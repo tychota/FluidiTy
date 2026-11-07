@@ -148,7 +148,7 @@ if(BUILD_TESTING)
 
   if(FLUIDITY_ENABLE_CUDA)
     add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)
-    target_link_libraries(fluidity_cuda_probe_tests PRIVATE fluidity_cuda_probe GTest::gtest_main)
+    target_link_libraries(fluidity_cuda_probe_tests PRIVATE fluidity_cuda_probe CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_probe_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     if(WIN32)
       target_compile_definitions(fluidity_cuda_probe_tests

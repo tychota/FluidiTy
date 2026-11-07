@@ -1,3 +1,5 @@
+#include <cuda_runtime_api.h>
+
 #include <array>
 #include <iostream>
 
@@ -59,6 +61,21 @@ TEST(CudaProbe, SharedVec2Math) {
             << " copy=" << report.copy_result << " synchronize=" << report.synchronize_result
             << " elements=" << report.element_count << " sentinel=(" << report.values.back().x << ','
             << report.values.back().y << ")\n";
+}
+
+TEST(CudaProbe, LaunchIgnoresPriorRuntimeError) {
+  ProbeReport baseline;
+  const absl::Status baseline_status = RunCudaProbe(0, &baseline);
+  ASSERT_TRUE(baseline_status.ok()) << baseline_status;
+
+  ASSERT_EQ(cudaSetDevice(-1), cudaErrorInvalidDevice);
+  ASSERT_EQ(cudaPeekAtLastError(), cudaErrorInvalidDevice);
+
+  ProbeReport report;
+  const absl::Status status = RunCudaProbe(0, &report);
+  EXPECT_TRUE(status.ok()) << status;
+  EXPECT_EQ(report.launch_result, 0);
+  EXPECT_EQ(cudaGetLastError(), cudaErrorInvalidDevice);
 }
 
 }  // namespace

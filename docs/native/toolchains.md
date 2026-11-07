@@ -46,14 +46,15 @@ generated for `compute_120`.
 | --- | --- | --- |
 | MSVC CRT | `/MDd` | `/MD` |
 | CMake architectures | `120-real;120-virtual` | `120-real;120-virtual` |
-| Hardware test `CudaProbe.SharedVec2Math` | 1 passed | 1 passed |
+| Hardware tests (`gpu`) | 2 passed | 2 passed |
 | CPU-labeled tests | 123 passed | 123 passed |
 | CUDA API doubles (`cuda-mock`) | 11 passed | 11 passed |
 | Compute Sanitizer memcheck 2026.3.0.0 (build 38637409) | Release gate | 1 passed, 0 errors, exit 0 |
 
-The hardware test verified all 17 `Vec2` results and the sentinel after a 32-thread launch.
-Launch, stream synchronization and device-to-host copy each returned zero. The device build used
-C++20 with `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`. CMake used the
+The `CudaProbe.SharedVec2Math` test verified all 17 `Vec2` results and the sentinel after a 32-thread launch.
+Launch, stream synchronization and device-to-host copy each returned zero. A second hardware test
+verified that the probe succeeds and preserves the pending error after an unrelated CUDA call fails.
+The device build used C++20 with `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`. CMake used the
 `Shared` runtime setting and linked `CUDA::cudart` from the installed toolkit. The earlier
 direct nvcc probe recorded the Windows `shared` deprecation described above.
 
@@ -122,7 +123,7 @@ uv @uvArgs ctest --preset windows-debug-cuda -L gpu --output-on-failure
 uv @uvArgs ctest --preset windows-release-cuda -L gpu --output-on-failure
 $sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
 $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
-& $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 `
+& $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
   out/build/windows-release-cuda/fluidity_cuda_probe_tests.exe --gtest_filter=CudaProbe.SharedVec2Math
 ```
 
