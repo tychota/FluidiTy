@@ -1,7 +1,7 @@
 # FluidiTy numerical reference
 
 This package provides independent float64 reference calculations on a uniform,
-complete-support 2D MAC grid. It is not the production simulator.
+complete-support 2D MAC grid, with selected independent 3D algebraic fixtures. It is not the production simulator; production/CUDA differential gates and full physical scenes remain outstanding.
 
 Use Python 3.13 and install the pinned, hash-checked runtime, test, and build
 dependencies into an isolated environment before installing the local package:

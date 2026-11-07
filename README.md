@@ -2,7 +2,7 @@
 
 Particle–grid multiphysics for Blender, designed around one sparse staggered grid, independent numerical references and measurable output quality.
 
-**Current status:** design for review. The production solver, Python reference and Lean proofs are not implemented. The next step after owner review is an implementation plan; this repository does not present research timings as measured product performance.
+**Current status:** the independent Python operator reference and two bounded Lean proof pilots are implemented. The ten complete proof families, production solver and CUDA validation remain outstanding. Research timings are not measured product performance.
 
 - [English design specification](docs/superpowers/specs/2026-11-07-fluidity-design.md): product requirements, numerical and execution contracts, milestones and acceptance gates.
 - [Scientific method paper](docs/papers/fluidity-method.pdf): equations, figures and detailed particle/transfer/grid flowcharts; [Typst source](docs/papers/fluidity-method.typ).

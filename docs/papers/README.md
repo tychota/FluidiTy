@@ -1,6 +1,6 @@
 # Scientific method and diagrams
 
-The paper accompanies the canonical [English design specification](../superpowers/specs/2026-11-07-fluidity-design.md). It describes proposed equations and acceptance contracts; it is not an implementation report or a claim of completed proofs.
+The paper accompanies the canonical [English design specification](../superpowers/specs/2026-11-07-fluidity-design.md). It describes proposed equations and acceptance contracts; it records the bounded reference and proof pilots without claiming completion of the proof families.
 
 - `fluidity-method.typ`: English paper, equations, ten formal contract families, independent-reference scope and bibliography.
 - `fluidity-figures.typ`: reusable CeTZ figures, including neural dependency coverage, hybrid meshing and validation layers.
@@ -20,4 +20,4 @@ Public supporting evidence:
 - [Neural surface artifacts and dependency analysis](../references/neural-surface-evidence.md).
 - [Ten formal contracts and implementation bridges](../references/formal-contracts.md).
 
-Python/Lean projects and production tests will be specified by the implementation plan after design review. Internal review records and downloaded third-party assets are excluded from version control.
+The independent Python reference and two Lean pilots are implemented; the full proof families and production tests remain future work. Internal review records and downloaded third-party assets are excluded from version control.

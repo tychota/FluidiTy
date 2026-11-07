@@ -536,7 +536,7 @@ This proves dissipation relative to wall work; it makes no absolute contraction 
 
 The two M0 pilots establish project feasibility and proof effort, not permission to replace the ten-contract scope by two lemmas. Public targets must compile without `sorry`, `admit` or unapproved project axioms; retain `#print axioms` output and allow only the recorded foundations of the pinned environment. F1 assumes moment identities for a selected transition basis: numerical THB patch tests still have to establish that the implementation satisfies them. A noncritical deferral requires an explicit ADR naming the missing theorem, reason, numerical substitute and revisit milestone.
 
-Report four distinct evidence classes: kernel-checked exact-arithmetic contracts, independent numerical-reference results, C++/CUDA parity and runtime invariants, and real-device end-to-end quality/performance. None replaces another. The contracts do not prove Navier–Stokes, total simulation stability, IEEE bounds, memory safety, collision geometry or reconstructed topology. No reference solver, Lean project or checked theorem is claimed implemented here.
+Report four distinct evidence classes: kernel-checked exact-arithmetic contracts, independent numerical-reference results, C++/CUDA parity and runtime invariants, and real-device end-to-end quality/performance. None replaces another. The contracts do not prove Navier–Stokes, total simulation stability, IEEE bounds, memory safety, collision geometry or reconstructed topology. An independent Python operator reference and bounded portions of F5 and F8 are implemented. Their four Lean targets were also checked by an experimental independent checker; the full ten families and production/CUDA gates remain outstanding.
 
 == Product constraints and measured choices <sec-open>
 Product decisions are recorded:
@@ -618,7 +618,7 @@ No FluidiTy simulation result is reported here; source-inspection facts and cite
 
 [33] Brochu and Bridson (2009). #link("https://www.cs.ubc.ca/labs/imager/tr/2009/eltopo/eltopo.html")[Robust Topological Operations for Dynamic Explicit Surfaces]. El Topo author project.
 
-[34] #link("https://lean-lang.org/doc/reference/latest/Elaboration-and-Compilation/")[Lean reference: elaboration and kernel checking]; #link("https://leanprover-community.github.io/mathlib4_docs/Mathlib/LinearAlgebra/Matrix/PosDef.html")[mathlib matrix positivity]. Versions are pinned when the proof project is created.
+[34] #link("https://lean-lang.org/doc/reference/latest/Elaboration-and-Compilation/")[Lean reference: elaboration and kernel checking]; #link("https://leanprover-community.github.io/mathlib4_docs/Mathlib/LinearAlgebra/Matrix/PosDef.html")[mathlib matrix positivity]. The proof project pins Lean 4.34.1 and mathlib; the independent experimental checker and exporter are pinned in the proof tooling.
 
 [35] Chen, Zhou and Zhu (2025). #link("https://cdwj.github.io/projects/neural-pls-project-page/static/pdfs/neural-pls.pdf")[A Neural Particle Level Set Method for Dynamic Interface Tracking]. DOI 10.1145/3730399.
 

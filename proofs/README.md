@@ -13,7 +13,17 @@ lake env lean Fluidity/Pressure.lean
 lake env lean Fluidity/FixedPoint.lean
 ```
 
-The default build includes the consumer examples in `Fluidity.lean`. Build outputs and locally retained evidence under `.lake/` and `artifacts/` are ignored. The independent proof-term verification workflow is a separate task; a successful Lean build alone does not establish that an independent checker accepted the terms.
+The default build includes the consumer examples in `Fluidity.lean`. Build outputs and locally retained evidence under `.lake/` and `artifacts/` are ignored. The four targets have also been exported with `olean-export` **0.2.0** and checked against the matching Init prelude by experimental `nl-fast` from nano-lean commit `54ce971a5ac2513a1bac0ac9bca73f672196c0f2`, built with Rust **1.97.1**. This independent checker is experimental, and its build receipt is a trusted external assertion, not a reproducible-build proof. A successful Lean build alone does not establish independent acceptance.
+
+Build `olean-export` 0.2.0 and nano-lean at the pinned revision from their official sources with Rust 1.97.1 and `cargo build --release --locked` (add `--bin nl-fast` for the checker). Supply a JSON receipt with `schema_version: 1`, `nano_lean_commit`, `rust_version`, and `checker_sha256` matching the executable; include source URL, archive checksum and build command to document provenance. Run from the repository root:
+
+```sh
+python tools/verify_proofs.py --lean-bin /path/to/lean/bin \
+  --exporter /path/to/olean-export --checker /path/to/nl-fast \
+  --checker-provenance /path/to/receipt.json --output proofs/artifacts/verification
+```
+
+The verifier checks pins and provenance, builds, audits all four axiom closures, exports Init and the four theorem closures under the same Lake environment, and runs the checker with an explicit axiom allowlist and no cache. It writes evidence only on success. `--lake-packages FILE` permits a local package override; its contents and hash are recorded in evidence and are an additional trust input. Keep verification evidence private if paths disclose local information.
 
 The public theorem targets are:
 
