@@ -1,0 +1,8 @@
+{
+  "lean_tag": "v4.34.1",
+  "lean_commit": "5045d0056413266e57c625dcd7c365b10e377c52",
+  "mathlib_commit": "d13f23b723b8a846827a245b89c10fc7d3f11612",
+  "nano_lean_commit": "54ce971a5ac2513a1bac0ac9bca73f672196c0f2",
+  "rust_version": "1.97.1",
+  "exporter_version": "0.2.0"
+}

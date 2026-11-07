@@ -2,7 +2,7 @@
 
 Particle–grid multiphysics for Blender, designed around one sparse staggered grid, independent numerical references and measurable output quality.
 
-**Current status:** design for review. The production solver, Python reference and Lean proofs are not implemented. The next step after owner review is an implementation plan; this repository does not present research timings as measured product performance.
+**Current status:** the independent Python operator reference and two bounded Lean proof pilots are implemented. The ten complete proof families, production solver and CUDA validation remain outstanding. Research timings are not measured product performance.
 
 - [English design specification](docs/superpowers/specs/2026-11-07-fluidity-design.md): product requirements, numerical and execution contracts, milestones and acceptance gates.
 - [Scientific method paper](docs/papers/fluidity-method.pdf): equations, figures and detailed particle/transfer/grid flowcharts; [Typst source](docs/papers/fluidity-method.typ).
@@ -10,6 +10,22 @@ Particle–grid multiphysics for Blender, designed around one sparse staggered g
 - [Verified neural-surface evidence](docs/references/neural-surface-evidence.md): published artifacts, preprocessing dependencies, benchmark scope and first comparison.
 
 The first meshing experiment compares a deterministic geometric reconstruction with the published Zhao–Shinar–Schroeder CNN on matched full-volume and narrow-band caches. Neural integration is gated on input coverage, quality, total resources, repeatability and artifact permissions.
+
+## Development tooling
+
+The Python reference uses uv >=0.13.7, Python 3.13 and a committed `reference/uv.lock`:
+
+```sh
+uv sync --project reference --locked
+uv run --project reference --locked pytest reference/tests tools/tests -q
+```
+
+See the [reference instructions](reference/README.md) and [proof tooling](proofs/README.md).
+The native build is specified to use CMake presets, Conan 2 and Ninja. Its
+configuration and C++/CUDA targets are the next implementation work; no Conan
+manifest is present yet. The [Windows native-foundation plan](docs/superpowers/plans/2026-11-07-native-foundation-windows.md)
+defines the next bounded build, CPU parity and CUDA-readiness tasks. Native dependencies belong to Conan; Python tooling
+belongs to uv, and Lean dependencies remain managed by Lake.
 
 ## Build the paper
 

@@ -1,6 +1,6 @@
 # FluidiTy: product, numerical method, and engineering design
 
-**Status:** English design proposed for owner review, before the implementation plan.
+**Status:** The broader product design remains proposed for owner review. The bounded M0 reference and proof foundation has been implemented and reviewed under its implementation plan; this does not approve the full product design.
 **Date:** 7 November 2026.
 **Canonical companion:** [scientific method source](../../papers/fluidity-method.typ), compiled as `fluidity-method.pdf`.
 **Evidence boundary:** this specification selects contracts and experiments. It does not claim an implemented simulator, completed Lean proofs, neural inference results, or measured CUDA performance.
@@ -9,7 +9,7 @@
 
 FluidiTy is an open-source-ready Blender add-on and native particle–grid simulator for convincing offline liquid effects, beginning with a breaking wave, persistent render surfaces, spray, foam and bubbles. Viscous/multiphase liquids, sand and snow, elastic objects with cutting, and low-Mach smoke/fire follow. The project is sized for one developer assisted by coding agents; every extra representation must justify its correctness and cost.
 
-This is a new, self-contained design. Historical reviews are development records, not normative dependencies. All public technical prose and identifiers are English. The next deliverable after owner review is a Superpowers implementation plan; this document is committed first. No implementation plan is approved by the existence of this document.
+This is a new, self-contained design. Historical reviews are development records, not normative dependencies. All public technical prose and identifiers are English. The bounded M0 implementation plan covers the reference and proof foundation. Later implementation plans and the broader product design remain subject to their respective review and approval; this document alone approves neither.
 
 Decision labels:
 
@@ -587,7 +587,7 @@ Deliver versioned `.blend` assets for points, Surface LOD, Whitewater, foam proj
 
 Production uses C++20, CUDA on Windows/Linux and a CPU backend on macOS. Initial Blender floor is5.2 LTS. Google C++ style with mandatory braces, `#pragma once`,100 columns; Google Python via ruff. `.h` is portable host/device, `.cuh` requires nvcc, `.cu` kernels, `.cc` host. One `FLUIDITY_HD` definition. No host exceptions: Status/StatusOr; device status bits are decoded at a safe boundary. Abseil is host-only. Prefer CUB/libcu++ to Thrust. No modules, coroutines, production RTTI, intricate metaprogramming or `using namespace`; no production BLAS dependency.
 
-CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark and a selected content hash. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
+CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
 
 No download of an unlicensed checkpoint or inferred license grants distribution permission. Select the project's own code/documentation license before public release, with third-party notices; this specification does not silently choose a license for the owner. Do not commit proprietary binaries, model weights, personal paths, source PDFs or internal review logs. Keep portable public source evidence and document build instructions.
 
