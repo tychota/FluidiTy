@@ -12,8 +12,8 @@
 namespace fluidity {
 
 struct StrainShape {
-  std::size_t rows;
-  std::size_t columns;
+  std::size_t rows;  // Strain samples, including both normal components and interior shear.
+  std::size_t columns;  // Face velocities in MAC face order.
   // Number of entries in the dense row-major strain operator.
   std::size_t coefficients;
 };
@@ -91,9 +91,10 @@ struct ViscosityOutputsView {
 struct ViscosityWorkspace {
   // Dense K during assembly, then the mass-scaled system for an implicit step.
   std::array<double, kMaxDenseUnknowns * kMaxDenseUnknowns> matrix;
-  std::array<double, kMaxDenseUnknowns> wall_load;
-  std::array<double, kMaxDenseUnknowns> sqrt_mass;
-  std::array<double, kMaxDenseUnknowns> solve_rhs;
+  std::array<double, kMaxDenseUnknowns> wall_load;  // E^T W boundary_strain in force units.
+  std::array<double, kMaxDenseUnknowns> sqrt_mass;  // Facewise square roots of inertia.
+  std::array<double, kMaxDenseUnknowns> solve_rhs;  // Implicit RHS with mass and power-of-two scaling.
+  // Holds the scaled implicit solution until physical face velocities are restored.
   std::array<double, kMaxDenseUnknowns> next_velocity;
   SmallSolveWorkspace solve;
 };
@@ -112,6 +113,10 @@ struct ViscosityWorkspace {
 // for more than 64 unknowns. Returns kFailedPrecondition for an unsafe forced explicit
 // step or unsafe SPD solve. Returns kOutOfRange for unrepresentable sizes, nonfinite
 // arithmetic, or nonzero stiffness, load, or scaled matrix terms below normal double range.
+// The implicit solve also requires a common power-of-two scale that keeps the nonzero
+// right-hand-side terms and weighted solution components normal, with room for sums.
+// Range loss detected in the solve or when restoring physical velocities also returns
+// kOutOfRange.
 absl::Status
 ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, ViscosityWorkspace& workspace);
 

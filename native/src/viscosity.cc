@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <numeric>
 #include <span>
 
 #include "fluidity/host/views.h"
@@ -10,11 +12,20 @@
 namespace fluidity {
 namespace {
 
-// Combine finite factors by exponent so a large or tiny intermediate cannot
-// erase a representable product. The divisor is positive.
-double ScaledProduct(double first_factor, double second_factor, double third_factor, double divisor = 1.0) {
+// Keep the exponent separate so a representable final product can survive
+// large or small intermediate factors and can share a power-of-two shift.
+struct BinaryProduct {
+  double fraction;
+  int exponent;
+
+  double Value(int exponent_shift = 0) const {
+    return std::scalbn(fraction, exponent + exponent_shift);
+  }
+};
+
+BinaryProduct FactorProduct(double first_factor, double second_factor, double third_factor, double divisor = 1.0) {
   if (first_factor == 0.0 || second_factor == 0.0 || third_factor == 0.0) {
-    return 0.0;
+    return {0.0, 0};
   }
   int first_exponent;
   int second_exponent;
@@ -26,8 +37,29 @@ double ScaledProduct(double first_factor, double second_factor, double third_fac
   const double divisor_fraction = std::frexp(divisor, &divisor_exponent);
   const double fraction = (first_fraction * (second_fraction * third_fraction)) / divisor_fraction;
   const int exponent = first_exponent + second_exponent + third_exponent - divisor_exponent;
-  return std::scalbn(fraction, exponent);
+  return {fraction, exponent};
 }
+
+double ScaledProduct(double first_factor, double second_factor, double third_factor, double divisor = 1.0) {
+  return FactorProduct(first_factor, second_factor, third_factor, divisor).Value();
+}
+
+struct BinaryExponentRange {
+  void Include(BinaryProduct term) {
+    if (term.fraction != 0.0) {
+      const int exponent = term.exponent + std::ilogb(term.fraction);
+      smallest = std::min(smallest, exponent);
+      largest = std::max(largest, exponent);
+    }
+  }
+
+  bool Empty() const {
+    return smallest > largest;
+  }
+
+  int smallest = std::numeric_limits<int>::max();
+  int largest = std::numeric_limits<int>::min();
+};
 
 absl::Status
 ValidateStepViews(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, ViscosityWorkspace& workspace) {
@@ -219,9 +251,140 @@ absl::Status ApplyForwardEuler(
   return absl::OkStatus();
 }
 
-// Solve (I + dt S) (sqrt(M) u_new) = sqrt(M) u + dt M^(-1/2) wall_load.
-// The change of variables preserves the backward Euler equation and keeps
-// disparate face masses from dominating the dense solver's conditioning test.
+// Assemble I + dt S in place, preserving the symmetry of the mass-scaled system.
+// Its largest diagonal sets the scale of attenuation through the solve.
+absl::StatusOr<double>
+BuildImplicitSystem(double dt, std::span<double> system_matrix, std::span<const double> sqrt_mass) {
+  const std::size_t columns = sqrt_mass.size();
+  double largest_diagonal = 1.0;
+  for (std::size_t row = 0; row < columns; ++row) {
+    for (std::size_t column = 0; column <= row; ++column) {
+      const double stiffness = system_matrix[row * columns + column];
+      const double mass_scaled = MassScaledStiffness(stiffness, sqrt_mass[row], sqrt_mass[column]);
+      const double step_coefficient = dt * mass_scaled;
+      if (stiffness != 0.0 && !std::isnormal(step_coefficient)) {
+        return absl::OutOfRangeError("implicit viscous stiffness is outside normal double range");
+      }
+      double system_coefficient = step_coefficient;
+      if (row == column) {
+        system_coefficient += 1.0;
+        largest_diagonal = std::max(largest_diagonal, system_coefficient);
+      }
+      system_matrix[row * columns + column] = system_coefficient;
+      system_matrix[column * columns + row] = system_coefficient;
+    }
+  }
+  return largest_diagonal;
+}
+
+// Scale all right-hand-side terms and solve coordinates by one power of two.
+// Choose the shift from the actual products, including terms below the double
+// range before shifting. Bias toward larger RHS values to leave room for decay.
+absl::StatusOr<int> ChooseImplicitRhsShift(
+    const ViscosityInputsView& inputs,
+    std::span<const double> wall_load,
+    std::span<const double> sqrt_mass,
+    double largest_diagonal
+) {
+  BinaryExponentRange term_exponents;
+  for (std::size_t face = 0; face < sqrt_mass.size(); ++face) {
+    term_exponents.Include(FactorProduct(sqrt_mass[face], inputs.velocity[face], 1.0));
+    term_exponents.Include(FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]));
+  }
+  if (term_exponents.Empty()) {
+    return 0;
+  }
+
+  constexpr int kMinNormalExponent = std::numeric_limits<double>::min_exponent - 1;
+  // Leave eight exponent bits for additions within a system of at most 64 unknowns.
+  constexpr int kMaxRhsTermExponent = std::numeric_limits<double>::max_exponent - 1 - 8;
+  const int smallest_shift = kMinNormalExponent - term_exponents.smallest;
+  const int largest_shift = kMaxRhsTermExponent - term_exponents.largest;
+  if (smallest_shift > largest_shift) {
+    return absl::OutOfRangeError("implicit right-hand side terms have no common normal scale");
+  }
+  const int term_center = std::midpoint(term_exponents.smallest, term_exponents.largest);
+  const int preferred_shift = std::ilogb(largest_diagonal) / 2 - term_center;
+  return std::clamp(preferred_shift, smallest_shift, largest_shift);
+}
+
+absl::Status StageImplicitRhs(
+    const ViscosityInputsView& inputs,
+    std::span<const double> wall_load,
+    std::span<const double> sqrt_mass,
+    int rhs_shift,
+    std::span<double> solve_rhs
+) {
+  for (std::size_t face = 0; face < sqrt_mass.size(); ++face) {
+    const double weighted_velocity = FactorProduct(sqrt_mass[face], inputs.velocity[face], 1.0).Value(rhs_shift);
+    const double wall_impulse = FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]).Value(rhs_shift);
+    solve_rhs[face] = weighted_velocity + wall_impulse;
+    if (solve_rhs[face] != 0.0 && !std::isnormal(solve_rhs[face])) {
+      return absl::OutOfRangeError("scaled implicit right-hand side is outside normal double range");
+    }
+  }
+  return absl::OkStatus();
+}
+
+// A rounded-to-zero solve component can hide a physical velocity. Check its
+// equation in a row-local scale so tiny couplings survive the residual calculation.
+bool ZeroComponentSatisfiesEquation(
+    std::span<const double> equation,
+    double rhs,
+    std::span<const double> weighted_velocity
+) {
+  BinaryExponentRange term_exponents;
+  term_exponents.Include({rhs, 0});
+  for (std::size_t column = 0; column < equation.size(); ++column) {
+    term_exponents.Include(FactorProduct(equation[column], weighted_velocity[column], 1.0));
+  }
+  if (term_exponents.Empty()) {
+    return true;
+  }
+
+  const int residual_shift = -term_exponents.largest;
+  double scaled_residual = -std::scalbn(rhs, residual_shift);
+  for (std::size_t column = 0; column < equation.size(); ++column) {
+    scaled_residual += FactorProduct(equation[column], weighted_velocity[column], 1.0).Value(residual_shift);
+  }
+  const double tolerance = 8.0 * static_cast<double>(equation.size()) * std::numeric_limits<double>::epsilon();
+  return std::abs(scaled_residual) <= tolerance;
+}
+
+absl::Status RestoreImplicitVelocity(
+    std::span<const double> system_matrix,
+    std::span<const double> solve_rhs,
+    std::span<const double> sqrt_mass,
+    int rhs_shift,
+    std::span<double> next_velocity
+) {
+  const std::size_t columns = sqrt_mass.size();
+  for (std::size_t face = 0; face < columns; ++face) {
+    const double weighted_velocity = next_velocity[face];
+    if (weighted_velocity == 0.0) {
+      const auto equation = system_matrix.subspan(face * columns, columns);
+      if (!ZeroComponentSatisfiesEquation(equation, solve_rhs[face], next_velocity)) {
+        return absl::OutOfRangeError("implicit solve lost a velocity component at the common scale");
+      }
+    } else if (!std::isnormal(weighted_velocity)) {
+      return absl::OutOfRangeError("implicit solve component is outside normal double range");
+    }
+  }
+
+  for (std::size_t face = 0; face < columns; ++face) {
+    const double weighted_velocity = next_velocity[face];
+    const double velocity = FactorProduct(weighted_velocity, 1.0, 1.0, sqrt_mass[face]).Value(-rhs_shift);
+    if (!std::isfinite(velocity) || (weighted_velocity != 0.0 && velocity == 0.0)) {
+      return absl::OutOfRangeError("implicit face velocity is outside representable double range");
+    }
+    next_velocity[face] = velocity;
+  }
+  return absl::OkStatus();
+}
+
+// Solve in sqrt(M) velocity coordinates with an additional common power of
+// two for range. The matrix is independent of that common scale, so the
+// conditioning screen still sees the mass-scaled backward Euler equation.
 absl::Status ApplyBackwardEuler(
     const ViscosityInputsView& inputs,
     std::span<double> system_matrix,
@@ -231,34 +394,23 @@ absl::Status ApplyBackwardEuler(
     std::span<double> next_velocity,
     SmallSolveWorkspace& solve
 ) {
-  const std::size_t columns = inputs.velocity.size();
-  for (std::size_t row = 0; row < columns; ++row) {
-    const double wall_impulse = ScaledProduct(inputs.dt, wall_load[row], 1.0, sqrt_mass[row]);
-    solve_rhs[row] = std::fma(sqrt_mass[row], inputs.velocity[row], wall_impulse);
-    if (!std::isfinite(solve_rhs[row])) {
-      return absl::OutOfRangeError("implicit viscosity right-hand side is nonfinite");
-    }
-    for (std::size_t column = 0; column <= row; ++column) {
-      const double coefficient = system_matrix[row * columns + column];
-      const double mass_scaled = MassScaledStiffness(coefficient, sqrt_mass[row], sqrt_mass[column]);
-      const double step_coefficient = inputs.dt * mass_scaled;
-      if (coefficient != 0.0 && !std::isnormal(step_coefficient)) {
-        return absl::OutOfRangeError("implicit viscous stiffness is outside normal double range");
-      }
-      const double system_coefficient = row == column ? 1.0 + step_coefficient : step_coefficient;
-      system_matrix[row * columns + column] = system_coefficient;
-      system_matrix[column * columns + row] = system_coefficient;
-    }
+  const auto largest_diagonal = BuildImplicitSystem(inputs.dt, system_matrix, sqrt_mass);
+  if (!largest_diagonal.ok()) {
+    return largest_diagonal.status();
   }
-
+  const auto rhs_shift = ChooseImplicitRhsShift(inputs, wall_load, sqrt_mass, *largest_diagonal);
+  if (!rhs_shift.ok()) {
+    return rhs_shift.status();
+  }
+  const auto staged = StageImplicitRhs(inputs, wall_load, sqrt_mass, *rhs_shift, solve_rhs);
+  if (!staged.ok()) {
+    return staged;
+  }
   const auto solved = SolveSmallSpd(system_matrix, solve_rhs, next_velocity, solve);
   if (!solved.ok()) {
     return solved;
   }
-  for (std::size_t face = 0; face < columns; ++face) {
-    next_velocity[face] /= sqrt_mass[face];
-  }
-  return absl::OkStatus();
+  return RestoreImplicitVelocity(system_matrix, solve_rhs, sqrt_mass, *rhs_shift, next_velocity);
 }
 
 absl::Status ComputeEnergyAndWallWork(

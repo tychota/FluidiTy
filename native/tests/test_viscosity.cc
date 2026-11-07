@@ -632,6 +632,123 @@ TEST(Viscosity, ExplicitStepRetainsRepresentableVelocityIncrements) {
   }
 }
 
+void CheckImplicitVelocityRange(
+    double old_velocity,
+    double quadrature,
+    double wall_strain,
+    double dt,
+    double expected_velocity
+) {
+  const std::array velocity{old_velocity};
+  const std::array mass{0x1p-1000};
+  const std::array strain{1.0};
+  const std::array weight{quadrature};
+  const std::array wall{wall_strain};
+  const ViscosityInputsView inputs{
+      .velocity = velocity,
+      .mass = mass,
+      .strain = strain,
+      .rows = 1,
+      .weight = weight,
+      .boundary_strain = wall,
+      .dt = dt,
+      .mode = ViscosityMode::kImplicit,
+  };
+  Result result(1);
+  ViscosityWorkspace workspace;
+  const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
+  EXPECT_NEAR(result.velocity[0] / expected_velocity, 1.0, kTolerance);
+}
+
+TEST(Viscosity, ImplicitStepRetainsOldVelocityWithTinyMass) {
+  CheckImplicitVelocityRange(0x1p-600, 0x1p-1000, 0.0, 1.0, 0x1p-601);
+}
+
+TEST(Viscosity, ImplicitStepRetainsTinyWallLiftWithTinyMass) {
+  CheckImplicitVelocityRange(0.0, 0x1p-1000, 1.0, 0x1p-1000, 0x1p-1000);
+}
+
+TEST(Viscosity, ImplicitStepRetainsSolutionWithTinyMass) {
+  CheckImplicitVelocityRange(1.0, 0x1p-400, 0.0, 1.0, 0x1p-600);
+}
+
+TEST(Viscosity, ImplicitStepRetainsVelocitiesAcrossMassScales) {
+  const std::array velocity{0x1p-600, 0x1p-500};
+  const std::array mass{0x1p-1000, 0x1p+1000};
+  const std::array strain{1.0, 0.0, 0.0, 1.0};
+  const std::array wall{0.0, 0.0};
+  const ViscosityInputsView inputs{
+      .velocity = velocity,
+      .mass = mass,
+      .strain = strain,
+      .rows = 2,
+      .weight = mass,
+      .boundary_strain = wall,
+      .dt = 1.0,
+      .mode = ViscosityMode::kImplicit,
+  };
+  Result result(velocity.size());
+  ViscosityWorkspace workspace;
+  const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
+  EXPECT_NEAR(result.velocity[0] / 0x1p-601, 1.0, kTolerance);
+  EXPECT_NEAR(result.velocity[1] / 0x1p-501, 1.0, kTolerance);
+}
+
+TEST(Viscosity, AcceptsZeroImplicitVelocityWithBalancedCoupling) {
+  const std::array velocity{2.0, 5.0};
+  const std::array mass{1.0, 1.0};
+  const std::array strain{1.0, 1.0, 1.0, 0.0, 0.0, 1.0};
+  const std::array weight{2.0, 1.0, 2.0};
+  const std::array wall{0.0, 0.0, 0.0};
+  const ViscosityInputsView inputs{
+      .velocity = velocity,
+      .mass = mass,
+      .strain = strain,
+      .rows = 3,
+      .weight = weight,
+      .boundary_strain = wall,
+      .dt = 1.0,
+      .mode = ViscosityMode::kImplicit,
+  };
+  // A = [[4, 2], [2, 5]] has an exact Cholesky factor. The second face
+  // supplies the entire first equation even though its RHS is nonzero.
+  Result result(velocity.size());
+  ViscosityWorkspace workspace;
+  const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.velocity[0], 0.0);
+  EXPECT_EQ(result.velocity[1], 1.0);
+}
+
+TEST(Viscosity, RejectsImplicitSolutionLostAcrossScales) {
+  const std::array velocity{1.0, 0.0};
+  const std::array mass{0x1p-1000, 0x1p-200};
+  const std::array strain{1.0, 0.0, 0.0, 1.0};
+  const std::array weight{1.0, 0x1p+800};
+  const std::array wall{0.0, 0x1p-200};
+  const ViscosityInputsView inputs{
+      .velocity = velocity,
+      .mass = mass,
+      .strain = strain,
+      .rows = 2,
+      .weight = weight,
+      .boundary_strain = wall,
+      .dt = 1.0,
+      .mode = ViscosityMode::kImplicit,
+  };
+  // Both equations have the same mass-scaled diagonal. In physical units
+  // the expected velocities round to 2^-1000 and 2^-200. A common shift
+  // that keeps the second RHS finite cannot keep the first solution normal.
+  Result result(velocity.size());
+  ViscosityWorkspace workspace;
+  EXPECT_EQ(ViscousStep(inputs, result.Outputs(), workspace).code(), absl::StatusCode::kOutOfRange);
+  result.ExpectUnchanged();
+}
+
 TEST(Viscosity, RejectsRoundedSubnormalStiffness) {
   TwoFaceCase problem;
   problem.weight[0] = std::numeric_limits<double>::min();
