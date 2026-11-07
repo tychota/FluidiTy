@@ -235,6 +235,40 @@ TEST(SmallSolve, AcceptsRegularizedCoupledSystemAtTinyScale) {
   }
 }
 
+TEST(SmallSolve, RejectsSingularSubnormalMatrix) {
+  // The exact null vector is (0, -2, 1). Rounded subnormal updates can mask it.
+  constexpr double unit = std::numeric_limits<double>::denorm_min();
+  const std::array matrix{2.0 * unit, unit, 2.0 * unit, unit, unit, 2.0 * unit, 2.0 * unit, 2.0 * unit, 4.0 * unit};
+  const std::array rhs{0.0, 0.0, 0.0};
+  std::array solution{7.0, 8.0, 9.0};
+  SmallSolveWorkspace workspace;
+
+  EXPECT_EQ(SolveSmallSpd(matrix, rhs, solution, workspace).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(solution, (std::array{7.0, 8.0, 9.0}));
+}
+
+TEST(SmallSolve, RejectsSubnormalPivotAtNormalMatrixScale) {
+  constexpr double normal = std::numeric_limits<double>::min();
+  const std::array matrix{normal, 0.0, 0.0, normal / 2.0};
+  const std::array rhs{normal, normal / 2.0};
+  std::array solution{7.0, 8.0};
+  SmallSolveWorkspace workspace;
+
+  EXPECT_EQ(SolveSmallSpd(matrix, rhs, solution, workspace).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(solution, (std::array{7.0, 8.0}));
+}
+
+TEST(SmallSolve, AcceptsSmallestNormalPivot) {
+  constexpr double normal = std::numeric_limits<double>::min();
+  const std::array matrix{normal};
+  const std::array rhs{normal};
+  std::array solution{7.0};
+  SmallSolveWorkspace workspace;
+
+  ASSERT_TRUE(SolveSmallSpd(matrix, rhs, solution, workspace).ok());
+  EXPECT_DOUBLE_EQ(solution[0], 1.0);
+}
+
 TEST(SmallSolve, RejectsUnsafeRelativePivot) {
   const std::array matrix{1e-13, 0.0, 0.0, 1e-29};
   const std::array rhs{1.0, 0.0};
