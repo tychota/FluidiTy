@@ -18,7 +18,8 @@ namespace {
 constexpr std::size_t kComponentCount = 2;
 constexpr std::size_t kStencilSize = 9;
 constexpr std::size_t kDepositDoublesPerFace = 2;
-constexpr std::size_t kGatherDoublesPerParticle = 12;
+constexpr std::size_t kMatrixEntryCount = kComponentCount * kComponentCount;
+constexpr std::size_t kGatherDoublesPerParticle = 2 * kComponentCount + 2 * kMatrixEntryCount;
 
 bool IsFinite(Vec2 vector) {
   return std::isfinite(vector.x) && std::isfinite(vector.y);
@@ -118,6 +119,35 @@ absl::StatusOr<Vec2> WeightedOffsetMean(Vec2 position, std::span<const Vec2> sam
     return absl::OutOfRangeError("weighted offset mean is nonfinite");
   }
   return mean;
+}
+
+// Deposit one complete component stencil into batch scratch. Centering the affine term
+// makes its weighted linear momentum zero while preserving its contribution to torque.
+absl::Status DepositComponent(
+    const FaceStencil& stencil,
+    Vec2 position,
+    double mass,
+    double velocity,
+    Vec2 affine_row,
+    std::span<double> staged_mass,
+    std::span<double> staged_momentum
+) {
+  const auto mean = WeightedOffsetMean(position, stencil.samples, stencil.basis.weights);
+  if (!mean.ok()) {
+    return mean.status();
+  }
+  for (std::size_t sample = 0; sample < stencil.face_indices.size(); ++sample) {
+    const std::size_t face = stencil.face_indices[sample];
+    const Vec2 centered = (stencil.samples[sample] - position) - *mean;
+    const double sample_velocity = velocity + Dot(affine_row, centered);
+    const double mass_contribution = stencil.basis.weights[sample] * mass;
+    staged_mass[face] += mass_contribution;
+    staged_momentum[face] += mass_contribution * sample_velocity;
+    if (!std::isfinite(staged_mass[face]) || !std::isfinite(staged_momentum[face])) {
+      return absl::OutOfRangeError("deposited mass or momentum is nonfinite");
+    }
+  }
+  return absl::OkStatus();
 }
 
 // Scale the full symmetric moment before forming its determinant. Comparing the determinant
@@ -268,20 +298,17 @@ absl::Status P2G(
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const auto mean = WeightedOffsetMean(position, stencil->samples, stencil->basis.weights);
-      if (!mean.ok()) {
-        return mean.status();
-      }
-      for (std::size_t sample = 0; sample < stencil->face_indices.size(); ++sample) {
-        const std::size_t face = stencil->face_indices[sample];
-        const Vec2 centered = (stencil->samples[sample] - position) - *mean;
-        const double sample_velocity = component_velocities[component] + Dot(affine_rows[component], centered);
-        const double mass_contribution = stencil->basis.weights[sample] * mass;
-        staged_mass[face] += mass_contribution;
-        staged_momentum[face] += mass_contribution * sample_velocity;
-        if (!std::isfinite(staged_mass[face]) || !std::isfinite(staged_momentum[face])) {
-          return absl::OutOfRangeError("deposited mass or momentum is nonfinite");
-        }
+      const auto deposited = DepositComponent(
+          *stencil,
+          position,
+          mass,
+          component_velocities[component],
+          affine_rows[component],
+          staged_mass,
+          staged_momentum
+      );
+      if (!deposited.ok()) {
+        return deposited;
       }
     }
   }
@@ -352,8 +379,8 @@ absl::Status G2P(
   }
 
   // Stage the four particle outputs in double slices, independent of Vec2 and Mat2 layout.
-  const std::size_t vector_doubles = 2 * particle_count;
-  const std::size_t matrix_doubles = 4 * particle_count;
+  const std::size_t vector_doubles = kComponentCount * particle_count;
+  const std::size_t matrix_doubles = kMatrixEntryCount * particle_count;
   auto staged_pic = scratch.first(vector_doubles);
   auto staged_increments = scratch.subspan(vector_doubles, vector_doubles);
   auto staged_affine = scratch.subspan(2 * vector_doubles, matrix_doubles);
@@ -372,8 +399,8 @@ absl::Status G2P(
       if (!gathered.ok()) {
         return gathered.status();
       }
-      const std::size_t vector_entry = 2 * particle + component;
-      const std::size_t matrix_row = 2 * vector_entry;
+      const std::size_t vector_entry = kComponentCount * particle + component;
+      const std::size_t matrix_row = kComponentCount * vector_entry;
       staged_pic[vector_entry] = gathered->pic;
       staged_increments[vector_entry] = gathered->increment;
       staged_affine[matrix_row] = gathered->affine_row.x;
@@ -384,8 +411,8 @@ absl::Status G2P(
   }
 
   for (std::size_t particle = 0; particle < particle_count; ++particle) {
-    const std::size_t vector_offset = 2 * particle;
-    const std::size_t matrix_offset = 4 * particle;
+    const std::size_t vector_offset = kComponentCount * particle;
+    const std::size_t matrix_offset = kMatrixEntryCount * particle;
     pic[particle] = {staged_pic[vector_offset], staged_pic[vector_offset + 1]};
     increments[particle] = {staged_increments[vector_offset], staged_increments[vector_offset + 1]};
     affine[particle] = {

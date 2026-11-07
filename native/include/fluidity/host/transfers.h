@@ -47,7 +47,8 @@ absl::StatusOr<std::size_t> P2GScratchDoubles(const Grid2D& grid);
 absl::StatusOr<std::size_t> G2PScratchDoubles(std::size_t particle_count);
 
 // Deposits centered APIC mass (kg) and pure momentum (kg*m/s) into exact FaceCount-sized
-// outputs in FaceGeometry order. An empty particle batch writes zero to every face.
+// outputs in FaceGeometry order. Each particle needs all nine nodes on both staggered
+// lattices, including zero-weight nodes. An empty particle batch writes zero to every face.
 // Scratch has exactly P2GScratchDoubles entries. Writable spans must be disjoint from
 // each other and all inputs. Scratch may change on failure. Outputs change only on success.
 // Returns kInvalidArgument for wrong extents, overlap, nonfinite particle inputs, negative
@@ -100,9 +101,12 @@ absl::StatusOr<AffineFit2D> FitAffine2D(
 // storage. Returns kInvalidArgument for invalid inputs and kOutOfRange for nonfinite arithmetic.
 absl::StatusOr<Vec2> VelocityGradient2D(std::span<const double> values, std::span<const Vec2> gradients);
 
-// Applies the phase's retention policy to PIC and the particle velocity minus the old-grid
-// gather (both in m/s). Energy and separation are dimensionless in [0, 1]. Returns
-// kInvalidArgument for invalid inputs and kOutOfRange for nonfinite arithmetic.
+// Blends PIC and the particle velocity minus the old-grid gather (both in m/s).
+// Stored velocity adds alpha times the residual to PIC. Advecting velocity adds
+// beta times that retained residual. Energy and separation are dimensionless in [0, 1].
+// Alpha is 0.99 times energy, and beta is energy times separation. Gas sets both
+// factors to zero. Elastic sets beta to zero. Returns kInvalidArgument for invalid
+// inputs and kOutOfRange for nonfinite arithmetic.
 absl::StatusOr<VelocityPair> BlendHistory2D(Vec2 pic, Vec2 residual, double energy, Phase phase, double separation);
 
 }  // namespace fluidity
