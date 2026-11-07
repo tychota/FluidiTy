@@ -9,5 +9,8 @@ description = "Independent uniform-grid numerical reference for FluidiTy"
 requires-python = ">=3.13,<3.14"
 dependencies = ["numpy==2.2.6", "scipy==1.15.3"]
 
+[project.scripts]
+fluidity-reference = "fluidity_reference.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
