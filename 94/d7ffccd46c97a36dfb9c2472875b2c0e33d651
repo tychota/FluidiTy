@@ -1,0 +1,33 @@
+docs/superpowers/plans/2026-11-07-native-foundation-windows.md
+  s_780be1775eb500::t_c0aa1f250cca11 13,108,191,221-222,228
+  s_2c56ace901f12c::t_229a2f0c28fa70 58,87-99,116,128,152,176
+  s_2c56ace901f12c::t_db9d0016422d39 72,85,164,186,188,235
+  s_780be1775eb500::t_f595d88c09221a 1-12,14-57,59-71,73-84,86,100-103,105-106,110-115,117-125,127,129-131,133-137,139-149,151,153-161,163,165-173,175,177-185,187,189-190,192-199,201-220,223-227,229-234,236-254,257-264
+  s_2c56ace901f12c::t_096043bf43d640 104,107,109,126,132,138,150,162,174,200,255-256
+README.md
+  s_2c56ace901f12c::t_096043bf43d640 26-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "94d7ffccd46c97a36dfb9c2472875b2c0e33d651",
+  "prompts": {},
+  "sessions": {
+    "s_2c56ace901f12c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b26d-129e-7990-9b06-0b5666dccca0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_780be1775eb500": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1b26d-129e-7990-9b06-0b5666dccca0",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
