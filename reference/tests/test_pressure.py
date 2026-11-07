@@ -62,3 +62,9 @@ def test_bounded_band_source():
     x = bounded_band_source([100, -10, 2, 10], v, band, 1.)
     assert x[0] == 0 and np.max(np.abs(x)) <= 1
     assert abs(v @ x) < 1e-12
+
+
+def test_band_source_balances_errors_far_larger_than_bound():
+    result = bounded_band_source([0., 1e30], [1., 2.], [True, True], 1.)
+    np.testing.assert_allclose(result, [-1., .5], atol=1e-14)
+    assert abs(np.dot([1., 2.], result)) < 1e-14

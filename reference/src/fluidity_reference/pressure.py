@@ -1,5 +1,7 @@
 """Small, directly assembled finite-volume pressure reference."""
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
+import math
 
 import numpy as np
 from scipy.sparse import diags
@@ -124,13 +126,43 @@ def bounded_band_source(error, volumes, band, maximum):
     result = np.zeros_like(error)
     if not np.any(band) or maximum == 0:
         return result
-    e, v = error[band], volumes[band]
-    lo, hi = np.min(e) - maximum, np.max(e) + maximum
-    for _ in range(100):
-        mid = lo / 2 + hi / 2
-        if np.dot(v, np.clip(e - mid, -maximum, maximum)) > 0:
-            lo = mid
+    # Decimal preserves differences smaller than an ulp of a large error.  The
+    # finite binary64 input range requires fewer than 2200 decimal digits even
+    # for products of subnormal weights and extreme differences.
+    with localcontext() as ctx:
+        ctx.prec = 2200
+        e = [Decimal.from_float(float(x)) for x in error[band]]
+        v = [Decimal.from_float(float(x)) for x in volumes[band]]
+        bound = Decimal.from_float(float(maximum))
+        points = sorted({x - bound for x in e} | {x + bound for x in e})
+
+        def balance(offset):
+            return sum((weight * max(-bound, min(bound, x - offset))
+                        for x, weight in zip(e, v)), Decimal(0))
+
+        lo, hi = 0, len(points) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if balance(points[mid]) > 0:
+                lo = mid
+            else:
+                hi = mid
+        left, right = points[lo], points[hi]
+        left_balance, right_balance = balance(left), balance(right)
+        if left_balance == 0:
+            offset = left
+        elif right_balance == 0:
+            offset = right
         else:
-            hi = mid
-    result[band] = np.clip(e - (lo / 2 + hi / 2), -maximum, maximum)
+            offset = left + (right - left) * left_balance / (left_balance - right_balance)
+        result[band] = [float(max(-bound, min(bound, x - offset))) for x in e]
+
+    # Check in normalized units to avoid overflowing finite input products.
+    weights = volumes[band] / np.max(volumes[band])
+    scaled = result[band] / maximum
+    terms = weights * scaled
+    imbalance = abs(math.fsum(terms))
+    tolerance = 8 * np.finfo(float).eps * max(math.fsum(abs(x) for x in terms), 1.)
+    if imbalance > tolerance:
+        raise ArithmeticError('band source weighted balance lost to rounding')
     return result
