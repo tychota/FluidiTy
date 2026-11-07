@@ -27,7 +27,10 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
-add_library(fluidity_native STATIC native/src/grid.cc native/src/basis.cc)
+add_library(fluidity_native STATIC
+  native/src/grid.cc
+  native/src/basis.cc
+  native/src/small_solve.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
 target_link_libraries(fluidity_native
@@ -84,7 +87,8 @@ if(BUILD_TESTING)
   add_executable(fluidity_native_tests
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
-    native/tests/test_grid_basis.cc)
+    native/tests/test_grid_basis.cc
+    native/tests/test_small_solve.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
