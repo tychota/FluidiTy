@@ -144,46 +144,47 @@ absl::Status ValidateStepParameters(const ViscosityInputsView& inputs) {
   return absl::OkStatus();
 }
 
-// Assemble one lower triangle of E^T W E and mirror it so both integrators
-// use the same symmetric stiffness. Accumulate the wall lift in the same row order.
-absl::Status
-AssembleViscousOperator(const ViscosityInputsView& inputs, std::span<double> stiffness, std::span<double> wall_load) {
-  const std::size_t columns = inputs.velocity.size();
-  std::ranges::fill(stiffness, 0.0);
-  std::ranges::fill(wall_load, 0.0);
-  for (std::size_t strain_row = 0; strain_row < inputs.rows; ++strain_row) {
-    const double quadrature = inputs.weight[strain_row];
-    if (quadrature == 0.0) {
+// Add one strain row's weighted outer product to the lower triangle and its
+// prescribed wall strain contribution to the load.
+absl::Status AccumulateStrainRow(
+    std::span<const double> strain_coefficients,
+    double quadrature,
+    double wall_strain,
+    std::span<double> stiffness,
+    std::span<double> wall_load
+) {
+  const std::size_t columns = strain_coefficients.size();
+  for (std::size_t face_row = 0; face_row < columns; ++face_row) {
+    const double row_coefficient = strain_coefficients[face_row];
+    if (row_coefficient == 0.0) {
       continue;
     }
-    const double wall_strain = inputs.boundary_strain[strain_row];
-    const auto strain = inputs.strain.subspan(strain_row * columns, columns);
-    for (std::size_t face_row = 0; face_row < columns; ++face_row) {
-      const double row_coefficient = strain[face_row];
-      if (row_coefficient == 0.0) {
+    if (wall_strain != 0.0) {
+      const double contribution = ScaledProduct(quadrature, row_coefficient, wall_strain);
+      if (!std::isnormal(contribution)) {
+        return absl::OutOfRangeError("wall load term is outside normal double range");
+      }
+      wall_load[face_row] += contribution;
+    }
+    for (std::size_t face_column = 0; face_column <= face_row; ++face_column) {
+      const double column_coefficient = strain_coefficients[face_column];
+      if (column_coefficient == 0.0) {
         continue;
       }
-      if (wall_strain != 0.0) {
-        const double contribution = ScaledProduct(quadrature, row_coefficient, wall_strain);
-        if (!std::isnormal(contribution)) {
-          return absl::OutOfRangeError("wall load term is outside normal double range");
-        }
-        wall_load[face_row] += contribution;
+      const double contribution = ScaledProduct(quadrature, row_coefficient, column_coefficient);
+      if (!std::isnormal(contribution)) {
+        return absl::OutOfRangeError("viscous stiffness term is outside normal double range");
       }
-      for (std::size_t face_column = 0; face_column <= face_row; ++face_column) {
-        const double column_coefficient = strain[face_column];
-        if (column_coefficient == 0.0) {
-          continue;
-        }
-        const double contribution = ScaledProduct(quadrature, row_coefficient, column_coefficient);
-        if (!std::isnormal(contribution)) {
-          return absl::OutOfRangeError("viscous stiffness term is outside normal double range");
-        }
-        stiffness[face_row * columns + face_column] += contribution;
-      }
+      stiffness[face_row * columns + face_column] += contribution;
     }
   }
+  return absl::OkStatus();
+}
 
+// The reductions can overflow or cancel to subnormal values even when all
+// individual terms were normal. Check the completed entries before mirroring.
+absl::Status FinalizeViscousOperator(std::span<double> stiffness, std::span<const double> wall_load) {
+  const std::size_t columns = wall_load.size();
   for (std::size_t row = 0; row < columns; ++row) {
     if (wall_load[row] != 0.0 && !std::isnormal(wall_load[row])) {
       return absl::OutOfRangeError("assembled wall load is outside normal double range");
@@ -197,6 +198,28 @@ AssembleViscousOperator(const ViscosityInputsView& inputs, std::span<double> sti
     }
   }
   return absl::OkStatus();
+}
+
+// Both integrators use the same symmetric E^T W E. Reduce the lower triangle
+// and wall load in strain row order before finalizing the dense operator.
+absl::Status
+AssembleViscousOperator(const ViscosityInputsView& inputs, std::span<double> stiffness, std::span<double> wall_load) {
+  const std::size_t columns = inputs.velocity.size();
+  std::ranges::fill(stiffness, 0.0);
+  std::ranges::fill(wall_load, 0.0);
+  for (std::size_t strain_row = 0; strain_row < inputs.rows; ++strain_row) {
+    const double quadrature = inputs.weight[strain_row];
+    if (quadrature == 0.0) {
+      continue;
+    }
+    const auto strain_coefficients = inputs.strain.subspan(strain_row * columns, columns);
+    const double wall_strain = inputs.boundary_strain[strain_row];
+    const auto accumulated = AccumulateStrainRow(strain_coefficients, quadrature, wall_strain, stiffness, wall_load);
+    if (!accumulated.ok()) {
+      return accumulated;
+    }
+  }
+  return FinalizeViscousOperator(stiffness, wall_load);
 }
 
 double MassScaledStiffness(double coefficient, double row_sqrt_mass, double column_sqrt_mass) {
@@ -431,8 +454,12 @@ absl::Status ComputeEnergyAndWallWork(
     const double old_weighted_velocity = sqrt_mass[face] * inputs.velocity[face];
     const double new_weighted_velocity = sqrt_mass[face] * next_velocity[face];
     const double velocity_increment = next_velocity[face] - inputs.velocity[face];
-    const double weighted_increment = std::isfinite(velocity_increment) ? sqrt_mass[face] * velocity_increment
-                                                                        : new_weighted_velocity - old_weighted_velocity;
+    const bool unweighted_increment_fits = std::isfinite(velocity_increment);
+    // Subtract first to retain small changes. If opposite large velocities
+    // overflow the subtraction, apply the mass metric before subtracting.
+    const double weighted_increment = unweighted_increment_fits ? sqrt_mass[face] * velocity_increment
+                                                                : new_weighted_velocity - old_weighted_velocity;
+
     const double work_velocity = explicit_step ? inputs.velocity[face] : next_velocity[face];
 
     diagnostics.energy_before = std::fma(0.5 * old_weighted_velocity, old_weighted_velocity, diagnostics.energy_before);

@@ -115,6 +115,7 @@ TEST(Viscosity, StiffFixture) {
 
   const auto expected = FixtureFloats(*fixture, "expected_velocity");
   ASSERT_EQ(expected.size(), 2);
+  ASSERT_EQ(result.velocity.size(), expected.size());
   for (std::size_t column = 0; column < expected.size(); ++column) {
     const double tolerance = fixture->atol + fixture->rtol * std::abs(expected[column]);
     EXPECT_NEAR(result.velocity[column], expected[column], tolerance);
