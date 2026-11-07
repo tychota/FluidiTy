@@ -62,3 +62,22 @@ def test_invalid_data_and_split_do_not_mutate():
     assert np.array_equal(p.positions,original)
     with pytest.raises(ValueError): ParticleBatch([[0,0]], [1], [1], [1], [[0,0]], np.zeros((1,2,2)), [[.2,.2]], [1])
     with pytest.raises(ValueError): ParticleBatch([[0,0]], [np.nan], [1], [1], [[0,0]], np.zeros((1,2,2)), [[1]], [1])
+
+
+def test_merge_rejects_small_infeasible_moments_and_preserves_feasible_affine():
+    p = ParticleBatch([[0., 0.]], [1.], [1.], [1.], [[0., 0.]], [np.eye(2)], [[1.]], [1])
+    child = np.tile(1e-13*np.eye(2), (1,2,1,1))
+    with pytest.raises(ValueError):
+        merge_particles(p, child, np.tile(1e-20*np.eye(2), (2,1,1)), 2)
+    q = merge_particles(p, child, child[0], 2)
+    assert np.allclose(q.affine[0], np.eye(2))
+
+
+def test_reseed_avoids_overflow_and_rejects_unrepresentable_results():
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', RuntimeWarning)
+        with pytest.raises(ValueError):
+            reseed_cell(1e308, 2, 1, 1, [1])
+        r = reseed_cell(1, 1, 1e308, 2, [1])
+        assert np.all(r['reference_volume'] == 5e-309)

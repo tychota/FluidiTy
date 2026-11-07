@@ -93,7 +93,7 @@ def merge_particles(batch, child_moments, target_moments, merged_id):
         for moment in child[:,a]: _positive_definite(moment)
         k = np.einsum('n,ni,nj->ij', batch.mass,r,r) + np.einsum('n,nij->ij',batch.mass,child[:,a])
         gap = mass*target[a]-k
-        if np.min(np.linalg.eigvalsh(gap)) < -1e-12 * max(1., np.linalg.norm(mass*target[a], ord=2)):
+        if np.min(np.linalg.eigvalsh(gap)) < -1e-12 * max(np.linalg.norm(mass*target[a], ord=2), np.linalg.norm(k, ord=2)):
             raise ValueError("target moments fail dissipative gate")
         h = np.einsum('n,n,ni->i',batch.mass,batch.velocity[:,a]-v[a],r) + np.einsum('n,ni,nij->j',batch.mass,batch.affine[:,a,:],child[:,a])
         affine[a] = np.linalg.solve(target[a],h)/mass
@@ -119,5 +119,12 @@ def reseed_cell(volume, density, J, count, composition):
     f = _array(composition)
     if f.ndim != 1 or not len(f): raise ValueError("invalid composition")
     _fractions(f)
-    return {'mass': np.full(count,density*volume/count), 'current_volume': np.full(count,volume/count),
-            'reference_volume': np.full(count,volume/(count*J)), 'composition': np.tile(f,(count,1))}
+    # Extended intermediates avoid overflow or underflow before the final division.
+    with np.errstate(over='ignore', under='ignore', invalid='ignore', divide='ignore'):
+        current = np.longdouble(volume) / count
+        values = np.asarray([current * np.longdouble(density), current,
+                             current / np.longdouble(J)], dtype=float)
+    if not np.all(np.isfinite(values)) or np.any(values <= 0):
+        raise ValueError("unrepresentable reseeding state")
+    return {'mass': np.full(count,values[0]), 'current_volume': np.full(count,values[1]),
+            'reference_volume': np.full(count,values[2]), 'composition': np.tile(f,(count,1))}
