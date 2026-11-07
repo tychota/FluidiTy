@@ -45,8 +45,10 @@ function(fluidity_check_windows_toolchain)
 
   if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND crt STREQUAL "MDd")
     set(runtime MultiThreadedDebugDLL)
+    set(expect_debug_crt 1)
   elseif(CMAKE_BUILD_TYPE STREQUAL "Release" AND crt STREQUAL "MD")
     set(runtime MultiThreadedDLL)
+    set(expect_debug_crt 0)
   else()
     message(FATAL_ERROR "The receipt does not qualify the ${CMAKE_BUILD_TYPE} DLL CRT.")
   endif()
@@ -54,6 +56,25 @@ function(fluidity_check_windows_toolchain)
      AND NOT CMAKE_MSVC_RUNTIME_LIBRARY STREQUAL "${runtime}")
     message(FATAL_ERROR "Use the Conan dynamic ${CMAKE_BUILD_TYPE} CRT profile.")
   endif()
+
+  # Inspect the effective flags of each compilation, including overrides from the build shell.
+  set(crt_header "${CMAKE_CURRENT_BINARY_DIR}/fluidity_qualified_crt.h")
+  file(CONFIGURE OUTPUT "${crt_header}" CONTENT [=[
+#pragma once
+
+#if !defined(__CUDA_ARCH__)
+#if !defined(_MT) || !defined(_DLL)
+#error FluidiTy requires the qualified MSVC DLL CRT (/MDd for Debug, /MD for Release).
+#endif
+#if defined(_DEBUG) != @expect_debug_crt@
+#error FluidiTy MSVC CRT debug mode differs from the qualified build configuration.
+#endif
+#endif
+]=] @ONLY)
+  add_compile_options(
+    "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/FI${crt_header}>"
+    "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--pre-include=${crt_header}>"
+  )
 endfunction()
 
 function(fluidity_check_windows_cuda_toolchain)
