@@ -31,6 +31,19 @@ bool IsFinitePositive(double value) {
   return value > 0.0 && std::isfinite(value);
 }
 
+// The inputs are finite and positive. Evaluate with normal-sized fractions so
+// an intermediate product cannot lose range before division restores it.
+double MultiplyDividePositive(double first_factor, double second_factor, double divisor) {
+  int first_exponent;
+  int second_exponent;
+  int divisor_exponent;
+  const double first_fraction = std::frexp(first_factor, &first_exponent);
+  const double second_fraction = std::frexp(second_factor, &second_exponent);
+  const double divisor_fraction = std::frexp(divisor, &divisor_exponent);
+  const double fraction = first_fraction * second_fraction / divisor_fraction;
+  return std::scalbn(fraction, first_exponent + second_exponent - divisor_exponent);
+}
+
 absl::Status ValidatePressureViews(
     const PressureInputsView& inputs,
     const PressureOutputsView& outputs,
@@ -156,10 +169,11 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
   if (!geometry.ok()) {
     return geometry.status();
   }
+  const double aperture = inputs.aperture[face_index];
   FaceLink face{
       .tail = geometry->tail,
       .head = geometry->head,
-      .open_area = geometry->area * inputs.aperture[face_index],
+      .open_area = geometry->area * aperture,
       .wall_area = 0.0,
       .velocity_scale = 0.0,
       .conductance = 0.0,
@@ -175,16 +189,23 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
   }
 
   face.wall_area = geometry->area - face.open_area;
-  face.active = face.open_area > 0.0 && (IsInternal(face) || dirichlet);
+  face.active = aperture > 0.0 && (IsInternal(face) || dirichlet);
   if (!face.active) {
     return face;
   }
+  if (face.open_area == 0.0) {
+    return absl::OutOfRangeError("active pressure open area rounded to zero");
+  }
   const double mobility = inputs.mobility[face_index];
   const double distance = inputs.distance[face_index];
-  face.velocity_scale = inputs.dt * mobility / distance;
-  face.conductance = inputs.dt * face.open_area * mobility / distance;
-  if (!std::isfinite(face.velocity_scale) || !std::isfinite(face.conductance)) {
-    return absl::OutOfRangeError("pressure face coefficient is outside the representable range");
+  face.velocity_scale = MultiplyDividePositive(inputs.dt, mobility, distance);
+  if (!IsFinitePositive(face.velocity_scale)) {
+    return absl::OutOfRangeError("pressure velocity scale is outside the positive representable range");
+  }
+  // Use the correction coefficient in the matrix so both phases share the face response.
+  face.conductance = face.open_area * face.velocity_scale;
+  if (!IsFinitePositive(face.conductance)) {
+    return absl::OutOfRangeError("pressure conductance is outside the positive representable range");
   }
   if (dirichlet) {
     // The missing pressure contributes with the opposite incidence of the adjacent cell.
@@ -261,6 +282,9 @@ AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchore
         return absl::OutOfRangeError("pressure bulk modulus times dt is outside the representable range");
       }
       compliance = inputs.fluid_volume[cell] / bulk_time;
+      if (!IsFinitePositive(compliance)) {
+        return absl::OutOfRangeError("finite-modulus pressure compliance is outside the positive representable range");
+      }
     }
     workspace.bulk_time[cell] = bulk_time;
     anchored_cells[cell] = anchored_cells[cell] || compliance > 0.0;

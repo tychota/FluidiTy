@@ -93,7 +93,8 @@ struct PressureWorkspace {
 // Returns kInvalidArgument for invalid inputs, extents or overlap. Returns
 // kUnimplemented for grids over 64 cells and kFailedPrecondition for incompatible
 // unanchored components or unsafe SPD solves. Returns kOutOfRange for grid or
-// arithmetic overflow or other nonfinite computed arithmetic.
+// arithmetic overflow, other nonfinite computed arithmetic, or rounding a positive
+// active-face open area, velocity scale, conductance or finite-modulus compliance to zero.
 absl::Status
 SolvePressure2D(const PressureInputsView& inputs, PressureOutputsView outputs, PressureWorkspace& workspace);
 

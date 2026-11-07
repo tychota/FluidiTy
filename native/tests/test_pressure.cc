@@ -571,6 +571,139 @@ TEST(Pressure, RejectsAnyWritableOverlapIncludingGaugeCountAndScratchTail) {
   expect_count_overlap(workspace.gauges.back());
 }
 
+TEST(Pressure, DirichletConductanceRetainsRepresentableSmallOpenArea) {
+  PressureCase problem({1, 1, 1.0});
+  problem.dt = 0x1p-600;
+  problem.aperture[0] = 0x1p-600;
+  problem.mobility[0] = 0x1p600;
+  problem.dirichlet_mask[0] = 1;
+  problem.dirichlet_pressure[0] = 0x1p600;
+
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], 0x1p-600);
+  EXPECT_EQ(result.rhs[0], 1.0);
+  EXPECT_EQ(result.pressure[0], 0x1p600);
+  ExpectField(result.velocity, std::array{0.0, 0.0, 0.0, 0.0});
+  ExpectField(result.residual, std::array{0.0});
+  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
+  ExpectGauges(result, {});
+}
+
+TEST(Pressure, CorrectionScaleRecoversAfterTinyProduct) {
+  PressureCase problem({1, 1, 0x1p100});
+  problem.dt = 0x1p-900;
+  problem.mobility[0] = 0x1p-200;
+  problem.distance[0] = 0x1p-100;
+  problem.dirichlet_mask[0] = 1;
+  problem.velocity[0] = 1.0;
+  problem.fluid_volume[0] = 1.0;
+
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], 0x1p-900);
+  EXPECT_EQ(result.rhs[0], 0x1p100);
+  EXPECT_EQ(result.pressure[0], 0x1p1000);
+  ExpectField(result.velocity, std::array{0.0, 0.0, 0.0, 0.0});
+  ExpectField(result.residual, std::array{0.0});
+  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
+  ExpectGauges(result, {});
+}
+
+TEST(Pressure, CorrectionScaleRecoversAfterHugeProduct) {
+  PressureCase problem({1, 1, 1.0});
+  problem.dt = 0x1p600;
+  problem.mobility[0] = 0x1p600;
+  problem.distance[0] = 0x1p600;
+  problem.dirichlet_mask[0] = 1;
+  problem.dirichlet_pressure[0] = 1.0;
+
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], 0x1p600);
+  EXPECT_EQ(result.rhs[0], 0x1p600);
+  EXPECT_EQ(result.pressure[0], 1.0);
+  ExpectField(result.velocity, std::array{0.0, 0.0, 0.0, 0.0});
+  ExpectField(result.residual, std::array{0.0});
+  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
+  ExpectGauges(result, {});
+}
+
+TEST(Pressure, ConductanceUsesTheSameScaleAsVelocityCorrection) {
+  constexpr double kOpenArea = 0x1.8p-475;
+  PressureCase problem({1, 1, 1.0});
+  problem.dt = 0x1p-600;
+  problem.aperture[0] = kOpenArea;
+  problem.mobility[0] = 0x1p600;
+  problem.dirichlet_mask[0] = 1;
+  problem.velocity[0] = 1.0;
+  problem.fluid_volume[0] = kOpenArea;
+
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], kOpenArea);
+  EXPECT_EQ(result.rhs[0], kOpenArea);
+  ExpectField(result.pressure, std::array{1.0});
+  ExpectField(result.velocity, std::array{0.0, 0.0, 0.0, 0.0});
+  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
+  ExpectGauges(result, {});
+}
+
+TEST(Pressure, RoundedZeroComplianceDoesNotInventAGauge) {
+  PressureCase problem({1, 1, 1.0});
+  std::ranges::fill(problem.aperture, 0.0);
+  problem.fluid_volume[0] = 0x1p-600;
+  problem.bulk_modulus[0] = 0x1p600;
+  problem.previous_pressure[0] = 0x1p600;
+
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+  result.ExpectUnchanged();
+}
+
+TEST(Pressure, RoundedZeroActiveFaceCoefficientsAreRejected) {
+  struct Coefficients {
+    std::string_view name;
+    double spacing;
+    double dt;
+    double aperture;
+    double mobility;
+  };
+  constexpr std::array cases{
+      Coefficients{"open area", 0x1p-500, 1.0, 0x1p-600, 1.0},
+      Coefficients{"velocity scale", 1.0, 0x1p-1000, 1.0, 0x1p-100},
+      Coefficients{"conductance", 0x1p-500, 0x1p-600, 1.0, 1.0},
+  };
+  for (const auto& coefficients : cases) {
+    SCOPED_TRACE(coefficients.name);
+    PressureCase problem({1, 1, coefficients.spacing});
+    problem.dt = coefficients.dt;
+    problem.aperture[0] = coefficients.aperture;
+    problem.mobility[0] = coefficients.mobility;
+    problem.dirichlet_mask[0] = 1;
+
+    Result result(problem);
+    PressureWorkspace workspace;
+    const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+    EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+    result.ExpectUnchanged();
+  }
+}
+
 TEST(Pressure, CorrectionOverflowLeavesAllOutputsUnchanged) {
   PressureCase problem({1, 1, 1.0});
   // Finite conductance near one, but correcting the open fluid velocity overflows.
