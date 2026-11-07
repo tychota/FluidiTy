@@ -110,6 +110,39 @@ absl::Status FactorCholesky(std::span<double> factor, std::size_t unknowns, doub
   return absl::OkStatus();
 }
 
+// The inverse Frobenius norm squared bounds the inverse spectral norm of L L^T.
+// Probe the columns of sqrt(matrix_scale) L^-1 to keep the estimate scale-relative.
+// The O(n^3) pass reuses the RHS scratch for one column at a time.
+absl::Status CheckFactorConditioning(std::span<const double> factor, double matrix_scale, std::span<double> work) {
+  const std::size_t unknowns = work.size();
+  const double order = static_cast<double>(unknowns);
+  // Allow for O(n) rounded operations per matrix entry and n entries per row.
+  const double relative_roundoff_budget = 4.0 * order * (order + 1.0) * std::numeric_limits<double>::epsilon();
+  const double inverse_norm_squared_limit = 1.0 / relative_roundoff_budget;
+  const double scaled_basis_entry = std::sqrt(matrix_scale);
+  double inverse_norm_squared = 0.0;
+
+  for (std::size_t basis_column = 0; basis_column < unknowns; ++basis_column) {
+    // Entries above this column's diagonal are implicitly zero.
+    for (std::size_t row = basis_column; row < unknowns; ++row) {
+      double residual = row == basis_column ? scaled_basis_entry : 0.0;
+      for (std::size_t column = basis_column; column < row; ++column) {
+        residual = std::fma(-factor[row * unknowns + column], work[column], residual);
+      }
+      const double inverse_entry = residual / factor[row * unknowns + row];
+      inverse_norm_squared = std::fma(inverse_entry, inverse_entry, inverse_norm_squared);
+      if (!std::isfinite(inverse_norm_squared)) {
+        return absl::OutOfRangeError("Cholesky conditioning probe is outside the representable range");
+      }
+      if (inverse_norm_squared >= inverse_norm_squared_limit) {
+        return absl::FailedPreconditionError("SPD matrix is too ill-conditioned for a reliable Cholesky solve");
+      }
+      work[row] = inverse_entry;
+    }
+  }
+  return absl::OkStatus();
+}
+
 // Solve L y = b forward, then L^T x = y backward, reusing the same vector.
 absl::Status SolveFactoredSystem(std::span<const double> factor, std::span<const double> rhs, std::span<double> work) {
   const std::size_t unknowns = rhs.size();
@@ -174,6 +207,9 @@ absl::Status SolveSmallSpd(
   }
 
   const auto work = std::span(workspace.working_rhs).first(unknowns);
+  if (const auto status = CheckFactorConditioning(factor, *matrix_scale, work); !status.ok()) {
+    return status;
+  }
   if (const auto status = SolveFactoredSystem(factor, rhs, work); !status.ok()) {
     return status;
   }

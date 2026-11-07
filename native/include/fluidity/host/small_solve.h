@@ -13,7 +13,7 @@ inline constexpr std::size_t kMaxDenseUnknowns = 64;
 struct SmallSolveWorkspace {
   // Scratch for the lower-triangular factor, stored with row stride n.
   std::array<double, kMaxDenseUnknowns * kMaxDenseUnknowns> factor;
-  // Scratch for forward substitution and the staged solution.
+  // Scratch for conditioning, substitution and the staged solution.
   std::array<double, kMaxDenseUnknowns> working_rhs;
 };
 
@@ -24,13 +24,16 @@ struct SmallSolveWorkspace {
 // on failure and has no persistent state.
 //
 // kUnimplemented means n exceeds kMaxDenseUnknowns. kInvalidArgument means incorrect extents,
-// overlap, nonfinite input, or asymmetry exceeding 8 double epsilons relative to max |A_ij|.
-// Off-diagonal pairs within that tolerance are averaged once. kFailedPrecondition means
-// a nonpositive pivot or one at most 64 double epsilons times max |A_ij|. kOutOfRange means
-// a nonfinite computed factor or substitution result.
+// overlap, nonfinite input, or normalized off-diagonal entries differing by more than eight double
+// epsilons. Entries are normalized by the largest absolute matrix entry for the symmetry check.
+// Off-diagonal pairs within that tolerance are averaged once. kFailedPrecondition means the
+// matrix has a nonpositive or numerically unsafe pivot, or the factor fails a conditioning check.
+// kOutOfRange means nonfinite arithmetic during factorization, conditioning or substitution.
 //
-// Intended for well-conditioned systems whose nonzero arithmetic stays in normal double
-// range. The pivot check is a safety screen and gives no accuracy guarantee outside this domain.
+// With s = max |A_ij| and L the computed lower factor, the O(n^3) conditioning check requires
+// the estimate of s * ||L^-1||_F^2 to be below 1 / (4 * n * (n + 1) * double epsilon).
+// This conservative screen is independent of the RHS. Accuracy is intended for well-conditioned
+// systems whose nonzero arithmetic stays in normal double range.
 absl::Status SolveSmallSpd(
     std::span<const double> row_major_matrix,
     std::span<const double> rhs,

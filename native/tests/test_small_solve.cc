@@ -169,6 +169,72 @@ TEST(SmallSolve, RejectsSingularMatrix) {
   EXPECT_EQ(solution, (std::array{7.0, 8.0}));
 }
 
+TEST(SmallSolve, RejectsSingularityMaskedByRoundedPivots) {
+  // The matrix has the exact null vector (4096, -64, 1). A zero RHS and
+  // an inconsistent RHS must both fail even when computed pivots are positive.
+  const std::array matrix{2.0, 128.0, 0.0, 128.0, 8194.0, 128.0, 0.0, 128.0, 8192.0};
+  const std::array right_hand_sides{
+      std::array{0.0, 0.0, 0.0},
+      std::array{1.0, 0.0, 0.0},
+  };
+  SmallSolveWorkspace workspace;
+
+  for (const auto& rhs : right_hand_sides) {
+    SCOPED_TRACE(rhs[0]);
+    std::array solution{7.0, 8.0, 9.0};
+    EXPECT_EQ(SolveSmallSpd(matrix, rhs, solution, workspace).code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_EQ(solution, (std::array{7.0, 8.0, 9.0}));
+  }
+}
+
+TEST(SmallSolve, RejectsLongSingularTridiagonalSystem) {
+  // With these end diagonals, the exact null vector has entries (-2)^(63-row).
+  constexpr std::size_t unknowns = 64;
+  std::array<double, unknowns * unknowns> matrix{};
+  std::array<double, unknowns> rhs{};
+  std::array<double, unknowns> solution;
+  SmallSolveWorkspace workspace;
+  for (std::size_t row = 0; row < unknowns; ++row) {
+    matrix[row * unknowns + row] = 10.0;
+    if (row > 0) {
+      matrix[row * unknowns + row - 1] = 4.0;
+      matrix[(row - 1) * unknowns + row] = 4.0;
+    }
+  }
+  matrix.front() = 2.0;
+  matrix.back() = 8.0;
+  rhs.front() = 1.0;
+  solution.fill(7.0);
+  const auto initial_solution = solution;
+
+  EXPECT_EQ(SolveSmallSpd(matrix, rhs, solution, workspace).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(solution, initial_solution);
+}
+
+TEST(SmallSolve, AcceptsRegularizedCoupledSystemAtTinyScale) {
+  // Add the identity to the singular 3-by-3 matrix and scale the entire system.
+  constexpr double scale = 0x1p-44;
+  const std::array matrix{
+      3.0 * scale,
+      128.0 * scale,
+      0.0,
+      128.0 * scale,
+      8195.0 * scale,
+      128.0 * scale,
+      0.0,
+      128.0 * scale,
+      8193.0 * scale,
+  };
+  const std::array rhs{131.0 * scale, 8451.0 * scale, 8321.0 * scale};
+  std::array<double, 3> solution{};
+  SmallSolveWorkspace workspace;
+
+  ASSERT_TRUE(SolveSmallSpd(matrix, rhs, solution, workspace).ok());
+  for (const double entry : solution) {
+    EXPECT_NEAR(entry, 1.0, 2e-12);
+  }
+}
+
 TEST(SmallSolve, RejectsUnsafeRelativePivot) {
   const std::array matrix{1e-13, 0.0, 0.0, 1e-29};
   const std::array rhs{1.0, 0.0};
