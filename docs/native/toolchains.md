@@ -93,3 +93,18 @@ Requalify after changes to the compiler, toolkit, runtime or target device. Use 
 configure after changing compilers. The Linux and macOS CPU presets use the same lock and
 per-preset output folders with platform-appropriate host and build profiles. Their toolchain
 versions are outside this Windows qualification.
+
+## Reference fixtures in native tests
+
+Configure through the locked uv environment so CMake finds its Python 3.13 interpreter. The
+native build runs the existing exporter into `out/fixtures/<preset>/` on the first build and
+after exporter or uv lock changes. Each preset has its own export directory and a test-only
+header at `out/build/<preset>/generated/fixture_data.h`.
+
+Each build checks the complete JSON set and its manifest hashes before compiling the tests.
+An invalid or incomplete export fails the build and invalidates its generated header.
+To restore the reference export, run the following command, then rebuild and rerun CTest.
+
+```powershell
+uv @uvArgs python -m fluidity_reference.cli export "out/fixtures/$preset" --overwrite
+```

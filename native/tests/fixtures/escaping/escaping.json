@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "escaping",
+  "arrays": {
+    "int \"limits\" \\ array": {
+      "dtype": "int64",
+      "shape": [
+        2
+      ],
+      "data": [
+        -9223372036854775808,
+        9223372036854775807
+      ],
+      "units": "unit \"i\" \\"
+    },
+    "float": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "data": [
+        -0.0,
+        5e-324,
+        0.1
+      ],
+      "units": "1"
+    }
+  },
+  "metadata": {
+    "provenance": "Derived from \"one\" at C:\\test.",
+    "default_policy": "line\n\u0000\u00e9",
+    "tolerances": {
+      "rtol": 0,
+      "atol": 0
+    }
+  }
+}

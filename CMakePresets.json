@@ -14,7 +14,11 @@
       "toolchainFile": "${sourceDir}/out/conan/${presetName}/conan_toolchain.cmake",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "FLUIDITY_ENABLE_CUDA": false
+        "FLUIDITY_ENABLE_CUDA": false,
+        "FLUIDITY_FIXTURE_DIRECTORY": {
+          "type": "PATH",
+          "value": "${sourceDir}/out/fixtures/${presetName}"
+        }
       }
     },
     {
