@@ -1,16 +1,15 @@
 """Compile hashed schema-1 reference fixtures into a test-only C++ header."""
 
 import argparse
-from dataclasses import dataclass
 import hashlib
 import json
 import math
 import ntpath
 import os
-from pathlib import Path
 import re
 import tempfile
-
+from dataclasses import dataclass
+from pathlib import Path
 
 MANIFEST = "manifest.json"
 INT64_MIN = -(2**63)
@@ -49,15 +48,17 @@ def reject_constant(value):
     raise ValueError(f"JSON numbers must be finite, found {value}")
 
 
-def schema_document(raw):
-    doc = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
-                     parse_constant=reject_constant)
-    if not isinstance(doc, dict):
-        raise ValueError("expected a JSON object")
-    version = doc.get("schema_version")
+def schema_document(document_bytes):
+    document = json.loads(
+        document_bytes.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant,
+    )
+    if not isinstance(document, dict):
+        # The bytes are valid input. The decoded JSON violates the fixture schema.
+        raise ValueError("expected a JSON object")  # noqa: TRY004
+    version = document.get("schema_version")
     if type(version) is not int or version != 1:
         raise ValueError("expected schema_version 1")
-    return doc
+    return document
 
 
 def regular_file(path):
@@ -65,47 +66,52 @@ def regular_file(path):
 
 
 def read_fixtures(directory):
-    manifest = directory / MANIFEST
-    if not regular_file(manifest):
+    manifest_path = directory / MANIFEST
+    if not regular_file(manifest_path):
         raise ValueError(f"{MANIFEST} is missing or is not a regular file")
     try:
-        entries = schema_document(manifest.read_bytes())["fixtures"]
-        if not isinstance(entries, dict) or not entries:
+        fixture_digests = schema_document(manifest_path.read_bytes())["fixtures"]
+        if not isinstance(fixture_digests, dict) or not fixture_digests:
             raise ValueError("expected a nonempty fixtures object")
-        seen = {MANIFEST}
-        for name, digest in entries.items():
-            if (not name.endswith(".json") or name == ".json" or ntpath.basename(name) != name
-                    or ntpath.isreserved(name)
-                    or name.casefold() in seen):
-                raise ValueError(f"unsafe or duplicate fixture path {name!r}")
-            seen.add(name.casefold())
+        seen_filenames = {MANIFEST}
+        for filename, digest in fixture_digests.items():
+            safe_basename = (
+                filename.endswith(".json") and filename != ".json" and ntpath.basename(filename) == filename
+                and not ntpath.isreserved(filename)
+            )
+            if not safe_basename or filename.casefold() in seen_filenames:
+                raise ValueError(f"unsafe or duplicate fixture path {filename!r}")
+            seen_filenames.add(filename.casefold())
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
-                raise ValueError(f"malformed SHA256 for {name!r}")
+                raise ValueError(f"malformed SHA256 for {filename!r}")
     except (KeyError, ValueError) as exc:
         raise ValueError(f"{MANIFEST}: {exc}") from exc
 
-    actual = {p.name: p for p in directory.iterdir() if p.suffix.lower() == ".json"}
-    expected = set(entries) | {MANIFEST}
-    if actual.keys() != expected:
-        raise ValueError(f"fixture file set mismatch: missing {sorted(expected - actual.keys())}, "
-                         f"extra {sorted(actual.keys() - expected)}")
+    fixture_paths = {path.name: path for path in directory.iterdir() if path.suffix.lower() == ".json"}
+    expected_filenames = set(fixture_digests) | {MANIFEST}
+    if fixture_paths.keys() != expected_filenames:
+        missing_filenames = sorted(expected_filenames - fixture_paths.keys())
+        extra_filenames = sorted(fixture_paths.keys() - expected_filenames)
+        raise ValueError(f"fixture file set mismatch: missing {missing_filenames}, extra {extra_filenames}")
 
-    contents = {}
-    for name in sorted(entries):
-        path = actual[name]
-        if not regular_file(path):
-            raise ValueError(f"{name}: expected a regular fixture file")
-        raw = path.read_bytes()
-        if hashlib.sha256(raw).hexdigest() != entries[name].lower():
-            raise ValueError(f"{name}: SHA256 mismatch")
-        contents[name] = raw
+    verified_fixture_bytes = {}
+    for filename in sorted(fixture_digests):
+        fixture_path = fixture_paths[filename]
+        if not regular_file(fixture_path):
+            raise ValueError(f"{filename}: expected a regular fixture file")
+        fixture_bytes = fixture_path.read_bytes()
+        if hashlib.sha256(fixture_bytes).hexdigest() != fixture_digests[filename].lower():
+            raise ValueError(f"{filename}: SHA256 mismatch")
+        verified_fixture_bytes[filename] = fixture_bytes
 
+    # Check the manifest hashes before parsing any fixture content.
     fixtures = []
-    for name, raw in contents.items():
+    for filename, fixture_bytes in verified_fixture_bytes.items():
         try:
-            fixtures.append(parse_fixture(schema_document(raw), name.removesuffix(".json")))
+            document = schema_document(fixture_bytes)
+            fixtures.append(parse_fixture(document, filename.removesuffix(".json")))
         except (KeyError, ValueError) as exc:
-            raise ValueError(f"{name}: {exc}") from exc
+            raise ValueError(f"{filename}: {exc}") from exc
     return fixtures
 
 
@@ -142,37 +148,46 @@ def flatten_values(data, shape, dtype):
             raise ValueError("data must be an int64 integer in range")
 
 
-def parse_array(name, doc):
+def parse_array(name, document):
     nonempty_string(name, "array name")
-    if not isinstance(doc, dict):
-        raise ValueError("expected an array object")
-    dtype = doc["dtype"]
+    if not isinstance(document, dict):
+        # Invalid schema content uses the same error path as an invalid array extent.
+        raise ValueError("expected an array object")  # noqa: TRY004
+    dtype = document["dtype"]
     if dtype not in ("float64", "int64"):
         raise ValueError("dtype must be float64 or int64")
-    dimensions = doc["shape"]
+    dimensions = document["shape"]
     if (not isinstance(dimensions, list)
-            or any(type(n) is not int or not 0 <= n <= INT64_MAX for n in dimensions)):
+            or any(type(extent) is not int or not 0 <= extent <= INT64_MAX for extent in dimensions)):
         raise ValueError("shape must contain nonnegative int64 extents")
     shape = tuple(dimensions)
-    values = tuple(flatten_values(doc["data"], shape, dtype))
+    values = tuple(flatten_values(document["data"], shape, dtype))
     if len(values) != math.prod(shape):
         raise ValueError("data count does not match declared shape")
-    return Array(name, dtype, shape, values, nonempty_string(doc["units"], "units"))
+    return Array(name, dtype, shape, values, nonempty_string(document["units"], "units"))
 
 
-def parse_fixture(doc, name):
-    if doc["name"] != name:
+def parse_fixture(document, name):
+    if document["name"] != name:
         raise ValueError(f"fixture name must match filename stem {name!r}")
-    if not isinstance(doc["arrays"], dict) or not doc["arrays"]:
+    if not isinstance(document["arrays"], dict) or not document["arrays"]:
         raise ValueError("expected a nonempty arrays object")
     arrays = {}
-    for key, value in sorted(doc["arrays"].items()):
+    for key, value in sorted(document["arrays"].items()):
         try:
             arrays[key] = parse_array(key, value)
         except (KeyError, ValueError) as exc:
             raise ValueError(f"{key}: {exc}") from exc
 
-    if {"grid", "spacing", "origin"} & arrays.keys():
+    is_pressure_fixture = name in ("compliant_pressure", "two_cell_pressure")
+    if is_pressure_fixture:
+        grid = arrays["grid"]
+        if grid.dtype != "int64" or grid.shape != (2,):
+            raise ValueError("grid must have dtype int64 and shape (2,)")
+        if any(extent <= 0 for extent in grid.values):
+            raise ValueError("grid extents must be positive")
+
+    if is_pressure_fixture or {"grid", "spacing", "origin"} & arrays.keys():
         for key, shape in (("spacing", (1,)), ("origin", (2,))):
             array = arrays[key]
             if array.dtype != "float64" or array.shape != shape:
@@ -180,12 +195,13 @@ def parse_fixture(doc, name):
         if arrays["spacing"].values[0] <= 0:
             raise ValueError("spacing must be positive")
 
-    metadata = doc["metadata"]
+    # These checks report invalid JSON schema content through the fixture diagnostic.
+    metadata = document["metadata"]
     if not isinstance(metadata, dict):
-        raise ValueError("expected a metadata object")
+        raise ValueError("expected a metadata object")  # noqa: TRY004
     tolerances = metadata["tolerances"]
     if not isinstance(tolerances, dict):
-        raise ValueError("expected a tolerances object")
+        raise ValueError("expected a tolerances object")  # noqa: TRY004
     rtol = finite_float(tolerances["rtol"], "rtol")
     atol = finite_float(tolerances["atol"], "atol")
     if rtol < 0 or atol < 0:
@@ -254,13 +270,13 @@ namespace detail {
 
 def render_header(fixtures):
     lines = [HEADER]
-    for i, fixture in enumerate(fixtures):
+    for fixture_index, fixture in enumerate(fixtures):
         records = []
-        for j, array in enumerate(fixture.arrays):
-            identifier = f"kFixture{i}Array{j}"
-            shape = ", ".join(f"{n}ULL" for n in array.shape)
+        for array_index, array in enumerate(fixture.arrays):
+            identifier = f"kFixture{fixture_index}Array{array_index}"
+            shape_literals = ", ".join(f"{extent}ULL" for extent in array.shape)
             lines.append(f"inline constexpr std::array<std::size_t, {len(array.shape)}> "
-                         f"{identifier}Shape = {{{shape}}};")
+                         f"{identifier}Shape = {{{shape_literals}}};")
             if array.dtype == "float64":
                 kind, cpp_type = "kFloat64", "double"
                 values = [value.hex() for value in array.values]
@@ -275,13 +291,13 @@ def render_header(fixtures):
             lines.append("};")
             records.append(f"    {{{cpp_string(array.name)}, DType::{kind}, {identifier}Shape, "
                            f"{f64_data}, {i64_data}, {cpp_string(array.units)}}},")
-        lines.append(f"inline constexpr std::array<ArrayRecord, {len(records)}> kFixture{i} = {{{{")
+        lines.append(f"inline constexpr std::array<ArrayRecord, {len(records)}> kFixture{fixture_index} = {{{{")
         lines.extend(records)
         lines.append("}};\n")
 
     lines.append(f"inline constexpr std::array<FixtureRecord, {len(fixtures)}> kFixtures = {{{{")
-    for i, fixture in enumerate(fixtures):
-        lines.append(f"    {{{cpp_string(fixture.name)}, kFixture{i}, "
+    for fixture_index, fixture in enumerate(fixtures):
+        lines.append(f"    {{{cpp_string(fixture.name)}, kFixture{fixture_index}, "
                      f"{fixture.rtol.hex()}, {fixture.atol.hex()},")
         lines.append(f"     {cpp_string(fixture.provenance)}, {cpp_string(fixture.default_policy)}}},")
     lines.append("""}};

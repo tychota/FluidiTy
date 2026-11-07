@@ -1,11 +1,10 @@
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 COMPILER = Path(__file__).resolve().parents[1] / "compile_fixtures.py"
 CASE = "example.json"
@@ -15,25 +14,25 @@ def write_json(path, value):
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def rewrite_fixture(directory, change):
-    path = directory / CASE
+def rewrite_fixture(directory, change, case=CASE):
+    path = directory / case
     document = json.loads(path.read_bytes())
     change(document)
     write_json(path, document)
-    update_digest(directory)
+    update_digest(directory, case)
 
 
-def update_digest(directory):
+def update_digest(directory, case=CASE):
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    manifest["fixtures"][CASE] = hashlib.sha256((directory / CASE).read_bytes()).hexdigest()
+    manifest["fixtures"][case] = hashlib.sha256((directory / case).read_bytes()).hexdigest()
     write_json(manifest_path, manifest)
 
 
 def compile_fixtures(directory, header):
     return subprocess.run(
         [sys.executable, str(COMPILER), "--input", str(directory), "--output", str(header)],
-        capture_output=True, text=True, encoding="utf-8",
+        capture_output=True, text=True, encoding="utf-8", check=False,
     )
 
 
@@ -76,6 +75,34 @@ def test_manifest_tamper_rejected(fixture_input):
     # An invalid JSON byte must be diagnosed by its hash, before the JSON is parsed.
     (directory / CASE).write_bytes(b"!")
     assert_rejected(directory, header, "SHA256 mismatch")
+
+
+@pytest.mark.parametrize("name", ["compliant_pressure", "two_cell_pressure"])
+@pytest.mark.parametrize("grid", [
+    pytest.param(None, id="all-geometry-missing"),
+    pytest.param({"dtype": "float64", "shape": [2], "data": [1.0, 2.0]}, id="wrong-dtype"),
+    pytest.param({"dtype": "int64", "shape": [1, 2], "data": [[1, 2]]}, id="wrong-shape"),
+    pytest.param({"dtype": "int64", "shape": [2], "data": [0, 2]}, id="zero-extent"),
+    pytest.param({"dtype": "int64", "shape": [2], "data": [1, -2]}, id="negative-extent"),
+])
+def test_pressure_requires_valid_geometry(tmp_path, name, grid):
+    directory = tmp_path / "fixtures"
+    header = tmp_path / "fixture_data.h"
+    subprocess.run([sys.executable, "-m", "fluidity_reference.cli", "export", str(directory)],
+                   check=True)
+    result = compile_fixtures(directory, header)
+    assert result.returncode == 0, result.stderr
+    assert header.is_file()
+
+    def change(doc):
+        if grid is None:
+            for key in ("grid", "spacing", "origin"):
+                del doc["arrays"][key]
+        else:
+            doc["arrays"]["grid"].update(grid)
+
+    rewrite_fixture(directory, change, f"{name}.json")
+    assert_rejected(directory, header, "grid")
 
 
 @pytest.mark.parametrize("field", ["default_policy", "provenance", "tolerances", "origin", "spacing"])

@@ -80,8 +80,8 @@ if(BUILD_TESTING)
   # Use a separate test executable for the synthetic case so each executable owns one data set.
   set(escaping_input "${PROJECT_SOURCE_DIR}/native/tests/fixtures/escaping")
   set(escaping_header "${generated_dir}/fixture_escaping_data.h")
-  fluidity_compile_fixtures(fluidity_fixture_escaping_header "${escaping_input}" "${escaping_header}"
-                           "${escaping_input}/escaping.json" "${escaping_input}/manifest.json")
+  # Let the validator handle missing JSON files so it can remove a stale header.
+  fluidity_compile_fixtures(fluidity_fixture_escaping_header "${escaping_input}" "${escaping_header}")
   add_executable(fluidity_fixture_bridge_escaping native/tests/test_fixture_escaping.cc)
   add_dependencies(fluidity_fixture_bridge_escaping fluidity_fixture_escaping_header)
 
