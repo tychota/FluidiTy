@@ -663,6 +663,37 @@ void CheckImplicitVelocityRange(
   EXPECT_NEAR(result.velocity[0] / expected_velocity, 1.0, kTolerance);
 }
 
+TEST(Viscosity, ImplicitStepRetainsWallCancellationResidual) {
+  constexpr double sqrt_mass = 0x1.0000008p+0;
+  const std::array mass{sqrt_mass * sqrt_mass};
+  const std::array strain{1.0};
+  const std::array weight{1.0};
+  constexpr std::array velocity_exponents{0, 80};
+  for (const int exponent : velocity_exponents) {
+    SCOPED_TRACE(exponent);
+    const std::array velocity{std::ldexp(0x1.ffffffffffffep-1, exponent)};
+    const std::array wall{std::ldexp(-0x1.0000007ffffffp+0, exponent)};
+    const ViscosityInputsView inputs{
+        .velocity = velocity,
+        .mass = mass,
+        .strain = strain,
+        .rows = 1,
+        .weight = weight,
+        .boundary_strain = wall,
+        .dt = sqrt_mass,
+        .mode = ViscosityMode::kImplicit,
+    };
+    Result result(1);
+    ViscosityWorkspace workspace;
+    const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+    ASSERT_TRUE(status.ok()) << status;
+    // The rounded wall term cancels the leading product bits. The exact
+    // numerator is -2^(exponent-77) after dividing the equation by sqrt_mass.
+    const double expected_velocity = std::ldexp(-0x1.ffffff8000002p-79, exponent);
+    EXPECT_NEAR(result.velocity[0] / expected_velocity, 1.0, kTolerance);
+  }
+}
+
 TEST(Viscosity, ImplicitStepRetainsOldVelocityWithTinyMass) {
   CheckImplicitVelocityRange(0x1p-600, 0x1p-1000, 0.0, 1.0, 0x1p-601);
 }

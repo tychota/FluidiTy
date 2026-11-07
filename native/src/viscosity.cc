@@ -47,18 +47,18 @@ double ScaledProduct(double first_factor, double second_factor, double third_fac
 struct BinaryExponentRange {
   void Include(BinaryProduct term) {
     if (term.fraction != 0.0) {
-      const int exponent = term.exponent + std::ilogb(term.fraction);
-      smallest = std::min(smallest, exponent);
-      largest = std::max(largest, exponent);
+      const int term_exponent = term.exponent + std::ilogb(term.fraction);
+      min_exponent = std::min(min_exponent, term_exponent);
+      max_exponent = std::max(max_exponent, term_exponent);
     }
   }
 
   bool Empty() const {
-    return smallest > largest;
+    return min_exponent > max_exponent;
   }
 
-  int smallest = std::numeric_limits<int>::max();
-  int largest = std::numeric_limits<int>::min();
+  int min_exponent = std::numeric_limits<int>::max();
+  int max_exponent = std::numeric_limits<int>::min();
 };
 
 absl::Status
@@ -321,14 +321,14 @@ absl::StatusOr<int> ChooseImplicitRhsShift(
   constexpr int kMinNormalExponent = std::numeric_limits<double>::min_exponent - 1;
   // Leave eight exponent bits for additions within a system of at most 64 unknowns.
   constexpr int kMaxRhsTermExponent = std::numeric_limits<double>::max_exponent - 1 - 8;
-  const int smallest_shift = kMinNormalExponent - term_exponents.smallest;
-  const int largest_shift = kMaxRhsTermExponent - term_exponents.largest;
-  if (smallest_shift > largest_shift) {
+  const int minimum_rhs_shift = kMinNormalExponent - term_exponents.min_exponent;
+  const int maximum_rhs_shift = kMaxRhsTermExponent - term_exponents.max_exponent;
+  if (minimum_rhs_shift > maximum_rhs_shift) {
     return absl::OutOfRangeError("implicit right-hand side terms have no common normal scale");
   }
-  const int term_center = std::midpoint(term_exponents.smallest, term_exponents.largest);
-  const int preferred_shift = std::ilogb(largest_diagonal) / 2 - term_center;
-  return std::clamp(preferred_shift, smallest_shift, largest_shift);
+  const int rhs_exponent_midpoint = std::midpoint(term_exponents.min_exponent, term_exponents.max_exponent);
+  const int preferred_shift = std::ilogb(largest_diagonal) / 2 - rhs_exponent_midpoint;
+  return std::clamp(preferred_shift, minimum_rhs_shift, maximum_rhs_shift);
 }
 
 absl::Status StageImplicitRhs(
@@ -339,9 +339,14 @@ absl::Status StageImplicitRhs(
     std::span<double> solve_rhs
 ) {
   for (std::size_t face = 0; face < sqrt_mass.size(); ++face) {
-    const double weighted_velocity = FactorProduct(sqrt_mass[face], inputs.velocity[face], 1.0).Value(rhs_shift);
-    const double wall_impulse = FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]).Value(rhs_shift);
-    solve_rhs[face] = weighted_velocity + wall_impulse;
+    int sqrt_mass_exponent;
+    const double sqrt_mass_fraction = std::frexp(sqrt_mass[face], &sqrt_mass_exponent);
+    // The checked product window also keeps this multiplier in range because
+    // the mass fraction lies in [0.5, 1). Fusing the sum retains the low bits
+    // when the weighted velocity and wall impulse nearly cancel.
+    const double shifted_velocity = std::scalbn(inputs.velocity[face], sqrt_mass_exponent + rhs_shift);
+    const double scaled_wall_impulse = FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]).Value(rhs_shift);
+    solve_rhs[face] = std::fma(sqrt_mass_fraction, shifted_velocity, scaled_wall_impulse);
     if (solve_rhs[face] != 0.0 && !std::isnormal(solve_rhs[face])) {
       return absl::OutOfRangeError("scaled implicit right-hand side is outside normal double range");
     }
@@ -365,7 +370,7 @@ bool ZeroComponentSatisfiesEquation(
     return true;
   }
 
-  const int residual_shift = -term_exponents.largest;
+  const int residual_shift = -term_exponents.max_exponent;
   double scaled_residual = -std::scalbn(rhs, residual_shift);
   for (std::size_t column = 0; column < equation.size(); ++column) {
     scaled_residual += FactorProduct(equation[column], weighted_velocity[column], 1.0).Value(residual_shift);
@@ -379,28 +384,29 @@ absl::Status RestoreImplicitVelocity(
     std::span<const double> solve_rhs,
     std::span<const double> sqrt_mass,
     int rhs_shift,
-    std::span<double> next_velocity
+    std::span<double> scaled_solution
 ) {
-  const std::size_t columns = sqrt_mass.size();
-  for (std::size_t face = 0; face < columns; ++face) {
-    const double weighted_velocity = next_velocity[face];
-    if (weighted_velocity == 0.0) {
-      const auto equation = system_matrix.subspan(face * columns, columns);
-      if (!ZeroComponentSatisfiesEquation(equation, solve_rhs[face], next_velocity)) {
+  const std::size_t face_count = sqrt_mass.size();
+  for (std::size_t face_index = 0; face_index < face_count; ++face_index) {
+    const double scaled_mass_weighted_velocity = scaled_solution[face_index];
+    if (scaled_mass_weighted_velocity == 0.0) {
+      const auto system_row = system_matrix.subspan(face_index * face_count, face_count);
+      if (!ZeroComponentSatisfiesEquation(system_row, solve_rhs[face_index], scaled_solution)) {
         return absl::OutOfRangeError("implicit solve lost a velocity component at the common scale");
       }
-    } else if (!std::isnormal(weighted_velocity)) {
+    } else if (!std::isnormal(scaled_mass_weighted_velocity)) {
       return absl::OutOfRangeError("implicit solve component is outside normal double range");
     }
   }
 
-  for (std::size_t face = 0; face < columns; ++face) {
-    const double weighted_velocity = next_velocity[face];
-    const double velocity = FactorProduct(weighted_velocity, 1.0, 1.0, sqrt_mass[face]).Value(-rhs_shift);
-    if (!std::isfinite(velocity) || (weighted_velocity != 0.0 && velocity == 0.0)) {
+  for (std::size_t face_index = 0; face_index < face_count; ++face_index) {
+    const double scaled_mass_weighted_velocity = scaled_solution[face_index];
+    const double velocity =
+        FactorProduct(scaled_mass_weighted_velocity, 1.0, 1.0, sqrt_mass[face_index]).Value(-rhs_shift);
+    if (!std::isfinite(velocity) || (scaled_mass_weighted_velocity != 0.0 && velocity == 0.0)) {
       return absl::OutOfRangeError("implicit face velocity is outside representable double range");
     }
-    next_velocity[face] = velocity;
+    scaled_solution[face_index] = velocity;
   }
   return absl::OkStatus();
 }
@@ -480,11 +486,11 @@ absl::Status ComputeEnergyAndWallWork(
 }  // namespace
 
 absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid) {
-  const auto faces = FaceCount(grid);
-  if (!faces.ok()) {
-    return faces.status();
+  const auto face_count = FaceCount(grid);
+  if (!face_count.ok()) {
+    return face_count.status();
   }
-  if (*faces > kMaxDenseUnknowns) {
+  if (*face_count > kMaxDenseUnknowns) {
     return absl::UnimplementedError("MAC strain supports at most 64 velocity unknowns");
   }
 
@@ -495,13 +501,13 @@ absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid) {
   const std::size_t normal_rows = 2 * cell_columns * cell_rows;
   const std::size_t shear_rows = (cell_columns - 1) * (cell_rows - 1);
   const std::size_t strain_rows = normal_rows + shear_rows;
-  const auto coefficients = CheckedExtentProduct(strain_rows, *faces);
+  const auto coefficients = CheckedExtentProduct(strain_rows, *face_count);
   if (!coefficients.ok()) {
     return coefficients.status();
   }
   return StrainShape{
       .rows = strain_rows,
-      .columns = *faces,
+      .columns = *face_count,
       .coefficients = *coefficients,
   };
 }
@@ -530,31 +536,31 @@ absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain
 
   const std::size_t cell_columns = grid.nx;
   const std::size_t cell_rows = grid.ny;
-  const std::size_t cells = cell_columns * cell_rows;
-  const std::size_t normal_rows = 2 * cells;
-  const bool has_shear = shape->rows > normal_rows;
+  const std::size_t cell_count = cell_columns * cell_rows;
+  const std::size_t normal_row_count = 2 * cell_count;
+  const bool has_shear_rows = shape->rows > normal_row_count;
   const double normal_derivative = 1.0 / grid.h;
   const double shear_derivative = 0.5 * normal_derivative;
-  if (!std::isnormal(normal_derivative) || (has_shear && !std::isnormal(shear_derivative))) {
+  if (!std::isnormal(normal_derivative) || (has_shear_rows && !std::isnormal(shear_derivative))) {
     return absl::OutOfRangeError("MAC strain difference coefficient is outside normal double range");
   }
 
   // Fold the tensor multiplicity into a spacing factor before multiplication.
   // This also handles a finite mu whose double or quadruple would overflow.
   const double normal_weight = ScaledProduct(mu, 2.0 * grid.h, grid.h);
-  const double shear_weight = has_shear ? ScaledProduct(mu, 4.0 * grid.h, grid.h) : 0.0;
+  const double shear_weight = has_shear_rows ? ScaledProduct(mu, 4.0 * grid.h, grid.h) : 0.0;
   if (mu > 0.0 && !std::isnormal(normal_weight)) {
     return absl::OutOfRangeError("normal strain quadrature is outside normal double range");
   }
-  if (mu > 0.0 && has_shear && !std::isnormal(shear_weight)) {
+  if (mu > 0.0 && has_shear_rows && !std::isnormal(shear_weight)) {
     return absl::OutOfRangeError("shear strain quadrature is outside normal double range");
   }
 
   // Every coefficient and index extent has been checked. Fill the caller's
   // dense views directly now that the remaining stencil writes cannot fail.
   std::ranges::fill(strain, 0.0);
-  std::ranges::fill(weight.first(normal_rows), normal_weight);
-  std::ranges::fill(weight.subspan(normal_rows), shear_weight);
+  std::ranges::fill(weight.first(normal_row_count), normal_weight);
+  std::ranges::fill(weight.subspan(normal_row_count), shear_weight);
 
   const std::size_t x_face_stride = cell_columns + 1;
   const std::size_t y_face_offset = x_face_stride * cell_rows;
@@ -563,27 +569,27 @@ absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain
       const std::size_t cell = row * cell_columns + column;
       const std::size_t left_face = row * x_face_stride + column;
       const std::size_t bottom_face = y_face_offset + cell;
-      const std::size_t x_strain_offset = cell * shape->columns;
-      const std::size_t y_strain_offset = (cells + cell) * shape->columns;
-      strain[x_strain_offset + left_face] = -normal_derivative;
-      strain[x_strain_offset + left_face + 1] = normal_derivative;
-      strain[y_strain_offset + bottom_face] = -normal_derivative;
-      strain[y_strain_offset + bottom_face + cell_columns] = normal_derivative;
+      const std::size_t x_normal_row_offset = cell * shape->columns;
+      const std::size_t y_normal_row_offset = (cell_count + cell) * shape->columns;
+      strain[x_normal_row_offset + left_face] = -normal_derivative;
+      strain[x_normal_row_offset + left_face + 1] = normal_derivative;
+      strain[y_normal_row_offset + bottom_face] = -normal_derivative;
+      strain[y_normal_row_offset + bottom_face + cell_columns] = normal_derivative;
     }
   }
 
   for (std::size_t row = 1; row < cell_rows; ++row) {
     for (std::size_t column = 1; column < cell_columns; ++column) {
-      const std::size_t vertex = (row - 1) * (cell_columns - 1) + column - 1;
-      const std::size_t shear_offset = (normal_rows + vertex) * shape->columns;
+      const std::size_t shear_vertex_index = (row - 1) * (cell_columns - 1) + column - 1;
+      const std::size_t shear_row_offset = (normal_row_count + shear_vertex_index) * shape->columns;
       const std::size_t upper_x_face = row * x_face_stride + column;
       const std::size_t right_y_face = y_face_offset + row * cell_columns + column;
       const std::size_t lower_x_face = upper_x_face - x_face_stride;
       const std::size_t left_y_face = right_y_face - 1;
-      strain[shear_offset + lower_x_face] = -shear_derivative;
-      strain[shear_offset + upper_x_face] = shear_derivative;
-      strain[shear_offset + left_y_face] = -shear_derivative;
-      strain[shear_offset + right_y_face] = shear_derivative;
+      strain[shear_row_offset + lower_x_face] = -shear_derivative;
+      strain[shear_row_offset + upper_x_face] = shear_derivative;
+      strain[shear_row_offset + left_y_face] = -shear_derivative;
+      strain[shear_row_offset + right_y_face] = shear_derivative;
     }
   }
   return absl::OkStatus();
@@ -620,8 +626,8 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
   // above the finite explicit limit can only select the implicit branch.
   const double explicit_limit = 2.0 * (1.0 - inputs.safety);
   const double spectral_bound = *computed_bound;
-  const double scaled_step = inputs.dt * spectral_bound;
-  const bool explicit_safe = scaled_step <= explicit_limit;
+  const double dimensionless_step = inputs.dt * spectral_bound;
+  const bool explicit_safe = dimensionless_step <= explicit_limit;
   if (inputs.mode == ViscosityMode::kExplicit && !explicit_safe) {
     return absl::FailedPreconditionError("explicit viscosity exceeds its stability bound");
   }
