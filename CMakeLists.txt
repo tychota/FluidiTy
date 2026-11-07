@@ -11,6 +11,14 @@ if(WIN32)
 endif()
 
 if(FLUIDITY_ENABLE_CUDA)
+  if(NOT CMAKE_CUDA_ARCHITECTURES)
+    message(FATAL_ERROR "Set CMAKE_CUDA_ARCHITECTURES to the explicit target architectures.")
+  endif()
+  foreach(architecture IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    if(NOT architecture MATCHES "^[0-9]+[af]?(-real|-virtual)?$")
+      message(FATAL_ERROR "CUDA architecture '${architecture}' must name an explicit target.")
+    endif()
+  endforeach()
   if(NOT "$ENV{NVCC_PREPEND_FLAGS}" STREQUAL "" OR NOT "$ENV{NVCC_APPEND_FLAGS}" STREQUAL "")
     message(FATAL_ERROR "Unset NVCC_PREPEND_FLAGS and NVCC_APPEND_FLAGS before configuring CUDA.")
   endif()
@@ -21,8 +29,11 @@ if(FLUIDITY_ENABLE_CUDA)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   set(CMAKE_CUDA_EXTENSIONS OFF)
   enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
   if(WIN32)
     fluidity_check_windows_cuda_toolchain()
+    # CMake's nvcc defaults enable MSVC exception unwinding. CUDA probe code uses Status.
+    string(REPLACE "-Xcompiler=\" /EHsc\"" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
   endif()
 endif()
 
@@ -39,6 +50,26 @@ target_compile_features(fluidity_native PUBLIC cxx_std_20)
 target_link_libraries(fluidity_native
   PUBLIC absl::status absl::statusor
   PRIVATE fluidity_native_options)
+
+if(FLUIDITY_ENABLE_CUDA)
+  add_library(fluidity_cuda_probe_host OBJECT native/cuda/probe_host.cc)
+  target_include_directories(fluidity_cuda_probe_host PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
+  target_include_directories(fluidity_cuda_probe_host SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+  target_link_libraries(fluidity_cuda_probe_host PRIVATE absl::status fluidity_native_options)
+
+  add_library(fluidity_cuda_probe STATIC native/cuda/probe.cu $<TARGET_OBJECTS:fluidity_cuda_probe_host>)
+  target_include_directories(fluidity_cuda_probe PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
+  target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
+  target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
+  set_target_properties(fluidity_cuda_probe PROPERTIES
+    CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_RUNTIME_LIBRARY Shared)
+  target_compile_options(fluidity_cuda_probe PRIVATE
+    "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--no-exceptions;--fmad=false;--ftz=false;--prec-div=true;--prec-sqrt=true>")
+  if(MSVC)
+    target_compile_options(fluidity_cuda_probe PRIVATE
+      "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:-Xcompiler=/GR-,/fp:precise,/Zc:__cplusplus>")
+  endif()
+endif()
 
 if(BUILD_TESTING)
   find_package(GTest 1.17.0 EXACT CONFIG REQUIRED)
@@ -114,4 +145,26 @@ if(BUILD_TESTING)
     target_link_libraries(${target} PRIVATE GTest::gtest_main)
     gtest_discover_tests(${target} PROPERTIES LABELS cpu)
   endforeach()
+
+  if(FLUIDITY_ENABLE_CUDA)
+    add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)
+    target_link_libraries(fluidity_cuda_probe_tests PRIVATE fluidity_cuda_probe GTest::gtest_main)
+    target_compile_options(fluidity_cuda_probe_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    if(WIN32)
+      target_compile_definitions(fluidity_cuda_probe_tests
+        PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
+    endif()
+    gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
+
+    # Link the same host wrapper to CUDA API doubles for deterministic failure-path tests.
+    add_executable(fluidity_cuda_probe_error_tests
+      native/tests/test_cuda_probe_errors.cc $<TARGET_OBJECTS:fluidity_cuda_probe_host>)
+    target_include_directories(fluidity_cuda_probe_error_tests
+      PRIVATE "${PROJECT_SOURCE_DIR}/native/include" "${PROJECT_SOURCE_DIR}/native/cuda")
+    target_include_directories(fluidity_cuda_probe_error_tests SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    target_compile_features(fluidity_cuda_probe_error_tests PRIVATE cxx_std_20)
+    target_link_libraries(fluidity_cuda_probe_error_tests PRIVATE absl::status GTest::gtest_main)
+    target_compile_options(fluidity_cuda_probe_error_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    gtest_discover_tests(fluidity_cuda_probe_error_tests PROPERTIES LABELS cuda-mock)
+  endif()
 endif()

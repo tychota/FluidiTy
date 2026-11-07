@@ -35,6 +35,31 @@ this launch on R610. CUDA 13.4 features that require R615 need a separate qualif
 The schema-version 1 receipts under `out/qualification/` record local executables, full version
 output, compiled source hashes and command results. Keep the receipts with the local build.
 
+## Windows CUDA repository probe measured on 2026-11-08
+
+The repository probe used the Windows x64 toolchain above. The NVIDIA GeForce RTX 5060 Ti reported
+compute capability 12.0 with driver 610.88. Both the driver and runtime APIs returned 13030. The
+executed kernel reported `__CUDA_ARCH__=1200`. Both executables contained an `sm_120` cubin and PTX
+generated for `compute_120`.
+
+| Check | Debug CUDA | Release CUDA |
+| --- | --- | --- |
+| MSVC CRT | `/MDd` | `/MD` |
+| CMake architectures | `120-real;120-virtual` | `120-real;120-virtual` |
+| Hardware test `CudaProbe.SharedVec2Math` | 1 passed | 1 passed |
+| CPU-labeled tests | 123 passed | 123 passed |
+| CUDA API doubles (`cuda-mock`) | 11 passed | 11 passed |
+| Compute Sanitizer memcheck 2026.3.0.0 (build 38637409) | Release gate | 1 passed, 0 errors, exit 0 |
+
+The hardware test verified all 17 `Vec2` results and the sentinel after a 32-thread launch.
+Launch, stream synchronization and device-to-host copy each returned zero. The device build used
+C++20 with `--fmad=false --ftz=false --prec-div=true --prec-sqrt=true`. CMake used the
+`Shared` runtime setting and linked `CUDA::cudart` from the installed toolkit. The earlier
+direct nvcc probe recorded the Windows `shared` deprecation described above.
+
+The `gpu` label runs the device test. The `cuda-mock` and `cpu` labels record separate evidence.
+The probe qualifies CUDA build and execution infrastructure and shared vector arithmetic.
+
 ## Locked dependencies and ABI
 
 Conan Center at `https://center2.conan.io` resolved these recipe revisions for both Windows
@@ -88,6 +113,23 @@ uv @uvArgs cmake --preset $preset
 uv @uvArgs cmake --build --preset $preset
 uv @uvArgs ctest --preset $preset -L cpu --output-on-failure
 ```
+
+With the CUDA presets, run the hardware gate in both configurations and memcheck in Release.
+Use a process-local override to select named pipes for the Windows sanitizer connection.
+
+```powershell
+uv @uvArgs ctest --preset windows-debug-cuda -L gpu --output-on-failure
+uv @uvArgs ctest --preset windows-release-cuda -L gpu --output-on-failure
+$sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+& $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 `
+  out/build/windows-release-cuda/fluidity_cuda_probe_tests.exe --gtest_filter=CudaProbe.SharedVec2Math
+```
+
+For a different GPU, generate a separate receipt using `--cuda-architecture` and a distinct
+`--output`. Configure with explicit `CMAKE_CUDA_ARCHITECTURES` and `FLUIDITY_TOOLCHAIN_RECEIPT`
+overrides for that receipt. The hardware test compares the device name with the configured
+receipt and checks that the device image matches the reported compute capability.
 
 Requalify after changes to the compiler, toolkit, runtime or target device. Use a fresh CMake
 configure after changing compilers. The Linux and macOS CPU presets use the same lock and
