@@ -1,0 +1,45 @@
+docs/superpowers/plans/2026-11-07-m0-reference-proofs.md
+  s_780be1775eb500::t_579831e6936b4c 140-141
+reference/pyproject.toml
+  s_2c56ace901f12c::t_b7a1c152c26d70 12-14
+  s_2c56ace901f12c::t_bfcc6ba8f7cdf1 15-17
+proofs/README.md
+  s_780be1775eb500::t_579831e6936b4c 21
+.gitignore
+  s_2c56ace901f12c::t_ccedf8f8044511 9
+reference/README.md
+  s_2c56ace901f12c::t_ccedf8f8044511 21
+  s_780be1775eb500::t_579831e6936b4c 6,9-11,14-20
+docs/superpowers/specs/2026-11-07-fluidity-design.md
+  s_780be1775eb500::t_579831e6936b4c 590
+reference/.python-version
+  s_2c56ace901f12c::t_b7a1c152c26d70 1
+README.md
+  s_780be1775eb500::t_579831e6936b4c 14-28
+reference/uv.lock
+  s_2c56ace901f12c::t_302016e569fde5 1-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "500511d4a49067900f30e2d2b2dae1211750b1c5",
+  "prompts": {},
+  "sessions": {
+    "s_2c56ace901f12c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1b26d-129e-7990-9b06-0b5666dccca0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    },
+    "s_780be1775eb500": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a1b26d-129e-7990-9b06-0b5666dccca0",
+        "model": "unknown"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
