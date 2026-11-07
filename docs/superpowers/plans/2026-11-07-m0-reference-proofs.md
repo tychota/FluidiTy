@@ -51,11 +51,11 @@ Later plans cover production sparse MAC/CUDA, complete scenes, AMR, meshing, whi
 
 **Files:** Create `reference/src/fluidity_reference/transfers.py`, `reference/tests/test_transfers.py`.
 
-**Interfaces:** Consumes Grid2D/basis. Produces `local_apic_fit(position, sample_positions, weights, values) -> (value, affine_row)` using centered full moment; `local_velocity_gradient(values, gradients) -> ndarray[d]`; `p2g(grid, positions[n,2], masses[n], velocities[n,2], affine[n,2,2]) -> (face_mass, face_momentum)`; `g2p(grid, positions, old_faces, new_faces) -> (pic[n,2], increments[n,2], affine[n,2,2], gradient[n,2,2])`; `energy_velocity(pic, increment, residual, energy, phase) -> ndarray`. Float64, complete uniform supports only; incomplete support raises ValueError.
+**Interfaces:** Consumes Grid2D/basis. Produces `local_apic_fit(position, sample_positions, weights, values) -> (value, affine_row)` using centered full moment; `local_velocity_gradient(values, gradients) -> ndarray[d]`; `p2g(grid, positions[n,2], masses[n], velocities[n,2], affine[n,2,2]) -> (face_mass, face_momentum)`; `g2p(grid, positions, old_faces, new_faces) -> (pic[n,2], increments[n,2], affine[n,2,2], gradient[n,2,2])`; `energy_velocity(pic, residual, energy, phase, separation=1.) -> (particle_velocity, advection_velocity)`. Float64, complete uniform supports only; incomplete support raises ValueError.
 
 - [ ] **Step 1:** Test affine reproduction, linear/angular moments, each component mass sum separately (do not add component masses). Nonlinear field gives C different from true derivative L. Identical old/new gives zero increment while supplied residual may persist. Liquid alpha=.99e,beta=e; gas alpha=beta=0; e in [0,1]. Invalid/nonfinite data and incomplete supports reject without mutation.
 - [ ] **Step 2:** Run `python -m pytest reference/tests/test_transfers.py -q`; record failure.
-- [ ] **Step 3:** Implement independent old/new gathers and full moment solve. Energy result pic+alpha*increment+beta*residual. No CPIC/boundary or masked-stencil conservation claim.
+- [ ] **Step 3:** Implement independent old/new gathers and full moment solve. Particle result pic+alpha*residual; advection result pic+beta*alpha*residual, beta<=e and elastic beta=0. Grid increment is diagnostic only, not added separately; residual=old_particle−gather(old_grid). No CPIC/boundary or masked-stencil conservation claim.
 - [ ] **Step 4:** Run transfer and prior tests; all pass.
 - [ ] **Step 5:** Commit `feat(reference): add staggered APIC transfer oracle`.
 
