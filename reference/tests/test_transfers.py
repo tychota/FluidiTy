@@ -96,3 +96,56 @@ def test_invalid_inputs_and_incomplete_support_do_not_mutate():
         p2g(grid, [[3., 3.]], [-1.], velocities, affine)
     with pytest.raises(ValueError):
         g2p(grid, [[3., 3.]], np.zeros(2), np.zeros(grid.face_count))
+
+
+def test_g2p_nonzero_increment_and_success_preserves_inputs():
+    grid = Grid2D(6, 6, 1.)
+    positions = np.array([[3., 3.]])
+    old = np.arange(grid.face_count, dtype=float)
+    new = old + 1
+    originals = [x.copy() for x in (positions, old, new)]
+    _, increment, _, _ = g2p(grid, positions, old, new)
+    np.testing.assert_allclose(increment, [[1., 1.]], atol=1e-14)
+    for x, original in zip((positions, old, new), originals):
+        np.testing.assert_array_equal(x, original)
+
+
+@pytest.mark.parametrize('api', ['fit_position', 'fit_samples', 'fit_weights', 'fit_values', 'gradient_values', 'gradient_gradients', 'p2g_positions', 'p2g_mass', 'p2g_velocity', 'p2g_affine', 'g2p_positions', 'g2p_old', 'g2p_new', 'energy_pic', 'energy_residual', 'energy_scalar', 'energy_separation'])
+def test_transfer_apis_reject_nonfinite_inputs(api):
+    grid = Grid2D(6, 6, 1.)
+    bad = np.nan
+    calls = {
+        'fit_position': lambda: local_apic_fit([bad, 0], [[0, 0], [1, 0], [0, 1]], [1/3]*3, [1, 2, 3]),
+        'fit_samples': lambda: local_apic_fit([0, 0], [[bad, 0], [1, 0], [0, 1]], [1/3]*3, [1, 2, 3]),
+        'fit_weights': lambda: local_apic_fit([0, 0], [[0, 0], [1, 0], [0, 1]], [bad, 0, 0], [1, 2, 3]),
+        'fit_values': lambda: local_apic_fit([0, 0], [[0, 0], [1, 0], [0, 1]], [1/3]*3, [bad, 2, 3]),
+        'gradient_values': lambda: local_velocity_gradient([bad], [[1, 1]]),
+        'gradient_gradients': lambda: local_velocity_gradient([1], [[bad, 1]]),
+        'p2g_positions': lambda: p2g(grid, [[bad, 3]], [1], [[0, 0]], np.zeros((1, 2, 2))),
+        'p2g_mass': lambda: p2g(grid, [[3, 3]], [bad], [[0, 0]], np.zeros((1, 2, 2))),
+        'p2g_velocity': lambda: p2g(grid, [[3, 3]], [1], [[bad, 0]], np.zeros((1, 2, 2))),
+        'p2g_affine': lambda: p2g(grid, [[3, 3]], [1], [[0, 0]], np.full((1, 2, 2), bad)),
+        'g2p_positions': lambda: g2p(grid, [[bad, 3]], np.zeros(grid.face_count), np.zeros(grid.face_count)),
+        'g2p_old': lambda: g2p(grid, [[3, 3]], np.full(grid.face_count, bad), np.zeros(grid.face_count)),
+        'g2p_new': lambda: g2p(grid, [[3, 3]], np.zeros(grid.face_count), np.full(grid.face_count, bad)),
+        'energy_pic': lambda: energy_velocity([bad, 0], [0, 0], .5, 'liquid'),
+        'energy_residual': lambda: energy_velocity([0, 0], [bad, 0], .5, 'liquid'),
+        'energy_scalar': lambda: energy_velocity([0, 0], [0, 0], bad, 'liquid'),
+        'energy_separation': lambda: energy_velocity([0, 0], [0, 0], .5, 'liquid', bad),
+    }
+    with pytest.raises(ValueError):
+        calls[api]()
+
+
+def test_p2g_success_preserves_inputs():
+    grid = Grid2D(6, 6, 1.)
+    positions = np.array([[3., 3.]])
+    mass = np.array([2.]); velocity = np.array([[1., -1.]])
+    affine = np.array([[[0., 1.], [-1., 0.]]])
+    inputs = (positions, mass, velocity, affine)
+    snapshots = [x.copy() for x in inputs]
+    face_mass, momentum = p2g(grid, *inputs)
+    assert face_mass.sum() == pytest.approx(4.)
+    assert np.all(np.isfinite(momentum))
+    for x, before in zip(inputs, snapshots):
+        np.testing.assert_array_equal(x, before)

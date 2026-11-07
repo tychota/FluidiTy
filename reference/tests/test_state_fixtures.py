@@ -64,11 +64,11 @@ def test_manufactured_values_against_reference_operators():
     from fluidity_reference.viscosity import viscous_step
     cases = examples()
     p = cases['two_cell_pressure'][0]
-    result = solve_pressure(PressureInputs(Grid2D(2, 1, 1.), p['dt'][0], p['velocity'], jump=p['jump']))
+    result = solve_pressure(PressureInputs(Grid2D(*p['grid'], p['spacing'][0], tuple(p['origin'])), p['dt'][0], p['velocity'], jump=p['jump']))
     np.testing.assert_allclose(result.pressure, p['expected_pressure'])
     np.testing.assert_allclose(result.velocity, p['expected_velocity'], atol=1e-14)
     p = cases['compliant_pressure'][0]
-    result = solve_pressure(PressureInputs(Grid2D(1, 1, 1.), p['dt'][0], p['velocity'], bulk_modulus=p['bulk_modulus'], source=p['source']))
+    result = solve_pressure(PressureInputs(Grid2D(*p['grid'], p['spacing'][0], tuple(p['origin'])), p['dt'][0], p['velocity'], bulk_modulus=p['bulk_modulus'], source=p['source']))
     np.testing.assert_allclose(result.pressure, p['expected_pressure'])
     np.testing.assert_allclose(result.velocity, p['expected_velocity'])
     p = cases['affine_apic'][0]
@@ -95,3 +95,22 @@ def test_rejected_validator_cannot_change_snapshot_array_metadata():
     assert state.arrays['x'].shape == (1, 2)
     assert state.arrays['x'].dtype == np.dtype('float64')
     assert state.arrays['x'].tobytes() == original
+
+
+def test_exported_fixture_metadata_and_pressure_geometry(tmp_path):
+    from fluidity_reference.cli import export
+    from fluidity_reference.grid import Grid2D
+    from fluidity_reference.pressure import PressureInputs, solve_pressure
+    export(tmp_path)
+    for name in ('two_cell_pressure', 'compliant_pressure', 'affine_apic', 'stiff_viscosity'):
+        payload = json.loads((tmp_path / f'{name}.json').read_text())
+        metadata = payload['metadata']
+        assert metadata['provenance'] and metadata['default_policy']
+        assert metadata['tolerances']['rtol'] >= 0 and metadata['tolerances']['atol'] >= 0
+        if 'pressure' in name:
+            data = {k: v['data'] for k, v in payload['arrays'].items()}
+            grid = Grid2D(*data['grid'], data['spacing'][0], tuple(data['origin']))
+            kw = {k: data[k] for k in ('jump', 'bulk_modulus', 'source') if k in data}
+            result = solve_pressure(PressureInputs(grid, data['dt'][0], data['velocity'], **kw))
+            np.testing.assert_allclose(result.pressure, data['expected_pressure'], **metadata['tolerances'])
+            np.testing.assert_allclose(result.velocity, data['expected_velocity'], **metadata['tolerances'])

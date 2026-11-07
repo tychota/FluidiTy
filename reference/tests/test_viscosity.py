@@ -69,3 +69,16 @@ def test_invalid_inputs_rejected(change):
 def test_invalid_viscosity_rejected():
     for mu in (-1., np.nan, np.inf):
         with pytest.raises(ValueError): mac_strain(Grid2D(1, 1, 1.), mu)
+
+
+def test_explicit_scalar_wall_work_identity_and_input_immutability():
+    u = np.array([1.]); mass = np.array([2.]); E = csr_matrix([[1.]])
+    weight = np.array([3.]); wall = np.array([4.]); dt = .1
+    r = viscous_step(u, mass, E, weight, wall, dt, mode='explicit')
+    assert r.method == 'explicit'
+    assert r.velocity[0] == pytest.approx(1.45)
+    assert r.energy_after - r.energy_before + dt*3*u[0]**2 - r.numerical_dissipation == pytest.approx(r.wall_work)
+    assert r.wall_work == pytest.approx(1.2)
+    np.testing.assert_array_equal(u, [1.]); np.testing.assert_array_equal(mass, [2.])
+    np.testing.assert_array_equal(weight, [3.]); np.testing.assert_array_equal(wall, [4.])
+    np.testing.assert_array_equal(E.toarray(), [[1.]])

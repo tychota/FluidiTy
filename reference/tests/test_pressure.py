@@ -68,3 +68,26 @@ def test_band_source_balances_errors_far_larger_than_bound():
     result = bounded_band_source([0., 1e30], [1., 2.], [True, True], 1.)
     np.testing.assert_allclose(result, [-1., .5], atol=1e-14)
     assert abs(np.dot([1., 2.], result)) < 1e-14
+
+
+def test_disconnected_compatible_components_get_independent_gauges_without_mutation():
+    g = Grid2D(2, 1, 1.)
+    aperture = np.ones(g.face_count); aperture[1] = 0
+    velocity = np.zeros(g.face_count)
+    source = np.zeros(2)
+    original = [x.copy() for x in (aperture, velocity, source)]
+    r = solve_pressure(PressureInputs(g, 1., velocity, aperture=aperture, source=source))
+    assert r.gauges == (0, 1)
+    np.testing.assert_allclose(r.pressure, [0, 0])
+    np.testing.assert_allclose(r.constraint_defect, [0, 0])
+    for x, before in zip((aperture, velocity, source), original):
+        np.testing.assert_array_equal(x, before)
+
+
+def test_incompatible_prescribed_neumann_flux_rejected_without_mutation():
+    g = Grid2D(1, 1, 1.)
+    velocity = np.zeros(g.face_count); velocity[0] = 1
+    before = velocity.copy()
+    with pytest.raises(ValueError, match='incompatible'):
+        solve_pressure(PressureInputs(g, 1., velocity))
+    np.testing.assert_array_equal(velocity, before)

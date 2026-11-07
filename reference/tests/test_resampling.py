@@ -89,3 +89,34 @@ def test_reseed_preserves_mass_with_subnormal_volume():
     from fractions import Fraction
     expected = float(Fraction.from_float(float(volume)) * Fraction.from_float(1e308) / 2)
     assert np.all(result['mass'] == expected)
+
+
+@pytest.mark.parametrize('which', ['child', 'target'])
+def test_merge_rejects_material_asymmetry_at_small_scale(which):
+    p = ParticleBatch([[0., 0.]], [1.], [1.], [1.], [[0., 0.]], [np.ones((2, 2))], [[1.]], [1])
+    child = np.tile(1e-14*np.eye(2), (1, 2, 1, 1))
+    target = np.tile(1e-13*np.eye(2), (2, 1, 1))
+    bad = np.array([[1e-13, 9e-13], [0., 1e-13]])
+    if which == 'child':
+        child[0, 0] = bad
+        target[:] = 1e-11*np.eye(2)
+    else:
+        target[0] = bad
+    with pytest.raises(ValueError, match='symmetric'):
+        merge_particles(p, child, target, 2)
+
+
+def test_merge_symmetrizes_rounding_level_asymmetry_consistently():
+    p = ParticleBatch([[0., 0.]], [1.], [1.], [1.], [[0., 0.]], [np.ones((2, 2))], [[1.]], [1])
+    child = np.tile(1e-14*np.eye(2), (1, 2, 1, 1))
+    target = np.tile(1e-13*np.eye(2), (2, 1, 1))
+    child[0, :, 0, 1] = 5e-27
+    target[:, 0, 1] = 5e-26
+    originals = child.copy(), target.copy()
+    q = merge_particles(p, child, target, 2)
+    for a in range(2):
+        symmetric_child = (child[0, a] + child[0, a].T) / 2
+        symmetric_target = (target[a] + target[a].T) / 2
+        np.testing.assert_allclose(q.affine[0, a] @ symmetric_target, np.ones(2) @ symmetric_child, rtol=1e-14, atol=0)
+    np.testing.assert_array_equal(child, originals[0])
+    np.testing.assert_array_equal(target, originals[1])

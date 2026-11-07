@@ -1,6 +1,6 @@
 # FluidiTy: product, numerical method, and engineering design
 
-**Status:** English design proposed for owner review, before the implementation plan.
+**Status:** The broader product design remains proposed for owner review. The bounded M0 reference and proof foundation has been implemented and reviewed under its implementation plan; this does not approve the full product design.
 **Date:** 7 November 2026.
 **Canonical companion:** [scientific method source](../../papers/fluidity-method.typ), compiled as `fluidity-method.pdf`.
 **Evidence boundary:** this specification selects contracts and experiments. It does not claim an implemented simulator, completed Lean proofs, neural inference results, or measured CUDA performance.
@@ -9,7 +9,7 @@
 
 FluidiTy is an open-source-ready Blender add-on and native particle–grid simulator for convincing offline liquid effects, beginning with a breaking wave, persistent render surfaces, spray, foam and bubbles. Viscous/multiphase liquids, sand and snow, elastic objects with cutting, and low-Mach smoke/fire follow. The project is sized for one developer assisted by coding agents; every extra representation must justify its correctness and cost.
 
-This is a new, self-contained design. Historical reviews are development records, not normative dependencies. All public technical prose and identifiers are English. The next deliverable after owner review is a Superpowers implementation plan; this document is committed first. No implementation plan is approved by the existence of this document.
+This is a new, self-contained design. Historical reviews are development records, not normative dependencies. All public technical prose and identifiers are English. The bounded M0 implementation plan covers the reference and proof foundation. Later implementation plans and the broader product design remain subject to their respective review and approval; this document alone approves neither.
 
 Decision labels:
 

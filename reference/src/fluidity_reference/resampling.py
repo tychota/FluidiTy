@@ -75,8 +75,13 @@ def split_particle(batch, index, offsets, child_ids):
 
 
 def _positive_definite(m):
-    if not np.allclose(m, m.T, rtol=1e-12, atol=1e-12) or np.min(np.linalg.eigvalsh(m)) <= 0:
+    scale = np.max(np.abs(m))
+    if scale == 0 or np.max(np.abs(m / scale - m.T / scale)) > 1e-12:
         raise ValueError("support moments must be symmetric positive definite")
+    symmetric = m / 2 + m.T / 2
+    if np.min(np.linalg.eigvalsh(symmetric)) <= 0:
+        raise ValueError("support moments must be symmetric positive definite")
+    return symmetric
 
 
 def merge_particles(batch, child_moments, target_moments, merged_id):
@@ -90,8 +95,8 @@ def merge_particles(batch, child_moments, target_moments, merged_id):
     r = batch.positions - x
     affine = np.empty((d,d))
     for a in range(d):
-        _positive_definite(target[a])
-        for moment in child[:,a]: _positive_definite(moment)
+        target[a] = _positive_definite(target[a])
+        for i in range(n): child[i,a] = _positive_definite(child[i,a])
         k = np.einsum('n,ni,nj->ij', batch.mass,r,r) + np.einsum('n,nij->ij',batch.mass,child[:,a])
         gap = mass*target[a]-k
         if np.min(np.linalg.eigvalsh(gap)) < -1e-12 * max(np.linalg.norm(mass*target[a], ord=2), np.linalg.norm(k, ord=2)):
