@@ -1,5 +1,6 @@
 """Uniform-support algebra; callers must separately certify geometry and EOS."""
 from dataclasses import dataclass
+from fractions import Fraction
 import numpy as np
 
 
@@ -119,11 +120,13 @@ def reseed_cell(volume, density, J, count, composition):
     f = _array(composition)
     if f.ndim != 1 or not len(f): raise ValueError("invalid composition")
     _fractions(f)
-    # Extended intermediates avoid overflow or underflow before the final division.
-    with np.errstate(over='ignore', under='ignore', invalid='ignore', divide='ignore'):
-        current = np.longdouble(volume) / count
-        values = np.asarray([current * np.longdouble(density), current,
-                             current / np.longdouble(J)], dtype=float)
+    # Round only after each complete expression, including on binary64 platforms.
+    v, rho, j = (Fraction.from_float(float(x)) for x in (volume, density, J))
+    try:
+        values = np.array([float(v * rho / count), float(v / count),
+                           float(v / (count * j))])
+    except OverflowError as exc:
+        raise ValueError("unrepresentable reseeding state") from exc
     if not np.all(np.isfinite(values)) or np.any(values <= 0):
         raise ValueError("unrepresentable reseeding state")
     return {'mass': np.full(count,values[0]), 'current_volume': np.full(count,values[1]),

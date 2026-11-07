@@ -81,3 +81,11 @@ def test_reseed_avoids_overflow_and_rejects_unrepresentable_results():
             reseed_cell(1e308, 2, 1, 1, [1])
         r = reseed_cell(1, 1, 1e308, 2, [1])
         assert np.all(r['reference_volume'] == 5e-309)
+
+
+def test_reseed_preserves_mass_with_subnormal_volume():
+    volume = 3 * np.nextafter(0., 1.)
+    result = reseed_cell(volume, 1e308, 1, 2, [1])
+    from fractions import Fraction
+    expected = float(Fraction.from_float(float(volume)) * Fraction.from_float(1e308) / 2)
+    assert np.all(result['mass'] == expected)
