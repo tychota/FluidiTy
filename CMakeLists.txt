@@ -32,7 +32,8 @@ add_library(fluidity_native STATIC
   native/src/basis.cc
   native/src/small_solve.cc
   native/src/transfers.cc
-  native/src/pressure.cc)
+  native/src/pressure.cc
+  native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
 target_link_libraries(fluidity_native
@@ -92,7 +93,8 @@ if(BUILD_TESTING)
     native/tests/test_grid_basis.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
-    native/tests/test_pressure.cc)
+    native/tests/test_pressure.cc
+    native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
