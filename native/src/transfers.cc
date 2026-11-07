@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <tuple>
 
 #include "fluidity/host/basis.h"
 #include "fluidity/host/views.h"
@@ -16,7 +17,7 @@ namespace fluidity {
 namespace {
 
 constexpr std::size_t kComponentCount = 2;
-constexpr std::size_t kStencilSize = 9;
+constexpr std::size_t kStencilSize = std::tuple_size_v<decltype(Stencil2D::nodes)>;
 constexpr std::size_t kDepositDoublesPerFace = 2;
 constexpr std::size_t kMatrixEntryCount = kComponentCount * kComponentCount;
 constexpr std::size_t kGatherDoublesPerParticle = 2 * kComponentCount + 2 * kMatrixEntryCount;
@@ -150,6 +151,40 @@ absl::Status DepositComponent(
   return absl::OkStatus();
 }
 
+struct BinaryParts {
+  double fraction;
+  int exponent;
+};
+
+// Split both factors before multiplying. Each nonzero fraction product is in [1/4, 1)
+// in magnitude even when the full product is outside the range of double.
+BinaryParts ProductParts(double first, double second) {
+  int first_exponent;
+  int second_exponent;
+  const double first_fraction = std::frexp(first, &first_exponent);
+  const double second_fraction = std::frexp(second, &second_exponent);
+  return {
+      .fraction = first_fraction * second_fraction,
+      .exponent = first_exponent + second_exponent,
+  };
+}
+
+// Align only the terms in this numerator. A term too small to survive alignment is
+// negligible compared to its nonzero partner. Leave the quotient's range to the final scaling.
+double DivideProductDifference(BinaryParts first, BinaryParts second, BinaryParts denominator) {
+  int numerator_exponent = std::max(first.exponent, second.exponent);
+  if (first.fraction == 0.0) {
+    numerator_exponent = second.exponent;
+  }
+  if (second.fraction == 0.0) {
+    numerator_exponent = first.exponent;
+  }
+  const double first_fraction = std::scalbn(first.fraction, first.exponent - numerator_exponent);
+  const double second_fraction = std::scalbn(second.fraction, second.exponent - numerator_exponent);
+  const double quotient_fraction = (first_fraction - second_fraction) / denominator.fraction;
+  return std::scalbn(quotient_fraction, numerator_exponent - denominator.exponent);
+}
+
 // Scale the full symmetric moment before forming its determinant. Comparing the determinant
 // to 2*epsilon*lambda_max^2 applies the two-dimensional relative rank test without subtracting
 // two nearly equal eigenvalues. The caller has checked all four accumulated inputs.
@@ -158,20 +193,28 @@ absl::StatusOr<Vec2> SolveAffineMoment(double xx, double xy, double yy, Vec2 rhs
   if (scale == 0.0) {
     return absl::FailedPreconditionError("affine moment is singular");
   }
-  xx /= scale;
-  xy /= scale;
-  yy /= scale;
-
-  const double determinant = std::fma(xx, yy, -xy * xy);
-  const double largest_eigenvalue = 0.5 * (xx + yy + std::hypot(xx - yy, 2.0 * xy));
+  const double normalized_xx = xx / scale;
+  const double normalized_xy = xy / scale;
+  const double normalized_yy = yy / scale;
+  const double determinant = std::fma(normalized_xx, normalized_yy, -normalized_xy * normalized_xy);
+  const double largest_eigenvalue =
+      0.5 * (normalized_xx + normalized_yy + std::hypot(normalized_xx - normalized_yy, 2.0 * normalized_xy));
   constexpr double rank_tolerance = 2.0 * std::numeric_limits<double>::epsilon();
   if (determinant <= rank_tolerance * largest_eigenvalue * largest_eigenvalue) {
     return absl::FailedPreconditionError("affine moment is numerically singular");
   }
-  const Vec2 scaled_rhs{rhs.x / scale, rhs.y / scale};
+
+  // Cramer's rule uses the original moment entries in each numerator. Keep
+  // scale squared in the denominator's exponent so neither it nor the RHS
+  // normalization constrains the range of a representable row.
+  const BinaryParts squared_scale = ProductParts(scale, scale);
+  const BinaryParts denominator{
+      .fraction = determinant * squared_scale.fraction,
+      .exponent = squared_scale.exponent,
+  };
   const Vec2 row{
-      .x = (yy * scaled_rhs.x - xy * scaled_rhs.y) / determinant,
-      .y = (xx * scaled_rhs.y - xy * scaled_rhs.x) / determinant,
+      .x = DivideProductDifference(ProductParts(yy, rhs.x), ProductParts(xy, rhs.y), denominator),
+      .y = DivideProductDifference(ProductParts(xx, rhs.y), ProductParts(xy, rhs.x), denominator),
   };
   if (!IsFinite(row)) {
     return absl::OutOfRangeError("affine row is nonfinite");
@@ -400,13 +443,13 @@ absl::Status G2P(
         return gathered.status();
       }
       const std::size_t vector_entry = kComponentCount * particle + component;
-      const std::size_t matrix_row = kComponentCount * vector_entry;
+      const std::size_t matrix_row_offset = kComponentCount * vector_entry;
       staged_pic[vector_entry] = gathered->pic;
       staged_increments[vector_entry] = gathered->increment;
-      staged_affine[matrix_row] = gathered->affine_row.x;
-      staged_affine[matrix_row + 1] = gathered->affine_row.y;
-      staged_gradient[matrix_row] = gathered->gradient_row.x;
-      staged_gradient[matrix_row + 1] = gathered->gradient_row.y;
+      staged_affine[matrix_row_offset] = gathered->affine_row.x;
+      staged_affine[matrix_row_offset + 1] = gathered->affine_row.y;
+      staged_gradient[matrix_row_offset] = gathered->gradient_row.x;
+      staged_gradient[matrix_row_offset + 1] = gathered->gradient_row.y;
     }
   }
 

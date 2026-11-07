@@ -8,9 +8,9 @@
 #include "fluidity/base/types.h"
 #include "fluidity/host/grid.h"
 
+// Host FP64 reference transfers for complete quadratic MAC stencils.
 namespace fluidity {
 
-// Host FP64 reference transfers for complete quadratic MAC stencils.
 struct ParticleView2D {
   // All spans have the same particle count and ordering.
   std::span<const Vec2> positions;  // World positions in m.
@@ -53,7 +53,7 @@ absl::StatusOr<std::size_t> G2PScratchDoubles(std::size_t particle_count);
 // each other and all inputs. Scratch may change on failure. Outputs change only on success.
 // Returns kInvalidArgument for wrong extents, overlap, nonfinite particle inputs, negative
 // mass or an incomplete stencil. Propagates grid errors and returns kOutOfRange for
-// unrepresentable stencil indices or nonfinite arithmetic.
+// unrepresentable scratch extents, stencil indices or nonfinite arithmetic.
 absl::Status P2G(
     const Grid2D& grid,
     ParticleView2D particles,
@@ -63,9 +63,11 @@ absl::Status P2G(
 );
 
 // Gathers PIC and the new-minus-old grid velocity increment (m/s), affine fit C (1/s)
-// and true velocity gradient L (1/s) at world positions in m. Both face arrays have
-// exactly FaceCount entries in FaceGeometry order and may share storage. Each output
-// has exactly positions.size() entries. Scratch has exactly G2PScratchDoubles entries.
+// and true velocity gradient L (1/s) at world positions in m. C and L have Cartesian
+// rows in velocity-component order. Each particle needs all nine nodes on both staggered
+// lattices, including zero-weight nodes. Both face arrays have exactly FaceCount entries
+// in FaceGeometry order and may share storage. Each output has exactly positions.size()
+// entries. Scratch has exactly G2PScratchDoubles entries.
 // Empty positions are allowed. Writable spans must be disjoint from each other and all
 // inputs. Scratch may change on failure. Outputs change only on success.
 // Returns kInvalidArgument for wrong extents, overlap, nonfinite inputs or an incomplete
@@ -83,8 +85,9 @@ absl::Status G2P(
     std::span<double> scratch
 );
 
-// Gathers a scalar and solves its centered full 2D affine moment. Position and samples
-// are in m. Inputs have the same nonzero extent and may share storage. Weights are
+// Gathers a weighted scalar and fits its affine row using the full centered 2D moment.
+// Position and sample positions are in m. Sample positions, weights, and values share
+// the same nonzero extent and order and may share storage. Weights are
 // dimensionless, nonnegative and sum to one within 2e-12. Returns kInvalidArgument for
 // invalid inputs, kFailedPrecondition for a numerically singular moment, and kOutOfRange
 // for nonfinite arithmetic. The smaller moment eigenvalue must exceed twice double

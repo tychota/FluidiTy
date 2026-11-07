@@ -81,20 +81,68 @@ TEST(Transfer, FitUsesFullCenteredMoment) {
   ExpectVec(fit->row, {2.0, -4.0});
 }
 
+TEST(Transfer, FitKeepsRepresentableLargeCoupledRow) {
+  constexpr std::array<Vec2, 4> samples{{{0.5, 0.5}, {-0.5, -0.5}, {0.25, -0.25}, {-0.25, 0.25}}};
+  constexpr std::array weights{0.25, 0.25, 0.25, 0.25};
+  constexpr std::array values{1.3e308, -1.3e308, 0.0, 0.0};
+  // The moment has diagonal 5/32 and off-diagonal 3/32. The RHS points along
+  // its (1, 1) eigenvector with eigenvalue 1/4.
+  const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
+  ASSERT_TRUE(fit.ok()) << fit.status();
+  EXPECT_EQ(fit->value, 0.0);
+  ExpectVec(fit->row, {1.3e308, 1.3e308});
+}
+
+TEST(Transfer, FitPreservesIndependentCoefficientsAcrossExponentRange) {
+  constexpr std::array<Vec2, 4> samples{{{0.5, 0.0}, {-0.5, 0.0}, {0.0, 0.5}, {0.0, -0.5}}};
+  constexpr std::array weights{0.25, 0.25, 0.25, 0.25};
+  constexpr std::array values{8e307, -8e307, 1e-100, -1e-100};
+  const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
+  ASSERT_TRUE(fit.ok()) << fit.status();
+  ExpectNear(fit->row.x, 1.6e308);
+  EXPECT_NEAR(fit->row.y, 2e-100, 2e-112);
+
+  constexpr std::array overflowing_values{1e308, -1e308, 1e-100, -1e-100};
+  const auto overflow = FitAffine2D({0.0, 0.0}, samples, weights, overflowing_values);
+  EXPECT_EQ(overflow.status().code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST(Transfer, FitKeepsSmallRepresentableRowWithLargeMoment) {
+  constexpr std::array<Vec2, 4> samples{{{1e100, 0.0}, {-1e100, 0.0}, {0.0, 1e94}, {0.0, -1e94}}};
+  constexpr std::array weights{0.25, 0.25, 0.25, 0.25};
+  constexpr std::array values{1e100, -1e100, 1e-213, -1e-213};
+  // The diagonal moments are .5e200 and .5e188. Direct RHS normalization
+  // rounds the smaller RHS to subnormal precision before dividing by the determinant.
+  const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
+  ASSERT_TRUE(fit.ok()) << fit.status();
+  ExpectNear(fit->row.x, 1.0);
+  EXPECT_NEAR(fit->row.y, 1e-307, 1e-319);
+}
+
 TEST(Transfer, StaggeredAffine) {
-  constexpr Grid2D grid{8, 8, 0.75, {10.0, -3.0}};
+  // Use explicit face indices and positions on a nonsquare grid to check layout
+  // independently of FaceGeometry and the stencil's flattened face indices.
+  constexpr Grid2D grid{7, 6, 0.75, {10.0, -3.0}};
+  constexpr std::size_t x_face_count = 8 * 6;
+  constexpr std::size_t face_count = x_face_count + 7 * 7;
   // The first particle is exactly on the lowest complete-support position of both shifted lattices.
   const std::array<Vec2, 2> positions{{{10.75, -2.25}, {12.3, 0.2}}};
-  std::array<double, kFaceCount> old_faces;
-  std::array<double, kFaceCount> new_faces;
-  for (std::size_t face = 0; face < new_faces.size(); ++face) {
-    const auto geometry = FaceGeometry(grid, face);
-    ASSERT_TRUE(geometry.ok()) << geometry.status();
-    const auto [x, y] = geometry->position;
-    if (face < kXFaceCount) {
+  std::array<double, face_count> old_faces;
+  std::array<double, face_count> new_faces;
+  for (std::size_t row = 0; row < 6; ++row) {
+    for (std::size_t column = 0; column < 8; ++column) {
+      const std::size_t face = 8 * row + column;
+      const double x = 10.0 + 0.75 * static_cast<double>(column);
+      const double y = -3.0 + 0.75 * (static_cast<double>(row) + 0.5);
       new_faces[face] = 1.0 + 2.0 * x - 3.0 * y;
       old_faces[face] = new_faces[face] - 0.75;
-    } else {
+    }
+  }
+  for (std::size_t row = 0; row < 7; ++row) {
+    for (std::size_t column = 0; column < 7; ++column) {
+      const std::size_t face = x_face_count + 7 * row + column;
+      const double x = 10.0 + 0.75 * (static_cast<double>(column) + 0.5);
+      const double y = -3.0 + 0.75 * static_cast<double>(row);
       new_faces[face] = -2.0 + 0.5 * x + 4.0 * y;
       old_faces[face] = new_faces[face] + 1.25;
     }
