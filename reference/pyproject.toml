@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluidity-reference"
+version = "0.1.0"
+description = "Independent uniform-grid numerical reference for FluidiTy"
+requires-python = ">=3.13,<3.14"
+dependencies = ["numpy==2.2.6", "scipy==1.15.3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
