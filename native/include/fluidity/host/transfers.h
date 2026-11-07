@@ -1,0 +1,108 @@
+#pragma once
+
+#include <cstddef>
+#include <span>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "fluidity/base/types.h"
+#include "fluidity/host/grid.h"
+
+namespace fluidity {
+
+// Host FP64 reference transfers for complete quadratic MAC stencils.
+struct ParticleView2D {
+  // All spans have the same particle count and ordering.
+  std::span<const Vec2> positions;  // World positions in m.
+  std::span<const double> masses;  // Nonnegative masses in kg.
+  std::span<const Vec2> velocities;  // Velocities in m/s.
+  std::span<const Mat2> affine;  // Affine fits C in 1/s, one row per velocity component.
+};
+
+struct AffineFit2D {
+  double value;  // Weighted value in the input units.
+  Vec2 row;  // Spatial affine coefficients in input units per m.
+};
+
+// Phase selection for the history blend policy.
+enum class Phase {
+  kLiquid,
+  kGas,
+  kElastic,
+  kGranular,
+  kSnow
+};
+
+struct VelocityPair {
+  Vec2 stored;  // History-blended particle velocity in m/s.
+  Vec2 advecting;  // Velocity for position advection in m/s.
+};
+
+// Returns the required P2G scratch extent in doubles (two per face). Propagates FaceCount
+// errors and returns kOutOfRange if the scratch count overflows.
+absl::StatusOr<std::size_t> P2GScratchDoubles(const Grid2D& grid);
+
+// Returns the required G2P scratch extent in doubles (12 per particle, including zero).
+// Returns kOutOfRange if the scratch count overflows.
+absl::StatusOr<std::size_t> G2PScratchDoubles(std::size_t particle_count);
+
+// Deposits centered APIC mass (kg) and pure momentum (kg*m/s) into exact FaceCount-sized
+// outputs in FaceGeometry order. An empty particle batch writes zero to every face.
+// Scratch has exactly P2GScratchDoubles entries. Writable spans must be disjoint from
+// each other and all inputs. Scratch may change on failure. Outputs change only on success.
+// Returns kInvalidArgument for wrong extents, overlap, nonfinite particle inputs, negative
+// mass or an incomplete stencil. Propagates grid errors and returns kOutOfRange for
+// unrepresentable stencil indices or nonfinite arithmetic.
+absl::Status P2G(
+    const Grid2D& grid,
+    ParticleView2D particles,
+    std::span<double> face_mass,
+    std::span<double> face_momentum,
+    std::span<double> scratch
+);
+
+// Gathers PIC and the new-minus-old grid velocity increment (m/s), affine fit C (1/s)
+// and true velocity gradient L (1/s) at world positions in m. Both face arrays have
+// exactly FaceCount entries in FaceGeometry order and may share storage. Each output
+// has exactly positions.size() entries. Scratch has exactly G2PScratchDoubles entries.
+// Empty positions are allowed. Writable spans must be disjoint from each other and all
+// inputs. Scratch may change on failure. Outputs change only on success.
+// Returns kInvalidArgument for wrong extents, overlap, nonfinite inputs or an incomplete
+// stencil, kFailedPrecondition for a numerically singular fit and kOutOfRange for
+// unrepresentable extents or indices or nonfinite arithmetic. Propagates grid errors.
+absl::Status G2P(
+    const Grid2D& grid,
+    std::span<const Vec2> positions,
+    std::span<const double> old_faces,
+    std::span<const double> new_faces,
+    std::span<Vec2> pic,
+    std::span<Vec2> increments,
+    std::span<Mat2> affine,
+    std::span<Mat2> gradient,
+    std::span<double> scratch
+);
+
+// Gathers a scalar and solves its centered full 2D affine moment. Position and samples
+// are in m. Inputs have the same nonzero extent and may share storage. Weights are
+// dimensionless, nonnegative and sum to one within 2e-12. Returns kInvalidArgument for
+// invalid inputs, kFailedPrecondition for a numerically singular moment, and kOutOfRange
+// for nonfinite arithmetic. The smaller moment eigenvalue must exceed twice double
+// epsilon times the larger one, to working precision.
+absl::StatusOr<AffineFit2D> FitAffine2D(
+    Vec2 position,
+    std::span<const Vec2> samples,
+    std::span<const double> weights,
+    std::span<const double> values
+);
+
+// Sums scalar samples times their true interpolation weight gradients (1/m) in input
+// order, returning input units per m. Inputs have the same nonzero extent and may share
+// storage. Returns kInvalidArgument for invalid inputs and kOutOfRange for nonfinite arithmetic.
+absl::StatusOr<Vec2> VelocityGradient2D(std::span<const double> values, std::span<const Vec2> gradients);
+
+// Applies the phase's retention policy to PIC and the particle velocity minus the old-grid
+// gather (both in m/s). Energy and separation are dimensionless in [0, 1]. Returns
+// kInvalidArgument for invalid inputs and kOutOfRange for nonfinite arithmetic.
+absl::StatusOr<VelocityPair> BlendHistory2D(Vec2 pic, Vec2 residual, double energy, Phase phase, double separation);
+
+}  // namespace fluidity
