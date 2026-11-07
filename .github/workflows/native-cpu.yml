@@ -1,0 +1,143 @@
+name: Native CPU
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    name: ${{ matrix.platform }} ${{ matrix.configuration }} CPU
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+        platform: [windows, linux, macos]
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: macos
+            runner: macos-15
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PRESET: ${{ matrix.platform }}-${{ matrix.configuration }}-cpu
+      CONAN_HOME: ${{ github.workspace }}/out/ci-conan-home
+      UV_PYTHON: "3.13.18"
+      UV_PYTHON_PREFERENCE: only-managed
+      PYTHONUTF8: "1"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      - name: Select Visual Studio 2022 x64 and Windows SDK 26100
+        if: runner.os == 'Windows'
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -version '[17.0,18.0)' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -or !$installation) { throw 'Visual Studio 2022 C++ tools are required.' }
+          $devCmd = Join-Path $installation 'Common7/Tools/VsDevCmd.bat'
+          $command = "call `"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.44 -winsdk=10.0.26100.0 && set"
+          $variables = & cmd.exe /d /c $command
+          if ($LASTEXITCODE) { throw 'VsDevCmd failed.' }
+          $nativeVariables = @(
+            'INCLUDE', 'LIB', 'LIBPATH', 'VCINSTALLDIR', 'VCToolsInstallDir', 'VCToolsVersion',
+            'VisualStudioVersion', 'VSINSTALLDIR', 'WindowsSdkDir', 'WindowsSDKVersion',
+            'UniversalCRTSdkDir', 'UCRTVersion', 'VSCMD_VER', 'VSCMD_ARG_HOST_ARCH', 'VSCMD_ARG_TGT_ARCH'
+          )
+          foreach ($line in $variables) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $Matches[1]
+              $value = $Matches[2]
+              if ($name -in $nativeVariables) {
+                "$name=$value" >> $env:GITHUB_ENV
+              }
+              if ($name -eq 'Path') {
+                $addedPaths = @($value -split ';' | Where-Object { $_ -and $_ -notin ($env:Path -split ';') })
+                [array]::Reverse($addedPaths)
+                $addedPaths >> $env:GITHUB_PATH
+              }
+            }
+          }
+
+      - name: Select GCC 13
+        if: runner.os == 'Linux'
+        run: |
+          'CC=gcc-13' >> $env:GITHUB_ENV
+          'CXX=g++-13' >> $env:GITHUB_ENV
+
+      - name: Select AppleClang from Xcode 16.4
+        if: runner.os == 'macOS'
+        run: |
+          'DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer' >> $env:GITHUB_ENV
+          'CC=clang' >> $env:GITHUB_ENV
+          'CXX=clang++' >> $env:GITHUB_ENV
+
+      - name: Sync tools, detect profiles and identify the compiler
+        id: compiler
+        run: |
+          if ($IsWindows) { chcp.com 65001 }
+          uv sync --project reference --locked --group native
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $uvArgs = @('run', '--project', 'reference', '--locked', '--group', 'native')
+          foreach ($profile in @('ci-host', 'ci-build')) {
+            uv @uvArgs conan profile detect --name $profile --force
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          if ($IsWindows) {
+            uv @uvArgs python tools/native/qualify_toolchain.py --mode cpu --output out/qualification/windows-cpu.json
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $qualified = Get-Content out/qualification/windows-cpu.json -Raw | ConvertFrom-Json
+            $compiler = @('MSVC', $qualified.tools.cl.version, $qualified.host.toolset_version,
+                          $qualified.host.windows_sdk_version)
+          } elseif ($IsLinux) {
+            $version = & g++-13 -dumpfullversion -dumpversion
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $compiler = @('GCC', $version)
+          } else {
+            $version = & xcrun clang++ --version
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $sdk = & xcrun --show-sdk-version
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $compiler = @('Xcode 16.4', $version, $sdk)
+          }
+          $identity = "$($compiler -join '|')|$env:ImageVersion"
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+          "hash=$hash" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: out/ci-conan-home/p
+          key: conan-v1-${{ matrix.runner }}-${{ runner.arch }}-${{ matrix.configuration }}-${{ steps.compiler.outputs.hash }}-${{ hashFiles('conan.lock', 'conanfile.py', 'reference/uv.lock') }}
+
+      - name: Validate the locked CPU preset
+        run: |
+          if ($IsWindows) { chcp.com 65001 }
+          uv run --project reference --locked --group native python tools/native/validate.py `
+            --preset $env:PRESET --host-profile ci-host --build-profile ci-build --output out/ci-evidence
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.configuration }}-cpu
+          path: out/ci-evidence/
+          if-no-files-found: warn

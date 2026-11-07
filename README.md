@@ -2,7 +2,7 @@
 
 Particle–grid multiphysics for Blender, designed around one sparse staggered grid, independent numerical references and measurable output quality.
 
-**Current status:** the independent Python operator reference and two bounded Lean proof pilots are implemented. The ten complete proof families, production solver and CUDA validation remain outstanding. Research timings are not measured product performance.
+**Current status** — The independent Python operator reference, bounded native CPU operators and two Lean proof pilots are implemented. The Windows CUDA hardware probe exercises shared vector arithmetic. The ten complete proof families, production solver and CUDA operator validation remain outstanding.
 
 - [English design specification](docs/superpowers/specs/2026-11-07-fluidity-design.md): product requirements, numerical and execution contracts, milestones and acceptance gates.
 - [Scientific method paper](docs/papers/fluidity-method.pdf): equations, figures and detailed particle/transfer/grid flowcharts; [Typst source](docs/papers/fluidity-method.typ).
@@ -21,11 +21,10 @@ uv run --project reference --locked pytest reference/tests tools/tests -q
 ```
 
 See the [reference instructions](reference/README.md) and [proof tooling](proofs/README.md).
-The native build is specified to use CMake presets, Conan 2 and Ninja. Its
-configuration and C++/CUDA targets are the next implementation work; no Conan
-manifest is present yet. The [Windows native-foundation plan](docs/superpowers/plans/2026-11-07-native-foundation-windows.md)
-defines the next bounded build, CPU parity and CUDA-readiness tasks. Native dependencies belong to Conan; Python tooling
-belongs to uv, and Lean dependencies remain managed by Lake.
+The native build uses CMake presets, Ninja and locked Conan dependencies. The
+[native validation guide](docs/native/README.md) covers CPU builds, the Windows CUDA
+hardware gate and the evidence each run produces. Python tooling uses uv and Lean
+dependencies use Lake.
 
 ## Build the paper
 

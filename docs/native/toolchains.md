@@ -58,7 +58,7 @@ The device build used C++20 with `--fmad=false --ftz=false --prec-div=true --pre
 `Shared` runtime setting and linked `CUDA::cudart` from the installed toolkit. The earlier
 direct nvcc probe recorded the Windows `shared` deprecation described above.
 
-The `gpu` label runs the device test. The `cuda-mock` and `cpu` labels record separate evidence.
+The `gpu` label runs both hardware tests. The `cuda-mock` and `cpu` labels record separate evidence.
 The probe qualifies CUDA build and execution infrastructure and shared vector arithmetic.
 
 ## Locked dependencies and ABI
@@ -78,6 +78,9 @@ CRT. The host context uses C++20 and the dynamic CRT for its selected build type
 pins recipes. Package binaries, their local compiler and the installed driver have separate evidence.
 
 ## Reproduce on Windows
+
+For the locked validator commands and evidence locations, see the [native validation guide](README.md).
+The steps below also expose the individual Conan, CMake and CUDA commands.
 
 Run from the repository root in an x64 Native Tools PowerShell. Use console code page 65001 for both
 configure and build so Ninja can parse localized MSVC include reports. CPU and CUDA qualification use distinct
