@@ -4,6 +4,20 @@ target_compile_features(fluidity_native_options INTERFACE cxx_std_20)
 if(MSVC)
   # CMake initializes /EHsc for all C++ targets. Enable it explicitly on test targets.
   string(REGEX REPLACE "(^|[ \t])/EHsc($|[ \t])" "\\1\\2" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
+  # Abseil reaches MSVC's <chrono>, whose time-zone helpers contain a catch. Keep the
+  # no-unwind warning enabled in our code and preserve the default STL ABI.
+  set(stl_header "${CMAKE_CURRENT_BINARY_DIR}/fluidity_msvc_stl.h")
+  file(CONFIGURE OUTPUT "${stl_header}" CONTENT [=[
+#pragma once
+
+#pragma warning(push)
+#pragma warning(disable : 4530)
+#include <chrono>
+#pragma warning(pop)
+]=] @ONLY)
+  target_compile_options(fluidity_native_options INTERFACE
+    "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/FI${stl_header}>")
 endif()
 
 target_compile_options(fluidity_native_options INTERFACE

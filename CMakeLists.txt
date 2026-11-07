@@ -26,8 +26,15 @@ if(FLUIDITY_ENABLE_CUDA)
   endif()
 endif()
 
+find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
+add_library(fluidity_native STATIC native/src/grid.cc native/src/basis.cc)
+target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
+target_compile_features(fluidity_native PUBLIC cxx_std_20)
+target_link_libraries(fluidity_native
+  PUBLIC absl::status absl::statusor
+  PRIVATE fluidity_native_options)
+
 if(BUILD_TESTING)
-  find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
   find_package(GTest 1.17.0 EXACT CONFIG REQUIRED)
   include(GoogleTest)
 
@@ -74,7 +81,11 @@ if(BUILD_TESTING)
 
   fluidity_compile_fixtures(fluidity_fixture_headers "${FLUIDITY_FIXTURE_DIRECTORY}"
                            "${fixture_header}" "${fixture_export_stamp}")
-  add_executable(fluidity_native_tests native/tests/test_build.cc native/tests/test_fixture_bridge.cc)
+  add_executable(fluidity_native_tests
+    native/tests/test_build.cc
+    native/tests/test_fixture_bridge.cc
+    native/tests/test_grid_basis.cc)
+  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
   # Use a separate test executable for the synthetic case so each executable owns one data set.
@@ -84,12 +95,13 @@ if(BUILD_TESTING)
   fluidity_compile_fixtures(fluidity_fixture_escaping_header "${escaping_input}" "${escaping_header}")
   add_executable(fluidity_fixture_bridge_escaping native/tests/test_fixture_escaping.cc)
   add_dependencies(fluidity_fixture_bridge_escaping fluidity_fixture_escaping_header)
+  target_link_libraries(fluidity_fixture_bridge_escaping PRIVATE absl::status absl::statusor)
 
   foreach(target IN ITEMS fluidity_native_tests fluidity_fixture_bridge_escaping)
     target_include_directories(${target} PRIVATE "${generated_dir}")
     target_compile_features(${target} PRIVATE cxx_std_20)
     target_compile_options(${target} PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
-    target_link_libraries(${target} PRIVATE absl::status absl::statusor GTest::gtest_main)
+    target_link_libraries(${target} PRIVATE GTest::gtest_main)
     gtest_discover_tests(${target} PROPERTIES LABELS cpu)
   endforeach()
 endif()
