@@ -1,0 +1,12 @@
+{
+    "version": "0.5",
+    "requires": [
+        "gtest/1.17.0#43201cc96e5d35332662ce8890cceb27%1786446850.202",
+        "abseil/20250814.2#10d8fe8d3fe5ef417d119e4becd655ec%1773137900.305"
+    ],
+    "build_requires": [
+        "cmake/4.4.4#9009f1989569bdbc583e48ea6e132723%1793881531.325"
+    ],
+    "python_requires": [],
+    "config_requires": []
+}
