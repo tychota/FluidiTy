@@ -15,7 +15,7 @@ class ReferenceState:
             if not isinstance(name, str) or not name or a.dtype.kind not in 'biuf' or not np.all(np.isfinite(a)):
                 raise ValueError('invalid state array')
             a = np.array(a, copy=True, order='C')
-            copied[name] = np.frombuffer(a.tobytes(), dtype=a.dtype).reshape(a.shape)
+            copied[name] = (a.tobytes(), a.dtype, a.shape)
         if any(not isinstance(k, str) or not k or isinstance(v, bool) or not isinstance(v, int) for k, v in counters.items()):
             raise ValueError('invalid counters')
         self._arrays = MappingProxyType(copied)
@@ -23,7 +23,8 @@ class ReferenceState:
 
     @property
     def arrays(self):
-        return self._arrays
+        return MappingProxyType({name: np.frombuffer(data, dtype=dtype).reshape(shape)
+                                 for name, (data, dtype, shape) in self._arrays.items()})
 
     @property
     def counters(self):

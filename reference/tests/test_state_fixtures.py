@@ -79,3 +79,19 @@ def test_manufactured_values_against_reference_operators():
     result = viscous_step(p['velocity'], p['mass'], csr_matrix(p['strain_operator']), p['strain_weight'], p['boundary_strain'], p['dt'][0])
     assert result.method == 'implicit'
     np.testing.assert_allclose(result.velocity, p['expected_velocity'])
+
+
+def test_rejected_validator_cannot_change_snapshot_array_metadata():
+    state = ReferenceState({'x': np.array([[1., 2.]])}, {'step': 0})
+    original = state.arrays['x'].tobytes()
+
+    def reject(trial):
+        trial.arrays['x'].shape = (2,)
+        trial.arrays['x'].dtype = 'uint8'
+        return False
+
+    with pytest.raises(TrialRejected):
+        accept_trial(state, state, reject)
+    assert state.arrays['x'].shape == (1, 2)
+    assert state.arrays['x'].dtype == np.dtype('float64')
+    assert state.arrays['x'].tobytes() == original
