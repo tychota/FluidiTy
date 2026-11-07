@@ -31,6 +31,12 @@ bool IsFinitePositive(double value) {
   return value > 0.0 && std::isfinite(value);
 }
 
+// Subnormal matrix coefficients can lose relative precision before pressure lifts.
+// A larger diagonal contribution can hide that loss from the SPD checks.
+bool IsPositiveNormal(double value) {
+  return value >= std::numeric_limits<double>::min() && std::isfinite(value);
+}
+
 // The inputs are finite and positive. Evaluate with normal-sized fractions so
 // an intermediate product cannot lose range before division restores it.
 double MultiplyDividePositive(double first_factor, double second_factor, double divisor) {
@@ -180,16 +186,17 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
       .signed_boundary_pressure = 0.0,
       .active = false,
   };
-  const bool dirichlet = inputs.dirichlet_mask[face_index] == 1;
-  if (dirichlet && IsInternal(face)) {
+  const bool is_dirichlet = inputs.dirichlet_mask[face_index] == 1;
+  if (is_dirichlet && IsInternal(face)) {
     return absl::InvalidArgumentError("pressure Dirichlet face must be on the grid boundary");
   }
-  if (dirichlet && inputs.jump[face_index] != 0.0) {
+  if (is_dirichlet && inputs.jump[face_index] != 0.0) {
     return absl::InvalidArgumentError("pressure jump must be zero on a Dirichlet face");
   }
 
   face.wall_area = geometry->area - face.open_area;
-  face.active = aperture > 0.0 && (IsInternal(face) || dirichlet);
+  const bool has_pressure_coupling = IsInternal(face) || is_dirichlet;
+  face.active = aperture > 0.0 && has_pressure_coupling;
   if (!face.active) {
     return face;
   }
@@ -204,10 +211,10 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
   }
   // Use the correction coefficient in the matrix so both phases share the face response.
   face.conductance = face.open_area * face.velocity_scale;
-  if (!IsFinitePositive(face.conductance)) {
-    return absl::OutOfRangeError("pressure conductance is outside the positive representable range");
+  if (!IsPositiveNormal(face.conductance)) {
+    return absl::OutOfRangeError("active pressure conductance must be a positive normal double");
   }
-  if (dirichlet) {
+  if (is_dirichlet) {
     // The missing pressure contributes with the opposite incidence of the adjacent cell.
     const double outward_sign = face.tail >= 0 ? 1.0 : -1.0;
     face.signed_boundary_pressure = outward_sign * inputs.dirichlet_pressure[face_index];
@@ -238,9 +245,9 @@ AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchore
 
   // Keep the three incidence products separate. Balance source and predicted flux
   // before adding the pressure lifts so cancellation preserves small contributions.
-  std::array<double, kMaxPressureCells> predicted_divergence{};
-  std::array<double, kMaxPressureCells> jump_divergence{};
-  std::array<double, kMaxPressureCells> dirichlet_lift{};
+  std::array<double, kMaxPressureCells> predicted_outward_flux{};
+  std::array<double, kMaxPressureCells> jump_flux_lift{};
+  std::array<double, kMaxPressureCells> dirichlet_flux_lift{};
 
   for (std::size_t face_index = 0; face_index < inputs.velocity.size(); ++face_index) {
     const auto face = BuildFaceLink(inputs, face_index);
@@ -250,10 +257,10 @@ AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchore
     workspace.faces[face_index] = *face;
     const double conductance = face->conductance;
     const double flux = IntegratedFaceFlux(*face, inputs.velocity[face_index], inputs.wall_velocity[face_index]);
-    AccumulateOutward(*face, flux, predicted_divergence);
-    AccumulateOutward(*face, conductance * inputs.jump[face_index], jump_divergence);
+    AccumulateOutward(*face, flux, predicted_outward_flux);
+    AccumulateOutward(*face, conductance * inputs.jump[face_index], jump_flux_lift);
     // A Dirichlet column has only one incidence, which squares its sign in the lift.
-    AccumulateOutward(*face, conductance * face->signed_boundary_pressure, dirichlet_lift);
+    AccumulateOutward(*face, conductance * face->signed_boundary_pressure, dirichlet_flux_lift);
 
     if (conductance == 0.0) {
       continue;
@@ -282,15 +289,15 @@ AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchore
         return absl::OutOfRangeError("pressure bulk modulus times dt is outside the representable range");
       }
       compliance = inputs.fluid_volume[cell] / bulk_time;
-      if (!IsFinitePositive(compliance)) {
-        return absl::OutOfRangeError("finite-modulus pressure compliance is outside the positive representable range");
+      if (!IsPositiveNormal(compliance)) {
+        return absl::OutOfRangeError("finite-modulus pressure compliance must be a positive normal double");
       }
     }
     workspace.bulk_time[cell] = bulk_time;
     anchored_cells[cell] = anchored_cells[cell] || compliance > 0.0;
     matrix[cell * cell_count + cell] += compliance;
     const double integrated_source = inputs.fluid_volume[cell] * inputs.source[cell];
-    rhs[cell] = integrated_source - predicted_divergence[cell] - jump_divergence[cell] + dirichlet_lift[cell]
+    rhs[cell] = integrated_source - predicted_outward_flux[cell] - jump_flux_lift[cell] + dirichlet_flux_lift[cell]
         + compliance * inputs.previous_pressure[cell];
   }
 
@@ -385,8 +392,9 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
 // Evaluate the correction with the same orientation as R^T p. Sum the corrected
 // fluid and wall flux independently of the original system for the physical defect.
 absl::Status CorrectVelocityAndAccumulateFlux(const PressureInputsView& inputs, PressureWorkspace& workspace) {
-  auto cell_flux = std::span(workspace.constraint_defect).first(inputs.fluid_volume.size());
-  std::ranges::fill(cell_flux, 0.0);
+  // Reuse defect storage for the integrated flux until all corrected faces have contributed.
+  auto corrected_outward_flux = std::span(workspace.constraint_defect).first(inputs.fluid_volume.size());
+  std::ranges::fill(corrected_outward_flux, 0.0);
   for (std::size_t face_index = 0; face_index < inputs.velocity.size(); ++face_index) {
     const FaceLink& face = workspace.faces[face_index];
     double velocity = inputs.velocity[face_index];
@@ -401,7 +409,7 @@ absl::Status CorrectVelocityAndAccumulateFlux(const PressureInputsView& inputs, 
     }
     workspace.velocity[face_index] = velocity;
     const double flux = IntegratedFaceFlux(face, velocity, inputs.wall_velocity[face_index]);
-    AccumulateOutward(face, flux, cell_flux);
+    AccumulateOutward(face, flux, corrected_outward_flux);
   }
   return absl::OkStatus();
 }
@@ -411,8 +419,8 @@ absl::Status EvaluateResidualAndDefect(const PressureInputsView& inputs, Pressur
   for (std::size_t cell = 0; cell < cell_count; ++cell) {
     double matrix_pressure = 0.0;
     for (std::size_t column = 0; column < cell_count; ++column) {
-      const double entry = workspace.original_matrix[cell * cell_count + column];
-      matrix_pressure = std::fma(entry, workspace.pressure[column], matrix_pressure);
+      const double pressure_coefficient = workspace.original_matrix[cell * cell_count + column];
+      matrix_pressure = std::fma(pressure_coefficient, workspace.pressure[column], matrix_pressure);
     }
     const double residual = workspace.rhs[cell] - matrix_pressure;
 
@@ -421,8 +429,9 @@ absl::Status EvaluateResidualAndDefect(const PressureInputsView& inputs, Pressur
     if (std::isfinite(bulk_time)) {
       compliance_defect = (workspace.pressure[cell] - inputs.previous_pressure[cell]) / bulk_time;
     }
-    const double divergence = workspace.constraint_defect[cell] / inputs.fluid_volume[cell];
-    const double defect = divergence - inputs.source[cell] + compliance_defect;
+    const double corrected_outward_flux = workspace.constraint_defect[cell];
+    const double corrected_divergence = corrected_outward_flux / inputs.fluid_volume[cell];
+    const double defect = corrected_divergence - inputs.source[cell] + compliance_defect;
     if (!std::isfinite(residual) || !std::isfinite(defect)) {
       return absl::OutOfRangeError("pressure residual or constraint defect is outside the representable range");
     }

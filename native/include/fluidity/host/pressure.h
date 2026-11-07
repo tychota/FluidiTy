@@ -24,16 +24,16 @@ inline constexpr std::size_t kMaxPressureFaces = 3 * kMaxPressureCells + 1;
 // floating-point fields are finite.
 struct PressureInputsView {
   Grid2D grid;
-  double dt;
-  std::span<const double> velocity;
+  double dt;  // Step duration.
+  std::span<const double> velocity;  // Predicted fluid face velocity.
   std::span<const double> aperture;
-  std::span<const double> mobility;
-  std::span<const double> distance;
+  std::span<const double> mobility;  // Face inverse density.
+  std::span<const double> distance;  // Physical pressure-gradient distance.
   std::span<const double> wall_velocity;
   std::span<const std::uint8_t> dirichlet_mask;
   std::span<const double> dirichlet_pressure;
-  std::span<const double> jump;
-  std::span<const double> source;
+  std::span<const double> jump;  // Oriented pressure jump added to tail pressure minus head pressure.
+  std::span<const double> source;  // Target divergence in inverse time.
   std::span<const double> fluid_volume;
   std::span<const double> bulk_modulus;
   std::span<const double> previous_pressure;
@@ -45,8 +45,9 @@ struct PressureOutputsView {
   // Original integrated system before gauge constraints, stored row-major.
   std::span<double> original_matrix;
   std::span<double> rhs;
-  // True integrated residual b - A*p and independently evaluated physical defect.
+  // Integrated residual b - A*p, including the original equation at each gauge.
   std::span<double> residual;
+  // Corrected outward flux per fluid volume, minus source, plus the compliance term. Units are inverse time.
   std::span<double> constraint_defect;
   // Cell indices of the pins in ascending order. Only the first gauge_count entries are written.
   std::span<std::size_t> gauges;
@@ -62,14 +63,15 @@ struct PressureWorkspace {
     std::int64_t head;
     double open_area;
     double wall_area;
-    double velocity_scale;
-    double conductance;
+    double velocity_scale;  // dt * mobility / distance, for the face velocity correction.
+    double conductance;  // Open area times velocity_scale, for the integrated system.
     // Exterior pressure multiplied by the adjacent cell's outward incidence.
     double signed_boundary_pressure;
     bool active;
   };
 
   std::array<FaceLink, kMaxPressureFaces> faces;
+  // Bulk modulus times dt, infinite for an incompressible cell.
   std::array<double, kMaxPressureCells> bulk_time;
   std::array<double, kMaxPressureCells * kMaxPressureCells> original_matrix;
   std::array<double, kMaxPressureCells> rhs;
@@ -79,11 +81,13 @@ struct PressureWorkspace {
   std::array<double, kMaxPressureCells> pressure;
   std::array<double, kMaxPressureFaces> velocity;
   std::array<double, kMaxPressureCells> residual;
+  // Integrated corrected flux during accumulation, then the staged per-volume defect.
   std::array<double, kMaxPressureCells> constraint_defect;
   std::array<std::size_t, kMaxPressureCells> gauges;
 };
 
 // Assembles the integrated pressure system and corrects open internal and Dirichlet face velocities.
+// Each compatible unanchored component pins the pressure at its lowest cell index to zero.
 // The original matrix has n*n entries, velocity has f entries, and all other output spans have
 // n entries (n = CellCount(grid), f = FaceCount(grid)). Read-only spans may alias. Outputs,
 // including gauge_count, and the entire workspace must be disjoint from the input view,
@@ -93,8 +97,10 @@ struct PressureWorkspace {
 // Returns kInvalidArgument for invalid inputs, extents or overlap. Returns
 // kUnimplemented for grids over 64 cells and kFailedPrecondition for incompatible
 // unanchored components or unsafe SPD solves. Returns kOutOfRange for grid or
-// arithmetic overflow, other nonfinite computed arithmetic, or rounding a positive
-// active-face open area, velocity scale, conductance or finite-modulus compliance to zero.
+// arithmetic overflow, other nonfinite computed arithmetic, or a positive
+// active-face open area or velocity scale rounded to zero. Active conductance
+// and finite-modulus compliance must be positive normal doubles, at least
+// std::numeric_limits<double>::min(), or the solve returns kOutOfRange.
 absl::Status
 SolvePressure2D(const PressureInputsView& inputs, PressureOutputsView outputs, PressureWorkspace& workspace);
 

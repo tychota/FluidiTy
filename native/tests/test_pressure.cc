@@ -704,6 +704,91 @@ TEST(Pressure, RoundedZeroActiveFaceCoefficientsAreRejected) {
   }
 }
 
+TEST(Pressure, RejectsSubnormalConductanceEvenWithNormalCompliance) {
+  constexpr double kFluidVolume = 0x1.8p-475;
+  PressureCase problem({1, 1, 1.0});
+  problem.aperture = {kFluidVolume, 0.0, 0.0, 0.0};
+  problem.mobility[0] = 0x1p-600;
+  problem.dirichlet_mask[0] = 1;
+  problem.dirichlet_pressure[0] = 0x1p600;
+  problem.fluid_volume[0] = kFluidVolume;
+  problem.bulk_modulus[0] = kFluidVolume;
+
+  // Conductance rounds from 0.75 * denorm_min to denorm_min. The normal
+  // compliance keeps the resulting matrix well conditioned.
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+  result.ExpectUnchanged();
+}
+
+TEST(Pressure, RejectsSubnormalComplianceEvenWithNormalConductance) {
+  PressureCase problem({1, 1, 1.0});
+  problem.aperture = {1.0, 0.0, 0.0, 0.0};
+  problem.dirichlet_mask[0] = 1;
+  problem.fluid_volume[0] = 0x1.8p-475;
+  problem.bulk_modulus[0] = 0x1p600;
+  problem.previous_pressure[0] = 0x1p600;
+
+  // Compliance rounds from 0.75 * denorm_min to denorm_min. The normal
+  // conductance keeps the resulting matrix well conditioned.
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+  result.ExpectUnchanged();
+}
+
+TEST(Pressure, AcceptsMinimumNormalConductanceWithNormalCompliance) {
+  constexpr double kFluidVolume = 0x1p-422;
+  PressureCase problem({1, 1, 1.0});
+  problem.aperture = {kFluidVolume, 0.0, 0.0, 0.0};
+  problem.mobility[0] = 0x1p-600;
+  problem.dirichlet_mask[0] = 1;
+  problem.dirichlet_pressure[0] = 0x1p600;
+  problem.fluid_volume[0] = kFluidVolume;
+  problem.bulk_modulus[0] = kFluidVolume;
+
+  // The conductance is exactly 2^-1022. Its Dirichlet lift is V and
+  // compliance is one, so the represented system gives p = V.
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], 1.0);
+  EXPECT_EQ(result.rhs[0], kFluidVolume);
+  EXPECT_EQ(result.pressure[0], kFluidVolume);
+  EXPECT_EQ(result.velocity[0], 1.0);
+  EXPECT_EQ(result.residual[0], 0.0);
+  EXPECT_EQ(result.constraint_defect[0], 0.0);
+  ExpectGauges(result, {});
+}
+
+TEST(Pressure, AcceptsMinimumNormalComplianceWithNormalConductance) {
+  constexpr double kFluidVolume = 0x1p-422;
+  PressureCase problem({1, 1, 1.0});
+  problem.aperture = {1.0, 0.0, 0.0, 0.0};
+  problem.dirichlet_mask[0] = 1;
+  problem.fluid_volume[0] = kFluidVolume;
+  problem.bulk_modulus[0] = 0x1p600;
+  problem.previous_pressure[0] = 0x1p600;
+
+  // The compliance is exactly 2^-1022. Its previous-pressure lift is V and
+  // conductance is one, so the represented system gives p = V.
+  Result result(problem);
+  PressureWorkspace workspace;
+  const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.original_matrix[0], 1.0);
+  EXPECT_EQ(result.rhs[0], kFluidVolume);
+  EXPECT_EQ(result.pressure[0], kFluidVolume);
+  EXPECT_EQ(result.velocity[0], -kFluidVolume);
+  EXPECT_EQ(result.residual[0], 0.0);
+  EXPECT_EQ(result.constraint_defect[0], 0.0);
+  ExpectGauges(result, {});
+}
+
 TEST(Pressure, CorrectionOverflowLeavesAllOutputsUnchanged) {
   PressureCase problem({1, 1, 1.0});
   // Finite conductance near one, but correcting the open fluid velocity overflows.
