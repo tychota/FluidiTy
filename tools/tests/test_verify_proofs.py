@@ -51,9 +51,7 @@ def test_process_doubles_fail_closed(tmp_path):
 
     bindir = tmp_path / 'bin'
     bindir.mkdir()
-    driver = tmp_path / 'fake.py'
-    driver.write_text('''#!/usr/bin/env python3
-import os, pathlib, sys
+    driver = '''import os, pathlib, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 if os.environ.get("FAIL_TOOL") == name: sys.exit(7)
@@ -68,20 +66,49 @@ elif name == "lake":
         for key, targets in names.items():
             if args[-1].endswith(key):
                 for target in targets: print("'Fluidity." + target + "' depends on axioms: [" + os.environ.get("FAKE_AXIOM", "propext") + "]")
-    elif "exporter" in " ".join(args): os.execv(args[1], args[1:])
+    elif pathlib.Path(args[1]).name == "exporter":
+        sys.exit(subprocess.run([sys.executable, *args[1:]]).returncode)
 elif name == "checker":
     assert "--no-cache" in args and "--prelude" in args and "--axioms" in args
-''')
-    driver.chmod(0o755)
+'''
     for name in ('lean', 'lake', 'exporter', 'checker'):
-        (bindir / name).write_text(driver.read_text())
+        (bindir / name).write_text(driver)
         (bindir / name).chmod(0o755)
     receipt = tmp_path / 'receipt.json'
     receipt.write_text(json.dumps({'schema_version': 1, 'nano_lean_commit': verify.PINS['nano_lean_commit'], 'rust_version': verify.PINS['rust_version'], 'checker_sha256': verify.sha256(bindir / 'checker')}))
-    cmd = [sys.executable, str(ROOT_SCRIPT), '--lean-bin', str(bindir), '--exporter', str(bindir / 'exporter'), '--checker', str(bindir / 'checker'), '--checker-provenance', str(receipt), '--output', str(tmp_path / 'output')]
+    launcher = tmp_path / 'launch_verifier.py'
+    launcher.write_text('''
+import pathlib
+import runpy
+import subprocess
+import sys
+
+bin_dir = pathlib.Path(sys.argv.pop(1))
+verifier = sys.argv.pop(1)
+real_run = subprocess.run
+
+def run_double(argv, **kwargs):
+    assert pathlib.Path(argv[0]).parent == bin_dir
+    return real_run([sys.executable, *argv], **kwargs)
+
+subprocess.run = run_double
+runpy.run_path(verifier, run_name="__main__")
+''')
+    output = tmp_path / 'output'
+    cmd = [
+        sys.executable, '-X', 'utf8', str(launcher), str(bindir), str(ROOT_SCRIPT),
+        '--lean-bin', str(bindir), '--exporter', str(bindir / 'exporter'),
+        '--checker', str(bindir / 'checker'), '--checker-provenance', str(receipt),
+        '--output', str(output),
+    ]
+
     def invoke(**kwargs):
-        return subprocess.run(cmd, env={**os.environ, **kwargs}, capture_output=True, text=True)
-    assert invoke().returncode == 0
+        return subprocess.run(cmd, env={**os.environ, **kwargs}, capture_output=True,
+                              text=True, encoding='utf-8')
+
+    success = invoke()
+    assert success.returncode == 0, (success.stdout, success.stderr)
+    assert (output / 'evidence.json').is_file()
     for env in ({'EXPORTER_VERSION': 'wrong'}, {'LEAN_VERSION': 'wrong'}, {'FAKE_AXIOM': 'sorryAx'}, {'FAIL_EXPORT': '1'}, {'FAIL_TOOL': 'checker'}, {'EMPTY_EXPORT': '1'}):
         result = invoke(**env)
         assert result.returncode != 0, (env, result.stdout, result.stderr)
