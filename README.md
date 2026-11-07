@@ -23,7 +23,8 @@ uv run --project reference --locked pytest reference/tests tools/tests -q
 See the [reference instructions](reference/README.md) and [proof tooling](proofs/README.md).
 The native build is specified to use CMake presets, Conan 2 and Ninja. Its
 configuration and C++/CUDA targets are the next implementation work; no Conan
-manifest is present yet. Native dependencies belong to Conan; Python tooling
+manifest is present yet. The [Windows native-foundation plan](docs/superpowers/plans/2026-11-07-native-foundation-windows.md)
+defines the next bounded build, CPU parity and CUDA-readiness tasks. Native dependencies belong to Conan; Python tooling
 belongs to uv, and Lean dependencies remain managed by Lake.
 
 ## Build the paper
