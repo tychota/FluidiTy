@@ -137,3 +137,5 @@ Run all Python tests, fixture export, Lean build/axiom audit, actual nano-lean c
 Coverage: Tasks1–6 cover independent operator reference, not full physical scenes/CUDA/AMR. Tasks7–8 cover F5/F8 only; other eight families remain future work. Interfaces consistently use Grid2D ordering, original-system residual, explicit row-specific merge moments. Each Review Focus line has owning tests. Owner authorized automatic execution after passing review and explicitly selected SDD; no redundant handoff confirmation is needed.
 
 Execution status: all eight bounded tasks passed their task reviews. The whole-branch review and final delivery checks are recorded separately; the full production M0/CUDA gate remains open.
+
+Dependency-workflow update: after this plan completed, the owner selected uv. `reference/uv.lock` supersedes the historical `reference/requirements.lock`; current setup and test commands are in `reference/README.md`. The original task record above describes the implementation as delivered at that time.

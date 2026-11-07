@@ -18,7 +18,7 @@ The default build includes the consumer examples in `Fluidity.lean`. Build outpu
 Build `olean-export` 0.2.0 and nano-lean at the pinned revision from their official sources with Rust 1.97.1 and `cargo build --release --locked` (add `--bin nl-fast` for the checker). Supply a JSON receipt with `schema_version: 1`, `nano_lean_commit`, `rust_version`, and `checker_sha256` matching the executable; include source URL, archive checksum and build command to document provenance. Run from the repository root:
 
 ```sh
-python tools/verify_proofs.py --lean-bin /path/to/lean/bin \
+uv run --project reference --locked python tools/verify_proofs.py --lean-bin /path/to/lean/bin \
   --exporter /path/to/olean-export --checker /path/to/nl-fast \
   --checker-provenance /path/to/receipt.json --output proofs/artifacts/verification
 ```

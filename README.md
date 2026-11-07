@@ -11,6 +11,21 @@ Particle–grid multiphysics for Blender, designed around one sparse staggered g
 
 The first meshing experiment compares a deterministic geometric reconstruction with the published Zhao–Shinar–Schroeder CNN on matched full-volume and narrow-band caches. Neural integration is gated on input coverage, quality, total resources, repeatability and artifact permissions.
 
+## Development tooling
+
+The Python reference uses uv >=0.13.7, Python 3.13 and a committed `reference/uv.lock`:
+
+```sh
+uv sync --project reference --locked
+uv run --project reference --locked pytest reference/tests tools/tests -q
+```
+
+See the [reference instructions](reference/README.md) and [proof tooling](proofs/README.md).
+The native build is specified to use CMake presets, Conan 2 and Ninja. Its
+configuration and C++/CUDA targets are the next implementation work; no Conan
+manifest is present yet. Native dependencies belong to Conan; Python tooling
+belongs to uv, and Lean dependencies remain managed by Lake.
+
 ## Build the paper
 
 With Typst 0.15.1, CeTZ 0.5.2 and the fonts named in the source:
