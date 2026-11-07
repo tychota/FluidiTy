@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <limits>
 #include <span>
 #include <tuple>
@@ -34,37 +33,6 @@ double Dot(Vec2 lhs, Vec2 rhs) {
   return lhs.x * rhs.x + lhs.y * rhs.y;
 }
 
-absl::Status CheckExtents(std::size_t expected, std::initializer_list<std::size_t> extents) {
-  for (const std::size_t extent : extents) {
-    const auto status = ValidateExtent(extent, expected);
-    if (!status.ok()) {
-      return status;
-    }
-  }
-  return absl::OkStatus();
-}
-
-using ByteView = std::span<const std::byte>;
-
-// Read-only views can share storage. Compare every writable view to all other storage it can affect.
-absl::Status CheckWritableViews(std::initializer_list<ByteView> writable, std::initializer_list<ByteView> readable) {
-  for (auto view = writable.begin(); view != writable.end(); ++view) {
-    for (const ByteView input : readable) {
-      const auto status = ValidateDisjoint(*view, input);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-    for (auto other = writable.begin(); other != view; ++other) {
-      const auto status = ValidateDisjoint(*view, *other);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-  }
-  return absl::OkStatus();
-}
-
 struct FaceStencil {
   Stencil2D basis;
   std::array<std::size_t, kStencilSize> face_indices;
@@ -73,37 +41,42 @@ struct FaceStencil {
 
 // FaceCount has validated the lattice sizes. Check the signed nodes before flattening them,
 // including zero-weight nodes at exact half-cell ties.
-absl::StatusOr<FaceStencil> BuildFaceStencil(const Grid2D& grid, Vec2 position, std::size_t component) {
+absl::StatusOr<FaceStencil> BuildFaceStencil(const Grid2D& grid, Vec2 position, std::size_t velocity_component) {
   const Vec2 relative_position = position - grid.origin;
   if (!IsFinite(relative_position)) {
     return absl::OutOfRangeError("position relative to grid origin is nonfinite");
   }
-  const bool is_x_normal = component == 0;
-  const Vec2 offset = is_x_normal ? Vec2{0.0, 0.5} : Vec2{0.5, 0.0};
-  const auto basis = QuadraticStencil2D(relative_position, grid.h, offset);
+  const bool is_x_normal = velocity_component == 0;
+  const Vec2 lattice_offset{
+      .x = is_x_normal ? 0.0 : 0.5,
+      .y = is_x_normal ? 0.5 : 0.0,
+  };
+  const auto basis = QuadraticStencil2D(relative_position, grid.h, lattice_offset);
   if (!basis.ok()) {
     return basis.status();
   }
 
-  const std::int64_t columns = static_cast<std::int64_t>(grid.nx) + (is_x_normal ? 1 : 0);
-  const std::int64_t rows = static_cast<std::int64_t>(grid.ny) + (is_x_normal ? 0 : 1);
-  const std::size_t first_face = is_x_normal ? 0 : (static_cast<std::size_t>(grid.nx) + 1) * grid.ny;
+  const std::int64_t face_column_count = static_cast<std::int64_t>(grid.nx) + (is_x_normal ? 1 : 0);
+  const std::int64_t face_row_count = static_cast<std::int64_t>(grid.ny) + (is_x_normal ? 0 : 1);
+  const std::size_t orientation_face_offset = is_x_normal ? 0 : (static_cast<std::size_t>(grid.nx) + 1) * grid.ny;
   FaceStencil stencil;
   stencil.basis = *basis;
-  for (std::size_t sample = 0; sample < stencil.face_indices.size(); ++sample) {
-    const Node2D node = basis->nodes[sample];
-    const bool has_face = node.x >= 0 && node.y >= 0 && node.x < columns && node.y < rows;
-    if (!has_face) {
+  for (std::size_t stencil_slot = 0; stencil_slot < stencil.face_indices.size(); ++stencil_slot) {
+    const Node2D node = basis->nodes[stencil_slot];
+    const bool node_on_face_lattice =
+        node.x >= 0 && node.y >= 0 && node.x < face_column_count && node.y < face_row_count;
+    if (!node_on_face_lattice) {
       return absl::InvalidArgumentError("particle does not have complete MAC support");
     }
-    const std::size_t face = first_face + static_cast<std::size_t>(node.y) * static_cast<std::size_t>(columns)
+    const std::size_t face_index = orientation_face_offset
+        + static_cast<std::size_t>(node.y) * static_cast<std::size_t>(face_column_count)
         + static_cast<std::size_t>(node.x);
-    const auto geometry = FaceGeometry(grid, face);
+    const auto geometry = FaceGeometry(grid, face_index);
     if (!geometry.ok()) {
       return geometry.status();
     }
-    stencil.face_indices[sample] = face;
-    stencil.samples[sample] = geometry->position;
+    stencil.face_indices[stencil_slot] = face_index;
+    stencil.samples[stencil_slot] = geometry->position;
   }
   return stencil;
 }
@@ -133,18 +106,18 @@ absl::Status DepositComponent(
     std::span<double> staged_mass,
     std::span<double> staged_momentum
 ) {
-  const auto mean = WeightedOffsetMean(position, stencil.samples, stencil.basis.weights);
-  if (!mean.ok()) {
-    return mean.status();
+  const auto mean_offset = WeightedOffsetMean(position, stencil.samples, stencil.basis.weights);
+  if (!mean_offset.ok()) {
+    return mean_offset.status();
   }
-  for (std::size_t sample = 0; sample < stencil.face_indices.size(); ++sample) {
-    const std::size_t face = stencil.face_indices[sample];
-    const Vec2 centered = (stencil.samples[sample] - position) - *mean;
-    const double sample_velocity = velocity + Dot(affine_row, centered);
-    const double mass_contribution = stencil.basis.weights[sample] * mass;
-    staged_mass[face] += mass_contribution;
-    staged_momentum[face] += mass_contribution * sample_velocity;
-    if (!std::isfinite(staged_mass[face]) || !std::isfinite(staged_momentum[face])) {
+  for (std::size_t stencil_slot = 0; stencil_slot < stencil.face_indices.size(); ++stencil_slot) {
+    const std::size_t face_index = stencil.face_indices[stencil_slot];
+    const Vec2 centered_offset = (stencil.samples[stencil_slot] - position) - *mean_offset;
+    const double deposited_velocity = velocity + Dot(affine_row, centered_offset);
+    const double mass_contribution = stencil.basis.weights[stencil_slot] * mass;
+    staged_mass[face_index] += mass_contribution;
+    staged_momentum[face_index] += mass_contribution * deposited_velocity;
+    if (!std::isfinite(staged_mass[face_index]) || !std::isfinite(staged_momentum[face_index])) {
       return absl::OutOfRangeError("deposited mass or momentum is nonfinite");
     }
   }
@@ -188,38 +161,46 @@ double DivideProductDifference(BinaryParts first, BinaryParts second, BinaryPart
 // Scale the full symmetric moment before forming its determinant. Comparing the determinant
 // to 2*epsilon*lambda_max^2 applies the two-dimensional relative rank test without subtracting
 // two nearly equal eigenvalues. The caller has checked all four accumulated inputs.
-absl::StatusOr<Vec2> SolveAffineMoment(double xx, double xy, double yy, Vec2 rhs) {
-  const double scale = std::max(xx, yy);
-  if (scale == 0.0) {
+absl::StatusOr<Vec2> SolveAffineMoment(double moment_xx, double moment_xy, double moment_yy, Vec2 offset_value_moment) {
+  const double moment_scale = std::max(moment_xx, moment_yy);
+  if (moment_scale == 0.0) {
     return absl::FailedPreconditionError("affine moment is singular");
   }
-  const double normalized_xx = xx / scale;
-  const double normalized_xy = xy / scale;
-  const double normalized_yy = yy / scale;
-  const double determinant = std::fma(normalized_xx, normalized_yy, -normalized_xy * normalized_xy);
+  const double normalized_xx = moment_xx / moment_scale;
+  const double normalized_xy = moment_xy / moment_scale;
+  const double normalized_yy = moment_yy / moment_scale;
+  const double normalized_determinant = std::fma(normalized_xx, normalized_yy, -normalized_xy * normalized_xy);
   const double largest_eigenvalue =
       0.5 * (normalized_xx + normalized_yy + std::hypot(normalized_xx - normalized_yy, 2.0 * normalized_xy));
   constexpr double rank_tolerance = 2.0 * std::numeric_limits<double>::epsilon();
-  if (determinant <= rank_tolerance * largest_eigenvalue * largest_eigenvalue) {
+  if (normalized_determinant <= rank_tolerance * largest_eigenvalue * largest_eigenvalue) {
     return absl::FailedPreconditionError("affine moment is numerically singular");
   }
 
   // Cramer's rule uses the original moment entries in each numerator. Keep
-  // scale squared in the denominator's exponent so neither it nor the RHS
-  // normalization constrains the range of a representable row.
-  const BinaryParts squared_scale = ProductParts(scale, scale);
-  const BinaryParts denominator{
-      .fraction = determinant * squared_scale.fraction,
+  // the squared scale in the determinant exponent so neither it nor RHS
+  // normalization constrains the range of a representable affine coefficient.
+  const BinaryParts squared_scale = ProductParts(moment_scale, moment_scale);
+  const BinaryParts moment_determinant{
+      .fraction = normalized_determinant * squared_scale.fraction,
       .exponent = squared_scale.exponent,
   };
-  const Vec2 row{
-      .x = DivideProductDifference(ProductParts(yy, rhs.x), ProductParts(xy, rhs.y), denominator),
-      .y = DivideProductDifference(ProductParts(xx, rhs.y), ProductParts(xy, rhs.x), denominator),
+  const Vec2 affine_row{
+      .x = DivideProductDifference(
+          ProductParts(moment_yy, offset_value_moment.x),
+          ProductParts(moment_xy, offset_value_moment.y),
+          moment_determinant
+      ),
+      .y = DivideProductDifference(
+          ProductParts(moment_xx, offset_value_moment.y),
+          ProductParts(moment_xy, offset_value_moment.x),
+          moment_determinant
+      ),
   };
-  if (!IsFinite(row)) {
+  if (!IsFinite(affine_row)) {
     return absl::OutOfRangeError("affine row is nonfinite");
   }
-  return row;
+  return affine_row;
 }
 
 struct GatheredComponent {
@@ -493,11 +474,11 @@ absl::StatusOr<AffineFit2D> FitAffine2D(
   // The reference compares the weight sum to one with absolute and relative tolerances of 1e-12.
   constexpr double partition_tolerance = 2e-12;
   double total_weight = 0.0;
-  for (std::size_t sample = 0; sample < samples.size(); ++sample) {
-    if (!IsFinite(samples[sample]) || !std::isfinite(values[sample])) {
+  for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
+    if (!IsFinite(samples[sample_index]) || !std::isfinite(values[sample_index])) {
       return absl::InvalidArgumentError("sample positions and values must be finite");
     }
-    const double weight = weights[sample];
+    const double weight = weights[sample_index];
     const bool valid_weight = std::isfinite(weight) && weight >= 0.0;
     if (!valid_weight) {
       return absl::InvalidArgumentError("weights must be finite and nonnegative");
@@ -511,37 +492,37 @@ absl::StatusOr<AffineFit2D> FitAffine2D(
   if (1.0 - total_weight > partition_tolerance) {
     return absl::InvalidArgumentError("weights must form a partition of unity");
   }
-  const auto mean = WeightedOffsetMean(position, samples, weights);
-  if (!mean.ok()) {
-    return mean.status();
+  const auto mean_offset = WeightedOffsetMean(position, samples, weights);
+  if (!mean_offset.ok()) {
+    return mean_offset.status();
   }
 
   double value = 0.0;
   double moment_xx = 0.0;
   double moment_xy = 0.0;
   double moment_yy = 0.0;
-  Vec2 rhs{};
-  for (std::size_t sample = 0; sample < samples.size(); ++sample) {
-    const Vec2 centered = (samples[sample] - position) - *mean;
-    const Vec2 weighted_centered = centered * weights[sample];
-    const double weighted_value = weights[sample] * values[sample];
+  Vec2 offset_value_moment{};
+  for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
+    const Vec2 centered_offset = (samples[sample_index] - position) - *mean_offset;
+    const Vec2 weighted_centered_offset = centered_offset * weights[sample_index];
+    const double weighted_value = weights[sample_index] * values[sample_index];
     value += weighted_value;
-    moment_xx += weighted_centered.x * centered.x;
-    moment_xy += weighted_centered.x * centered.y;
-    moment_yy += weighted_centered.y * centered.y;
-    rhs = rhs + centered * weighted_value;
+    moment_xx += weighted_centered_offset.x * centered_offset.x;
+    moment_xy += weighted_centered_offset.x * centered_offset.y;
+    moment_yy += weighted_centered_offset.y * centered_offset.y;
+    offset_value_moment = offset_value_moment + centered_offset * weighted_value;
   }
   const bool finite_moment = std::isfinite(moment_xx) && std::isfinite(moment_xy) && std::isfinite(moment_yy);
-  if (!finite_moment || !IsFinite(rhs) || !std::isfinite(value)) {
+  if (!finite_moment || !IsFinite(offset_value_moment) || !std::isfinite(value)) {
     return absl::OutOfRangeError("affine moment, right-hand side or gathered value is nonfinite");
   }
-  const auto row = SolveAffineMoment(moment_xx, moment_xy, moment_yy, rhs);
-  if (!row.ok()) {
-    return row.status();
+  const auto affine_row = SolveAffineMoment(moment_xx, moment_xy, moment_yy, offset_value_moment);
+  if (!affine_row.ok()) {
+    return affine_row.status();
   }
   return AffineFit2D{
       .value = value,
-      .row = *row,
+      .row = *affine_row,
   };
 }
 

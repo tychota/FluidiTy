@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <span>
 
@@ -45,6 +46,40 @@ inline absl::Status ValidateDisjoint(std::span<const std::byte> first_view, std:
   }
   if (overlaps) {
     return absl::InvalidArgumentError("views overlap");
+  }
+  return absl::OkStatus();
+}
+
+// Requires each extent to match the expected size. Returns kInvalidArgument for a mismatch.
+inline absl::Status CheckExtents(std::size_t expected, std::initializer_list<std::size_t> extents) {
+  for (const std::size_t extent : extents) {
+    const auto status = ValidateExtent(extent, expected);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return absl::OkStatus();
+}
+
+using ByteView = std::span<const std::byte>;
+
+// Read-only views can share storage. Returns kInvalidArgument for overlap between a
+// writable view and any other view.
+inline absl::Status
+CheckWritableViews(std::initializer_list<ByteView> writable, std::initializer_list<ByteView> readable) {
+  for (auto view = writable.begin(); view != writable.end(); ++view) {
+    for (const ByteView input : readable) {
+      const auto status = ValidateDisjoint(*view, input);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+    for (auto other = writable.begin(); other != view; ++other) {
+      const auto status = ValidateDisjoint(*view, *other);
+      if (!status.ok()) {
+        return status;
+      }
+    }
   }
   return absl::OkStatus();
 }
