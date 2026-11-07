@@ -222,6 +222,37 @@ TEST(Basis, PreservesStencilAtLargeIntegerCoordinates) {
   EXPECT_EQ(stencil->weights[4], 0.5625);
 }
 
+TEST(Basis, PreservesHalfOffsetAtLargeCoordinates) {
+  const auto stencil = QuadraticStencil2D({9007199254740991.0, 0.0}, 1.0, {0.5, 0.0});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ(stencil->nodes[0].x, 9007199254740990ll);
+  EXPECT_EQ(stencil->nodes[8].x, 9007199254740992ll);
+  EXPECT_EQ(stencil->weights[4], 0.375);
+  EXPECT_EQ(stencil->gradients[1].x, -0.75);
+}
+
+TEST(Basis, PreservesOffsetRemainderBelowHalfCellTie) {
+  const auto stencil = QuadraticStencil2D({-0x1p-55, 0.0}, 1.0, {0.5, 0.0});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ(stencil->nodes[0].x, -2);
+  EXPECT_EQ(stencil->nodes[8].x, 0);
+  EXPECT_EQ(stencil->weights[1], 0x1.8p-112);
+  EXPECT_EQ(stencil->gradients[1].x, -0x1.8p-56);
+}
+
+TEST(Basis, ChecksShiftedStencilAtSignedIndexLimits) {
+  constexpr auto low = std::numeric_limits<std::int64_t>::min();
+  constexpr auto high = std::numeric_limits<std::int64_t>::max();
+  const auto stencil = QuadraticStencil2D({-0x1p63, 0x1p63}, 1.0, {-1.0, 2.0});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ(stencil->nodes[0].x, low);
+  EXPECT_EQ(stencil->nodes[8].x, low + 2);
+  EXPECT_EQ(stencil->nodes[0].y, high - 2);
+  EXPECT_EQ(stencil->nodes[8].y, high);
+  EXPECT_EQ(stencil->weights[4], 0.5625);
+  EXPECT_EQ(QuadraticStencil2D({0.0, 0x1p63}, 1.0, {0.0, 1.0}).status().code(), absl::StatusCode::kOutOfRange);
+}
+
 TEST(Basis, PreservesSmallSignedCenterDerivative) {
   const auto stencil = QuadraticStencil2D({-0x1p-55, 0.0}, 1.0, {0.0, 0.0});
   ASSERT_TRUE(stencil.ok()) << stencil.status();

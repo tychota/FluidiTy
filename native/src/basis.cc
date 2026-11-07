@@ -19,38 +19,68 @@ struct AxisStencil {
   std::array<double, kAxisNodeCount> derivatives;
 };
 
-// Computes the three nodes and dimensionless derivatives for one lattice coordinate.
-absl::StatusOr<AxisStencil> QuadraticAxis(double coordinate) {
-  const double integer_part = std::floor(coordinate);
+// Computes the three nodes and dimensionless derivatives for one axis. Keep the normalized
+// position and offset separate so their difference retains precision near half-cell ties.
+absl::StatusOr<AxisStencil> QuadraticAxis(double normalized_position, double lattice_offset) {
+  const double rounded_lattice_coordinate = normalized_position - lattice_offset;
   constexpr double index_limit = 0x1p63;
-  const bool index_fits = integer_part >= -index_limit && integer_part < index_limit;
-  if (!index_fits) {
-    return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
-  }
-  const auto integral_index = static_cast<std::int64_t>(integer_part);
-
-  // Compute floor(coordinate - 0.5) without rounding away the half-cell shift at large indices.
-  const bool upper_half = coordinate - integer_part >= 0.5;
-  if (!upper_half && integral_index == std::numeric_limits<std::int64_t>::min()) {
-    return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
-  }
-  const std::int64_t first_node = upper_half ? integral_index : integral_index - 1;
-  if (first_node > std::numeric_limits<std::int64_t>::max() - 2) {
+  const bool coordinate_fits = rounded_lattice_coordinate >= -index_limit && rounded_lattice_coordinate <= index_limit;
+  if (!coordinate_fits) {
     return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
   }
 
-  const double center_delta = coordinate - static_cast<double>(first_node + 1);
-  const double left_support_distance = 0.5 - center_delta;
-  const double right_support_distance = 0.5 + center_delta;
+  // TwoSum recovers the subtraction residual from the position and negated lattice offset.
+  const double recovered_offset = normalized_position - rounded_lattice_coordinate;
+  const double subtraction_residual =
+      (normalized_position - (rounded_lattice_coordinate + recovered_offset)) + (recovered_offset - lattice_offset);
+  double rounded_integral_part;
+  const double rounded_fraction = std::modf(rounded_lattice_coordinate, &rounded_integral_part);
+  double residual_integral_part;
+  const double residual_fraction = std::modf(subtraction_residual, &residual_integral_part);
+
+  // Round the corrected lattice coordinate to the nearest node, with exact ties going up.
+  // Compare to the half-cell thresholds before adding the fractional parts.
+  int half_cell_shift = 0;
+  if (residual_fraction >= 0.5 - rounded_fraction) {
+    half_cell_shift = 1;
+  } else if (residual_fraction < -0.5 - rounded_fraction) {
+    half_cell_shift = -1;
+  }
+
+  constexpr auto min_index = std::numeric_limits<std::int64_t>::min();
+  constexpr auto max_index = std::numeric_limits<std::int64_t>::max();
+  // The rounded coordinate may equal 2^63 even though the corrected center fits.
+  const bool at_upper_limit = rounded_integral_part == index_limit;
+  const auto provisional_center_index = at_upper_limit ? max_index : static_cast<std::int64_t>(rounded_integral_part);
+  // The coordinate bound limits the subtraction residual to 1024.
+  const auto center_index_correction =
+      static_cast<std::int64_t>(residual_integral_part) + half_cell_shift + (at_upper_limit ? 1 : 0);
+  // Check both support endpoints before applying the correction in signed arithmetic.
+  const bool first_node_out_of_range =
+      center_index_correction <= 0 && provisional_center_index < min_index + 1 - center_index_correction;
+  if (first_node_out_of_range) {
+    return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
+  }
+  const bool last_node_out_of_range =
+      center_index_correction >= 0 && provisional_center_index > max_index - 1 - center_index_correction;
+  if (last_node_out_of_range) {
+    return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
+  }
+
+  const std::int64_t first_node = provisional_center_index + center_index_correction - 1;
+  const double normalized_center_displacement = (rounded_fraction - half_cell_shift) + residual_fraction;
+  // Keep the support-edge distances even when the center displacement rounds to a half cell.
+  const double left_support_distance = ((0.5 + half_cell_shift) - rounded_fraction) - residual_fraction;
+  const double right_support_distance = ((0.5 - half_cell_shift) + rounded_fraction) + residual_fraction;
   const std::array weights{
       0.5 * left_support_distance * left_support_distance,
-      0.75 - center_delta * center_delta,
+      0.75 - normalized_center_displacement * normalized_center_displacement,
       0.5 * right_support_distance * right_support_distance,
   };
   return AxisStencil{
       .first_node = first_node,
       .weights = weights,
-      .derivatives = {-left_support_distance, -2.0 * center_delta, right_support_distance},
+      .derivatives = {-left_support_distance, -2.0 * normalized_center_displacement, right_support_distance},
   };
 }
 
@@ -68,11 +98,11 @@ absl::StatusOr<Stencil2D> QuadraticStencil2D(Vec2 relative_position, double spac
     return absl::InvalidArgumentError("stencil offset must be finite");
   }
 
-  const auto x_stencil = QuadraticAxis(relative_position.x / spacing - offset.x);
+  const auto x_stencil = QuadraticAxis(relative_position.x / spacing, offset.x);
   if (!x_stencil.ok()) {
     return x_stencil.status();
   }
-  const auto y_stencil = QuadraticAxis(relative_position.y / spacing - offset.y);
+  const auto y_stencil = QuadraticAxis(relative_position.y / spacing, offset.y);
   if (!y_stencil.ok()) {
     return y_stencil.status();
   }
