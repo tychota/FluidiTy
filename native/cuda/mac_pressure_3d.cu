@@ -396,11 +396,11 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
   if (!Vcycle(device, residual, preconditioned, preconditioned_flux)) {
     return;
   }
-  double product = 0.0;
-  if (!Dot(device, residual, preconditioned, product)) {
+  double preconditioned_residual_inner_product = 0.0;
+  if (!Dot(device, residual, preconditioned, preconditioned_residual_inner_product)) {
     return;
   }
-  if (product <= 0.0) {
+  if (preconditioned_residual_inner_product <= 0.0) {
     state.error = PressureError3D::kCurvature;
     return;
   }
@@ -410,7 +410,11 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
     }
   } else {
     float beta = 0.0F;
-    if (!FineValue(device, product / state.previous_product, beta)) {
+    if (!FineValue(
+            device,
+            preconditioned_residual_inner_product / state.previous_preconditioned_residual_inner_product,
+            beta
+        )) {
       return;
     }
     for (std::size_t i = 0; i < count; ++i) {
@@ -430,7 +434,7 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
     return;
   }
   float alpha = 0.0F;
-  if (!FineValue(device, product / curvature, alpha)) {
+  if (!FineValue(device, preconditioned_residual_inner_product / curvature, alpha)) {
     return;
   }
   for (std::size_t i = 0; i < count; ++i) {
@@ -444,7 +448,7 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
     }
   }
   state.restart = false;
-  state.previous_product = product;
+  state.previous_preconditioned_residual_inner_product = preconditioned_residual_inner_product;
   const bool last = state.iterations == device.max_iterations;
   if (last || RecursivePasses(device, residual)) {
     if (!Evaluate(device) || state.converged) {

@@ -72,7 +72,7 @@ struct PressureState3D {
   std::size_t iterations;
   bool converged;
   bool restart;  // Restart direction after true-residual replacement.
-  double previous_product;
+  double previous_preconditioned_residual_inner_product;
   double residual_l2;
   double maximum_scaled_residual;
   double maximum_defect;
