@@ -27,7 +27,7 @@ struct AffineFit2D {
 };
 
 // Phase selection for the history blend policy.
-enum class Phase {
+enum class MaterialPhase {
   kLiquid,
   kGas,
   kElastic,
@@ -35,9 +35,9 @@ enum class Phase {
   kSnow
 };
 
-struct VelocityPair {
-  Vec2 stored;  // History-blended particle velocity in m/s.
-  Vec2 advecting;  // Velocity for position advection in m/s.
+struct HistoryBlendVelocities {
+  Vec2 stored_particle_velocity;  // History-blended particle velocity in m/s.
+  Vec2 advection_velocity;  // Velocity for position advection in m/s.
 };
 
 // Returns the required P2G scratch extent in doubles (two per face). Propagates FaceCount
@@ -112,11 +112,11 @@ VelocityGradient2D(std::span<const double> face_velocity_samples, std::span<cons
 // Alpha is 0.99 times energy, and beta is energy times separation. Gas sets both
 // factors to zero. Elastic sets beta to zero. Returns kInvalidArgument for invalid
 // inputs and kOutOfRange for nonfinite arithmetic.
-absl::StatusOr<VelocityPair> BlendHistory2D(
+absl::StatusOr<HistoryBlendVelocities> BlendHistory2D(
     Vec2 pic_velocity,
     Vec2 history_velocity_residual,
     double energy_control,
-    Phase phase,
+    MaterialPhase phase,
     double separation_factor
 );
 

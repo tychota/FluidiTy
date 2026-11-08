@@ -40,15 +40,15 @@ struct PressureInputsView {
 };
 
 struct PressureOutputsView {
-  std::span<double> pressure;
+  std::span<double> cell_pressures;
   std::span<double> corrected_face_velocities;
   // Original integrated system before gauge constraints, stored row-major.
   std::span<double> original_matrix;
-  std::span<double> rhs;
+  std::span<double> original_rhs;
   // Integrated residual b - A*p, including the original equation at each gauge.
-  std::span<double> residual;
+  std::span<double> original_residuals;
   // Corrected outward flux per fluid volume, minus source, plus the compliance term. Units are inverse time.
-  std::span<double> constraint_defect;
+  std::span<double> cell_constraint_defects;
   // Cell indices of the pins in ascending order. Only the first gauge_count entries are written.
   std::span<std::size_t> gauge_cell_indices;
   std::size_t& gauge_count;
@@ -74,15 +74,15 @@ struct PressureWorkspace {
   // Bulk modulus times dt, infinite for an incompressible cell.
   std::array<double, kMaxPressureCells> bulk_modulus_times_dt;
   std::array<double, kMaxPressureCells * kMaxPressureCells> original_matrix;
-  std::array<double, kMaxPressureCells> rhs;
+  std::array<double, kMaxPressureCells> original_rhs;
   std::array<double, kMaxPressureCells * kMaxPressureCells> solve_matrix;
   std::array<double, kMaxPressureCells> solve_rhs;
   SmallSolveWorkspace solve_workspace;
-  std::array<double, kMaxPressureCells> pressure;
+  std::array<double, kMaxPressureCells> cell_pressures;
   std::array<double, kMaxPressureFaces> corrected_face_velocities;
-  std::array<double, kMaxPressureCells> residual;
+  std::array<double, kMaxPressureCells> original_residuals;
   // Integrated corrected flux during accumulation, then the staged per-volume defect.
-  std::array<double, kMaxPressureCells> constraint_defect;
+  std::array<double, kMaxPressureCells> cell_constraint_defects;
   std::array<std::size_t, kMaxPressureCells> gauge_cell_indices;
 };
 

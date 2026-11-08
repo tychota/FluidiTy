@@ -127,15 +127,15 @@ TEST(Transfer, StaggeredAffine) {
   constexpr std::size_t face_count = x_face_count + 7 * 7;
   // The first particle is exactly on the lowest complete-support position of both shifted lattices.
   const std::array<Vec2, 2> positions{{{10.75, -2.25}, {12.3, 0.2}}};
-  std::array<double, face_count> old_faces;
-  std::array<double, face_count> new_faces;
+  std::array<double, face_count> old_face_velocities;
+  std::array<double, face_count> new_face_velocities;
   for (std::size_t row = 0; row < 6; ++row) {
     for (std::size_t column = 0; column < 8; ++column) {
       const std::size_t face = 8 * row + column;
       const double x = 10.0 + 0.75 * static_cast<double>(column);
       const double y = -3.0 + 0.75 * (static_cast<double>(row) + 0.5);
-      new_faces[face] = 1.0 + 2.0 * x - 3.0 * y;
-      old_faces[face] = new_faces[face] - 0.75;
+      new_face_velocities[face] = 1.0 + 2.0 * x - 3.0 * y;
+      old_face_velocities[face] = new_face_velocities[face] - 0.75;
     }
   }
   for (std::size_t row = 0; row < 7; ++row) {
@@ -143,24 +143,33 @@ TEST(Transfer, StaggeredAffine) {
       const std::size_t face = x_face_count + 7 * row + column;
       const double x = 10.0 + 0.75 * (static_cast<double>(column) + 0.5);
       const double y = -3.0 + 0.75 * static_cast<double>(row);
-      new_faces[face] = -2.0 + 0.5 * x + 4.0 * y;
-      old_faces[face] = new_faces[face] + 1.25;
+      new_face_velocities[face] = -2.0 + 0.5 * x + 4.0 * y;
+      old_face_velocities[face] = new_face_velocities[face] + 1.25;
     }
   }
-  std::array<Vec2, 2> pic;
-  std::array<Vec2, 2> increments;
-  std::array<Mat2, 2> affine;
-  std::array<Mat2, 2> gradient;
+  std::array<Vec2, 2> pic_velocities;
+  std::array<Vec2, 2> grid_velocity_increments;
+  std::array<Mat2, 2> velocity_fit_slopes;
+  std::array<Mat2, 2> velocity_gradients;
   std::array<double, 24> scratch;
-  const auto status = G2P(grid, positions, old_faces, new_faces, pic, increments, affine, gradient, scratch);
+  const auto status =
+      G2P(grid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectVec(pic[0], {29.25, -5.625});
-  ExpectVec(pic[1], {25.0, 4.95});
+  ExpectVec(pic_velocities[0], {29.25, -5.625});
+  ExpectVec(pic_velocities[1], {25.0, 4.95});
   for (std::size_t particle = 0; particle < positions.size(); ++particle) {
     SCOPED_TRACE(particle);
-    ExpectVec(increments[particle], {0.75, -1.25});
-    ExpectMat(affine[particle], {2.0, -3.0, 0.5, 4.0});
-    ExpectMat(gradient[particle], {2.0, -3.0, 0.5, 4.0});
+    ExpectVec(grid_velocity_increments[particle], {0.75, -1.25});
+    ExpectMat(velocity_fit_slopes[particle], {2.0, -3.0, 0.5, 4.0});
+    ExpectMat(velocity_gradients[particle], {2.0, -3.0, 0.5, 4.0});
   }
 }
 
@@ -169,12 +178,12 @@ TEST(Transfer, MassAndAngularMoments) {
   const std::array<Vec2, 3> positions{{{3.2, 3.4}, {4.3, 4.1}, {2.0, 3.0}}};
   const std::array masses{2.0, 3.0, 0.0};
   const std::array<Vec2, 3> velocities{{{1.0, 2.0}, {-2.0, 1.0}, {7.0, 8.0}}};
-  const std::array<Mat2, 3> affine{{{0.0, -2.0, 2.0, 0.0}, {0.0, 1.0, -1.0, 0.0}, {1.0, 2.0, 3.0, 4.0}}};
+  const std::array<Mat2, 3> velocity_fit_slopes{{{0.0, -2.0, 2.0, 0.0}, {0.0, 1.0, -1.0, 0.0}, {1.0, 2.0, 3.0, 4.0}}};
   const ParticleView2D particles{
       .positions = positions,
       .masses = masses,
       .velocities = velocities,
-      .velocity_fit_slopes = affine,
+      .velocity_fit_slopes = velocity_fit_slopes,
   };
   std::array<double, kFaceCount> face_mass;
   std::array<double, kFaceCount> face_momentum;
@@ -193,7 +202,7 @@ TEST(Transfer, MassAndAngularMoments) {
   for (std::size_t face = 0; face < face_momentum.size(); ++face) {
     const auto geometry = FaceGeometry(grid, face);
     ASSERT_TRUE(geometry.ok()) << geometry.status();
-    const double moment_arm = face < kXFaceCount ? -geometry->position.y : geometry->position.x;
+    const double moment_arm = face < kXFaceCount ? -geometry->world_position.y : geometry->world_position.x;
     angular_momentum += moment_arm * face_momentum[face];
   }
   // Orbital angular momentum is 43.5 and the affine spin adds 0.5 (h^2/4 per row).
@@ -207,67 +216,85 @@ TEST(Transfer, NonlinearGradientDiffersFromAffine) {
   for (std::size_t face = 0; face < faces.size(); ++face) {
     const auto geometry = FaceGeometry(grid, face);
     ASSERT_TRUE(geometry.ok()) << geometry.status();
-    const double coordinate = face < kXFaceCount ? geometry->position.x : geometry->position.y;
+    const double coordinate = face < kXFaceCount ? geometry->world_position.x : geometry->world_position.y;
     faces[face] = coordinate * coordinate * coordinate;
   }
-  std::array<Vec2, 1> pic;
-  std::array<Vec2, 1> increments;
-  std::array<Mat2, 1> affine;
-  std::array<Mat2, 1> gradient;
+  std::array<Vec2, 1> pic_velocities;
+  std::array<Vec2, 1> grid_velocity_increments;
+  std::array<Mat2, 1> velocity_fit_slopes;
+  std::array<Mat2, 1> velocity_gradients;
   std::array<double, 12> scratch;
-  const auto status = G2P(grid, positions, faces, faces, pic, increments, affine, gradient, scratch);
+  const auto status =
+      G2P(grid,
+          positions,
+          faces,
+          faces,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch);
   ASSERT_TRUE(status.ok()) << status;
   // Along each face normal the samples are 8, 27, 64, with weights (1,22,9)/32
   // and derivatives (-1,-2,3)/4. The centered variance of the positions is 1/4.
-  ExpectVec(pic[0], {36.8125, 36.8125});
-  ExpectMat(affine[0], {34.1875, 0.0, 0.0, 34.1875});
-  ExpectMat(gradient[0], {32.5, 0.0, 0.0, 32.5});
+  ExpectVec(pic_velocities[0], {36.8125, 36.8125});
+  ExpectMat(velocity_fit_slopes[0], {34.1875, 0.0, 0.0, 34.1875});
+  ExpectMat(velocity_gradients[0], {32.5, 0.0, 0.0, 32.5});
 }
 
 TEST(Transfer, IdenticalGridRetainsParticleResidual) {
   const std::array<Vec2, 1> positions{{{13.0, 0.0}}};
   std::array<double, kFaceCount> faces;
   faces.fill(2.0);
-  std::array<Vec2, 1> pic;
-  std::array<Vec2, 1> increments;
-  std::array<Mat2, 1> affine;
-  std::array<Mat2, 1> gradient;
+  std::array<Vec2, 1> pic_velocities;
+  std::array<Vec2, 1> grid_velocity_increments;
+  std::array<Mat2, 1> velocity_fit_slopes;
+  std::array<Mat2, 1> velocity_gradients;
   std::array<double, 12> scratch;
-  const auto status = G2P(kGrid, positions, faces, faces, pic, increments, affine, gradient, scratch);
+  const auto status =
+      G2P(kGrid,
+          positions,
+          faces,
+          faces,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectVec(pic[0], {2.0, 2.0});
-  ExpectVec(increments[0], {0.0, 0.0});
+  ExpectVec(pic_velocities[0], {2.0, 2.0});
+  ExpectVec(grid_velocity_increments[0], {0.0, 0.0});
 
   constexpr Vec2 old_particle_velocity{3.0, 0.0};
-  const Vec2 residual = old_particle_velocity - pic[0];
-  const auto liquid = BlendHistory2D(pic[0], residual, 0.5, Phase::kLiquid, 0.5);
+  const Vec2 residual = old_particle_velocity - pic_velocities[0];
+  const auto liquid = BlendHistory2D(pic_velocities[0], residual, 0.5, MaterialPhase::kLiquid, 0.5);
   ASSERT_TRUE(liquid.ok()) << liquid.status();
-  ExpectVec(liquid->stored, {2.495, 1.01});
-  ExpectVec(liquid->advecting, {2.12375, 1.7525});
+  ExpectVec(liquid->stored_particle_velocity, {2.495, 1.01});
+  ExpectVec(liquid->advection_velocity, {2.12375, 1.7525});
 }
 
 TEST(Transfer, PhaseHistoryPolicy) {
   struct Case {
-    Phase phase;
-    Vec2 stored;
-    Vec2 advecting;
+    MaterialPhase phase;
+    Vec2 stored_particle_velocity;
+    Vec2 advection_velocity;
   };
-  constexpr Vec2 pic{1.0, 2.0};
+  constexpr Vec2 pic_velocity{1.0, 2.0};
   constexpr Vec2 residual{2.0, -1.0};
   constexpr Vec2 blended_stored{2.584, 1.208};
   constexpr Vec2 blended_advecting{1.6336, 1.6832};
   constexpr std::array cases{
-      Case{Phase::kGas, pic, pic},
-      Case{Phase::kElastic, blended_stored, pic},
-      Case{Phase::kGranular, blended_stored, blended_advecting},
-      Case{Phase::kSnow, blended_stored, blended_advecting},
+      Case{MaterialPhase::kGas, pic_velocity, pic_velocity},
+      Case{MaterialPhase::kElastic, blended_stored, pic_velocity},
+      Case{MaterialPhase::kGranular, blended_stored, blended_advecting},
+      Case{MaterialPhase::kSnow, blended_stored, blended_advecting},
   };
   for (const Case& test : cases) {
     SCOPED_TRACE(static_cast<int>(test.phase));
-    const auto result = BlendHistory2D(pic, residual, 0.8, test.phase, 0.5);
+    const auto result = BlendHistory2D(pic_velocity, residual, 0.8, test.phase, 0.5);
     ASSERT_TRUE(result.ok()) << result.status();
-    ExpectVec(result->stored, test.stored);
-    ExpectVec(result->advecting, test.advecting);
+    ExpectVec(result->stored_particle_velocity, test.stored_particle_velocity);
+    ExpectVec(result->advection_velocity, test.advection_velocity);
   }
 }
 
@@ -309,12 +336,12 @@ TEST(Transfer, DepositDoesNotPublishOnError) {
   std::array<Vec2, 2> positions{{{13.25, 0.25}, {10.5, 0.25}}};
   std::array masses{1.0, 1.0};
   std::array<Vec2, 2> velocities{{{2.0, -3.0}, {3.0, 4.0}}};
-  const std::array<Mat2, 2> affine{};
+  const std::array<Mat2, 2> velocity_fit_slopes{};
   ParticleView2D particles{
       .positions = positions,
       .masses = masses,
       .velocities = velocities,
-      .velocity_fit_slopes = affine,
+      .velocity_fit_slopes = velocity_fit_slopes,
   };
   std::array<double, kFaceCount> face_mass;
   std::array<double, kFaceCount> face_momentum;
@@ -355,26 +382,26 @@ TEST(Transfer, DepositDoesNotPublishOnError) {
 TEST(Transfer, GatherDoesNotPublishOnError) {
   // x=nx-1 in grid coordinates places a zero-weight node beyond the shifted face lattice.
   std::array<Vec2, 2> positions{{{13.25, 0.25}, {17.0, 0.25}}};
-  std::array<double, kFaceCount> old_faces{};
-  std::array<double, kFaceCount> new_faces{};
+  std::array<double, kFaceCount> old_face_velocities{};
+  std::array<double, kFaceCount> new_face_velocities{};
   // The velocity sentinel is also a valid position for the input/output aliasing case.
   constexpr Vec2 velocity_sentinel{13.0, 1.0};
   constexpr Mat2 matrix_sentinel{kSentinel, kSentinel, kSentinel, kSentinel};
-  std::array pic{velocity_sentinel, velocity_sentinel};
-  std::array increments{velocity_sentinel, velocity_sentinel};
-  std::array affine{matrix_sentinel, matrix_sentinel};
-  std::array gradient{matrix_sentinel, matrix_sentinel};
+  std::array pic_velocities{velocity_sentinel, velocity_sentinel};
+  std::array grid_velocity_increments{velocity_sentinel, velocity_sentinel};
+  std::array velocity_fit_slopes{matrix_sentinel, matrix_sentinel};
+  std::array velocity_gradients{matrix_sentinel, matrix_sentinel};
   std::array<double, 24> scratch;
   const auto expect_error = [&](absl::Status status, absl::StatusCode expected) {
     EXPECT_EQ(status.code(), expected) << status;
     for (std::size_t particle = 0; particle < positions.size(); ++particle) {
       SCOPED_TRACE(particle);
-      EXPECT_EQ(pic[particle].x, velocity_sentinel.x);
-      EXPECT_EQ(pic[particle].y, velocity_sentinel.y);
-      EXPECT_EQ(increments[particle].x, velocity_sentinel.x);
-      EXPECT_EQ(increments[particle].y, velocity_sentinel.y);
-      const auto [affine_xx, affine_xy, affine_yx, affine_yy] = affine[particle];
-      const auto [gradient_xx, gradient_xy, gradient_yx, gradient_yy] = gradient[particle];
+      EXPECT_EQ(pic_velocities[particle].x, velocity_sentinel.x);
+      EXPECT_EQ(pic_velocities[particle].y, velocity_sentinel.y);
+      EXPECT_EQ(grid_velocity_increments[particle].x, velocity_sentinel.x);
+      EXPECT_EQ(grid_velocity_increments[particle].y, velocity_sentinel.y);
+      const auto [affine_xx, affine_xy, affine_yx, affine_yy] = velocity_fit_slopes[particle];
+      const auto [gradient_xx, gradient_xy, gradient_yx, gradient_yy] = velocity_gradients[particle];
       for (const double value :
            {affine_xx, affine_xy, affine_yx, affine_yy, gradient_xx, gradient_xy, gradient_yx, gradient_yy}) {
         EXPECT_EQ(value, kSentinel);
@@ -382,31 +409,79 @@ TEST(Transfer, GatherDoesNotPublishOnError) {
     }
   };
   expect_error(
-      G2P(kGrid, positions, old_faces, new_faces, pic, increments, affine, gradient, scratch),
+      G2P(kGrid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch),
       absl::StatusCode::kInvalidArgument
   );
   positions[1] = {14.0, 1.0};
   // Even an unsampled face must satisfy the finite-input contract.
-  old_faces.front() = kInfinity;
+  old_face_velocities.front() = kInfinity;
   expect_error(
-      G2P(kGrid, positions, old_faces, new_faces, pic, increments, affine, gradient, scratch),
+      G2P(kGrid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch),
       absl::StatusCode::kInvalidArgument
   );
-  old_faces.front() = 0.0;
+  old_face_velocities.front() = 0.0;
   expect_error(
-      G2P(kGrid, positions, old_faces, new_faces, pic, increments, affine, gradient, std::span(scratch).subspan(1)),
+      G2P(kGrid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          std::span(scratch).subspan(1)),
       absl::StatusCode::kInvalidArgument
   );
   expect_error(
-      G2P(kGrid, positions, old_faces, new_faces, pic, pic, affine, gradient, scratch),
+      G2P(kGrid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          pic_velocities,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch),
       absl::StatusCode::kInvalidArgument
   );
   expect_error(
-      G2P(kGrid, positions, old_faces, new_faces, pic, increments, affine, gradient, std::span(old_faces).last(24)),
+      G2P(kGrid,
+          positions,
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          std::span(old_face_velocities).last(24)),
       absl::StatusCode::kInvalidArgument
   );
   expect_error(
-      G2P(kGrid, std::span(pic), old_faces, new_faces, pic, increments, affine, gradient, scratch),
+      G2P(kGrid,
+          std::span(pic_velocities),
+          old_face_velocities,
+          new_face_velocities,
+          pic_velocities,
+          grid_velocity_increments,
+          velocity_fit_slopes,
+          velocity_gradients,
+          scratch),
       absl::StatusCode::kInvalidArgument
   );
 }
@@ -456,24 +531,24 @@ TEST(Transfer, LocalGradientValidatesAndUsesProvidedDerivatives) {
 TEST(Transfer, HistoryRejectsInvalidInputAndOverflow) {
   constexpr Vec2 velocity{2.0, 3.0};
   EXPECT_EQ(
-      BlendHistory2D(velocity, velocity, 1.1, Phase::kLiquid, 1.0).status().code(),
+      BlendHistory2D(velocity, velocity, 1.1, MaterialPhase::kLiquid, 1.0).status().code(),
       absl::StatusCode::kInvalidArgument
   );
   EXPECT_EQ(
-      BlendHistory2D(velocity, velocity, 1.0, Phase::kLiquid, -0.1).status().code(),
+      BlendHistory2D(velocity, velocity, 1.0, MaterialPhase::kLiquid, -0.1).status().code(),
       absl::StatusCode::kInvalidArgument
   );
   EXPECT_EQ(
-      BlendHistory2D(velocity, velocity, 1.0, static_cast<Phase>(-1), 1.0).status().code(),
+      BlendHistory2D(velocity, velocity, 1.0, static_cast<MaterialPhase>(-1), 1.0).status().code(),
       absl::StatusCode::kInvalidArgument
   );
   EXPECT_EQ(
-      BlendHistory2D(velocity, {kInfinity, 3.0}, 1.0, Phase::kGas, 1.0).status().code(),
+      BlendHistory2D(velocity, {kInfinity, 3.0}, 1.0, MaterialPhase::kGas, 1.0).status().code(),
       absl::StatusCode::kInvalidArgument
   );
   constexpr Vec2 large_velocity{std::numeric_limits<double>::max(), 0.0};
   EXPECT_EQ(
-      BlendHistory2D(large_velocity, large_velocity, 1.0, Phase::kLiquid, 1.0).status().code(),
+      BlendHistory2D(large_velocity, large_velocity, 1.0, MaterialPhase::kLiquid, 1.0).status().code(),
       absl::StatusCode::kOutOfRange
   );
 }

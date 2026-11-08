@@ -489,7 +489,7 @@ absl::Status ComputeEnergyAndWallWork(
 
 }  // namespace
 
-absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid) {
+absl::StatusOr<MacStrainExtents> MacStrainExtents2D(const Grid2D& grid) {
   const auto face_count = FaceCount(grid);
   if (!face_count.ok()) {
     return face_count.status();
@@ -509,20 +509,20 @@ absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid) {
   if (!coefficients.ok()) {
     return coefficients.status();
   }
-  return StrainShape{
+  return MacStrainExtents{
       .strain_row_count = strain_rows,
       .face_velocity_count = *face_count,
       .coefficient_count = *coefficients,
   };
 }
 
-absl::Status MacStrain2D(
+absl::Status AssembleMacStrain2D(
     const Grid2D& grid,
     double dynamic_viscosity,
     std::span<double> strain_operator,
     std::span<double> strain_quadrature_weights
 ) {
-  const auto shape = MacStrainShape2D(grid);
+  const auto shape = MacStrainExtents2D(grid);
   if (!shape.ok()) {
     return shape.status();
   }

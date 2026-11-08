@@ -50,10 +50,10 @@ absl::Status ValidatePressureViews(
           pressure_inputs.cell_fluid_volumes.size(),
           pressure_inputs.cell_bulk_moduli.size(),
           pressure_inputs.previous_cell_pressures.size(),
-          pressure_outputs.pressure.size(),
-          pressure_outputs.rhs.size(),
-          pressure_outputs.residual.size(),
-          pressure_outputs.constraint_defect.size(),
+          pressure_outputs.cell_pressures.size(),
+          pressure_outputs.original_rhs.size(),
+          pressure_outputs.original_residuals.size(),
+          pressure_outputs.cell_constraint_defects.size(),
           pressure_outputs.gauge_cell_indices.size(),
       }
   );
@@ -67,12 +67,12 @@ absl::Status ValidatePressureViews(
 
   return CheckWritableViews(
       {
-          std::as_bytes(pressure_outputs.pressure),
+          std::as_bytes(pressure_outputs.cell_pressures),
           std::as_bytes(pressure_outputs.corrected_face_velocities),
           std::as_bytes(pressure_outputs.original_matrix),
-          std::as_bytes(pressure_outputs.rhs),
-          std::as_bytes(pressure_outputs.residual),
-          std::as_bytes(pressure_outputs.constraint_defect),
+          std::as_bytes(pressure_outputs.original_rhs),
+          std::as_bytes(pressure_outputs.original_residuals),
+          std::as_bytes(pressure_outputs.cell_constraint_defects),
           std::as_bytes(pressure_outputs.gauge_cell_indices),
           std::as_bytes(std::span(&pressure_outputs.gauge_count, 1)),
           std::as_bytes(std::span(&kernel_measurement, 1)),
@@ -131,7 +131,7 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
       return absl::InvalidArgumentError("CUDA pressure Dirichlet mask must contain 0 or 1");
     }
     const bool has_dirichlet_pressure = dirichlet_face_mask == 1;
-    const bool is_internal_face = face_geometry->tail >= 0 && face_geometry->head >= 0;
+    const bool is_internal_face = face_geometry->tail_cell_index >= 0 && face_geometry->head_cell_index >= 0;
     if (has_dirichlet_pressure && is_internal_face) {
       return absl::InvalidArgumentError("CUDA pressure Dirichlet face must be on the grid boundary");
     }
@@ -139,8 +139,8 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
       return absl::InvalidArgumentError("CUDA pressure jump must be zero on a Dirichlet face");
     }
     prepared_pressure_inputs.faces[face_index] = {
-        .tail_cell_index = face_geometry->tail,
-        .head_cell_index = face_geometry->head,
+        .tail_cell_index = face_geometry->tail_cell_index,
+        .head_cell_index = face_geometry->head_cell_index,
         .face_area = face_geometry->area,
         .predicted_face_velocity = predicted_face_velocity,
         .open_area_fraction = open_area_fraction,
@@ -285,7 +285,7 @@ absl::Status CudaSolvePressure2D(
     return pressure_status;
   }
 
-  std::copy_n(staged_pressure_result.cell_pressures, *cell_count, pressure_outputs.pressure.begin());
+  std::copy_n(staged_pressure_result.cell_pressures, *cell_count, pressure_outputs.cell_pressures.begin());
   std::copy_n(
       staged_pressure_result.corrected_face_velocities,
       *face_count,
@@ -296,9 +296,13 @@ absl::Status CudaSolvePressure2D(
       *cell_count * *cell_count,
       pressure_outputs.original_matrix.begin()
   );
-  std::copy_n(staged_pressure_result.original_rhs, *cell_count, pressure_outputs.rhs.begin());
-  std::copy_n(staged_pressure_result.original_residuals, *cell_count, pressure_outputs.residual.begin());
-  std::copy_n(staged_pressure_result.cell_constraint_defects, *cell_count, pressure_outputs.constraint_defect.begin());
+  std::copy_n(staged_pressure_result.original_rhs, *cell_count, pressure_outputs.original_rhs.begin());
+  std::copy_n(staged_pressure_result.original_residuals, *cell_count, pressure_outputs.original_residuals.begin());
+  std::copy_n(
+      staged_pressure_result.cell_constraint_defects,
+      *cell_count,
+      pressure_outputs.cell_constraint_defects.begin()
+  );
   std::copy_n(
       staged_pressure_result.gauge_cell_indices,
       staged_pressure_result.gauge_count,

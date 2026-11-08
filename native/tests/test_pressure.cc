@@ -84,25 +84,25 @@ struct PressureCase {
   std::vector<double> previous_cell_pressures;
 };
 
-struct Result {
-  explicit Result(const PressureCase& problem)
-      : pressure(problem.cells, kSentinel),
+struct PressureResult {
+  explicit PressureResult(const PressureCase& problem)
+      : cell_pressures(problem.cells, kSentinel),
         corrected_face_velocities(problem.faces, kSentinel),
         original_matrix(problem.cells * problem.cells, kSentinel),
-        rhs(problem.cells, kSentinel),
-        residual(problem.cells, kSentinel),
-        constraint_defect(problem.cells, kSentinel),
+        original_rhs(problem.cells, kSentinel),
+        original_residuals(problem.cells, kSentinel),
+        cell_constraint_defects(problem.cells, kSentinel),
         gauge_cell_indices(problem.cells, kGaugeSentinel) {
   }
 
   PressureOutputsView Outputs() {
     return {
-        .pressure = pressure,
+        .cell_pressures = cell_pressures,
         .corrected_face_velocities = corrected_face_velocities,
         .original_matrix = original_matrix,
-        .rhs = rhs,
-        .residual = residual,
-        .constraint_defect = constraint_defect,
+        .original_rhs = original_rhs,
+        .original_residuals = original_residuals,
+        .cell_constraint_defects = cell_constraint_defects,
         .gauge_cell_indices = gauge_cell_indices,
         .gauge_count = gauge_count,
     };
@@ -110,7 +110,12 @@ struct Result {
 
   void ExpectUnchanged() const {
     for (const auto* field :
-         {&pressure, &corrected_face_velocities, &original_matrix, &rhs, &residual, &constraint_defect}) {
+         {&cell_pressures,
+          &corrected_face_velocities,
+          &original_matrix,
+          &original_rhs,
+          &original_residuals,
+          &cell_constraint_defects}) {
       EXPECT_TRUE(std::ranges::all_of(*field, [](double value) {
         return value == kSentinel;
       }));
@@ -121,12 +126,12 @@ struct Result {
     EXPECT_EQ(gauge_count, kCountSentinel);
   }
 
-  std::vector<double> pressure;
+  std::vector<double> cell_pressures;
   std::vector<double> corrected_face_velocities;
   std::vector<double> original_matrix;
-  std::vector<double> rhs;
-  std::vector<double> residual;
-  std::vector<double> constraint_defect;
+  std::vector<double> original_rhs;
+  std::vector<double> original_residuals;
+  std::vector<double> cell_constraint_defects;
   std::vector<std::size_t> gauge_cell_indices;
   std::size_t gauge_count = kCountSentinel;
 };
@@ -144,7 +149,7 @@ void ExpectField(
   }
 }
 
-void ExpectGauges(const Result& result, std::span<const std::size_t> expected) {
+void ExpectGaugeCellIndices(const PressureResult& result, std::span<const std::size_t> expected) {
   ASSERT_EQ(result.gauge_count, expected.size());
   EXPECT_TRUE(std::ranges::equal(std::span(result.gauge_cell_indices).first(expected.size()), expected));
   for (std::size_t unused : std::span(result.gauge_cell_indices).subspan(expected.size())) {
@@ -152,10 +157,14 @@ void ExpectGauges(const Result& result, std::span<const std::size_t> expected) {
   }
 }
 
-void ExpectResidualIdentity(const PressureCase& problem, const Result& result, double tolerance) {
+void ExpectResidualIdentity(const PressureCase& problem, const PressureResult& result, double tolerance) {
   for (std::size_t cell = 0; cell < problem.cells; ++cell) {
     SCOPED_TRACE(cell);
-    EXPECT_NEAR(result.constraint_defect[cell], -result.residual[cell] / problem.cell_fluid_volumes[cell], tolerance);
+    EXPECT_NEAR(
+        result.cell_constraint_defects[cell],
+        -result.original_residuals[cell] / problem.cell_fluid_volumes[cell],
+        tolerance
+    );
   }
 }
 
@@ -206,7 +215,7 @@ void CheckFixture(
   for (std::size_t face = 0; face < problem.faces; ++face) {
     const auto geometry = FaceGeometry(problem.grid, face);
     ASSERT_TRUE(geometry.ok()) << geometry.status();
-    problem.pressure_gradient_distances[face] = geometry->distance;
+    problem.pressure_gradient_distances[face] = geometry->pressure_gradient_distance;
   }
   if (name == "two_cell_pressure") {
     const auto jump = FixtureFloats(*fixture, "jump");
@@ -221,18 +230,18 @@ void CheckFixture(
     std::ranges::fill(problem.cell_bulk_moduli, bulk_modulus[0]);
   }
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   const Tolerances tolerances{fixture->atol, fixture->rtol};
-  ExpectField(result.pressure, FixtureFloats(*fixture, "expected_pressure"), tolerances);
+  ExpectField(result.cell_pressures, FixtureFloats(*fixture, "expected_pressure"), tolerances);
   ExpectField(result.corrected_face_velocities, FixtureFloats(*fixture, "expected_velocity"), tolerances);
   ExpectField(result.original_matrix, expected_matrix, tolerances);
-  ExpectField(result.rhs, expected_rhs, tolerances);
-  ExpectField(result.residual, std::vector<double>(problem.cells), tolerances);
+  ExpectField(result.original_rhs, expected_rhs, tolerances);
+  ExpectField(result.original_residuals, std::vector<double>(problem.cells), tolerances);
   ExpectResidualIdentity(problem, result, tolerances.absolute);
-  ExpectGauges(result, expected_gauges);
+  ExpectGaugeCellIndices(result, expected_gauges);
 }
 
 TEST(Pressure, TwoCellFixtureUsesPositiveInternalJump) {
@@ -266,18 +275,18 @@ TEST(Pressure, DirichletPressureLiftsOnceAtBothBoundaryOrientations) {
     problem.dirichlet_face_pressures[face] = 7.0;
     problem.target_cell_divergence[0] = 0.0625;
 
-    Result result(problem);
+    PressureResult result(problem);
     PressureWorkspace workspace;
     const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
     ASSERT_TRUE(status.ok()) << status;
     ExpectField(result.original_matrix, std::array{2.0});
-    ExpectField(result.rhs, std::array{12.0});
-    ExpectField(result.pressure, std::array{6.0});
+    ExpectField(result.original_rhs, std::array{12.0});
+    ExpectField(result.cell_pressures, std::array{6.0});
     ExpectField(result.corrected_face_velocities, std::array{0.0, 0.0, 0.0, 0.0});
-    ExpectField(result.residual, std::array{0.0});
-    ExpectField(result.constraint_defect, std::array{0.0});
+    ExpectField(result.original_residuals, std::array{0.0});
+    ExpectField(result.cell_constraint_defects, std::array{0.0});
     ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-    ExpectGauges(result, {});
+    ExpectGaugeCellIndices(result, {});
   }
 }
 
@@ -286,17 +295,17 @@ TEST(Pressure, ADirichletAnchorReachesOnlyItsConnectedCells) {
   problem.dirichlet_face_mask[0] = 1;
   problem.dirichlet_face_pressures[0] = 3.0;
   problem.face_open_fractions[2] = 0.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   ExpectField(result.original_matrix, std::array{2.0, -1.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.rhs, std::array{3.0, 0.0, 0.0});
-  ExpectField(result.pressure, std::array{3.0, 3.0, 0.0});
+  ExpectField(result.original_rhs, std::array{3.0, 0.0, 0.0});
+  ExpectField(result.cell_pressures, std::array{3.0, 3.0, 0.0});
   ExpectField(result.corrected_face_velocities, std::vector<double>(problem.faces));
-  ExpectField(result.residual, std::array{0.0, 0.0, 0.0});
+  ExpectField(result.original_residuals, std::array{0.0, 0.0, 0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, std::array<std::size_t, 1>{2});
+  ExpectGaugeCellIndices(result, std::array<std::size_t, 1>{2});
 }
 
 TEST(Pressure, DisconnectedCellsGetIndependentGauges) {
@@ -305,14 +314,14 @@ TEST(Pressure, DisconnectedCellsGetIndependentGauges) {
   problem.face_open_fractions[0] = 0.0;
   problem.dirichlet_face_mask[0] = 1;
   problem.dirichlet_face_pressures[0] = 7.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectGauges(result, std::array<std::size_t, 2>{0, 1});
+  ExpectGaugeCellIndices(result, std::array<std::size_t, 2>{0, 1});
   ExpectField(result.original_matrix, std::array{0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.rhs, std::array{0.0, 0.0});
-  ExpectField(result.pressure, std::array{0.0, 0.0});
+  ExpectField(result.original_rhs, std::array{0.0, 0.0});
+  ExpectField(result.cell_pressures, std::array{0.0, 0.0});
 }
 
 TEST(Pressure, NonDirichletBoundaryKeepsPrescribedFlux) {
@@ -321,14 +330,14 @@ TEST(Pressure, NonDirichletBoundaryKeepsPrescribedFlux) {
   problem.target_cell_divergence[0] = 2.0;
   problem.face_pressure_jumps[1] = 4.0;
   problem.dirichlet_face_pressures[1] = 7.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectGauges(result, std::array<std::size_t, 1>{0});
+  ExpectGaugeCellIndices(result, std::array<std::size_t, 1>{0});
   ExpectField(result.corrected_face_velocities, std::array{0.0, 2.0, 0.0, 0.0});
   ExpectField(result.original_matrix, std::array{0.0});
-  ExpectField(result.rhs, std::array{0.0});
+  ExpectField(result.original_rhs, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
 }
 
@@ -336,7 +345,7 @@ TEST(Pressure, DisconnectedNeumannSourcesCannotCancelGlobally) {
   PressureCase problem({2, 1, 1.0});
   problem.face_open_fractions[1] = 0.0;
   problem.target_cell_divergence = {1.0, -1.0};
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
@@ -346,7 +355,7 @@ TEST(Pressure, DisconnectedNeumannSourcesCannotCancelGlobally) {
 TEST(Pressure, IncompatiblePrescribedNeumannFluxIsRejected) {
   PressureCase problem({1, 1, 1.0});
   problem.predicted_face_velocities[0] = 1.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
@@ -362,18 +371,18 @@ TEST(Pressure, BlockedMovingWallContributesFluxAtTinyVolume) {
   problem.cell_bulk_moduli[0] = 2.0;
   problem.target_cell_divergence[0] = 3.0;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   ExpectField(result.original_matrix, std::array{5e-13}, {0.0, 1e-14});
-  ExpectField(result.rhs, std::array{1.0 + 3e-12});
-  ExpectField(result.pressure, std::array{2e12 + 6.0}, {0.0, 1e-14});
+  ExpectField(result.original_rhs, std::array{1.0 + 3e-12});
+  ExpectField(result.cell_pressures, std::array{2e12 + 6.0}, {0.0, 1e-14});
   ExpectField(result.corrected_face_velocities, std::array{4.0, 0.0, 0.0, 0.0});
-  ExpectField(result.residual, std::array{0.0});
-  ExpectField(result.constraint_defect, std::array{0.0}, {1e-3, 0.0});
+  ExpectField(result.original_residuals, std::array{0.0});
+  ExpectField(result.cell_constraint_defects, std::array{0.0}, {1e-3, 0.0});
   ExpectResidualIdentity(problem, result, 1e-3);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, ComplianceLiftsPreviousPressure) {
@@ -383,16 +392,16 @@ TEST(Pressure, ComplianceLiftsPreviousPressure) {
   problem.cell_bulk_moduli[0] = 3.0;
   problem.previous_cell_pressures[0] = 4.0;
   problem.target_cell_divergence[0] = 2.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   ExpectField(result.original_matrix, std::array{0.5});
-  ExpectField(result.rhs, std::array{8.0});
-  ExpectField(result.pressure, std::array{16.0});
-  ExpectField(result.residual, std::array{0.0});
+  ExpectField(result.original_rhs, std::array{8.0});
+  ExpectField(result.cell_pressures, std::array{16.0});
+  ExpectField(result.original_residuals, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, ComplianceLiftSurvivesCancellationOfIntegratedSourceAndFlux) {
@@ -401,16 +410,16 @@ TEST(Pressure, ComplianceLiftSurvivesCancellationOfIntegratedSourceAndFlux) {
   problem.predicted_face_velocities[1] = 0x1p55;
   problem.cell_bulk_moduli[0] = 2.0;
   problem.previous_cell_pressures[0] = 3.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   ExpectField(result.original_matrix, std::array{0.5});
-  ExpectField(result.rhs, std::array{1.5});
-  ExpectField(result.pressure, std::array{3.0});
+  ExpectField(result.original_rhs, std::array{1.5});
+  ExpectField(result.cell_pressures, std::array{3.0});
   ExpectField(result.corrected_face_velocities, problem.predicted_face_velocities);
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, AcceptedCompatibilityRoundoffRemainsInOriginalResidual) {
@@ -420,25 +429,25 @@ TEST(Pressure, AcceptedCompatibilityRoundoffRemainsInOriginalResidual) {
   problem.target_cell_divergence[0] = 1.0;
   problem.cell_fluid_volumes[0] = kTinyVolume;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   // The integrated imbalance is below 1e-12 times the RHS 1-norm, but the
   // physical defect is order one because that imbalance sits in the tiny gauge cell.
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectField(result.rhs, std::array{-1.0 + kTinyVolume, 1.0}, {0.0, 0.0});
-  ExpectField(result.pressure, std::array{0.0, 1.0});
-  ExpectField(result.residual, std::array{kTinyVolume, 0.0}, {1e-16, 0.0});
-  ExpectField(result.constraint_defect, std::array{-1.0, 0.0});
+  ExpectField(result.original_rhs, std::array{-1.0 + kTinyVolume, 1.0}, {0.0, 0.0});
+  ExpectField(result.cell_pressures, std::array{0.0, 1.0});
+  ExpectField(result.original_residuals, std::array{kTinyVolume, 0.0}, {1e-16, 0.0});
+  ExpectField(result.cell_constraint_defects, std::array{-1.0, 0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, std::array<std::size_t, 1>{0});
+  ExpectGaugeCellIndices(result, std::array<std::size_t, 1>{0});
 }
 
 TEST(Pressure, CompatibilityToleranceScalesWithSmallRhs) {
   PressureCase problem({2, 1, 1.0});
   problem.predicted_face_velocities[1] = 1e-20;
   problem.target_cell_divergence[0] = 1e-29;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
@@ -447,7 +456,7 @@ TEST(Pressure, CompatibilityToleranceScalesWithSmallRhs) {
 
 TEST(Pressure, RejectsInteriorDirichletAndJumpOnDirichlet) {
   PressureCase problem({2, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   problem.dirichlet_face_mask[1] = 1;
   auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
@@ -463,7 +472,7 @@ TEST(Pressure, RejectsInteriorDirichletAndJumpOnDirichlet) {
 
 TEST(Pressure, RejectsInvalidPhysicalCoefficients) {
   PressureCase problem({1, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto expect_invalid = [&] {
     const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
@@ -494,7 +503,7 @@ TEST(Pressure, RejectsInvalidPhysicalCoefficients) {
 
 TEST(Pressure, RejectsIncorrectInputAndOutputExtents) {
   PressureCase problem({2, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   auto inputs = problem.Inputs();
   auto outputs = result.Outputs();
@@ -522,16 +531,16 @@ TEST(Pressure, AllowsSharedReadOnlyFields) {
   inputs.wall_face_velocities = inputs.predicted_face_velocities;
   inputs.face_pressure_jumps = inputs.predicted_face_velocities;
   inputs.dirichlet_face_pressures = inputs.predicted_face_velocities;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  ExpectGauges(result, std::array<std::size_t, 1>{0});
+  ExpectGaugeCellIndices(result, std::array<std::size_t, 1>{0});
 }
 
 TEST(Pressure, RejectsAnyWritableOverlapIncludingGaugeCountAndScratchTail) {
   PressureCase problem({1, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto expect_overlap = [&](const PressureInputsView& inputs, PressureOutputsView outputs) {
     const auto status = SolvePressure2D(inputs, outputs, workspace);
@@ -539,30 +548,30 @@ TEST(Pressure, RejectsAnyWritableOverlapIncludingGaugeCountAndScratchTail) {
     result.ExpectUnchanged();
   };
   auto outputs = result.Outputs();
-  outputs.pressure = problem.target_cell_divergence;
+  outputs.cell_pressures = problem.target_cell_divergence;
   expect_overlap(problem.Inputs(), outputs);
   EXPECT_EQ(problem.target_cell_divergence[0], 0.0);
 
-  outputs.pressure = outputs.rhs;
+  outputs.cell_pressures = outputs.original_rhs;
   expect_overlap(problem.Inputs(), outputs);
 
-  outputs.pressure = std::span(workspace.pressure).last(1);
+  outputs.cell_pressures = std::span(workspace.cell_pressures).last(1);
   expect_overlap(problem.Inputs(), outputs);
 
   auto inputs = problem.Inputs();
-  inputs.target_cell_divergence = std::span(workspace.rhs).last(1);
+  inputs.target_cell_divergence = std::span(workspace.original_rhs).last(1);
   expect_overlap(inputs, result.Outputs());
 
   const auto expect_count_overlap = [&](std::size_t& aliased_count) {
     expect_overlap(
         problem.Inputs(),
         {
-            .pressure = result.pressure,
+            .cell_pressures = result.cell_pressures,
             .corrected_face_velocities = result.corrected_face_velocities,
             .original_matrix = result.original_matrix,
-            .rhs = result.rhs,
-            .residual = result.residual,
-            .constraint_defect = result.constraint_defect,
+            .original_rhs = result.original_rhs,
+            .original_residuals = result.original_residuals,
+            .cell_constraint_defects = result.cell_constraint_defects,
             .gauge_cell_indices = result.gauge_cell_indices,
             .gauge_count = aliased_count,
         }
@@ -580,18 +589,18 @@ TEST(Pressure, DirichletConductanceRetainsRepresentableSmallOpenArea) {
   problem.dirichlet_face_mask[0] = 1;
   problem.dirichlet_face_pressures[0] = 0x1p600;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], 0x1p-600);
-  EXPECT_EQ(result.rhs[0], 1.0);
-  EXPECT_EQ(result.pressure[0], 0x1p600);
+  EXPECT_EQ(result.original_rhs[0], 1.0);
+  EXPECT_EQ(result.cell_pressures[0], 0x1p600);
   ExpectField(result.corrected_face_velocities, std::array{0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.residual, std::array{0.0});
-  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectField(result.original_residuals, std::array{0.0});
+  ExpectField(result.cell_constraint_defects, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, CorrectionScaleRecoversAfterTinyProduct) {
@@ -603,18 +612,18 @@ TEST(Pressure, CorrectionScaleRecoversAfterTinyProduct) {
   problem.predicted_face_velocities[0] = 1.0;
   problem.cell_fluid_volumes[0] = 1.0;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], 0x1p-900);
-  EXPECT_EQ(result.rhs[0], 0x1p100);
-  EXPECT_EQ(result.pressure[0], 0x1p1000);
+  EXPECT_EQ(result.original_rhs[0], 0x1p100);
+  EXPECT_EQ(result.cell_pressures[0], 0x1p1000);
   ExpectField(result.corrected_face_velocities, std::array{0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.residual, std::array{0.0});
-  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectField(result.original_residuals, std::array{0.0});
+  ExpectField(result.cell_constraint_defects, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, CorrectionScaleRecoversAfterHugeProduct) {
@@ -625,18 +634,18 @@ TEST(Pressure, CorrectionScaleRecoversAfterHugeProduct) {
   problem.dirichlet_face_mask[0] = 1;
   problem.dirichlet_face_pressures[0] = 1.0;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], 0x1p600);
-  EXPECT_EQ(result.rhs[0], 0x1p600);
-  EXPECT_EQ(result.pressure[0], 1.0);
+  EXPECT_EQ(result.original_rhs[0], 0x1p600);
+  EXPECT_EQ(result.cell_pressures[0], 1.0);
   ExpectField(result.corrected_face_velocities, std::array{0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.residual, std::array{0.0});
-  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectField(result.original_residuals, std::array{0.0});
+  ExpectField(result.cell_constraint_defects, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, ConductanceUsesTheSameScaleAsVelocityCorrection) {
@@ -649,17 +658,17 @@ TEST(Pressure, ConductanceUsesTheSameScaleAsVelocityCorrection) {
   problem.predicted_face_velocities[0] = 1.0;
   problem.cell_fluid_volumes[0] = kOpenArea;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], kOpenArea);
-  EXPECT_EQ(result.rhs[0], kOpenArea);
-  ExpectField(result.pressure, std::array{1.0});
+  EXPECT_EQ(result.original_rhs[0], kOpenArea);
+  ExpectField(result.cell_pressures, std::array{1.0});
   ExpectField(result.corrected_face_velocities, std::array{0.0, 0.0, 0.0, 0.0});
-  ExpectField(result.constraint_defect, std::array{0.0});
+  ExpectField(result.cell_constraint_defects, std::array{0.0});
   ExpectResidualIdentity(problem, result, kHandTolerance.absolute);
-  ExpectGauges(result, {});
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, RoundedZeroComplianceDoesNotInventAGauge) {
@@ -669,7 +678,7 @@ TEST(Pressure, RoundedZeroComplianceDoesNotInventAGauge) {
   problem.cell_bulk_moduli[0] = 0x1p600;
   problem.previous_cell_pressures[0] = 0x1p600;
 
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
@@ -697,7 +706,7 @@ TEST(Pressure, RoundedZeroActiveFaceCoefficientsAreRejected) {
     problem.face_inverse_densities[0] = coefficients.mobility;
     problem.dirichlet_face_mask[0] = 1;
 
-    Result result(problem);
+    PressureResult result(problem);
     PressureWorkspace workspace;
     const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
     EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
@@ -717,7 +726,7 @@ TEST(Pressure, RejectsSubnormalConductanceEvenWithNormalCompliance) {
 
   // Conductance rounds from 0.75 * denorm_min to denorm_min. The normal
   // compliance keeps the resulting matrix well conditioned.
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
@@ -734,7 +743,7 @@ TEST(Pressure, RejectsSubnormalComplianceEvenWithNormalConductance) {
 
   // Compliance rounds from 0.75 * denorm_min to denorm_min. The normal
   // conductance keeps the resulting matrix well conditioned.
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
@@ -753,17 +762,17 @@ TEST(Pressure, AcceptsMinimumNormalConductanceWithNormalCompliance) {
 
   // The conductance is exactly 2^-1022. Its Dirichlet lift is V and
   // compliance is one, so the represented system gives p = V.
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], 1.0);
-  EXPECT_EQ(result.rhs[0], kFluidVolume);
-  EXPECT_EQ(result.pressure[0], kFluidVolume);
+  EXPECT_EQ(result.original_rhs[0], kFluidVolume);
+  EXPECT_EQ(result.cell_pressures[0], kFluidVolume);
   EXPECT_EQ(result.corrected_face_velocities[0], 1.0);
-  EXPECT_EQ(result.residual[0], 0.0);
-  EXPECT_EQ(result.constraint_defect[0], 0.0);
-  ExpectGauges(result, {});
+  EXPECT_EQ(result.original_residuals[0], 0.0);
+  EXPECT_EQ(result.cell_constraint_defects[0], 0.0);
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, AcceptsMinimumNormalComplianceWithNormalConductance) {
@@ -777,17 +786,17 @@ TEST(Pressure, AcceptsMinimumNormalComplianceWithNormalConductance) {
 
   // The compliance is exactly 2^-1022. Its previous-pressure lift is V and
   // conductance is one, so the represented system gives p = V.
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.original_matrix[0], 1.0);
-  EXPECT_EQ(result.rhs[0], kFluidVolume);
-  EXPECT_EQ(result.pressure[0], kFluidVolume);
+  EXPECT_EQ(result.original_rhs[0], kFluidVolume);
+  EXPECT_EQ(result.cell_pressures[0], kFluidVolume);
   EXPECT_EQ(result.corrected_face_velocities[0], -kFluidVolume);
-  EXPECT_EQ(result.residual[0], 0.0);
-  EXPECT_EQ(result.constraint_defect[0], 0.0);
-  ExpectGauges(result, {});
+  EXPECT_EQ(result.original_residuals[0], 0.0);
+  EXPECT_EQ(result.cell_constraint_defects[0], 0.0);
+  ExpectGaugeCellIndices(result, {});
 }
 
 TEST(Pressure, CorrectionOverflowLeavesAllOutputsUnchanged) {
@@ -797,7 +806,7 @@ TEST(Pressure, CorrectionOverflowLeavesAllOutputsUnchanged) {
   problem.face_open_fractions[0] = 1e-308;
   problem.face_inverse_densities[0] = 1e308;
   problem.target_cell_divergence[0] = 4.0;
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
@@ -808,7 +817,7 @@ TEST(Pressure, UnsafeSpdSolveLeavesAllOutputsUnchanged) {
   PressureCase problem({2, 1, 1.0});
   problem.face_open_fractions[1] = 0.0;
   problem.cell_bulk_moduli = {1.0, 1e20};
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
@@ -817,7 +826,7 @@ TEST(Pressure, UnsafeSpdSolveLeavesAllOutputsUnchanged) {
 
 TEST(Pressure, SupportsSixtyFourCellsAndOneHundredNinetyThreeFaces) {
   PressureCase problem({64, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   std::ranges::fill(problem.face_open_fractions, 0.0);
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
@@ -827,13 +836,13 @@ TEST(Pressure, SupportsSixtyFourCellsAndOneHundredNinetyThreeFaces) {
   for (std::size_t cell = 0; cell < result.gauge_count; ++cell) {
     EXPECT_EQ(result.gauge_cell_indices[cell], cell);
   }
-  ExpectField(result.pressure, std::vector<double>(64));
+  ExpectField(result.cell_pressures, std::vector<double>(64));
   ExpectField(result.corrected_face_velocities, std::vector<double>(193));
 }
 
 TEST(Pressure, RejectsLargerSystemsBeforePublication) {
   PressureCase problem({65, 1, 1.0});
-  Result result(problem);
+  PressureResult result(problem);
   PressureWorkspace workspace;
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   EXPECT_EQ(status.code(), absl::StatusCode::kUnimplemented);

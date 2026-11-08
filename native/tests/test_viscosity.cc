@@ -22,8 +22,8 @@ constexpr double kInfinity = std::numeric_limits<double>::infinity();
 constexpr double kMax = std::numeric_limits<double>::max();
 constexpr double kSentinel = -31.0;
 
-struct Result {
-  explicit Result(std::size_t columns) : updated_face_velocities(columns, kSentinel) {
+struct ViscosityResult {
+  explicit ViscosityResult(std::size_t face_velocity_count) : updated_face_velocities(face_velocity_count, kSentinel) {
   }
 
   ViscosityOutputsView Outputs() {
@@ -90,24 +90,24 @@ TEST(Viscosity, StiffFixture) {
   const auto fixtures = fixtures::AllFixtures();
   const auto fixture = std::ranges::find(fixtures, "stiff_viscosity", &fixtures::FixtureRecord::name);
   ASSERT_NE(fixture, fixtures.end());
-  const auto strain = fixtures::FindArray(*fixture, "strain_operator");
-  ASSERT_TRUE(strain.ok()) << strain.status();
-  ASSERT_EQ((*strain)->dtype, fixtures::DType::kFloat64);
-  ASSERT_EQ((*strain)->shape.size(), 2);
+  const auto strain_operator_record = fixtures::FindArray(*fixture, "strain_operator");
+  ASSERT_TRUE(strain_operator_record.ok()) << strain_operator_record.status();
+  ASSERT_EQ((*strain_operator_record)->dtype, fixtures::DType::kFloat64);
+  ASSERT_EQ((*strain_operator_record)->shape.size(), 2);
   const auto dt = FixtureFloats(*fixture, "dt");
   ASSERT_EQ(dt.size(), 1);
 
   const ViscosityInputsView inputs{
       .face_velocities = FixtureFloats(*fixture, "velocity"),
       .face_inertias = FixtureFloats(*fixture, "mass"),
-      .strain_operator = (*strain)->f64_data,
-      .strain_row_count = (*strain)->shape[0],
+      .strain_operator = (*strain_operator_record)->f64_data,
+      .strain_row_count = (*strain_operator_record)->shape[0],
       .strain_quadrature_weights = FixtureFloats(*fixture, "strain_weight"),
       .boundary_strain = FixtureFloats(*fixture, "boundary_strain"),
       .dt = dt.front(),
   };
-  ASSERT_EQ(inputs.face_velocities.size(), (*strain)->shape[1]);
-  Result result(inputs.face_velocities.size());
+  ASSERT_EQ(inputs.face_velocities.size(), (*strain_operator_record)->shape[1]);
+  ViscosityResult result(inputs.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -124,15 +124,15 @@ TEST(Viscosity, StiffFixture) {
 
 TEST(Viscosity, MacStrainRowsAndQuadrature) {
   const Grid2D grid{2, 2, 0.5};
-  const auto shape = MacStrainShape2D(grid);
+  const auto shape = MacStrainExtents2D(grid);
   ASSERT_TRUE(shape.ok()) << shape.status();
   EXPECT_EQ(shape->strain_row_count, 9);
   EXPECT_EQ(shape->face_velocity_count, 12);
   ASSERT_EQ(shape->coefficient_count, 108);
 
-  std::vector<double> strain(shape->coefficient_count, kSentinel);
-  std::vector<double> weight(shape->strain_row_count, kSentinel);
-  const auto status = MacStrain2D(grid, 3.0, strain, weight);
+  std::vector<double> strain_operator(shape->coefficient_count, kSentinel);
+  std::vector<double> strain_quadrature_weights(shape->strain_row_count, kSentinel);
+  const auto status = AssembleMacStrain2D(grid, 3.0, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(status.ok()) << status;
 
   std::array<double, 108> expected{};
@@ -156,18 +156,18 @@ TEST(Viscosity, MacStrainRowsAndQuadrature) {
   expected[8 * 12 + 4] = 1.0;
   expected[8 * 12 + 8] = -1.0;
   expected[8 * 12 + 9] = 1.0;
-  EXPECT_TRUE(std::ranges::equal(strain, expected));
+  EXPECT_TRUE(std::ranges::equal(strain_operator, expected));
   constexpr std::array expected_weight{1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 3.0};
-  EXPECT_TRUE(std::ranges::equal(weight, expected_weight));
+  EXPECT_TRUE(std::ranges::equal(strain_quadrature_weights, expected_weight));
 }
 
 TEST(Viscosity, MacStrainOfRigidMotionAndCouette) {
   const Grid2D grid{3, 2, 0.5, {0.25, -0.75}};
-  const auto shape = MacStrainShape2D(grid);
+  const auto shape = MacStrainExtents2D(grid);
   ASSERT_TRUE(shape.ok()) << shape.status();
-  std::vector<double> strain(shape->coefficient_count);
-  std::vector<double> weight(shape->strain_row_count);
-  const auto status = MacStrain2D(grid, 1.0, strain, weight);
+  std::vector<double> strain_operator(shape->coefficient_count);
+  std::vector<double> strain_quadrature_weights(shape->strain_row_count);
+  const auto status = AssembleMacStrain2D(grid, 1.0, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(status.ok()) << status;
 
   std::vector<double> translation(shape->face_velocity_count);
@@ -179,12 +179,13 @@ TEST(Viscosity, MacStrainOfRigidMotionAndCouette) {
     ASSERT_TRUE(face.ok()) << face.status();
     const bool is_x_normal = face_index < x_faces;
     translation[face_index] = is_x_normal ? 1.0 : -2.0;
-    rotation[face_index] = is_x_normal ? -3.0 * face->position.y : 3.0 * face->position.x;
-    couette[face_index] = is_x_normal ? 2.0 * face->position.y : 0.0;
+    rotation[face_index] = is_x_normal ? -3.0 * face->world_position.y : 3.0 * face->world_position.x;
+    couette[face_index] = is_x_normal ? 2.0 * face->world_position.y : 0.0;
   }
   for (std::size_t row = 0; row < shape->strain_row_count; ++row) {
     SCOPED_TRACE(row);
-    const auto coefficients = std::span(strain).subspan(row * shape->face_velocity_count, shape->face_velocity_count);
+    const auto coefficients =
+        std::span(strain_operator).subspan(row * shape->face_velocity_count, shape->face_velocity_count);
     EXPECT_NEAR(
         std::inner_product(coefficients.begin(), coefficients.end(), translation.begin(), 0.0),
         0.0,
@@ -202,38 +203,38 @@ TEST(Viscosity, MacStrainOfRigidMotionAndCouette) {
 
 TEST(Viscosity, TensorCouplesBothFaceOrientationsSymmetrically) {
   const Grid2D grid{2, 2, 0.5};
-  const auto shape = MacStrainShape2D(grid);
+  const auto shape = MacStrainExtents2D(grid);
   ASSERT_TRUE(shape.ok()) << shape.status();
-  std::vector<double> strain(shape->coefficient_count);
-  std::vector<double> weight(shape->strain_row_count);
-  const auto strain_status = MacStrain2D(grid, 3.0, strain, weight);
+  std::vector<double> strain_operator(shape->coefficient_count);
+  std::vector<double> strain_quadrature_weights(shape->strain_row_count);
+  const auto strain_status = AssembleMacStrain2D(grid, 3.0, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(strain_status.ok()) << strain_status;
-  std::vector<double> velocity(shape->face_velocity_count);
-  const std::vector<double> mass(shape->face_velocity_count, 1.0);
-  const std::vector<double> wall(shape->strain_row_count);
+  std::vector<double> face_velocities(shape->face_velocity_count);
+  const std::vector<double> face_inertias(shape->face_velocity_count, 1.0);
+  const std::vector<double> boundary_strain(shape->strain_row_count);
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = shape->strain_row_count,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 0.01,
       .mode = ViscosityMode::kExplicit,
   };
 
-  Result result(shape->face_velocity_count);
+  ViscosityResult result(shape->face_velocity_count);
   ViscosityWorkspace workspace;
   std::vector<double> stiffness(shape->face_velocity_count * shape->face_velocity_count);
   for (std::size_t column = 0; column < shape->face_velocity_count; ++column) {
-    velocity[column] = 1.0;
+    face_velocities[column] = 1.0;
     const auto status = ViscousStep(inputs, result.Outputs(), workspace);
     ASSERT_TRUE(status.ok()) << status;
     for (std::size_t row = 0; row < shape->face_velocity_count; ++row) {
       stiffness[row * shape->face_velocity_count + column] =
-          (velocity[row] - result.updated_face_velocities[row]) / inputs.dt;
+          (face_velocities[row] - result.updated_face_velocities[row]) / inputs.dt;
     }
-    velocity[column] = 0.0;
+    face_velocities[column] = 0.0;
   }
   for (std::size_t row = 0; row < shape->face_velocity_count; ++row) {
     for (std::size_t column = 0; column < shape->face_velocity_count; ++column) {
@@ -250,7 +251,7 @@ TEST(Viscosity, TensorCouplesBothFaceOrientationsSymmetrically) {
 
 TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {
   const TwoFaceCase problem;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -264,7 +265,7 @@ TEST(Viscosity, RejectsExplicitAboveMassScaledLimit) {
   const TwoFaceCase problem;
   auto inputs = problem.Inputs();
   inputs.mode = ViscosityMode::kExplicit;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   EXPECT_EQ(ViscousStep(inputs, result.Outputs(), workspace).code(), absl::StatusCode::kFailedPrecondition);
   result.ExpectUnchanged();
@@ -274,7 +275,7 @@ TEST(Viscosity, PermitsExplicitAtMassScaledLimit) {
   const TwoFaceCase problem;
   auto inputs = problem.Inputs();
   inputs.dt = 0.99 * 2.0 / 110.0;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -286,22 +287,22 @@ TEST(Viscosity, PermitsExplicitAtMassScaledLimit) {
 }
 
 void CheckMovingWallWork(ViscosityMode mode, ViscosityMethod method, double expected_velocity) {
-  const std::array velocity{0.25};
-  const std::array mass{2.0};
-  const std::array strain{2.0};
-  const std::array weight{3.0};
-  const std::array wall{1.5};
+  const std::array face_velocities{0.25};
+  const std::array face_inertias{2.0};
+  const std::array strain_operator{2.0};
+  const std::array strain_quadrature_weights{3.0};
+  const std::array boundary_strain{1.5};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 1,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 0.1,
       .mode = mode,
   };
-  Result result(1);
+  ViscosityResult result(1);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -311,11 +312,11 @@ void CheckMovingWallWork(ViscosityMode mode, ViscosityMethod method, double expe
   EXPECT_NEAR(diagnostics.spectral_bound, 6.0, kTolerance);
   EXPECT_NEAR(diagnostics.energy_before, 0.25 * 0.25, kTolerance);
   EXPECT_NEAR(diagnostics.energy_after, expected_velocity * expected_velocity, kTolerance);
-  const double increment = expected_velocity - velocity[0];
+  const double increment = expected_velocity - face_velocities[0];
   EXPECT_NEAR(diagnostics.numerical_dissipation, increment * increment, kTolerance);
 
   const bool explicit_step = method == ViscosityMethod::kExplicit;
-  const double work_velocity = explicit_step ? velocity[0] : expected_velocity;
+  const double work_velocity = explicit_step ? face_velocities[0] : expected_velocity;
   EXPECT_NEAR(diagnostics.wall_work, inputs.dt * 9.0 * work_velocity, kTolerance);
   const double material_dissipation = inputs.dt * 12.0 * work_velocity * work_velocity;
   const double increment_sign = explicit_step ? -1.0 : 1.0;
@@ -337,30 +338,30 @@ TEST(Viscosity, ImplicitMovingWallEnergyIdentity) {
 
 TEST(Viscosity, ZeroViscosityPreservesVelocity) {
   const Grid2D grid{1, 1, 1.0};
-  std::array<double, 8> strain;
-  std::array<double, 2> weight;
-  const auto strain_status = MacStrain2D(grid, 0.0, strain, weight);
+  std::array<double, 8> strain_operator;
+  std::array<double, 2> strain_quadrature_weights;
+  const auto strain_status = AssembleMacStrain2D(grid, 0.0, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(strain_status.ok()) << strain_status;
-  EXPECT_EQ(weight, (std::array{0.0, 0.0}));
+  EXPECT_EQ(strain_quadrature_weights, (std::array{0.0, 0.0}));
 
-  const std::array velocity{1.0, -2.0, 3.0, -4.0};
-  const std::array mass{0.5, 2.0, 3.0, 1.0};
-  const std::array wall{2.0, -3.0};
+  const std::array face_velocities{1.0, -2.0, 3.0, -4.0};
+  const std::array face_inertias{0.5, 2.0, 3.0, 1.0};
+  const std::array boundary_strain{2.0, -3.0};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
-      .strain_row_count = weight.size(),
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
+      .strain_row_count = strain_quadrature_weights.size(),
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 3.0,
       .mode = ViscosityMode::kImplicit,
   };
-  Result result(velocity.size());
+  ViscosityResult result(face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  EXPECT_TRUE(std::ranges::equal(result.updated_face_velocities, velocity));
+  EXPECT_TRUE(std::ranges::equal(result.updated_face_velocities, face_velocities));
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
   EXPECT_EQ(result.diagnostics.spectral_bound, 0.0);
   EXPECT_EQ(result.diagnostics.energy_before, result.diagnostics.energy_after);
@@ -374,7 +375,7 @@ TEST(Viscosity, ZeroTimeStepPreservesVelocity) {
   auto inputs = problem.Inputs();
   inputs.dt = 0.0;
   inputs.mode = ViscosityMode::kImplicit;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -388,30 +389,30 @@ TEST(Viscosity, ZeroTimeStepPreservesVelocity) {
 
 TEST(Viscosity, AcceptsOver64StrainRows) {
   const Grid2D grid{5, 5, 1.0};
-  const auto shape = MacStrainShape2D(grid);
+  const auto shape = MacStrainExtents2D(grid);
   ASSERT_TRUE(shape.ok()) << shape.status();
   ASSERT_EQ(shape->strain_row_count, 66);
   ASSERT_EQ(shape->face_velocity_count, 60);
   ASSERT_EQ(shape->coefficient_count, 66 * 60);
-  std::vector<double> strain(shape->coefficient_count);
-  std::vector<double> weight(shape->strain_row_count);
-  const auto strain_status = MacStrain2D(grid, 1.0, strain, weight);
+  std::vector<double> strain_operator(shape->coefficient_count);
+  std::vector<double> strain_quadrature_weights(shape->strain_row_count);
+  const auto strain_status = AssembleMacStrain2D(grid, 1.0, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(strain_status.ok()) << strain_status;
-  const std::vector<double> velocity(shape->face_velocity_count, 1.0);
-  const std::vector<double> mass(shape->face_velocity_count, 1.0);
-  std::vector<double> wall(shape->strain_row_count);
-  wall.back() = 1.0;
+  const std::vector<double> face_velocities(shape->face_velocity_count, 1.0);
+  const std::vector<double> face_inertias(shape->face_velocity_count, 1.0);
+  std::vector<double> boundary_strain(shape->strain_row_count);
+  boundary_strain.back() = 1.0;
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = shape->strain_row_count,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 0.01,
       .mode = ViscosityMode::kExplicit,
   };
-  Result result(shape->face_velocity_count);
+  ViscosityResult result(shape->face_velocity_count);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -420,60 +421,81 @@ TEST(Viscosity, AcceptsOver64StrainRows) {
 }
 
 TEST(Viscosity, RejectsOver64VelocityUnknowns) {
-  const auto largest = MacStrainShape2D(Grid2D{1, 21, 1.0});
+  const auto largest = MacStrainExtents2D(Grid2D{1, 21, 1.0});
   ASSERT_TRUE(largest.ok()) << largest.status();
   EXPECT_EQ(largest->face_velocity_count, 64);
   const Grid2D unsupported{6, 6, 1.0};
-  EXPECT_EQ(MacStrainShape2D(unsupported).status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_EQ(MacStrainExtents2D(unsupported).status().code(), absl::StatusCode::kUnimplemented);
 
-  const std::array<double, 65> velocity{};
-  std::array<double, 65> mass;
-  mass.fill(1.0);
+  const std::array<double, 65> face_velocities{};
+  std::array<double, 65> face_inertias;
+  face_inertias.fill(1.0);
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
       .strain_operator = {},
       .strain_row_count = 0,
       .strain_quadrature_weights = {},
       .boundary_strain = {},
       .dt = 0.1,
   };
-  Result result(velocity.size());
+  ViscosityResult result(face_velocities.size());
   ViscosityWorkspace workspace;
   EXPECT_EQ(ViscousStep(inputs, result.Outputs(), workspace).code(), absl::StatusCode::kUnimplemented);
   result.ExpectUnchanged();
 }
 
 TEST(Viscosity, RejectsInvalidMacStrainInputsWithoutWriting) {
-  std::array<double, 8> strain;
-  strain.fill(kSentinel);
-  std::array weight{kSentinel, kSentinel};
+  std::array<double, 8> strain_operator;
+  strain_operator.fill(kSentinel);
+  std::array strain_quadrature_weights{kSentinel, kSentinel};
   const Grid2D grid{1, 1, 1.0};
-  EXPECT_EQ(MacStrain2D(grid, -1.0, strain, weight).code(), absl::StatusCode::kInvalidArgument);
-  EXPECT_EQ(MacStrain2D(grid, kInfinity, strain, weight).code(), absl::StatusCode::kInvalidArgument);
-  EXPECT_EQ(MacStrain2D(Grid2D{0, 1, 1.0}, 1.0, strain, weight).code(), absl::StatusCode::kInvalidArgument);
-  EXPECT_EQ(MacStrain2D(Grid2D{1, 1, kMax}, 1.0, strain, weight).code(), absl::StatusCode::kOutOfRange);
-  EXPECT_EQ(MacStrain2D(grid, kMax, strain, weight).code(), absl::StatusCode::kOutOfRange);
-  EXPECT_EQ(MacStrain2D(grid, 1.0, strain, std::span(weight).first(1)).code(), absl::StatusCode::kInvalidArgument);
-  EXPECT_EQ(MacStrain2D(grid, 1.0, strain, std::span(strain).last(2)).code(), absl::StatusCode::kInvalidArgument);
-  EXPECT_EQ(weight, (std::array{kSentinel, kSentinel}));
-  EXPECT_TRUE(std::ranges::all_of(strain, [](double value) {
+  EXPECT_EQ(
+      AssembleMacStrain2D(grid, -1.0, strain_operator, strain_quadrature_weights).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(grid, kInfinity, strain_operator, strain_quadrature_weights).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(Grid2D{0, 1, 1.0}, 1.0, strain_operator, strain_quadrature_weights).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(Grid2D{1, 1, kMax}, 1.0, strain_operator, strain_quadrature_weights).code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(grid, kMax, strain_operator, strain_quadrature_weights).code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(grid, 1.0, strain_operator, std::span(strain_quadrature_weights).first(1)).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      AssembleMacStrain2D(grid, 1.0, strain_operator, std::span(strain_operator).last(2)).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(strain_quadrature_weights, (std::array{kSentinel, kSentinel}));
+  EXPECT_TRUE(std::ranges::all_of(strain_operator, [](double value) {
     return value == kSentinel;
   }));
 }
 
 TEST(Viscosity, MacQuadratureRetainsRepresentableWeight) {
   const Grid2D grid{1, 1, 0.5};
-  std::array<double, 8> strain;
-  std::array<double, 2> weight;
-  const auto status = MacStrain2D(grid, kMax, strain, weight);
+  std::array<double, 8> strain_operator;
+  std::array<double, 2> strain_quadrature_weights;
+  const auto status = AssembleMacStrain2D(grid, kMax, strain_operator, strain_quadrature_weights);
   ASSERT_TRUE(status.ok()) << status;
-  EXPECT_EQ(weight, (std::array{kMax / 2.0, kMax / 2.0}));
+  EXPECT_EQ(strain_quadrature_weights, (std::array{kMax / 2.0, kMax / 2.0}));
 }
 
 TEST(Viscosity, RejectsInvalidViscousStepInputsWithoutWriting) {
   TwoFaceCase problem;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   auto inputs = problem.Inputs();
 
@@ -514,7 +536,7 @@ TEST(Viscosity, RejectsInvalidViscousStepInputsWithoutWriting) {
 TEST(Viscosity, RejectsWritableInputAndWorkspaceAliases) {
   TwoFaceCase problem;
   auto inputs = problem.Inputs();
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const ViscosityOutputsView overlapping_input{
       .updated_face_velocities = problem.face_velocities,
@@ -548,7 +570,7 @@ TEST(Viscosity, RejectsOutputRecordAndInputObjectAliases) {
       .boundary_strain = data,
       .dt = 0.1,
   };
-  Result result(1);
+  ViscosityResult result(1);
   ViscosityWorkspace workspace;
   const ViscosityOutputsView overlapping_diagnostics{
       .updated_face_velocities = std::span(&result.diagnostics.spectral_bound, 1),
@@ -566,7 +588,7 @@ TEST(Viscosity, RejectsOutputRecordAndInputObjectAliases) {
 
 TEST(Viscosity, RejectsOverflowWithoutPublishingVelocityOrDiagnostics) {
   TwoFaceCase problem;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto inputs = problem.Inputs();
   problem.strain_quadrature_weights[0] = kMax;
@@ -582,21 +604,21 @@ TEST(Viscosity, RejectsOverflowWithoutPublishingVelocityOrDiagnostics) {
 }
 
 TEST(Viscosity, RetainsRepresentableStiffnessAndWallLoad) {
-  const std::array velocity{0.0};
-  const std::array mass{1.0};
-  const std::array strain{0x1p-700};
-  const std::array weight{0x1p+1000};
-  const std::array wall{0x1p-300};
+  const std::array face_velocities{0.0};
+  const std::array face_inertias{1.0};
+  const std::array strain_operator{0x1p-700};
+  const std::array strain_quadrature_weights{0x1p+1000};
+  const std::array boundary_strain{0x1p-300};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 1,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 1.0,
   };
-  Result result(1);
+  ViscosityResult result(1);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -609,29 +631,29 @@ TEST(Viscosity, ExplicitStepRetainsRepresentableVelocityIncrements) {
   constexpr std::array stiffness_exponents{-1000, 1000};
   for (const int exponent : stiffness_exponents) {
     SCOPED_TRACE(exponent);
-    const std::array velocity{std::ldexp(1.0, exponent / 10)};
-    const std::array mass{1.0};
-    const std::array strain{1.0};
-    const std::array weight{std::ldexp(1.0, exponent)};
-    const std::array wall{0.0};
+    const std::array face_velocities{std::ldexp(1.0, exponent / 10)};
+    const std::array face_inertias{1.0};
+    const std::array strain_operator{1.0};
+    const std::array strain_quadrature_weights{std::ldexp(1.0, exponent)};
+    const std::array boundary_strain{0.0};
     const ViscosityInputsView inputs{
-        .face_velocities = velocity,
-        .face_inertias = mass,
-        .strain_operator = strain,
+        .face_velocities = face_velocities,
+        .face_inertias = face_inertias,
+        .strain_operator = strain_operator,
         .strain_row_count = 1,
-        .strain_quadrature_weights = weight,
-        .boundary_strain = wall,
+        .strain_quadrature_weights = strain_quadrature_weights,
+        .boundary_strain = boundary_strain,
         .dt = std::ldexp(1.0, -exponent),
         .mode = ViscosityMode::kExplicit,
     };
-    Result result(1);
+    ViscosityResult result(1);
     ViscosityWorkspace workspace;
     const auto status = ViscousStep(inputs, result.Outputs(), workspace);
     EXPECT_TRUE(status.ok()) << status;
     if (!status.ok()) {
       continue;
     }
-    EXPECT_EQ(result.diagnostics.spectral_bound, weight[0]);
+    EXPECT_EQ(result.diagnostics.spectral_bound, strain_quadrature_weights[0]);
     EXPECT_EQ(result.updated_face_velocities[0], 0.0);
     EXPECT_EQ(result.diagnostics.energy_after, 0.0);
     EXPECT_EQ(result.diagnostics.numerical_dissipation, result.diagnostics.energy_before);
@@ -645,22 +667,22 @@ void CheckImplicitVelocityRange(
     double dt,
     double expected_velocity
 ) {
-  const std::array velocity{old_velocity};
-  const std::array mass{0x1p-1000};
-  const std::array strain{1.0};
-  const std::array weight{quadrature};
-  const std::array wall{wall_strain};
+  const std::array face_velocities{old_velocity};
+  const std::array face_inertias{0x1p-1000};
+  const std::array strain_operator{1.0};
+  const std::array strain_quadrature_weights{quadrature};
+  const std::array boundary_strain{wall_strain};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 1,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = dt,
       .mode = ViscosityMode::kImplicit,
   };
-  Result result(1);
+  ViscosityResult result(1);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -670,25 +692,25 @@ void CheckImplicitVelocityRange(
 
 TEST(Viscosity, ImplicitStepRetainsWallCancellationResidual) {
   constexpr double sqrt_mass = 0x1.0000008p+0;
-  const std::array mass{sqrt_mass * sqrt_mass};
-  const std::array strain{1.0};
-  const std::array weight{1.0};
+  const std::array face_inertias{sqrt_mass * sqrt_mass};
+  const std::array strain_operator{1.0};
+  const std::array strain_quadrature_weights{1.0};
   constexpr std::array velocity_exponents{0, 80};
   for (const int exponent : velocity_exponents) {
     SCOPED_TRACE(exponent);
-    const std::array velocity{std::ldexp(0x1.ffffffffffffep-1, exponent)};
-    const std::array wall{std::ldexp(-0x1.0000007ffffffp+0, exponent)};
+    const std::array face_velocities{std::ldexp(0x1.ffffffffffffep-1, exponent)};
+    const std::array boundary_strain{std::ldexp(-0x1.0000007ffffffp+0, exponent)};
     const ViscosityInputsView inputs{
-        .face_velocities = velocity,
-        .face_inertias = mass,
-        .strain_operator = strain,
+        .face_velocities = face_velocities,
+        .face_inertias = face_inertias,
+        .strain_operator = strain_operator,
         .strain_row_count = 1,
-        .strain_quadrature_weights = weight,
-        .boundary_strain = wall,
+        .strain_quadrature_weights = strain_quadrature_weights,
+        .boundary_strain = boundary_strain,
         .dt = sqrt_mass,
         .mode = ViscosityMode::kImplicit,
     };
-    Result result(1);
+    ViscosityResult result(1);
     ViscosityWorkspace workspace;
     const auto status = ViscousStep(inputs, result.Outputs(), workspace);
     ASSERT_TRUE(status.ok()) << status;
@@ -712,21 +734,21 @@ TEST(Viscosity, ImplicitStepRetainsSolutionWithTinyMass) {
 }
 
 TEST(Viscosity, ImplicitStepRetainsVelocitiesAcrossMassScales) {
-  const std::array velocity{0x1p-600, 0x1p-500};
-  const std::array mass{0x1p-1000, 0x1p+1000};
-  const std::array strain{1.0, 0.0, 0.0, 1.0};
-  const std::array wall{0.0, 0.0};
+  const std::array face_velocities{0x1p-600, 0x1p-500};
+  const std::array face_inertias{0x1p-1000, 0x1p+1000};
+  const std::array strain_operator{1.0, 0.0, 0.0, 1.0};
+  const std::array boundary_strain{0.0, 0.0};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 2,
-      .strain_quadrature_weights = mass,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = face_inertias,
+      .boundary_strain = boundary_strain,
       .dt = 1.0,
       .mode = ViscosityMode::kImplicit,
   };
-  Result result(velocity.size());
+  ViscosityResult result(face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -736,24 +758,24 @@ TEST(Viscosity, ImplicitStepRetainsVelocitiesAcrossMassScales) {
 }
 
 TEST(Viscosity, AcceptsZeroImplicitVelocityWithBalancedCoupling) {
-  const std::array velocity{2.0, 5.0};
-  const std::array mass{1.0, 1.0};
-  const std::array strain{1.0, 1.0, 1.0, 0.0, 0.0, 1.0};
-  const std::array weight{2.0, 1.0, 2.0};
-  const std::array wall{0.0, 0.0, 0.0};
+  const std::array face_velocities{2.0, 5.0};
+  const std::array face_inertias{1.0, 1.0};
+  const std::array strain_operator{1.0, 1.0, 1.0, 0.0, 0.0, 1.0};
+  const std::array strain_quadrature_weights{2.0, 1.0, 2.0};
+  const std::array boundary_strain{0.0, 0.0, 0.0};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 3,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 1.0,
       .mode = ViscosityMode::kImplicit,
   };
   // A = [[4, 2], [2, 5]] has an exact Cholesky factor. The second face
   // supplies the entire first equation even though its RHS is nonzero.
-  Result result(velocity.size());
+  ViscosityResult result(face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
@@ -762,25 +784,25 @@ TEST(Viscosity, AcceptsZeroImplicitVelocityWithBalancedCoupling) {
 }
 
 TEST(Viscosity, RejectsImplicitSolutionLostAcrossScales) {
-  const std::array velocity{1.0, 0.0};
-  const std::array mass{0x1p-1000, 0x1p-200};
-  const std::array strain{1.0, 0.0, 0.0, 1.0};
-  const std::array weight{1.0, 0x1p+800};
-  const std::array wall{0.0, 0x1p-200};
+  const std::array face_velocities{1.0, 0.0};
+  const std::array face_inertias{0x1p-1000, 0x1p-200};
+  const std::array strain_operator{1.0, 0.0, 0.0, 1.0};
+  const std::array strain_quadrature_weights{1.0, 0x1p+800};
+  const std::array boundary_strain{0.0, 0x1p-200};
   const ViscosityInputsView inputs{
-      .face_velocities = velocity,
-      .face_inertias = mass,
-      .strain_operator = strain,
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
       .strain_row_count = 2,
-      .strain_quadrature_weights = weight,
-      .boundary_strain = wall,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
       .dt = 1.0,
       .mode = ViscosityMode::kImplicit,
   };
   // Both equations have the same mass-scaled diagonal. In physical units
   // the expected velocities round to 2^-1000 and 2^-200. A common shift
   // that keeps the second RHS finite cannot keep the first solution normal.
-  Result result(velocity.size());
+  ViscosityResult result(face_velocities.size());
   ViscosityWorkspace workspace;
   EXPECT_EQ(ViscousStep(inputs, result.Outputs(), workspace).code(), absl::StatusCode::kOutOfRange);
   result.ExpectUnchanged();
@@ -790,7 +812,7 @@ TEST(Viscosity, RejectsRoundedSubnormalStiffness) {
   TwoFaceCase problem;
   problem.strain_quadrature_weights[0] = std::numeric_limits<double>::min();
   problem.strain_operator[0] = 0.5;
-  Result result(problem.face_velocities.size());
+  ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   EXPECT_EQ(ViscousStep(problem.Inputs(), result.Outputs(), workspace).code(), absl::StatusCode::kOutOfRange);
   result.ExpectUnchanged();

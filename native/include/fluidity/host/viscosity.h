@@ -11,7 +11,7 @@
 
 namespace fluidity {
 
-struct StrainShape {
+struct MacStrainExtents {
   std::size_t strain_row_count;  // Strain samples, including both normal components and interior shear.
   std::size_t face_velocity_count;  // Face velocities in MAC face order.
   // Number of entries in the dense row-major strain operator.
@@ -21,7 +21,7 @@ struct StrainShape {
 // Returns the extents of the dense strain operator and its diagonal quadrature.
 // Propagates checked grid errors. Returns kUnimplemented for more than 64 velocity
 // columns. The strain row count can exceed 64.
-absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid);
+absl::StatusOr<MacStrainExtents> MacStrainExtents2D(const Grid2D& grid);
 
 // Assembles the symmetric-gradient operator E (inverse length) and its diagonal
 // quadrature W for a constant dynamic viscosity mu (Pa s). Columns are x-normal
@@ -29,12 +29,12 @@ absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid);
 // cells, then all dv/dy cells, then Dxy at interior vertices, each in row-major order.
 // W contains 2*mu*h^2 for normal rows and 4*mu*h^2 for shear rows at unit depth.
 //
-// The caller supplies exact MacStrainShape2D extents. Outputs must be disjoint
+// The caller supplies exact MacStrainExtents2D extents. Outputs must be disjoint
 // from each other and the grid and are preserved on error. Returns kInvalidArgument
 // for invalid geometry, viscosity, extents, or overlap, kUnimplemented for unsupported
 // size, and kOutOfRange for unrepresentable geometry or coefficients. A nonzero
 // quadrature must be a positive normal double.
-absl::Status MacStrain2D(
+absl::Status AssembleMacStrain2D(
     const Grid2D& grid,
     double dynamic_viscosity,
     std::span<double> strain_operator,

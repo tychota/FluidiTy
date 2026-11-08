@@ -78,7 +78,7 @@ BuildFaceStencil(const Grid2D& mac_grid, Vec2 particle_world_position, std::size
       return face_geometry.status();
     }
     stencil.face_indices[stencil_slot_index] = face_index;
-    stencil.face_positions[stencil_slot_index] = face_geometry->position;
+    stencil.face_positions[stencil_slot_index] = face_geometry->world_position;
   }
   return stencil;
 }
@@ -572,11 +572,11 @@ VelocityGradient2D(std::span<const double> face_velocity_samples, std::span<cons
   return velocity_gradient;
 }
 
-absl::StatusOr<VelocityPair> BlendHistory2D(
+absl::StatusOr<HistoryBlendVelocities> BlendHistory2D(
     Vec2 pic_velocity,
     Vec2 history_velocity_residual,
     double energy_control,
-    Phase phase,
+    MaterialPhase phase,
     double separation_factor
 ) {
   if (!IsFinite(pic_velocity) || !IsFinite(history_velocity_residual)) {
@@ -594,25 +594,26 @@ absl::StatusOr<VelocityPair> BlendHistory2D(
   double history_retention_factor = 0.99 * energy_control;
   double advection_separation_factor = 0.0;
   switch (phase) {
-    case Phase::kGas:
+    case MaterialPhase::kGas:
       history_retention_factor = 0.0;
       break;
-    case Phase::kElastic:
+    case MaterialPhase::kElastic:
       break;
-    case Phase::kLiquid:
-    case Phase::kGranular:
-    case Phase::kSnow:
+    case MaterialPhase::kLiquid:
+    case MaterialPhase::kGranular:
+    case MaterialPhase::kSnow:
       advection_separation_factor = energy_control * separation_factor;
       break;
     default:
       return absl::InvalidArgumentError("unknown history blend phase");
   }
 
-  const VelocityPair velocities{
-      .stored = pic_velocity + history_retention_factor * history_velocity_residual,
-      .advecting = pic_velocity + (advection_separation_factor * history_retention_factor) * history_velocity_residual,
+  const HistoryBlendVelocities velocities{
+      .stored_particle_velocity = pic_velocity + history_retention_factor * history_velocity_residual,
+      .advection_velocity =
+          pic_velocity + (advection_separation_factor * history_retention_factor) * history_velocity_residual,
   };
-  if (!IsFinite(velocities.stored) || !IsFinite(velocities.advecting)) {
+  if (!IsFinite(velocities.stored_particle_velocity) || !IsFinite(velocities.advection_velocity)) {
     return absl::OutOfRangeError("history-blended velocity is nonfinite");
   }
   return velocities;

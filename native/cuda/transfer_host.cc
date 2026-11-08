@@ -65,7 +65,7 @@ PrepareTransferStencil(const Grid2D& mac_grid, Vec2 particle_world_position, Tra
       if (!face_geometry.ok()) {
         return face_geometry.status();
       }
-      const Vec2 particle_to_face_offset = face_geometry->position - particle_world_position;
+      const Vec2 particle_to_face_offset = face_geometry->world_position - particle_world_position;
       if (!IsFinite(particle_to_face_offset)) {
         return absl::OutOfRangeError("face position relative to particle is nonfinite");
       }

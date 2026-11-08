@@ -81,10 +81,10 @@ absl::Status ValidatePressureViews(
           inputs.cell_fluid_volumes.size(),
           inputs.cell_bulk_moduli.size(),
           inputs.previous_cell_pressures.size(),
-          outputs.pressure.size(),
-          outputs.rhs.size(),
-          outputs.residual.size(),
-          outputs.constraint_defect.size(),
+          outputs.cell_pressures.size(),
+          outputs.original_rhs.size(),
+          outputs.original_residuals.size(),
+          outputs.cell_constraint_defects.size(),
           outputs.gauge_cell_indices.size(),
       }
   );
@@ -97,12 +97,12 @@ absl::Status ValidatePressureViews(
 
   return CheckWritableViews(
       {
-          std::as_bytes(outputs.pressure),
+          std::as_bytes(outputs.cell_pressures),
           std::as_bytes(outputs.corrected_face_velocities),
           std::as_bytes(outputs.original_matrix),
-          std::as_bytes(outputs.rhs),
-          std::as_bytes(outputs.residual),
-          std::as_bytes(outputs.constraint_defect),
+          std::as_bytes(outputs.original_rhs),
+          std::as_bytes(outputs.original_residuals),
+          std::as_bytes(outputs.cell_constraint_defects),
           std::as_bytes(outputs.gauge_cell_indices),
           std::as_bytes(std::span(&outputs.gauge_count, 1)),
           std::as_bytes(std::span(&workspace, 1)),
@@ -178,8 +178,8 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
   }
   const double aperture = inputs.face_open_fractions[face_index];
   FaceLink face{
-      .tail = geometry->tail,
-      .head = geometry->head,
+      .tail = geometry->tail_cell_index,
+      .head = geometry->head_cell_index,
       .open_area = geometry->area * aperture,
       .wall_area = 0.0,
       .pressure_to_velocity_scale = 0.0,
@@ -244,7 +244,7 @@ absl::Status AssembleOriginalSystem(
 ) {
   const std::size_t cell_count = cell_has_pressure_anchor.size();
   auto original_matrix = std::span(workspace.original_matrix).first(cell_count * cell_count);
-  auto original_rhs = std::span(workspace.rhs).first(cell_count);
+  auto original_rhs = std::span(workspace.original_rhs).first(cell_count);
   std::ranges::fill(original_matrix, 0.0);
 
   // Keep the three incidence products separate. Balance source and predicted flux
@@ -393,7 +393,7 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
   auto matrix = std::span(workspace.solve_matrix).first(cell_count * cell_count);
   auto rhs = std::span(workspace.solve_rhs).first(cell_count);
   std::ranges::copy(std::span(workspace.original_matrix).first(matrix.size()), matrix.begin());
-  std::ranges::copy(std::span(workspace.rhs).first(cell_count), rhs.begin());
+  std::ranges::copy(std::span(workspace.original_rhs).first(cell_count), rhs.begin());
   for (const std::size_t gauge : std::span(workspace.gauge_cell_indices).first(gauge_count)) {
     std::ranges::fill(matrix.subspan(gauge * cell_count, cell_count), 0.0);
     for (std::size_t row = 0; row < cell_count; ++row) {
@@ -402,7 +402,7 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
     matrix[gauge * cell_count + gauge] = 1.0;
     rhs[gauge] = 0.0;
   }
-  auto pressure = std::span(workspace.pressure).first(cell_count);
+  auto pressure = std::span(workspace.cell_pressures).first(cell_count);
   return SolveSmallSpd(matrix, rhs, pressure, workspace.solve_workspace);
 }
 
@@ -410,14 +410,14 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
 // fluid and wall flux independently of the original system for the physical defect.
 absl::Status CorrectVelocityAndAccumulateFlux(const PressureInputsView& inputs, PressureWorkspace& workspace) {
   // Reuse defect storage for the integrated flux until all corrected faces have contributed.
-  auto corrected_outward_flux = std::span(workspace.constraint_defect).first(inputs.cell_fluid_volumes.size());
+  auto corrected_outward_flux = std::span(workspace.cell_constraint_defects).first(inputs.cell_fluid_volumes.size());
   std::ranges::fill(corrected_outward_flux, 0.0);
   for (std::size_t face_index = 0; face_index < inputs.predicted_face_velocities.size(); ++face_index) {
     const FaceLink& face = workspace.faces[face_index];
     double corrected_face_velocity = inputs.predicted_face_velocities[face_index];
     if (face.has_pressure_coupling) {
-      const double tail_pressure = face.tail >= 0 ? workspace.pressure[static_cast<std::size_t>(face.tail)] : 0.0;
-      const double head_pressure = face.head >= 0 ? workspace.pressure[static_cast<std::size_t>(face.head)] : 0.0;
+      const double tail_pressure = face.tail >= 0 ? workspace.cell_pressures[static_cast<std::size_t>(face.tail)] : 0.0;
+      const double head_pressure = face.head >= 0 ? workspace.cell_pressures[static_cast<std::size_t>(face.head)] : 0.0;
       const double pressure_difference = tail_pressure - head_pressure + inputs.face_pressure_jumps[face_index];
       corrected_face_velocity +=
           face.pressure_to_velocity_scale * (pressure_difference - face.signed_boundary_pressure);
@@ -438,30 +438,31 @@ absl::Status EvaluateResidualAndDefect(const PressureInputsView& inputs, Pressur
     double matrix_pressure = 0.0;
     for (std::size_t column = 0; column < cell_count; ++column) {
       const double pressure_coefficient = workspace.original_matrix[cell * cell_count + column];
-      matrix_pressure = std::fma(pressure_coefficient, workspace.pressure[column], matrix_pressure);
+      matrix_pressure = std::fma(pressure_coefficient, workspace.cell_pressures[column], matrix_pressure);
     }
-    const double residual = workspace.rhs[cell] - matrix_pressure;
+    const double residual = workspace.original_rhs[cell] - matrix_pressure;
 
     const double bulk_modulus_times_dt = workspace.bulk_modulus_times_dt[cell];
     double compliance_defect = 0.0;
     if (std::isfinite(bulk_modulus_times_dt)) {
-      compliance_defect = (workspace.pressure[cell] - inputs.previous_cell_pressures[cell]) / bulk_modulus_times_dt;
+      compliance_defect =
+          (workspace.cell_pressures[cell] - inputs.previous_cell_pressures[cell]) / bulk_modulus_times_dt;
     }
-    const double corrected_outward_flux = workspace.constraint_defect[cell];
+    const double corrected_outward_flux = workspace.cell_constraint_defects[cell];
     const double corrected_divergence = corrected_outward_flux / inputs.cell_fluid_volumes[cell];
     const double defect = corrected_divergence - inputs.target_cell_divergence[cell] + compliance_defect;
     if (!std::isfinite(residual) || !std::isfinite(defect)) {
       return absl::OutOfRangeError("pressure residual or constraint defect is outside the representable range");
     }
-    workspace.residual[cell] = residual;
-    workspace.constraint_defect[cell] = defect;
+    workspace.original_residuals[cell] = residual;
+    workspace.cell_constraint_defects[cell] = defect;
   }
   return absl::OkStatus();
 }
 
 void PublishOutputs(const PressureWorkspace& workspace, std::size_t gauge_count, PressureOutputsView outputs) {
-  const std::size_t cell_count = outputs.pressure.size();
-  std::ranges::copy(std::span(workspace.pressure).first(cell_count), outputs.pressure.begin());
+  const std::size_t cell_count = outputs.cell_pressures.size();
+  std::ranges::copy(std::span(workspace.cell_pressures).first(cell_count), outputs.cell_pressures.begin());
   std::ranges::copy(
       std::span(workspace.corrected_face_velocities).first(outputs.corrected_face_velocities.size()),
       outputs.corrected_face_velocities.begin()
@@ -470,9 +471,12 @@ void PublishOutputs(const PressureWorkspace& workspace, std::size_t gauge_count,
       std::span(workspace.original_matrix).first(outputs.original_matrix.size()),
       outputs.original_matrix.begin()
   );
-  std::ranges::copy(std::span(workspace.rhs).first(cell_count), outputs.rhs.begin());
-  std::ranges::copy(std::span(workspace.residual).first(cell_count), outputs.residual.begin());
-  std::ranges::copy(std::span(workspace.constraint_defect).first(cell_count), outputs.constraint_defect.begin());
+  std::ranges::copy(std::span(workspace.original_rhs).first(cell_count), outputs.original_rhs.begin());
+  std::ranges::copy(std::span(workspace.original_residuals).first(cell_count), outputs.original_residuals.begin());
+  std::ranges::copy(
+      std::span(workspace.cell_constraint_defects).first(cell_count),
+      outputs.cell_constraint_defects.begin()
+  );
   std::ranges::copy(std::span(workspace.gauge_cell_indices).first(gauge_count), outputs.gauge_cell_indices.begin());
   outputs.gauge_count = gauge_count;
 }
@@ -510,7 +514,7 @@ SolvePressure2D(const PressureInputsView& inputs, PressureOutputsView outputs, P
   const auto gauge_count = SelectGauges(
       std::span(workspace.faces).first(*face_count),
       anchors,
-      std::span(workspace.rhs).first(*cell_count),
+      std::span(workspace.original_rhs).first(*cell_count),
       workspace.gauge_cell_indices
   );
   if (!gauge_count.ok()) {

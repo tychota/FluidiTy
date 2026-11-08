@@ -44,8 +44,8 @@ TEST(Grid, TwoCellOrientation) {
     SCOPED_TRACE(face_index);
     const auto info = FaceGeometry(grid, face_index);
     ASSERT_TRUE(info.ok()) << info.status();
-    EXPECT_EQ(info->tail, expected_tails[face_index]);
-    EXPECT_EQ(info->head, expected_heads[face_index]);
+    EXPECT_EQ(info->tail_cell_index, expected_tails[face_index]);
+    EXPECT_EQ(info->head_cell_index, expected_heads[face_index]);
   }
 }
 
@@ -87,15 +87,15 @@ TEST(Grid, NonunitOriginAndDistance) {
     SCOPED_TRACE(face_index);
     const auto info = FaceGeometry(grid, face_index);
     ASSERT_TRUE(info.ok()) << info.status();
-    EXPECT_EQ(info->position.x, positions[face_index].x);
-    EXPECT_EQ(info->position.y, positions[face_index].y);
+    EXPECT_EQ(info->world_position.x, positions[face_index].x);
+    EXPECT_EQ(info->world_position.y, positions[face_index].y);
     EXPECT_EQ(info->area, 0.25);
-    EXPECT_EQ(info->distance, distances[face_index]);
+    EXPECT_EQ(info->pressure_gradient_distance, distances[face_index]);
   }
   const auto internal_y = FaceGeometry(grid, 9);
   ASSERT_TRUE(internal_y.ok()) << internal_y.status();
-  EXPECT_EQ(internal_y->tail, 1);
-  EXPECT_EQ(internal_y->head, 3);
+  EXPECT_EQ(internal_y->tail_cell_index, 1);
+  EXPECT_EQ(internal_y->head_cell_index, 3);
 }
 
 TEST(Grid, RejectsInvalidInput) {
@@ -128,8 +128,8 @@ TEST(Grid, WidensDimensionsBeforeAddingBoundaryFaces) {
     EXPECT_EQ(*faces, 12884901886ull);
     const auto high_x = FaceGeometry(grid, max_dimension);
     ASSERT_TRUE(high_x.ok()) << high_x.status();
-    EXPECT_EQ(high_x->tail, 4294967294ll);
-    EXPECT_EQ(high_x->head, -1);
+    EXPECT_EQ(high_x->tail_cell_index, 4294967294ll);
+    EXPECT_EQ(high_x->head_cell_index, -1);
   }
 }
 

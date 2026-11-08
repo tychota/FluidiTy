@@ -343,12 +343,12 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
   }};
   std::array<double, kFaceCount> old_face_velocities;
   std::array<double, kFaceCount> new_face_velocities;
-  constexpr Vec2 kExpectedPicIncrement{1.5, -0.75};
+  constexpr Vec2 kExpectedGridVelocityIncrement{1.5, -0.75};
   std::size_t embedded_sample_count = 0;
   for (std::size_t face_index = 0; face_index < new_face_velocities.size(); ++face_index) {
     const auto face_geometry = FaceGeometry(kShiftedMacGrid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    const Vec2 face_offset = face_geometry->position - kXFaceCenterInWorld;
+    const Vec2 face_offset = face_geometry->world_position - kXFaceCenterInWorld;
     const bool is_x_normal = face_index < kXNormalFaceCount;
     if (is_x_normal) {
       new_face_velocities[face_index] =
@@ -360,16 +360,16 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
             (*fixture_sample_positions)->f64_data[2 * sample_index + 1],
         };
         const Vec2 sample_face_position = local_sample_position + fixture_translation;
-        if (face_geometry->position.x == sample_face_position.x
-            && face_geometry->position.y == sample_face_position.y) {
+        if (face_geometry->world_position.x == sample_face_position.x
+            && face_geometry->world_position.y == sample_face_position.y) {
           new_face_velocities[face_index] = (*fixture_velocity_samples)->f64_data[sample_index];
           ++embedded_sample_count;
         }
       }
-      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedPicIncrement.x;
+      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedGridVelocityIncrement.x;
     } else {
       new_face_velocities[face_index] = -2.0 + 1.25 * face_offset.x - 0.5 * face_offset.y;
-      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedPicIncrement.y;
+      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedGridVelocityIncrement.y;
     }
   }
   ASSERT_EQ(embedded_sample_count, 4);
@@ -399,7 +399,7 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
       expected_x_affine_row.y,
       affine_fixture->atol + affine_fixture->rtol * std::abs(expected_x_affine_row.y)
   );
-  ExpectGatherVector(cuda_gather.grid_velocity_increments.front(), kExpectedPicIncrement);
+  ExpectGatherVector(cuda_gather.grid_velocity_increments.front(), kExpectedGridVelocityIncrement);
   ExpectGatherCpuParity(
       kShiftedMacGrid,
       particle_world_positions,
@@ -418,7 +418,7 @@ TEST(CudaTransfer, GatherNonlinearKeepsTrueGradientSeparate) {
   for (std::size_t face_index = 0; face_index < shared_face_velocities.size(); ++face_index) {
     const auto face_geometry = FaceGeometry(kGrid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    const Vec2 face_position = face_geometry->position;
+    const Vec2 face_position = face_geometry->world_position;
     shared_face_velocities[face_index] =
         face_index < kXNormalFaceCount ? face_position.x * face_position.x : 2.0 * face_position.y * face_position.y;
   }
