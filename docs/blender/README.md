@@ -10,7 +10,7 @@ probe returned counts of 3, 5, 4 and 4 for a fixture that expected 3, 5, 0 and 4
 
 ## Reproduce the Windows run
 
-Use the pinned Blender build and PowerShell 7 initialized for x64 Visual Studio 2022.
+Use the pinned Blender build and PowerShell 7.4 or later initialized for x64 Visual Studio 2022.
 Run from the repository root. The measured setup used Windows 25H2 build 26200.9711,
 VS Build Tools 17.14.44, MSVC 19.44.35229.0 with SDK 10.0.26100.0, CPython 3.13.18
 and uv 0.13.7. The locked build tools were Conan 2.34.0, CMake and CTest 4.4.4, and
@@ -117,7 +117,8 @@ and makes no particle-identity claim across samples.
 | Reopen relocated scene with archive | 0 | 1.354 s |
 | Reopen copied scene with archive absent | 23 | 1.234 s |
 
-These are single-run process times including Blender startup. In the
+These single-run process times include Blender startup and come from source
+revision `d9c45b95861227d6781f7c379db35d9d9767a2f0`. In the
 missing-archive control, Blender emitted reader warnings and showed the saved
 frame-one points on all six visits, with counts of 3, 3, 3, 3, 3 and 3. The
 verifier recorded the missing file and the stale geometry, including the first
@@ -128,8 +129,28 @@ a geometry difference from the relocated playback.
 The clean Release repeat passed standalone CTest (1/1), the focused locked Python
 tests (10/10), and the full locked Python suite across `reference/tests`,
 `tools/tests` and `tools/native/tests` (279/279). Ruff 0.17.4 and clang-format
-19.1.5 passed the Python and C++/CUDA checks respectively. The ignored
-`$runOut/playback/receipt.json` stores the archive digest, process arguments,
+19.1.5 passed the Python and C++/CUDA checks respectively. Run the checks from
+the repository root with those formatter versions on PATH.
+
+```powershell
+uv @uvArgs pytest tools/tests/test_qualify_point_cache.py -q --basetemp "$runOut/pytest-focused"
+uv @uvArgs pytest reference/tests tools/tests tools/native/tests -q --basetemp "$runOut/pytest-full"
+
+$pythonFiles = @(
+  'tools/blender/point_cache_playback.py',
+  'tools/blender/qualify_point_cache.py',
+  'tools/tests/test_qualify_point_cache.py'
+)
+ruff format --check --line-length 120 @pythonFiles
+ruff check @pythonFiles
+
+$nativeSources = @(git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh')
+$nativeSources += 'tools/blender/point_cache_writer/write_point_cache.cc'
+clang-format --version
+clang-format --dry-run --Werror @nativeSources
+```
+
+The ignored `$runOut/playback/receipt.json` stores the archive digest, process arguments,
 exit codes, timings, binding and per-visit measurements. Individual logs and
 JSON reports are under `original`, `Relocated cache – échantillons` and
 `Missing cache – échantillons` in that directory.
