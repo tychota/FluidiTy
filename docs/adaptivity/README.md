@@ -19,7 +19,8 @@ uv run --offline --project reference --locked --group native pytest reference/te
 
 The JSON in the ignored `out/` tree records the result of each fixture and every basis query, including
 actual precision, geometry, active support counts in coarse/fine order, and defects. The command returns
-exit code 1 after writing the report if any fixture gate fails.
+exit code 1 after writing the report if any fixture gate fails. A nonfinite metric is recorded as `null` and
+its path appears in `nonfinite_metrics` in the failing report.
 
 ## Transfer moments and knot nesting
 
@@ -68,7 +69,8 @@ density have unit values. Two columns of outward incidence `R` assign each flux 
 For conductances `k`, assemble `A = R diag(k) Rᵀ` and measure the constant-pressure residual
 `||A p||∞ / max(||A||∞ ||p||∞, 1e-12 m²/s)`. The zero-pressure probe exercises the denominator floor.
 With coarse pressure pinned to zero, the two fine equations give `p_fine = q*_subface/k`. Update each
-subface flux once and divide corrected outward cell flux by cell area.
+subface flux once. The predicted and corrected divergence use the same outward flux sum divided by each
+cell area. The predicted divergence is (0.25, −1.5, 0.5) s⁻¹ in both precisions and orientations.
 
 | Arithmetic, both orientations | Absolute constant-pressure residual (m²/s) | Relative residual | Maximum corrected divergence (s⁻¹) |
 | --- | ---: | ---: | ---: |

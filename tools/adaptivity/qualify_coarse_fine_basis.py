@@ -4,6 +4,7 @@ import argparse
 import json
 import platform
 from itertools import product
+from math import isfinite
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -170,7 +171,9 @@ def measure_basis(evaluate, queries, dtype, *, transition=False):
         "status": _status(all(sample["status"] == "pass" for sample in samples)),
         "dtype": np.dtype(dtype).name,
         "defect_limits": limits,
-        "max_defects": {name: max(sample["defects"][name] for sample in samples) for name in limits},
+        "max_defects": {
+            name: float(np.array([sample["defects"][name] for sample in samples], dtype=dtype).max()) for name in limits
+        },
         "samples": samples,
     }
 
@@ -215,6 +218,11 @@ def _relative_pressure_residual(matrix, pressure):
     return absolute_residual, denominator, absolute_residual / denominator
 
 
+def _cell_fluxes_and_divergence(incidence, subface_fluxes, cell_areas):
+    cell_fluxes = incidence @ subface_fluxes
+    return cell_fluxes, cell_fluxes / cell_areas
+
+
 def measure_pressure_fixture(dtype, interface_axis):
     """Assemble and solve the sealed three-cell patch with two coarse-to-fine fluxes."""
     rotation = np.eye(2, dtype=dtype) if interface_axis == 0 else np.array(ROTATION_90, dtype=dtype)
@@ -227,7 +235,9 @@ def measure_pressure_fixture(dtype, interface_axis):
 
     incidence = np.array([[1, 1], [-1, 0], [0, -1]], dtype=dtype)
     predicted_subface_fluxes = subface_lengths * (predicted_subface_velocities @ normal)
-    predicted_cell_fluxes = incidence @ predicted_subface_fluxes
+    predicted_cell_fluxes, predicted_divergence = _cell_fluxes_and_divergence(
+        incidence, predicted_subface_fluxes, cell_areas
+    )
     coarse_aggregate_flux = predicted_cell_fluxes[0]
 
     # Unit inverse density and time step. Pressure acts on each owned flux once.
@@ -241,13 +251,14 @@ def measure_pressure_fixture(dtype, interface_axis):
     pressure = np.zeros(3, dtype=dtype)
     pressure[1:] = predicted_subface_fluxes / conductances
     corrected_subface_fluxes = predicted_subface_fluxes + conductances * (incidence.T @ pressure)
-    corrected_divergence = (incidence @ corrected_subface_fluxes) / cell_areas
+    _, corrected_divergence = _cell_fluxes_and_divergence(incidence, corrected_subface_fluxes, cell_areas)
     max_corrected_divergence = np.max(np.abs(corrected_divergence))
 
     passed = (
         incidence.shape == (3, 2)
         and np.all(incidence.sum(axis=0) == 0)
         and np.array_equal(predicted_cell_fluxes, [0.25, -0.375, 0.125])
+        and np.array_equal(predicted_divergence, [0.25, -1.5, 0.5])
         and coarse_aggregate_flux == predicted_subface_fluxes.sum()
         and relative_residual <= PRESSURE_TOLERANCE
         and max_corrected_divergence <= PRESSURE_TOLERANCE
@@ -265,6 +276,7 @@ def measure_pressure_fixture(dtype, interface_axis):
         "incidence": incidence.astype(int).tolist(),
         "predicted_subface_fluxes_m2_per_s": predicted_subface_fluxes.tolist(),
         "predicted_cell_fluxes_m2_per_s": predicted_cell_fluxes.tolist(),
+        "predicted_divergence_per_s": predicted_divergence.tolist(),
         "coarse_aggregate_flux_m2_per_s": float(coarse_aggregate_flux),
         "integrated_pressure_matrix": pressure_matrix.tolist(),
         "constant_pressure": float(constant_pressure[0]),
@@ -383,6 +395,23 @@ def qualify(repeats):
     }
 
 
+def _replace_nonfinite_metrics(value, path, nonfinite_metrics):
+    """Keep strict JSON and record the paths of metrics represented by null."""
+    if isinstance(value, dict):
+        return {
+            key: _replace_nonfinite_metrics(item, f"{path}.{key}" if path else key, nonfinite_metrics)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _replace_nonfinite_metrics(item, f"{path}[{index}]", nonfinite_metrics) for index, item in enumerate(value)
+        ]
+    if isinstance(value, float) and not isfinite(value):
+        nonfinite_metrics.append(path)
+        return None
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("out/adaptivity-task-2/qualification.json"))
@@ -391,7 +420,11 @@ def main():
     if arguments.repeats < 1:
         parser.error("--repeats must be positive")
 
-    evidence = qualify(arguments.repeats)
+    nonfinite_metrics = []
+    evidence = _replace_nonfinite_metrics(qualify(arguments.repeats), "", nonfinite_metrics)
+    if nonfinite_metrics:
+        evidence["status"] = "fail"
+        evidence["nonfinite_metrics"] = nonfinite_metrics
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(json.dumps(evidence, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     print(f"2D coarse-fine qualification {evidence['status']} ({arguments.output})")

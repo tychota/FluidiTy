@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,7 @@ def test_pressure_fixture_uses_two_owned_subfaces(dtype, interface_axis, expecte
     assert result["incidence"] == [[1, 1], [-1, 0], [0, -1]]
     assert result["predicted_subface_fluxes_m2_per_s"] == [0.375, -0.125]
     assert result["predicted_cell_fluxes_m2_per_s"] == [0.25, -0.375, 0.125]
+    assert result["predicted_divergence_per_s"] == [0.25, -1.5, 0.5]
     assert result["coarse_aggregate_flux_m2_per_s"] == 0.25
     np.testing.assert_allclose(
         result["integrated_pressure_matrix"],
@@ -123,3 +125,51 @@ def test_cli_reports_the_same_timed_queries_for_both_evaluators(tmp_path):
         for uniform_sample, transition_sample in zip(uniform["samples"], transition["samples"], strict=True):
             assert uniform_sample["particle_world_position"] == transition_sample["particle_world_position"]
             assert transition_sample["status"] == uniform_sample["status"] == "pass"
+
+
+def test_cli_replaces_passing_receipt_when_stencil_weight_is_nonfinite(tmp_path, monkeypatch):
+    report_path = tmp_path / "qualification.json"
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--output", str(report_path), "--repeats", "1"])
+    assert qualification.main() == 0
+    assert json.loads(report_path.read_text(encoding="utf-8"))["status"] == "pass"
+
+    evaluate = qualification.evaluate_coarse_fine_basis
+
+    def evaluate_with_nonfinite_weight(particle_world_position, **kwargs):
+        stencil = evaluate(particle_world_position, **kwargs)
+        if (
+            kwargs["dtype"] is np.float32
+            and kwargs["face_normal_axis"] == kwargs["interface_axis"] == 0
+            and np.array_equal(particle_world_position, [-3.0625, -7.34375])
+        ):
+            weights = stencil.weights.copy()
+            weights[0] = np.nan
+            return replace(stencil, weights=weights)
+        return stencil
+
+    monkeypatch.setattr(qualification, "evaluate_coarse_fine_basis", evaluate_with_nonfinite_weight)
+    assert qualification.main() == 1
+
+    def reject_nonfinite_json(token):
+        pytest.fail(f"Invalid JSON number {token}")
+
+    report = json.loads(report_path.read_text(encoding="utf-8"), parse_constant=reject_nonfinite_json)
+    assert report["status"] == "fail"
+    assert report["uniform_cubic_normal"][0]["status"] == "pass"
+    transition = report["coarse_fine"][0]
+    assert transition["status"] == "fail"
+    assert transition["max_defects"]["partition"] is None
+    failed_samples = [
+        (index, sample) for index, sample in enumerate(transition["samples"]) if sample["status"] == "fail"
+    ]
+    assert len(failed_samples) == 1
+    sample_index, sample = failed_samples[0]
+    assert sample["sample_name"] == "mixed_support"
+    assert sample["defects"]["partition"] is None
+    assert sample["defects"]["first_moment"] is None
+    assert sample["defects"]["affine_gradient"] is not None
+    assert f"coarse_fine[0].samples[{sample_index}].defects.partition" in report["nonfinite_metrics"]
+    assert "coarse_fine[0].max_defects.partition" in report["nonfinite_metrics"]
+    assert report["masked_support"][0]["status"] == "fail"
+    assert report["masked_support"][0]["removed_weight"] is None
+    assert "masked_support[0].removed_weight" in report["nonfinite_metrics"]
