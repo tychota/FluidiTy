@@ -48,18 +48,18 @@ struct PressureCase {
     return {
         .grid = grid,
         .dt = step_duration,
-        .velocity = predicted_face_velocities,
-        .aperture = face_apertures,
-        .mobility = face_inverse_densities,
-        .distance = face_gradient_distances,
-        .wall_velocity = wall_face_velocities,
-        .dirichlet_mask = dirichlet_face_mask,
-        .dirichlet_pressure = dirichlet_face_pressures,
-        .jump = oriented_face_pressure_jumps,
-        .source = target_cell_divergences,
-        .fluid_volume = cell_fluid_volumes,
-        .bulk_modulus = cell_bulk_moduli,
-        .previous_pressure = previous_cell_pressures,
+        .predicted_face_velocities = predicted_face_velocities,
+        .face_open_fractions = face_apertures,
+        .face_inverse_densities = face_inverse_densities,
+        .pressure_gradient_distances = face_gradient_distances,
+        .wall_face_velocities = wall_face_velocities,
+        .dirichlet_face_mask = dirichlet_face_mask,
+        .dirichlet_face_pressures = dirichlet_face_pressures,
+        .face_pressure_jumps = oriented_face_pressure_jumps,
+        .target_cell_divergence = target_cell_divergences,
+        .cell_fluid_volumes = cell_fluid_volumes,
+        .cell_bulk_moduli = cell_bulk_moduli,
+        .previous_cell_pressures = previous_cell_pressures,
     };
   }
 
@@ -95,12 +95,12 @@ struct PressureResult {
   PressureOutputsView Outputs() {
     return {
         .pressure = cell_pressures,
-        .velocity = corrected_face_velocities,
+        .corrected_face_velocities = corrected_face_velocities,
         .original_matrix = original_matrix,
         .rhs = original_rhs,
         .residual = original_residuals,
         .constraint_defect = cell_constraint_defects,
-        .gauges = gauge_cell_indices,
+        .gauge_cell_indices = gauge_cell_indices,
         .gauge_count = gauge_count,
     };
   }
