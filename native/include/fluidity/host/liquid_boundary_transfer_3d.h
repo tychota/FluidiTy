@@ -27,7 +27,8 @@ struct LiquidBoundaryDepositInputs3D {
 
 struct LiquidBoundaryFaceDeposits3D {
   std::vector<MacFaceDepositQuanta3D> face_quanta;
-  // Particle order, then x/y/z; each stencil retains the complete owned order.
+  // Particle order, then x/y/z components; samples retain original stencil
+  // (z,y,x) order, with x fastest. Ghost donors separately use owned-slot order.
   std::vector<std::array<CompatibleMacFaceStencil3D, 3>> compatible_stencils;
 };
 

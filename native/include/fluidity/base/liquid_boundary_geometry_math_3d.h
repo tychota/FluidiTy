@@ -305,6 +305,9 @@ FLUIDITY_HD inline double PhysicalMeasure(double determinant, int local_exponent
 }
 
 FLUIDITY_HD inline double ComputeClippedVolume(const ClippingPolyhedron& polyhedron, double cell_width) {
+  if (polyhedron.overflow) {
+    return numeric::numeric_limits<double>::quiet_NaN();
+  }
   CartesianVector center{};
   numeric::size_t count = 0;
   for (const auto& polygon : polyhedron) {

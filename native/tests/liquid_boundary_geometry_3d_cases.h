@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "fixture_data.h"
+#include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
 #include "gtest/gtest.h"
 
@@ -420,6 +421,19 @@ class GeometryCases {
     EXPECT_EQ(links_(*omitted, {fields, velocities, 0}).status().code(), absl::StatusCode::kFailedPrecondition);
   }
   void RejectsUnrepresentableMeasuresAndInvalidPhysicalInputs() {
+    // Exercise internal bounded-storage failure directly: the certified public
+    // two-cut tetrahedron does not exhaust this capacity. Clipping propagates
+    // overflow into an empty container, which must never become zero volume.
+    boundary_internal::ClippingPolyhedron overflowed_polyhedron;
+    while (!overflowed_polyhedron.overflow) {
+      overflowed_polyhedron.push_back({});
+    }
+    EXPECT_TRUE(std::isnan(boundary_internal::ComputeClippedVolume(overflowed_polyhedron, 1.0)));
+    const auto clipped_overflow = boundary_internal::ClipPolyhedron(overflowed_polyhedron, {{1.0, 0.0, 0.0}, 0.0});
+    ASSERT_TRUE(clipped_overflow.overflow);
+    ASSERT_TRUE(clipped_overflow.empty());
+    EXPECT_TRUE(std::isnan(boundary_internal::ComputeClippedVolume(clipped_overflow, 1.0)));
+
     const auto grid = Grid();
     const auto samples = IsolatedLiquid();
     EXPECT_EQ(Freeze(grid, samples, {}, -1).status().code(), absl::StatusCode::kInvalidArgument);

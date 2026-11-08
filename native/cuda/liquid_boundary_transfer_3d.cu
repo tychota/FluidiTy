@@ -332,7 +332,7 @@ __device__ Error Gather(
         const Vec3 normalized_offset{
             sample.face_offset_from_particle.x / query.cell_width,
             sample.face_offset_from_particle.y / query.cell_width,
-            sample.face_offset_from_particle.z / query.cell_width
+            sample.face_offset_from_particle.z / query.cell_width,
         };
         AddScaled(weighted_velocity_offset_moment, normalized_offset, weighted_new_velocity);
         AddScaled(true_velocity_gradient, sample.weight_gradient, new_value->velocity);
@@ -340,7 +340,7 @@ __device__ Error Gather(
       const Vec3 slopes{
           (4 * weighted_velocity_offset_moment.x) / query.cell_width,
           (4 * weighted_velocity_offset_moment.y) / query.cell_width,
-          (4 * weighted_velocity_offset_moment.z) / query.cell_width
+          (4 * weighted_velocity_offset_moment.z) / query.cell_width,
       };
       const double increment = new_pic_velocity - old_pic_velocity;
       if (!numeric::isfinite(new_pic_velocity) || !numeric::isfinite(increment) || !IsFinite(slopes)

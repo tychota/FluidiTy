@@ -132,8 +132,8 @@ CTest requires exactly 28 real GPU cases. CTest also runs
 the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally trigger CUDA API
 errors and are excluded from memcheck. Each memcheck invocation must exit successfully
 and report one zero-error summary. The validator checks the exact GoogleTest start and
-completion names, the probe launch receipt and the eleven timing receipts in their
-matching cases. It sets the named-pipe connection override only in the sanitizer process
+completion names, the probe launch receipt, twelve operator timing receipts and one graph timing
+receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
 success receipt.

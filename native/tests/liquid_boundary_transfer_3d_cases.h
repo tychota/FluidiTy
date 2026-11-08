@@ -121,6 +121,39 @@ class TransferCases {
     fixture.particle.transfer.trial_world_position = {3.75, 3.75, 3.75};
     EXPECT_EQ(deposit(fixture.DepositInputs()).status().code(), absl::StatusCode::kFailedPrecondition);
     EXPECT_EQ(gather(fixture.GatherInputs()).status().code(), absl::StatusCode::kFailedPrecondition);
+    // At this position only the x-normal x=4 samples lack owners, and their
+    // normal spline factor is exactly zero. Every positive-weight node is owned.
+    fixture.particle.transfer.sorted_world_position = {2.5, 1.5, 1.5};
+    fixture.particle.transfer.trial_world_position = {2.5, 1.5, 1.5};
+    constexpr std::array normal_weights{0.5, 0.5, 0.0};
+    constexpr std::array transverse_weights{0.125, 0.75, 0.125};
+    std::size_t missing_zero_weight_nodes = 0;
+    for (auto axis : kAxes) {
+      const int first_x = axis == FaceNormalAxis::kX ? 2 : 1;
+      const int first_y = axis == FaceNormalAxis::kY ? 1 : 0;
+      const int first_z = axis == FaceNormalAxis::kZ ? 1 : 0;
+      for (int z = 0; z < 3; ++z) {
+        for (int y = 0; y < 3; ++y) {
+          for (int x = 0; x < 3; ++x) {
+            const double weight_x = axis == FaceNormalAxis::kX ? normal_weights[x] : transverse_weights[x];
+            const double weight_y = axis == FaceNormalAxis::kY ? normal_weights[y] : transverse_weights[y];
+            const double weight_z = axis == FaceNormalAxis::kZ ? normal_weights[z] : transverse_weights[z];
+            const double weight = weight_x * weight_y * weight_z;
+            const auto owner = fixture.grid.FaceSlot({axis, {first_x + x, first_y + y, first_z + z}});
+            if (weight > 0.0) {
+              ASSERT_TRUE(owner.ok()) << owner.status();
+            }
+            if (!owner.ok()) {
+              EXPECT_DOUBLE_EQ(weight, 0.0);
+              ++missing_zero_weight_nodes;
+            }
+          }
+        }
+      }
+    }
+    ASSERT_EQ(missing_zero_weight_nodes, 9);
+    EXPECT_EQ(deposit(fixture.DepositInputs()).status().code(), absl::StatusCode::kFailedPrecondition);
+    EXPECT_EQ(gather(fixture.GatherInputs()).status().code(), absl::StatusCode::kFailedPrecondition);
     auto empty_gather = fixture.GatherInputs();
     empty_gather.particles = {};
     const auto empty_gathered = gather(empty_gather);
@@ -164,7 +197,7 @@ class TransferCases {
     const std::array quanta{
         MacFaceDepositQuanta3D{0, 17, 0},
         MacFaceDepositQuanta3D{1, 8, 0},
-        MacFaceDepositQuanta3D{2, 6, 0}
+        MacFaceDepositQuanta3D{2, 6, 0},
     };
     auto normalized = normalize(quanta, {0.5, 1.0, 1}, 0.5);
     ASSERT_TRUE(normalized.ok()) << normalized.status();
@@ -243,18 +276,47 @@ class TransferCases {
     mismatched.old_history.face_velocities = std::span(fixture.old_values).first(1);
     EXPECT_EQ(gather(mismatched).status().code(), absl::StatusCode::kInvalidArgument);
 
-    // A full-rank vector fit (3,3,3) projected onto n=(1,1,0)/sqrt(2)
-    // relative to wall=(1,1,0) yields (1,1,3), before component selection.
+    // Each staggered component samples a different affine field. At the missing
+    // x-face target (1, 1.5, 1.5), all vector components must be evaluated there
+    // before projection, rather than at their own staggered lattice anchors.
     std::fill(fixture.validity.begin(), fixture.validity.end(), LiquidFaceValidity3D::kValid);
-    const double n = std::sqrt(0.5);
-    for (auto& wall : fixture.new_walls) {
-      wall = {true, 7, {n, n, 0.0}, {1.0, 1.0, 0.0}};
+    for (auto axis : kAxes) {
+      for (int z = 0; z < 4; ++z) {
+        for (int y = 0; y < 4; ++y) {
+          for (int x = 0; x < 4; ++x) {
+            const Vec3 anchor = *fixture.grid.FaceWorldAnchor({axis, {x, y, z}});
+            const auto face_slot = fixture.Slot(axis, x, y, z);
+            if (axis == FaceNormalAxis::kX) {
+              fixture.old_values[face_slot] = 1.0 + anchor.x + 2.0 * anchor.y - anchor.z;
+              fixture.new_values[face_slot] = 4.0 + 2.0 * anchor.x - anchor.y + 3.0 * anchor.z;
+            } else if (axis == FaceNormalAxis::kY) {
+              fixture.old_values[face_slot] = -2.0 + 3.0 * anchor.x - anchor.y + 2.0 * anchor.z;
+              fixture.new_values[face_slot] = 7.0 - anchor.x + 4.0 * anchor.y - anchor.z;
+            } else {
+              fixture.old_values[face_slot] = 4.0 - anchor.x + anchor.y + 3.0 * anchor.z;
+              fixture.new_values[face_slot] = -3.0 + 3.0 * anchor.x + 2.0 * anchor.y - 2.0 * anchor.z;
+            }
+          }
+        }
+      }
     }
-    const auto slot = fixture.Slot(FaceNormalAxis::kX, 1, 1, 1);
-    fixture.validity[slot] = LiquidFaceValidity3D::kMissing;
+    const double normal_component = std::sqrt(0.5);
+    const auto target_slot = fixture.Slot(FaceNormalAxis::kX, 1, 1, 1);
+    fixture.old_walls[target_slot] = {true, 7, {normal_component, normal_component, 0.0}, {2.0, -1.0, 4.0}};
+    fixture.new_walls[target_slot] = {true, 7, {normal_component, normal_component, 0.0}, {5.0, 1.0, -2.0}};
+    fixture.validity[target_slot] = LiquidFaceValidity3D::kMissing;
+    // The target vectors are old=(3.5,2.5,9), new=(9,10.5,0). For
+    // n=(1,1,0)/sqrt(2), projected u = u - (u+v-wall_u-wall_v)/2.
+    constexpr double old_projected_target = 3.5 - (3.5 + 2.5 - 2.0 + 1.0) / 2.0;
+    constexpr double new_projected_target = 9.0 - (9.0 + 10.5 - 5.0 - 1.0) / 2.0;
+    constexpr double target_weight = 0.5 * 0.75 * 0.75;
+    constexpr double old_pic_x = 4.0 + target_weight * (old_projected_target - 3.5);
+    constexpr double new_pic_x = 10.0 + target_weight * (new_projected_target - 9.0);
     gathered = gather(fixture.GatherInputs());
     ASSERT_TRUE(gathered.ok()) << gathered.status();
-    EXPECT_NEAR(gathered->particles[0].new_pic_velocity.x, 3.0 - 2.0 * 0.28125, 2e-12);
+    ExpectVec(gathered->particles[0].new_pic_velocity, {new_pic_x, 10.0, 1.5});
+    ExpectVec(gathered->particles[0].grid_velocity_increment, {new_pic_x - old_pic_x, 6.0, -7.0});
+    ExpectVec(gathered->particles[0].particle_minus_old_pic_velocity, {3.0 - old_pic_x, 0.0, -3.5});
     EXPECT_TRUE(gathered->particles[0].affine_enabled);
   }
   void SingularDonorsUseNearestContinuationAndSuppressRetention() {

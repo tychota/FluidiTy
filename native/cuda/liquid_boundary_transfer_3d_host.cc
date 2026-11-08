@@ -342,7 +342,7 @@ absl::StatusOr<CudaLiquidBoundaryGatherResults3D> CudaGatherLiquidBoundaryPartic
             face.anchor_in_cell_widths = {
                 4.0 * block.x + x + (axis == FaceNormalAxis::kX ? 0 : 0.5),
                 4.0 * block.y + y + (axis == FaceNormalAxis::kY ? 0 : 0.5),
-                4.0 * block.z + z + (axis == FaceNormalAxis::kZ ? 0 : 0.5)
+                4.0 * block.z + z + (axis == FaceNormalAxis::kZ ? 0 : 0.5),
             };
           }
         }
@@ -355,7 +355,7 @@ absl::StatusOr<CudaLiquidBoundaryGatherResults3D> CudaGatherLiquidBoundaryPartic
           history.face_velocities[face],
           history.validity[face],
           history.face_tags[face],
-          history.wall_samples[face]
+          history.wall_samples[face],
       };
     };
     staged.faces[face].old_history = pack_history(inputs.old_history);
