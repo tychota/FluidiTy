@@ -39,6 +39,7 @@ endif()
 
 find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
 add_library(fluidity_native STATIC
+  native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
@@ -162,6 +163,7 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_liquid_state_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
