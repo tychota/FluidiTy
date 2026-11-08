@@ -102,6 +102,8 @@ class DepositReplayFixture {
       return absl::InternalError("device rejected the deposit stencil");
     }
 
+    // Unsigned atomics sum quanta modulo 2^64. Reinterpret those bits to recover
+    // the signed totals before comparing direct and replay results.
     const auto face_accumulators = trial_accumulators_.host_staging();
     for (std::size_t face_index = 0; face_index < kFaceCount; ++face_index) {
       const auto& accumulator = face_accumulators[face_index];
