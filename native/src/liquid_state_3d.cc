@@ -95,7 +95,7 @@ absl::Status CheckCapacities(LiquidStateCapacities3D capacity) {
   });
   for (const auto& [count, stride] : regions) {
     if (count > (limit - bytes) / stride) {
-      return absl::ResourceExhaustedError("three liquid versions exceed addressable storage");
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
     }
     bytes += count * stride;
   }
@@ -142,72 +142,72 @@ bool LiquidState3D::operator==(const LiquidState3D& other) const {
 
 absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
   if (!Finite(state.geometry.world_origin) || !Positive(state.geometry.cell_width)) {
-    return absl::InvalidArgumentError("liquid geometry must be finite with positive cell width");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const auto& clock = state.clock;
   if (!std::isfinite(clock.time) || clock.time < 0 || clock.substep_ordinal > clock.accepted_step_ordinal
       || clock.frame_ordinal > clock.accepted_step_ordinal || clock.epoch < clock.accepted_step_ordinal
       || clock.substep_ordinal > clock.accepted_step_ordinal - clock.frame_ordinal) {
-    return absl::InvalidArgumentError("inconsistent liquid clock");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (state.next_particle_id == 0) {
-    return absl::InvalidArgumentError("next particle ID must be nonzero");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   for (std::size_t index = 0; index < state.particles.size(); ++index) {
     const auto& particle = state.particles[index];
     if (particle.id == 0 || particle.id >= state.next_particle_id) {
-      return absl::InvalidArgumentError("particle ID is zero or not below next ID");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     if (!Finite(particle.world_position) || !Finite(particle.world_velocity) || !Finite(particle.velocity_slopes.x_row)
         || !Finite(particle.velocity_slopes.y_row) || !Finite(particle.velocity_slopes.z_row)
         || !Positive(particle.mass) || !Positive(particle.reference_volume) || !Positive(particle.volume_ratio)) {
-      return absl::InvalidArgumentError("particle fields must be finite with positive mass, volume and J");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     // Stable spatial order is not ID order. Check uniqueness without sorting or
     // mutating the physical array, or allocating during acceptance.
     for (std::size_t previous = 0; previous < index; ++previous) {
       if (state.particles[previous].id == particle.id) {
-        return absl::InvalidArgumentError("duplicate particle ID");
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
       }
     }
   }
   if (state.blocks.size() > std::numeric_limits<std::size_t>::max() / 192) {
-    return absl::OutOfRangeError("owned face slot count overflows");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   for (std::size_t index = 0; index < state.blocks.size(); ++index) {
     const auto block = state.blocks[index].block_index;
     for (auto coordinate : {block.x, block.y, block.z}) {
       if (coordinate < std::numeric_limits<std::int32_t>::min() / 4
           || coordinate > (std::numeric_limits<std::int32_t>::max() - 3) / 4) {
-        return absl::OutOfRangeError("block leaves signed int32 cell lattice");
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
     if (index > 0 && Key(state.blocks[index - 1].block_index) >= Key(block)) {
-      return absl::InvalidArgumentError("blocks must have unique canonical keys");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   for (std::size_t index = 0; index < state.cells.size(); ++index) {
     const auto& cell = state.cells[index];
     if (index > 0 && Key(state.cells[index - 1].cell_index) >= Key(cell.cell_index)) {
-      return absl::InvalidArgumentError("cells must have unique canonical keys");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     if (FindOwner(state, cell.cell_index) == state.blocks.size()) {
-      return absl::InvalidArgumentError("selected cell owner is inactive");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     if (cell.occupancy > LiquidCellOccupancy3D::kSolid || !std::isfinite(cell.previous_pressure)) {
-      return absl::InvalidArgumentError("invalid occupancy or pressure history");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   for (std::size_t index = 0; index < state.faces.size(); ++index) {
     const auto& face = state.faces[index];
     if (face.face_index.axis > FaceNormalAxis::kZ || face.validity > LiquidFaceValidity3D::kLowMass
         || !std::isfinite(face.carrier_velocity)) {
-      return absl::InvalidArgumentError("invalid carrier axis, validity or velocity");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const auto lattice = face.face_index.lattice_index;
     const auto owner = FindOwner(state, lattice);
     if (owner == state.blocks.size()) {
-      return absl::InvalidArgumentError("carrier owner is inactive");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const auto block = state.blocks[owner].block_index;
     const auto local_x = static_cast<std::size_t>(lattice.x - block.x * 4);
@@ -216,7 +216,7 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
     const auto slot =
         owner * 192 + static_cast<std::size_t>(face.face_index.axis) * 64 + local_z * 16 + local_y * 4 + local_x;
     if (face.face_slot != slot || (index > 0 && state.faces[index - 1].face_slot >= slot)) {
-      return absl::InvalidArgumentError("carriers must have unique ordered matching owned slots");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   for (std::size_t index = 0; index < state.sources.size(); ++index) {
@@ -224,7 +224,7 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
     if (!std::isfinite(source.fractional_remainder) || source.fractional_remainder < 0
         || source.fractional_remainder >= 1
         || (index > 0 && state.sources[index - 1].source_ordinal >= source.source_ordinal)) {
-      return absl::InvalidArgumentError("invalid source remainder or canonical ordinal");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   return absl::OkStatus();
@@ -238,7 +238,7 @@ absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, Li
     return status;
   }
   if (!Fits(source, capacities)) {
-    return absl::ResourceExhaustedError("liquid state exceeds capacity plan");
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   LiquidState3D result;
   if (auto status = AllocateRecords(result.particles, capacities.particles); !status.ok()) {
@@ -283,13 +283,13 @@ LiquidFrameTransaction3D::Create(const LiquidState3D& initial_state, LiquidState
 }
 absl::Status LiquidFrameTransaction3D::BeginFrame(double target_time) {
   if (frame_active_ || committed_.clock.substep_ordinal != 0) {
-    return absl::FailedPreconditionError("frame is active or initial clock is not at a frame boundary");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   if (!std::isfinite(target_time) || target_time <= committed_.clock.time) {
-    return absl::InvalidArgumentError("frame target must be finite and later than committed time");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (committed_.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
-    return absl::OutOfRangeError("frame ordinal cannot advance");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   CopyState(committed_, frame_start_);
   target_time_ = target_time;
@@ -302,11 +302,11 @@ absl::Status LiquidFrameTransaction3D::BeginFrame(double target_time) {
 }
 absl::StatusOr<LiquidState3D*> LiquidFrameTransaction3D::ResetTrialFromCommitted() {
   if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time == target_time_) {
-    return absl::FailedPreconditionError("frame cannot start a physical attempt");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   if (!Reserved(trial_, capacities_)) {
     fatal_ = true;
-    return absl::FailedPreconditionError("trial owner replaced reserved storage");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   CopyState(committed_, trial_);
   trial_active_ = true;
@@ -315,32 +315,32 @@ absl::StatusOr<LiquidState3D*> LiquidFrameTransaction3D::ResetTrialFromCommitted
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, double attempted_duration) {
   if (!trial_active_) {
-    return absl::FailedPreconditionError("no borrowed trial to finish");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   trial_active_ = false;
   // Any malformed request is terminal, but never changes a committed value.
   fatal_ = true;
   if (!Positive(attempted_duration)) {
-    return absl::InvalidArgumentError("attempt duration must be finite and positive");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (retry_duration_ && attempted_duration != *retry_duration_) {
-    return absl::InvalidArgumentError("retry must use exactly the requested half duration");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const double remaining = target_time_ - committed_.clock.time;
   double accepted_time = committed_.clock.time + attempted_duration;
   if (attempted_duration > remaining || !std::isfinite(accepted_time) || accepted_time <= committed_.clock.time) {
-    return absl::OutOfRangeError("attempt cannot advance within the frame interval");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   // Only the scheduled final remaining interval may snap. The predecessor/successor
   // check makes the roundoff allowance explicit, rather than hiding a residual step.
   if (attempted_duration == remaining && accepted_time != target_time_) {
     if (std::nextafter(accepted_time, target_time_) != target_time_) {
-      return absl::OutOfRangeError("final time is farther than one ULP from target");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
     accepted_time = target_time_;
   }
   if (accepted_time > target_time_) {
-    return absl::OutOfRangeError("accepted time overshoots frame target");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   switch (decision) {
     case LiquidAttemptDisposition3D::kFatal:
@@ -363,30 +363,30 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
     case LiquidAttemptDisposition3D::kAccepted:
       break;
     default:
-      return absl::InvalidArgumentError("unknown attempt disposition");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (trial_.clock != committed_.clock || !SameGeometry(trial_.geometry, committed_.geometry)
       || trial_.random_seed != committed_.random_seed || trial_.next_particle_id < committed_.next_particle_id) {
-    return absl::InvalidArgumentError("trial changed immutable control fields or rewound next ID");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (!Reserved(trial_, capacities_) || !Fits(trial_, capacities_)) {
-    return absl::ResourceExhaustedError("trial replaced reserved storage or exceeds capacity");
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
   if (committed_.clock.epoch == maximum || committed_.clock.accepted_step_ordinal == maximum
       || committed_.clock.substep_ordinal == maximum) {
-    return absl::OutOfRangeError("accepted clock counter cannot advance");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   if (auto status = ValidateLiquidState3D(trial_); !status.ok()) {
     return status;
   }
   if (trial_.sources.size() != committed_.sources.size()) {
-    return absl::InvalidArgumentError("trial changed the resolved source inventory");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   for (std::size_t index = 0; index < trial_.sources.size(); ++index) {
     if (trial_.sources[index].source_ordinal != committed_.sources[index].source_ordinal
         || trial_.sources[index].next_child_ordinal < committed_.sources[index].next_child_ordinal) {
-      return absl::InvalidArgumentError("trial changed resolved source identity or rewound child ordinal");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   trial_.clock.time = accepted_time;
@@ -406,12 +406,12 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
 }
 absl::Status LiquidFrameTransaction3D::RestartFrameWithCapacity(LiquidStateCapacities3D capacities) {
   if (!frame_active_ || trial_active_ || !capacity_pending_ || capacity_restarted_ || fatal_) {
-    return absl::FailedPreconditionError("capacity restart is not authorized");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   if (capacities == capacities_ || capacities.particles < capacities_.particles
       || capacities.blocks < capacities_.blocks || capacities.cells < capacities_.cells
       || capacities.faces < capacities_.faces || capacities.sources < capacities_.sources) {
-    return absl::InvalidArgumentError("capacity restart requires checked nondecreasing growth");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   // Construct every independent owner before replacing any live version. Real
   // nothrow allocation failures destroy only temporary owners and retain retry authority.
@@ -427,7 +427,7 @@ absl::Status LiquidFrameTransaction3D::RestartFrameWithCapacity(LiquidStateCapac
 }
 absl::Status LiquidFrameTransaction3D::FinishFrame() {
   if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time != target_time_) {
-    return absl::FailedPreconditionError("frame is not coherently complete");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   // The final accepted version already contains the completed-frame clock. Closing
   // scheduling must not give one epoch two different persistent byte states.

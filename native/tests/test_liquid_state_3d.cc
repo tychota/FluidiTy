@@ -661,6 +661,73 @@ TEST(LiquidFrameTransaction3D, SuccessfulAttemptDoesNotAllocateOrFreeHeapStorage
   EXPECT_EQ(allocation_count, 0);
   EXPECT_EQ(deallocation_count, 0);
 }
+TEST(LiquidFrameTransaction3D, CapacityFailureAndStatusDestructionDoNotAllocateOrFree) {
+  auto initial = InitialState();
+  auto transaction = LiquidFrameTransaction3D::Create(initial, kCapacity);
+  ASSERT_TRUE(transaction.ok());
+  ASSERT_TRUE(transaction->BeginFrame(1).ok());
+  absl::StatusCode resize_code = absl::StatusCode::kOk;
+  bool capacity_outcome = false;
+  allocation_count = 0;
+  deallocation_count = 0;
+  fail_allocation = 0;
+  previous_hook = _CrtSetAllocHook(AllocationHook);
+  {
+    auto trial = transaction->ResetTrialFromCommitted();
+    auto resize_status = (**trial).particles.Resize(kCapacity.particles + 1);
+    resize_code = resize_status.code();
+    auto outcome = transaction->FinishAttempt(LiquidAttemptDisposition3D::kCapacity, 1);
+    capacity_outcome = outcome.ok() && outcome->disposition == LiquidAttemptDisposition3D::kCapacity;
+  }
+  _CrtSetAllocHook(previous_hook);
+  EXPECT_EQ(resize_code, absl::StatusCode::kResourceExhausted);
+  EXPECT_TRUE(capacity_outcome);
+  EXPECT_EQ(allocation_count, 0);
+  EXPECT_EQ(deallocation_count, 0);
+  EXPECT_EQ(transaction->committed(), initial);
+}
+TEST(LiquidFrameTransaction3D, InvalidCandidateAndStatusDestructionDoNotAllocateOrFree) {
+  auto initial = InitialState();
+  auto transaction = LiquidFrameTransaction3D::Create(initial, kCapacity);
+  ASSERT_TRUE(transaction.ok());
+  ASSERT_TRUE(transaction->BeginFrame(1).ok());
+  absl::StatusCode validation_code = absl::StatusCode::kOk;
+  absl::StatusCode acceptance_code = absl::StatusCode::kOk;
+  allocation_count = 0;
+  deallocation_count = 0;
+  fail_allocation = 0;
+  previous_hook = _CrtSetAllocHook(AllocationHook);
+  {
+    auto trial = transaction->ResetTrialFromCommitted();
+    (**trial).particles[0].volume_ratio = 0;
+    auto validation_status = ValidateLiquidState3D(**trial);
+    validation_code = validation_status.code();
+    auto outcome = transaction->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 1);
+    acceptance_code = outcome.status().code();
+  }
+  _CrtSetAllocHook(previous_hook);
+  EXPECT_EQ(validation_code, absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(acceptance_code, absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(allocation_count, 0);
+  EXPECT_EQ(deallocation_count, 0);
+  EXPECT_EQ(transaction->committed(), initial);
+}
+TEST(LiquidFrameTransaction3D, AllocationFailureStatusDoesNotRequestAdditionalHeapStorage) {
+  absl::StatusCode allocation_code = absl::StatusCode::kOk;
+  allocation_count = 0;
+  deallocation_count = 0;
+  fail_allocation = 1;
+  previous_hook = _CrtSetAllocHook(AllocationHook);
+  {
+    auto records = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+    allocation_code = records.status().code();
+  }
+  _CrtSetAllocHook(previous_hook);
+  fail_allocation = 0;
+  EXPECT_EQ(allocation_code, absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(allocation_count, 1);  // Only the failed storage request; no allocation for its error.
+  EXPECT_EQ(deallocation_count, 0);
+}
 TEST(LiquidFrameTransaction3D, PartialAllocationFailureRetainsVersionsAndGrowthAuthority) {
   auto initial = InitialState();
   auto transaction = LiquidFrameTransaction3D::Create(initial, kCapacity);
@@ -675,12 +742,19 @@ TEST(LiquidFrameTransaction3D, PartialAllocationFailureRetainsVersionsAndGrowthA
   const auto* committed_particles = transaction->committed().particles.values().data();
   const auto* snapshot_particles = transaction->frame_start().particles.values().data();
   allocation_count = 0;
+  deallocation_count = 0;
+  absl::StatusCode growth_code = absl::StatusCode::kOk;
   fail_allocation = 7;  // A complete temporary version and part of the next are already owned.
   previous_hook = _CrtSetAllocHook(AllocationHook);
-  auto status = transaction->RestartFrameWithCapacity({8, 2, 2, 4, 2});
+  {
+    auto status = transaction->RestartFrameWithCapacity({8, 2, 2, 4, 2});
+    growth_code = status.code();
+  }
   _CrtSetAllocHook(previous_hook);
   fail_allocation = 0;
-  EXPECT_EQ(status.code(), absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(growth_code, absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(allocation_count, 7);  // No error allocation after the injected failed request.
+  EXPECT_EQ(deallocation_count, 6);  // Only the six successfully allocated temporary record owners.
   EXPECT_EQ(transaction->committed(), *accepted);
   EXPECT_EQ(transaction->frame_start(), initial);
   EXPECT_EQ(transaction->committed().particles.values().data(), committed_particles);

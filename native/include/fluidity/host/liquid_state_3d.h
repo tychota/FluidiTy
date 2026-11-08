@@ -19,6 +19,8 @@ namespace fluidity {
 // Bounded owning host records. Active size is explicit; Resize never allocates.
 // Move invalidates views; operations preserve storage addresses until move/destruction.
 // Values outside size() are scratch and do not participate in physical equality.
+// Failures carry a status code and empty message: constructing/destroying an error
+// must not allocate, including when allocation itself failed.
 template <typename Record>
   requires(std::is_trivially_copyable_v<Record> && std::is_nothrow_default_constructible_v<Record>)
 class LiquidRecords3D {
@@ -43,13 +45,13 @@ class LiquidRecords3D {
   // ResourceExhausted without a partial result. Zero capacity is valid.
   static absl::StatusOr<LiquidRecords3D> Create(std::size_t capacity) {
     if (capacity > static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max()) / sizeof(Record)) {
-      return absl::ResourceExhaustedError("record capacity exceeds addressable storage");
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
     }
     LiquidRecords3D result;
     if (capacity != 0) {
       result.records_.reset(new (std::nothrow) Record[capacity]{});
       if (!result.records_) {
-        return absl::ResourceExhaustedError("record allocation failed");
+        return absl::Status(absl::StatusCode::kResourceExhausted, {});
       }
     }
     result.capacity_ = capacity;
@@ -59,7 +61,7 @@ class LiquidRecords3D {
   // ResourceExhausted leaves values/extent intact. No allocation or deallocation.
   absl::Status Resize(std::size_t size) {
     if (size > capacity_) {
-      return absl::ResourceExhaustedError("record extent exceeds reserved capacity");
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
     }
     for (std::size_t index = size_; index < size; ++index) {
       records_[index] = Record{};
@@ -191,13 +193,17 @@ struct LiquidAttemptOutcome3D {
 // Checks finite fields, positive m/V0/J, unique IDs, signed topology ownership,
 // canonical keys, face slots, enum ranges and clock relations. ID uniqueness uses
 // an allocation-free quadratic scan; physical particle order is never changed.
+// Validation allocates/deallocates nothing on either success or failure. Errors
+// carry only a code (empty message); format diagnostics outside the physical attempt.
 // Invalid data returns InvalidArgument; lattice/slot overflow is OutOfRange. Read-only input may alias any other
 // read-only state.
 absl::Status ValidateLiquidState3D(const LiquidState3D& state);
 
 // Single-threaded owner of three independent physical versions. No copy is allowed:
 // Moving invalidates all prior borrows; a moved-from owner may only be destroyed
-// or assigned. Successful attempts allocate/deallocate nothing.
+// or assigned. Attempts allocate/deallocate nothing, including failed validation
+// and returned-status destruction. All errors are code-only (empty message); the
+// scheduler must collect/format detailed diagnostics outside physical attempts.
 class LiquidFrameTransaction3D {
  public:
   LiquidFrameTransaction3D(LiquidFrameTransaction3D&&) noexcept = default;
