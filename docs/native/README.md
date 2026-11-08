@@ -1,8 +1,9 @@
 # Native build and validation
 
 The native foundation contains a C++20 CPU reference implementation, a CUDA hardware probe,
-and CUDA operators for uniform 2D MAC transfers and a tiny pressure solve. CMake presets use
-Ninja and separate Conan, build and fixture directories for every configuration. The
+CUDA operators for uniform 2D MAC transfers and a tiny pressure solve, and bounded CUDA Graph
+replay tests for deposition and pressure. CMake presets use Ninja and separate Conan,
+build and fixture directories for every configuration. The
 [toolchain matrix](toolchains.md) records the measured Windows configuration and its recipe revisions.
 
 ## Windows prerequisites
@@ -72,8 +73,9 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets require the exact 14 `gpu` cases, including two probe cases and
-12 transfer and pressure cases. They also run the `cuda-mock` API-double suite.
+separate. Both presets require the exact 18 `gpu` cases, including two probe cases,
+12 transfer and pressure cases, and four graph replay cases. They also run the
+`cuda-mock` API-double suite.
 
 ```powershell
 uv @uvArgs python tools/native/qualify_toolchain.py --mode cuda --output out/qualification/windows.json
@@ -97,13 +99,25 @@ shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event
 | `CudaPressure.NeumannJumpMatchesFixture` | `pressure_neumann` |
 | `CudaPressure.ComplianceRetainsMeanPressure` | `pressure_compliance` |
 
+Both CUDA presets require these four graph replay cases.
+
+- `CudaGraphReplay.DepositMatchesDirectAndClearsInactiveInputs`
+- `CudaGraphReplay.RejectedDepositPreservesAcceptedOutputs`
+- `CudaGraphReplay.FailedCaptureCanBeRetried`
+- `CudaGraphReplay.PressureMatchesDirectAndMeasuresReplay`
+
+Only the pressure case emits a graph timing receipt. The validator requires exactly one
+receipt between that case's GoogleTest start and completion markers, with compiled
+architecture 1200, 64 iterations and finite nonnegative times in microseconds.
+
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
-The validator runs memcheck on `CudaProbe.SharedVec2Math` and eleven transfer and pressure
-cases. CTest also runs the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally
-trigger CUDA API errors and are excluded from memcheck. Both memcheck invocations must exit
-successfully and report zero errors. The validator checks the exact GoogleTest start and
-completion names, the probe launch receipt and the four timing receipts in their matching
-operator cases. It sets the named-pipe connection override only in the sanitizer process
+The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
+eleven transfer and pressure cases, and all four graph replay cases. CTest also runs
+the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally trigger CUDA API
+errors and are excluded from memcheck. Each memcheck invocation must exit successfully
+and report one zero-error summary. The validator checks the exact GoogleTest start and
+completion names, the probe launch receipt and the five timing receipts in their
+matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
 success receipt.
@@ -123,6 +137,9 @@ try {
         out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe `
         --gtest_filter=*-CudaPressure.LaunchIgnoresPriorRuntimeError
     if ($LASTEXITCODE) { throw 'Release operator memcheck failed.' }
+    & $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
+        out/build/windows-release-cuda/fluidity_cuda_graph_tests.exe
+    if ($LASTEXITCODE) { throw 'Release graph memcheck failed.' }
 } finally {
     $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = $previousConnection
 }
@@ -160,11 +177,16 @@ fixture and header hashes, commands and separate results for Python, native CPU,
 CUDA doubles, sanitizer and proofs. The proof gate remains `not_run` in this validator.
 The validator clears inherited GoogleTest and pytest selectors. It checks each named native
 case's execution output and compares the Python results with the complete pytest collection.
-The CUDA receipt records the four tiny-kernel smoke measurements in `evidence.gpu.operators`.
-The times cover the measured kernel work and carry no throughput or scaling claim.
+The CUDA receipt records the four tiny-kernel smoke measurements in `evidence.gpu.operators`
+and the pressure graph measurement in `evidence.gpu.graph_replay`. Operator timings cover
+the measured kernel work. The graph receipt
+contains one capture and instantiation time, the iteration count and separate
+per-sequence host submission and stream intervals for direct and graph execution.
+See the fixture and timing method in the
+[toolchain matrix](toolchains.md#windows-cuda-graph-replay-gate-measured-on-2026-11-08).
 
-Full command arguments, tool output, Python and CTest XML, and the live requalification
-receipt and both Release memcheck logs stay under `out/native-validation/<preset>/run-*/`.
+Full command arguments, tool output, Python and CTest XML, the live requalification
+receipt and all three Release memcheck logs stay under `out/native-validation/<preset>/run-*/`.
 These local files can contain machine paths. An invocation with one valid `--output` destination clears its previous reports,
 including when another command-line argument is invalid.
 On failure, read the named stage's log and CTest report if the suite ran. Requalify after
@@ -182,8 +204,10 @@ The measured Windows hardware runs are documented in the [toolchain matrix](tool
 Hosted CPU checks leave the CUDA, sanitizer and proof results at `not_run`.
 
 The uniform CUDA spike covers complete-support quadratic MAC transfers with host-prepared
-geometry and a dense pressure solve for up to eight cells. M0 still requires measured
-Blender reader, CUDA Graph execution and 2D adaptive-basis spikes. Proof pilots and later
-formal contracts use the separate [Lean workflow](../../proofs/README.md). A release
-license decision remains open. See the [design milestones and evidence
+geometry and a dense pressure solve for up to eight cells. The graph spike covers fixed
+buffers on one stream for separate deposition and two-cell pressure fixtures. Production
+graph integration belongs to later solver work. M0 still requires measured Blender reader
+and 2D adaptive-basis spikes. Proof pilots and later formal contracts use the separate
+[Lean workflow](../../proofs/README.md). A release license decision remains open. See the
+[design milestones and evidence
 requirements](../superpowers/specs/2026-11-07-fluidity-design.md#15-validation-milestones-and-review-boundary).
