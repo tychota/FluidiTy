@@ -15,6 +15,10 @@ PROOFS = ROOT / 'proofs'
 PINS = json.loads((ROOT / 'tools/proof-toolchain.json').read_text())
 MODULE_TARGETS = {
     'Pressure': ('pressure_quadratic_form_eq', 'pressure_psd'),
+    'PressureTopology': ('pressure_kernel_eq_component_constants',
+                         'pressure_gauge_positive_definite',
+                         'pressure_solvable_iff_component_compatible'),
+    'PressureCorrection': ('pressure_corrected_flux_defect_eq_neg_residual',),
     'FixedPoint': ('fixed_point_order_independent', 'fixed_point_partial_bound',
                    'fixed_point_cap_partial_bound', 'quantized_contribution_bound',
                    'quantized_sum_error_bound'),
