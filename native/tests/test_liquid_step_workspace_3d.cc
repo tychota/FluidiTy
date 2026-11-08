@@ -271,11 +271,13 @@ TEST(LiquidStepWorkspace3D, AccountsEveryReservedRegionAndRejectsByteOverflow) {
       bytes->total_bytes,
       bytes->particle_order_bytes + bytes->particle_state_bytes + bytes->block_key_bytes + bytes->block_state_bytes
           + bytes->cell_state_bytes + bytes->face_state_bytes + bytes->activation_key_bytes + bytes->boundary_bytes
+          + bytes->pressure_bytes
   );
   auto workspace = LiquidStepWorkspace3D::Create(kCapacity, kGeometry);
   ASSERT_TRUE(workspace.ok());
   EXPECT_EQ(workspace->usage().used_bytes, 0);
   EXPECT_EQ(workspace->usage().reserved_bytes, bytes->total_bytes);
+  EXPECT_EQ(workspace->pressure().bytes().total_bytes, bytes->pressure_bytes);
   constexpr std::array cells{CellIndex3D{1, 1, 1}};
   ASSERT_TRUE(workspace->PrepareTrialTopology({}, cells).ok());
   const auto usage = workspace->usage();

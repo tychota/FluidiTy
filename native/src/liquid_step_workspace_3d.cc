@@ -87,6 +87,15 @@ absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCa
   }
   bytes.boundary_bytes = boundary->total_bytes;
   bytes.total_bytes += bytes.boundary_bytes;
+  const auto pressure = QueryMacPressureWorkspaceBytes3D(capacities.cells, capacities.faces);
+  if (!pressure.ok()) {
+    return pressure.status();
+  }
+  if (pressure->total_bytes > kByteLimit - bytes.total_bytes) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  bytes.pressure_bytes = pressure->total_bytes;
+  bytes.total_bytes += bytes.pressure_bytes;
   return bytes;
 }
 
@@ -109,6 +118,11 @@ LiquidStepWorkspace3D::Create(LiquidStateCapacities3D capacities, UniformMacGeom
     return boundary.status();
   }
   workspace.boundary_ = std::move(*boundary);
+  auto pressure = MacPressureWorkspace3D::Create(capacities.cells, capacities.faces);
+  if (!pressure.ok()) {
+    return pressure.status();
+  }
+  workspace.pressure_ = std::move(*pressure);
   for (auto& bank : workspace.banks_) {
     if (const auto status = Reserve(bank.particle_order, capacities.particles); !status.ok()) {
       return status;
@@ -327,7 +341,7 @@ LiquidWorkspaceUsage3D LiquidStepWorkspace3D::usage() const {
   LiquidWorkspaceUsage3D usage;
   usage.reserved_bytes = bytes_.total_bytes;
   usage.activation_keys = activation_keys_.size();
-  usage.used_bytes = activation_keys_.size() * sizeof(BlockIndex3D) + boundary_.used_bytes();
+  usage.used_bytes = activation_keys_.size() * sizeof(BlockIndex3D) + boundary_.used_bytes() + pressure_.used_bytes();
   for (const auto& bank : banks_) {
     usage.used_bytes += bank.particle_order.size() * sizeof(LiquidParticleSortEntry3D)
         + bank.particles.size() * sizeof(LiquidParticleState3D) + bank.block_keys.size() * sizeof(BlockIndex3D)

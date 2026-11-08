@@ -6,6 +6,7 @@
 
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 
 namespace fluidity {
@@ -17,8 +18,8 @@ struct LiquidParticleSortEntry3D {
 
 // Exact dynamic payload reservations for topology and CPU boundary/transfer. Each published/candidate
 // region has two independent banks. Includes bounded activation/sort storage; excludes
-// owner objects, allocator bookkeeping, transaction versions and future pressure/GPU regions.
-// Tasks 4/6 must extend accounting before claiming a complete physical-step bound.
+// owner objects, allocator bookkeeping, transaction versions and future GPU regions.
+// Task 6 must extend accounting before claiming a complete physical-step bound.
 struct LiquidWorkspaceBytes3D {
   std::size_t particle_order_bytes = 0;
   std::size_t particle_state_bytes = 0;
@@ -29,6 +30,7 @@ struct LiquidWorkspaceBytes3D {
   std::size_t activation_key_bytes = 0;
   std::size_t activation_key_capacity = 0;
   std::size_t boundary_bytes = 0;  // Full QueryLiquidBoundaryWorkspaceBytes3D payload.
+  std::size_t pressure_bytes = 0;  // Full QueryMacPressureWorkspaceBytes3D payload.
   std::size_t total_bytes = 0;
 };
 // Checked sum/products bounded by PTRDIFF_MAX; overflow returns ResourceExhausted.
@@ -51,7 +53,7 @@ struct LiquidPreparedTopologyView3D {
   std::span<const LiquidFaceState3D> faces;
 };
 
-// Single-threaded bounded topology and CPU boundary/transfer owner. Move invalidates all borrows. No operation
+// Single-threaded bounded topology and CPU boundary/transfer/pressure owner. Move invalidates all borrows. No operation
 // other than Create/move/destruction allocates or frees, including error destruction.
 // Errors are code-only; format diagnostics outside the physical attempt.
 class LiquidStepWorkspace3D {
@@ -102,6 +104,9 @@ class LiquidStepWorkspace3D {
   // Fixed reservation limits supplied to Create (sources are not used by topology).
   LiquidStateCapacities3D capacities() const;
   // Numeric regions share these reservation limits; their borrows have independent lifetimes.
+  MacPressureWorkspace3D& pressure() {
+    return pressure_;
+  }
   LiquidBoundaryWorkspace3D& boundary() {
     return boundary_;
   }
@@ -117,6 +122,7 @@ class LiquidStepWorkspace3D {
   };
   LiquidStepWorkspace3D() = default;
   LiquidBoundaryWorkspace3D boundary_;
+  MacPressureWorkspace3D pressure_;
   UniformMacGeometry3D geometry_{{0.0, 0.0, 0.0}, 1.0};
   LiquidStateCapacities3D capacities_;
   LiquidWorkspaceBytes3D bytes_;
