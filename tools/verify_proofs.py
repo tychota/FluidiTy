@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, audit, export and independently check the bounded Lean pilots."""
+"""Build, audit, export and independently check the bounded exact Lean contracts."""
 import argparse
 import hashlib
 import json
@@ -13,8 +13,18 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PROOFS = ROOT / 'proofs'
 PINS = json.loads((ROOT / 'tools/proof-toolchain.json').read_text())
-TARGETS = ('Fluidity.pressure_quadratic_form_eq', 'Fluidity.pressure_psd',
-           'Fluidity.fixed_point_order_independent', 'Fluidity.fixed_point_partial_bound')
+MODULE_TARGETS = {
+    'Pressure': ('pressure_quadratic_form_eq', 'pressure_psd'),
+    'FixedPoint': ('fixed_point_order_independent', 'fixed_point_partial_bound',
+                   'fixed_point_cap_partial_bound', 'quantized_contribution_bound',
+                   'quantized_sum_error_bound'),
+    'UniformTransfer': ('quadratic_centered_local', 'quadratic_derivative_polynomials',
+                        'quadratic_boundary_matching', 'tensor_gradient_polynomials',
+                        'quadratic_shifted_basis', 'quadratic_tensor_moments',
+                        'affine_reconstruction_of_moments', 'mac_deposit_conserves_row_moments'),
+    'UniformTile': ('uniform_mac_tile_contains_stencil', 'uniform_mac_tile_product'),
+}
+TARGETS = tuple('Fluidity.' + target for targets in MODULE_TARGETS.values() for target in targets)
 ALLOWED = {'propext', 'Classical.choice', 'Quot.sound'}
 
 
@@ -103,7 +113,7 @@ def main():
         override = {'sha256': sha256(path), 'contents': json.loads(path.read_text())}
         lake += ['--packages=' + str(path)]
     run(lake + ['--wfail', 'build'])
-    audit = audit_axioms(''.join(run(lake + ['env', 'lean', 'Fluidity/' + file + '.lean']) for file in ('Pressure', 'FixedPoint')))
+    audit = audit_axioms(''.join(run(lake + ['env', 'lean', 'Fluidity/' + file + '.lean']) for file in MODULE_TARGETS))
     with tempfile.TemporaryDirectory(prefix='proof-check-', dir=output) as temp:
         prelude, proof = Path(temp) / 'init.blean', Path(temp) / 'fluidity.blean'
         run(lake + ['env', exporter, 'Init', '-f', 'blean', '-o', prelude])

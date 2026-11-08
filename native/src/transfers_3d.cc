@@ -1,0 +1,317 @@
+#include "fluidity/host/transfers_3d.h"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "absl/status/statusor.h"
+#include "fluidity/host/views.h"
+
+namespace fluidity {
+namespace {
+
+struct MacNormalComponentAccess {
+  FaceNormalAxis axis;
+  double Vec3::* velocity_component;
+  Vec3 Mat3::* velocity_slope_row;
+};
+
+constexpr std::array kNormalComponentAccess{
+    MacNormalComponentAccess{FaceNormalAxis::kX, &Vec3::x, &Mat3::x_row},
+    MacNormalComponentAccess{FaceNormalAxis::kY, &Vec3::y, &Mat3::y_row},
+    MacNormalComponentAccess{FaceNormalAxis::kZ, &Vec3::z, &Mat3::z_row},
+};
+constexpr std::size_t kMaxQuantizedParticleCapacity = std::size_t{1} << 20;
+
+bool IsFinite(Vec3 value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool IsFinite(Mat3 value) {
+  return IsFinite(value.x_row) && IsFinite(value.y_row) && IsFinite(value.z_row);
+}
+
+bool IsPositiveNormalPowerOfTwo(double scale) {
+  int exponent;
+  return std::isnormal(scale) && std::frexp(scale, &exponent) == 0.5;
+}
+
+double Dot(Vec3 lhs, Vec3 rhs) {
+  return (lhs.x * rhs.x + lhs.y * rhs.y) + lhs.z * rhs.z;
+}
+
+void AddScaled(Vec3& sum, Vec3 vector, double scale) {
+  sum.x += vector.x * scale;
+  sum.y += vector.y * scale;
+  sum.z += vector.z * scale;
+}
+
+// The range guard has already bounded the magnitude by 2^62. Truncate the
+// magnitude first, then resolve the fraction and parity independently of the
+// ambient integer rounding direction.
+std::int64_t RoundNearestEven(double scaled_contribution) {
+  const double magnitude = std::abs(scaled_contribution);
+  const double integral_magnitude = std::floor(magnitude);
+  const double fraction = magnitude - integral_magnitude;
+  auto quanta_magnitude = static_cast<std::int64_t>(integral_magnitude);
+  const bool odd_tie = fraction == 0.5 && quanta_magnitude % 2 != 0;
+  if (fraction > 0.5 || odd_tie) {
+    ++quanta_magnitude;
+  }
+  return scaled_contribution < 0.0 ? -quanta_magnitude : quanta_magnitude;
+}
+
+template <typename FaceDeposit, typename AccumulateFaceContribution>
+absl::Status DepositWithFaceAccumulator(
+    const SparseMacGrid3D& mac_grid,
+    std::span<const MacTransferParticle3D> particles,
+    std::span<FaceDeposit> face_deposits,
+    AccumulateFaceContribution accumulate_face_contribution
+) {
+  const auto face_deposit_extent_status = ValidateExtent(face_deposits.size(), mac_grid.face_count());
+  if (!face_deposit_extent_status.ok()) {
+    return face_deposit_extent_status;
+  }
+  const auto alias_status = CheckWritableViews({std::as_bytes(face_deposits)}, {std::as_bytes(particles)});
+  if (!alias_status.ok()) {
+    return alias_status;
+  }
+
+  // Resolve and deposit in particle order into scratch. An unsupported face
+  // or arithmetic failure on a later particle must leave caller storage intact.
+  std::vector<FaceDeposit> staged_face_deposits(face_deposits.size());
+  for (const auto& particle : particles) {
+    if (!std::isfinite(particle.particle_mass) || particle.particle_mass < 0.0) {
+      return absl::InvalidArgumentError("particle mass must be finite and nonnegative");
+    }
+    if (!IsFinite(particle.particle_velocity) || !IsFinite(particle.particle_velocity_slopes)) {
+      return absl::InvalidArgumentError("particle velocity and affine fit must be finite");
+    }
+    for (const auto component : kNormalComponentAccess) {
+      const auto stencil = BuildOwnedMacFaceStencil3D(
+          mac_grid,
+          component.axis,
+          particle.sorted_world_position,
+          particle.trial_world_position
+      );
+      if (!stencil.ok()) {
+        return stencil.status();
+      }
+      const double particle_velocity_component = particle.particle_velocity.*component.velocity_component;
+      const Vec3 particle_velocity_slope_row = particle.particle_velocity_slopes.*component.velocity_slope_row;
+      for (const auto& sample : *stencil) {
+        const double mass_contribution = sample.weight * particle.particle_mass;
+        const double velocity_at_face =
+            particle_velocity_component + Dot(particle_velocity_slope_row, sample.face_offset_from_particle);
+        const double pure_momentum_contribution = mass_contribution * velocity_at_face;
+        const auto status = accumulate_face_contribution(
+            mass_contribution,
+            pure_momentum_contribution,
+            staged_face_deposits[sample.face_slot]
+        );
+        if (!status.ok()) {
+          return status;
+        }
+      }
+    }
+  }
+  std::ranges::copy(staged_face_deposits, face_deposits.begin());
+  return absl::OkStatus();
+}
+
+struct GatheredMacVelocityComponent {
+  double new_pic_velocity;
+  double grid_velocity_increment;
+  Vec3 fitted_velocity_slope_row;
+  Vec3 velocity_gradient_row;
+};
+
+absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
+    const MacFaceStencil3D& stencil,
+    double cell_width,
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities
+) {
+  double old_pic_velocity = 0.0;
+  double new_pic_velocity = 0.0;
+  Vec3 normalized_offset_velocity_moment{};
+  Vec3 velocity_gradient_row{};
+  for (const auto& sample : stencil) {
+    const double old_face_velocity = old_face_velocities[sample.face_slot];
+    const double new_face_velocity = new_face_velocities[sample.face_slot];
+    const double weighted_new_face_velocity = sample.weight * new_face_velocity;
+    old_pic_velocity += sample.weight * old_face_velocity;
+    new_pic_velocity += weighted_new_face_velocity;
+    const Vec3 normalized_face_displacement{
+        .x = sample.face_offset_from_particle.x / cell_width,
+        .y = sample.face_offset_from_particle.y / cell_width,
+        .z = sample.face_offset_from_particle.z / cell_width,
+    };
+    AddScaled(normalized_offset_velocity_moment, normalized_face_displacement, weighted_new_face_velocity);
+    AddScaled(velocity_gradient_row, sample.weight_gradient, new_face_velocity);
+  }
+  // Complete quadratic support makes the fit's normal matrix I/4 in cell
+  // coordinates. Apply its inverse before converting the slope to inverse
+  // seconds. Forming cell_width squared would narrow the usable scale range.
+  const Vec3 fitted_velocity_slope_row{
+      .x = (4.0 * normalized_offset_velocity_moment.x) / cell_width,
+      .y = (4.0 * normalized_offset_velocity_moment.y) / cell_width,
+      .z = (4.0 * normalized_offset_velocity_moment.z) / cell_width,
+  };
+  const double grid_velocity_increment = new_pic_velocity - old_pic_velocity;
+  if (!std::isfinite(new_pic_velocity) || !std::isfinite(grid_velocity_increment)
+      || !IsFinite(fitted_velocity_slope_row) || !IsFinite(velocity_gradient_row)) {
+    return absl::OutOfRangeError("gathered velocity or slope is nonfinite");
+  }
+  return GatheredMacVelocityComponent{
+      .new_pic_velocity = new_pic_velocity,
+      .grid_velocity_increment = grid_velocity_increment,
+      .fitted_velocity_slope_row = fitted_velocity_slope_row,
+      .velocity_gradient_row = velocity_gradient_row,
+  };
+}
+
+}  // namespace
+
+absl::Status DepositMac3D(
+    const SparseMacGrid3D& mac_grid,
+    std::span<const MacTransferParticle3D> particles,
+    std::span<MacFaceDeposit3D> face_deposits
+) {
+  return DepositWithFaceAccumulator(
+      mac_grid,
+      particles,
+      face_deposits,
+      [](double mass_contribution, double pure_momentum_contribution, MacFaceDeposit3D& face) {
+        face.deposited_mass += mass_contribution;
+        face.deposited_pure_momentum += pure_momentum_contribution;
+        if (!std::isfinite(face.deposited_mass) || !std::isfinite(face.deposited_pure_momentum)) {
+          return absl::OutOfRangeError("deposited mass or pure momentum is nonfinite");
+        }
+        return absl::OkStatus();
+      }
+  );
+}
+
+absl::Status DepositMacQuanta3D(
+    const SparseMacGrid3D& mac_grid,
+    std::span<const MacTransferParticle3D> particles,
+    MacDepositQuantization3D quantization,
+    std::span<MacFaceDepositQuanta3D> face_deposits
+) {
+  if (!IsPositiveNormalPowerOfTwo(quantization.mass_per_quantum)
+      || !IsPositiveNormalPowerOfTwo(quantization.pure_momentum_per_quantum)) {
+    return absl::InvalidArgumentError("quantization scales must be positive normal powers of two");
+  }
+  if (quantization.declared_particle_capacity > kMaxQuantizedParticleCapacity) {
+    return absl::ResourceExhaustedError("declared particle capacity exceeds the transfer limit");
+  }
+  if (particles.size() > quantization.declared_particle_capacity) {
+    return absl::ResourceExhaustedError("particle count exceeds declared capacity");
+  }
+
+  // Use the smallest power-of-two contributor bound that covers the capacity.
+  // A single particle can reach each owned face at most once.
+  const std::size_t nonzero_particle_capacity = std::max(std::size_t{1}, quantization.declared_particle_capacity);
+  const int particle_capacity_exponent = static_cast<int>(std::bit_width(nonzero_particle_capacity - 1));
+  const double scaled_contribution_limit = std::ldexp(1.0, 62 - particle_capacity_exponent);
+  return DepositWithFaceAccumulator(
+      mac_grid,
+      particles,
+      face_deposits,
+      [quantization, scaled_contribution_limit](
+          double mass_contribution,
+          double pure_momentum_contribution,
+          MacFaceDepositQuanta3D& face
+      ) {
+        const double scaled_mass_contribution = mass_contribution / quantization.mass_per_quantum;
+        const double scaled_pure_momentum_contribution =
+            pure_momentum_contribution / quantization.pure_momentum_per_quantum;
+        const bool scaled_mass_in_range =
+            std::isfinite(scaled_mass_contribution) && std::abs(scaled_mass_contribution) <= scaled_contribution_limit;
+        const bool scaled_pure_momentum_in_range = std::isfinite(scaled_pure_momentum_contribution)
+            && std::abs(scaled_pure_momentum_contribution) <= scaled_contribution_limit;
+        if (!scaled_mass_in_range || !scaled_pure_momentum_in_range) {
+          return absl::OutOfRangeError("scaled mass or pure momentum contribution exceeds the quantization range");
+        }
+        const std::int64_t quantized_mass_contribution = RoundNearestEven(scaled_mass_contribution);
+        const std::int64_t quantized_pure_momentum_contribution = RoundNearestEven(scaled_pure_momentum_contribution);
+        // One contribution per particle reaches any owned face. The sum of
+        // absolute rounded contributions is at most 2^62 in each channel.
+        face.mass_quanta_sum += quantized_mass_contribution;
+        face.pure_momentum_quanta_sum += quantized_pure_momentum_contribution;
+        return absl::OkStatus();
+      }
+  );
+}
+
+absl::Status GatherMac3D(
+    const SparseMacGrid3D& mac_grid,
+    std::span<const MacTransferParticle3D> particles,
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities,
+    std::span<MacParticleGatherResult3D> particle_gather_results
+) {
+  const auto face_extents =
+      CheckExtents(mac_grid.face_count(), {old_face_velocities.size(), new_face_velocities.size()});
+  if (!face_extents.ok()) {
+    return face_extents;
+  }
+  const auto particle_extent = ValidateExtent(particle_gather_results.size(), particles.size());
+  if (!particle_extent.ok()) {
+    return particle_extent;
+  }
+  const auto alias_status = CheckWritableViews(
+      {std::as_bytes(particle_gather_results)},
+      {std::as_bytes(particles), std::as_bytes(old_face_velocities), std::as_bytes(new_face_velocities)}
+  );
+  if (!alias_status.ok()) {
+    return alias_status;
+  }
+  const auto is_finite_face_velocity = [](double face_velocity) {
+    return std::isfinite(face_velocity);
+  };
+  if (!std::ranges::all_of(old_face_velocities, is_finite_face_velocity)
+      || !std::ranges::all_of(new_face_velocities, is_finite_face_velocity)) {
+    return absl::InvalidArgumentError("old and new face velocity fields must be finite");
+  }
+
+  const double cell_width = mac_grid.geometry().cell_width;
+  std::vector<MacParticleGatherResult3D> staged_particle_gather_results(particles.size());
+  for (std::size_t particle_index = 0; particle_index < particles.size(); ++particle_index) {
+    const auto& particle = particles[particle_index];
+    auto& staged_particle_result = staged_particle_gather_results[particle_index];
+    for (const auto component : kNormalComponentAccess) {
+      const auto stencil = BuildOwnedMacFaceStencil3D(
+          mac_grid,
+          component.axis,
+          particle.sorted_world_position,
+          particle.trial_world_position
+      );
+      if (!stencil.ok()) {
+        return stencil.status();
+      }
+      const auto gathered_component =
+          GatherMacVelocityComponent(*stencil, cell_width, old_face_velocities, new_face_velocities);
+      if (!gathered_component.ok()) {
+        return gathered_component.status();
+      }
+      staged_particle_result.new_pic_velocity.*component.velocity_component = gathered_component->new_pic_velocity;
+      staged_particle_result.grid_velocity_increment.*component.velocity_component =
+          gathered_component->grid_velocity_increment;
+      staged_particle_result.fitted_velocity_slopes.*component.velocity_slope_row =
+          gathered_component->fitted_velocity_slope_row;
+      staged_particle_result.velocity_gradient.*component.velocity_slope_row =
+          gathered_component->velocity_gradient_row;
+    }
+  }
+  std::ranges::copy(staged_particle_gather_results, particle_gather_results.begin());
+  return absl::OkStatus();
+}
+
+}  // namespace fluidity

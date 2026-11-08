@@ -13,16 +13,22 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CPU_CASES = (
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FourFixturesPresent",
+    "FixtureBridge.FiveFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
     "Transfer.LocalAffineFixture",
     "Pressure.TwoCellFixtureUsesPositiveInternalJump",
     "Pressure.CompliantFixtureRetainsMeanPressure",
     "Viscosity.StiffFixture",
-    *(f"Cpu.Case{index}" for index in range(116)),
+    "MacTransfer3D.AffineCornerMatchesOracle",
+    *(f"Cpu.Case{index}" for index in range(115)),
 )
 PROBE_CASES = ("CudaProbe.SharedVec2Math", "CudaProbe.LaunchIgnoresPriorRuntimeError")
 OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
+MAC_TRANSFER_3D_CASES = (
+    "CudaMacTransfer3D.DepositCornerMatchesOracleAndCpu",
+    "CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu",
+    "CudaMacTransfer3D.RejectionPreservesOutputs",
+)
 MEMCHECK_OPERATOR_CASES = (
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
@@ -31,6 +37,7 @@ MEMCHECK_OPERATOR_CASES = (
     "CudaTransfer.GatherAffineMatchesFixtureAndCpu",
     "CudaTransfer.GatherNonlinearKeepsTrueGradientSeparate",
     "CudaTransfer.GatherFailurePreservesOutputs",
+    *MAC_TRANSFER_3D_CASES,
     "CudaPressure.NeumannJumpMatchesFixture",
     "CudaPressure.ComplianceRetainsMeanPressure",
     "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
@@ -52,12 +59,20 @@ PROBE_RECEIPT = (
     "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
 )
 OPERATOR_RECEIPTS = {
+    MAC_TRANSFER_3D_CASES[0]: "operator=p2g_3d compiled_architecture=1200 kernel_ms=0.375",
+    MAC_TRANSFER_3D_CASES[1]: "operator=g2p_3d compiled_architecture=1200 kernel_ms=0.75",
     "CudaTransfer.DepositAnalyticAndCpuParity": "operator=p2g compiled_architecture=1200 kernel_ms=0.125",
     "CudaTransfer.GatherAffineMatchesFixtureAndCpu": "operator=g2p compiled_architecture=1200 kernel_ms=0.25",
     "CudaPressure.NeumannJumpMatchesFixture": "operator=pressure_neumann compiled_architecture=1200 kernel_ms=0.5",
     "CudaPressure.ComplianceRetainsMeanPressure": "operator=pressure_compliance compiled_architecture=1200 kernel_ms=1.0",
 }
-FIXTURES = ("affine_apic.json", "compliant_pressure.json", "stiff_viscosity.json", "two_cell_pressure.json")
+FIXTURES = (
+    "affine_apic.json",
+    "compliant_pressure.json",
+    "stiff_viscosity.json",
+    "two_cell_pressure.json",
+    "uniform_mac_transfer_3d.json",
+)
 PYTHON_NODE_IDS = (
     "tests/test_reference.py::test_analytic",
     "test_tools.py::test_export[0]",
@@ -330,7 +345,7 @@ def scenario(invocation, monkeypatch):
                             )
                             for index, case_name in enumerate(self.sanitizer_cases)
                         )
-                        stdout += "[  PASSED  ] 11 tests.\n"
+                        stdout += f"[  PASSED  ] {len(self.sanitizer_cases)} tests.\n"
                         stdout += self.operator_sanitizer_error_summary
             elif command == "cmake":
                 if self.failure == "build" and "--build" in arguments and "--target" not in arguments:
@@ -639,7 +654,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 18,
+        "tests": 21,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -648,6 +663,8 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
         "operators": {
             "p2g": {"compiled_architecture": 1200, "kernel_ms": 0.125},
             "g2p": {"compiled_architecture": 1200, "kernel_ms": 0.25},
+            "p2g_3d": {"compiled_architecture": 1200, "kernel_ms": 0.375},
+            "g2p_3d": {"compiled_architecture": 1200, "kernel_ms": 0.75},
             "pressure_neumann": {"compiled_architecture": 1200, "kernel_ms": 0.5},
             "pressure_compliance": {"compiled_architecture": 1200, "kernel_ms": 1.0},
         },
@@ -669,7 +686,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 16,
+            "tests": 19,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -909,3 +926,44 @@ def test_release_rejects_probe_and_operator_receipts_from_graph_memcheck(scenari
         GRAPH_RECEIPT, GRAPH_RECEIPT + "\n" + foreign_receipt
     )
     rejected(diagnostic, "windows-release-cuda")
+
+
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES[:2])
+@pytest.mark.parametrize("problem", ["missing", "wrong-operator", "wrong-architecture", "duplicate", "outside-case"])
+@pytest.mark.parametrize("config", ["debug", "release"])
+def test_cuda_rejects_bad_3d_operator_evidence(scenario, case_name, problem, config):
+    processes, _, _, _, rejected = scenario
+    receipt = OPERATOR_RECEIPTS[case_name]
+    wrong_operator = OPERATOR_RECEIPTS[next(case for case in MAC_TRANSFER_3D_CASES[:2] if case != case_name)]
+    if config == "debug":
+        receipts = processes.gpu_receipts
+    else:
+        receipts = processes.sanitizer_receipts
+    if problem == "outside-case":
+        if config == "debug":
+            processes.gpu_before_case[case_name] = receipt + "\n"
+        else:
+            processes.operator_sanitizer_error_summary += "\n" + receipt
+    else:
+        receipts[case_name] = {
+            "missing": "",
+            "wrong-operator": wrong_operator,
+            "wrong-architecture": receipt.replace("=1200", "=890"),
+            "duplicate": receipt + "\n" + receipt,
+        }[problem]
+    diagnostic = "outside its testcase" if problem == "outside-case" else case_name
+    rejected(diagnostic, f"windows-{config}-cuda")
+
+
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES)
+def test_gpu_rejects_skipped_3d_operator_cases(scenario, case_name):
+    processes, _, _, _, rejected = scenario
+    processes.skipped_gpu_case = case_name
+    rejected("contains skipped or failed tests", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES)
+def test_release_requires_every_3d_operator_in_memcheck(scenario, case_name):
+    processes, _, _, _, rejected = scenario
+    processes.sanitizer_cases = tuple(case for case in processes.sanitizer_cases if case != case_name)
+    rejected("Compute Sanitizer", "windows-release-cuda")

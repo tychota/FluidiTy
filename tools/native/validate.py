@@ -29,17 +29,23 @@ FIXTURE_TESTS = {
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
     "stiff_viscosity.json": "Viscosity.StiffFixture",
     "two_cell_pressure.json": "Pressure.TwoCellFixtureUsesPositiveInternalJump",
+    "uniform_mac_transfer_3d.json": "MacTransfer3D.AffineCornerMatchesOracle",
 }
 CPU_REQUIRED = {
     *FIXTURE_TESTS.values(),
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FourFixturesPresent",
+    "FixtureBridge.FiveFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
 }
 GPU_PROBE_RECEIPT_CASE = "CudaProbe.SharedVec2Math"
 GPU_PROBE_CASES = {GPU_PROBE_RECEIPT_CASE, "CudaProbe.LaunchIgnoresPriorRuntimeError"}
 GPU_OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
+GPU_DEPOSIT_3D_RECEIPT_CASE = "CudaMacTransfer3D.DepositCornerMatchesOracleAndCpu"
+GPU_GATHER_3D_RECEIPT_CASE = "CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu"
 GPU_OPERATOR_MEMCHECK_CASES = {
+    GPU_DEPOSIT_3D_RECEIPT_CASE,
+    GPU_GATHER_3D_RECEIPT_CASE,
+    "CudaMacTransfer3D.RejectionPreservesOutputs",
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
     "CudaTransfer.DepositRejectsInvalidSupportRangeAndCapacity",
@@ -61,6 +67,8 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_DEPOSIT_3D_RECEIPT_CASE: "p2g_3d",
+    GPU_GATHER_3D_RECEIPT_CASE: "g2p_3d",
     "CudaTransfer.DepositAnalyticAndCpuParity": "p2g",
     "CudaTransfer.GatherAffineMatchesFixtureAndCpu": "g2p",
     "CudaPressure.NeumannJumpMatchesFixture": "pressure_neumann",
@@ -392,7 +400,7 @@ def hash_fixtures(directory, build):
     entries = parse_schema1_json_object(contents)["fixtures"]
     actual = {path.name for path in directory.iterdir() if path.suffix.lower() == ".json"}
     if entries.keys() != FIXTURE_TESTS.keys() or actual != {*FIXTURE_TESTS, "manifest.json"}:
-        raise ValueError("expected the four exported fixture JSON files and their manifest")
+        raise ValueError("expected the five exported fixture JSON files and their manifest")
     for name, expected in entries.items():
         if sha256((directory / name).read_bytes()) != expected:
             raise ValueError(f"fixture hash mismatch: {name}")
@@ -497,7 +505,7 @@ def without_test_controls(prefix):
     return {key: value for key, value in os.environ.items() if not key.upper().startswith(prefix)}
 
 
-def verify_google_test(case):
+def google_test_case_output(case, label):
     name = case.attrib["name"]
     lines = case.findtext("system-out", "").splitlines()
     execution_markers = [
@@ -511,11 +519,15 @@ def verify_google_test(case):
         or lines.count("[  PASSED  ] 1 test.") != 1
     ):
         raise ValueError(f"CTest did not show that GoogleTest {name} executed and passed")
-    if name == GPU_GRAPH_RECEIPT_CASE:
-        (run_index, _), (ok_index, _) = execution_markers
+    (run_index, _), (ok_index, _) = execution_markers
+    if label == "gpu":
         outside_case = "\n".join(lines[:run_index] + lines[ok_index + 1 :])
-        if graph_receipt_lines(outside_case):
-            raise ValueError(f"CTest gpu: {name} reported a graph replay receipt outside its testcase")
+        if name == GPU_PROBE_RECEIPT_CASE and GPU_PROBE_RECEIPT_RE.search(outside_case):
+            raise ValueError("CTest gpu: hardware probe receipt outside its testcase")
+        for receipt_type, receipt_lines in (("operator", operator_receipt_lines), ("graph replay", graph_receipt_lines)):
+            if receipt_lines(outside_case):
+                raise ValueError(f"CTest gpu: {name} reported a {receipt_type} receipt outside its testcase")
+    return "\n".join(lines[run_index + 1 : ok_index])
 
 
 def run_ctest(run, label, required):
@@ -537,9 +549,9 @@ def run_ctest(run, label, required):
     if result.returncode and not junit.is_file():
         require_success(f"ctest-{label}", result)
     cases, incomplete = junit_cases(junit)
-    for case in cases:
-        if case.attrib["status"] == "run":
-            verify_google_test(case)
+    case_outputs = {
+        case.attrib["name"]: google_test_case_output(case, label) for case in cases if case.attrib["status"] == "run"
+    }
     if cases:
         publish_ctest(run, label, cases)
     require_success(f"ctest-{label}", result)
@@ -550,7 +562,7 @@ def run_ctest(run, label, required):
         raise ValueError("ctest gpu must contain exactly the required hardware probe, operator and graph replay tests")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
-    return {"status": "passed", "tests": len(cases)}, cases
+    return {"status": "passed", "tests": len(cases)}, case_outputs
 
 
 def verify_gpu_probe_receipt(probe_output, qualification, config):
@@ -857,8 +869,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     evidence["native_cpu"] = cpu
     if run.mode == "cuda":
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
-        evidence["gpu"], gpu_cases = run_ctest(run, "gpu", GPU_REQUIRED)
-        gpu_case_outputs = {case.attrib["name"]: case.findtext("system-out", "") for case in gpu_cases}
+        evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)
         probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
         evidence["gpu"].update(probe_evidence)
         expected_compiled_architecture = probe_evidence["compiled_architecture"]

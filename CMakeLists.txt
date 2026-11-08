@@ -40,9 +40,11 @@ endif()
 find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
 add_library(fluidity_native STATIC
   native/src/grid.cc
+  native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
   native/src/small_solve.cc
   native/src/transfers.cc
+  native/src/transfers_3d.cc
   native/src/pressure.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
@@ -64,6 +66,8 @@ if(FLUIDITY_ENABLE_CUDA)
   add_library(fluidity_cuda_operators STATIC
     native/cuda/transfer_host.cc
     native/cuda/transfers.cu
+    native/cuda/transfer_3d_host.cc
+    native/cuda/transfers_3d.cu
     native/cuda/pressure_host.cc
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
@@ -109,6 +113,7 @@ if(BUILD_TESTING)
             --overwrite
     COMMAND "${CMAKE_COMMAND}" -E touch "${fixture_export_stamp}"
     DEPENDS "${reference_src}/__init__.py" "${reference_src}/cli.py" "${reference_src}/fixtures.py"
+            "${reference_src}/transfer_3d_fixtures.py"
             "${PROJECT_SOURCE_DIR}/reference/pyproject.toml" "${PROJECT_SOURCE_DIR}/reference/uv.lock"
     COMMENT "Exporting independent reference fixtures"
     VERBATIM)
@@ -131,8 +136,10 @@ if(BUILD_TESTING)
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
+    native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
+    native/tests/test_transfers_3d.cc
     native/tests/test_pressure.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
@@ -159,19 +166,22 @@ if(BUILD_TESTING)
     add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)
     target_link_libraries(fluidity_cuda_probe_tests PRIVATE fluidity_cuda_probe CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_probe_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
-    if(WIN32)
-      target_compile_definitions(fluidity_cuda_probe_tests
-        PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
-    endif()
     gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
 
     add_executable(fluidity_cuda_operator_tests
       native/tests/test_cuda_transfers.cc
+      native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    if(WIN32)
+      foreach(target IN ITEMS fluidity_cuda_probe_tests fluidity_cuda_operator_tests)
+        target_compile_definitions(${target}
+          PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
+      endforeach()
+    endif()
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
     add_executable(fluidity_cuda_graph_tests

@@ -51,7 +51,7 @@ def test_process_doubles_fail_closed(tmp_path):
 
     bindir = tmp_path / 'bin'
     bindir.mkdir()
-    driver = '''import os, pathlib, subprocess, sys
+    driver = '''import json, os, pathlib, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 if os.environ.get("FAIL_TOOL") == name: sys.exit(7)
@@ -62,7 +62,7 @@ elif name == "exporter":
     elif not os.environ.get("EMPTY_EXPORT"): pathlib.Path(args[args.index("-o") + 1]).write_bytes(b"fake export")
 elif name == "lake":
     if "lean" in args:
-        names = {"Pressure.lean": ["pressure_quadratic_form_eq", "pressure_psd"], "FixedPoint.lean": ["fixed_point_order_independent", "fixed_point_partial_bound"]}
+        names = json.loads(os.environ["FAKE_MODULE_TARGETS"])
         for key, targets in names.items():
             if args[-1].endswith(key):
                 for target in targets: print("'Fluidity." + target + "' depends on axioms: [" + os.environ.get("FAKE_AXIOM", "propext") + "]")
@@ -102,8 +102,10 @@ runpy.run_path(verifier, run_name="__main__")
         '--output', str(output),
     ]
 
+    fake_modules = json.dumps({name + '.lean': targets for name, targets in verify.MODULE_TARGETS.items()})
+
     def invoke(**kwargs):
-        return subprocess.run(cmd, env={**os.environ, **kwargs}, capture_output=True,
+        return subprocess.run(cmd, env={**os.environ, "FAKE_MODULE_TARGETS": fake_modules, **kwargs}, capture_output=True,
                               text=True, encoding='utf-8')
 
     success = invoke()
@@ -118,3 +120,37 @@ runpy.run_path(verifier, run_name="__main__")
 
 
 ROOT_SCRIPT = Path(__file__).parents[1] / 'verify_proofs.py'
+
+def test_uniform_transfer_contract_inventory():
+    required = {
+        'Fluidity.affine_reconstruction_of_moments',
+        'Fluidity.mac_deposit_conserves_row_moments',
+        'Fluidity.quantized_sum_error_bound',
+        'Fluidity.uniform_mac_tile_contains_stencil',
+    }
+    assert required <= set(verify.TARGETS)
+
+
+def test_uniform_basis_and_cap_lemmas_are_independently_exported():
+    required = {
+        'Fluidity.quadratic_tensor_moments',
+        'Fluidity.quadratic_shifted_basis',
+        'Fluidity.fixed_point_cap_partial_bound',
+        'Fluidity.uniform_mac_tile_product',
+    }
+    assert required <= set(verify.TARGETS)
+
+
+@pytest.mark.parametrize('missing', [
+    'Fluidity.affine_reconstruction_of_moments',
+    'Fluidity.mac_deposit_conserves_row_moments',
+    'Fluidity.quantized_sum_error_bound',
+    'Fluidity.uniform_mac_tile_contains_stencil',
+])
+def test_new_contract_missing_closure_fails_audit(missing):
+    output = '\n'.join(
+        f"'{name}' depends on axioms: [propext, Classical.choice, Quot.sound]"
+        for name in verify.TARGETS if name != missing
+    )
+    with pytest.raises(ValueError, match='missing target'):
+        verify.audit_axioms(output)
