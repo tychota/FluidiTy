@@ -29,12 +29,13 @@ FIXTURE_TESTS = {
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
     "stiff_viscosity.json": "Viscosity.StiffFixture",
     "two_cell_pressure.json": "Pressure.TwoCellFixtureUsesPositiveInternalJump",
+    "uniform_mac_pressure_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_transfer_3d.json": "MacTransfer3D.AffineCornerMatchesOracle",
 }
 CPU_REQUIRED = {
     *FIXTURE_TESTS.values(),
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FiveFixturesPresent",
+    "FixtureBridge.CanonicalFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
 }
 GPU_PROBE_RECEIPT_CASE = "CudaProbe.SharedVec2Math"
@@ -400,7 +401,7 @@ def hash_fixtures(directory, build):
     entries = parse_schema1_json_object(contents)["fixtures"]
     actual = {path.name for path in directory.iterdir() if path.suffix.lower() == ".json"}
     if entries.keys() != FIXTURE_TESTS.keys() or actual != {*FIXTURE_TESTS, "manifest.json"}:
-        raise ValueError("expected the five exported fixture JSON files and their manifest")
+        raise ValueError("expected the canonical exported fixture JSON files and their manifest")
     for name, expected in entries.items():
         if sha256((directory / name).read_bytes()) != expected:
             raise ValueError(f"fixture hash mismatch: {name}")

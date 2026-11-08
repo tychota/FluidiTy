@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CPU_CASES = (
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FiveFixturesPresent",
+    "FixtureBridge.CanonicalFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
     "Transfer.LocalAffineFixture",
     "Pressure.TwoCellFixtureUsesPositiveInternalJump",
@@ -71,6 +71,7 @@ FIXTURES = (
     "compliant_pressure.json",
     "stiff_viscosity.json",
     "two_cell_pressure.json",
+    "uniform_mac_pressure_3d.json",
     "uniform_mac_transfer_3d.json",
 )
 PYTHON_NODE_IDS = (

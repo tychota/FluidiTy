@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import numpy as np
 from .fixtures import atomic_write, canonical_bytes, write_fixture
+from .pressure_3d_fixtures import uniform_mac_pressure_3d_fixture
 from .transfer_3d_fixtures import uniform_mac_transfer_3d_fixture
 
 
@@ -21,6 +22,7 @@ def export(directory, overwrite=False):
     directory = Path(directory)
     names = examples()
     names['uniform_mac_transfer_3d'] = uniform_mac_transfer_3d_fixture()
+    names['uniform_mac_pressure_3d'] = uniform_mac_pressure_3d_fixture()
     targets = [directory / (name + '.json') for name in names] + [directory / 'manifest.json']
     if not overwrite and any(p.exists() for p in targets):
         raise FileExistsError('export already exists; use --overwrite')

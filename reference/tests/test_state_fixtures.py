@@ -48,7 +48,7 @@ def test_cli_exports_deterministic_hand_checked_fixtures(tmp_path):
         subprocess.run([sys.executable, '-m', 'fluidity_reference.cli', 'export', str(path)], check=True)
     assert (a / 'manifest.json').read_bytes() == (b / 'manifest.json').read_bytes()
     manifest = json.loads((a / 'manifest.json').read_text())
-    assert len(manifest['fixtures']) == 5
+    assert len(manifest['fixtures']) == 6
     for name, digest in manifest['fixtures'].items():
         assert hashlib.sha256((a / name).read_bytes()).hexdigest() == digest
     assert subprocess.run([sys.executable, '-m', 'fluidity_reference.cli', 'export', str(a)], capture_output=True).returncode != 0
