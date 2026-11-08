@@ -162,6 +162,8 @@ if(BUILD_TESTING)
     gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
 
     add_executable(fluidity_cuda_operator_tests native/tests/test_cuda_transfers.cc)
+    add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
+    target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)

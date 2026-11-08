@@ -63,8 +63,8 @@ class OperatorRuntime {
     if (stream_ != nullptr) {
       cleanup_status_.Update(CheckCuda(cudaStreamDestroy(stream_), "cudaStreamDestroy"));
     }
-    for (std::size_t index = buffer_count_; index > 0; --index) {
-      cleanup_status_.Update(CheckCuda(cudaFree(buffers_[index - 1]), "cudaFree"));
+    for (std::size_t remaining_buffers = buffer_count_; remaining_buffers > 0; --remaining_buffers) {
+      cleanup_status_.Update(CheckCuda(cudaFree(buffers_[remaining_buffers - 1]), "cudaFree"));
     }
     if (previous_device_ >= 0) {
       cleanup_status_.Update(CheckCuda(cudaSetDevice(previous_device_), "cudaSetDevice (restore)"));
@@ -112,50 +112,50 @@ class OperatorRuntime {
     return stream_;
   }
 
-  // Zero-count buffers have a null device pointer and issue no runtime calls.
+  // Zero-element buffers have a null device pointer and issue no runtime calls.
   template <typename T>
-  absl::Status Allocate(std::size_t count, T*& device) {
-    device = nullptr;
-    if (count == 0) {
+  absl::Status Allocate(std::size_t element_count, T*& device_buffer) {
+    device_buffer = nullptr;
+    if (element_count == 0) {
       return absl::OkStatus();
     }
     if (buffer_count_ == buffers_.size()) {
       return absl::ResourceExhaustedError("CUDA operator buffer capacity exceeded");
     }
-    const auto bytes = CheckedExtentProduct(count, sizeof(T));
-    if (!bytes.ok()) {
-      return bytes.status();
+    const auto byte_count = CheckedExtentProduct(element_count, sizeof(T));
+    if (!byte_count.ok()) {
+      return byte_count.status();
     }
-    void* buffer = nullptr;
-    const auto status = CheckCuda(cudaMalloc(&buffer, *bytes), "cudaMalloc");
+    void* allocation = nullptr;
+    const auto status = CheckCuda(cudaMalloc(&allocation, *byte_count), "cudaMalloc");
     if (!status.ok()) {
       return status;
     }
-    buffers_[buffer_count_++] = buffer;
-    device = static_cast<T*>(buffer);
+    buffers_[buffer_count_++] = allocation;
+    device_buffer = static_cast<T*>(allocation);
     return absl::OkStatus();
   }
 
   template <typename T>
-  absl::Status Upload(std::span<const T> host, T*& device) {
-    const auto status = Allocate(host.size(), device);
-    if (!status.ok() || host.empty()) {
+  absl::Status Upload(std::span<const T> host_values, T*& device_buffer) {
+    const auto status = Allocate(host_values.size(), device_buffer);
+    if (!status.ok() || host_values.empty()) {
       return status;
     }
     return CheckCuda(
-        cudaMemcpyAsync(device, host.data(), host.size_bytes(), cudaMemcpyHostToDevice, stream_),
+        cudaMemcpyAsync(device_buffer, host_values.data(), host_values.size_bytes(), cudaMemcpyHostToDevice, stream_),
         "cudaMemcpyAsync (host to device)"
     );
   }
 
-  // The supplied count must match the allocation.
+  // The supplied element_count must match the allocation.
   template <typename T>
-  absl::Status AllocateZeroed(std::size_t count, T*& device) {
-    const auto status = Allocate(count, device);
-    if (!status.ok() || count == 0) {
+  absl::Status AllocateZeroed(std::size_t element_count, T*& device_buffer) {
+    const auto status = Allocate(element_count, device_buffer);
+    if (!status.ok() || element_count == 0) {
       return status;
     }
-    return CheckCuda(cudaMemsetAsync(device, 0, count * sizeof(T), stream_), "cudaMemsetAsync");
+    return CheckCuda(cudaMemsetAsync(device_buffer, 0, element_count * sizeof(T), stream_), "cudaMemsetAsync");
   }
 
   absl::Status BeginKernel() {
@@ -175,12 +175,12 @@ class OperatorRuntime {
 
   // Call only after FinishKernel has synchronized the stream.
   template <typename T>
-  absl::Status Download(const T* device, std::span<T> host) {
-    if (host.empty()) {
+  absl::Status Download(const T* device_buffer, std::span<T> host_values) {
+    if (host_values.empty()) {
       return absl::OkStatus();
     }
     return CheckCuda(
-        cudaMemcpy(host.data(), device, host.size_bytes(), cudaMemcpyDeviceToHost),
+        cudaMemcpy(host_values.data(), device_buffer, host_values.size_bytes(), cudaMemcpyDeviceToHost),
         "cudaMemcpy (device to host)"
     );
   }

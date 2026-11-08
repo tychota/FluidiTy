@@ -272,8 +272,10 @@ absl::Status P2G(
   }
   const std::size_t face_count = *scratch_count / kDepositDoublesPerFace;
   const std::size_t particle_count = particles.positions.size();
-  const auto particle_extents =
-      CheckExtents(particle_count, {particles.masses.size(), particles.velocities.size(), particles.affine.size()});
+  const auto particle_extents = CheckExtents(
+      particle_count,
+      {particles.masses.size(), particles.velocities.size(), particles.velocity_fit_slopes.size()}
+  );
   if (!particle_extents.ok()) {
     return particle_extents;
   }
@@ -292,7 +294,7 @@ absl::Status P2G(
           std::as_bytes(particles.positions),
           std::as_bytes(particles.masses),
           std::as_bytes(particles.velocities),
-          std::as_bytes(particles.affine),
+          std::as_bytes(particles.velocity_fit_slopes),
       }
   );
   if (!disjoint.ok()) {
@@ -306,7 +308,7 @@ absl::Status P2G(
     const Vec2 position = particles.positions[particle];
     const double mass = particles.masses[particle];
     const Vec2 velocity = particles.velocities[particle];
-    const Mat2 affine = particles.affine[particle];
+    const Mat2 affine = particles.velocity_fit_slopes[particle];
     if (!IsFinite(position) || !IsFinite(velocity) || !IsFinite(affine)) {
       return absl::InvalidArgumentError("particle position, velocity and affine fit must be finite");
     }
