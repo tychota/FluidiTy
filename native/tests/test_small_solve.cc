@@ -53,23 +53,23 @@ TEST(SmallSolve, Residual) {
   SmallSolveWorkspace workspace;
 
   for (const auto& system : systems) {
-    const std::size_t unknowns = system.rhs.size();
+    const std::size_t unknown_count = system.rhs.size();
     std::array<double, 3> storage{};
-    const auto solution = std::span(storage).first(unknowns);
+    const auto solution = std::span(storage).first(unknown_count);
     ASSERT_TRUE(SolveSmallSpd(system.matrix, system.rhs, solution, workspace).ok());
 
     double max_residual = 0.0;
-    double max_rhs = 0.0;
-    for (std::size_t row = 0; row < unknowns; ++row) {
-      double matrix_product = 0.0;
-      for (std::size_t column = 0; column < unknowns; ++column) {
-        matrix_product += system.matrix[row * unknowns + column] * solution[column];
+    double max_abs_rhs_entry = 0.0;
+    for (std::size_t row = 0; row < unknown_count; ++row) {
+      double matrix_vector_row_product = 0.0;
+      for (std::size_t column = 0; column < unknown_count; ++column) {
+        matrix_vector_row_product += system.matrix[row * unknown_count + column] * solution[column];
       }
-      ASSERT_TRUE(std::isfinite(matrix_product));
-      max_residual = std::max(max_residual, std::abs(system.rhs[row] - matrix_product));
-      max_rhs = std::max(max_rhs, std::abs(system.rhs[row]));
+      ASSERT_TRUE(std::isfinite(matrix_vector_row_product));
+      max_residual = std::max(max_residual, std::abs(system.rhs[row] - matrix_vector_row_product));
+      max_abs_rhs_entry = std::max(max_abs_rhs_entry, std::abs(system.rhs[row]));
     }
-    EXPECT_LE(max_residual, 1e-12 * std::max(1.0, max_rhs));
+    EXPECT_LE(max_residual, 1e-12 * std::max(1.0, max_abs_rhs_entry));
   }
 }
 
@@ -99,27 +99,27 @@ TEST(SmallSolve, RejectsIncorrectExtents) {
 }
 
 TEST(SmallSolve, MaximumSupportedSize) {
-  constexpr std::size_t unknowns = 64;
-  std::array<double, unknowns * unknowns> matrix{};
-  std::array<double, unknowns> rhs{};
-  std::array<double, unknowns> solution{};
+  constexpr std::size_t unknown_count = 64;
+  std::array<double, unknown_count * unknown_count> matrix{};
+  std::array<double, unknown_count> rhs{};
+  std::array<double, unknown_count> solution{};
   SmallSolveWorkspace workspace;
-  for (std::size_t row = 0; row < unknowns; ++row) {
-    matrix[row * unknowns + row] = 4.0;
+  for (std::size_t row = 0; row < unknown_count; ++row) {
+    matrix[row * unknown_count + row] = 4.0;
     rhs[row] = 4.0 * static_cast<double>(row);
   }
 
   ASSERT_TRUE(SolveSmallSpd(matrix, rhs, solution, workspace).ok());
-  for (std::size_t row = 0; row < unknowns; ++row) {
+  for (std::size_t row = 0; row < unknown_count; ++row) {
     EXPECT_DOUBLE_EQ(solution[row], static_cast<double>(row));
   }
 }
 
 TEST(SmallSolve, RejectsOversizedSystem) {
-  constexpr std::size_t unknowns = 65;
-  const std::array<double, unknowns * unknowns> matrix{};
-  const std::array<double, unknowns> rhs{};
-  std::array<double, unknowns> solution;
+  constexpr std::size_t unknown_count = 65;
+  const std::array<double, unknown_count * unknown_count> matrix{};
+  const std::array<double, unknown_count> rhs{};
+  std::array<double, unknown_count> solution;
   solution.fill(9.0);
   const auto initial_solution = solution;
   SmallSolveWorkspace workspace;
@@ -189,16 +189,16 @@ TEST(SmallSolve, RejectsSingularityMaskedByRoundedPivots) {
 
 TEST(SmallSolve, RejectsLongSingularTridiagonalSystem) {
   // With these end diagonals, the exact null vector has entries (-2)^(63-row).
-  constexpr std::size_t unknowns = 64;
-  std::array<double, unknowns * unknowns> matrix{};
-  std::array<double, unknowns> rhs{};
-  std::array<double, unknowns> solution;
+  constexpr std::size_t unknown_count = 64;
+  std::array<double, unknown_count * unknown_count> matrix{};
+  std::array<double, unknown_count> rhs{};
+  std::array<double, unknown_count> solution;
   SmallSolveWorkspace workspace;
-  for (std::size_t row = 0; row < unknowns; ++row) {
-    matrix[row * unknowns + row] = 10.0;
+  for (std::size_t row = 0; row < unknown_count; ++row) {
+    matrix[row * unknown_count + row] = 10.0;
     if (row > 0) {
-      matrix[row * unknowns + row - 1] = 4.0;
-      matrix[(row - 1) * unknowns + row] = 4.0;
+      matrix[row * unknown_count + row - 1] = 4.0;
+      matrix[(row - 1) * unknown_count + row] = 4.0;
     }
   }
   matrix.front() = 2.0;

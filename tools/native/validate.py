@@ -13,7 +13,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from compile_fixtures import schema_document
+from compile_fixtures import parse_schema1_json_object
 from qualify_toolchain import PINNED_TOOLS
 
 PLATFORMS = {
@@ -61,13 +61,13 @@ GPU_OPERATOR_RECEIPT_CASES = {
 }
 # The floor prevents partially discovered suites from passing. New tests may increase the count.
 MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11}
-GPU_RECORD = re.compile(
+GPU_PROBE_RECEIPT_RE = re.compile(
     r"^device=(?P<device>[\w ()+.-]+) capability=(?P<capability>\d+\.\d+) "
     r"compiled_architecture=(?P<compiled_architecture>\d+) driver_api=(?P<driver_api>\d+) "
     r"runtime_api=(?P<runtime_api>\d+) launch=0 copy=0 synchronize=0 elements=17 sentinel=\(0,0\)$",
     re.MULTILINE,
 )
-OPERATOR_RECORD = re.compile(
+OPERATOR_RECEIPT_RE = re.compile(
     r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
     r"kernel_ms=(?P<kernel_ms>[0-9]+\.[0-9]+)"
 )
@@ -94,31 +94,31 @@ def publish(path, contents):
 
 
 class ValidationRun:
-    def __init__(self, root, preset, output, host_profile, build_profile):
+    def __init__(self, root, preset, report_dir, host_profile, build_profile):
         self.root = root
-        self.output = output
+        self.report_dir = report_dir
         self.preset = preset
         self.config = preset.split("-")[1].title()
         self.mode = preset.split("-")[2]
-        raw_parent = root / "out/native-validation" / preset
-        raw_parent.mkdir(parents=True, exist_ok=True)
-        self.raw = Path(tempfile.mkdtemp(prefix="run-", dir=raw_parent))
-        self.log = self.raw / "commands.jsonl"
+        run_log_parent_dir = root / "out/native-validation" / preset
+        run_log_parent_dir.mkdir(parents=True, exist_ok=True)
+        self.run_log_dir = Path(tempfile.mkdtemp(prefix="run-", dir=run_log_parent_dir))
+        self.command_log_path = self.run_log_dir / "commands.jsonl"
         self.commands = []
         self.redactions = {sys.executable: "python", host_profile: "<host-profile>", build_profile: "<build-profile>"}
 
     def execute(self, stage, *arguments, check=True, timeout=None, env=None):
         argv = [str(argument) for argument in arguments]
-        display = []
+        redacted_argv = []
         for argument in argv:
-            if argument.startswith(str(self.raw) + os.sep):
-                display.append("<run-log>/" + Path(argument).name)
+            if argument.startswith(str(self.run_log_dir) + os.sep):
+                redacted_argv.append("<run-log>/" + Path(argument).name)
             else:
-                display.append(self.redactions.get(argument, argument))
-        print(f"[{stage}] {display}", flush=True)
+                redacted_argv.append(self.redactions.get(argument, argument))
+        print(f"[{stage}] {redacted_argv}", flush=True)
         # A file avoids waiting on a pipe inherited by a sanitizer child after timeout.
-        stdout = self.raw / f"{stage}.log"
-        with stdout.open("w", encoding="utf-8") as stream:
+        stage_log_path = self.run_log_dir / f"{stage}.log"
+        with stage_log_path.open("w", encoding="utf-8") as stream:
             try:
                 result = subprocess.run(
                     argv,
@@ -133,28 +133,34 @@ class ValidationRun:
                     env=env,
                 )
             except subprocess.TimeoutExpired as error:
-                self.record(stage, argv, display, "timeout", stdout)
+                self.record(stage, argv, redacted_argv, "timeout", stage_log_path)
                 raise RuntimeError(f"{stage} timed out after {timeout} seconds") from error
             except OSError:
-                self.record(stage, argv, display, "unavailable", stdout)
+                self.record(stage, argv, redacted_argv, "unavailable", stage_log_path)
                 raise
             if result.stdout is not None:
                 stream.write(result.stdout)
-        self.record(stage, argv, display, result.returncode, stdout)
-        result.stdout = stdout.read_text(encoding="utf-8", errors="replace")
+        self.record(stage, argv, redacted_argv, result.returncode, stage_log_path)
+        result.stdout = stage_log_path.read_text(encoding="utf-8", errors="replace")
         if check:
             require_success(stage, result)
         return result
 
-    def record(self, stage, argv, display, exit_code, stdout):
-        with self.log.open("a", encoding="utf-8") as stream:
+    def record(self, stage, argv, redacted_argv, exit_code, stage_log_path):
+        with self.command_log_path.open("a", encoding="utf-8") as stream:
             stream.write(
                 json.dumps(
-                    {"stage": stage, "argv": argv, "cwd": str(self.root), "exit_code": exit_code, "log": stdout.name}
+                    {
+                        "stage": stage,
+                        "argv": argv,
+                        "cwd": str(self.root),
+                        "exit_code": exit_code,
+                        "log": stage_log_path.name,
+                    }
                 )
                 + "\n"
             )
-        self.commands.append({"stage": stage, "argv": display, "exit_code": exit_code})
+        self.commands.append({"stage": stage, "argv": redacted_argv, "exit_code": exit_code})
 
 
 def require_success(stage, result):
@@ -166,11 +172,13 @@ def require_success(stage, result):
 def check_locks(run):
     evidence = {}
     for index, lock in enumerate(LOCKS):
-        recorded = run.execute(f"lock-{index}-head", "git", "rev-parse", f"HEAD:{lock}").stdout.strip()
-        actual = run.execute(f"lock-{index}-working", "git", "hash-object", f"--path={lock}", lock).stdout.strip()
-        if actual != recorded:
+        committed_blob_id = run.execute(f"lock-{index}-head", "git", "rev-parse", f"HEAD:{lock}").stdout.strip()
+        working_blob_id = run.execute(
+            f"lock-{index}-working", "git", "hash-object", f"--path={lock}", lock
+        ).stdout.strip()
+        if working_blob_id != committed_blob_id:
             raise ValueError(f"{lock} differs from the committed lock in HEAD")
-        evidence[lock] = {"git_blob": recorded, "sha256": sha256((run.root / lock).read_bytes())}
+        evidence[lock] = {"git_blob": committed_blob_id, "sha256": sha256((run.root / lock).read_bytes())}
     return evidence
 
 
@@ -192,14 +200,14 @@ def hash_sources(run):
         "conan.lock",
         ".github/workflows/native-cpu.yml",
     ).stdout
-    sources = set(filter(None, tracked.split("\0")))
+    tracked_source_paths = set(filter(None, tracked.split("\0")))
     # Include this script when validating it before the first commit.
-    sources.update(("tools/native/validate.py", "tools/native/tests/test_validate.py"))
+    tracked_source_paths.update(("tools/native/validate.py", "tools/native/tests/test_validate.py"))
     return sha256(
         json_bytes(
             {
                 source: sha256((run.root / source).read_bytes())
-                for source in sorted(sources)
+                for source in sorted(tracked_source_paths)
                 if (run.root / source).is_file()
             }
         )
@@ -226,10 +234,10 @@ def check_tools(run):
 
 
 def check_windows_qualification(run, path):
-    original = schema_document(path.read_bytes())
+    original = parse_schema1_json_object(path.read_bytes())
     if original.get("mode") != run.mode:
         raise ValueError(f"qualification receipt must use --mode {run.mode}")
-    current_path = run.raw / "qualification.json"
+    current_path = run.run_log_dir / "qualification.json"
     run.execute(
         "qualification",
         sys.executable,
@@ -240,7 +248,7 @@ def check_windows_qualification(run, path):
         current_path,
         timeout=120,
     )
-    current = schema_document(current_path.read_bytes())
+    current = parse_schema1_json_object(current_path.read_bytes())
     for field in ("mode", "host", "source_sha256", "cuda"):
         if original.get(field) != current.get(field):
             raise ValueError(f"stale qualification ({field}). Requalify the Windows toolchain")
@@ -367,7 +375,7 @@ def check_configuration(run, build, fixtures, conan, receipt_path, compiler_id, 
 def hash_fixtures(directory, build):
     manifest = directory / "manifest.json"
     contents = manifest.read_bytes()
-    entries = schema_document(contents)["fixtures"]
+    entries = parse_schema1_json_object(contents)["fixtures"]
     actual = {path.name for path in directory.iterdir() if path.suffix.lower() == ".json"}
     if entries.keys() != FIXTURE_TESTS.keys() or actual != {*FIXTURE_TESTS, "manifest.json"}:
         raise ValueError("expected the four exported fixture JSON files and their manifest")
@@ -468,7 +476,7 @@ def publish_ctest(run, label, cases):
             ET.SubElement(testcase, outcome)
     report.set("failures", str(counts["failure"]))
     report.set("skipped", str(counts["skipped"]))
-    publish(run.output / f"ctest-{label}.xml", ET.tostring(report, encoding="utf-8", xml_declaration=True))
+    publish(run.report_dir / f"ctest-{label}.xml", ET.tostring(report, encoding="utf-8", xml_declaration=True))
 
 
 def without_test_controls(prefix):
@@ -491,7 +499,7 @@ def verify_google_test(case):
 
 
 def run_ctest(run, label, required):
-    junit = run.raw / f"ctest-{label}.xml"
+    junit = run.run_log_dir / f"ctest-{label}.xml"
     result = run.execute(
         f"ctest-{label}",
         "ctest",
@@ -525,13 +533,13 @@ def run_ctest(run, label, required):
     return {"status": "passed", "tests": len(cases)}, cases
 
 
-def gpu_receipt(probe_output, qualification, config):
-    observed_probe_records = GPU_RECORD.findall(probe_output)
+def verify_gpu_probe_receipt(probe_output, qualification, config):
+    observed_probe_records = GPU_PROBE_RECEIPT_RE.findall(probe_output)
     qualified_cuda = qualification["cuda"]
     qualified_device = qualified_cuda["configurations"][config]
-    qualified_architecture_code = qualified_cuda["architecture"]
-    compute_capability = f"{qualified_architecture_code // 10}.{qualified_architecture_code % 10}"
-    expected_compiled_architecture = qualified_architecture_code * 10
+    qualified_sm_code = qualified_cuda["architecture"]
+    compute_capability = f"{qualified_sm_code // 10}.{qualified_sm_code % 10}"
+    expected_compiled_architecture = qualified_sm_code * 10
     expected_probe_record = (
         qualified_device["device"],
         compute_capability,
@@ -554,7 +562,7 @@ def operator_receipt_lines(test_output):
     return [line for line in test_output.splitlines() if line.lstrip().startswith("operator=")]
 
 
-def operator_measurements(case_outputs, expected_compiled_architecture, evidence_label):
+def verify_operator_receipts(case_outputs, expected_compiled_architecture, evidence_label):
     measurements = {}
     for case_name, case_output in case_outputs.items():
         expected_operator = GPU_OPERATOR_RECEIPT_CASES.get(case_name)
@@ -565,15 +573,15 @@ def operator_measurements(case_outputs, expected_compiled_architecture, evidence
             continue
         if len(observed_receipt_lines) != 1:
             raise ValueError(f"{evidence_label}: {case_name} must report exactly one operator receipt")
-        receipt_match = OPERATOR_RECORD.fullmatch(observed_receipt_lines[0])
+        receipt_match = OPERATOR_RECEIPT_RE.fullmatch(observed_receipt_lines[0])
         if receipt_match is None:
             raise ValueError(f"{evidence_label}: malformed operator receipt in {case_name}")
         observed_operator = receipt_match["operator"]
-        observed_architecture_text = receipt_match["compiled_architecture"]
+        compiled_architecture_text = receipt_match["compiled_architecture"]
         observed_kernel_ms = float(receipt_match["kernel_ms"])
         if observed_operator != expected_operator:
             raise ValueError(f"{evidence_label}: {case_name} must report operator {expected_operator}")
-        if observed_architecture_text != str(expected_compiled_architecture):
+        if compiled_architecture_text != str(expected_compiled_architecture):
             raise ValueError(f"{evidence_label}: {case_name} reported a mismatched compiled architecture")
         if not math.isfinite(observed_kernel_ms):
             raise ValueError(f"{evidence_label}: {case_name} reported nonfinite kernel time")
@@ -666,7 +674,7 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
         {GPU_PROBE_RECEIPT_CASE},
         f"--gtest_filter={GPU_PROBE_RECEIPT_CASE}",
     )
-    gpu_receipt(probe_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
+    verify_gpu_probe_receipt(probe_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
     operator_case_outputs = run_memcheck(
         run,
         sanitizer,
@@ -675,7 +683,7 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
         GPU_OPERATOR_MEMCHECK_CASES,
         f"--gtest_filter=*-{GPU_OPERATOR_ERROR_CASE}",
     )
-    operator_measurements(
+    verify_operator_receipts(
         {**probe_case_outputs, **operator_case_outputs}, expected_compiled_architecture, "Compute Sanitizer"
     )
     return {
@@ -689,7 +697,7 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
     }
 
 
-def collected_python_cases(output):
+def parse_pytest_collection(output):
     # Pytest's xunit2 classname is the dotted test file and any enclosing class names.
     cases = set()
     for line in output.splitlines():
@@ -706,7 +714,7 @@ def collected_python_cases(output):
 
 
 def run_python(run):
-    junit = run.raw / "pytest.xml"
+    junit = run.run_log_dir / "pytest.xml"
     env = without_test_controls("PYTEST_")
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     command = (
@@ -721,8 +729,8 @@ def run_python(run):
         "-o",
         "addopts=",
     )
-    collection = run.execute("python-collection", *command, "--collect-only", env=env).stdout
-    expected = collected_python_cases(collection)
+    collection_stdout = run.execute("python-collection", *command, "--collect-only", env=env).stdout
+    collected_case_ids = parse_pytest_collection(collection_stdout)
     result = run.execute(
         "python-tests",
         *command,
@@ -731,20 +739,26 @@ def run_python(run):
         "--junitxml",
         junit,
         "--basetemp",
-        run.raw / "pytest-temp",
+        run.run_log_dir / "pytest-temp",
         env=env,
     )
     cases, incomplete = junit_cases(junit)
-    actual = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+    reported_case_ids = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
     passed = re.search(r"^([1-9][0-9]*) passed(?:, [0-9]+ warnings?)? in .+$", result.stdout, re.MULTILINE)
-    if incomplete or not passed or int(passed[1]) != len(cases) or len(actual) != len(cases) or actual != expected:
+    if (
+        incomplete
+        or not passed
+        or int(passed[1]) != len(cases)
+        or len(reported_case_ids) != len(cases)
+        or reported_case_ids != collected_case_ids
+    ):
         raise ValueError("Python results differ from the complete collected suite")
     return {"status": "passed", "tests": len(cases)}
 
 
 def validate(run, args, system, compiler, compiler_id, architecture):
-    locks = check_locks(run)
-    sources = hash_sources(run)
+    lockfile_evidence = check_locks(run)
+    source_tree_sha256 = hash_sources(run)
     head = run.execute("source-revision", "git", "rev-parse", "HEAD").stdout.strip()
     versions = check_tools(run)
     receipt_path = None
@@ -788,18 +802,18 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_cases = run_ctest(run, "gpu", GPU_REQUIRED)
         gpu_case_outputs = {case.attrib["name"]: case.findtext("system-out", "") for case in gpu_cases}
-        probe_evidence = gpu_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
+        probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
         evidence["gpu"].update(probe_evidence)
         expected_compiled_architecture = probe_evidence["compiled_architecture"]
-        evidence["gpu"]["operators"] = operator_measurements(
+        evidence["gpu"]["operators"] = verify_operator_receipts(
             gpu_case_outputs, expected_compiled_architecture, "CTest gpu"
         )
         evidence["sanitizer"] = run_sanitizer(run, qualification, build, expected_compiled_architecture)
     evidence["python"] = run_python(run)
 
     if (
-        locks != check_locks(run)
-        or sources != hash_sources(run)
+        lockfile_evidence != check_locks(run)
+        or source_tree_sha256 != hash_sources(run)
         or head != run.execute("source-revision-final", "git", "rev-parse", "HEAD").stdout.strip()
         or fixture_evidence != hash_fixtures(fixtures, build)
         or any(profiles[key]["file_sha256"] != sha256(path.read_bytes()) for key, path in profile_paths.items())
@@ -812,8 +826,8 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         "architecture": architecture,
         "configuration": run.config,
         "head": head,
-        "source_tree_sha256": sources,
-        "locks": locks,
+        "source_tree_sha256": source_tree_sha256,
+        "locks": lockfile_evidence,
         "profiles": profiles,
         "toolchain": versions,
         "fixtures": fixture_evidence,
@@ -893,10 +907,10 @@ def main(argv=None):
     except (KeyError, OSError, RuntimeError, TypeError, ValueError, ET.ParseError) as error:
         print(f"Native validation failed: {error}", file=sys.stderr)
         if run:
-            print(f"Local logs: {run.raw}", file=sys.stderr)
+            print(f"Local logs: {run.run_log_dir}", file=sys.stderr)
         return 1
     print(f"Native validation succeeded: {output / 'summary.json'}")
-    print(f"Local logs: {run.raw}")
+    print(f"Local logs: {run.run_log_dir}")
     return 0
 
 

@@ -65,7 +65,7 @@ PrepareTransferStencil(const Grid2D& mac_grid, Vec2 particle_world_position, Tra
       if (!face_geometry.ok()) {
         return face_geometry.status();
       }
-      const Vec2 particle_to_face_offset = face_geometry->position - particle_world_position;
+      const Vec2 particle_to_face_offset = face_geometry->world_position - particle_world_position;
       if (!IsFinite(particle_to_face_offset)) {
         return absl::OutOfRangeError("face position relative to particle is nonfinite");
       }
@@ -124,7 +124,7 @@ absl::Status PrepareDeposit(
 }
 
 absl::Status CollectDeposit(
-    OperatorRuntime& runtime,
+    CudaOperatorRuntime& runtime,
     std::span<const DepositParticle> particles,
     CudaDepositScales scales,
     std::span<DepositFaceAccumulator> face_accumulators,
@@ -146,7 +146,7 @@ absl::Status CollectDeposit(
     return status;
   }
 
-  if (auto status = runtime.BeginKernel(); !status.ok()) {
+  if (auto status = runtime.RecordKernelStart(); !status.ok()) {
     return status;
   }
   const int deposit_launch_code = LaunchDeposit(
@@ -165,7 +165,7 @@ absl::Status CollectDeposit(
   if (auto status = CheckCuda(static_cast<cudaError_t>(deposit_launch_code), "LaunchDeposit"); !status.ok()) {
     return status;
   }
-  if (auto status = runtime.FinishKernel(); !status.ok()) {
+  if (auto status = runtime.SynchronizeAndMeasureKernel(); !status.ok()) {
     return status;
   }
 
@@ -173,7 +173,7 @@ absl::Status CollectDeposit(
   if (auto status = runtime.Download(device_deposit_state, std::span(&downloaded_deposit_state, 1)); !status.ok()) {
     return status;
   }
-  const auto measured_kernel = runtime.Measurement(downloaded_deposit_state.compiled_architecture);
+  const auto measured_kernel = runtime.ValidateKernelMeasurement(downloaded_deposit_state.compiled_architecture);
   if (!measured_kernel.ok()) {
     return measured_kernel.status();
   }
@@ -191,7 +191,7 @@ absl::Status CollectDeposit(
 }
 
 absl::Status CollectGather(
-    OperatorRuntime& runtime,
+    CudaOperatorRuntime& runtime,
     std::span<const TransferStencil> particle_stencils,
     std::span<const double> old_face_velocities,
     std::span<const double> new_face_velocities,
@@ -223,7 +223,7 @@ absl::Status CollectGather(
     return allocation_status;
   }
 
-  if (auto kernel_start_status = runtime.BeginKernel(); !kernel_start_status.ok()) {
+  if (auto kernel_start_status = runtime.RecordKernelStart(); !kernel_start_status.ok()) {
     return kernel_start_status;
   }
   const int gather_launch_code = LaunchGather(
@@ -242,7 +242,7 @@ absl::Status CollectGather(
       !launch_status.ok()) {
     return launch_status;
   }
-  if (auto kernel_completion_status = runtime.FinishKernel(); !kernel_completion_status.ok()) {
+  if (auto kernel_completion_status = runtime.SynchronizeAndMeasureKernel(); !kernel_completion_status.ok()) {
     return kernel_completion_status;
   }
 
@@ -251,7 +251,7 @@ absl::Status CollectGather(
       !download_status.ok()) {
     return download_status;
   }
-  const auto measured_kernel = runtime.Measurement(downloaded_gather_state.compiled_architecture);
+  const auto measured_kernel = runtime.ValidateKernelMeasurement(downloaded_gather_state.compiled_architecture);
   if (!measured_kernel.ok()) {
     return measured_kernel.status();
   }
@@ -373,7 +373,7 @@ absl::Status CudaP2G(
   absl::Status status;
   absl::Status cleanup_status;
   {
-    cuda_internal::OperatorRuntime runtime(cleanup_status);
+    cuda_internal::CudaOperatorRuntime runtime(cleanup_status);
     status = cuda_internal::CollectDeposit(
         runtime,
         particle_staging,
@@ -494,7 +494,7 @@ absl::Status CudaG2P(
   absl::Status gather_status;
   absl::Status cleanup_status;
   {
-    cuda_internal::OperatorRuntime runtime(cleanup_status);
+    cuda_internal::CudaOperatorRuntime runtime(cleanup_status);
     gather_status = cuda_internal::CollectGather(
         runtime,
         std::span(particle_stencils.get(), particle_count),

@@ -101,7 +101,7 @@ absl::StatusOr<double> CellVolume(const Grid2D& grid) {
   return metrics->cell_volume;
 }
 
-absl::StatusOr<FaceInfo> FaceGeometry(const Grid2D& grid, std::size_t face_index) {
+absl::StatusOr<MacFaceGeometry> FaceGeometry(const Grid2D& grid, std::size_t face_index) {
   const auto metrics = CheckedGridMetrics(grid);
   if (!metrics.ok()) {
     return metrics.status();
@@ -137,12 +137,12 @@ absl::StatusOr<FaceInfo> FaceGeometry(const Grid2D& grid, std::size_t face_index
   const std::int64_t tail_cell_index =
       has_tail ? static_cast<std::int64_t>(potential_head_cell_index - normal_cell_index_stride) : -1;
   const std::int64_t head_cell_index = has_head ? static_cast<std::int64_t>(potential_head_cell_index) : -1;
-  return FaceInfo{
-      .position = position,
+  return MacFaceGeometry{
+      .world_position = position,
       .area = grid.h,
-      .distance = face_distance,
-      .tail = tail_cell_index,
-      .head = head_cell_index,
+      .pressure_gradient_distance = face_distance,
+      .tail_cell_index = tail_cell_index,
+      .head_cell_index = head_cell_index,
   };
 }
 

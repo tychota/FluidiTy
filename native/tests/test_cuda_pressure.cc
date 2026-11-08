@@ -31,9 +31,9 @@ struct PressureCase {
         cell_count(static_cast<std::size_t>(grid.nx) * grid.ny),
         face_count(2 * cell_count + grid.nx + grid.ny),
         predicted_face_velocities(face_count),
-        face_apertures(face_count, 1.0),
+        face_open_fractions(face_count, 1.0),
         face_inverse_densities(face_count, 1.0),
-        face_gradient_distances(face_count, grid.h),
+        pressure_gradient_distances(face_count, grid.h),
         wall_face_velocities(face_count),
         dirichlet_face_mask(face_count),
         dirichlet_face_pressures(face_count),
@@ -48,18 +48,18 @@ struct PressureCase {
     return {
         .grid = grid,
         .dt = step_duration,
-        .velocity = predicted_face_velocities,
-        .aperture = face_apertures,
-        .mobility = face_inverse_densities,
-        .distance = face_gradient_distances,
-        .wall_velocity = wall_face_velocities,
-        .dirichlet_mask = dirichlet_face_mask,
-        .dirichlet_pressure = dirichlet_face_pressures,
-        .jump = oriented_face_pressure_jumps,
-        .source = target_cell_divergences,
-        .fluid_volume = cell_fluid_volumes,
-        .bulk_modulus = cell_bulk_moduli,
-        .previous_pressure = previous_cell_pressures,
+        .predicted_face_velocities = predicted_face_velocities,
+        .face_open_fractions = face_open_fractions,
+        .face_inverse_densities = face_inverse_densities,
+        .pressure_gradient_distances = pressure_gradient_distances,
+        .wall_face_velocities = wall_face_velocities,
+        .dirichlet_face_mask = dirichlet_face_mask,
+        .dirichlet_face_pressures = dirichlet_face_pressures,
+        .face_pressure_jumps = oriented_face_pressure_jumps,
+        .target_cell_divergence = target_cell_divergences,
+        .cell_fluid_volumes = cell_fluid_volumes,
+        .cell_bulk_moduli = cell_bulk_moduli,
+        .previous_cell_pressures = previous_cell_pressures,
     };
   }
 
@@ -68,9 +68,9 @@ struct PressureCase {
   std::size_t face_count;
   double step_duration = 1.0;
   std::vector<double> predicted_face_velocities;
-  std::vector<double> face_apertures;
+  std::vector<double> face_open_fractions;
   std::vector<double> face_inverse_densities;
-  std::vector<double> face_gradient_distances;
+  std::vector<double> pressure_gradient_distances;
   std::vector<double> wall_face_velocities;
   std::vector<std::uint8_t> dirichlet_face_mask;
   std::vector<double> dirichlet_face_pressures;
@@ -94,13 +94,13 @@ struct PressureResult {
 
   PressureOutputsView Outputs() {
     return {
-        .pressure = cell_pressures,
-        .velocity = corrected_face_velocities,
+        .cell_pressures = cell_pressures,
+        .corrected_face_velocities = corrected_face_velocities,
         .original_matrix = original_matrix,
-        .rhs = original_rhs,
-        .residual = original_residuals,
-        .constraint_defect = cell_constraint_defects,
-        .gauges = gauge_cell_indices,
+        .original_rhs = original_rhs,
+        .original_residuals = original_residuals,
+        .cell_constraint_defects = cell_constraint_defects,
+        .gauge_cell_indices = gauge_cell_indices,
         .gauge_count = gauge_count,
     };
   }
@@ -178,7 +178,7 @@ void ExpectCpuParity(const PressureCase& pressure_case, const PressureResult& cu
   ExpectGaugeCellIndices(cuda_result, std::span(cpu_result.gauge_cell_indices).first(cpu_result.gauge_count));
 }
 
-std::span<const double> FixtureFloats(const fixtures::FixtureRecord& fixture, std::string_view field_name) {
+std::span<const double> ReadFixtureFloat64Array(const fixtures::FixtureRecord& fixture, std::string_view field_name) {
   const auto array_record = fixtures::FindArray(fixture, field_name);
   if (!array_record.ok()) {
     ADD_FAILURE() << array_record.status();
@@ -205,9 +205,9 @@ void CheckPressureFixture(
   ASSERT_TRUE(fixture_grid.ok()) << fixture_grid.status();
   ASSERT_EQ((*fixture_grid)->dtype, fixtures::DType::kInt64);
   const auto grid_dimensions = (*fixture_grid)->i64_data;
-  const auto grid_spacing = FixtureFloats(*fixture_record_iterator, "spacing");
-  const auto grid_origin = FixtureFloats(*fixture_record_iterator, "origin");
-  const auto step_duration = FixtureFloats(*fixture_record_iterator, "dt");
+  const auto grid_spacing = ReadFixtureFloat64Array(*fixture_record_iterator, "spacing");
+  const auto grid_origin = ReadFixtureFloat64Array(*fixture_record_iterator, "origin");
+  const auto step_duration = ReadFixtureFloat64Array(*fixture_record_iterator, "dt");
   ASSERT_EQ(grid_dimensions.size(), 2);
   ASSERT_EQ(grid_spacing.size(), 1);
   ASSERT_EQ(grid_origin.size(), 2);
@@ -219,21 +219,21 @@ void CheckPressureFixture(
       .origin = {grid_origin[0], grid_origin[1]},
   });
   pressure_case.step_duration = step_duration[0];
-  const auto predicted_face_velocities = FixtureFloats(*fixture_record_iterator, "velocity");
+  const auto predicted_face_velocities = ReadFixtureFloat64Array(*fixture_record_iterator, "velocity");
   ASSERT_EQ(predicted_face_velocities.size(), pressure_case.face_count);
   std::ranges::copy(predicted_face_velocities, pressure_case.predicted_face_velocities.begin());
   for (std::size_t face_index = 0; face_index < pressure_case.face_count; ++face_index) {
     const auto face_geometry = FaceGeometry(pressure_case.grid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    pressure_case.face_gradient_distances[face_index] = face_geometry->distance;
+    pressure_case.pressure_gradient_distances[face_index] = face_geometry->pressure_gradient_distance;
   }
   if (fixture_name == "two_cell_pressure") {
-    const auto oriented_face_pressure_jumps = FixtureFloats(*fixture_record_iterator, "jump");
+    const auto oriented_face_pressure_jumps = ReadFixtureFloat64Array(*fixture_record_iterator, "jump");
     ASSERT_EQ(oriented_face_pressure_jumps.size(), pressure_case.face_count);
     std::ranges::copy(oriented_face_pressure_jumps, pressure_case.oriented_face_pressure_jumps.begin());
   } else {
-    const auto target_cell_divergences = FixtureFloats(*fixture_record_iterator, "source");
-    const auto bulk_modulus = FixtureFloats(*fixture_record_iterator, "bulk_modulus");
+    const auto target_cell_divergences = ReadFixtureFloat64Array(*fixture_record_iterator, "source");
+    const auto bulk_modulus = ReadFixtureFloat64Array(*fixture_record_iterator, "bulk_modulus");
     ASSERT_EQ(target_cell_divergences.size(), pressure_case.cell_count);
     ASSERT_EQ(bulk_modulus.size(), 1);
     std::ranges::copy(target_cell_divergences, pressure_case.target_cell_divergences.begin());
@@ -246,13 +246,13 @@ void CheckPressureFixture(
   ASSERT_TRUE(cuda_status.ok()) << cuda_status;
   ExpectField(
       cuda_result.cell_pressures,
-      FixtureFloats(*fixture_record_iterator, "expected_pressure"),
+      ReadFixtureFloat64Array(*fixture_record_iterator, "expected_pressure"),
       fixture_record_iterator->atol,
       fixture_record_iterator->rtol
   );
   ExpectField(
       cuda_result.corrected_face_velocities,
-      FixtureFloats(*fixture_record_iterator, "expected_velocity"),
+      ReadFixtureFloat64Array(*fixture_record_iterator, "expected_velocity"),
       fixture_record_iterator->atol,
       fixture_record_iterator->rtol
   );
@@ -347,8 +347,8 @@ TEST(CudaPressure, LaunchIgnoresPriorRuntimeError) {
 
 TEST(CudaPressure, DirichletAndWallFluxMatchAnalyticAndCpu) {
   PressureCase pressure_case({1, 1, 1.0});
-  pressure_case.face_apertures = {0.5, 0.0, 0.0, 0.0};
-  pressure_case.face_gradient_distances[0] = 0.5;
+  pressure_case.face_open_fractions = {0.5, 0.0, 0.0, 0.0};
+  pressure_case.pressure_gradient_distances[0] = 0.5;
   pressure_case.dirichlet_face_mask[0] = 1;
   pressure_case.dirichlet_face_pressures[0] = 3.0;
   pressure_case.wall_face_velocities[1] = 1.0;
@@ -369,7 +369,7 @@ TEST(CudaPressure, DirichletAndWallFluxMatchAnalyticAndCpu) {
 
 TEST(CudaPressure, CapacityAndIncompatibilityPreserveOutputs) {
   PressureCase disconnected_pressure_case({8, 1, 1.0});
-  disconnected_pressure_case.face_apertures[4] = 0.0;
+  disconnected_pressure_case.face_open_fractions[4] = 0.0;
   disconnected_pressure_case.target_cell_divergences = {1.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0, -2.0};
 
   // A small accepted imbalance on the first gauge still appears in the original
@@ -407,7 +407,7 @@ TEST(CudaPressure, CapacityAndIncompatibilityPreserveOutputs) {
   // A positive subnormal is still too small for a pressure matrix coefficient.
   constexpr double subnormal_coefficient = 0x1p-1023;
   PressureCase subnormal_conductance_case({2, 1, 1.0});
-  subnormal_conductance_case.face_apertures[1] = subnormal_coefficient;
+  subnormal_conductance_case.face_open_fractions[1] = subnormal_coefficient;
   expect_rejection(subnormal_conductance_case, absl::StatusCode::kOutOfRange);
   PressureCase subnormal_compliance_case({1, 1, 1.0});
   subnormal_compliance_case.cell_fluid_volumes[0] = subnormal_coefficient;
@@ -417,7 +417,7 @@ TEST(CudaPressure, CapacityAndIncompatibilityPreserveOutputs) {
   const PressureCase aliased_pressure_case({1, 1, 1.0});
   PressureResult aliased_result(aliased_pressure_case);
   auto aliased_outputs = aliased_result.Outputs();
-  aliased_outputs.rhs = aliased_outputs.pressure;
+  aliased_outputs.original_rhs = aliased_outputs.cell_pressures;
   const auto alias_status =
       CudaSolvePressure2D(aliased_pressure_case.Inputs(), aliased_outputs, aliased_result.kernel_measurement);
   EXPECT_EQ(alias_status.code(), absl::StatusCode::kInvalidArgument);

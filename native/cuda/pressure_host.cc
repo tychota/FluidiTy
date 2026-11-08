@@ -29,15 +29,15 @@ absl::Status ValidatePressureViews(
   const auto face_extent_status = CheckExtents(
       face_count,
       {
-          pressure_inputs.velocity.size(),
-          pressure_inputs.aperture.size(),
-          pressure_inputs.mobility.size(),
-          pressure_inputs.distance.size(),
-          pressure_inputs.wall_velocity.size(),
-          pressure_inputs.dirichlet_mask.size(),
-          pressure_inputs.dirichlet_pressure.size(),
-          pressure_inputs.jump.size(),
-          pressure_outputs.velocity.size(),
+          pressure_inputs.predicted_face_velocities.size(),
+          pressure_inputs.face_open_fractions.size(),
+          pressure_inputs.face_inverse_densities.size(),
+          pressure_inputs.pressure_gradient_distances.size(),
+          pressure_inputs.wall_face_velocities.size(),
+          pressure_inputs.dirichlet_face_mask.size(),
+          pressure_inputs.dirichlet_face_pressures.size(),
+          pressure_inputs.face_pressure_jumps.size(),
+          pressure_outputs.corrected_face_velocities.size(),
       }
   );
   if (!face_extent_status.ok()) {
@@ -46,15 +46,15 @@ absl::Status ValidatePressureViews(
   const auto cell_extent_status = CheckExtents(
       cell_count,
       {
-          pressure_inputs.source.size(),
-          pressure_inputs.fluid_volume.size(),
-          pressure_inputs.bulk_modulus.size(),
-          pressure_inputs.previous_pressure.size(),
-          pressure_outputs.pressure.size(),
-          pressure_outputs.rhs.size(),
-          pressure_outputs.residual.size(),
-          pressure_outputs.constraint_defect.size(),
-          pressure_outputs.gauges.size(),
+          pressure_inputs.target_cell_divergence.size(),
+          pressure_inputs.cell_fluid_volumes.size(),
+          pressure_inputs.cell_bulk_moduli.size(),
+          pressure_inputs.previous_cell_pressures.size(),
+          pressure_outputs.cell_pressures.size(),
+          pressure_outputs.original_rhs.size(),
+          pressure_outputs.original_residuals.size(),
+          pressure_outputs.cell_constraint_defects.size(),
+          pressure_outputs.gauge_cell_indices.size(),
       }
   );
   if (!cell_extent_status.ok()) {
@@ -67,30 +67,30 @@ absl::Status ValidatePressureViews(
 
   return CheckWritableViews(
       {
-          std::as_bytes(pressure_outputs.pressure),
-          std::as_bytes(pressure_outputs.velocity),
+          std::as_bytes(pressure_outputs.cell_pressures),
+          std::as_bytes(pressure_outputs.corrected_face_velocities),
           std::as_bytes(pressure_outputs.original_matrix),
-          std::as_bytes(pressure_outputs.rhs),
-          std::as_bytes(pressure_outputs.residual),
-          std::as_bytes(pressure_outputs.constraint_defect),
-          std::as_bytes(pressure_outputs.gauges),
+          std::as_bytes(pressure_outputs.original_rhs),
+          std::as_bytes(pressure_outputs.original_residuals),
+          std::as_bytes(pressure_outputs.cell_constraint_defects),
+          std::as_bytes(pressure_outputs.gauge_cell_indices),
           std::as_bytes(std::span(&pressure_outputs.gauge_count, 1)),
           std::as_bytes(std::span(&kernel_measurement, 1)),
       },
       {
           std::as_bytes(std::span(&pressure_inputs, 1)),
-          std::as_bytes(pressure_inputs.velocity),
-          std::as_bytes(pressure_inputs.aperture),
-          std::as_bytes(pressure_inputs.mobility),
-          std::as_bytes(pressure_inputs.distance),
-          std::as_bytes(pressure_inputs.wall_velocity),
-          std::as_bytes(pressure_inputs.dirichlet_mask),
-          std::as_bytes(pressure_inputs.dirichlet_pressure),
-          std::as_bytes(pressure_inputs.jump),
-          std::as_bytes(pressure_inputs.source),
-          std::as_bytes(pressure_inputs.fluid_volume),
-          std::as_bytes(pressure_inputs.bulk_modulus),
-          std::as_bytes(pressure_inputs.previous_pressure),
+          std::as_bytes(pressure_inputs.predicted_face_velocities),
+          std::as_bytes(pressure_inputs.face_open_fractions),
+          std::as_bytes(pressure_inputs.face_inverse_densities),
+          std::as_bytes(pressure_inputs.pressure_gradient_distances),
+          std::as_bytes(pressure_inputs.wall_face_velocities),
+          std::as_bytes(pressure_inputs.dirichlet_face_mask),
+          std::as_bytes(pressure_inputs.dirichlet_face_pressures),
+          std::as_bytes(pressure_inputs.face_pressure_jumps),
+          std::as_bytes(pressure_inputs.target_cell_divergence),
+          std::as_bytes(pressure_inputs.cell_fluid_volumes),
+          std::as_bytes(pressure_inputs.cell_bulk_moduli),
+          std::as_bytes(pressure_inputs.previous_cell_pressures),
       }
   );
 }
@@ -108,30 +108,30 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
     if (!face_geometry.ok()) {
       return face_geometry.status();
     }
-    const double open_area_fraction = pressure_inputs.aperture[face_index];
+    const double open_area_fraction = pressure_inputs.face_open_fractions[face_index];
     const bool valid_open_area_fraction = open_area_fraction >= 0.0 && open_area_fraction <= 1.0;
     if (!valid_open_area_fraction) {
       return absl::InvalidArgumentError("CUDA pressure aperture must be in [0, 1]");
     }
-    const double inverse_density = pressure_inputs.mobility[face_index];
-    const double pressure_gradient_distance = pressure_inputs.distance[face_index];
+    const double inverse_density = pressure_inputs.face_inverse_densities[face_index];
+    const double pressure_gradient_distance = pressure_inputs.pressure_gradient_distances[face_index];
     if (!IsFinitePositive(inverse_density) || !IsFinitePositive(pressure_gradient_distance)) {
       return absl::InvalidArgumentError("CUDA pressure inverse density and distance must be finite and positive");
     }
-    const double predicted_face_velocity = pressure_inputs.velocity[face_index];
-    const double wall_face_velocity = pressure_inputs.wall_velocity[face_index];
-    const double dirichlet_pressure = pressure_inputs.dirichlet_pressure[face_index];
-    const double oriented_pressure_jump = pressure_inputs.jump[face_index];
+    const double predicted_face_velocity = pressure_inputs.predicted_face_velocities[face_index];
+    const double wall_face_velocity = pressure_inputs.wall_face_velocities[face_index];
+    const double dirichlet_pressure = pressure_inputs.dirichlet_face_pressures[face_index];
+    const double oriented_pressure_jump = pressure_inputs.face_pressure_jumps[face_index];
     if (!std::isfinite(predicted_face_velocity) || !std::isfinite(wall_face_velocity)
         || !std::isfinite(dirichlet_pressure) || !std::isfinite(oriented_pressure_jump)) {
       return absl::InvalidArgumentError("CUDA pressure face velocities, boundary pressures and jumps must be finite");
     }
-    const auto dirichlet_face_mask = pressure_inputs.dirichlet_mask[face_index];
+    const auto dirichlet_face_mask = pressure_inputs.dirichlet_face_mask[face_index];
     if (dirichlet_face_mask > 1) {
       return absl::InvalidArgumentError("CUDA pressure Dirichlet mask must contain 0 or 1");
     }
     const bool has_dirichlet_pressure = dirichlet_face_mask == 1;
-    const bool is_internal_face = face_geometry->tail >= 0 && face_geometry->head >= 0;
+    const bool is_internal_face = face_geometry->tail_cell_index >= 0 && face_geometry->head_cell_index >= 0;
     if (has_dirichlet_pressure && is_internal_face) {
       return absl::InvalidArgumentError("CUDA pressure Dirichlet face must be on the grid boundary");
     }
@@ -139,8 +139,8 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
       return absl::InvalidArgumentError("CUDA pressure jump must be zero on a Dirichlet face");
     }
     prepared_pressure_inputs.faces[face_index] = {
-        .tail_cell_index = face_geometry->tail,
-        .head_cell_index = face_geometry->head,
+        .tail_cell_index = face_geometry->tail_cell_index,
+        .head_cell_index = face_geometry->head_cell_index,
         .face_area = face_geometry->area,
         .predicted_face_velocity = predicted_face_velocity,
         .open_area_fraction = open_area_fraction,
@@ -153,16 +153,16 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
     };
   }
   for (std::size_t cell_index = 0; cell_index < prepared_pressure_inputs.cell_count; ++cell_index) {
-    const double target_cell_divergence = pressure_inputs.source[cell_index];
-    const double previous_cell_pressure = pressure_inputs.previous_pressure[cell_index];
+    const double target_cell_divergence = pressure_inputs.target_cell_divergence[cell_index];
+    const double previous_cell_pressure = pressure_inputs.previous_cell_pressures[cell_index];
     if (!std::isfinite(target_cell_divergence) || !std::isfinite(previous_cell_pressure)) {
       return absl::InvalidArgumentError("CUDA pressure target divergence and previous pressure must be finite");
     }
-    const double cell_fluid_volume = pressure_inputs.fluid_volume[cell_index];
+    const double cell_fluid_volume = pressure_inputs.cell_fluid_volumes[cell_index];
     if (!IsFinitePositive(cell_fluid_volume)) {
       return absl::InvalidArgumentError("CUDA pressure fluid volume must be finite and positive");
     }
-    const double cell_bulk_modulus = pressure_inputs.bulk_modulus[cell_index];
+    const double cell_bulk_modulus = pressure_inputs.cell_bulk_moduli[cell_index];
     if (!(cell_bulk_modulus > 0.0)) {
       return absl::InvalidArgumentError("CUDA pressure bulk modulus must be positive");
     }
@@ -177,7 +177,7 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
 }
 
 absl::Status CollectPressure(
-    cuda_internal::OperatorRuntime& runtime,
+    cuda_internal::CudaOperatorRuntime& runtime,
     const PreparedPressureInputs& prepared_pressure_inputs,
     PressureKernelResult& staged_pressure_result,
     CudaOperatorMeasurement& staged_kernel_measurement
@@ -193,7 +193,7 @@ absl::Status CollectPressure(
   if (auto status = runtime.AllocateZeroed(1, device_pressure_result); !status.ok()) {
     return status;
   }
-  if (auto status = runtime.BeginKernel(); !status.ok()) {
+  if (auto status = runtime.RecordKernelStart(); !status.ok()) {
     return status;
   }
   const auto launch_error = static_cast<cudaError_t>(
@@ -202,7 +202,7 @@ absl::Status CollectPressure(
   if (auto status = cuda_internal::CheckCuda(launch_error, "CUDA pressure launch"); !status.ok()) {
     return status;
   }
-  if (auto status = runtime.FinishKernel(); !status.ok()) {
+  if (auto status = runtime.SynchronizeAndMeasureKernel(); !status.ok()) {
     return status;
   }
   if (auto status = runtime.Download(device_pressure_result, std::span(&staged_pressure_result, 1)); !status.ok()) {
@@ -220,7 +220,8 @@ absl::Status CollectPressure(
     default:
       return absl::InternalError("unknown CUDA pressure kernel error");
   }
-  const auto completed_kernel_measurement = runtime.Measurement(staged_pressure_result.compiled_architecture);
+  const auto completed_kernel_measurement =
+      runtime.ValidateKernelMeasurement(staged_pressure_result.compiled_architecture);
   if (!completed_kernel_measurement.ok()) {
     return completed_kernel_measurement.status();
   }
@@ -275,7 +276,7 @@ absl::Status CudaSolvePressure2D(
   absl::Status pressure_status;
   absl::Status cleanup_status;
   {
-    cuda_internal::OperatorRuntime runtime(cleanup_status);
+    cuda_internal::CudaOperatorRuntime runtime(cleanup_status);
     pressure_status =
         CollectPressure(runtime, prepared_pressure_inputs, staged_pressure_result, staged_kernel_measurement);
   }
@@ -284,20 +285,28 @@ absl::Status CudaSolvePressure2D(
     return pressure_status;
   }
 
-  std::copy_n(staged_pressure_result.cell_pressures, *cell_count, pressure_outputs.pressure.begin());
-  std::copy_n(staged_pressure_result.corrected_face_velocities, *face_count, pressure_outputs.velocity.begin());
+  std::copy_n(staged_pressure_result.cell_pressures, *cell_count, pressure_outputs.cell_pressures.begin());
+  std::copy_n(
+      staged_pressure_result.corrected_face_velocities,
+      *face_count,
+      pressure_outputs.corrected_face_velocities.begin()
+  );
   std::copy_n(
       staged_pressure_result.original_matrix,
       *cell_count * *cell_count,
       pressure_outputs.original_matrix.begin()
   );
-  std::copy_n(staged_pressure_result.original_rhs, *cell_count, pressure_outputs.rhs.begin());
-  std::copy_n(staged_pressure_result.original_residuals, *cell_count, pressure_outputs.residual.begin());
-  std::copy_n(staged_pressure_result.cell_constraint_defects, *cell_count, pressure_outputs.constraint_defect.begin());
+  std::copy_n(staged_pressure_result.original_rhs, *cell_count, pressure_outputs.original_rhs.begin());
+  std::copy_n(staged_pressure_result.original_residuals, *cell_count, pressure_outputs.original_residuals.begin());
+  std::copy_n(
+      staged_pressure_result.cell_constraint_defects,
+      *cell_count,
+      pressure_outputs.cell_constraint_defects.begin()
+  );
   std::copy_n(
       staged_pressure_result.gauge_cell_indices,
       staged_pressure_result.gauge_count,
-      pressure_outputs.gauges.begin()
+      pressure_outputs.gauge_cell_indices.begin()
   );
   pressure_outputs.gauge_count = staged_pressure_result.gauge_count;
   kernel_measurement = staged_kernel_measurement;

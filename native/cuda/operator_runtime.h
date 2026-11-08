@@ -42,14 +42,14 @@ inline absl::Status CheckCuda(cudaError_t error, const char* operation) {
 // Owns one call's device buffers, stream and events. Callers keep host upload
 // storage alive through destruction and combine cleanup_status with the execution
 // status before publishing any staged data.
-class OperatorRuntime {
+class CudaOperatorRuntime {
  public:
-  explicit OperatorRuntime(absl::Status& cleanup_status) : cleanup_status_(cleanup_status) {
+  explicit CudaOperatorRuntime(absl::Status& cleanup_status) : cleanup_status_(cleanup_status) {
   }
-  OperatorRuntime(const OperatorRuntime&) = delete;
-  OperatorRuntime& operator=(const OperatorRuntime&) = delete;
+  CudaOperatorRuntime(const CudaOperatorRuntime&) = delete;
+  CudaOperatorRuntime& operator=(const CudaOperatorRuntime&) = delete;
 
-  ~OperatorRuntime() noexcept {
+  ~CudaOperatorRuntime() noexcept {
     // Early errors can occur while uploads or a kernel are still in flight.
     if (stream_ != nullptr) {
       cleanup_status_.Update(CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize (cleanup)"));
@@ -113,8 +113,8 @@ class OperatorRuntime {
   }
 
   // Zero-element buffers have a null device pointer and issue no runtime calls.
-  template <typename T>
-  absl::Status Allocate(std::size_t element_count, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status Allocate(std::size_t element_count, BufferElement*& device_buffer) {
     device_buffer = nullptr;
     if (element_count == 0) {
       return absl::OkStatus();
@@ -122,7 +122,7 @@ class OperatorRuntime {
     if (buffer_count_ == buffers_.size()) {
       return absl::ResourceExhaustedError("CUDA operator buffer capacity exceeded");
     }
-    const auto byte_count = CheckedExtentProduct(element_count, sizeof(T));
+    const auto byte_count = CheckedExtentProduct(element_count, sizeof(BufferElement));
     if (!byte_count.ok()) {
       return byte_count.status();
     }
@@ -132,12 +132,12 @@ class OperatorRuntime {
       return status;
     }
     buffers_[buffer_count_++] = allocation;
-    device_buffer = static_cast<T*>(allocation);
+    device_buffer = static_cast<BufferElement*>(allocation);
     return absl::OkStatus();
   }
 
-  template <typename T>
-  absl::Status Upload(std::span<const T> host_values, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status Upload(std::span<const BufferElement> host_values, BufferElement*& device_buffer) {
     const auto status = Allocate(host_values.size(), device_buffer);
     if (!status.ok() || host_values.empty()) {
       return status;
@@ -149,21 +149,24 @@ class OperatorRuntime {
   }
 
   // The supplied element_count must match the allocation.
-  template <typename T>
-  absl::Status AllocateZeroed(std::size_t element_count, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status AllocateZeroed(std::size_t element_count, BufferElement*& device_buffer) {
     const auto status = Allocate(element_count, device_buffer);
     if (!status.ok() || element_count == 0) {
       return status;
     }
-    return CheckCuda(cudaMemsetAsync(device_buffer, 0, element_count * sizeof(T), stream_), "cudaMemsetAsync");
+    return CheckCuda(
+        cudaMemsetAsync(device_buffer, 0, element_count * sizeof(BufferElement), stream_),
+        "cudaMemsetAsync"
+    );
   }
 
-  absl::Status BeginKernel() {
+  absl::Status RecordKernelStart() {
     return CheckCuda(cudaEventRecord(kernel_start_, stream_), "cudaEventRecord (start)");
   }
 
   // Completes all work on the stream before any result is read by the host.
-  absl::Status FinishKernel() {
+  absl::Status SynchronizeAndMeasureKernel() {
     if (auto status = CheckCuda(cudaEventRecord(kernel_end_, stream_), "cudaEventRecord (end)"); !status.ok()) {
       return status;
     }
@@ -173,9 +176,9 @@ class OperatorRuntime {
     return CheckCuda(cudaEventElapsedTime(&kernel_ms_, kernel_start_, kernel_end_), "cudaEventElapsedTime");
   }
 
-  // Call only after FinishKernel has synchronized the stream.
-  template <typename T>
-  absl::Status Download(const T* device_buffer, std::span<T> host_values) {
+  // Call only after SynchronizeAndMeasureKernel has synchronized the stream.
+  template <typename BufferElement>
+  absl::Status Download(const BufferElement* device_buffer, std::span<BufferElement> host_values) {
     if (host_values.empty()) {
       return absl::OkStatus();
     }
@@ -186,7 +189,7 @@ class OperatorRuntime {
   }
 
   // The marker must be written by the kernel image that just executed.
-  absl::StatusOr<CudaOperatorMeasurement> Measurement(int compiled_architecture) const {
+  absl::StatusOr<CudaOperatorMeasurement> ValidateKernelMeasurement(int compiled_architecture) const {
     if (compiled_architecture != device_architecture_) {
       return absl::FailedPreconditionError("CUDA operator image architecture differs from device architecture");
     }

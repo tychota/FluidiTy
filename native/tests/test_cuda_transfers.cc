@@ -17,17 +17,17 @@ namespace {
 constexpr Grid2D kGrid{4, 4, 1.0};
 constexpr std::size_t kXNormalFaceCount = (kGrid.nx + 1) * kGrid.ny;
 constexpr std::size_t kFaceCount = 40;
-constexpr std::size_t kXFace = 6;  // X-normal column 1, row 1.
+constexpr std::size_t kInteriorXNormalFaceIndex = 6;  // X-normal column 1, row 1.
 constexpr CudaDepositScales kUnitScales{1.0, 1.0, 1.0};
 
-template <std::size_t Count>
+template <std::size_t ParticleCount>
 struct ParticleBatch {
-  std::array<Vec2, Count> positions{};
-  std::array<double, Count> masses{};
-  std::array<Vec2, Count> velocities{};
-  std::array<Mat2, Count> velocity_fit_slopes{};
-  std::array<double, Count> volumes{};
-  std::array<Mat2, Count> stresses{};
+  std::array<Vec2, ParticleCount> positions{};
+  std::array<double, ParticleCount> masses{};
+  std::array<Vec2, ParticleCount> velocities{};
+  std::array<Mat2, ParticleCount> velocity_fit_slopes{};
+  std::array<double, ParticleCount> volumes{};
+  std::array<Mat2, ParticleCount> stresses{};
 
   ParticleView2D view() const {
     return {positions, masses, velocities, velocity_fit_slopes};
@@ -63,8 +63,8 @@ struct DepositResult {
   }
 };
 
-template <std::size_t Count>
-absl::Status Deposit(const ParticleBatch<Count>& batch, CudaDepositScales scales, DepositResult& result) {
+template <std::size_t ParticleCount>
+absl::Status Deposit(const ParticleBatch<ParticleCount>& batch, CudaDepositScales scales, DepositResult& result) {
   return CudaP2G(kGrid, batch.view(), batch.volumes, batch.stresses, scales, result.views(), result.measurement);
 }
 
@@ -87,9 +87,9 @@ TEST(CudaTransfer, DepositAnalyticAndCpuParity) {
   DepositResult result;
   const auto analytic_status = Deposit(analytic, scales, result);
   ASSERT_TRUE(analytic_status.ok()) << analytic_status;
-  EXPECT_EQ(static_cast<double>(result.mass_quanta[kXFace]) * scale, 0.375);
-  EXPECT_EQ(static_cast<double>(result.pure_momentum_quanta[kXFace]) * scale, 0.75);
-  EXPECT_EQ(static_cast<double>(result.stress_force_quanta[kXFace]) * scale, 6.0);
+  EXPECT_EQ(static_cast<double>(result.mass_quanta[kInteriorXNormalFaceIndex]) * scale, 0.375);
+  EXPECT_EQ(static_cast<double>(result.pure_momentum_quanta[kInteriorXNormalFaceIndex]) * scale, 0.75);
+  EXPECT_EQ(static_cast<double>(result.stress_force_quanta[kInteriorXNormalFaceIndex]) * scale, 6.0);
   EXPECT_EQ(static_cast<double>(result.stress_force_quanta[7]) * scale, -6.0);
   EXPECT_EQ(static_cast<double>(result.stress_force_quanta[1]) * scale, 2.0);
   EXPECT_EQ(static_cast<double>(result.stress_force_quanta[25]) * scale, -3.0);
@@ -123,18 +123,18 @@ TEST(CudaTransfer, DepositAnalyticAndCpuParity) {
 
   // At most two contributions per face, each with at most half a scale unit of rounding.
   constexpr double quantization_bound = 2.0 * scale / 2.0;
-  constexpr double fp_allowance = 2e-14;
+  constexpr double floating_point_tolerance = 2e-14;
   for (std::size_t face = 0; face < kFaceCount; ++face) {
     SCOPED_TRACE(face);
     EXPECT_NEAR(
         static_cast<double>(result.mass_quanta[face]) * scale,
         cpu_mass[face],
-        quantization_bound + fp_allowance
+        quantization_bound + floating_point_tolerance
     );
     EXPECT_NEAR(
         static_cast<double>(result.pure_momentum_quanta[face]) * scale,
         cpu_momentum[face],
-        quantization_bound + fp_allowance
+        quantization_bound + floating_point_tolerance
     );
   }
   std::cout << "operator=p2g compiled_architecture=" << result.measurement.compiled_architecture
@@ -153,9 +153,9 @@ TEST(CudaTransfer, DepositRoundsContributionsBeforeOrderIndependentSum) {
   ASSERT_TRUE(forward_status.ok()) << forward_status;
   // At this face all mass contributions round down from 0.375. Momentum and force
   // round (1.5, 1.5, -4.5) to (2, 2, -4) rather than rounding the sum to -2.
-  EXPECT_EQ(forward.mass_quanta[kXFace], 0);
-  EXPECT_EQ(forward.pure_momentum_quanta[kXFace], 0);
-  EXPECT_EQ(forward.stress_force_quanta[kXFace], 0);
+  EXPECT_EQ(forward.mass_quanta[kInteriorXNormalFaceIndex], 0);
+  EXPECT_EQ(forward.pure_momentum_quanta[kInteriorXNormalFaceIndex], 0);
+  EXPECT_EQ(forward.stress_force_quanta[kInteriorXNormalFaceIndex], 0);
   EXPECT_EQ(forward.stress_force_quanta[7], 0);  // Opposite signs on the adjacent x-normal face.
 
   std::ranges::reverse(batch.velocities);
@@ -173,7 +173,7 @@ TEST(CudaTransfer, DepositRoundsContributionsBeforeOrderIndependentSum) {
   boundary.velocities.fill({0x1p52, 0.0});
   const auto boundary_status = Deposit(boundary, kUnitScales, forward);
   ASSERT_TRUE(boundary_status.ok()) << boundary_status;
-  EXPECT_EQ(forward.pure_momentum_quanta[kXFace], std::int64_t{1} << 62);
+  EXPECT_EQ(forward.pure_momentum_quanta[kInteriorXNormalFaceIndex], std::int64_t{1} << 62);
 }
 
 TEST(CudaTransfer, DepositRejectsInvalidSupportRangeAndCapacity) {
@@ -343,12 +343,12 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
   }};
   std::array<double, kFaceCount> old_face_velocities;
   std::array<double, kFaceCount> new_face_velocities;
-  constexpr Vec2 kExpectedPicIncrement{1.5, -0.75};
+  constexpr Vec2 kExpectedGridVelocityIncrement{1.5, -0.75};
   std::size_t embedded_sample_count = 0;
   for (std::size_t face_index = 0; face_index < new_face_velocities.size(); ++face_index) {
     const auto face_geometry = FaceGeometry(kShiftedMacGrid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    const Vec2 face_offset = face_geometry->position - kXFaceCenterInWorld;
+    const Vec2 face_offset = face_geometry->world_position - kXFaceCenterInWorld;
     const bool is_x_normal = face_index < kXNormalFaceCount;
     if (is_x_normal) {
       new_face_velocities[face_index] =
@@ -360,16 +360,16 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
             (*fixture_sample_positions)->f64_data[2 * sample_index + 1],
         };
         const Vec2 sample_face_position = local_sample_position + fixture_translation;
-        if (face_geometry->position.x == sample_face_position.x
-            && face_geometry->position.y == sample_face_position.y) {
+        if (face_geometry->world_position.x == sample_face_position.x
+            && face_geometry->world_position.y == sample_face_position.y) {
           new_face_velocities[face_index] = (*fixture_velocity_samples)->f64_data[sample_index];
           ++embedded_sample_count;
         }
       }
-      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedPicIncrement.x;
+      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedGridVelocityIncrement.x;
     } else {
       new_face_velocities[face_index] = -2.0 + 1.25 * face_offset.x - 0.5 * face_offset.y;
-      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedPicIncrement.y;
+      old_face_velocities[face_index] = new_face_velocities[face_index] - kExpectedGridVelocityIncrement.y;
     }
   }
   ASSERT_EQ(embedded_sample_count, 4);
@@ -399,7 +399,7 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
       expected_x_affine_row.y,
       affine_fixture->atol + affine_fixture->rtol * std::abs(expected_x_affine_row.y)
   );
-  ExpectGatherVector(cuda_gather.grid_velocity_increments.front(), kExpectedPicIncrement);
+  ExpectGatherVector(cuda_gather.grid_velocity_increments.front(), kExpectedGridVelocityIncrement);
   ExpectGatherCpuParity(
       kShiftedMacGrid,
       particle_world_positions,
@@ -418,7 +418,7 @@ TEST(CudaTransfer, GatherNonlinearKeepsTrueGradientSeparate) {
   for (std::size_t face_index = 0; face_index < shared_face_velocities.size(); ++face_index) {
     const auto face_geometry = FaceGeometry(kGrid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    const Vec2 face_position = face_geometry->position;
+    const Vec2 face_position = face_geometry->world_position;
     shared_face_velocities[face_index] =
         face_index < kXNormalFaceCount ? face_position.x * face_position.x : 2.0 * face_position.y * face_position.y;
   }
@@ -614,7 +614,7 @@ TEST(CudaTransfer, GatherFailurePreservesOutputs) {
   // The second particle adds two gradient terms of 0.75 * max, which overflow
   // the FP64 derivative sum despite finite samples and a representable PIC value.
   constexpr std::size_t kRightXNormalFaceIndex = 7;
-  new_face_velocities[kXFace] = -std::numeric_limits<double>::max();
+  new_face_velocities[kInteriorXNormalFaceIndex] = -std::numeric_limits<double>::max();
   new_face_velocities[kRightXNormalFaceIndex] = std::numeric_limits<double>::max();
   expect_error(gather(), absl::StatusCode::kOutOfRange);
 }

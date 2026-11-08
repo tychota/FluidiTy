@@ -104,27 +104,27 @@ def resolve_tool(name):
     return Path(executable).resolve() if executable else None
 
 
-def check_host(output, crt):
-    fields = dict(re.findall(r"(\w+)=([^\s]+)", output))
-    if fields.get("crt") != crt:
-        raise ValueError(f"expected {crt} CRT, observed {fields.get('crt')!r}")
+def parse_msvc_probe(probe_stdout, expected_crt):
+    fields = dict(re.findall(r"(\w+)=([^\s]+)", probe_stdout))
+    if fields.get("crt") != expected_crt:
+        raise ValueError(f"expected {expected_crt} CRT, observed {fields.get('crt')!r}")
     if fields.get("architecture") != "x64" or fields.get("pointer_bits") != "64":
-        raise ValueError(f"expected the MSVC x64 target with 64-bit pointers, got {output!r}")
+        raise ValueError(f"expected the MSVC x64 target with 64-bit pointers, got {probe_stdout!r}")
     if not re.fullmatch(r"\d{9}", fields.get("msvc_full_ver", "")):
-        raise ValueError(f"missing full MSVC compiler version in probe output: {output!r}")
-    full = fields["msvc_full_ver"]
-    if fields.get("msvc_ver") != full[:4] or int(fields.get("cxx_standard", "0")) < 202002:
-        raise ValueError(f"expected consistent MSVC versions and C++20, got {output!r}")
+        raise ValueError(f"missing full MSVC compiler version in probe output: {probe_stdout!r}")
+    full_version_digits = fields["msvc_full_ver"]
+    if fields.get("msvc_ver") != full_version_digits[:4] or int(fields.get("cxx_standard", "0")) < 202002:
+        raise ValueError(f"expected consistent MSVC versions and C++20, got {probe_stdout!r}")
     return {
-        "crt": crt,
+        "crt": expected_crt,
         "msvc_ver": int(fields["msvc_ver"]),
-        "msvc_full_ver": int(full),
-        "compiler_version": f"{full[:2]}.{full[2:4]}.{full[4:]}",
+        "msvc_full_ver": int(full_version_digits),
+        "compiler_version": f"{full_version_digits[:2]}.{full_version_digits[2:4]}.{full_version_digits[4:]}",
         "cxx_standard": int(fields["cxx_standard"]),
     }
 
 
-def qualify(mode, architecture, work):
+def qualify(mode, cuda_architecture_code, probe_dir):
     tools = {}
     commands = []
     source_hashes = {}
@@ -140,12 +140,12 @@ def qualify(mode, architecture, work):
     def run(*argv):
         argv = list(map(str, argv))
         result = subprocess.run(
-            argv, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            argv, cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace", check=False,
         )
         commands.append({
             "argv": argv,
-            "cwd": str(work),
+            "cwd": str(probe_dir),
             "exit_code": result.returncode,
             "output": result.stdout,
         })
@@ -159,7 +159,7 @@ def qualify(mode, architecture, work):
         return output
 
     def write_source(name, source):
-        path = work / name
+        path = probe_dir / name
         contents = source.encode("utf-8")
         path.write_bytes(contents)
         source_hashes[name] = hashlib.sha256(contents).hexdigest()
@@ -179,21 +179,21 @@ def qualify(mode, architecture, work):
         if observed is None or observed.group(1) != expected:
             raise ValueError(f"{name} {expected} is required, got {tools[name]['version']!r}")
 
-    source = write_source("cpu probe.cc", CPU_SOURCE)
+    cpu_probe_path = write_source("cpu probe.cc", CPU_SOURCE)
     host_configurations = {}
     for configuration, crt in CRT_FLAGS.items():
-        executable = work / f"{configuration}.exe"
+        probe_exe_path = probe_dir / f"{configuration}.exe"
         debug = int(configuration == "Debug")
         cl_output = run(
             cl, "/nologo", "/Bv", "/std:c++20", "/Zc:__cplusplus",
-            f"/{crt}", f"/DFLUIDITY_DEBUG_CRT={debug}", f"/Fe{executable}", source,
+            f"/{crt}", f"/DFLUIDITY_DEBUG_CRT={debug}", f"/Fe{probe_exe_path}", cpu_probe_path,
         )
-        host_configurations[configuration] = check_host(run(executable), crt)
+        host_configurations[configuration] = parse_msvc_probe(run(probe_exe_path), crt)
     host_version = host_configurations["Release"]["compiler_version"]
     if host_configurations["Debug"]["compiler_version"] != host_version:
         raise ValueError("Debug and Release used different MSVC versions")
     tools["cl"].update(version=host_version, version_output=cl_output)
-    evidence = {
+    qualification_receipt = {
         "schema_version": 1,
         "mode": mode,
         "tools": tools,
@@ -214,42 +214,43 @@ def qualify(mode, architecture, work):
             raise ValueError("unset NVCC_PREPEND_FLAGS and NVCC_APPEND_FLAGS before qualifying")
         version("nvcc")
         version("nvidia-smi")
-        source = write_source("device probe.cu", CUDA_SOURCE)
+        cuda_probe_path = write_source("device probe.cu", CUDA_SOURCE)
         cuda_configurations = {}
         for configuration, crt in CRT_FLAGS.items():
-            executable = work / f"{configuration} CUDA.exe"
+            probe_exe_path = probe_dir / f"{configuration} CUDA.exe"
             debug = int(configuration == "Debug")
             run(
                 tools["nvcc"]["executable"], "-ccbin", cl, "--std=c++20", "--cudart=shared",
-                f"--generate-code=arch=compute_{architecture},code=[sm_{architecture},compute_{architecture}]",
+                f"--generate-code=arch=compute_{cuda_architecture_code},"
+                f"code=[sm_{cuda_architecture_code},compute_{cuda_architecture_code}]",
                 f"-Xcompiler=/{crt},/Zc:__cplusplus", f"-DFLUIDITY_DEBUG_CRT={debug}",
-                "-o", executable, source,
+                "-o", probe_exe_path, cuda_probe_path,
             )
-            host_line, device_line, device_name = run(executable).splitlines()
-            if check_host(host_line, crt) != host_configurations[configuration]:
+            host_line, device_line, device_name = run(probe_exe_path).splitlines()
+            if parse_msvc_probe(host_line, crt) != host_configurations[configuration]:
                 raise ValueError(f"CUDA {configuration} used a different host compiler configuration")
             fields = dict(re.findall(r"(\w+)=(\d+)", device_line))
             if (
-                fields.get("kernel_architecture") != architecture
-                or fields.get("device_architecture") != architecture
+                fields.get("kernel_architecture") != cuda_architecture_code
+                or fields.get("device_architecture") != cuda_architecture_code
                 or fields.get("result") != "7"
                 or int(fields.get("runtime_version", "0")) <= 0
                 or int(fields.get("driver_api_version", "0")) <= 0
                 or not device_name
             ):
-                raise ValueError(f"CUDA {configuration} probe did not match sm_{architecture}: {device_line}")
+                raise ValueError(f"CUDA {configuration} probe did not match sm_{cuda_architecture_code}: {device_line}")
             cuda_configurations[configuration] = {
                 "device": device_name,
                 **{name: int(value) for name, value in fields.items()},
             }
-        evidence["cuda"] = {
-            "architecture": int(architecture),
+        qualification_receipt["cuda"] = {
+            "architecture": int(cuda_architecture_code),
             "runtime": "Shared",
             "host_compiler": str(cl),
             "configurations": cuda_configurations,
         }
 
-    return evidence
+    return qualification_receipt
 
 
 def main(argv=None):
@@ -259,21 +260,21 @@ def main(argv=None):
     parser.add_argument("--cuda-architecture", default="120")
     args = parser.parse_args(argv)
     try:
-        output = args.output.absolute()
-        output.unlink(missing_ok=True)
+        receipt_path = args.output.absolute()
+        receipt_path.unlink(missing_ok=True)
         if not re.fullmatch(r"[1-9]\d{1,2}", args.cuda_architecture):
             raise ValueError("--cuda-architecture must be numeric, for example 120")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="native probe ", dir=output.parent) as temp:
-            work = Path(temp)
-            evidence = qualify(args.mode, args.cuda_architecture, work)
-            receipt = work / "receipt.json"
-            receipt.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-            receipt.replace(output)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="native probe ", dir=receipt_path.parent) as temp:
+            probe_dir = Path(temp)
+            qualification_receipt = qualify(args.mode, args.cuda_architecture, probe_dir)
+            temp_receipt_path = probe_dir / "receipt.json"
+            temp_receipt_path.write_text(json.dumps(qualification_receipt, indent=2) + "\n", encoding="utf-8")
+            temp_receipt_path.replace(receipt_path)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"Toolchain qualification failed: {error}", file=sys.stderr)
         return 1
-    print(f"Toolchain qualification succeeded: {output}")
+    print(f"Toolchain qualification succeeded: {receipt_path}")
     return 0
 
 

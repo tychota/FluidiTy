@@ -143,12 +143,12 @@ class CudaProbeErrors : public testing::Test {
         .driver_version = 111,
         .runtime_version = 222,
         .compiled_architecture = 890,
-        .element_count = 3,
+        .sample_count = 3,
         .launch_result = 10,
         .copy_result = 20,
         .synchronize_result = 30,
     };
-    report.values.fill(Vec2{64.0, -128.0});
+    report.samples_with_sentinel.fill(Vec2{64.0, -128.0});
     const absl::Status status = RunCudaProbe(device_index, &report);
     EXPECT_EQ(status.code(), code) << status;
     EXPECT_EQ(report.device_name, "previous report");
@@ -157,11 +157,11 @@ class CudaProbeErrors : public testing::Test {
     EXPECT_EQ(report.driver_version, 111);
     EXPECT_EQ(report.runtime_version, 222);
     EXPECT_EQ(report.compiled_architecture, 890);
-    EXPECT_EQ(report.element_count, 3);
+    EXPECT_EQ(report.sample_count, 3);
     EXPECT_EQ(report.launch_result, 10);
     EXPECT_EQ(report.copy_result, 20);
     EXPECT_EQ(report.synchronize_result, 30);
-    for (const Vec2 value : report.values) {
+    for (const Vec2 value : report.samples_with_sentinel) {
       EXPECT_EQ(value.x, 64.0);
       EXPECT_EQ(value.y, -128.0);
     }

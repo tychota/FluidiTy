@@ -26,11 +26,11 @@ def toolchain(tmp_path, monkeypatch):
     for name in versions:
         (bindir / f"{name}.exe").touch()
 
-    class Toolchain:
+    class FakeToolchain:
         compile_exit = 0
         debug_crt = "MDd"
         def __init__(self):
-            self.sources = {}
+            self.probe_source_digests = {}
 
         def run(self, argv, *, cwd, stdout, stderr, text, errors, check):
             assert check is False
@@ -43,7 +43,7 @@ def toolchain(tmp_path, monkeypatch):
                 source = Path(argv[-1])
                 assert source.parent == cwd
                 assert " " in str(source)
-                self.sources[source.name] = hashlib.sha256(source.read_bytes()).hexdigest()
+                self.probe_source_digests[source.name] = hashlib.sha256(source.read_bytes()).hexdigest()
                 return subprocess.CompletedProcess(
                     argv, self.compile_exit,
                     "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35227 for x64",
@@ -58,7 +58,7 @@ def toolchain(tmp_path, monkeypatch):
             assert argv[1:] == ["--version"]
             return subprocess.CompletedProcess(argv, 0, versions[name])
 
-    double = Toolchain()
+    double = FakeToolchain()
     monkeypatch.setattr(qualify_toolchain, "resolve_tool", lambda name: (
         path if (path := bindir / f"{name}.exe").is_file() else None
     ))
@@ -100,7 +100,7 @@ def test_paths_with_spaces(toolchain):
     assert evidence["host"]["pointer_bits"] == 64
     assert evidence["host"]["configurations"]["Debug"]["crt"] == "MDd"
     assert evidence["host"]["configurations"]["Release"]["crt"] == "MD"
-    assert evidence["source_sha256"] == {"cpu probe.cc": double.sources["cpu probe.cc"]}
+    assert evidence["source_sha256"] == {"cpu probe.cc": double.probe_source_digests["cpu probe.cc"]}
     assert all(command["exit_code"] == 0 for command in evidence["commands"])
 
 

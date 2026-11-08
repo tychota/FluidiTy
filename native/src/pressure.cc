@@ -60,15 +60,15 @@ absl::Status ValidatePressureViews(
   const auto face_extents = CheckExtents(
       face_count,
       {
-          inputs.velocity.size(),
-          inputs.aperture.size(),
-          inputs.mobility.size(),
-          inputs.distance.size(),
-          inputs.wall_velocity.size(),
-          inputs.dirichlet_mask.size(),
-          inputs.dirichlet_pressure.size(),
-          inputs.jump.size(),
-          outputs.velocity.size(),
+          inputs.predicted_face_velocities.size(),
+          inputs.face_open_fractions.size(),
+          inputs.face_inverse_densities.size(),
+          inputs.pressure_gradient_distances.size(),
+          inputs.wall_face_velocities.size(),
+          inputs.dirichlet_face_mask.size(),
+          inputs.dirichlet_face_pressures.size(),
+          inputs.face_pressure_jumps.size(),
+          outputs.corrected_face_velocities.size(),
       }
   );
   if (!face_extents.ok()) {
@@ -77,15 +77,15 @@ absl::Status ValidatePressureViews(
   const auto cell_extents = CheckExtents(
       cell_count,
       {
-          inputs.source.size(),
-          inputs.fluid_volume.size(),
-          inputs.bulk_modulus.size(),
-          inputs.previous_pressure.size(),
-          outputs.pressure.size(),
-          outputs.rhs.size(),
-          outputs.residual.size(),
-          outputs.constraint_defect.size(),
-          outputs.gauges.size(),
+          inputs.target_cell_divergence.size(),
+          inputs.cell_fluid_volumes.size(),
+          inputs.cell_bulk_moduli.size(),
+          inputs.previous_cell_pressures.size(),
+          outputs.cell_pressures.size(),
+          outputs.original_rhs.size(),
+          outputs.original_residuals.size(),
+          outputs.cell_constraint_defects.size(),
+          outputs.gauge_cell_indices.size(),
       }
   );
   if (!cell_extents.ok()) {
@@ -97,42 +97,42 @@ absl::Status ValidatePressureViews(
 
   return CheckWritableViews(
       {
-          std::as_bytes(outputs.pressure),
-          std::as_bytes(outputs.velocity),
+          std::as_bytes(outputs.cell_pressures),
+          std::as_bytes(outputs.corrected_face_velocities),
           std::as_bytes(outputs.original_matrix),
-          std::as_bytes(outputs.rhs),
-          std::as_bytes(outputs.residual),
-          std::as_bytes(outputs.constraint_defect),
-          std::as_bytes(outputs.gauges),
+          std::as_bytes(outputs.original_rhs),
+          std::as_bytes(outputs.original_residuals),
+          std::as_bytes(outputs.cell_constraint_defects),
+          std::as_bytes(outputs.gauge_cell_indices),
           std::as_bytes(std::span(&outputs.gauge_count, 1)),
           std::as_bytes(std::span(&workspace, 1)),
       },
       {
           std::as_bytes(std::span(&inputs, 1)),
-          std::as_bytes(inputs.velocity),
-          std::as_bytes(inputs.aperture),
-          std::as_bytes(inputs.mobility),
-          std::as_bytes(inputs.distance),
-          std::as_bytes(inputs.wall_velocity),
-          std::as_bytes(inputs.dirichlet_mask),
-          std::as_bytes(inputs.dirichlet_pressure),
-          std::as_bytes(inputs.jump),
-          std::as_bytes(inputs.source),
-          std::as_bytes(inputs.fluid_volume),
-          std::as_bytes(inputs.bulk_modulus),
-          std::as_bytes(inputs.previous_pressure),
+          std::as_bytes(inputs.predicted_face_velocities),
+          std::as_bytes(inputs.face_open_fractions),
+          std::as_bytes(inputs.face_inverse_densities),
+          std::as_bytes(inputs.pressure_gradient_distances),
+          std::as_bytes(inputs.wall_face_velocities),
+          std::as_bytes(inputs.dirichlet_face_mask),
+          std::as_bytes(inputs.dirichlet_face_pressures),
+          std::as_bytes(inputs.face_pressure_jumps),
+          std::as_bytes(inputs.target_cell_divergence),
+          std::as_bytes(inputs.cell_fluid_volumes),
+          std::as_bytes(inputs.cell_bulk_moduli),
+          std::as_bytes(inputs.previous_cell_pressures),
       }
   );
 }
 
 absl::Status ValidatePressureCoefficients(const PressureInputsView& inputs) {
   const std::array finite_fields{
-      inputs.velocity,
-      inputs.wall_velocity,
-      inputs.dirichlet_pressure,
-      inputs.jump,
-      inputs.source,
-      inputs.previous_pressure,
+      inputs.predicted_face_velocities,
+      inputs.wall_face_velocities,
+      inputs.dirichlet_face_pressures,
+      inputs.face_pressure_jumps,
+      inputs.target_cell_divergence,
+      inputs.previous_cell_pressures,
   };
   for (const auto field : finite_fields) {
     if (!std::ranges::all_of(field, IsFinite)) {
@@ -142,10 +142,11 @@ absl::Status ValidatePressureCoefficients(const PressureInputsView& inputs) {
   const auto valid_aperture = [](double aperture) {
     return aperture >= 0.0 && aperture <= 1.0;
   };
-  if (!std::ranges::all_of(inputs.aperture, valid_aperture)) {
+  if (!std::ranges::all_of(inputs.face_open_fractions, valid_aperture)) {
     return absl::InvalidArgumentError("pressure aperture must be in [0, 1]");
   }
-  for (const auto field : {inputs.mobility, inputs.distance, inputs.fluid_volume}) {
+  for (const auto field :
+       {inputs.face_inverse_densities, inputs.pressure_gradient_distances, inputs.cell_fluid_volumes}) {
     if (!std::ranges::all_of(field, IsFinitePositive)) {
       return absl::InvalidArgumentError("pressure mobility, distance and fluid volume must be finite and positive");
     }
@@ -153,13 +154,13 @@ absl::Status ValidatePressureCoefficients(const PressureInputsView& inputs) {
   const auto valid_bulk_modulus = [](double modulus) {
     return modulus > 0.0;
   };
-  if (!std::ranges::all_of(inputs.bulk_modulus, valid_bulk_modulus)) {
+  if (!std::ranges::all_of(inputs.cell_bulk_moduli, valid_bulk_modulus)) {
     return absl::InvalidArgumentError("pressure bulk modulus must be positive");
   }
   const auto binary_mask = [](std::uint8_t value) {
     return value <= 1;
   };
-  if (!std::ranges::all_of(inputs.dirichlet_mask, binary_mask)) {
+  if (!std::ranges::all_of(inputs.dirichlet_face_mask, binary_mask)) {
     return absl::InvalidArgumentError("pressure Dirichlet mask must contain 0 or 1");
   }
   return absl::OkStatus();
@@ -175,49 +176,49 @@ absl::StatusOr<FaceLink> BuildFaceLink(const PressureInputsView& inputs, std::si
   if (!geometry.ok()) {
     return geometry.status();
   }
-  const double aperture = inputs.aperture[face_index];
+  const double aperture = inputs.face_open_fractions[face_index];
   FaceLink face{
-      .tail = geometry->tail,
-      .head = geometry->head,
+      .tail = geometry->tail_cell_index,
+      .head = geometry->head_cell_index,
       .open_area = geometry->area * aperture,
       .wall_area = 0.0,
-      .velocity_scale = 0.0,
+      .pressure_to_velocity_scale = 0.0,
       .conductance = 0.0,
       .signed_boundary_pressure = 0.0,
-      .active = false,
+      .has_pressure_coupling = false,
   };
-  const bool is_dirichlet = inputs.dirichlet_mask[face_index] == 1;
+  const bool is_dirichlet = inputs.dirichlet_face_mask[face_index] == 1;
   if (is_dirichlet && IsInternal(face)) {
     return absl::InvalidArgumentError("pressure Dirichlet face must be on the grid boundary");
   }
-  if (is_dirichlet && inputs.jump[face_index] != 0.0) {
+  if (is_dirichlet && inputs.face_pressure_jumps[face_index] != 0.0) {
     return absl::InvalidArgumentError("pressure jump must be zero on a Dirichlet face");
   }
 
   face.wall_area = geometry->area - face.open_area;
-  const bool has_pressure_coupling = IsInternal(face) || is_dirichlet;
-  face.active = aperture > 0.0 && has_pressure_coupling;
-  if (!face.active) {
+  const bool supports_pressure_coupling = IsInternal(face) || is_dirichlet;
+  face.has_pressure_coupling = aperture > 0.0 && supports_pressure_coupling;
+  if (!face.has_pressure_coupling) {
     return face;
   }
   if (face.open_area == 0.0) {
     return absl::OutOfRangeError("active pressure open area rounded to zero");
   }
-  const double mobility = inputs.mobility[face_index];
-  const double distance = inputs.distance[face_index];
-  face.velocity_scale = MultiplyDividePositive(inputs.dt, mobility, distance);
-  if (!IsFinitePositive(face.velocity_scale)) {
+  const double mobility = inputs.face_inverse_densities[face_index];
+  const double distance = inputs.pressure_gradient_distances[face_index];
+  face.pressure_to_velocity_scale = MultiplyDividePositive(inputs.dt, mobility, distance);
+  if (!IsFinitePositive(face.pressure_to_velocity_scale)) {
     return absl::OutOfRangeError("pressure velocity scale is outside the positive representable range");
   }
   // Use the correction coefficient in the matrix so both phases share the face response.
-  face.conductance = face.open_area * face.velocity_scale;
+  face.conductance = face.open_area * face.pressure_to_velocity_scale;
   if (!IsPositiveNormal(face.conductance)) {
     return absl::OutOfRangeError("active pressure conductance must be a positive normal double");
   }
   if (is_dirichlet) {
     // The missing pressure contributes with the opposite incidence of the adjacent cell.
     const double outward_sign = face.tail >= 0 ? 1.0 : -1.0;
-    face.signed_boundary_pressure = outward_sign * inputs.dirichlet_pressure[face_index];
+    face.signed_boundary_pressure = outward_sign * inputs.dirichlet_face_pressures[face_index];
   }
   return face;
 }
@@ -226,146 +227,162 @@ double IntegratedFaceFlux(const FaceLink& face, double fluid_velocity, double wa
   return face.open_area * fluid_velocity + face.wall_area * wall_velocity;
 }
 
-void AccumulateOutward(const FaceLink& face, double face_value, std::span<double> cell_values) {
+void AccumulateOutwardFaceFlux(const FaceLink& face, double oriented_face_flux, std::span<double> outward_cell_fluxes) {
   if (face.tail >= 0) {
-    cell_values[static_cast<std::size_t>(face.tail)] += face_value;
+    outward_cell_fluxes[static_cast<std::size_t>(face.tail)] += oriented_face_flux;
   }
   if (face.head >= 0) {
-    cell_values[static_cast<std::size_t>(face.head)] -= face_value;
+    outward_cell_fluxes[static_cast<std::size_t>(face.head)] -= oriented_face_flux;
   }
 }
 
 // Assemble A = R diag(k) R^T + C and b in integrated flux units.
-absl::Status
-AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchored_cells, PressureWorkspace& workspace) {
-  const std::size_t cell_count = anchored_cells.size();
-  auto matrix = std::span(workspace.original_matrix).first(cell_count * cell_count);
-  auto rhs = std::span(workspace.rhs).first(cell_count);
-  std::ranges::fill(matrix, 0.0);
+absl::Status AssembleOriginalSystem(
+    const PressureInputsView& inputs,
+    std::span<bool> cell_has_pressure_anchor,
+    PressureWorkspace& workspace
+) {
+  const std::size_t cell_count = cell_has_pressure_anchor.size();
+  auto original_matrix = std::span(workspace.original_matrix).first(cell_count * cell_count);
+  auto original_rhs = std::span(workspace.original_rhs).first(cell_count);
+  std::ranges::fill(original_matrix, 0.0);
 
   // Keep the three incidence products separate. Balance source and predicted flux
   // before adding the pressure lifts so cancellation preserves small contributions.
-  std::array<double, kMaxPressureCells> predicted_outward_flux{};
-  std::array<double, kMaxPressureCells> jump_flux_lift{};
-  std::array<double, kMaxPressureCells> dirichlet_flux_lift{};
+  std::array<double, kMaxPressureCells> predicted_outward_fluxes{};
+  std::array<double, kMaxPressureCells> jump_flux_lifts{};
+  std::array<double, kMaxPressureCells> dirichlet_flux_lifts{};
 
-  for (std::size_t face_index = 0; face_index < inputs.velocity.size(); ++face_index) {
+  for (std::size_t face_index = 0; face_index < inputs.predicted_face_velocities.size(); ++face_index) {
     const auto face = BuildFaceLink(inputs, face_index);
     if (!face.ok()) {
       return face.status();
     }
     workspace.faces[face_index] = *face;
-    const double conductance = face->conductance;
-    const double flux = IntegratedFaceFlux(*face, inputs.velocity[face_index], inputs.wall_velocity[face_index]);
-    AccumulateOutward(*face, flux, predicted_outward_flux);
-    AccumulateOutward(*face, conductance * inputs.jump[face_index], jump_flux_lift);
+    const double face_conductance = face->conductance;
+    const double predicted_face_flux = IntegratedFaceFlux(
+        *face,
+        inputs.predicted_face_velocities[face_index],
+        inputs.wall_face_velocities[face_index]
+    );
+    AccumulateOutwardFaceFlux(*face, predicted_face_flux, predicted_outward_fluxes);
+    AccumulateOutwardFaceFlux(*face, face_conductance * inputs.face_pressure_jumps[face_index], jump_flux_lifts);
     // A Dirichlet column has only one incidence, which squares its sign in the lift.
-    AccumulateOutward(*face, conductance * face->signed_boundary_pressure, dirichlet_flux_lift);
+    AccumulateOutwardFaceFlux(*face, face_conductance * face->signed_boundary_pressure, dirichlet_flux_lifts);
 
-    if (conductance == 0.0) {
+    if (face_conductance == 0.0) {
       continue;
     }
     if (IsInternal(*face)) {
-      const auto tail = static_cast<std::size_t>(face->tail);
-      const auto head = static_cast<std::size_t>(face->head);
-      matrix[tail * cell_count + tail] += conductance;
-      matrix[head * cell_count + head] += conductance;
-      matrix[tail * cell_count + head] -= conductance;
-      matrix[head * cell_count + tail] -= conductance;
+      const auto tail_cell_index = static_cast<std::size_t>(face->tail);
+      const auto head_cell_index = static_cast<std::size_t>(face->head);
+      original_matrix[tail_cell_index * cell_count + tail_cell_index] += face_conductance;
+      original_matrix[head_cell_index * cell_count + head_cell_index] += face_conductance;
+      original_matrix[tail_cell_index * cell_count + head_cell_index] -= face_conductance;
+      original_matrix[head_cell_index * cell_count + tail_cell_index] -= face_conductance;
     } else {
-      const auto cell = static_cast<std::size_t>(face->tail >= 0 ? face->tail : face->head);
-      matrix[cell * cell_count + cell] += conductance;
-      anchored_cells[cell] = true;
+      const auto boundary_cell_index = static_cast<std::size_t>(face->tail >= 0 ? face->tail : face->head);
+      original_matrix[boundary_cell_index * cell_count + boundary_cell_index] += face_conductance;
+      cell_has_pressure_anchor[boundary_cell_index] = true;
     }
   }
 
-  for (std::size_t cell = 0; cell < cell_count; ++cell) {
-    const double bulk_modulus = inputs.bulk_modulus[cell];
-    double bulk_time = std::numeric_limits<double>::infinity();
-    double compliance = 0.0;
-    if (std::isfinite(bulk_modulus)) {
-      bulk_time = bulk_modulus * inputs.dt;
-      if (!IsFinitePositive(bulk_time)) {
+  for (std::size_t cell_index = 0; cell_index < cell_count; ++cell_index) {
+    const double cell_bulk_modulus = inputs.cell_bulk_moduli[cell_index];
+    double bulk_modulus_times_dt = std::numeric_limits<double>::infinity();
+    double cell_compliance = 0.0;
+    if (std::isfinite(cell_bulk_modulus)) {
+      bulk_modulus_times_dt = cell_bulk_modulus * inputs.dt;
+      if (!IsFinitePositive(bulk_modulus_times_dt)) {
         return absl::OutOfRangeError("pressure bulk modulus times dt is outside the representable range");
       }
-      compliance = inputs.fluid_volume[cell] / bulk_time;
-      if (!IsPositiveNormal(compliance)) {
+      cell_compliance = inputs.cell_fluid_volumes[cell_index] / bulk_modulus_times_dt;
+      if (!IsPositiveNormal(cell_compliance)) {
         return absl::OutOfRangeError("finite-modulus pressure compliance must be a positive normal double");
       }
     }
-    workspace.bulk_time[cell] = bulk_time;
-    anchored_cells[cell] = anchored_cells[cell] || compliance > 0.0;
-    matrix[cell * cell_count + cell] += compliance;
-    const double integrated_source = inputs.fluid_volume[cell] * inputs.source[cell];
-    rhs[cell] = integrated_source - predicted_outward_flux[cell] - jump_flux_lift[cell] + dirichlet_flux_lift[cell]
-        + compliance * inputs.previous_pressure[cell];
+    workspace.bulk_modulus_times_dt[cell_index] = bulk_modulus_times_dt;
+    cell_has_pressure_anchor[cell_index] = cell_has_pressure_anchor[cell_index] || cell_compliance > 0.0;
+    original_matrix[cell_index * cell_count + cell_index] += cell_compliance;
+    const double integrated_target_flux =
+        inputs.cell_fluid_volumes[cell_index] * inputs.target_cell_divergence[cell_index];
+    original_rhs[cell_index] = integrated_target_flux - predicted_outward_fluxes[cell_index]
+        - jump_flux_lifts[cell_index] + dirichlet_flux_lifts[cell_index]
+        + cell_compliance * inputs.previous_cell_pressures[cell_index];
   }
 
-  if (!std::ranges::all_of(matrix, IsFinite) || !std::ranges::all_of(rhs, IsFinite)) {
+  if (!std::ranges::all_of(original_matrix, IsFinite) || !std::ranges::all_of(original_rhs, IsFinite)) {
     return absl::OutOfRangeError("pressure assembly is outside the representable range");
   }
   return absl::OkStatus();
 }
 
-std::size_t FindComponent(std::span<const std::size_t> parents, std::size_t cell) {
-  while (parents[cell] != cell) {
-    cell = parents[cell];
+std::size_t FindComponentRootCellIndex(std::span<const std::size_t> parent_cell_indices, std::size_t cell_index) {
+  while (parent_cell_indices[cell_index] != cell_index) {
+    cell_index = parent_cell_indices[cell_index];
   }
-  return cell;
+  return cell_index;
 }
 
 // Only positive internal conductance connects cells. Union toward the smaller root
 // so each unanchored component's root is also its deterministic gauge index.
 absl::StatusOr<std::size_t> SelectGauges(
     std::span<const FaceLink> faces,
-    std::span<const bool> anchored_cells,
-    std::span<const double> rhs,
-    std::span<std::size_t> gauges
+    std::span<const bool> cell_has_pressure_anchor,
+    std::span<const double> original_rhs,
+    std::span<std::size_t> gauge_cell_indices
 ) {
-  std::array<std::size_t, kMaxPressureCells> parents;
-  const auto components = std::span(parents).first(rhs.size());
-  std::iota(components.begin(), components.end(), std::size_t{0});
+  std::array<std::size_t, kMaxPressureCells> parent_cell_index_storage;
+  const auto parent_cell_indices = std::span(parent_cell_index_storage).first(original_rhs.size());
+  std::iota(parent_cell_indices.begin(), parent_cell_indices.end(), std::size_t{0});
   for (const FaceLink& face : faces) {
     if (face.conductance > 0.0 && IsInternal(face)) {
-      const std::size_t tail_root = FindComponent(components, static_cast<std::size_t>(face.tail));
-      const std::size_t head_root = FindComponent(components, static_cast<std::size_t>(face.head));
-      components[std::max(tail_root, head_root)] = std::min(tail_root, head_root);
+      const std::size_t tail_root_cell_index =
+          FindComponentRootCellIndex(parent_cell_indices, static_cast<std::size_t>(face.tail));
+      const std::size_t head_root_cell_index =
+          FindComponentRootCellIndex(parent_cell_indices, static_cast<std::size_t>(face.head));
+      parent_cell_indices[std::max(tail_root_cell_index, head_root_cell_index)] =
+          std::min(tail_root_cell_index, head_root_cell_index);
     }
   }
 
   struct ComponentBalance {
-    bool anchored = false;
-    double net_rhs = 0.0;
-    double rhs_norm = 0.0;
+    bool has_pressure_anchor = false;
+    double rhs_sum = 0.0;
+    double absolute_rhs_sum = 0.0;
   };
-  std::array<ComponentBalance, kMaxPressureCells> balances;
-  for (std::size_t cell = 0; cell < rhs.size(); ++cell) {
-    const std::size_t root = FindComponent(components, cell);
-    components[cell] = root;
-    balances[root].anchored = balances[root].anchored || anchored_cells[cell];
+  std::array<ComponentBalance, kMaxPressureCells> component_balances;
+  for (std::size_t cell_index = 0; cell_index < original_rhs.size(); ++cell_index) {
+    const std::size_t component_root_cell_index = FindComponentRootCellIndex(parent_cell_indices, cell_index);
+    parent_cell_indices[cell_index] = component_root_cell_index;
+    component_balances[component_root_cell_index].has_pressure_anchor =
+        component_balances[component_root_cell_index].has_pressure_anchor || cell_has_pressure_anchor[cell_index];
   }
-  for (std::size_t cell = 0; cell < rhs.size(); ++cell) {
-    auto& balance = balances[components[cell]];
-    if (!balance.anchored) {
-      balance.net_rhs += rhs[cell];
-      balance.rhs_norm += std::abs(rhs[cell]);
+  for (std::size_t cell_index = 0; cell_index < original_rhs.size(); ++cell_index) {
+    auto& component_balance = component_balances[parent_cell_indices[cell_index]];
+    if (!component_balance.has_pressure_anchor) {
+      component_balance.rhs_sum += original_rhs[cell_index];
+      component_balance.absolute_rhs_sum += std::abs(original_rhs[cell_index]);
     }
   }
 
   std::size_t gauge_count = 0;
-  for (std::size_t root = 0; root < rhs.size(); ++root) {
-    const auto& balance = balances[root];
-    if (components[root] != root || balance.anchored) {
+  for (std::size_t component_root_cell_index = 0; component_root_cell_index < original_rhs.size();
+       ++component_root_cell_index) {
+    const auto& component_balance = component_balances[component_root_cell_index];
+    if (parent_cell_indices[component_root_cell_index] != component_root_cell_index
+        || component_balance.has_pressure_anchor) {
       continue;
     }
-    if (!std::isfinite(balance.net_rhs) || !std::isfinite(balance.rhs_norm)) {
+    if (!std::isfinite(component_balance.rhs_sum) || !std::isfinite(component_balance.absolute_rhs_sum)) {
       return absl::OutOfRangeError("pressure component balance is outside the representable range");
     }
-    const double scale = std::max(balance.rhs_norm, std::numeric_limits<double>::min());
-    if (std::abs(balance.net_rhs) > kCompatibilityTolerance * scale) {
+    const double rhs_compatibility_scale =
+        std::max(component_balance.absolute_rhs_sum, std::numeric_limits<double>::min());
+    if (std::abs(component_balance.rhs_sum) > kCompatibilityTolerance * rhs_compatibility_scale) {
       return absl::FailedPreconditionError("incompatible Neumann pressure component");
     }
-    gauges[gauge_count++] = root;
+    gauge_cell_indices[gauge_count++] = component_root_cell_index;
   }
   return gauge_count;
 }
@@ -376,8 +393,8 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
   auto matrix = std::span(workspace.solve_matrix).first(cell_count * cell_count);
   auto rhs = std::span(workspace.solve_rhs).first(cell_count);
   std::ranges::copy(std::span(workspace.original_matrix).first(matrix.size()), matrix.begin());
-  std::ranges::copy(std::span(workspace.rhs).first(cell_count), rhs.begin());
-  for (const std::size_t gauge : std::span(workspace.gauges).first(gauge_count)) {
+  std::ranges::copy(std::span(workspace.original_rhs).first(cell_count), rhs.begin());
+  for (const std::size_t gauge : std::span(workspace.gauge_cell_indices).first(gauge_count)) {
     std::ranges::fill(matrix.subspan(gauge * cell_count, cell_count), 0.0);
     for (std::size_t row = 0; row < cell_count; ++row) {
       matrix[row * cell_count + gauge] = 0.0;
@@ -385,7 +402,7 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
     matrix[gauge * cell_count + gauge] = 1.0;
     rhs[gauge] = 0.0;
   }
-  auto pressure = std::span(workspace.pressure).first(cell_count);
+  auto pressure = std::span(workspace.cell_pressures).first(cell_count);
   return SolveSmallSpd(matrix, rhs, pressure, workspace.solve_workspace);
 }
 
@@ -393,66 +410,74 @@ absl::Status SolveGaugedSystem(std::size_t cell_count, std::size_t gauge_count, 
 // fluid and wall flux independently of the original system for the physical defect.
 absl::Status CorrectVelocityAndAccumulateFlux(const PressureInputsView& inputs, PressureWorkspace& workspace) {
   // Reuse defect storage for the integrated flux until all corrected faces have contributed.
-  auto corrected_outward_flux = std::span(workspace.constraint_defect).first(inputs.fluid_volume.size());
+  auto corrected_outward_flux = std::span(workspace.cell_constraint_defects).first(inputs.cell_fluid_volumes.size());
   std::ranges::fill(corrected_outward_flux, 0.0);
-  for (std::size_t face_index = 0; face_index < inputs.velocity.size(); ++face_index) {
+  for (std::size_t face_index = 0; face_index < inputs.predicted_face_velocities.size(); ++face_index) {
     const FaceLink& face = workspace.faces[face_index];
-    double velocity = inputs.velocity[face_index];
-    if (face.active) {
-      const double tail_pressure = face.tail >= 0 ? workspace.pressure[static_cast<std::size_t>(face.tail)] : 0.0;
-      const double head_pressure = face.head >= 0 ? workspace.pressure[static_cast<std::size_t>(face.head)] : 0.0;
-      const double pressure_difference = tail_pressure - head_pressure + inputs.jump[face_index];
-      velocity += face.velocity_scale * (pressure_difference - face.signed_boundary_pressure);
+    double corrected_face_velocity = inputs.predicted_face_velocities[face_index];
+    if (face.has_pressure_coupling) {
+      const double tail_pressure = face.tail >= 0 ? workspace.cell_pressures[static_cast<std::size_t>(face.tail)] : 0.0;
+      const double head_pressure = face.head >= 0 ? workspace.cell_pressures[static_cast<std::size_t>(face.head)] : 0.0;
+      const double pressure_difference = tail_pressure - head_pressure + inputs.face_pressure_jumps[face_index];
+      corrected_face_velocity +=
+          face.pressure_to_velocity_scale * (pressure_difference - face.signed_boundary_pressure);
     }
-    if (!std::isfinite(velocity)) {
+    if (!std::isfinite(corrected_face_velocity)) {
       return absl::OutOfRangeError("corrected pressure velocity is outside the representable range");
     }
-    workspace.velocity[face_index] = velocity;
-    const double flux = IntegratedFaceFlux(face, velocity, inputs.wall_velocity[face_index]);
-    AccumulateOutward(face, flux, corrected_outward_flux);
+    workspace.corrected_face_velocities[face_index] = corrected_face_velocity;
+    const double flux = IntegratedFaceFlux(face, corrected_face_velocity, inputs.wall_face_velocities[face_index]);
+    AccumulateOutwardFaceFlux(face, flux, corrected_outward_flux);
   }
   return absl::OkStatus();
 }
 
 absl::Status EvaluateResidualAndDefect(const PressureInputsView& inputs, PressureWorkspace& workspace) {
-  const std::size_t cell_count = inputs.fluid_volume.size();
+  const std::size_t cell_count = inputs.cell_fluid_volumes.size();
   for (std::size_t cell = 0; cell < cell_count; ++cell) {
     double matrix_pressure = 0.0;
     for (std::size_t column = 0; column < cell_count; ++column) {
       const double pressure_coefficient = workspace.original_matrix[cell * cell_count + column];
-      matrix_pressure = std::fma(pressure_coefficient, workspace.pressure[column], matrix_pressure);
+      matrix_pressure = std::fma(pressure_coefficient, workspace.cell_pressures[column], matrix_pressure);
     }
-    const double residual = workspace.rhs[cell] - matrix_pressure;
+    const double residual = workspace.original_rhs[cell] - matrix_pressure;
 
-    const double bulk_time = workspace.bulk_time[cell];
+    const double bulk_modulus_times_dt = workspace.bulk_modulus_times_dt[cell];
     double compliance_defect = 0.0;
-    if (std::isfinite(bulk_time)) {
-      compliance_defect = (workspace.pressure[cell] - inputs.previous_pressure[cell]) / bulk_time;
+    if (std::isfinite(bulk_modulus_times_dt)) {
+      compliance_defect =
+          (workspace.cell_pressures[cell] - inputs.previous_cell_pressures[cell]) / bulk_modulus_times_dt;
     }
-    const double corrected_outward_flux = workspace.constraint_defect[cell];
-    const double corrected_divergence = corrected_outward_flux / inputs.fluid_volume[cell];
-    const double defect = corrected_divergence - inputs.source[cell] + compliance_defect;
+    const double corrected_outward_flux = workspace.cell_constraint_defects[cell];
+    const double corrected_divergence = corrected_outward_flux / inputs.cell_fluid_volumes[cell];
+    const double defect = corrected_divergence - inputs.target_cell_divergence[cell] + compliance_defect;
     if (!std::isfinite(residual) || !std::isfinite(defect)) {
       return absl::OutOfRangeError("pressure residual or constraint defect is outside the representable range");
     }
-    workspace.residual[cell] = residual;
-    workspace.constraint_defect[cell] = defect;
+    workspace.original_residuals[cell] = residual;
+    workspace.cell_constraint_defects[cell] = defect;
   }
   return absl::OkStatus();
 }
 
 void PublishOutputs(const PressureWorkspace& workspace, std::size_t gauge_count, PressureOutputsView outputs) {
-  const std::size_t cell_count = outputs.pressure.size();
-  std::ranges::copy(std::span(workspace.pressure).first(cell_count), outputs.pressure.begin());
-  std::ranges::copy(std::span(workspace.velocity).first(outputs.velocity.size()), outputs.velocity.begin());
+  const std::size_t cell_count = outputs.cell_pressures.size();
+  std::ranges::copy(std::span(workspace.cell_pressures).first(cell_count), outputs.cell_pressures.begin());
+  std::ranges::copy(
+      std::span(workspace.corrected_face_velocities).first(outputs.corrected_face_velocities.size()),
+      outputs.corrected_face_velocities.begin()
+  );
   std::ranges::copy(
       std::span(workspace.original_matrix).first(outputs.original_matrix.size()),
       outputs.original_matrix.begin()
   );
-  std::ranges::copy(std::span(workspace.rhs).first(cell_count), outputs.rhs.begin());
-  std::ranges::copy(std::span(workspace.residual).first(cell_count), outputs.residual.begin());
-  std::ranges::copy(std::span(workspace.constraint_defect).first(cell_count), outputs.constraint_defect.begin());
-  std::ranges::copy(std::span(workspace.gauges).first(gauge_count), outputs.gauges.begin());
+  std::ranges::copy(std::span(workspace.original_rhs).first(cell_count), outputs.original_rhs.begin());
+  std::ranges::copy(std::span(workspace.original_residuals).first(cell_count), outputs.original_residuals.begin());
+  std::ranges::copy(
+      std::span(workspace.cell_constraint_defects).first(cell_count),
+      outputs.cell_constraint_defects.begin()
+  );
+  std::ranges::copy(std::span(workspace.gauge_cell_indices).first(gauge_count), outputs.gauge_cell_indices.begin());
   outputs.gauge_count = gauge_count;
 }
 
@@ -489,8 +514,8 @@ SolvePressure2D(const PressureInputsView& inputs, PressureOutputsView outputs, P
   const auto gauge_count = SelectGauges(
       std::span(workspace.faces).first(*face_count),
       anchors,
-      std::span(workspace.rhs).first(*cell_count),
-      workspace.gauges
+      std::span(workspace.original_rhs).first(*cell_count),
+      workspace.gauge_cell_indices
   );
   if (!gauge_count.ok()) {
     return gauge_count.status();

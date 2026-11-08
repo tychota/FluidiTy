@@ -22,12 +22,12 @@ struct ParticleView2D {
 };
 
 struct AffineFit2D {
-  double value;  // Weighted value in the input units.
-  Vec2 row;  // Spatial affine coefficients in input units per m.
+  double interpolated_value;  // Weighted value in the input units.
+  Vec2 spatial_slopes;  // Spatial affine coefficients in input units per m.
 };
 
 // Phase selection for the history blend policy.
-enum class Phase {
+enum class MaterialPhase {
   kLiquid,
   kGas,
   kElastic,
@@ -35,9 +35,9 @@ enum class Phase {
   kSnow
 };
 
-struct VelocityPair {
-  Vec2 stored;  // History-blended particle velocity in m/s.
-  Vec2 advecting;  // Velocity for position advection in m/s.
+struct HistoryBlendVelocities {
+  Vec2 stored_particle_velocity;  // History-blended particle velocity in m/s.
+  Vec2 advection_velocity;  // Velocity for position advection in m/s.
 };
 
 // Returns the required P2G scratch extent in doubles (two per face). Propagates FaceCount
@@ -68,23 +68,22 @@ absl::Status P2G(
 // and true velocity gradient L (1/s) at world positions in m. C and L have Cartesian
 // rows in velocity-component order. Each particle needs all nine nodes on both staggered
 // lattices, including zero-weight nodes. Both face arrays have exactly FaceCount entries
-// in FaceGeometry order and may share storage. Each output has exactly positions.size()
-// entries. Scratch has exactly G2PScratchDoubles entries.
-// Empty positions are allowed. Writable spans must be disjoint from each other and all
+// in FaceGeometry order and may share storage. Each output has one entry per particle. Scratch has exactly
+// G2PScratchDoubles entries. Empty positions are allowed. Writable spans must be disjoint from each other and all
 // inputs. Scratch may change on failure. Outputs change only on success.
 // Returns kInvalidArgument for wrong extents, overlap, nonfinite inputs or an incomplete
 // stencil, kFailedPrecondition for a numerically singular fit and kOutOfRange for
 // unrepresentable extents or indices or nonfinite arithmetic. Propagates grid errors.
 absl::Status G2P(
-    const Grid2D& grid,
-    std::span<const Vec2> positions,
-    std::span<const double> old_faces,
-    std::span<const double> new_faces,
-    std::span<Vec2> pic,
-    std::span<Vec2> increments,
-    std::span<Mat2> affine,
-    std::span<Mat2> gradient,
-    std::span<double> scratch
+    const Grid2D& mac_grid,
+    std::span<const Vec2> particle_world_positions,
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities,
+    std::span<Vec2> pic_velocities,
+    std::span<Vec2> grid_velocity_increments,
+    std::span<Mat2> velocity_fit_slopes,
+    std::span<Mat2> velocity_gradients,
+    std::span<double> gather_scratch
 );
 
 // Gathers a weighted scalar and fits its affine row using the full centered 2D moment.
@@ -96,15 +95,16 @@ absl::Status G2P(
 // epsilon times the larger one, to working precision.
 absl::StatusOr<AffineFit2D> FitAffine2D(
     Vec2 position,
-    std::span<const Vec2> samples,
-    std::span<const double> weights,
-    std::span<const double> values
+    std::span<const Vec2> sample_positions,
+    std::span<const double> sample_weights,
+    std::span<const double> sample_values
 );
 
 // Sums scalar samples times their true interpolation weight gradients (1/m) in input
 // order, returning input units per m. Inputs have the same nonzero extent and may share
 // storage. Returns kInvalidArgument for invalid inputs and kOutOfRange for nonfinite arithmetic.
-absl::StatusOr<Vec2> VelocityGradient2D(std::span<const double> values, std::span<const Vec2> gradients);
+absl::StatusOr<Vec2>
+VelocityGradient2D(std::span<const double> face_velocity_samples, std::span<const Vec2> basis_weight_gradients);
 
 // Blends PIC and the particle velocity minus the old-grid gather (both in m/s).
 // Stored velocity adds alpha times the residual to PIC. Advecting velocity adds
@@ -112,6 +112,12 @@ absl::StatusOr<Vec2> VelocityGradient2D(std::span<const double> values, std::spa
 // Alpha is 0.99 times energy, and beta is energy times separation. Gas sets both
 // factors to zero. Elastic sets beta to zero. Returns kInvalidArgument for invalid
 // inputs and kOutOfRange for nonfinite arithmetic.
-absl::StatusOr<VelocityPair> BlendHistory2D(Vec2 pic, Vec2 residual, double energy, Phase phase, double separation);
+absl::StatusOr<HistoryBlendVelocities> BlendHistory2D(
+    Vec2 pic_velocity,
+    Vec2 history_velocity_residual,
+    double energy_control,
+    MaterialPhase phase,
+    double separation_factor
+);
 
 }  // namespace fluidity

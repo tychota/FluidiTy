@@ -104,9 +104,9 @@ absl::Status CollectProbe(int device_index, ProbeReport& staged_report, absl::St
   }
 
   // Reserve a sentinel just beyond the samples and one separate slot for the device image's architecture.
-  constexpr std::size_t sample_count = ProbeReport::kElementCount;
-  std::array<Vec2, sample_count + 2> copied_values{};
-  constexpr std::size_t buffer_bytes = sizeof(Vec2) * copied_values.size();
+  constexpr std::size_t sample_count = ProbeReport::kSampleCount;
+  std::array<Vec2, sample_count + 2> copied_probe_payload{};
+  constexpr std::size_t buffer_bytes = sizeof(Vec2) * copied_probe_payload.size();
   if (auto status =
           CheckCuda(cudaStreamCreateWithFlags(&resources.stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
       !status.ok()) {
@@ -133,14 +133,14 @@ absl::Status CollectProbe(int device_index, ProbeReport& staged_report, absl::St
     return status;
   }
   staged_report.copy_result =
-      cudaMemcpy(copied_values.data(), resources.device_output, buffer_bytes, cudaMemcpyDeviceToHost);
+      cudaMemcpy(copied_probe_payload.data(), resources.device_output, buffer_bytes, cudaMemcpyDeviceToHost);
   if (auto status = CheckCuda(static_cast<cudaError_t>(staged_report.copy_result), "cudaMemcpy"); !status.ok()) {
     return status;
   }
 
   // Compare the marker written by the executing image to the queried capability encoding.
   const int device_architecture = properties.major * 100 + properties.minor * 10;
-  const double compiled_architecture = copied_values[sample_count + 1].x;
+  const double compiled_architecture = copied_probe_payload[sample_count + 1].x;
   if (compiled_architecture != device_architecture) {
     return absl::FailedPreconditionError(
         "CUDA probe compiled architecture " + std::to_string(compiled_architecture)
@@ -151,8 +151,12 @@ absl::Status CollectProbe(int device_index, ProbeReport& staged_report, absl::St
   staged_report.compute_major = properties.major;
   staged_report.compute_minor = properties.minor;
   staged_report.compiled_architecture = static_cast<int>(compiled_architecture);
-  staged_report.element_count = sample_count;
-  std::copy_n(copied_values.begin(), staged_report.values.size(), staged_report.values.begin());
+  staged_report.sample_count = sample_count;
+  std::copy_n(
+      copied_probe_payload.begin(),
+      staged_report.samples_with_sentinel.size(),
+      staged_report.samples_with_sentinel.begin()
+  );
   return absl::OkStatus();
 }
 

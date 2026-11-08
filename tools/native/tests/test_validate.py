@@ -207,17 +207,17 @@ def scenario(invocation, monkeypatch):
     for mode, name in (("cpu", "windows-cpu"), ("cuda", "windows")):
         (root / f"out/qualification/{name}.json").write_text(json.dumps(qualified_receipt(mode)), encoding="utf-8")
 
-    class ExternalProcesses:
+    class FakeNativeProcesses:
         failure = None
         stale_qualification = False
         stale_lock = False
         cpu_cases = CPU_CASES
         first_cpu_status = "run"
-        gtest_result = None
+        reported_gtest_case_name = None
         gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE)
         skipped_gpu_case = None
         sanitizer_cases = MEMCHECK_OPERATOR_CASES
-        sanitizer_result = None
+        operator_memcheck_status_override = None
         probe_sanitizer_case_receipts = PROBE_RECEIPT
         probe_sanitizer_trailing_output = ""
         operator_sanitizer_error_summary = "========= ERROR SUMMARY: 0 errors"
@@ -297,7 +297,9 @@ def scenario(invocation, monkeypatch):
                             self.gtest_case_output(
                                 case_name,
                                 self.sanitizer_receipts.get(case_name, ""),
-                                self.sanitizer_result if index == 1 and self.sanitizer_result else "       OK",
+                                self.operator_memcheck_status_override
+                                if index == 1 and self.operator_memcheck_status_override
+                                else "       OK",
                             )
                             for index, case_name in enumerate(self.sanitizer_cases)
                         )
@@ -332,7 +334,11 @@ def scenario(invocation, monkeypatch):
                     if label == "^gpu$" and name == self.skipped_gpu_case:
                         status = "notrun"
                     testcase = ET.SubElement(suite, "testcase", name=name, classname=name, status=status, time="0.01")
-                    reported = self.gtest_result if index == 0 and self.gtest_result is not None else name
+                    reported = (
+                        self.reported_gtest_case_name
+                        if index == 0 and self.reported_gtest_case_name is not None
+                        else name
+                    )
                     console = (
                         self.gtest_case_output(reported, self.gpu_receipts.get(name, "")) + "[  PASSED  ] 1 test."
                         if reported
@@ -368,7 +374,7 @@ def scenario(invocation, monkeypatch):
                 pytest.fail(f"unexpected command: {argv}")
             return subprocess.CompletedProcess(argv, 0, stdout)
 
-    processes = ExternalProcesses()
+    processes = FakeNativeProcesses()
     monkeypatch.setattr(subprocess, "run", processes.run)
 
     return processes, root, output, run, rejected
@@ -481,7 +487,7 @@ def test_ctest_preserves_incomplete_report_after_zero_exit(scenario, status):
 @pytest.mark.parametrize("reported", ["", "Different.Test"])
 def test_ctest_must_prove_each_expected_case_executed(scenario, reported):
     processes, _, output, _, rejected = scenario
-    processes.gtest_result = reported
+    processes.reported_gtest_case_name = reported
     rejected("GoogleTest")
     assert not (output / "ctest-cpu.xml").exists()
 
@@ -668,7 +674,7 @@ def test_release_rejects_incomplete_operator_memcheck(scenario, problem):
     elif problem == "wrong-name":
         processes.sanitizer_cases = (*MEMCHECK_OPERATOR_CASES[:-1], "CudaPressure.DifferentTest")
     elif problem == "skipped":
-        processes.sanitizer_result = "  SKIPPED"
+        processes.operator_memcheck_status_override = "  SKIPPED"
     elif problem == "missing-receipt":
         del processes.sanitizer_receipts["CudaPressure.ComplianceRetainsMeanPressure"]
     elif problem == "wrong-receipt":

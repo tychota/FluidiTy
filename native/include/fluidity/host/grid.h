@@ -19,14 +19,14 @@ struct Grid2D {
 };
 
 // Geometry for one oriented MAC face. Position, area at unit depth, and distance use physical units.
-struct FaceInfo {
-  Vec2 position;  // World-space face center.
+struct MacFaceGeometry {
+  Vec2 world_position;  // World-space face center.
   double area;  // Face measure h at unit depth.
-  double distance;  // h across an internal face, h/2 at a boundary.
-  // The tail is on the low side of the face and the head is on the high side.
+  double pressure_gradient_distance;  // h across an internal face, h/2 at a boundary.
+  // The tail cell is on the low side of the face and the head cell is on the high side.
   // Their outward incidence is +1 and -1 respectively. A missing cell is -1.
-  std::int64_t tail;
-  std::int64_t head;
+  std::int64_t tail_cell_index;
+  std::int64_t head_cell_index;
 };
 
 // Checks a grid on the host. Returns kInvalidArgument for zero dimensions, nonpositive spacing,
@@ -48,6 +48,6 @@ absl::StatusOr<double> CellVolume(const Grid2D& grid);
 // each lattice in row-major order. Distance is between neighboring cell centers or from the
 // adjacent cell center to a boundary face. Returns kInvalidArgument for an invalid face index
 // and propagates ValidateGrid's errors. Errors carry no face geometry.
-absl::StatusOr<FaceInfo> FaceGeometry(const Grid2D& grid, std::size_t face_index);
+absl::StatusOr<MacFaceGeometry> FaceGeometry(const Grid2D& grid, std::size_t face_index);
 
 }  // namespace fluidity
