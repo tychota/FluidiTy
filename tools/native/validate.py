@@ -631,6 +631,14 @@ def run_memcheck(run, sanitizer, stage, executable, expected_case_names, *test_a
         case_outputs[observed_case_name] = memcheck_output[started_case.end() : completed_case.start()]
     if case_outputs.keys() != expected_case_names:
         raise ValueError(f"Compute Sanitizer {executable.name} did not run the required hardware cases")
+    # Count the entire process output, including any lines outside the testcase intervals.
+    expected_probe_receipt_count = int(GPU_PROBE_RECEIPT_CASE in expected_case_names)
+    observed_probe_receipt_count = sum(line.lstrip().startswith("device=") for line in output_lines)
+    if observed_probe_receipt_count != expected_probe_receipt_count:
+        raise ValueError(
+            f"Compute Sanitizer {executable.name} expected {expected_probe_receipt_count} hardware probe receipts, "
+            f"found {observed_probe_receipt_count}"
+        )
     attributed_receipt_count = sum(len(operator_receipt_lines(case_output)) for case_output in case_outputs.values())
     if attributed_receipt_count != len(operator_receipt_lines(memcheck_output)):
         raise ValueError(f"Compute Sanitizer {executable.name} reported an operator receipt outside its testcase")
@@ -667,7 +675,9 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
         GPU_OPERATOR_MEMCHECK_CASES,
         f"--gtest_filter=*-{GPU_OPERATOR_ERROR_CASE}",
     )
-    operator_measurements(operator_case_outputs, expected_compiled_architecture, "Compute Sanitizer")
+    operator_measurements(
+        {**probe_case_outputs, **operator_case_outputs}, expected_compiled_architecture, "Compute Sanitizer"
+    )
     return {
         "status": "passed",
         "version": version_match[1],

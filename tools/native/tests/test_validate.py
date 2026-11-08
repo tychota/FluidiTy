@@ -218,6 +218,8 @@ def scenario(invocation, monkeypatch):
         skipped_gpu_case = None
         sanitizer_cases = MEMCHECK_OPERATOR_CASES
         sanitizer_result = None
+        probe_sanitizer_case_receipts = PROBE_RECEIPT
+        probe_sanitizer_trailing_output = ""
         operator_sanitizer_error_summary = "========= ERROR SUMMARY: 0 errors"
         python_cases = PYTHON_CASES
         python_deselected = False
@@ -285,8 +287,9 @@ def scenario(invocation, monkeypatch):
                     executable = Path(arguments[8]).name
                     if executable == "fluidity_cuda_probe_tests.exe":
                         assert arguments[9:] == ["--gtest_filter=CudaProbe.SharedVec2Math"]
-                        stdout = self.gtest_case_output(PROBE_CASES[0], PROBE_RECEIPT)
-                        stdout += "[  PASSED  ] 1 test.\n========= ERROR SUMMARY: 0 errors"
+                        stdout = self.gtest_case_output(PROBE_CASES[0], self.probe_sanitizer_case_receipts)
+                        stdout += "[  PASSED  ] 1 test.\n========= ERROR SUMMARY: 0 errors\n"
+                        stdout += self.probe_sanitizer_trailing_output
                     else:
                         assert executable == "fluidity_cuda_operator_tests.exe"
                         assert arguments[9:] == ["--gtest_filter=*-CudaPressure.LaunchIgnoresPriorRuntimeError"]
@@ -675,6 +678,30 @@ def test_release_rejects_incomplete_operator_memcheck(scenario, problem):
     else:
         processes.operator_sanitizer_error_summary += "\n========= ERROR SUMMARY: 1 error"
     rejected("Compute Sanitizer", "windows-release-cuda")
+
+
+def test_release_rejects_an_operator_receipt_from_the_probe_memcheck(scenario):
+    processes, _, _, _, rejected = scenario
+    processes.probe_sanitizer_case_receipts += "\n" + OPERATOR_RECEIPTS["CudaTransfer.DepositAnalyticAndCpuParity"]
+    rejected("unexpected operator receipt in CudaProbe.SharedVec2Math", "windows-release-cuda")
+
+
+@pytest.mark.parametrize(
+    "duplicate_probe_receipt",
+    [PROBE_RECEIPT, PROBE_RECEIPT.replace("launch=0", "launch=1")],
+    ids=["qualified", "malformed"],
+)
+def test_release_rejects_a_duplicate_probe_receipt_after_the_case(scenario, duplicate_probe_receipt):
+    processes, _, _, _, rejected = scenario
+    processes.probe_sanitizer_trailing_output = duplicate_probe_receipt
+    rejected("hardware probe receipt", "windows-release-cuda")
+
+
+def test_release_rejects_a_probe_receipt_from_the_operator_memcheck(scenario):
+    processes, _, _, _, rejected = scenario
+    case_name = "CudaPressure.ComplianceRetainsMeanPressure"
+    processes.sanitizer_receipts[case_name] += "\n" + PROBE_RECEIPT
+    rejected("hardware probe receipt", "windows-release-cuda")
 
 
 def test_release_does_not_publish_success_when_required_memcheck_is_unavailable(scenario):
