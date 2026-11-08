@@ -781,6 +781,38 @@ absl::StatusOr<LiquidBoundaryGatherView3D> LiquidBoundaryWorkspace3D::Gather(
       output.low_mass_fallback_particle_count,
   };
 }
+absl::StatusOr<double> LiquidBoundaryWorkspace3D::ContinueFace(
+    SparseMacGridView3D grid,
+    const LiquidBoundaryVelocityHistory3D& history,
+    std::size_t face_slot,
+    std::int64_t side_tag
+) {
+  if (grid.face_count() > capacities_.faces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  if (face_slot >= grid.face_count()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto status = ValidateHistory(history, grid.face_count(), history.velocity_sample_time, true);
+  if (!status.ok()) {
+    return status;
+  }
+  Resize(anchors_, grid.face_count());
+  BuildOwnedAnchors(grid, anchors_.values());
+  RecordHighWater();
+  const auto value = FillVelocity(
+      history,
+      std::span<const OwnedFaceAnchor>(anchors_.values()),
+      face_slot,
+      static_cast<std::size_t>(anchors_[face_slot].axis),
+      side_tag,
+      true
+  );
+  if (!value.ok()) {
+    return value.status();
+  }
+  return value->velocity;
+}
 absl::StatusOr<LiquidBoundaryVelocityHistory3D> LiquidBoundaryWorkspace3D::SaveHistory(
     const LiquidBoundaryVelocityHistory3D& history,
     LiquidVelocityTimeLevel3D time_level

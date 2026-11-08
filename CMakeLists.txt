@@ -41,6 +41,9 @@ find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
 add_library(fluidity_native STATIC
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
+  native/src/liquid_substep_3d.cc
+  native/src/liquid_substep_3d_cpu.cc
+  native/src/liquid_substep_3d_staging.cc
   native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
@@ -169,6 +172,7 @@ if(BUILD_TESTING)
   add_executable(fluidity_native_tests
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc
+    native/tests/test_liquid_substep_3d.cc
     native/tests/test_liquid_state_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc

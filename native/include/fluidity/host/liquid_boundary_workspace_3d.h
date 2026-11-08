@@ -132,6 +132,16 @@ class LiquidBoundaryWorkspace3D {
   // Uses independent complete old/new ghosts, bounded donor QR and true gradients.
   // Same statuses as owning gather; no histories or external output are modified.
   absl::StatusOr<LiquidBoundaryGatherView3D> Gather(const LiquidBoundaryGatherViewInputs3D& inputs);
+  // Evaluates one complete-basis continuation at an owned face using Gather's
+  // same-side donor order/QR/wall fallback. Does not modify history or its validity.
+  // Used for preprojection prediction at missing liquid faces. Returns the same
+  // code-only validation/support/range errors as Gather; scratch only is changed.
+  absl::StatusOr<double> ContinueFace(
+      SparseMacGridView3D grid,
+      const LiquidBoundaryVelocityHistory3D& history,
+      std::size_t face_slot,
+      std::int64_t side_tag
+  );
   // Copies a validated full-slot snapshot in m/s with matching finite sample times.
   // Both snapshots own velocities, validity, tags and prescribed wall samples.
   // Force/projection outputs are copied into kNew without overwriting kOld.
