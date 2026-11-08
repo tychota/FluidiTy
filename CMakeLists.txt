@@ -61,7 +61,11 @@ if(FLUIDITY_ENABLE_CUDA)
   target_include_directories(fluidity_cuda_probe PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
-  add_library(fluidity_cuda_operators STATIC native/cuda/transfer_host.cc native/cuda/transfers.cu)
+  add_library(fluidity_cuda_operators STATIC
+    native/cuda/transfer_host.cc
+    native/cuda/transfers.cu
+    native/cuda/pressure_host.cc
+    native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
 
   foreach(target IN ITEMS fluidity_cuda_probe fluidity_cuda_operators)
@@ -161,7 +165,9 @@ if(BUILD_TESTING)
     endif()
     gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
 
-    add_executable(fluidity_cuda_operator_tests native/tests/test_cuda_transfers.cc)
+    add_executable(fluidity_cuda_operator_tests
+      native/tests/test_cuda_transfers.cc
+      native/tests/test_cuda_pressure.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
