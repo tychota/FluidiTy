@@ -140,7 +140,7 @@ example {n m : ℕ} (g : PressureGraph n m) (p : Fin n → ℝ)
   have result := (pressure_kernel_eq_component_constants g p).mp kernel
   exact ⟨result.1 i j same, result.2 a anchored⟩
 
--- Arbitrarily disconnected components may carry different constants; anchors vanish.
+-- Disconnected components may carry different constants. Pressure vanishes on anchored components.
 example {n m : ℕ} (g : PressureGraph n m) (p : Fin n → ℝ)
     (constant : ∀ i j, g.Reachable i j → p i = p j)
     (anchored : ∀ i, 0 < g.anchor i → p i = 0) :

@@ -27,7 +27,7 @@ def PressureGraph.incidence {n m : ℕ} (g : PressureGraph n m) (i : Fin n) (f :
 def PressureGraph.Reachable {n m : ℕ} (g : PressureGraph n m) : Fin n → Fin n → Prop :=
   Relation.EqvGen (fun i j => ∃ f, 0 < g.conductance f ∧ g.tail f = i ∧ g.head f = j)
 
-/-- A component is unanchored when every diagonal in it vanishes. -/
+/-- A component is unanchored when every anchor diagonal in it vanishes. -/
 def PressureGraph.Unanchored {n m : ℕ} (g : PressureGraph n m) (i : Fin n) : Prop :=
   ∀ j, g.Reachable i j → g.anchor j = 0
 
@@ -126,7 +126,7 @@ theorem pressure_gauge_positive_definite {n m : ℕ} (g : PressureGraph n m)
 #print axioms pressure_kernel_eq_component_constants
 #print axioms pressure_gauge_positive_definite
 
--- Anchor vanishing propagates across the entire actual reachability class.
+-- Zero pressure at an anchored cell propagates across its reachability class.
 private theorem constant_zero_of_anchored {n m : ℕ} (g : PressureGraph n m) (x : Fin n → ℝ)
     (constant : g.ComponentConstants x) (i : Fin n) (anchored : ¬ g.Unanchored i) : x i = 0 := by
   by_contra nonzero

@@ -69,19 +69,19 @@ ApplyVcycle(const MacPressureHierarchy3D& hierarchy, std::size_t level_ordinal, 
       const std::size_t count = block.unknown_ordinals.size();
       std::vector<double> block_correction(count);
       for (std::size_t row = 0; row < count; ++row) {
-        double forward_flux = residual[block.unknown_ordinals[row]];
+        double forward_rhs = residual[block.unknown_ordinals[row]];
         for (std::size_t column = 0; column < row; ++column) {
-          forward_flux -= block.cholesky_lower[row * count + column] * block_correction[column];
+          forward_rhs -= block.cholesky_lower[row * count + column] * block_correction[column];
         }
-        block_correction[row] = forward_flux / block.cholesky_lower[row * count + row];
+        block_correction[row] = forward_rhs / block.cholesky_lower[row * count + row];
       }
       for (std::size_t reverse_row = count; reverse_row > 0; --reverse_row) {
         const std::size_t row = reverse_row - 1;
-        double backward_flux = block_correction[row];
+        double backward_rhs = block_correction[row];
         for (std::size_t column = row + 1; column < count; ++column) {
-          backward_flux -= block.cholesky_lower[column * count + row] * block_correction[column];
+          backward_rhs -= block.cholesky_lower[column * count + row] * block_correction[column];
         }
-        block_correction[row] = backward_flux / block.cholesky_lower[row * count + row];
+        block_correction[row] = backward_rhs / block.cholesky_lower[row * count + row];
         if (!std::isfinite(block_correction[row])) {
           return absl::OutOfRangeError("pressure terminal solve is unrepresentable");
         }

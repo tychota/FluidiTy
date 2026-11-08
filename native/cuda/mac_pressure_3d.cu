@@ -211,19 +211,19 @@ Terminal(PressureDevice3D device, const PressureLevel3D& level, const Scalar* re
     const auto* unknowns = device.indices + block.unknown_offset;
     const auto* factor = device.coefficients + block.factor_offset;
     for (std::size_t row = 0; row < block.count; ++row) {
-      double flux = residual[unknowns[row]];
+      double forward_rhs = residual[unknowns[row]];
       for (std::size_t column = 0; column < row; ++column) {
-        flux -= factor[row * block.count + column] * block_correction[column];
+        forward_rhs -= factor[row * block.count + column] * block_correction[column];
       }
-      block_correction[row] = flux / factor[row * block.count + row];
+      block_correction[row] = forward_rhs / factor[row * block.count + row];
     }
     for (std::size_t reverse = block.count; reverse > 0; --reverse) {
       const auto row = reverse - 1;
-      double flux = block_correction[row];
+      double backward_rhs = block_correction[row];
       for (std::size_t column = row + 1; column < block.count; ++column) {
-        flux -= factor[column * block.count + row] * block_correction[column];
+        backward_rhs -= factor[column * block.count + row] * block_correction[column];
       }
-      block_correction[row] = flux / factor[row * block.count + row];
+      block_correction[row] = backward_rhs / factor[row * block.count + row];
       if (!isfinite(block_correction[row])) {
         return RangeFailure(device);
       }

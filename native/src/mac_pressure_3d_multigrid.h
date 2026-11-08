@@ -46,9 +46,10 @@ struct MacPressureLevel3D {
   std::vector<MacPressureCoarseBlock3D> terminal_blocks;
 };
 
-// Shared, owning upload data for CPU/CUDA. Fine coefficients are rounded once
-// to representable FP32 and stored exactly as doubles. Galerkin coefficients,
-// coarse operations and factors are FP64. No dense fine matrix is stored.
+// Shared, owning upload data for CPU/CUDA. Fine edges and anchors are rounded
+// once to FP32 and stored exactly in FP64. Fine diagonals are their FP64 sums
+// and convert to FP32 when used by the fine smoother. Galerkin coefficients,
+// coarse operations and factors use FP64. The fine operator is matrix-free.
 struct MacPressureHierarchy3D {
   std::vector<std::size_t> unknown_to_cell;
   std::vector<std::size_t> cell_to_unknown;  // kNoPressureUnknown3D marks eliminated zero pins.

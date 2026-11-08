@@ -82,10 +82,12 @@ struct MacPressureSolverOptions3D {
 // residual and independent physical defect gates, including every pin row:
 // ||b-Ap||₂ <= 2e-6 m³/s + 2e-6 ||b||₂ and both maximum |r|/V and physical
 // constraint defect <= 2e-5 s⁻¹.
-// Returns preparation/evaluation errors, kInvalidArgument for a budget outside
-// [1,256], kOutOfRange for unrepresentable solver arithmetic, and kAborted for
-// nonpositive curvature or failure to converge within the budget. Inputs are
-// borrowed read-only and errors publish no partial projection.
+// Returns kInvalidArgument for invalid data, face topology, or an iteration
+// budget outside [1,256]. Missing face ownership or incompatible unanchored
+// components return kFailedPrecondition. Extents above capacity return
+// kResourceExhausted. Unrepresentable indices or arithmetic return kOutOfRange,
+// and a residual/defect identity mismatch returns kInternal. Nonpositive
+// curvature or failure to converge returns kAborted. Errors carry no projection.
 absl::StatusOr<MacPressureProjection3D>
 ProjectMacPressure3D(const MacPressureInputs3D& inputs, MacPressureSolverOptions3D options = {});
 
