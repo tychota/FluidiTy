@@ -63,15 +63,17 @@ class PreparedMacPressureSystem3D {
 // kInvalidArgument for invalid physical data, ordering or face inventory,
 // kFailedPrecondition for missing ownership or an incompatible unanchored
 // component, kResourceExhausted for excessive extents, and kOutOfRange for
-// unrepresentable lattice indices or arithmetic. Errors carry no system.
+// unrepresentable lattice indices or arithmetic, including inexact flux
+// products that round to zero or a subnormal. Errors carry no system.
 absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const MacPressureInputs3D& inputs);
 
 // Evaluate all original rows for the supplied finite pressures in Pa, in
 // prepared cell order. Reports residual, independently accumulated physical
 // defect and corrected normal velocities without applying stopping tolerances.
 // Returns kInvalidArgument for malformed candidates, kOutOfRange for
-// unrepresentable arithmetic and kInternal for a residual/defect identity
-// mismatch. Errors carry no projection.
+// unrepresentable arithmetic, including inexact flux and velocity correction
+// products that round to zero or a subnormal. Returns kInternal for a
+// residual/defect identity mismatch. Errors carry no projection.
 absl::StatusOr<MacPressureProjection3D>
 EvaluateMacPressure3D(const PreparedMacPressureSystem3D& system, std::span<const double> candidate_cell_pressures);
 

@@ -459,6 +459,83 @@ TEST(MacPressureSystem3D, RejectsUnrepresentableActiveCoefficients) {
   EXPECT_EQ(PrepareMacPressureSystem3D({*grid, 2.0, cells, faces}).status().code(), absl::StatusCode::kOutOfRange);
 }
 
+TEST(MacPressureSystem3D, RejectsLossySubnormalTargetFluxes) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  constexpr double kFluxQuantum = std::numeric_limits<double>::denorm_min();
+  std::array cells{IncompressibleCellAtX(0)};
+  auto faces = SealedFacesAtX(0);
+  cells.front().fluid_volume = kFluxQuantum;
+  cells.front().target_divergence = 0.25;
+  EXPECT_EQ(PrepareMacPressureSystem3D({*grid, 1.0, cells, faces}).status().code(), absl::StatusCode::kOutOfRange);
+
+  // The exact source is 1.25 quanta. Rounding it to one quantum would
+  // incorrectly balance the prescribed wall and conceal a −0.25 s⁻¹ defect.
+  cells.front().target_divergence = 1.25;
+  faces[1].wall_normal_velocity = kFluxQuantum;
+  EXPECT_EQ(PrepareMacPressureSystem3D({*grid, 1.0, cells, faces}).status().code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST(MacPressureSystem3D, RejectsLossySubnormalFluidAndWallFluxes) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  constexpr double kFluxQuantum = std::numeric_limits<double>::denorm_min();
+  auto cell = IncompressibleCellAtX(0);
+  cell.fluid_volume = kFluxQuantum;
+  const std::array cells{cell};
+  auto faces = SealedFacesAtX(0);
+  auto& boundary = faces[1];
+  boundary.open_area = 0.25;
+  boundary.inverse_density = 1.0;
+  boundary.pressure_gradient_distance = 1.0;
+  boundary.pressure_link = DirichletMacPressureLink3D{0.0};
+
+  // Three quarters of a quantum round to a nonzero but wrong wall flux.
+  boundary.wall_normal_velocity = kFluxQuantum;
+  EXPECT_EQ(PrepareMacPressureSystem3D({*grid, 1.0, cells, faces}).status().code(), absl::StatusCode::kOutOfRange);
+
+  // One quarter of a quantum rounds away the predicted fluid flux.
+  boundary.wall_normal_velocity = 0.0;
+  boundary.predicted_normal_velocity = kFluxQuantum;
+  EXPECT_EQ(PrepareMacPressureSystem3D({*grid, 1.0, cells, faces}).status().code(), absl::StatusCode::kOutOfRange);
+
+  boundary.predicted_normal_velocity = 0.0;
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  EXPECT_EQ(EvaluateMacPressure3D(*system, std::array{kFluxQuantum}).status().code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST(MacPressureSystem3D, RejectsLossySubnormalComplianceFlux) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto cell = IncompressibleCellAtX(0);
+  cell.fluid_volume = std::numeric_limits<double>::denorm_min();
+  cell.bulk_modulus = 1.0;
+  const std::array cells{cell};
+  const auto faces = SealedFacesAtX(0);
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  EXPECT_EQ(EvaluateMacPressure3D(*system, std::array{0.25}).status().code(), absl::StatusCode::kOutOfRange);
+}
+
+TEST(MacPressureSystem3D, PreservesExactlyRepresentableSubnormalFlux) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  constexpr double kFluxQuantum = std::numeric_limits<double>::denorm_min();
+  auto cell = IncompressibleCellAtX(0);
+  cell.fluid_volume = 8.0 * kFluxQuantum;
+  cell.target_divergence = 0.25;
+  const std::array cells{cell};
+  auto faces = SealedFacesAtX(0);
+  faces[1].wall_normal_velocity = 2.0 * kFluxQuantum;
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  const auto projection = EvaluateMacPressure3D(*system, std::array{0.0});
+  ASSERT_TRUE(projection.ok()) << projection.status();
+  EXPECT_EQ(projection->integrated_rhs, std::vector{0.0});
+  EXPECT_EQ(projection->cell_constraint_defects, std::vector{0.0});
+}
+
 TEST(MacPressureSystem3D, ChecksPhysicalCompatibilityPerComponentWithoutAbsoluteFloor) {
   const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
   ASSERT_TRUE(grid.ok()) << grid.status();

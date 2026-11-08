@@ -28,6 +28,28 @@ bool IsFinitePositive(double value) {
   return std::isfinite(value) && value > 0.0;
 }
 
+// Normal products have the usual FP64 relative error bound. In the
+// subnormal range an inexact product can erase an O(1) defect after division
+// by a small cell volume. Test exactness on normalized mantissas so the FMA
+// residual itself cannot underflow.
+bool IsRepresentablePressureProduct(double coefficient, double quantity, double product) {
+  if (!std::isfinite(product)) {
+    return false;
+  }
+  if (coefficient == 0.0 || quantity == 0.0 || std::abs(product) >= std::numeric_limits<double>::min()) {
+    return true;
+  }
+  if (product == 0.0) {
+    return false;
+  }
+  int coefficient_exponent = 0;
+  int quantity_exponent = 0;
+  const double coefficient_mantissa = std::frexp(coefficient, &coefficient_exponent);
+  const double quantity_mantissa = std::frexp(quantity, &quantity_exponent);
+  const double normalized_product = std::scalbn(product, -(coefficient_exponent + quantity_exponent));
+  return std::fma(coefficient_mantissa, quantity_mantissa, -normalized_product) == 0.0;
+}
+
 auto CellSortKey(CellIndex3D index) {
   return std::tuple{index.z, index.y, index.x};
 }
@@ -97,7 +119,7 @@ FreezeCell(const MacPressureCell3D& cell, double step_duration, double full_cell
   }
 
   const double integrated_target_flux = cell.fluid_volume * cell.target_divergence;
-  if (!std::isfinite(integrated_target_flux)) {
+  if (!IsRepresentablePressureProduct(cell.fluid_volume, cell.target_divergence, integrated_target_flux)) {
     return absl::OutOfRangeError("pressure cell integrated target flux is unrepresentable");
   }
   return PreparedMacPressureCell3D{
@@ -235,24 +257,42 @@ double IntegratedWallFlux(const FrozenMacPressureLink3D& link) {
 
 // The original RHS uses one signed flux per physical contribution. Track
 // their magnitudes before cancellation for the final identity roundoff bound.
-std::vector<FluxRow> AssembleIntegratedRhs(
+absl::StatusOr<std::vector<FluxRow>> AssembleIntegratedRhs(
     std::span<const PreparedMacPressureCell3D> cells,
     std::span<const FrozenMacPressureLink3D> links
 ) {
   std::vector<FluxRow> rows(cells.size());
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     rows[cell].Add(cells[cell].integrated_target_flux);
-    rows[cell].Add(cells[cell].compliance * cells[cell].previous_pressure);
+    const auto& coefficients = cells[cell];
+    const double prior_compliance_flux = coefficients.compliance * coefficients.previous_pressure;
+    if (!IsRepresentablePressureProduct(
+            coefficients.compliance,
+            coefficients.previous_pressure,
+            prior_compliance_flux
+        )) {
+      return absl::OutOfRangeError("previous pressure compliance flux is unrepresentable");
+    }
+    rows[cell].Add(prior_compliance_flux);
   }
   for (const auto& link : links) {
     const double predicted_fluid_flux = link.open_area * link.predicted_normal_velocity;
+    if (!IsRepresentablePressureProduct(link.open_area, link.predicted_normal_velocity, predicted_fluid_flux)) {
+      return absl::OutOfRangeError("predicted pressure face fluid flux is unrepresentable");
+    }
     const double wall_flux = IntegratedWallFlux(link);
+    if (!IsRepresentablePressureProduct(link.blocked_area, link.wall_normal_velocity, wall_flux)) {
+      return absl::OutOfRangeError("prescribed pressure face wall flux is unrepresentable");
+    }
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       rows[cell].Add(-outward_sign * predicted_fluid_flux);
       rows[cell].Add(-outward_sign * wall_flux);
     });
     if (const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link)) {
       const double jump_flux = link.conductance * internal->pressure_jump;
+      if (!IsRepresentablePressureProduct(link.conductance, internal->pressure_jump, jump_flux)) {
+        return absl::OutOfRangeError("pressure jump flux is unrepresentable");
+      }
       ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
         rows[cell].Add(-outward_sign * jump_flux);
       });
@@ -260,6 +300,9 @@ std::vector<FluxRow> AssembleIntegratedRhs(
       // The Dirichlet lift has the same sign at either orientation because the
       // known pressure at the missing endpoint carries the opposite incidence.
       const double exterior_pressure_flux = link.conductance * boundary->exterior_pressure;
+      if (!IsRepresentablePressureProduct(link.conductance, boundary->exterior_pressure, exterior_pressure_flux)) {
+        return absl::OutOfRangeError("exterior pressure flux is unrepresentable");
+      }
       ForEachIncidentCell(link, [&](std::size_t cell, double) {
         rows[cell].Add(exterior_pressure_flux);
       });
@@ -355,13 +398,19 @@ absl::StatusOr<std::vector<std::size_t>> SelectGauges(
 // Apply the original integrated operator as R diag(k) R^T plus compliance.
 // Missing endpoints have zero unknown pressure because exterior pressures are
 // already lifted into the RHS. All rows contribute, including gauge rows.
-std::vector<FluxRow> ApplyOriginalPressureOperator(
+absl::StatusOr<std::vector<FluxRow>> ApplyOriginalPressureOperator(
     const PreparedMacPressureSystem3D& system,
     std::span<const double> candidate_cell_pressures
 ) {
   std::vector<FluxRow> rows(system.cells().size());
   for (std::size_t cell = 0; cell < rows.size(); ++cell) {
-    rows[cell].Add(system.cells()[cell].compliance * candidate_cell_pressures[cell]);
+    const double compliance = system.cells()[cell].compliance;
+    const double pressure = candidate_cell_pressures[cell];
+    const double operator_compliance_flux = compliance * pressure;
+    if (!IsRepresentablePressureProduct(compliance, pressure, operator_compliance_flux)) {
+      return absl::OutOfRangeError("candidate pressure compliance flux is unrepresentable");
+    }
+    rows[cell].Add(operator_compliance_flux);
   }
   for (const auto& link : system.links()) {
     if (link.conductance == 0.0) {
@@ -371,6 +420,9 @@ std::vector<FluxRow> ApplyOriginalPressureOperator(
     const double head_pressure = link.head_cell_ordinal ? candidate_cell_pressures[*link.head_cell_ordinal] : 0.0;
     const double pressure_difference = tail_pressure - head_pressure;
     const double operator_flux = link.conductance * pressure_difference;
+    if (!IsRepresentablePressureProduct(link.conductance, pressure_difference, operator_flux)) {
+      return absl::OutOfRangeError("original operator pressure flux is unrepresentable");
+    }
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       rows[cell].Add(outward_sign * operator_flux);
     });
@@ -391,7 +443,11 @@ absl::StatusOr<std::vector<FluxRow>> CorrectFacesAndAccumulatePhysicalDefect(
     rows[cell].Add(-coefficients.integrated_target_flux);
     if (coefficients.compliance > 0.0) {
       const double pressure_change = candidate_cell_pressures[cell] - coefficients.previous_pressure;
-      rows[cell].Add(coefficients.compliance * pressure_change);
+      const double compliance_change_flux = coefficients.compliance * pressure_change;
+      if (!IsRepresentablePressureProduct(coefficients.compliance, pressure_change, compliance_change_flux)) {
+        return absl::OutOfRangeError("pressure change compliance flux is unrepresentable");
+      }
+      rows[cell].Add(compliance_change_flux);
     }
   }
 
@@ -412,13 +468,24 @@ absl::StatusOr<std::vector<FluxRow>> CorrectFacesAndAccumulatePhysicalDefect(
       const double head_pressure =
           link.head_cell_ordinal ? candidate_cell_pressures[*link.head_cell_ordinal] : exterior_pressure;
       const double lifted_pressure_difference = tail_pressure - head_pressure + pressure_jump;
-      corrected_normal_velocity += link.pressure_to_velocity_scale * lifted_pressure_difference;
+      const double normal_velocity_correction = link.pressure_to_velocity_scale * lifted_pressure_difference;
+      if (!IsRepresentablePressureProduct(
+              link.pressure_to_velocity_scale,
+              lifted_pressure_difference,
+              normal_velocity_correction
+          )) {
+        return absl::OutOfRangeError("pressure face velocity correction is unrepresentable");
+      }
+      corrected_normal_velocity += normal_velocity_correction;
     }
     if (!std::isfinite(corrected_normal_velocity)) {
       return absl::OutOfRangeError("corrected pressure velocity is unrepresentable");
     }
     corrected_face_velocities[face] = corrected_normal_velocity;
     const double corrected_fluid_flux = link.open_area * corrected_normal_velocity;
+    if (!IsRepresentablePressureProduct(link.open_area, corrected_normal_velocity, corrected_fluid_flux)) {
+      return absl::OutOfRangeError("corrected pressure face fluid flux is unrepresentable");
+    }
     const double wall_flux = IntegratedWallFlux(link);
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       rows[cell].Add(outward_sign * corrected_fluid_flux);
@@ -510,9 +577,12 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const Mac
   }
 
   const auto rhs_rows = AssembleIntegratedRhs(system.cells(), system.links());
-  system.integrated_rhs_.reserve(rhs_rows.size());
-  system.rhs_absolute_term_sums_.reserve(rhs_rows.size());
-  for (const auto& row : rhs_rows) {
+  if (!rhs_rows.ok()) {
+    return rhs_rows.status();
+  }
+  system.integrated_rhs_.reserve(rhs_rows->size());
+  system.rhs_absolute_term_sums_.reserve(rhs_rows->size());
+  for (const auto& row : *rhs_rows) {
     const double integrated_rhs = row.flux.Total();
     const double absolute_rhs_terms = row.absolute_terms.Total();
     if (!std::isfinite(integrated_rhs) || !std::isfinite(absolute_rhs_terms)) {
@@ -543,6 +613,9 @@ EvaluateMacPressure3D(const PreparedMacPressureSystem3D& system, std::span<const
   }
 
   const auto operator_rows = ApplyOriginalPressureOperator(system, candidate_cell_pressures);
+  if (!operator_rows.ok()) {
+    return operator_rows.status();
+  }
   MacPressureProjection3D projection;
   projection.corrected_face_velocities.resize(system.links().size());
   const auto physical_rows =
@@ -556,12 +629,12 @@ EvaluateMacPressure3D(const PreparedMacPressureSystem3D& system, std::span<const
   projection.true_residuals.reserve(cells.size());
   projection.cell_constraint_defects.reserve(cells.size());
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
-    const double residual = integrated_rhs[cell] - operator_rows[cell].flux.Total();
+    const double residual = integrated_rhs[cell] - (*operator_rows)[cell].flux.Total();
     const double fluid_volume = cells[cell].fluid_volume;
     const double volume_scaled_residual = std::abs(residual) / fluid_volume;
     const double defect = (*physical_rows)[cell].flux.Total() / fluid_volume;
     const double identity_error = fluid_volume * defect + residual;
-    const double absolute_row_terms = rhs_absolute_term_sums[cell] + operator_rows[cell].absolute_terms.Total()
+    const double absolute_row_terms = rhs_absolute_term_sums[cell] + (*operator_rows)[cell].absolute_terms.Total()
         + (*physical_rows)[cell].absolute_terms.Total();
     if (!std::isfinite(volume_scaled_residual) || !std::isfinite(defect) || !std::isfinite(identity_error)
         || !std::isfinite(absolute_row_terms)) {
