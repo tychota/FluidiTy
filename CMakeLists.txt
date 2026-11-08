@@ -61,14 +61,19 @@ if(FLUIDITY_ENABLE_CUDA)
   target_include_directories(fluidity_cuda_probe PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
-  set_target_properties(fluidity_cuda_probe PROPERTIES
-    CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_RUNTIME_LIBRARY Shared)
-  target_compile_options(fluidity_cuda_probe PRIVATE
-    "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--no-exceptions;--fmad=false;--ftz=false;--prec-div=true;--prec-sqrt=true>")
-  if(MSVC)
-    target_compile_options(fluidity_cuda_probe PRIVATE
-      "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:-Xcompiler=/GR-,/fp:precise,/Zc:__cplusplus>")
-  endif()
+  add_library(fluidity_cuda_operators STATIC native/cuda/transfer_host.cc native/cuda/transfers.cu)
+  target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
+
+  foreach(target IN ITEMS fluidity_cuda_probe fluidity_cuda_operators)
+    set_target_properties(${target} PROPERTIES
+      CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON CUDA_RUNTIME_LIBRARY Shared)
+    target_compile_options(${target} PRIVATE
+      "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--no-exceptions;--fmad=false;--ftz=false;--prec-div=true;--prec-sqrt=true>")
+    if(MSVC)
+      target_compile_options(${target} PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:-Xcompiler=/GR-,/fp:precise,/Zc:__cplusplus>")
+    endif()
+  endforeach()
 endif()
 
 if(BUILD_TESTING)
@@ -155,6 +160,11 @@ if(BUILD_TESTING)
         PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
     endif()
     gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
+
+    add_executable(fluidity_cuda_operator_tests native/tests/test_cuda_transfers.cc)
+    target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
+    target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
     # Link the same host wrapper to CUDA API doubles for deterministic failure-path tests.
     add_executable(fluidity_cuda_probe_error_tests
