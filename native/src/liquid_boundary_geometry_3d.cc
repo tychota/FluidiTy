@@ -134,6 +134,20 @@ ClipPolygon(const ClippingPolygon& polygon, const ClippingPlane& plane, Clipping
   }
   return clipped;
 }
+// Normalize before cross products: local cap directions can be tiny even
+// when the final physical face area or cell volume is comfortably normal.
+CartesianVector UnitDirection(CartesianVector direction) {
+  const double largest_component = std::max({std::abs(direction[0]), std::abs(direction[1]), std::abs(direction[2])});
+  if (largest_component == 0) {
+    return {};
+  }
+  int exponent = 0;
+  std::frexp(largest_component, &exponent);
+  for (double& component : direction) {
+    component = std::ldexp(component, -exponent);
+  }
+  return Scale(direction, 1 / std::hypot(direction[0], direction[1], direction[2]));
+}
 ClippingPolyhedron ClipPolyhedron(const ClippingPolyhedron& polyhedron, const ClippingPlane& plane) {
   ClippingPolyhedron result;
   ClippingPolygon intersections;
@@ -156,10 +170,10 @@ ClippingPolyhedron ClipPolyhedron(const ClippingPolyhedron& polyhedron, const Cl
     for (const auto& vertex : cap) {
       center = Add(center, Scale(vertex.cell_width_position, 1.0 / cap.size()));
     }
-    const CartesianVector tangent = Sub(cap.front().cell_width_position, center);
+    const CartesianVector tangent = UnitDirection(Sub(cap.front().cell_width_position, center));
     CartesianVector normal{};
     for (std::size_t i = 1; i < cap.size(); ++i) {
-      normal = Cross(tangent, Sub(cap[i].cell_width_position, center));
+      normal = UnitDirection(Cross(tangent, UnitDirection(Sub(cap[i].cell_width_position, center))));
       if (std::hypot(normal[0], normal[1], normal[2]) > 0) {
         break;
       }
@@ -181,7 +195,47 @@ ClippingPolyhedron ClipPolyhedron(const ClippingPolyhedron& polyhedron, const Cl
   }
   return result;
 }
-double ComputeClippedVolume(const ClippingPolyhedron& polyhedron) {
+// Coordinate rows are scaled independently before a determinant. This also
+// handles long thin prisms, whose edge vectors can be nearly parallel: merely
+// scaling each entire vector would still multiply two tiny transverse entries.
+template <std::size_t VectorCount>
+int NormalizeCoordinateRow(std::array<CartesianVector, VectorCount>& edges, int axis) {
+  double largest_component = 0;
+  for (const auto& edge : edges) {
+    largest_component = std::max(largest_component, std::abs(edge[axis]));
+  }
+  if (largest_component == 0) {
+    return 0;
+  }
+  int exponent = 0;
+  std::frexp(largest_component, &exponent);
+  for (auto& edge : edges) {
+    edge[axis] = std::ldexp(edge[axis], -exponent);
+  }
+  return exponent;
+}
+
+// Combine the local determinant's binary exponent with h^dimension before
+// rounding the physical measure. Nonzero contributions that cannot be represented
+// propagate NaN to the checked caller rather than masquerading as empty geometry.
+double PhysicalMeasure(double determinant, int local_exponent, double cell_width, int dimension) {
+  if (determinant == 0) {
+    return 0;
+  }
+  int width_exponent = 0;
+  const double width_mantissa = std::frexp(cell_width, &width_exponent);
+  double physical_mantissa = determinant;
+  for (int axis = 0; axis < dimension; ++axis) {
+    physical_mantissa *= width_mantissa;
+  }
+  const double physical_measure = std::ldexp(physical_mantissa, local_exponent + dimension * width_exponent);
+  if (!std::isfinite(physical_measure) || physical_measure == 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return physical_measure;
+}
+
+double ComputeClippedVolume(const ClippingPolyhedron& polyhedron, double cell_width) {
   CartesianVector center{};
   std::size_t count = 0;
   for (const auto& polygon : polyhedron) {
@@ -194,38 +248,57 @@ double ComputeClippedVolume(const ClippingPolyhedron& polyhedron) {
     return 0;
   }
   center = Scale(center, 1.0 / count);
-  double volume = 0;
+  double physical_volume = 0;
   for (const auto& polygon : polyhedron) {
-    for (std::size_t i = 1; i + 1 < polygon.size(); ++i) {
-      volume += std::abs(Dot(
-                    Sub(polygon[0].cell_width_position, center),
-                    Cross(Sub(polygon[i].cell_width_position, center), Sub(polygon[i + 1].cell_width_position, center))
-                ))
-          / 6;
+    for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
+      std::array edges{
+          Sub(polygon[0].cell_width_position, center),
+          Sub(polygon[vertex].cell_width_position, center),
+          Sub(polygon[vertex + 1].cell_width_position, center),
+      };
+      int determinant_exponent = 0;
+      for (int axis = 0; axis < 3; ++axis) {
+        determinant_exponent += NormalizeCoordinateRow(edges, axis);
+      }
+      const double determinant = std::abs(Dot(edges[0], Cross(edges[1], edges[2]))) / 6;
+      physical_volume += PhysicalMeasure(determinant, determinant_exponent, cell_width, 3);
     }
   }
-  return volume;
+  return physical_volume;
 }
-double ComputeClippedArea(const ClippingPolygon& polygon) {
-  double area = 0;
-  for (std::size_t i = 1; i + 1 < polygon.size(); ++i) {
-    const auto cross = Cross(
-        Sub(polygon[i].cell_width_position, polygon[0].cell_width_position),
-        Sub(polygon[i + 1].cell_width_position, polygon[0].cell_width_position)
-    );
-    area += std::hypot(cross[0], cross[1], cross[2]) / 2;
+double ComputeClippedArea(const ClippingPolygon& polygon, double cell_width) {
+  double physical_area = 0;
+  for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
+    const std::array edges{
+        Sub(polygon[vertex].cell_width_position, polygon[0].cell_width_position),
+        Sub(polygon[vertex + 1].cell_width_position, polygon[0].cell_width_position),
+    };
+    CartesianVector physical_half_cross{};
+    for (int axis = 0; axis < 3; ++axis) {
+      auto normalized_edges = edges;
+      const int first_axis = (axis + 1) % 3;
+      const int second_axis = (axis + 2) % 3;
+      const int first_axis_exponent = NormalizeCoordinateRow(normalized_edges, first_axis);
+      const int second_axis_exponent = NormalizeCoordinateRow(normalized_edges, second_axis);
+      const int area_exponent = first_axis_exponent + second_axis_exponent;
+      const double determinant = (normalized_edges[0][first_axis] * normalized_edges[1][second_axis]
+                                  - normalized_edges[0][second_axis] * normalized_edges[1][first_axis])
+          / 2;
+      physical_half_cross[axis] = PhysicalMeasure(determinant, area_exponent, cell_width, 2);
+    }
+    physical_area += std::hypot(physical_half_cross[0], physical_half_cross[1], physical_half_cross[2]);
   }
-  return area;
+  return physical_area;
 }
 // A polygon contained in the solid boundary is closed. Strictness changes area
 // only for this coplanar case, and avoids counting the same face on both sides.
-double ComputeOpenFaceArea(const ClippingPolygon& polygon, ClippingPlane plane) {
+double ComputeOpenFaceArea(const ClippingPolygon& polygon, ClippingPlane plane, double cell_width) {
   if (std::ranges::none_of(polygon, [&](const auto& vertex) {
         return EvaluateClipDistance(vertex, plane) < 0;
       })) {
     return 0;
   }
-  return ComputeClippedArea(ClipPolygon(polygon, plane));
+  return ComputeClippedArea(ClipPolygon(polygon, plane), cell_width);
 }
 struct ObstaclePlanes {
   bool present = false;
@@ -436,39 +509,49 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     if (!local_obstacle.ok()) {
       return local_obstacle.status();
     }
-    double low_side_liquid_volume_fraction = 0;
-    double high_side_liquid_volume_fraction = 0;
+    double low_side_liquid_volume = 0;
+    double high_side_liquid_volume = 0;
     // All six permutations walk from (0,0,0) to (1,1,1). The resulting
     // coordinate-increasing face diagonals agree on both sides of every face.
     std::array<int, 3> permutation{0, 1, 2};
     do {
       const std::array<int, 4> corners_of_tet{0, 1 << permutation[0], (1 << permutation[0]) | (1 << permutation[1]), 7};
+      // The liquid region is strictly negative. An all-zero tetrahedron is an
+      // interface plateau, not liquid volume; zeros still bound genuine cuts.
+      const bool contains_negative_liquid = std::ranges::any_of(corners_of_tet, [&](int corner) {
+        return vertices[corner].liquid_distance < 0;
+      });
+      if (!contains_negative_liquid) {
+        continue;
+      }
       const ClippingVertex a = vertices[corners_of_tet[0]];
       const ClippingVertex b = vertices[corners_of_tet[1]];
       const ClippingVertex c = vertices[corners_of_tet[2]];
       const ClippingVertex d = vertices[corners_of_tet[3]];
       auto liquid_polyhedron = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
       if (!local_obstacle->present) {
-        high_side_liquid_volume_fraction += ComputeClippedVolume(liquid_polyhedron);
+        high_side_liquid_volume += ComputeClippedVolume(liquid_polyhedron, h);
       } else {
-        high_side_liquid_volume_fraction += ComputeClippedVolume(
-            ClipPolyhedron(liquid_polyhedron, {Scale(local_obstacle->normal, -1), -local_obstacle->high})
+        high_side_liquid_volume += ComputeClippedVolume(
+            ClipPolyhedron(liquid_polyhedron, {Scale(local_obstacle->normal, -1), -local_obstacle->high}),
+            h
         );
         if (local_obstacle->slab) {
-          low_side_liquid_volume_fraction +=
-              ComputeClippedVolume(ClipPolyhedron(liquid_polyhedron, {local_obstacle->normal, local_obstacle->low}));
+          low_side_liquid_volume +=
+              ComputeClippedVolume(ClipPolyhedron(liquid_polyhedron, {local_obstacle->normal, local_obstacle->low}), h);
         }
       }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
-    if (low_side_liquid_volume_fraction > 0 && high_side_liquid_volume_fraction > 0 && *center_distance < 0) {
+    if (low_side_liquid_volume > 0 && high_side_liquid_volume > 0 && *center_distance < 0) {
       return absl::FailedPreconditionError("Slab splits one pressure cell into disconnected liquid regions");
     }
-    const double fraction = low_side_liquid_volume_fraction + high_side_liquid_volume_fraction;
-    if (!std::isfinite(fraction) || fraction < 0 || fraction > 1 + 64 * std::numeric_limits<double>::epsilon()) {
+    const double unclamped_volume = low_side_liquid_volume + high_side_liquid_volume;
+    if (!std::isfinite(unclamped_volume) || unclamped_volume < 0
+        || unclamped_volume / full_volume > 1 + 64 * std::numeric_limits<double>::epsilon()) {
       return UnrepresentableGeometry();
     }
-    const double volume = std::min(1.0, fraction) * full_volume;
-    if (!IsNormalOrZero(volume) || (fraction > 0 && volume == 0)) {
+    const double volume = std::min(full_volume, unclamped_volume);
+    if (!IsNormalOrZero(volume)) {
       return UnrepresentableGeometry();
     }
     if (*center_distance >= 0 || volume == 0) {
@@ -515,32 +598,33 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     vertices[2].cell_width_position[transverse[0]] = 1;
     vertices[2].cell_width_position[transverse[1]] = 1;
     vertices[3].cell_width_position[transverse[1]] = 1;
-    double blocked_fraction = 0;
-    double open_fraction = 0;
+    double geometric_blocked_area = 0;
+    double geometric_open_area = 0;
     for (int triangle = 0; triangle < 2; ++triangle) {
       const ClippingPolygon polygon{vertices[0], vertices[triangle + 1], vertices[triangle + 2]};
       if (!local_obstacle->present) {
-        open_fraction += ComputeClippedArea(polygon);
+        geometric_open_area += ComputeClippedArea(polygon, h);
         continue;
       }
       auto blocked = ClipPolygon(polygon, {local_obstacle->normal, local_obstacle->high});
       if (local_obstacle->slab) {
         blocked = ClipPolygon(blocked, {Scale(local_obstacle->normal, -1), -local_obstacle->low});
       }
-      blocked_fraction += ComputeClippedArea(blocked);
-      open_fraction += ComputeOpenFaceArea(polygon, {Scale(local_obstacle->normal, -1), -local_obstacle->high});
+      geometric_blocked_area += ComputeClippedArea(blocked, h);
+      geometric_open_area +=
+          ComputeOpenFaceArea(polygon, {Scale(local_obstacle->normal, -1), -local_obstacle->high}, h);
       if (local_obstacle->slab) {
-        open_fraction += ComputeOpenFaceArea(polygon, {local_obstacle->normal, local_obstacle->low});
+        geometric_open_area += ComputeOpenFaceArea(polygon, {local_obstacle->normal, local_obstacle->low}, h);
       }
     }
     // Compute both sides geometrically, then publish the exact subtraction used
     // by pressure assembly. A positive measure must not disappear in rounding.
-    const double open_area = std::clamp(open_fraction, 0.0, 1.0) * full_area;
+    const double open_area = std::min(geometric_open_area, full_area);
     const double blocked_area = full_area - open_area;
-    if (!std::isfinite(open_fraction) || !std::isfinite(blocked_fraction)
-        || open_fraction > 1 + 64 * std::numeric_limits<double>::epsilon() || !IsNormalOrZero(open_area)
-        || !IsNormalOrZero(blocked_area) || (open_fraction > 0 && open_area == 0)
-        || (blocked_fraction > 0 && blocked_area == 0)) {
+    if (!std::isfinite(geometric_open_area) || !std::isfinite(geometric_blocked_area)
+        || geometric_open_area / full_area > 1 + 64 * std::numeric_limits<double>::epsilon()
+        || !IsNormalOrZero(open_area) || !IsNormalOrZero(blocked_area)
+        || (geometric_blocked_area > 0 && blocked_area == 0)) {
       return UnrepresentableGeometry();
     }
     result.faces_.push_back({face, slot, open_area, blocked_area, obstacle->velocity[static_cast<int>(face.axis)]});
@@ -641,7 +725,7 @@ BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D& geometry, const
         h,
         fields.predicted_face_velocities[i],
         face.wall_normal_velocity,
-        SealedMacPressureLink3D{}
+        SealedMacPressureLink3D{},
     };
     const auto index = face.face_index.lattice_index;
     const CellIndex3D head{index.x, index.y, index.z};

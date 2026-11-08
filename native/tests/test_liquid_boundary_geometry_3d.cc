@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -96,7 +97,7 @@ TEST(LiquidBoundaryGeometry3D, AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOp
       }
     }
   }
-  std::cout << "analytic_max_area_volume_error=" << max_error << '\n';
+  std::cout << std::setprecision(17) << "analytic_max_area_volume_error=" << max_error << '\n';
 }
 
 TEST(LiquidBoundaryGeometry3D, ObliqueAndSimultaneousLiquidSolidClips) {
@@ -508,6 +509,79 @@ TEST(LiquidBoundaryGeometry3D, RejectsCapillaryLiftThatUnderflowsToZero) {
       BuildLiquidPressureLinks3D(*frozen, {fields, velocities, 0}).status().code(),
       absl::StatusCode::kOutOfRange
   );
+}
+TEST(LiquidBoundaryGeometry3D, ZeroCornerPlateauHasNoStrictlyNegativeLiquidVolume) {
+  const auto grid = Grid();
+  auto samples = IsolatedLiquid();
+  for (auto& sample : samples.corners) {
+    sample.signed_distance = 0;
+  }
+  const auto frozen = Freeze(grid, samples);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  EXPECT_TRUE(frozen->cells().empty());
+  EXPECT_TRUE(frozen->faces().empty());
+}
+TEST(LiquidBoundaryGeometry3D, MixedZeroPlateauCountsOnlyStrictlyNegativeTetrahedra) {
+  const auto grid = Grid();
+  auto samples = IsolatedLiquid();
+  for (auto& sample : samples.corners) {
+    const auto index = sample.corner_index;
+    sample.signed_distance = index.x == -1 && index.y == -2 && index.z == -2 ? -1.0 : 0.0;
+  }
+  const auto frozen = Freeze(grid, samples);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  // Exactly the two tetrahedra whose increasing coordinate walk starts in x
+  // contain the negative corner (1,0,0); their remaining boundary vertices are zero.
+  EXPECT_NEAR(frozen->cells()[0].fluid_volume, 1.0 / 3.0, 2e-14);
+}
+TEST(LiquidBoundaryGeometry3D, PhysicalVolumeSurvivesUnderflowOfNormalizedCubicMeasure) {
+  const auto grid = Grid(1e100);
+  auto samples = Sample([](double x, double y, double z) {
+    return x + y + z - 1e-110;
+  });
+  for (auto& sample : samples.centers) {
+    sample.signed_distance = -1;
+  }
+  const auto frozen = Freeze(grid, samples);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  // Three world-space intercepts are 1e-10 m, so the volume is 1e-30/6 m³.
+  EXPECT_NEAR(frozen->cells()[0].fluid_volume / 1e-30, 1.0 / 6.0, 2e-14);
+  std::cout << "scaled_tetrahedron_volume_error=" << std::abs(frozen->cells()[0].fluid_volume - 1e-30 / 6.0) << '\n';
+}
+TEST(LiquidBoundaryGeometry3D, PhysicalFaceAreaSurvivesUnderflowOfNormalizedSquareMeasure) {
+  const auto grid = Grid(1e100);
+  const auto samples = Sample([](double, double, double) {
+    return -1.0;
+  });
+  const double diagonal_component = 1.0 / std::sqrt(2.0);
+  const auto frozen = Freeze(
+      grid,
+      samples,
+      TranslatingHalfspace3D{
+          {-diagonal_component, -diagonal_component, 0},
+          -diagonal_component * 1e-70,
+          {0, 0, 0},
+      }
+  );
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  // The open prism has two world-space intercepts of 1e-70 m and length 1e100 m.
+  EXPECT_NEAR(frozen->cells()[0].fluid_volume / 1e-40, 0.5, 2e-14);
+  std::size_t transverse_faces = 0;
+  double maximum_area_error = 0;
+  for (const auto& face : frozen->faces()) {
+    if (face.face_index.axis == FaceNormalAxis::kZ) {
+      ++transverse_faces;
+      EXPECT_NEAR(face.open_area / 1e-140, 0.5, 2e-14);
+      maximum_area_error = std::max(maximum_area_error, std::abs(face.open_area - 5e-141));
+      EXPECT_DOUBLE_EQ(face.blocked_area, 1e200 - face.open_area);
+    }
+  }
+  EXPECT_EQ(transverse_faces, 2);
+  std::cout << "scaled_prism_volume_error=" << std::abs(frozen->cells()[0].fluid_volume - 5e-41)
+            << " scaled_face_area_error=" << maximum_area_error << '\n';
 }
 }  // namespace
 }  // namespace fluidity
