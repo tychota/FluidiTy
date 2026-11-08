@@ -329,7 +329,7 @@ absl::Status P2G(
     const std::array component_velocities{particle_velocity.x, particle_velocity.y};
     const std::array velocity_fit_slope_rows{
         Vec2{particle_velocity_fit_slopes.xx, particle_velocity_fit_slopes.xy},
-        Vec2{particle_velocity_fit_slopes.yx, particle_velocity_fit_slopes.yy}
+        Vec2{particle_velocity_fit_slopes.yx, particle_velocity_fit_slopes.yy},
     };
 
     for (std::size_t velocity_component_index = 0; velocity_component_index < kVelocityComponentCount;
