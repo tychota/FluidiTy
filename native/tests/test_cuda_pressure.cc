@@ -339,7 +339,10 @@ TEST(CudaPressure, LaunchIgnoresPriorRuntimeError) {
   const auto cuda_status =
       CudaSolvePressure2D(pressure_case.Inputs(), cuda_result.Outputs(), cuda_result.kernel_measurement);
   EXPECT_EQ(cudaGetLastError(), cudaErrorInvalidDevice);
-  EXPECT_TRUE(cuda_status.ok()) << cuda_status;
+  ASSERT_TRUE(cuda_status.ok()) << cuda_status;
+  EXPECT_EQ(cuda_result.kernel_measurement.compiled_architecture, 1200);
+  ExpectField(cuda_result.cell_pressures, std::array{0.0});
+  ExpectGaugeCellIndices(cuda_result, std::array<std::size_t, 1>{0});
 }
 
 TEST(CudaPressure, DirichletAndWallFluxMatchAnalyticAndCpu) {
