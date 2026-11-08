@@ -36,7 +36,7 @@ TEST(CudaProbe, SharedVec2Math) {
   const absl::Status status = RunCudaProbe(0, &report);
   ASSERT_TRUE(status.ok()) << status;
 
-  EXPECT_EQ(report.element_count, 17);
+  EXPECT_EQ(report.sample_count, 17);
   EXPECT_EQ(report.launch_result, 0);
   EXPECT_EQ(report.copy_result, 0);
   EXPECT_EQ(report.synchronize_result, 0);
@@ -48,19 +48,19 @@ TEST(CudaProbe, SharedVec2Math) {
   EXPECT_EQ(report.compiled_architecture, report.compute_major * 100 + report.compute_minor * 10);
   EXPECT_GT(report.driver_version, 0);
   EXPECT_GT(report.runtime_version, 0);
-  ASSERT_EQ(report.values.size(), expected.size());
+  ASSERT_EQ(report.samples_with_sentinel.size(), expected.size());
   for (std::size_t index = 0; index < expected.size(); ++index) {
     SCOPED_TRACE(index);
-    EXPECT_EQ(report.values[index].x, expected[index].x);
-    EXPECT_EQ(report.values[index].y, expected[index].y);
+    EXPECT_EQ(report.samples_with_sentinel[index].x, expected[index].x);
+    EXPECT_EQ(report.samples_with_sentinel[index].y, expected[index].y);
   }
 
   std::cout << "device=" << report.device_name << " capability=" << report.compute_major << '.' << report.compute_minor
             << " compiled_architecture=" << report.compiled_architecture << " driver_api=" << report.driver_version
             << " runtime_api=" << report.runtime_version << " launch=" << report.launch_result
             << " copy=" << report.copy_result << " synchronize=" << report.synchronize_result
-            << " elements=" << report.element_count << " sentinel=(" << report.values.back().x << ','
-            << report.values.back().y << ")\n";
+            << " elements=" << report.sample_count << " sentinel=(" << report.samples_with_sentinel.back().x << ','
+            << report.samples_with_sentinel.back().y << ")\n";
 }
 
 TEST(CudaProbe, LaunchIgnoresPriorRuntimeError) {

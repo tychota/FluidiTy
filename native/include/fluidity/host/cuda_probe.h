@@ -10,7 +10,7 @@
 namespace fluidity {
 
 struct ProbeReport {
-  static constexpr std::size_t kElementCount = 17;
+  static constexpr std::size_t kSampleCount = 17;
 
   std::string device_name;
   // Compute capability reported by the device, as separate major and minor numbers.
@@ -21,13 +21,13 @@ struct ProbeReport {
   int runtime_version = 0;
   // The value of __CUDA_ARCH__ in the executed device image.
   int compiled_architecture = 0;
-  std::size_t element_count = 0;
+  std::size_t sample_count = 0;  // Computed samples, excluding the sentinel.
   // Runtime return codes. Zero means success and -1 means the operation has yet to run.
   int launch_result = -1;
   int copy_result = -1;
   int synchronize_result = -1;
-  // The last slot is the zero sentinel after the kElementCount results.
-  std::array<Vec2, kElementCount + 1> values{};
+  // The last slot is the zero sentinel after the kSampleCount results.
+  std::array<Vec2, kSampleCount + 1> samples_with_sentinel{};
 };
 
 // Runs a fixed-size Vec2 arithmetic probe on a CUDA device ordinal. Returns InvalidArgument for an invalid

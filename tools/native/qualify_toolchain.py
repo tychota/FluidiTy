@@ -112,14 +112,14 @@ def check_host(output, crt):
         raise ValueError(f"expected the MSVC x64 target with 64-bit pointers, got {output!r}")
     if not re.fullmatch(r"\d{9}", fields.get("msvc_full_ver", "")):
         raise ValueError(f"missing full MSVC compiler version in probe output: {output!r}")
-    full = fields["msvc_full_ver"]
-    if fields.get("msvc_ver") != full[:4] or int(fields.get("cxx_standard", "0")) < 202002:
+    full_version_digits = fields["msvc_full_ver"]
+    if fields.get("msvc_ver") != full_version_digits[:4] or int(fields.get("cxx_standard", "0")) < 202002:
         raise ValueError(f"expected consistent MSVC versions and C++20, got {output!r}")
     return {
         "crt": crt,
         "msvc_ver": int(fields["msvc_ver"]),
-        "msvc_full_ver": int(full),
-        "compiler_version": f"{full[:2]}.{full[2:4]}.{full[4:]}",
+        "msvc_full_ver": int(full_version_digits),
+        "compiler_version": f"{full_version_digits[:2]}.{full_version_digits[2:4]}.{full_version_digits[4:]}",
         "cxx_standard": int(fields["cxx_standard"]),
     }
 
