@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <span>
 
+#include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 
@@ -14,10 +15,10 @@ struct LiquidParticleSortEntry3D {
   std::size_t original_ordinal = 0;  // Stable incoming order for equal signed bins.
 };
 
-// Exact dynamic payload reservations for Task 2 topology only. Each published/candidate
+// Exact dynamic payload reservations for topology and CPU boundary/transfer. Each published/candidate
 // region has two independent banks. Includes bounded activation/sort storage; excludes
-// owner objects, allocator bookkeeping, transaction versions and future numeric regions.
-// Tasks 3/4/6 must extend accounting before claiming a complete physical-step bound.
+// owner objects, allocator bookkeeping, transaction versions and future pressure/GPU regions.
+// Tasks 4/6 must extend accounting before claiming a complete physical-step bound.
 struct LiquidWorkspaceBytes3D {
   std::size_t particle_order_bytes = 0;
   std::size_t particle_state_bytes = 0;
@@ -27,6 +28,7 @@ struct LiquidWorkspaceBytes3D {
   std::size_t face_state_bytes = 0;
   std::size_t activation_key_bytes = 0;
   std::size_t activation_key_capacity = 0;
+  std::size_t boundary_bytes = 0;  // Full QueryLiquidBoundaryWorkspaceBytes3D payload.
   std::size_t total_bytes = 0;
 };
 // Checked sum/products bounded by PTRDIFF_MAX; overflow returns ResourceExhausted.
@@ -36,7 +38,8 @@ absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCa
 struct LiquidWorkspaceUsage3D {
   LiquidStateCapacities3D active;  // Published topology extents; sources is always zero.
   std::size_t activation_keys = 0;  // Used scratch before deduplication, including duplicates.
-  std::size_t used_bytes = 0;  // Both initialized banks plus used scratch, excluding unused capacity.
+  std::size_t used_bytes =
+      0;  // Current valid ranges in both banks plus numeric/sort scratch; excludes unused capacity.
   std::size_t reserved_bytes = 0;  // Same payload scope as QueryLiquidWorkspaceBytes3D.
 };
 struct LiquidPreparedTopologyView3D {
@@ -48,7 +51,7 @@ struct LiquidPreparedTopologyView3D {
   std::span<const LiquidFaceState3D> faces;
 };
 
-// Single-threaded bounded topology owner. Move invalidates all borrows. No operation
+// Single-threaded bounded topology and CPU boundary/transfer owner. Move invalidates all borrows. No operation
 // other than Create/move/destruction allocates or frees, including error destruction.
 // Errors are code-only; format diagnostics outside the physical attempt.
 class LiquidStepWorkspace3D {
@@ -57,7 +60,7 @@ class LiquidStepWorkspace3D {
   LiquidStepWorkspace3D& operator=(LiquidStepWorkspace3D&&) noexcept = default;
   LiquidStepWorkspace3D(const LiquidStepWorkspace3D&) = delete;
   LiquidStepWorkspace3D& operator=(const LiquidStepWorkspace3D&) = delete;
-  // Reserves two topology banks and worst-case 81*particles+7*cells activation keys.
+  // Reserves two topology banks, 81*particles+7*cells activation keys, and fixed CPU numeric regions.
   // Invalid geometry returns InvalidArgument. Checked byte overflow or actual nothrow
   // allocation failure returns ResourceExhausted with no partial owner.
   static absl::StatusOr<LiquidStepWorkspace3D>
@@ -93,11 +96,15 @@ class LiquidStepWorkspace3D {
   // Does not change clock, source inventory, IDs or seed. Trial owners may not alias
   // workspace storage. The transaction acceptance gate validates the complete trial.
   absl::Status ApplyTrialTopology(LiquidState3D& trial) const;
-  // Active counts describe the published bank; initialized byte/scratch counts also
+  // Active counts describe the published topology bank; valid-range byte/scratch counts also
   // include the candidate bank, including work left by a rejected preparation.
   LiquidWorkspaceUsage3D usage() const;
   // Fixed reservation limits supplied to Create (sources are not used by topology).
   LiquidStateCapacities3D capacities() const;
+  // Numeric regions share these reservation limits; their borrows have independent lifetimes.
+  LiquidBoundaryWorkspace3D& boundary() {
+    return boundary_;
+  }
 
  private:
   struct TopologyBank {
@@ -109,6 +116,7 @@ class LiquidStepWorkspace3D {
     LiquidRecords3D<LiquidFaceState3D> faces;
   };
   LiquidStepWorkspace3D() = default;
+  LiquidBoundaryWorkspace3D boundary_;
   UniformMacGeometry3D geometry_{{0.0, 0.0, 0.0}, 1.0};
   LiquidStateCapacities3D capacities_;
   LiquidWorkspaceBytes3D bytes_;

@@ -32,7 +32,20 @@ inline ContactInput PackContact(const LiquidWallContactInputs3D& inputs) {
       inputs.penetration_tolerance,
   };
 }
-inline absl::Status ArithmeticStatus(Error error) {
+inline absl::Status ArithmeticStatus(Error error, bool bounded = false) {
+  if (bounded) {
+    switch (error) {
+      case Error::kNone:
+        return absl::OkStatus();
+      case Error::kInvalid:
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      case Error::kPrecondition:
+        return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+      case Error::kRange:
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    return absl::Status(absl::StatusCode::kInternal, {});
+  }
   switch (error) {
     case Error::kNone:
       return absl::OkStatus();

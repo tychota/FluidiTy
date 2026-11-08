@@ -270,7 +270,7 @@ TEST(LiquidStepWorkspace3D, AccountsEveryReservedRegionAndRejectsByteOverflow) {
   EXPECT_EQ(
       bytes->total_bytes,
       bytes->particle_order_bytes + bytes->particle_state_bytes + bytes->block_key_bytes + bytes->block_state_bytes
-          + bytes->cell_state_bytes + bytes->face_state_bytes + bytes->activation_key_bytes
+          + bytes->cell_state_bytes + bytes->face_state_bytes + bytes->activation_key_bytes + bytes->boundary_bytes
   );
   auto workspace = LiquidStepWorkspace3D::Create(kCapacity, kGeometry);
   ASSERT_TRUE(workspace.ok());
