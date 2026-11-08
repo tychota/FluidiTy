@@ -274,6 +274,7 @@ void ExpectGatherMatrix(Mat2 actual, Mat2 expected) {
 
 template <std::size_t ParticleCount>
 void ExpectGatherCpuParity(
+    const Grid2D& mac_grid,
     const std::array<Vec2, ParticleCount>& particle_world_positions,
     const std::array<double, kFaceCount>& old_face_velocities,
     const std::array<double, kFaceCount>& new_face_velocities,
@@ -283,7 +284,7 @@ void ExpectGatherCpuParity(
   constexpr std::size_t kCpuGatherScratchDoublesPerParticle = 12;
   std::array<double, kCpuGatherScratchDoublesPerParticle * ParticleCount> cpu_gather_scratch;
   const auto cpu_gather_status =
-      G2P(kGrid,
+      G2P(mac_grid,
           particle_world_positions,
           old_face_velocities,
           new_face_velocities,
@@ -332,17 +333,22 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
   const double expected_center_pic = (*fixture_expected_pic)->f64_data[0];
   const Vec2 expected_x_affine_row{(*fixture_expected_affine)->f64_data[0], (*fixture_expected_affine)->f64_data[1]};
   const Vec2 fixture_particle_position{(*fixture_position)->f64_data[0], (*fixture_position)->f64_data[1]};
-  constexpr Vec2 kXFaceCenter{2.0, 1.5};
-  const Vec2 fixture_translation = kXFaceCenter - fixture_particle_position;
-  const std::array<Vec2, 2> particle_world_positions{{kXFaceCenter, {1.25, 2.125}}};
+  constexpr Grid2D kShiftedMacGrid{4, 4, 1.0, {12.0, -7.0}};
+  constexpr Vec2 kXFaceCenterInGrid{2.0, 1.5};
+  constexpr Vec2 kXFaceCenterInWorld = kShiftedMacGrid.origin + kXFaceCenterInGrid;
+  const Vec2 fixture_translation = kXFaceCenterInWorld - fixture_particle_position;
+  const std::array<Vec2, 2> particle_world_positions{{
+      kXFaceCenterInWorld,
+      kShiftedMacGrid.origin + Vec2{1.25, 2.125},
+  }};
   std::array<double, kFaceCount> old_face_velocities;
   std::array<double, kFaceCount> new_face_velocities;
   constexpr Vec2 kExpectedPicIncrement{1.5, -0.75};
   std::size_t embedded_sample_count = 0;
   for (std::size_t face_index = 0; face_index < new_face_velocities.size(); ++face_index) {
-    const auto face_geometry = FaceGeometry(kGrid, face_index);
+    const auto face_geometry = FaceGeometry(kShiftedMacGrid, face_index);
     ASSERT_TRUE(face_geometry.ok()) << face_geometry.status();
-    const Vec2 face_offset = face_geometry->position - kXFaceCenter;
+    const Vec2 face_offset = face_geometry->position - kXFaceCenterInWorld;
     const bool is_x_normal = face_index < kXNormalFaceCount;
     if (is_x_normal) {
       new_face_velocities[face_index] =
@@ -370,7 +376,7 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
 
   GatherResult<particle_world_positions.size()> cuda_gather;
   const auto cuda_gather_status = CudaG2P(
-      kGrid,
+      kShiftedMacGrid,
       particle_world_positions,
       old_face_velocities,
       new_face_velocities,
@@ -394,7 +400,13 @@ TEST(CudaTransfer, GatherAffineMatchesFixtureAndCpu) {
       affine_fixture->atol + affine_fixture->rtol * std::abs(expected_x_affine_row.y)
   );
   ExpectGatherVector(cuda_gather.grid_velocity_increments.front(), kExpectedPicIncrement);
-  ExpectGatherCpuParity(particle_world_positions, old_face_velocities, new_face_velocities, cuda_gather);
+  ExpectGatherCpuParity(
+      kShiftedMacGrid,
+      particle_world_positions,
+      old_face_velocities,
+      new_face_velocities,
+      cuda_gather
+  );
   ExpectMeasurement(cuda_gather.kernel_measurement);
   std::cout << "operator=g2p compiled_architecture=" << cuda_gather.kernel_measurement.compiled_architecture
             << " kernel_ms=" << std::fixed << std::setprecision(9) << cuda_gather.kernel_measurement.kernel_ms << '\n';
@@ -428,7 +440,7 @@ TEST(CudaTransfer, GatherNonlinearKeepsTrueGradientSeparate) {
   ExpectGatherNear(cuda_gather.velocity_gradients.front().xx, 2.5);
   EXPECT_EQ(cuda_gather.grid_velocity_increments.front().x, 0.0);
   EXPECT_EQ(cuda_gather.grid_velocity_increments.front().y, 0.0);
-  ExpectGatherCpuParity(particle_world_positions, shared_face_velocities, shared_face_velocities, cuda_gather);
+  ExpectGatherCpuParity(kGrid, particle_world_positions, shared_face_velocities, shared_face_velocities, cuda_gather);
 }
 
 TEST(CudaTransfer, GatherFailurePreservesOutputs) {
@@ -569,6 +581,28 @@ TEST(CudaTransfer, GatherFailurePreservesOutputs) {
       CudaG2P(
           kSingularMomentGrid,
           singular_moment_particle_positions,
+          old_face_velocities,
+          new_face_velocities,
+          cuda_gather.views(),
+          cuda_gather.kernel_measurement
+      ),
+      absl::StatusCode::kFailedPrecondition
+  );
+
+  // At this origin the first three x-normal columns have world offsets (-4, 0, 0)
+  // from the particle. The first column's x weight is 2^-105, so its positive
+  // centered x moment is about 3.94e-31 versus a y moment of about 1.78.
+  constexpr double kNearTieSpacing = 0x1.5555555555556p+1;  // Next double above rounded 8/3.
+  constexpr Grid2D kIllConditionedMomentGrid{4, 4, kNearTieSpacing, {0x1p54, 0.0}};
+  constexpr Vec2 kIllConditionedParticlePosition{kIllConditionedMomentGrid.origin.x + 4.0, 2.0 * kNearTieSpacing};
+  constexpr std::array ill_conditioned_particle_positions{
+      kIllConditionedParticlePosition,
+      kIllConditionedParticlePosition,
+  };
+  expect_error(
+      CudaG2P(
+          kIllConditionedMomentGrid,
+          ill_conditioned_particle_positions,
           old_face_velocities,
           new_face_velocities,
           cuda_gather.views(),
