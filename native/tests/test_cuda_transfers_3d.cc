@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <span>
+#include <sstream>
 #include <string_view>
 #include <vector>
 
@@ -84,7 +85,9 @@ void ExpectMeasurementSentinel(CudaOperatorMeasurement measurement) {
 }
 
 void PrintMeasurement(std::string_view operator_name, CudaOperatorMeasurement measurement) {
-  std::cout << "operator=" << operator_name << " compiled_architecture=" << measurement.compiled_architecture
+  // Keep the parity records and GoogleTest completion markers in CTest JUnit.
+  std::cout << "CTEST_FULL_OUTPUT\n"
+            << "operator=" << operator_name << " compiled_architecture=" << measurement.compiled_architecture
             << " kernel_ms=" << std::fixed << std::setprecision(9) << measurement.kernel_ms << '\n';
 }
 
@@ -94,12 +97,27 @@ void ExpectQuanta(MacFaceDepositQuanta3D actual, MacFaceDepositQuanta3D expected
   EXPECT_EQ(actual.stress_force_quanta_sum, expected.stress_force_quanta_sum);
 }
 
-void ExpectQuanta(std::span<const MacFaceDepositQuanta3D> actual, std::span<const MacFaceDepositQuanta3D> expected) {
+void ExpectDepositParity(
+    std::string_view fixture_name,
+    std::string_view reference_name,
+    std::span<const MacFaceDepositQuanta3D> actual,
+    std::span<const MacFaceDepositQuanta3D> expected
+) {
   ASSERT_EQ(actual.size(), expected.size());
+  std::size_t mismatching_faces = 0;
   for (std::size_t face_slot = 0; face_slot < actual.size(); ++face_slot) {
     SCOPED_TRACE(face_slot);
-    ExpectQuanta(actual[face_slot], expected[face_slot]);
+    const auto actual_face = actual[face_slot];
+    const auto expected_face = expected[face_slot];
+    ExpectQuanta(actual_face, expected_face);
+    if (actual_face.mass_quanta_sum != expected_face.mass_quanta_sum
+        || actual_face.pure_momentum_quanta_sum != expected_face.pure_momentum_quanta_sum
+        || actual_face.stress_force_quanta_sum != expected_face.stress_force_quanta_sum) {
+      ++mismatching_faces;
+    }
   }
+  std::cout << "parity_error transfer=p2g_3d fixture=" << fixture_name << " reference=" << reference_name
+            << " compared_faces=" << actual.size() << " mismatching_faces=" << mismatching_faces << '\n';
 }
 
 void ExpectNear(Vec3 actual, Vec3 expected, double tolerance) {
@@ -119,6 +137,39 @@ void ExpectGather(MacParticleGatherResult3D actual, MacParticleGatherResult3D ex
   ExpectNear(actual.grid_velocity_increment, expected.grid_velocity_increment, tolerance);
   ExpectNear(actual.fitted_velocity_slopes, expected.fitted_velocity_slopes, tolerance);
   ExpectNear(actual.velocity_gradient, expected.velocity_gradient, tolerance);
+}
+
+double MaxAbsComponentError(Vec3 actual, Vec3 expected) {
+  return std::max({std::abs(actual.x - expected.x), std::abs(actual.y - expected.y), std::abs(actual.z - expected.z)});
+}
+
+double MaxAbsComponentError(Mat3 actual, Mat3 expected) {
+  return std::max({
+      MaxAbsComponentError(actual.x_row, expected.x_row),
+      MaxAbsComponentError(actual.y_row, expected.y_row),
+      MaxAbsComponentError(actual.z_row, expected.z_row),
+  });
+}
+
+void ExpectGatherParity(
+    std::string_view fixture_name,
+    std::string_view reference_name,
+    MacParticleGatherResult3D actual,
+    MacParticleGatherResult3D expected
+) {
+  ExpectGather(actual, expected);
+  std::ostringstream receipt;
+  receipt << std::scientific << std::setprecision(std::numeric_limits<double>::max_digits10)
+          << "parity_error transfer=g2p_3d fixture=" << fixture_name << " reference=" << reference_name
+          << " max_abs_pic_velocity_m_per_s="
+          << MaxAbsComponentError(actual.new_pic_velocity, expected.new_pic_velocity)
+          << " max_abs_grid_velocity_increment_m_per_s="
+          << MaxAbsComponentError(actual.grid_velocity_increment, expected.grid_velocity_increment)
+          << " max_abs_affine_velocity_fit_per_s="
+          << MaxAbsComponentError(actual.fitted_velocity_slopes, expected.fitted_velocity_slopes)
+          << " max_abs_velocity_gradient_per_s="
+          << MaxAbsComponentError(actual.velocity_gradient, expected.velocity_gradient);
+  std::cout << receipt.str() << '\n';
 }
 
 // Sample the manufactured velocity fields at every owned physical anchor.
@@ -161,7 +212,7 @@ TEST(CudaMacTransfer3D, DepositCornerMatchesOracleAndCpu) {
   ExpectMeasurement(measurement);
   const auto corner_measurement = measurement;
   ASSERT_TRUE(DepositMacQuanta3D(*mac_grid, {&particle, 1}, quantization, cpu_face_quanta).ok());
-  ExpectQuanta(gpu_face_quanta, cpu_face_quanta);
+  ExpectDepositParity("corner", "cpu", gpu_face_quanta, cpu_face_quanta);
 
   const auto cases = fixtures::AllFixtures();
   const auto fixture = std::ranges::find(cases, "uniform_mac_transfer_3d", &fixtures::FixtureRecord::name);
@@ -202,7 +253,7 @@ TEST(CudaMacTransfer3D, DepositCornerMatchesOracleAndCpu) {
         .stress_force_quanta_sum = 0,
     };
   }
-  ExpectQuanta(gpu_face_quanta, oracle_face_quanta);
+  ExpectDepositParity("corner", "oracle", gpu_face_quanta, oracle_face_quanta);
 
   // At the selected face the three weights are 1/2, so each mass is one
   // quantum. Signed ties (1.5, 1.5, -4.5) round to (2, 2, -4).
@@ -218,10 +269,10 @@ TEST(CudaMacTransfer3D, DepositCornerMatchesOracleAndCpu) {
   ASSERT_TRUE(DepositMacQuanta3D(*mac_grid, ties, tie_quantization, cpu_face_quanta).ok());
   ASSERT_TRUE(CudaDepositMacQuanta3D(*mac_grid, ties, tie_quantization, gpu_face_quanta, measurement).ok());
   ExpectQuanta(gpu_face_quanta[*tie_slot], {3, 0, 0});
-  ExpectQuanta(gpu_face_quanta, cpu_face_quanta);
+  ExpectDepositParity("signed_ties_forward", "cpu", gpu_face_quanta, cpu_face_quanta);
   std::reverse(ties.begin(), ties.end());
   ASSERT_TRUE(CudaDepositMacQuanta3D(*mac_grid, ties, tie_quantization, gpu_face_quanta, measurement).ok());
-  ExpectQuanta(gpu_face_quanta, cpu_face_quanta);
+  ExpectDepositParity("signed_ties_reversed", "cpu", gpu_face_quanta, cpu_face_quanta);
 
   PrintMeasurement("p2g_3d", corner_measurement);
 }
@@ -269,8 +320,13 @@ TEST(CudaMacTransfer3D, GatherCornerMatchesOracleAndCpu) {
   ASSERT_TRUE(
       GatherMac3D(*mac_grid, {&particle, 1}, old_face_velocities, new_face_velocities, {&cpu_particle_gather, 1}).ok()
   );
-  ExpectGather(gpu_particle_gather, cpu_particle_gather);
-  ExpectGather(gpu_particle_gather, {kParticleVelocity, {-1.0, -5.0, 8.0}, kAffineRows, kAffineRows});
+  ExpectGatherParity("affine", "cpu", gpu_particle_gather, cpu_particle_gather);
+  ExpectGatherParity(
+      "affine",
+      "oracle",
+      gpu_particle_gather,
+      {kParticleVelocity, {-1.0, -5.0, 8.0}, kAffineRows, kAffineRows}
+  );
 
   const double half_cell = 0.5 * mac_grid->geometry().cell_width;
   particle.sorted_world_position = {
@@ -299,14 +355,14 @@ TEST(CudaMacTransfer3D, GatherCornerMatchesOracleAndCpu) {
   ASSERT_TRUE(
       GatherMac3D(*mac_grid, {&particle, 1}, old_face_velocities, new_face_velocities, {&cpu_particle_gather, 1}).ok()
   );
-  ExpectGather(gpu_particle_gather, cpu_particle_gather);
+  ExpectGatherParity("squared", "cpu", gpu_particle_gather, cpu_particle_gather);
   constexpr MacParticleGatherResult3D squared_field_oracle{
       .new_pic_velocity = {1.0, 1.0, 1.0},
       .grid_velocity_increment = {1.0, 1.0, 1.0},
       .fitted_velocity_slopes = {{-0.375, 0.0, 0.0}, {0.0, -0.375, 0.0}, {0.0, 0.0, -0.375}},
       .velocity_gradient = {},
   };
-  ExpectGather(gpu_particle_gather, squared_field_oracle);
+  ExpectGatherParity("squared", "oracle", gpu_particle_gather, squared_field_oracle);
   PrintMeasurement("g2p_3d", corner_measurement);
 }
 
