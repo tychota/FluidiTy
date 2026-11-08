@@ -485,9 +485,9 @@ def run_ctest(run, label, required):
     for case in cases:
         if case.attrib["status"] == "run":
             verify_google_test(case)
-    if result.returncode:
+    if cases:
         publish_ctest(run, label, cases)
-        require_success(f"ctest-{label}", result)
+    require_success(f"ctest-{label}", result)
     names = {case.attrib["name"] for case in cases}
     if len(cases) != len(names) or len(names) < MINIMUM_TESTS[label] or not required <= names:
         raise ValueError(f"ctest {label} is missing expected tests or contains duplicate results")
@@ -495,7 +495,6 @@ def run_ctest(run, label, required):
         raise ValueError("ctest gpu must contain exactly the two hardware probe tests")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
-    publish_ctest(run, label, cases)
     return {"status": "passed", "tests": len(cases)}, cases
 
 

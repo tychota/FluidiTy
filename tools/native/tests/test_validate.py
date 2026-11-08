@@ -157,7 +157,7 @@ def scenario(invocation, monkeypatch):
         stale_qualification = False
         stale_lock = False
         cpu_cases = CPU_CASES
-        skipped_cpu = False
+        first_cpu_status = "run"
         gtest_result = None
         python_cases = PYTHON_CASES
         python_deselected = False
@@ -215,11 +215,11 @@ def scenario(invocation, monkeypatch):
                     name="(empty)",
                     tests=str(len(cases)),
                     failures="0",
-                    skipped=str(int(self.skipped_cpu)),
-                    disabled="0",
+                    skipped=str(int(self.first_cpu_status == "notrun")),
+                    disabled=str(int(self.first_cpu_status == "disabled")),
                 )
                 for index, name in enumerate(cases):
-                    status = "notrun" if self.skipped_cpu and index == 0 else "run"
+                    status = self.first_cpu_status if index == 0 else "run"
                     testcase = ET.SubElement(suite, "testcase", name=name, classname=name, status=status, time="0.01")
                     reported = self.gtest_result if index == 0 and self.gtest_result is not None else name
                     console = (
@@ -228,7 +228,7 @@ def scenario(invocation, monkeypatch):
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
                     ET.SubElement(testcase, "system-out").text = f"{root}\n{console}\n"
-                    if self.skipped_cpu and index == 0:
+                    if status == "notrun":
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
             elif arguments[:2] == ["-m", "pytest"]:
@@ -339,16 +339,31 @@ def test_cuda_requires_a_device_even_with_a_qualification_receipt(scenario):
     rejected("no CUDA-capable device", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("missing", ["all", "one", "skipped"])
+@pytest.mark.parametrize("missing", ["all", "one"])
 def test_cpu_suite_must_run_in_full(scenario, missing):
-    processes, _, _, _, rejected = scenario
+    processes, _, output, _, rejected = scenario
     if missing == "all":
         processes.cpu_cases = ()
-    elif missing == "one":
-        processes.cpu_cases = CPU_CASES[:-1]
     else:
-        processes.skipped_cpu = True
+        processes.cpu_cases = CPU_CASES[:-1]
     rejected("cpu")
+    if missing == "all":
+        assert not (output / "ctest-cpu.xml").exists()
+
+
+@pytest.mark.parametrize("status", ["notrun", "disabled"])
+def test_ctest_preserves_incomplete_report_after_zero_exit(scenario, status):
+    processes, root, output, _, rejected = scenario
+    processes.first_cpu_status = status
+    rejected("contains skipped or failed tests")
+    report = output / "ctest-cpu.xml"
+    assert report.is_file()
+    content = report.read_text(encoding="utf-8")
+    suite = ET.fromstring(content)
+    assert suite.attrib["skipped"] == "1"
+    skipped = suite.findall("testcase/skipped/..")
+    assert [case.attrib["name"] for case in skipped] == ["Build.Cxx20StatusRoundTrip"]
+    assert str(root) not in content
 
 
 @pytest.mark.parametrize("reported", ["", "Different.Test"])
