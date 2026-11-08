@@ -29,11 +29,13 @@ struct CudaDepositViews {
 // Divide each contribution by its scale and round to nearest-even before integer
 // accumulation. Outputs have exactly FaceCount entries in FaceGeometry order.
 // Outputs and measurement must be disjoint from each other and all inputs. An empty
-// batch still launches and writes zero faces. All outputs change only on success.
+// batch still launches and sets every face output to zero. All outputs change only
+// on success.
 // Returns kInvalidArgument for invalid inputs, kOutOfRange for nonfinite arithmetic
 // or scaled magnitude above 2^52, and kResourceExhausted beyond 1024 particles or
-// 4096 faces or on device allocation failure. An unusable device or image returns
-// kFailedPrecondition. Other CUDA errors return kInternal. Propagates grid errors.
+// 4096 faces or on host or device allocation failure. An unusable device or image
+// returns kFailedPrecondition. Other CUDA errors return kInternal. Propagates grid
+// errors.
 absl::Status CudaP2G(
     const Grid2D& grid,
     ParticleView2D particles,
