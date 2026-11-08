@@ -500,21 +500,21 @@ def without_test_controls(prefix):
 def verify_google_test(case):
     name = case.attrib["name"]
     lines = case.findtext("system-out", "").splitlines()
-    started = [line.removeprefix("[ RUN      ] ") for line in lines if line.startswith("[ RUN      ] ")]
-    completed = [line for line in lines if line.startswith("[       OK ] ")]
+    execution_markers = [
+        (index, line) for index, line in enumerate(lines) if line.startswith(("[ RUN      ] ", "[       OK ] "))
+    ]
     completion = rf"\[       OK \] {re.escape(name)} \(\d+ ms\)"
     if (
-        started != [name]
-        or len(completed) != 1
-        or not re.fullmatch(completion, completed[0])
+        len(execution_markers) != 2
+        or execution_markers[0][1] != f"[ RUN      ] {name}"
+        or not re.fullmatch(completion, execution_markers[1][1])
         or lines.count("[  PASSED  ] 1 test.") != 1
     ):
         raise ValueError(f"CTest did not show that GoogleTest {name} executed and passed")
     if name == GPU_GRAPH_RECEIPT_CASE:
-        run_index = lines.index(f"[ RUN      ] {name}")
-        ok_index = lines.index(completed[0])
+        (run_index, _), (ok_index, _) = execution_markers
         outside_case = "\n".join(lines[:run_index] + lines[ok_index + 1 :])
-        if ok_index < run_index or graph_receipt_lines(outside_case):
+        if graph_receipt_lines(outside_case):
             raise ValueError(f"CTest gpu: {name} reported a graph replay receipt outside its testcase")
 
 

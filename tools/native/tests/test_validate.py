@@ -245,6 +245,7 @@ def scenario(invocation, monkeypatch):
                 **OPERATOR_RECEIPTS,
                 GRAPH_PRESSURE_CASE: GRAPH_RECEIPT,
             }
+            self.ctest_output_overrides = {}
             self.gpu_before_case = {}
             self.gpu_after_case = {}
             self.sanitizer_receipts = OPERATOR_RECEIPTS.copy()
@@ -370,6 +371,7 @@ def scenario(invocation, monkeypatch):
                         if reported
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
+                    console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
                     after_case = self.gpu_after_case.get(name, "")
                     ET.SubElement(testcase, "system-out").text = f"{root}\n{before_case}\n{console}\n{after_case}\n"
@@ -518,6 +520,21 @@ def test_ctest_must_prove_each_expected_case_executed(scenario, reported):
     processes.reported_gtest_case_name = reported
     rejected("GoogleTest")
     assert not (output / "ctest-cpu.xml").exists()
+
+
+@pytest.mark.parametrize(
+    ("preset", "case_name"),
+    [
+        ("windows-debug-cpu", "Build.Cxx20StatusRoundTrip"),
+        ("windows-debug-cuda", "CudaGraphReplay.FailedCaptureCanBeRetried"),
+    ],
+)
+def test_ctest_requires_run_before_ok(scenario, preset, case_name):
+    processes, _, _, _, rejected = scenario
+    processes.ctest_output_overrides[case_name] = (
+        f"[       OK ] {case_name} (0 ms)\n[ RUN      ] {case_name}\n[  PASSED  ] 1 test."
+    )
+    rejected(f"CTest did not show that GoogleTest {case_name} executed and passed", preset)
 
 
 @pytest.mark.parametrize("problem", ["partial", "duplicate", "unexpected", "deselected", "collection_deselected"])
