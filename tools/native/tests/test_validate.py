@@ -34,7 +34,12 @@ MAC_PRESSURE_3D_CASES = (
     "CudaMacPressure3D.MultilevelProjectionMatchesCpu",
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
 )
+BOUNDARY_3D_CASES = (
+    "CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle",
+    "CudaLiquidBoundary3D.SweptContactMatchesOracle",
+)
 MEMCHECK_OPERATOR_CASES = (
+    *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
     "CudaTransfer.DepositRejectsInvalidSupportRangeAndCapacity",
@@ -65,6 +70,8 @@ PROBE_RECEIPT = (
     "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
 )
 OPERATOR_RECEIPTS = {
+    BOUNDARY_3D_CASES[0]: "operator=liquid_boundary_geometry_3d compiled_architecture=1200 kernel_ms=0.875",
+    BOUNDARY_3D_CASES[1]: "operator=liquid_wall_contact_3d compiled_architecture=1200 kernel_ms=1.5",
     MAC_PRESSURE_3D_CASES[0]: "operator=pressure_3d_mixed compiled_architecture=1200 kernel_ms=0.625",
     MAC_PRESSURE_3D_CASES[1]: "operator=pressure_3d_multilevel compiled_architecture=1200 kernel_ms=1.25",
     MAC_TRANSFER_3D_CASES[0]: "operator=p2g_3d compiled_architecture=1200 kernel_ms=0.375",
@@ -664,13 +671,15 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 24,
+        "tests": 26,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
         "driver_api": 13030,
         "runtime_api": 13030,
         "operators": {
+            "liquid_boundary_geometry_3d": {"compiled_architecture": 1200, "kernel_ms": 0.875},
+            "liquid_wall_contact_3d": {"compiled_architecture": 1200, "kernel_ms": 1.5},
             "p2g": {"compiled_architecture": 1200, "kernel_ms": 0.125},
             "g2p": {"compiled_architecture": 1200, "kernel_ms": 0.25},
             "p2g_3d": {"compiled_architecture": 1200, "kernel_ms": 0.375},
@@ -698,7 +707,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 22,
+            "tests": 24,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -940,13 +949,14 @@ def test_release_rejects_probe_and_operator_receipts_from_graph_memcheck(scenari
     rejected(diagnostic, "windows-release-cuda")
 
 
-@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2])
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2] + BOUNDARY_3D_CASES)
 @pytest.mark.parametrize("problem", ["missing", "wrong-operator", "wrong-architecture", "duplicate", "outside-case"])
 @pytest.mark.parametrize("config", ["debug", "release"])
 def test_cuda_rejects_bad_3d_operator_evidence(scenario, case_name, problem, config):
     processes, _, _, _, rejected = scenario
     receipt = OPERATOR_RECEIPTS[case_name]
-    case_group = MAC_PRESSURE_3D_CASES if case_name in MAC_PRESSURE_3D_CASES else MAC_TRANSFER_3D_CASES
+    case_group = (BOUNDARY_3D_CASES if case_name in BOUNDARY_3D_CASES else
+                  MAC_PRESSURE_3D_CASES if case_name in MAC_PRESSURE_3D_CASES else MAC_TRANSFER_3D_CASES)
     wrong_operator = OPERATOR_RECEIPTS[next(case for case in case_group[:2] if case != case_name)]
     if config == "debug":
         receipts = processes.gpu_receipts
@@ -968,15 +978,25 @@ def test_cuda_rejects_bad_3d_operator_evidence(scenario, case_name, problem, con
     rejected(diagnostic, f"windows-{config}-cuda")
 
 
-@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES + MAC_PRESSURE_3D_CASES)
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES + MAC_PRESSURE_3D_CASES + BOUNDARY_3D_CASES)
 def test_gpu_rejects_skipped_3d_operator_cases(scenario, case_name):
     processes, _, _, _, rejected = scenario
     processes.skipped_gpu_case = case_name
     rejected("contains skipped or failed tests", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES + MAC_PRESSURE_3D_CASES)
+@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES + MAC_PRESSURE_3D_CASES + BOUNDARY_3D_CASES)
 def test_release_requires_every_3d_operator_in_memcheck(scenario, case_name):
     processes, _, _, _, rejected = scenario
     processes.sanitizer_cases = tuple(case for case in processes.sanitizer_cases if case != case_name)
     rejected("Compute Sanitizer", "windows-release-cuda")
+
+
+@pytest.mark.parametrize("case_name", BOUNDARY_3D_CASES)
+@pytest.mark.parametrize("problem", ["missing", "wrong-name"])
+def test_gpu_requires_boundary_3d_cases(scenario, case_name, problem):
+    processes, _, _, _, rejected = scenario
+    processes.gpu_cases = tuple(case for case in processes.gpu_cases if case != case_name)
+    if problem == "wrong-name":
+        processes.gpu_cases += ("CudaLiquidBoundary3D.WrongCase",)
+    rejected("missing expected tests", "windows-debug-cuda")

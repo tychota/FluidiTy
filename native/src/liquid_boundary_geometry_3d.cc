@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "liquid_boundary_backend.h"
 
 namespace fluidity {
 namespace {
@@ -18,40 +19,17 @@ template <typename Index>
 CellLatticeKey CellKey(Index index) {
   return {index.z, index.y, index.x};
 }
-using CartesianVector = std::array<double, 3>;
-CartesianVector Add(CartesianVector left, CartesianVector right) {
-  return {left[0] + right[0], left[1] + right[1], left[2] + right[2]};
-}
-CartesianVector Sub(CartesianVector left, CartesianVector right) {
-  return {left[0] - right[0], left[1] - right[1], left[2] - right[2]};
-}
-CartesianVector Scale(CartesianVector vector, double factor) {
-  return {vector[0] * factor, vector[1] * factor, vector[2] * factor};
-}
-double Dot(CartesianVector left, CartesianVector right) {
-  return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
-}
-CartesianVector Cross(CartesianVector left, CartesianVector right) {
-  return {
-      left[1] * right[2] - left[2] * right[1],
-      left[2] * right[0] - left[0] * right[2],
-      left[0] * right[1] - left[1] * right[0],
-  };
-}
-CartesianVector CartesianComponents(Vec3 vector) {
-  return {vector.x, vector.y, vector.z};
-}
-bool HasFiniteComponents(CartesianVector vector) {
-  return std::ranges::all_of(vector, [](double component) {
-    return std::isfinite(component);
-  });
-}
-bool IsPositiveFinite(double value) {
-  return std::isfinite(value) && value > 0;
-}
-bool IsNormalOrZero(double value) {
-  return value == 0.0 || std::isnormal(value);
-}
+using boundary_internal::CartesianComponents;
+using boundary_internal::CartesianVector;
+using boundary_internal::ClippingVertex;
+using boundary_internal::Dot;
+using boundary_internal::GeometryBackend;
+using boundary_internal::GeometryInput;
+using boundary_internal::GeometryMode;
+using boundary_internal::HasFiniteComponents;
+using boundary_internal::IsNormalOrZero;
+using boundary_internal::IsPositiveFinite;
+using boundary_internal::ObstaclePlanes;
 absl::Status UnrepresentableGeometry() {
   return absl::OutOfRangeError("Unrepresentable boundary geometry arithmetic");
 }
@@ -81,233 +59,6 @@ absl::StatusOr<double> LookupSignedDistance(const SignedDistanceMap& samples, Ce
   return found->second;
 }
 
-// Clip in cell-width coordinates, retaining the interpolated physical liquid
-// value. The same diagonal triangulation induces every tetrahedron boundary.
-struct ClippingVertex {
-  CartesianVector cell_width_position;
-  double liquid_distance;
-};
-using ClippingPolygon = std::vector<ClippingVertex>;
-using ClippingPolyhedron = std::vector<ClippingPolygon>;
-struct ClippingPlane {
-  CartesianVector normal;
-  double plane_coordinate;
-  bool uses_liquid_distance = false;
-};
-double EvaluateClipDistance(const ClippingVertex& vertex, const ClippingPlane& plane) {
-  return plane.uses_liquid_distance ? vertex.liquid_distance
-                                    : Dot(plane.normal, vertex.cell_width_position) - plane.plane_coordinate;
-}
-ClippingPolygon
-ClipPolygon(const ClippingPolygon& polygon, const ClippingPlane& plane, ClippingPolygon* intersections = nullptr) {
-  ClippingPolygon clipped;
-  if (polygon.empty()) {
-    return clipped;
-  }
-  ClippingVertex previous = polygon.back();
-  double previous_distance = EvaluateClipDistance(previous, plane);
-  for (const auto& current : polygon) {
-    const double current_distance = EvaluateClipDistance(current, plane);
-    if ((previous_distance <= 0) != (current_distance <= 0)) {
-      // Normalize before subtraction so finite distances of opposite sign cannot overflow.
-      const double magnitude = std::max(std::abs(previous_distance), std::abs(current_distance));
-      const double previous_scaled = previous_distance / magnitude;
-      const double current_scaled = current_distance / magnitude;
-      const double scaled_difference = previous_scaled - current_scaled;
-      const double previous_weight = -current_scaled / scaled_difference;
-      const double current_weight = previous_scaled / scaled_difference;
-      // Compute both weights directly: 1-t loses a tiny positive cut when t rounds to one.
-      ClippingVertex intersection{
-          Add(Scale(previous.cell_width_position, previous_weight), Scale(current.cell_width_position, current_weight)),
-          previous_weight * previous.liquid_distance + current_weight * current.liquid_distance,
-      };
-      clipped.push_back(intersection);
-      if (intersections != nullptr) {
-        intersections->push_back(intersection);
-      }
-    }
-    if (current_distance <= 0) {
-      clipped.push_back(current);
-    }
-    previous = current;
-    previous_distance = current_distance;
-  }
-  return clipped;
-}
-// Normalize before cross products: local cap directions can be tiny even
-// when the final physical face area or cell volume is comfortably normal.
-CartesianVector UnitDirection(CartesianVector direction) {
-  const double largest_component = std::max({std::abs(direction[0]), std::abs(direction[1]), std::abs(direction[2])});
-  if (largest_component == 0) {
-    return {};
-  }
-  int exponent = 0;
-  std::frexp(largest_component, &exponent);
-  for (double& component : direction) {
-    component = std::ldexp(component, -exponent);
-  }
-  return Scale(direction, 1 / std::hypot(direction[0], direction[1], direction[2]));
-}
-ClippingPolyhedron ClipPolyhedron(const ClippingPolyhedron& polyhedron, const ClippingPlane& plane) {
-  ClippingPolyhedron result;
-  ClippingPolygon intersections;
-  for (const auto& polygon : polyhedron) {
-    auto clipped = ClipPolygon(polygon, plane, &intersections);
-    if (clipped.size() >= 3) {
-      result.push_back(std::move(clipped));
-    }
-  }
-  ClippingPolygon cap;
-  for (const auto& vertex : intersections) {
-    if (std::ranges::none_of(cap, [&](const auto& other) {
-          return other.cell_width_position == vertex.cell_width_position;
-        })) {
-      cap.push_back(vertex);
-    }
-  }
-  if (cap.size() >= 3) {
-    CartesianVector center{};
-    for (const auto& vertex : cap) {
-      center = Add(center, Scale(vertex.cell_width_position, 1.0 / cap.size()));
-    }
-    const CartesianVector tangent = UnitDirection(Sub(cap.front().cell_width_position, center));
-    CartesianVector normal{};
-    for (std::size_t i = 1; i < cap.size(); ++i) {
-      normal = UnitDirection(Cross(tangent, UnitDirection(Sub(cap[i].cell_width_position, center))));
-      if (std::hypot(normal[0], normal[1], normal[2]) > 0) {
-        break;
-      }
-    }
-    const CartesianVector bitangent = Cross(normal, tangent);
-    const double tangent_length = std::hypot(tangent[0], tangent[1], tangent[2]);
-    const double bitangent_length = std::hypot(bitangent[0], bitangent[1], bitangent[2]);
-    if (tangent_length > 0 && bitangent_length > 0) {
-      const auto unit_tangent = Scale(tangent, 1 / tangent_length);
-      const auto unit_bitangent = Scale(bitangent, 1 / bitangent_length);
-      std::ranges::sort(cap, [&](const auto& a, const auto& b) {
-        const auto delta_a = Sub(a.cell_width_position, center);
-        const auto delta_b = Sub(b.cell_width_position, center);
-        return std::atan2(Dot(delta_a, unit_bitangent), Dot(delta_a, unit_tangent))
-            < std::atan2(Dot(delta_b, unit_bitangent), Dot(delta_b, unit_tangent));
-      });
-      result.push_back(std::move(cap));
-    }
-  }
-  return result;
-}
-// Coordinate rows are scaled independently before a determinant. This also
-// handles long thin prisms, whose edge vectors can be nearly parallel: merely
-// scaling each entire vector would still multiply two tiny transverse entries.
-template <std::size_t VectorCount>
-int NormalizeCoordinateRow(std::array<CartesianVector, VectorCount>& edges, int axis) {
-  double largest_component = 0;
-  for (const auto& edge : edges) {
-    largest_component = std::max(largest_component, std::abs(edge[axis]));
-  }
-  if (largest_component == 0) {
-    return 0;
-  }
-  int exponent = 0;
-  std::frexp(largest_component, &exponent);
-  for (auto& edge : edges) {
-    edge[axis] = std::ldexp(edge[axis], -exponent);
-  }
-  return exponent;
-}
-
-// Combine the local determinant's binary exponent with h^dimension before
-// rounding the physical measure. Nonzero contributions that cannot be represented
-// propagate NaN to the checked caller rather than masquerading as empty geometry.
-double PhysicalMeasure(double determinant, int local_exponent, double cell_width, int dimension) {
-  if (determinant == 0) {
-    return 0;
-  }
-  int width_exponent = 0;
-  const double width_mantissa = std::frexp(cell_width, &width_exponent);
-  double physical_mantissa = determinant;
-  for (int axis = 0; axis < dimension; ++axis) {
-    physical_mantissa *= width_mantissa;
-  }
-  const double physical_measure = std::ldexp(physical_mantissa, local_exponent + dimension * width_exponent);
-  if (!std::isfinite(physical_measure) || physical_measure == 0) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-  return physical_measure;
-}
-
-double ComputeClippedVolume(const ClippingPolyhedron& polyhedron, double cell_width) {
-  CartesianVector center{};
-  std::size_t count = 0;
-  for (const auto& polygon : polyhedron) {
-    for (const auto& vertex : polygon) {
-      center = Add(center, vertex.cell_width_position);
-      ++count;
-    }
-  }
-  if (count == 0) {
-    return 0;
-  }
-  center = Scale(center, 1.0 / count);
-  double physical_volume = 0;
-  for (const auto& polygon : polyhedron) {
-    for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
-      std::array edges{
-          Sub(polygon[0].cell_width_position, center),
-          Sub(polygon[vertex].cell_width_position, center),
-          Sub(polygon[vertex + 1].cell_width_position, center),
-      };
-      int determinant_exponent = 0;
-      for (int axis = 0; axis < 3; ++axis) {
-        determinant_exponent += NormalizeCoordinateRow(edges, axis);
-      }
-      const double determinant = std::abs(Dot(edges[0], Cross(edges[1], edges[2]))) / 6;
-      physical_volume += PhysicalMeasure(determinant, determinant_exponent, cell_width, 3);
-    }
-  }
-  return physical_volume;
-}
-double ComputeClippedArea(const ClippingPolygon& polygon, double cell_width) {
-  double physical_area = 0;
-  for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
-    const std::array edges{
-        Sub(polygon[vertex].cell_width_position, polygon[0].cell_width_position),
-        Sub(polygon[vertex + 1].cell_width_position, polygon[0].cell_width_position),
-    };
-    CartesianVector physical_half_cross{};
-    for (int axis = 0; axis < 3; ++axis) {
-      auto normalized_edges = edges;
-      const int first_axis = (axis + 1) % 3;
-      const int second_axis = (axis + 2) % 3;
-      const int first_axis_exponent = NormalizeCoordinateRow(normalized_edges, first_axis);
-      const int second_axis_exponent = NormalizeCoordinateRow(normalized_edges, second_axis);
-      const int area_exponent = first_axis_exponent + second_axis_exponent;
-      const double determinant = (normalized_edges[0][first_axis] * normalized_edges[1][second_axis]
-                                  - normalized_edges[0][second_axis] * normalized_edges[1][first_axis])
-          / 2;
-      physical_half_cross[axis] = PhysicalMeasure(determinant, area_exponent, cell_width, 2);
-    }
-    physical_area += std::hypot(physical_half_cross[0], physical_half_cross[1], physical_half_cross[2]);
-  }
-  return physical_area;
-}
-// A polygon contained in the solid boundary is closed. Strictness changes area
-// only for this coplanar case, and avoids counting the same face on both sides.
-double ComputeOpenFaceArea(const ClippingPolygon& polygon, ClippingPlane plane, double cell_width) {
-  if (std::ranges::none_of(polygon, [&](const auto& vertex) {
-        return EvaluateClipDistance(vertex, plane) < 0;
-      })) {
-    return 0;
-  }
-  return ComputeClippedArea(ClipPolygon(polygon, plane), cell_width);
-}
-struct ObstaclePlanes {
-  bool present = false;
-  bool slab = false;
-  CartesianVector normal{};
-  double low = 0;
-  double high = 0;
-  CartesianVector velocity{};
-};
 absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle) {
   ObstaclePlanes result;
   if (const auto* halfspace = std::get_if<TranslatingHalfspace3D>(&obstacle)) {
@@ -345,95 +96,52 @@ absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle
   }
   return result;
 }
-absl::StatusOr<ObstaclePlanes>
-ObstacleInCellCoordinates(ObstaclePlanes obstacle, UniformMacGeometry3D geometry, CellIndex3D index) {
-  if (!obstacle.present) {
-    return obstacle;
-  }
-  const CartesianVector anchor{
-      geometry.world_origin.x + geometry.cell_width * index.x,
-      geometry.world_origin.y + geometry.cell_width * index.y,
-      geometry.world_origin.z + geometry.cell_width * index.z,
-  };
-  const double origin_projection = Dot(obstacle.normal, anchor);
-  obstacle.low = (obstacle.low - origin_projection) / geometry.cell_width;
-  obstacle.high = (obstacle.high - origin_projection) / geometry.cell_width;
-  if (!HasFiniteComponents(anchor) || !std::isfinite(obstacle.low) || !std::isfinite(obstacle.high)
-      || (obstacle.slab && obstacle.low >= obstacle.high)) {
-    return UnrepresentableGeometry();
-  }
-  return obstacle;
-}
-
-absl::StatusOr<double> ComputeCenteredCurvature(const SignedDistanceMap& samples, CellIndex3D center, double h) {
-  const auto center_value = LookupSignedDistance(samples, center);
-  if (!center_value.ok()) {
-    return center_value.status();
-  }
-  CartesianVector gradient{};
-  std::array<CartesianVector, 3> hessian{};
-  for (int axis = 0; axis < 3; ++axis) {
-    const auto low = OffsetCellIndex(center, axis, -1);
-    const auto high = OffsetCellIndex(center, axis, 1);
-    if (!low.ok() || !high.ok()) {
-      return UnrepresentableGeometry();
-    }
-    const auto low_value = LookupSignedDistance(samples, *low);
-    const auto high_value = LookupSignedDistance(samples, *high);
-    if (!low_value.ok() || !high_value.ok()) {
-      return MissingBoundarySample();
-    }
-    gradient[axis] = (*high_value - *low_value) / (2 * h);
-    hessian[axis][axis] = ((*high_value - *center_value) + (*low_value - *center_value)) / h / h;
-    for (int other = 0; other < axis; ++other) {
-      double mixed = 0;
-      for (int first : {-1, 1}) {
-        for (int second : {-1, 1}) {
-          const auto first_index = OffsetCellIndex(center, axis, first);
-          if (!first_index.ok()) {
-            return first_index.status();
-          }
-          const auto diagonal = OffsetCellIndex(*first_index, other, second);
-          if (!diagonal.ok()) {
-            return diagonal.status();
-          }
-          const auto value = LookupSignedDistance(samples, *diagonal);
-          if (!value.ok()) {
-            return value.status();
-          }
-          mixed += first * second * (*value / 4);
+// Stage only the centered derivative stencil, preserving absent unused halos.
+absl::StatusOr<double>
+ComputeCenteredCurvature(const SignedDistanceMap& samples, CellIndex3D center, double h, GeometryBackend backend) {
+  GeometryInput query{};
+  query.mode = GeometryMode::kCurvature;
+  query.geometry.cell_width = h;
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        if (x != 0 && y != 0 && z != 0) {
+          continue;
         }
+        CellIndex3D index = center;
+        const int offsets[3]{x, y, z};
+        for (int axis = 0; axis < 3; ++axis) {
+          const auto shifted = OffsetCellIndex(index, axis, offsets[axis]);
+          if (!shifted.ok()) {
+            return shifted.status();
+          }
+          index = *shifted;
+        }
+        const auto value = LookupSignedDistance(samples, index);
+        if (!value.ok()) {
+          return value.status();
+        }
+        query.derivative_distances[(z + 1) * 9 + (y + 1) * 3 + x + 1] = *value;
       }
-      hessian[axis][other] = mixed / h / h;
-      hessian[other][axis] = hessian[axis][other];
     }
   }
-  const double norm = std::hypot(gradient[0], gradient[1], gradient[2]);
-  if (!HasFiniteComponents(gradient) || !std::isfinite(norm)) {
-    return UnrepresentableGeometry();
+  const auto result = backend.compute(backend.context, query);
+  if (!result.ok()) {
+    return result.status();
   }
-  if (norm < 1e-8) {
-    return absl::FailedPreconditionError("Degenerate liquid curvature gradient");
+  return result->interface_curvature;
+}
+absl::StatusOr<boundary_internal::GeometryOutput> CpuGeometry(void*, const GeometryInput& query) {
+  const auto result = boundary_internal::ComputeGeometry(query);
+  if (!result.ok()) {
+    return boundary_internal::ArithmeticStatus(result.status());
   }
-  // Contract the Hessian with a normalized gradient to avoid a cubic norm.
-  const CartesianVector normal = Scale(gradient, 1 / norm);
-  double curvature = 0;
-  for (int axis = 0; axis < 3; ++axis) {
-    if (!HasFiniteComponents(hessian[axis])) {
-      return UnrepresentableGeometry();
-    }
-    curvature += (hessian[axis][axis] - normal[axis] * Dot(hessian[axis], normal)) / norm;
-  }
-  if (!std::isfinite(curvature)) {
-    return UnrepresentableGeometry();
-  }
-  return curvature;
+  return *result;
 }
 }  // namespace
 
-absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
-    const LiquidBoundaryGeometryInputs3D& inputs
-) {
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D>
+boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, GeometryBackend backend) {
   if (!IsPositiveFinite(inputs.step_duration) || !IsPositiveFinite(inputs.liquid_density)
       || !std::isfinite(inputs.surface_tension) || inputs.surface_tension < 0) {
     return absl::InvalidArgumentError("Invalid liquid material or step");
@@ -505,43 +213,20 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
       }
       vertices[corner] = {cell_width_position, *distance};
     }
-    const auto local_obstacle = ObstacleInCellCoordinates(*obstacle, grid_geometry, index);
-    if (!local_obstacle.ok()) {
-      return local_obstacle.status();
+    GeometryInput query{};
+    query.mode = GeometryMode::kCell;
+    query.geometry = grid_geometry;
+    query.index = index;
+    query.obstacle = PackObstacle(inputs.obstacle);
+    for (int corner = 0; corner < 8; ++corner) {
+      query.corner_distances[corner] = vertices[corner].liquid_distance;
     }
-    double low_side_liquid_volume = 0;
-    double high_side_liquid_volume = 0;
-    // All six permutations walk from (0,0,0) to (1,1,1). The resulting
-    // coordinate-increasing face diagonals agree on both sides of every face.
-    std::array<int, 3> permutation{0, 1, 2};
-    do {
-      const std::array<int, 4> corners_of_tet{0, 1 << permutation[0], (1 << permutation[0]) | (1 << permutation[1]), 7};
-      // The liquid region is strictly negative. An all-zero tetrahedron is an
-      // interface plateau, not liquid volume; zeros still bound genuine cuts.
-      const bool contains_negative_liquid = std::ranges::any_of(corners_of_tet, [&](int corner) {
-        return vertices[corner].liquid_distance < 0;
-      });
-      if (!contains_negative_liquid) {
-        continue;
-      }
-      const ClippingVertex a = vertices[corners_of_tet[0]];
-      const ClippingVertex b = vertices[corners_of_tet[1]];
-      const ClippingVertex c = vertices[corners_of_tet[2]];
-      const ClippingVertex d = vertices[corners_of_tet[3]];
-      auto liquid_polyhedron = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
-      if (!local_obstacle->present) {
-        high_side_liquid_volume += ComputeClippedVolume(liquid_polyhedron, h);
-      } else {
-        high_side_liquid_volume += ComputeClippedVolume(
-            ClipPolyhedron(liquid_polyhedron, {Scale(local_obstacle->normal, -1), -local_obstacle->high}),
-            h
-        );
-        if (local_obstacle->slab) {
-          low_side_liquid_volume +=
-              ComputeClippedVolume(ClipPolyhedron(liquid_polyhedron, {local_obstacle->normal, local_obstacle->low}), h);
-        }
-      }
-    } while (std::next_permutation(permutation.begin(), permutation.end()));
+    const auto volumes = backend.compute(backend.context, query);
+    if (!volumes.ok()) {
+      return volumes.status();
+    }
+    const double low_side_liquid_volume = volumes->low_side_liquid_volume;
+    const double high_side_liquid_volume = volumes->high_side_liquid_volume;
     if (low_side_liquid_volume > 0 && high_side_liquid_volume > 0 && *center_distance < 0) {
       return absl::FailedPreconditionError("Slab splits one pressure cell into disconnected liquid regions");
     }
@@ -578,55 +263,18 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
   }
   for (const auto& [slot, face] : incident_faces) {
     const auto face_lattice_index = face.lattice_index;
-    const auto local_obstacle = ObstacleInCellCoordinates(
-        *obstacle,
-        grid_geometry,
-        {face_lattice_index.x, face_lattice_index.y, face_lattice_index.z}
-    );
-    if (!local_obstacle.ok()) {
-      return local_obstacle.status();
+    GeometryInput query{};
+    query.mode = GeometryMode::kFace;
+    query.geometry = grid_geometry;
+    query.index = {face_lattice_index.x, face_lattice_index.y, face_lattice_index.z};
+    query.obstacle = PackObstacle(inputs.obstacle);
+    query.axis = static_cast<int>(face.axis);
+    const auto areas = backend.compute(backend.context, query);
+    if (!areas.ok()) {
+      return areas.status();
     }
-    std::array<int, 2> transverse{};
-    int transverse_axis_count = 0;
-    for (int axis = 0; axis < 3; ++axis) {
-      if (axis != static_cast<int>(face.axis)) {
-        transverse[transverse_axis_count++] = axis;
-      }
-    }
-    std::array<ClippingVertex, 4> vertices{};
-    vertices[1].cell_width_position[transverse[0]] = 1;
-    vertices[2].cell_width_position[transverse[0]] = 1;
-    vertices[2].cell_width_position[transverse[1]] = 1;
-    vertices[3].cell_width_position[transverse[1]] = 1;
-    double geometric_blocked_area = 0;
-    double geometric_open_area = 0;
-    for (int triangle = 0; triangle < 2; ++triangle) {
-      const ClippingPolygon polygon{vertices[0], vertices[triangle + 1], vertices[triangle + 2]};
-      if (!local_obstacle->present) {
-        geometric_open_area += ComputeClippedArea(polygon, h);
-        continue;
-      }
-      auto blocked = ClipPolygon(polygon, {local_obstacle->normal, local_obstacle->high});
-      if (local_obstacle->slab) {
-        blocked = ClipPolygon(blocked, {Scale(local_obstacle->normal, -1), -local_obstacle->low});
-      }
-      geometric_blocked_area += ComputeClippedArea(blocked, h);
-      geometric_open_area +=
-          ComputeOpenFaceArea(polygon, {Scale(local_obstacle->normal, -1), -local_obstacle->high}, h);
-      if (local_obstacle->slab) {
-        geometric_open_area += ComputeOpenFaceArea(polygon, {local_obstacle->normal, local_obstacle->low}, h);
-      }
-    }
-    // Compute both sides geometrically, then publish the exact subtraction used
-    // by pressure assembly. A positive measure must not disappear in rounding.
-    const double open_area = std::min(geometric_open_area, full_area);
-    const double blocked_area = full_area - open_area;
-    if (!std::isfinite(geometric_open_area) || !std::isfinite(geometric_blocked_area)
-        || geometric_open_area / full_area > 1 + 64 * std::numeric_limits<double>::epsilon()
-        || !IsNormalOrZero(open_area) || !IsNormalOrZero(blocked_area)
-        || (geometric_blocked_area > 0 && blocked_area == 0)) {
-      return UnrepresentableGeometry();
-    }
+    const double open_area = areas->open_face_area;
+    const double blocked_area = areas->blocked_face_area;
     result.faces_.push_back({face, slot, open_area, blocked_area, obstacle->velocity[static_cast<int>(face.axis)]});
   }
   // Curvature and the capillary bound are interface-local. Interior or closed
@@ -666,7 +314,7 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
       continue;
     }
     auto& cell = result.cells_[ordinal];
-    const auto curvature = ComputeCenteredCurvature(center_distance_samples, cell.cell_index, h);
+    const auto curvature = ComputeCenteredCurvature(center_distance_samples, cell.cell_index, h, backend);
     if (!curvature.ok()) {
       return curvature.status();
     }
@@ -675,12 +323,16 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
   if (std::ranges::any_of(needs_curvature, [](bool needed) {
         return needed;
       })) {
-    const double capillary_square =
-        inputs.liquid_density * full_volume / (4 * std::numbers::pi * inputs.surface_tension);
-    if (!std::isnormal(capillary_square)) {
-      return UnrepresentableGeometry();
+    GeometryInput query{};
+    query.mode = GeometryMode::kCapillary;
+    query.geometry = grid_geometry;
+    query.liquid_density = inputs.liquid_density;
+    query.surface_tension = inputs.surface_tension;
+    const auto capillary = backend.compute(backend.context, query);
+    if (!capillary.ok()) {
+      return capillary.status();
     }
-    result.capillary_step_bound_ = std::sqrt(capillary_square);
+    result.capillary_step_bound_ = capillary->capillary_step_bound;
     if (inputs.step_duration > result.capillary_step_bound_) {
       return absl::FailedPreconditionError("Step exceeds capillary bound");
     }
@@ -688,8 +340,11 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
   return result;
 }
 
-absl::StatusOr<LiquidPressureProblem3D>
-BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D& geometry, const LiquidPressureFields3D& fields) {
+absl::StatusOr<LiquidPressureProblem3D> boundary_internal::BuildLinks(
+    const FrozenLiquidBoundaryGeometry3D& geometry,
+    const LiquidPressureFields3D& fields,
+    GeometryBackend backend
+) {
   if (fields.cells.size() != geometry.cells_.size() || fields.predicted_face_velocities.size() != geometry.faces_.size()
       || !std::isfinite(fields.ambient_pressure)) {
     return absl::InvalidArgumentError("Invalid pressure field extents or ambient pressure");
@@ -752,27 +407,34 @@ BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D& geometry, const
         return MissingBoundarySample();
       }
       const auto& adjacent_liquid_cell = geometry.cells_[has_head ? head_found->second : tail_found->second];
-      const double magnitude = std::max(-adjacent_liquid_cell.center_distance, *air_distance);
-      const double liquid_scaled = -adjacent_liquid_cell.center_distance / magnitude;
-      const double theta = liquid_scaled / (liquid_scaled + *air_distance / magnitude);
-      if (theta < 0.05) {
-        ++result.lower_theta_regularization_count;
+      GeometryInput query{};
+      query.mode = GeometryMode::kLink;
+      query.geometry = geometry.mac_grid_.geometry();
+      query.surface_tension = geometry.surface_tension_;
+      query.ambient_pressure = fields.ambient_pressure;
+      query.interface_curvature = adjacent_liquid_cell.curvature;
+      query.liquid_center_distance = adjacent_liquid_cell.center_distance;
+      query.air_center_distance = *air_distance;
+      const auto values = backend.compute(backend.context, query);
+      if (!values.ok()) {
+        return values.status();
       }
-      link.pressure_gradient_distance = std::clamp(theta, 0.05, 1.0) * h;
-      // A Dirichlet exterior pressure carries the entire capillary lift.
-      // No internal jump or separate surface-force impulse accompanies it.
-      const double pressure_lift = geometry.surface_tension_ * adjacent_liquid_cell.curvature;
-      const double exterior_pressure = fields.ambient_pressure + pressure_lift;
-      const bool lost_capillary_lift =
-          geometry.surface_tension_ > 0 && adjacent_liquid_cell.curvature != 0 && pressure_lift == 0;
-      if (lost_capillary_lift || !IsNormalOrZero(pressure_lift) || !std::isfinite(exterior_pressure)
-          || !std::isnormal(link.pressure_gradient_distance)) {
-        return UnrepresentableGeometry();
-      }
+      result.lower_theta_regularization_count += values->lower_theta_regularized ? 1 : 0;
+      link.pressure_gradient_distance = values->pressure_gradient_distance;
+      const double exterior_pressure = values->exterior_pressure;
       link.pressure_link = DirichletMacPressureLink3D{exterior_pressure};
     }
     result.faces.push_back(link);
   }
   return result;
+}
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs
+) {
+  return boundary_internal::FreezeGeometry(inputs, {CpuGeometry, nullptr});
+}
+absl::StatusOr<LiquidPressureProblem3D>
+BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D& geometry, const LiquidPressureFields3D& fields) {
+  return boundary_internal::BuildLinks(geometry, fields, {CpuGeometry, nullptr});
 }
 }  // namespace fluidity

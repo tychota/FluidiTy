@@ -80,6 +80,14 @@ struct LiquidPressureProblem3D {
   std::size_t lower_theta_regularization_count = 0;  // Number of air links clamped upward to 0.05h.
 };
 
+class FrozenLiquidBoundaryGeometry3D;
+namespace boundary_internal {
+struct GeometryBackend;
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);
+absl::StatusOr<LiquidPressureProblem3D>
+BuildLinks(const FrozenLiquidBoundaryGeometry3D&, const LiquidPressureFields3D&, GeometryBackend);
+}  // namespace boundary_internal
+
 // Owns validated start-time geometry and samples. Views remain valid until move
 // or destruction. One face per owner, in slot order; cells use (z,y,x) order.
 class FrozenLiquidBoundaryGeometry3D {
@@ -112,6 +120,13 @@ class FrozenLiquidBoundaryGeometry3D {
   FreezeLiquidBoundaryGeometry3D(const LiquidBoundaryGeometryInputs3D&);
   friend absl::StatusOr<LiquidPressureProblem3D>
   BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D&, const LiquidPressureFields3D&);
+  friend absl::StatusOr<FrozenLiquidBoundaryGeometry3D>
+  boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, boundary_internal::GeometryBackend);
+  friend absl::StatusOr<LiquidPressureProblem3D> boundary_internal::BuildLinks(
+      const FrozenLiquidBoundaryGeometry3D&,
+      const LiquidPressureFields3D&,
+      boundary_internal::GeometryBackend
+  );
   SparseMacGrid3D mac_grid_;
   std::vector<LiquidCenterDistance3D> center_distances_;
   std::vector<FrozenLiquidCell3D> cells_;

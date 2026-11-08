@@ -74,11 +74,19 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/transfers.cu
     native/cuda/transfer_3d_host.cc
     native/cuda/transfers_3d.cu
+    native/cuda/liquid_boundary_geometry_3d_host.cc
+    native/cuda/liquid_boundary_geometry_3d.cu
+    native/cuda/liquid_wall_contact_3d_host.cc
+    native/cuda/liquid_wall_contact_3d.cu
     native/cuda/mac_pressure_3d_host.cc
     native/cuda/mac_pressure_3d.cu
     native/cuda/pressure_host.cc
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
+  if(MSVC)
+    set_source_files_properties(native/cuda/liquid_boundary_geometry_3d.cu native/cuda/liquid_wall_contact_3d.cu
+      PROPERTIES COMPILE_OPTIONS "-Xcompiler=/Zc:preprocessor" )
+  endif()
 
   foreach(target IN ITEMS fluidity_cuda_probe fluidity_cuda_operators)
     set_target_properties(${target} PROPERTIES
@@ -196,6 +204,7 @@ if(BUILD_TESTING)
       native/tests/test_cuda_transfers.cc
       native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc
+      native/tests/test_cuda_liquid_boundary_3d.cc
       native/tests/test_cuda_mac_pressure_3d.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")

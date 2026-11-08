@@ -46,7 +46,11 @@ GPU_DEPOSIT_3D_RECEIPT_CASE = "CudaMacTransfer3D.DepositCornerMatchesOracleAndCp
 GPU_GATHER_3D_RECEIPT_CASE = "CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu"
 GPU_PRESSURE_3D_MIXED_CASE = "CudaMacPressure3D.MixedLinksMatchOracle"
 GPU_PRESSURE_3D_MULTILEVEL_CASE = "CudaMacPressure3D.MultilevelProjectionMatchesCpu"
+GPU_BOUNDARY_GEOMETRY_3D_CASE = "CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle"
+GPU_WALL_CONTACT_3D_CASE = "CudaLiquidBoundary3D.SweptContactMatchesOracle"
 GPU_OPERATOR_MEMCHECK_CASES = {
+    GPU_BOUNDARY_GEOMETRY_3D_CASE,
+    GPU_WALL_CONTACT_3D_CASE,
     GPU_PRESSURE_3D_MIXED_CASE,
     GPU_PRESSURE_3D_MULTILEVEL_CASE,
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
@@ -74,6 +78,8 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",
+    GPU_WALL_CONTACT_3D_CASE: "liquid_wall_contact_3d",
     GPU_PRESSURE_3D_MIXED_CASE: "pressure_3d_mixed",
     GPU_PRESSURE_3D_MULTILEVEL_CASE: "pressure_3d_multilevel",
     GPU_DEPOSIT_3D_RECEIPT_CASE: "p2g_3d",

@@ -98,6 +98,19 @@ shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event
 | `CudaTransfer.GatherAffineMatchesFixtureAndCpu` | `g2p` |
 | `CudaPressure.NeumannJumpMatchesFixture` | `pressure_neumann` |
 | `CudaPressure.ComplianceRetainsMeanPressure` | `pressure_compliance` |
+| `CudaMacTransfer3D.DepositCornerMatchesOracleAndCpu` | `p2g_3d` |
+| `CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu` | `g2p_3d` |
+| `CudaMacPressure3D.MixedLinksMatchOracle` | `pressure_3d_mixed` |
+| `CudaMacPressure3D.MultilevelProjectionMatchesCpu` | `pressure_3d_multilevel` |
+| `CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle` | `liquid_boundary_geometry_3d` |
+| `CudaLiquidBoundary3D.SweptContactMatchesOracle` | `liquid_wall_contact_3d` |
+
+The liquid boundary cases exercise the shared CPU analytic fixtures on the device,
+including scaled tiny cuts, interface-local capillarity, the CUDA static pressure bridge,
+and compensated continuous thin-wall contact. Geometry uses checked host topology and
+sequential POD queries with two reusable allocations. Its event time sums the device
+queries; separate diagnostic lines report aggregate successful device time and wall time
+for all calls. These bounded fixture timings do not qualify production throughput.
 
 Both CUDA presets require these four graph replay cases.
 
@@ -112,11 +125,12 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-eleven transfer and pressure cases, and all four graph replay cases. CTest also runs
+nineteen operator cases, and all four graph replay cases (24 memcheck cases total).
+CTest requires exactly 26 real GPU cases. CTest also runs
 the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally trigger CUDA API
 errors and are excluded from memcheck. Each memcheck invocation must exit successfully
 and report one zero-error summary. The validator checks the exact GoogleTest start and
-completion names, the probe launch receipt and the five timing receipts in their
+completion names, the probe launch receipt and the eleven timing receipts in their
 matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
@@ -153,7 +167,8 @@ $cuobjdump = Join-Path $env:CUDA_PATH 'bin/cuobjdump.exe'
 $operators = 'out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe'
 & $cuobjdump --list-elf $operators
 & $cuobjdump --list-ptx $operators
-& $cuobjdump --dump-ptx $operators | Select-String '^\.target'
+& $cuobjdump --dump-ptx $operators | Select-String '^\.target|LiquidBoundaryGeometry3DKernel|LiquidWallContact3DKernel'
+& $cuobjdump --dump-sass $operators | Select-String 'arch = sm_120|LiquidBoundaryGeometry3DKernel|LiquidWallContact3DKernel'
 ```
 
 ## Fixtures and evidence
