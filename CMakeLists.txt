@@ -174,7 +174,9 @@ if(BUILD_TESTING)
     target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
-    add_executable(fluidity_cuda_graph_tests native/tests/test_cuda_graph_deposit.cc)
+    add_executable(fluidity_cuda_graph_tests
+      native/tests/test_cuda_graph_deposit.cc
+      native/tests/test_cuda_graph_pressure.cc)
     target_include_directories(fluidity_cuda_graph_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/cuda")
     target_link_libraries(fluidity_cuda_graph_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_graph_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
