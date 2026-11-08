@@ -5,6 +5,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 
 namespace fluidity {
@@ -70,5 +71,22 @@ struct MacPressureProjection3D {
   std::vector<std::size_t> gauge_cell_ordinals;  // In increasing cell order.
   MacPressureDiagnostics3D diagnostics;
 };
+
+struct MacPressureSolverOptions3D {
+  std::size_t max_iterations = 256;  // Inclusive budget in [1, 256].
+};
+
+// Project frozen MAC velocities using mixed-precision multigrid PCG. The
+// previous pressure initializes each anchored component; subtract the prior
+// pin pressure on unanchored components. Success requires the original FP64
+// residual and independent physical defect gates, including every pin row:
+// ||b-Ap||₂ <= 2e-6 m³/s + 2e-6 ||b||₂ and both maximum |r|/V and physical
+// constraint defect <= 2e-5 s⁻¹.
+// Returns preparation/evaluation errors, kInvalidArgument for a budget outside
+// [1,256], kOutOfRange for unrepresentable solver arithmetic, and kAborted for
+// nonpositive curvature or failure to converge within the budget. Inputs are
+// borrowed read-only and errors publish no partial projection.
+absl::StatusOr<MacPressureProjection3D>
+ProjectMacPressure3D(const MacPressureInputs3D& inputs, MacPressureSolverOptions3D options = {});
 
 }  // namespace fluidity
