@@ -211,7 +211,7 @@ class PressureReplayFixture {
   }
 
   // Teardown fences the stream before destroying events or the executable.
-  // Both captured addresses remain live until after graph destruction.
+  // The captured host and device addresses remain live until after graph destruction.
   PinnedDeviceBuffer<PreparedPressureInputs, 1> pressure_inputs_buffer_;
   PinnedDeviceBuffer<PressureKernelResult, 1> pressure_result_buffer_;
   CudaGraphReplay replay_;
