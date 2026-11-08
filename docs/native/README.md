@@ -208,7 +208,9 @@ geometry and a dense pressure solve for up to eight cells. The graph spike cover
 buffers on one stream for separate deposition and two-cell pressure fixtures. Production
 graph integration belongs to later solver work. The
 [Blender reader qualification](../blender/README.md) records measured point-cache playback.
-The 2D adaptive-basis spike remains open for M0. Proof pilots and later formal contracts use the separate
-[Lean workflow](../../proofs/README.md). A release license decision remains open. See the
+The [2D adaptive-basis qualification](../adaptivity/README.md) records measured M0 transfer, flux ownership,
+and masked support fixtures. Production adaptivity still requires 3D solver and CUDA throughput gates.
+Proof pilots and later formal contracts use the separate [Lean workflow](../../proofs/README.md).
+The project owner must select a license before public release. See the
 [design milestones and evidence
 requirements](../superpowers/specs/2026-11-07-fluidity-design.md#15-validation-milestones-and-review-boundary).

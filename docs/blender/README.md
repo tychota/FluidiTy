@@ -169,7 +169,8 @@ with the extension disabled remain M1-B gates. Other platforms, Blender builds,
 subframe playback, motion blur and production-scale performance need their own
 measurements.
 
-The 2D adaptive-basis spike remains the open measured M0 spike. The bounded CUDA
+The [2D adaptive-basis qualification](../adaptivity/README.md) records the measured M0 fixture.
+Production adaptive 3D and GPU gates remain separate. The bounded CUDA
 transfer, pressure and graph results are recorded in the native toolchain
 matrix. Lean pilots and later formal contracts use the separate proof workflow.
 A release license decision remains open.
