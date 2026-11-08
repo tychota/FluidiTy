@@ -135,6 +135,16 @@ if(BUILD_TESTING)
 
   fluidity_compile_fixtures(fluidity_fixture_headers "${FLUIDITY_FIXTURE_DIRECTORY}"
                            "${fixture_header}" "${fixture_export_stamp}")
+  # Shared decoded pressure fixtures for evaluator, CPU solver and future CUDA tests.
+  add_library(fluidity_pressure_3d_test_support STATIC native/tests/mac_pressure_3d_fixture.cc)
+  add_dependencies(fluidity_pressure_3d_test_support fluidity_fixture_headers)
+  target_include_directories(fluidity_pressure_3d_test_support
+    PUBLIC "${PROJECT_SOURCE_DIR}/native/tests"
+    PRIVATE "${generated_dir}")
+  target_compile_features(fluidity_pressure_3d_test_support PUBLIC cxx_std_20)
+  target_compile_options(fluidity_pressure_3d_test_support PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+  target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
+
   add_executable(fluidity_native_tests
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
@@ -147,7 +157,7 @@ if(BUILD_TESTING)
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_viscosity.cc)
-  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
+  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
   # Use a separate test executable for the synthetic case so each executable owns one data set.
