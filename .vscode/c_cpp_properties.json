@@ -1,0 +1,45 @@
+{
+  "configurations": [
+    {
+      "name": "Win32",
+      "cppStandard": "c++20",
+      "compileCommands": [
+        "${workspaceFolder}/out/build/windows-debug-cpu/compile_commands.json"
+      ],
+      "includePath": [
+        "${workspaceFolder}/native/include"
+      ]
+    },
+    {
+      "name": "Windows CUDA",
+      "cppStandard": "c++20",
+      "compileCommands": [
+        "${workspaceFolder}/out/build/windows-debug-cuda/compile_commands.json"
+      ],
+      "includePath": [
+        "${workspaceFolder}/native/include"
+      ]
+    },
+    {
+      "name": "Linux",
+      "cppStandard": "c++20",
+      "compileCommands": [
+        "${workspaceFolder}/out/build/linux-debug-cpu/compile_commands.json"
+      ],
+      "includePath": [
+        "${workspaceFolder}/native/include"
+      ]
+    },
+    {
+      "name": "Mac",
+      "cppStandard": "c++20",
+      "compileCommands": [
+        "${workspaceFolder}/out/build/macos-debug-cpu/compile_commands.json"
+      ],
+      "includePath": [
+        "${workspaceFolder}/native/include"
+      ]
+    }
+  ],
+  "version": 4
+}

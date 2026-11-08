@@ -58,6 +58,17 @@ For manual Conan install and CMake commands, including the explicit ABI flags, s
 [toolchain matrix reproduction commands](toolchains.md#reproduce-on-windows). The lock pins
 recipe revisions and `--build=missing` permits building a binary from a pinned recipe.
 
+## VS Code IntelliSense
+
+Open the repository folder with the Microsoft C/C++ extension installed. Run the native
+setup and validation for your platform once to generate the preset's
+`out/build/<preset>/compile_commands.json` and fixture headers. IntelliSense reads
+the compiler, flags and Conan include directories from that database.
+
+The default configuration uses your platform's Debug CPU preset. For CUDA sources,
+run the Windows Debug CUDA preset and select **Windows CUDA** using
+**C/C++: Select a Configuration**. Each checkout generates its own databases.
+
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
