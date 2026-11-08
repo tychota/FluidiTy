@@ -74,13 +74,7 @@ def _normalize_query(particle_world_position, origin, cell_width, dtype, finest_
                 f"normalized position must be in [-{_MAX_NORMALIZED_COORDINATE}, {_MAX_NORMALIZED_COORDINATE}]"
             )
 
-        # Keep sufficient resolution for half-cell lattice shifts through the
-        # full support, including the two-coarse-cell normal spline radius.
-        world_extent = np.abs(position) + 2 * cell_width
-        if not np.all(np.spacing(world_extent) <= finest_cell_width / 2):
-            raise ValueError("world coordinates cannot resolve the finest lattice in the requested dtype")
-
-    return normalized_position, origin, cell_width
+    return position, normalized_position, origin, cell_width
 
 
 def _support_radius(is_face_normal):
@@ -146,7 +140,7 @@ def _active_fine_axis(normalized_coordinate, is_face_normal):
     return anchors[contained], weights[contained], gradients[contained]
 
 
-def _tensor_stencil(axis_stencils, origin, cell_width, level):
+def _tensor_stencil(axis_stencils, position, normalized_position, origin, cell_width, level):
     (x_anchors, x_weights, x_gradients), (y_anchors, y_weights, y_gradients) = axis_stencils
     weights = (x_weights[:, None] * y_weights).ravel()
     positive = weights > 0
@@ -154,7 +148,19 @@ def _tensor_stencil(axis_stencils, origin, cell_width, level):
     normalized_gradients = np.column_stack(
         ((x_gradients[:, None] * y_weights).ravel(), (x_weights[:, None] * y_gradients).ravel())
     )
-    anchor_world_positions = origin + cell_width * normalized_anchors[positive]
+    normalized_anchors = normalized_anchors[positive]
+    with np.errstate(over="ignore", invalid="ignore"):
+        anchor_world_positions = origin + cell_width * normalized_anchors
+        round_trip_offsets = (anchor_world_positions - position) / cell_width
+        offset_error = np.abs(round_trip_offsets - (normalized_anchors - normalized_position))
+    if not np.all(np.isfinite(anchor_world_positions)):
+        raise ValueError("world anchor positions must be finite in the requested dtype")
+
+    # Compare geometry in level cell units. A two-epsilon budget keeps
+    # coordinate rounding small enough for the FP32 moment measurements.
+    if not np.all(offset_error <= 2 * np.finfo(position.dtype).eps):
+        raise ValueError("world anchor offsets lose lattice precision in the requested dtype")
+
     physical_gradients = normalized_gradients[positive] / cell_width
     levels = np.full(anchor_world_positions.shape[0], level, dtype=np.int8)
     return anchor_world_positions, weights[positive], physical_gradients, levels
@@ -175,13 +181,15 @@ def evaluate_coarse_fine_basis(
     The fine half-plane has world coordinate >= interface_origin[interface_axis].
     The face-normal and interface axes are 0 (x) or 1 (y). The finite input
     vectors are in world length units, with the particle position in
-    [-64, 64] coarse cells of the origin along each axis. A positive coarse cell
-    width must permit resolving the fine anchors in the selected float32 or
-    float64 dtype. Invalid inputs raise ValueError or TypeError.
+    [-64, 64] coarse cells of the origin along each axis. Coordinate subtraction
+    uses the selected float32 or float64 dtype. With a positive coarse cell width,
+    each returned world anchor must be finite, and its offset from the particle
+    must agree with the lattice offset to within two dtype epsilons in that
+    anchor's level cell units. Invalid inputs raise ValueError or TypeError.
     """
     _validate_axis(face_normal_axis, "face_normal_axis")
     _validate_axis(interface_axis, "interface_axis")
-    normalized_position, origin, coarse_cell_width = _normalize_query(
+    position, normalized_position, origin, coarse_cell_width = _normalize_query(
         particle_world_position, interface_origin, coarse_cell_width, dtype, finest_cell_ratio=0.5
     )
 
@@ -194,14 +202,15 @@ def evaluate_coarse_fine_basis(
         else _uniform_axis(coordinate, axis == face_normal_axis)
         for axis, coordinate in enumerate(normalized_position)
     ]
+    fine_normalized_position = 2 * normalized_position
     fine_axes = [
         _active_fine_axis(coordinate, axis == face_normal_axis)
         if axis == interface_axis
         else _uniform_axis(coordinate, axis == face_normal_axis)
-        for axis, coordinate in enumerate(2 * normalized_position)
+        for axis, coordinate in enumerate(fine_normalized_position)
     ]
-    coarse = _tensor_stencil(coarse_axes, origin, coarse_cell_width, level=0)
-    fine = _tensor_stencil(fine_axes, origin, coarse_cell_width / 2, level=1)
+    coarse = _tensor_stencil(coarse_axes, position, normalized_position, origin, coarse_cell_width, level=0)
+    fine = _tensor_stencil(fine_axes, position, fine_normalized_position, origin, coarse_cell_width / 2, level=1)
     return _immutable_stencil(*(np.concatenate(parts) for parts in zip(coarse, fine, strict=True)))
 
 
@@ -212,12 +221,14 @@ def evaluate_uniform_cubic_normal_basis(
 
     The face-normal axis is 0 (x) or 1 (y). The finite input vectors are in world
     length units, with the particle position in [-64, 64] cells of lattice_origin
-    along each axis. A positive cell width must permit resolving anchors in the
-    selected float32 or float64 dtype. Invalid inputs raise ValueError or TypeError.
+    along each axis. Coordinate subtraction uses the selected float32 or float64
+    dtype. With a positive cell width, each returned world anchor must be finite,
+    and its offset from the particle must agree with the lattice offset to within
+    two dtype epsilons in cell units. Invalid inputs raise ValueError or TypeError.
     """
     _validate_axis(face_normal_axis, "face_normal_axis")
-    normalized_position, origin, cell_width = _normalize_query(
+    position, normalized_position, origin, cell_width = _normalize_query(
         particle_world_position, lattice_origin, cell_width, dtype, finest_cell_ratio=1
     )
     axes = [_uniform_axis(coordinate, axis == face_normal_axis) for axis, coordinate in enumerate(normalized_position)]
-    return _immutable_stencil(*_tensor_stencil(axes, origin, cell_width, level=0))
+    return _immutable_stencil(*_tensor_stencil(axes, position, normalized_position, origin, cell_width, level=0))

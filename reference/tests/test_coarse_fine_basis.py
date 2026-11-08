@@ -253,3 +253,54 @@ def test_unusable_transition_inputs_are_rejected(position, overrides):
     }
     with pytest.raises((TypeError, ValueError)):
         evaluate_coarse_fine_basis(position, **(options | overrides))
+
+
+@pytest.fixture(params=["transition", "uniform"])
+def evaluate_geometry(request):
+    def evaluate(position, origin, width, dtype):
+        if request.param == "transition":
+            return evaluate_coarse_fine_basis(
+                position,
+                interface_origin=origin,
+                coarse_cell_width=width,
+                face_normal_axis=0,
+                interface_axis=0,
+                dtype=dtype,
+            )
+        return evaluate_uniform_cubic_normal_basis(
+            position, lattice_origin=origin, cell_width=width, face_normal_axis=0, dtype=dtype
+        )
+
+    return evaluate
+
+
+@pytest.mark.parametrize(
+    "dtype,origin,offset",
+    [
+        (np.float32, (1e6, -1e6), (0.4375, 0.3125)),
+        (np.float64, (1e12, -1e12), (0.4375, 0.3125)),
+        (np.float32, (0, 0), (63.9, -57.3125)),
+    ],
+)
+def test_rejects_inaccurate_world_anchor_offsets(evaluate_geometry, dtype, origin, offset):
+    origin = np.array(origin, dtype=dtype)
+    query = origin + np.array(offset, dtype=dtype)
+    with pytest.raises(ValueError):
+        evaluate_geometry(query, origin, dtype(1.1), dtype)
+
+
+@pytest.mark.parametrize("dtype,origin_x,width", [(np.float32, 3.4e38, 6e36), (np.float64, 1.79e308, 3e306)])
+def test_rejects_overflowing_world_anchor_reconstruction(evaluate_geometry, dtype, origin_x, width):
+    with pytest.raises(ValueError):
+        evaluate_geometry((0, 0), (origin_x, 0), dtype(width), dtype)
+
+
+@pytest.mark.parametrize("dtype,origin_x", [(np.float32, 1e6), (np.float64, 1e12)])
+def test_accepts_exact_world_anchor_geometry_near_patch_limit(evaluate_geometry, dtype, origin_x):
+    origin = np.array((origin_x, -origin_x), dtype=dtype)
+    query = origin + np.array((63.875, -57.3125), dtype=dtype)
+    stencil = evaluate_geometry(query, origin, dtype(1), dtype)
+    offsets = stencil.anchor_world_positions - query
+    tolerance = 2 * np.finfo(dtype).eps
+    np.testing.assert_allclose(stencil.weights @ offsets, 0, rtol=0, atol=tolerance)
+    np.testing.assert_allclose(offsets.T @ stencil.physical_gradients, np.eye(2), rtol=0, atol=tolerance)
