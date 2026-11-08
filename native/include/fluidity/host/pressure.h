@@ -25,23 +25,23 @@ inline constexpr std::size_t kMaxPressureFaces = 3 * kMaxPressureCells + 1;
 struct PressureInputsView {
   Grid2D grid;
   double dt;  // Step duration.
-  std::span<const double> velocity;  // Predicted fluid face velocity.
-  std::span<const double> aperture;
-  std::span<const double> mobility;  // Face inverse density.
-  std::span<const double> distance;  // Physical pressure-gradient distance.
-  std::span<const double> wall_velocity;
-  std::span<const std::uint8_t> dirichlet_mask;
-  std::span<const double> dirichlet_pressure;
-  std::span<const double> jump;  // Oriented pressure jump added to tail pressure minus head pressure.
-  std::span<const double> source;  // Target divergence in inverse time.
-  std::span<const double> fluid_volume;
-  std::span<const double> bulk_modulus;
-  std::span<const double> previous_pressure;
+  std::span<const double> predicted_face_velocities;  // Predicted fluid face velocity.
+  std::span<const double> face_open_fractions;
+  std::span<const double> face_inverse_densities;  // Face inverse density.
+  std::span<const double> pressure_gradient_distances;  // Physical pressure-gradient distance.
+  std::span<const double> wall_face_velocities;
+  std::span<const std::uint8_t> dirichlet_face_mask;
+  std::span<const double> dirichlet_face_pressures;
+  std::span<const double> face_pressure_jumps;  // Oriented pressure jump added to tail pressure minus head pressure.
+  std::span<const double> target_cell_divergence;  // Target divergence in inverse time.
+  std::span<const double> cell_fluid_volumes;
+  std::span<const double> cell_bulk_moduli;
+  std::span<const double> previous_cell_pressures;
 };
 
 struct PressureOutputsView {
   std::span<double> pressure;
-  std::span<double> velocity;
+  std::span<double> corrected_face_velocities;
   // Original integrated system before gauge constraints, stored row-major.
   std::span<double> original_matrix;
   std::span<double> rhs;
@@ -50,7 +50,7 @@ struct PressureOutputsView {
   // Corrected outward flux per fluid volume, minus source, plus the compliance term. Units are inverse time.
   std::span<double> constraint_defect;
   // Cell indices of the pins in ascending order. Only the first gauge_count entries are written.
-  std::span<std::size_t> gauges;
+  std::span<std::size_t> gauge_cell_indices;
   std::size_t& gauge_count;
 };
 
@@ -63,27 +63,27 @@ struct PressureWorkspace {
     std::int64_t head;
     double open_area;
     double wall_area;
-    double velocity_scale;  // dt * mobility / distance, for the face velocity correction.
-    double conductance;  // Open area times velocity_scale, for the integrated system.
+    double pressure_to_velocity_scale;  // dt * mobility / distance, for the face velocity correction.
+    double conductance;  // Open area times pressure_to_velocity_scale, for the integrated system.
     // Exterior pressure multiplied by the adjacent cell's outward incidence.
     double signed_boundary_pressure;
-    bool active;
+    bool has_pressure_coupling;
   };
 
   std::array<FaceLink, kMaxPressureFaces> faces;
   // Bulk modulus times dt, infinite for an incompressible cell.
-  std::array<double, kMaxPressureCells> bulk_time;
+  std::array<double, kMaxPressureCells> bulk_modulus_times_dt;
   std::array<double, kMaxPressureCells * kMaxPressureCells> original_matrix;
   std::array<double, kMaxPressureCells> rhs;
   std::array<double, kMaxPressureCells * kMaxPressureCells> solve_matrix;
   std::array<double, kMaxPressureCells> solve_rhs;
   SmallSolveWorkspace solve_workspace;
   std::array<double, kMaxPressureCells> pressure;
-  std::array<double, kMaxPressureFaces> velocity;
+  std::array<double, kMaxPressureFaces> corrected_face_velocities;
   std::array<double, kMaxPressureCells> residual;
   // Integrated corrected flux during accumulation, then the staged per-volume defect.
   std::array<double, kMaxPressureCells> constraint_defect;
-  std::array<std::size_t, kMaxPressureCells> gauges;
+  std::array<std::size_t, kMaxPressureCells> gauge_cell_indices;
 };
 
 // Assembles the integrated pressure system and corrects open internal and Dirichlet face velocities.
