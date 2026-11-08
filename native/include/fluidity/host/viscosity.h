@@ -12,10 +12,10 @@
 namespace fluidity {
 
 struct StrainShape {
-  std::size_t rows;  // Strain samples, including both normal components and interior shear.
-  std::size_t columns;  // Face velocities in MAC face order.
+  std::size_t strain_row_count;  // Strain samples, including both normal components and interior shear.
+  std::size_t face_velocity_count;  // Face velocities in MAC face order.
   // Number of entries in the dense row-major strain operator.
-  std::size_t coefficients;
+  std::size_t coefficient_count;
 };
 
 // Returns the extents of the dense strain operator and its diagonal quadrature.
@@ -31,10 +31,15 @@ absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid);
 //
 // The caller supplies exact MacStrainShape2D extents. Outputs must be disjoint
 // from each other and the grid and are preserved on error. Returns kInvalidArgument
-// for invalid geometry, mu, extents, or overlap, kUnimplemented for unsupported
+// for invalid geometry, viscosity, extents, or overlap, kUnimplemented for unsupported
 // size, and kOutOfRange for unrepresentable geometry or coefficients. A nonzero
 // quadrature must be a positive normal double.
-absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain, std::span<double> weight);
+absl::Status MacStrain2D(
+    const Grid2D& grid,
+    double dynamic_viscosity,
+    std::span<double> strain_operator,
+    std::span<double> strain_quadrature_weights
+);
 
 enum class ViscosityMode {
   kAuto,
@@ -49,22 +54,22 @@ enum class ViscosityMethod {
 
 struct ViscosityInputsView {
   // Face velocity in length/time. Its order defines the columns of E.
-  std::span<const double> velocity;
+  std::span<const double> face_velocities;
   // Positive face inertia in mass units, supplied by the matching pressure geometry.
-  std::span<const double> mass;
+  std::span<const double> face_inertias;
   // Dense row-major E in inverse length, with one column per velocity unknown.
-  std::span<const double> strain;
+  std::span<const double> strain_operator;
   // Number of strain rows and entries in both strain-space vectors.
-  std::size_t rows;
+  std::size_t strain_row_count;
   // Diagonal strain quadrature W in mass*length^2/time.
-  std::span<const double> weight;
+  std::span<const double> strain_quadrature_weights;
   // Prescribed wall strain in inverse time, in the same row order as E.
   std::span<const double> boundary_strain;
   // Nonnegative step duration in time units.
   double dt;
   ViscosityMode mode = ViscosityMode::kAuto;
   // Fractional explicit stability margin in [0, 1).
-  double safety = 0.01;
+  double explicit_stability_margin = 0.01;
 };
 
 struct ViscosityDiagnostics {
@@ -84,7 +89,7 @@ struct ViscosityDiagnostics {
 
 struct ViscosityOutputsView {
   // Caller-owned span in the same units, order, and extent as the input velocity.
-  std::span<double> velocity;
+  std::span<double> updated_face_velocities;
   ViscosityDiagnostics& diagnostics;
 };
 
@@ -100,7 +105,7 @@ struct ViscosityWorkspace {
 };
 
 // Advances the entire system using K = E^T W E and wall load E^T W boundary_strain.
-// Auto mode selects explicit only when dt*spectral_bound <= 2*(1-safety).
+// Auto mode selects explicit only when dt*spectral_bound <= 2*(1-explicit_stability_margin).
 // The bound is float64 reference evidence. The wall strain is an algebraic lift.
 //
 // Uses 1 to 64 velocity unknowns and any representable strain row count, including

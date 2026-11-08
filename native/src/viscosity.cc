@@ -63,14 +63,14 @@ struct BinaryExponentRange {
 
 absl::Status
 ValidateStepViews(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, ViscosityWorkspace& workspace) {
-  const std::size_t columns = inputs.velocity.size();
+  const std::size_t columns = inputs.face_velocities.size();
   if (columns == 0) {
     return absl::InvalidArgumentError("viscosity requires at least one velocity unknown");
   }
   if (columns > kMaxDenseUnknowns) {
     return absl::UnimplementedError("viscosity supports at most 64 velocity unknowns");
   }
-  const auto coefficients = CheckedExtentProduct(inputs.rows, columns);
+  const auto coefficients = CheckedExtentProduct(inputs.strain_row_count, columns);
   if (!coefficients.ok()) {
     return coefficients.status();
   }
@@ -78,28 +78,30 @@ ValidateStepViews(const ViscosityInputsView& inputs, ViscosityOutputsView output
   if (!coefficient_bytes.ok()) {
     return coefficient_bytes.status();
   }
-  const auto column_extents = CheckExtents(columns, {inputs.mass.size(), outputs.velocity.size()});
+  const auto column_extents =
+      CheckExtents(columns, {inputs.face_inertias.size(), outputs.updated_face_velocities.size()});
   if (!column_extents.ok()) {
     return column_extents;
   }
-  const auto row_extents = CheckExtents(inputs.rows, {inputs.weight.size(), inputs.boundary_strain.size()});
+  const auto row_extents =
+      CheckExtents(inputs.strain_row_count, {inputs.strain_quadrature_weights.size(), inputs.boundary_strain.size()});
   if (!row_extents.ok()) {
     return row_extents;
   }
-  const auto strain_extent = ValidateExtent(inputs.strain.size(), *coefficients);
+  const auto strain_extent = ValidateExtent(inputs.strain_operator.size(), *coefficients);
   if (!strain_extent.ok()) {
     return strain_extent;
   }
 
   return CheckWritableViews(
-      {std::as_bytes(outputs.velocity),
+      {std::as_bytes(outputs.updated_face_velocities),
        std::as_bytes(std::span(&outputs.diagnostics, 1)),
        std::as_bytes(std::span(&workspace, 1))},
       {std::as_bytes(std::span(&inputs, 1)),
-       std::as_bytes(inputs.velocity),
-       std::as_bytes(inputs.mass),
-       std::as_bytes(inputs.strain),
-       std::as_bytes(inputs.weight),
+       std::as_bytes(inputs.face_velocities),
+       std::as_bytes(inputs.face_inertias),
+       std::as_bytes(inputs.strain_operator),
+       std::as_bytes(inputs.strain_quadrature_weights),
        std::as_bytes(inputs.boundary_strain)}
   );
 }
@@ -108,7 +110,8 @@ absl::Status ValidateStepParameters(const ViscosityInputsView& inputs) {
   if (!std::isfinite(inputs.dt) || inputs.dt < 0.0) {
     return absl::InvalidArgumentError("viscosity dt must be finite and nonnegative");
   }
-  if (!std::isfinite(inputs.safety) || inputs.safety < 0.0 || inputs.safety >= 1.0) {
+  if (!std::isfinite(inputs.explicit_stability_margin) || inputs.explicit_stability_margin < 0.0
+      || inputs.explicit_stability_margin >= 1.0) {
     return absl::InvalidArgumentError("viscosity safety must be in [0, 1)");
   }
   switch (inputs.mode) {
@@ -120,23 +123,23 @@ absl::Status ValidateStepParameters(const ViscosityInputsView& inputs) {
       return absl::InvalidArgumentError("invalid viscosity mode");
   }
 
-  for (std::size_t face = 0; face < inputs.velocity.size(); ++face) {
-    if (!std::isfinite(inputs.velocity[face])) {
+  for (std::size_t face = 0; face < inputs.face_velocities.size(); ++face) {
+    if (!std::isfinite(inputs.face_velocities[face])) {
       return absl::InvalidArgumentError("face velocity must be finite");
     }
-    if (!std::isfinite(inputs.mass[face]) || inputs.mass[face] <= 0.0) {
+    if (!std::isfinite(inputs.face_inertias[face]) || inputs.face_inertias[face] <= 0.0) {
       return absl::InvalidArgumentError("face inertia must be finite and positive");
     }
   }
-  for (std::size_t row = 0; row < inputs.rows; ++row) {
-    if (!std::isfinite(inputs.weight[row]) || inputs.weight[row] < 0.0) {
+  for (std::size_t row = 0; row < inputs.strain_row_count; ++row) {
+    if (!std::isfinite(inputs.strain_quadrature_weights[row]) || inputs.strain_quadrature_weights[row] < 0.0) {
       return absl::InvalidArgumentError("strain quadrature must be finite and nonnegative");
     }
     if (!std::isfinite(inputs.boundary_strain[row])) {
       return absl::InvalidArgumentError("wall strain must be finite");
     }
   }
-  for (const double coefficient : inputs.strain) {
+  for (const double coefficient : inputs.strain_operator) {
     if (!std::isfinite(coefficient)) {
       return absl::InvalidArgumentError("strain operator must be finite");
     }
@@ -204,15 +207,15 @@ absl::Status FinalizeViscousOperator(std::span<double> stiffness, std::span<cons
 // and wall load in strain row order before finalizing the dense operator.
 absl::Status
 AssembleViscousOperator(const ViscosityInputsView& inputs, std::span<double> stiffness, std::span<double> wall_load) {
-  const std::size_t columns = inputs.velocity.size();
+  const std::size_t columns = inputs.face_velocities.size();
   std::ranges::fill(stiffness, 0.0);
   std::ranges::fill(wall_load, 0.0);
-  for (std::size_t strain_row = 0; strain_row < inputs.rows; ++strain_row) {
-    const double quadrature = inputs.weight[strain_row];
+  for (std::size_t strain_row = 0; strain_row < inputs.strain_row_count; ++strain_row) {
+    const double quadrature = inputs.strain_quadrature_weights[strain_row];
     if (quadrature == 0.0) {
       continue;
     }
-    const auto strain_coefficients = inputs.strain.subspan(strain_row * columns, columns);
+    const auto strain_coefficients = inputs.strain_operator.subspan(strain_row * columns, columns);
     const double wall_strain = inputs.boundary_strain[strain_row];
     const auto accumulated = AccumulateStrainRow(strain_coefficients, quadrature, wall_strain, stiffness, wall_load);
     if (!accumulated.ok()) {
@@ -255,21 +258,21 @@ absl::Status ApplyForwardEuler(
     std::span<const double> wall_load,
     std::span<double> next_velocity
 ) {
-  const std::size_t columns = inputs.velocity.size();
+  const std::size_t columns = inputs.face_velocities.size();
   for (std::size_t row = 0; row < columns; ++row) {
-    const double face_mass = inputs.mass[row];
+    const double face_mass = inputs.face_inertias[row];
     double velocity_increment = ScaledProduct(inputs.dt, wall_load[row], 1.0, face_mass);
     // Accumulate in velocity units so an extreme force can still make a
     // representable contribution after scaling by dt and the face inertia.
     for (std::size_t column = 0; column < columns; ++column) {
       const double coefficient = stiffness[row * columns + column];
-      const double viscous_increment = ScaledProduct(inputs.dt, coefficient, inputs.velocity[column], face_mass);
+      const double viscous_increment = ScaledProduct(inputs.dt, coefficient, inputs.face_velocities[column], face_mass);
       velocity_increment -= viscous_increment;
     }
     if (!std::isfinite(velocity_increment)) {
       return absl::OutOfRangeError("explicit viscous increment is nonfinite");
     }
-    next_velocity[row] = inputs.velocity[row] + velocity_increment;
+    next_velocity[row] = inputs.face_velocities[row] + velocity_increment;
   }
   return absl::OkStatus();
 }
@@ -311,7 +314,7 @@ absl::StatusOr<int> ChooseImplicitRhsShift(
 ) {
   BinaryExponentRange term_exponents;
   for (std::size_t face = 0; face < sqrt_mass.size(); ++face) {
-    term_exponents.Include(FactorProduct(sqrt_mass[face], inputs.velocity[face], 1.0));
+    term_exponents.Include(FactorProduct(sqrt_mass[face], inputs.face_velocities[face], 1.0));
     term_exponents.Include(FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]));
   }
   if (term_exponents.Empty()) {
@@ -344,9 +347,9 @@ absl::Status StageImplicitRhs(
     // The checked product window also keeps this multiplier in range because
     // the mass fraction lies in [0.5, 1). Fusing the sum retains the low bits
     // when the weighted velocity and wall impulse nearly cancel.
-    const double shifted_velocity = std::scalbn(inputs.velocity[face], sqrt_mass_exponent + rhs_shift);
+    const double exponent_scaled_velocity = std::scalbn(inputs.face_velocities[face], sqrt_mass_exponent + rhs_shift);
     const double scaled_wall_impulse = FactorProduct(inputs.dt, wall_load[face], 1.0, sqrt_mass[face]).Value(rhs_shift);
-    solve_rhs[face] = std::fma(sqrt_mass_fraction, shifted_velocity, scaled_wall_impulse);
+    solve_rhs[face] = std::fma(sqrt_mass_fraction, exponent_scaled_velocity, scaled_wall_impulse);
     if (solve_rhs[face] != 0.0 && !std::isnormal(solve_rhs[face])) {
       return absl::OutOfRangeError("scaled implicit right-hand side is outside normal double range");
     }
@@ -457,16 +460,16 @@ absl::Status ComputeEnergyAndWallWork(
     if (!std::isfinite(next_velocity[face])) {
       return absl::OutOfRangeError("updated viscous velocity is nonfinite");
     }
-    const double old_weighted_velocity = sqrt_mass[face] * inputs.velocity[face];
+    const double old_weighted_velocity = sqrt_mass[face] * inputs.face_velocities[face];
     const double new_weighted_velocity = sqrt_mass[face] * next_velocity[face];
-    const double velocity_increment = next_velocity[face] - inputs.velocity[face];
+    const double velocity_increment = next_velocity[face] - inputs.face_velocities[face];
     const bool unweighted_increment_fits = std::isfinite(velocity_increment);
     // Subtract first to retain small changes. If opposite large velocities
     // overflow the subtraction, apply the mass metric before subtracting.
     const double weighted_increment = unweighted_increment_fits ? sqrt_mass[face] * velocity_increment
                                                                 : new_weighted_velocity - old_weighted_velocity;
 
-    const double work_velocity = explicit_step ? inputs.velocity[face] : next_velocity[face];
+    const double work_velocity = explicit_step ? inputs.face_velocities[face] : next_velocity[face];
 
     diagnostics.energy_before = std::fma(0.5 * old_weighted_velocity, old_weighted_velocity, diagnostics.energy_before);
     diagnostics.energy_after = std::fma(0.5 * new_weighted_velocity, new_weighted_velocity, diagnostics.energy_after);
@@ -506,30 +509,37 @@ absl::StatusOr<StrainShape> MacStrainShape2D(const Grid2D& grid) {
     return coefficients.status();
   }
   return StrainShape{
-      .rows = strain_rows,
-      .columns = *face_count,
-      .coefficients = *coefficients,
+      .strain_row_count = strain_rows,
+      .face_velocity_count = *face_count,
+      .coefficient_count = *coefficients,
   };
 }
 
-absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain, std::span<double> weight) {
+absl::Status MacStrain2D(
+    const Grid2D& grid,
+    double dynamic_viscosity,
+    std::span<double> strain_operator,
+    std::span<double> strain_quadrature_weights
+) {
   const auto shape = MacStrainShape2D(grid);
   if (!shape.ok()) {
     return shape.status();
   }
-  if (!std::isfinite(mu) || mu < 0.0) {
+  if (!std::isfinite(dynamic_viscosity) || dynamic_viscosity < 0.0) {
     return absl::InvalidArgumentError("dynamic viscosity must be finite and nonnegative");
   }
-  const auto strain_extent = ValidateExtent(strain.size(), shape->coefficients);
+  const auto strain_extent = ValidateExtent(strain_operator.size(), shape->coefficient_count);
   if (!strain_extent.ok()) {
     return strain_extent;
   }
-  const auto weight_extent = ValidateExtent(weight.size(), shape->rows);
+  const auto weight_extent = ValidateExtent(strain_quadrature_weights.size(), shape->strain_row_count);
   if (!weight_extent.ok()) {
     return weight_extent;
   }
-  const auto disjoint =
-      CheckWritableViews({std::as_bytes(strain), std::as_bytes(weight)}, {std::as_bytes(std::span(&grid, 1))});
+  const auto disjoint = CheckWritableViews(
+      {std::as_bytes(strain_operator), std::as_bytes(strain_quadrature_weights)},
+      {std::as_bytes(std::span(&grid, 1))}
+  );
   if (!disjoint.ok()) {
     return disjoint;
   }
@@ -538,7 +548,7 @@ absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain
   const std::size_t cell_rows = grid.ny;
   const std::size_t cell_count = cell_columns * cell_rows;
   const std::size_t normal_row_count = 2 * cell_count;
-  const bool has_shear_rows = shape->rows > normal_row_count;
+  const bool has_shear_rows = shape->strain_row_count > normal_row_count;
   const double normal_derivative = 1.0 / grid.h;
   const double shear_derivative = 0.5 * normal_derivative;
   if (!std::isnormal(normal_derivative) || (has_shear_rows && !std::isnormal(shear_derivative))) {
@@ -547,20 +557,20 @@ absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain
 
   // Fold the tensor multiplicity into a spacing factor before multiplication.
   // This also handles a finite mu whose double or quadruple would overflow.
-  const double normal_weight = ScaledProduct(mu, 2.0 * grid.h, grid.h);
-  const double shear_weight = has_shear_rows ? ScaledProduct(mu, 4.0 * grid.h, grid.h) : 0.0;
-  if (mu > 0.0 && !std::isnormal(normal_weight)) {
+  const double normal_weight = ScaledProduct(dynamic_viscosity, 2.0 * grid.h, grid.h);
+  const double shear_weight = has_shear_rows ? ScaledProduct(dynamic_viscosity, 4.0 * grid.h, grid.h) : 0.0;
+  if (dynamic_viscosity > 0.0 && !std::isnormal(normal_weight)) {
     return absl::OutOfRangeError("normal strain quadrature is outside normal double range");
   }
-  if (mu > 0.0 && has_shear_rows && !std::isnormal(shear_weight)) {
+  if (dynamic_viscosity > 0.0 && has_shear_rows && !std::isnormal(shear_weight)) {
     return absl::OutOfRangeError("shear strain quadrature is outside normal double range");
   }
 
   // Every coefficient and index extent has been checked. Fill the caller's
   // dense views directly now that the remaining stencil writes cannot fail.
-  std::ranges::fill(strain, 0.0);
-  std::ranges::fill(weight.first(normal_row_count), normal_weight);
-  std::ranges::fill(weight.subspan(normal_row_count), shear_weight);
+  std::ranges::fill(strain_operator, 0.0);
+  std::ranges::fill(strain_quadrature_weights.first(normal_row_count), normal_weight);
+  std::ranges::fill(strain_quadrature_weights.subspan(normal_row_count), shear_weight);
 
   const std::size_t x_face_stride = cell_columns + 1;
   const std::size_t y_face_offset = x_face_stride * cell_rows;
@@ -569,27 +579,27 @@ absl::Status MacStrain2D(const Grid2D& grid, double mu, std::span<double> strain
       const std::size_t cell = row * cell_columns + column;
       const std::size_t left_face = row * x_face_stride + column;
       const std::size_t bottom_face = y_face_offset + cell;
-      const std::size_t x_normal_row_offset = cell * shape->columns;
-      const std::size_t y_normal_row_offset = (cell_count + cell) * shape->columns;
-      strain[x_normal_row_offset + left_face] = -normal_derivative;
-      strain[x_normal_row_offset + left_face + 1] = normal_derivative;
-      strain[y_normal_row_offset + bottom_face] = -normal_derivative;
-      strain[y_normal_row_offset + bottom_face + cell_columns] = normal_derivative;
+      const std::size_t x_normal_row_offset = cell * shape->face_velocity_count;
+      const std::size_t y_normal_row_offset = (cell_count + cell) * shape->face_velocity_count;
+      strain_operator[x_normal_row_offset + left_face] = -normal_derivative;
+      strain_operator[x_normal_row_offset + left_face + 1] = normal_derivative;
+      strain_operator[y_normal_row_offset + bottom_face] = -normal_derivative;
+      strain_operator[y_normal_row_offset + bottom_face + cell_columns] = normal_derivative;
     }
   }
 
   for (std::size_t row = 1; row < cell_rows; ++row) {
     for (std::size_t column = 1; column < cell_columns; ++column) {
       const std::size_t shear_vertex_index = (row - 1) * (cell_columns - 1) + column - 1;
-      const std::size_t shear_row_offset = (normal_row_count + shear_vertex_index) * shape->columns;
+      const std::size_t shear_row_offset = (normal_row_count + shear_vertex_index) * shape->face_velocity_count;
       const std::size_t upper_x_face = row * x_face_stride + column;
       const std::size_t right_y_face = y_face_offset + row * cell_columns + column;
       const std::size_t lower_x_face = upper_x_face - x_face_stride;
       const std::size_t left_y_face = right_y_face - 1;
-      strain[shear_row_offset + lower_x_face] = -shear_derivative;
-      strain[shear_row_offset + upper_x_face] = shear_derivative;
-      strain[shear_row_offset + left_y_face] = -shear_derivative;
-      strain[shear_row_offset + right_y_face] = shear_derivative;
+      strain_operator[shear_row_offset + lower_x_face] = -shear_derivative;
+      strain_operator[shear_row_offset + upper_x_face] = shear_derivative;
+      strain_operator[shear_row_offset + left_y_face] = -shear_derivative;
+      strain_operator[shear_row_offset + right_y_face] = shear_derivative;
     }
   }
   return absl::OkStatus();
@@ -606,7 +616,7 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
     return parameters;
   }
 
-  const std::size_t columns = inputs.velocity.size();
+  const std::size_t columns = inputs.face_velocities.size();
   auto stiffness = std::span(workspace.matrix).first(columns * columns);
   auto wall_load = std::span(workspace.wall_load).first(columns);
   const auto assembled = AssembleViscousOperator(inputs, stiffness, wall_load);
@@ -615,7 +625,7 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
   }
   auto sqrt_mass = std::span(workspace.sqrt_mass).first(columns);
   for (std::size_t face = 0; face < columns; ++face) {
-    sqrt_mass[face] = std::sqrt(inputs.mass[face]);
+    sqrt_mass[face] = std::sqrt(inputs.face_inertias[face]);
   }
   const auto computed_bound = ComputeSpectralBound(stiffness, sqrt_mass);
   if (!computed_bound.ok()) {
@@ -624,7 +634,7 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
 
   // The stability test applies to the entire coupled operator. A product
   // above the finite explicit limit can only select the implicit branch.
-  const double explicit_limit = 2.0 * (1.0 - inputs.safety);
+  const double explicit_limit = 2.0 * (1.0 - inputs.explicit_stability_margin);
   const double spectral_bound = *computed_bound;
   const double dimensionless_step = inputs.dt * spectral_bound;
   const bool explicit_safe = dimensionless_step <= explicit_limit;
@@ -643,7 +653,7 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
 
   auto next_velocity = std::span(workspace.next_velocity).first(columns);
   if (inputs.dt == 0.0 || spectral_bound == 0.0) {
-    std::ranges::copy(inputs.velocity, next_velocity.begin());
+    std::ranges::copy(inputs.face_velocities, next_velocity.begin());
   } else if (use_explicit) {
     const auto stepped = ApplyForwardEuler(inputs, stiffness, wall_load, next_velocity);
     if (!stepped.ok()) {
@@ -663,7 +673,7 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
     return measured;
   }
 
-  std::ranges::copy(next_velocity, outputs.velocity.begin());
+  std::ranges::copy(next_velocity, outputs.updated_face_velocities.begin());
   outputs.diagnostics = diagnostics;
   return absl::OkStatus();
 }
