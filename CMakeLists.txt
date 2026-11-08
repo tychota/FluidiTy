@@ -48,6 +48,7 @@ add_library(fluidity_native STATIC
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
+  native/src/liquid_boundary_transfer_3d.cc
   native/src/mac_pressure_3d.cc
   native/src/mac_pressure_3d_multigrid.cc
   native/src/viscosity.cc)
@@ -160,6 +161,7 @@ if(BUILD_TESTING)
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
+    native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support)
