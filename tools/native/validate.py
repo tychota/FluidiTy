@@ -29,6 +29,7 @@ FIXTURE_TESTS = {
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
     "stiff_viscosity.json": "Viscosity.StiffFixture",
     "two_cell_pressure.json": "Pressure.TwoCellFixtureUsesPositiveInternalJump",
+    "uniform_mac_liquid_boundary_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_pressure_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_transfer_3d.json": "MacTransfer3D.AffineCornerMatchesOracle",
 }

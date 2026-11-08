@@ -79,6 +79,7 @@ FIXTURES = (
     "compliant_pressure.json",
     "stiff_viscosity.json",
     "two_cell_pressure.json",
+    "uniform_mac_liquid_boundary_3d.json",
     "uniform_mac_pressure_3d.json",
     "uniform_mac_transfer_3d.json",
 )
