@@ -1,0 +1,10 @@
+{
+    "version": "0.5",
+    "requires": [
+        "imath/3.2.2#d5203a84ee631ae6ab2da7c3a6b16787%1775543416.311",
+        "alembic/1.8.8#1eb7f96673ab004a34f1085147fac5f2%1754654828.543"
+    ],
+    "build_requires": [],
+    "python_requires": [],
+    "config_requires": []
+}

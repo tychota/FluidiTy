@@ -1,0 +1,11 @@
+[requires]
+alembic/1.8.8
+
+[options]
+alembic/*:shared=False
+alembic/*:with_hdf5=False
+imath/*:shared=False
+
+[generators]
+CMakeDeps
+CMakeToolchain

@@ -206,8 +206,9 @@ Hosted CPU checks leave the CUDA, sanitizer and proof results at `not_run`.
 The uniform CUDA spike covers complete-support quadratic MAC transfers with host-prepared
 geometry and a dense pressure solve for up to eight cells. The graph spike covers fixed
 buffers on one stream for separate deposition and two-cell pressure fixtures. Production
-graph integration belongs to later solver work. M0 still requires measured Blender reader
-and 2D adaptive-basis spikes. Proof pilots and later formal contracts use the separate
+graph integration belongs to later solver work. The
+[Blender reader qualification](../blender/README.md) records measured point-cache playback.
+The 2D adaptive-basis spike remains open for M0. Proof pilots and later formal contracts use the separate
 [Lean workflow](../../proofs/README.md). A release license decision remains open. See the
 [design milestones and evidence
 requirements](../superpowers/specs/2026-11-07-fluidity-design.md#15-validation-milestones-and-review-boundary).
