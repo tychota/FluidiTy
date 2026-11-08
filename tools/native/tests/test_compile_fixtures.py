@@ -84,6 +84,8 @@ def test_manifest_tamper_rejected(fixture_input):
     pytest.param({"dtype": "int64", "shape": [1, 2], "data": [[1, 2]]}, id="wrong-shape"),
     pytest.param({"dtype": "int64", "shape": [2], "data": [0, 2]}, id="zero-extent"),
     pytest.param({"dtype": "int64", "shape": [2], "data": [1, -2]}, id="negative-extent"),
+    pytest.param({"data": [2**32 + 2, 1]}, id="x-extent-overflows-uint32"),
+    pytest.param({"data": [2, 2**32]}, id="y-extent-overflows-uint32"),
 ])
 def test_pressure_requires_valid_geometry(tmp_path, name, grid):
     directory = tmp_path / "fixtures"

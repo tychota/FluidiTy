@@ -14,6 +14,7 @@ from pathlib import Path
 MANIFEST = "manifest.json"
 INT64_MIN = -(2**63)
 INT64_MAX = 2**63 - 1
+UINT32_MAX = 2**32 - 1
 
 
 @dataclass(frozen=True)
@@ -184,8 +185,8 @@ def parse_fixture(document, name):
         grid = arrays["grid"]
         if grid.dtype != "int64" or grid.shape != (2,):
             raise ValueError("grid must have dtype int64 and shape (2,)")
-        if any(extent <= 0 for extent in grid.values):
-            raise ValueError("grid extents must be positive")
+        if any(extent <= 0 or extent > UINT32_MAX for extent in grid.values):
+            raise ValueError("grid extents must be positive and fit in Grid2D uint32_t dimensions")
 
     if is_pressure_fixture or {"grid", "spacing", "origin"} & arrays.keys():
         for key, shape in (("spacing", (1,)), ("origin", (2,))):
