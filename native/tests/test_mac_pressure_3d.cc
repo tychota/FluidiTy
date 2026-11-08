@@ -1,0 +1,428 @@
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <set>
+#include <span>
+#include <tuple>
+#include <vector>
+
+#include "../src/mac_pressure_3d_multigrid.h"
+#include "../src/mac_pressure_3d_system.h"
+#include "absl/status/status.h"
+#include "fluidity/host/mac_pressure_3d.h"
+#include "gtest/gtest.h"
+#include "mac_pressure_3d_fixture.h"
+
+namespace fluidity {
+namespace {
+
+using pressure_internal::EvaluateMacPressure3D;
+using pressure_internal::PrepareMacPressureSystem3D;
+
+constexpr UniformMacGeometry3D kUnitGeometry{{0.0, 0.0, 0.0}, 1.0};
+constexpr std::array kUnitBlock{BlockIndex3D{0, 0, 0}};
+constexpr double kInfinity = std::numeric_limits<double>::infinity();
+
+std::array<MacPressureFace3D, 6> SealedFacesAtX(std::int32_t x) {
+  return {{
+      {.face_index = {FaceNormalAxis::kX, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kX, {x + 1, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kY, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kY, {x, 1, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kZ, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kZ, {x, 0, 1}}, .pressure_link = SealedMacPressureLink3D{}},
+  }};
+}
+
+MacPressureCell3D IncompressibleCellAtX(std::int32_t x) {
+  return {.cell_index = {x, 0, 0}, .fluid_volume = 1.0, .bulk_modulus = kInfinity};
+}
+
+std::int32_t FixtureOwnerAxis(std::int32_t index) {
+  return index / 4 - (index % 4 < 0 ? 1 : 0);
+}
+
+TEST(MacPressure3D, SolvesAllIndependentFixtureCases) {
+  std::vector<pressure_test::MacPressureFixtureCase3D> cases;
+  ASSERT_NO_FATAL_FAILURE(pressure_test::LoadMacPressureFixtureCases3D(cases));
+  ASSERT_EQ(cases.size(), 8);
+  for (const auto& fixture_case : cases) {
+    SCOPED_TRACE(fixture_case.name);
+    const auto projection =
+        ProjectMacPressure3D({fixture_case.grid, fixture_case.step_duration, fixture_case.cells, fixture_case.faces});
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    pressure_test::ExpectMacPressureFixtureProjection3D(
+        *projection,
+        fixture_case.expected_projection,
+        fixture_case.absolute_tolerance,
+        fixture_case.relative_tolerance
+    );
+  }
+}
+
+// Build an independent affine solution: each predicted face velocity is the
+// analytic pressure slope, so correction leaves zero flux on every open face.
+struct AffineProblem {
+  std::vector<MacPressureCell3D> cells;
+  std::vector<MacPressureFace3D> faces;
+  std::vector<BlockIndex3D> blocks;
+};
+
+double AffinePressure(CellIndex3D index) {
+  return index.x + 2.0 * index.y + 4.0 * index.z;
+}
+
+AffineProblem MakeAffineProblem(std::int32_t minimum, std::int32_t extent, bool anchored) {
+  AffineProblem problem;
+  std::set<std::tuple<int, int, int, int>> face_keys;
+  for (int z = minimum; z < minimum + extent; ++z) {
+    for (int y = minimum; y < minimum + extent; ++y) {
+      for (int x = minimum; x < minimum + extent; ++x) {
+        problem.cells.push_back({
+            .cell_index = {x, y, z},
+            .fluid_volume = 1.0,
+            .bulk_modulus = kInfinity,
+        });
+        for (int axis = 0; axis < 3; ++axis) {
+          for (int side = 0; side < 2; ++side) {
+            face_keys.emplace(axis, x + (axis == 0 ? side : 0), y + (axis == 1 ? side : 0), z + (axis == 2 ? side : 0));
+          }
+        }
+      }
+    }
+  }
+  std::set<std::tuple<int, int, int>> block_keys;
+  for (const auto& [axis, x, y, z] : face_keys) {
+    const std::array coordinates{x, y, z};
+    const bool low = coordinates[axis] == minimum;
+    const bool high = coordinates[axis] == minimum + extent;
+    const bool boundary = low || high;
+    MacPressureFace3D face{
+        .face_index = {static_cast<FaceNormalAxis>(axis), {x, y, z}},
+        .open_area = boundary && !anchored ? 0.0 : 1.0,
+        .inverse_density = 1.0,
+        .pressure_gradient_distance = 1.0,
+        .predicted_normal_velocity = boundary && !anchored ? 0.0 : static_cast<double>(1 << axis),
+        .pressure_link = InternalMacPressureLink3D{0.0},
+    };
+    if (boundary && anchored) {
+      const CellIndex3D exterior{
+          x - (axis == 0 && low ? 1 : 0),
+          y - (axis == 1 && low ? 1 : 0),
+          z - (axis == 2 && low ? 1 : 0),
+      };
+      face.pressure_link = DirichletMacPressureLink3D{AffinePressure(exterior)};
+    } else if (boundary) {
+      face.pressure_link = SealedMacPressureLink3D{};
+    }
+    problem.faces.push_back(face);
+    block_keys.emplace(FixtureOwnerAxis(x), FixtureOwnerAxis(y), FixtureOwnerAxis(z));
+  }
+  for (const auto& [x, y, z] : block_keys) {
+    problem.blocks.push_back({x, y, z});
+  }
+  return problem;
+}
+
+void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
+  std::ranges::sort(problem.faces, [&](const auto& left, const auto& right) {
+    return *grid.FaceSlot(left.face_index) < *grid.FaceSlot(right.face_index);
+  });
+}
+
+TEST(MacPressure3D, SolvesNegativeCoordinateMultilevelAffineFieldWithAllSixBoundaries) {
+  for (const bool anchored : {false, true}) {
+    SCOPED_TRACE(anchored);
+    auto problem = MakeAffineProblem(-3, 4, anchored);
+    const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+    ASSERT_TRUE(grid.ok()) << grid.status();
+    SortFaces(problem, *grid);
+    const auto result = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces});
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_GE(result->diagnostics.multigrid_level_count, 2);
+    EXPECT_GT(result->diagnostics.iteration_count, 0);
+    EXPECT_LE(result->diagnostics.max_volume_scaled_residual, 2e-5);
+    EXPECT_LE(result->diagnostics.max_cell_constraint_defect, 2e-5);
+    double rhs_norm = 0.0;
+    for (double rhs : result->integrated_rhs) {
+      rhs_norm = std::hypot(rhs_norm, rhs);
+    }
+    EXPECT_LE(result->diagnostics.true_residual_l2, 2e-6 + 2e-6 * rhs_norm);
+    for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+      const double expected = AffinePressure(problem.cells[cell].cell_index) + (anchored ? 0.0 : 21.0);
+      EXPECT_NEAR(result->cell_pressures[cell], expected, 5e-5);
+      EXPECT_NEAR(result->true_residuals[cell], -result->cell_constraint_defects[cell], 1e-12);
+    }
+    for (double velocity : result->corrected_face_velocities) {
+      EXPECT_NEAR(velocity, 0.0, 5e-5);
+    }
+    RecordProperty(
+        anchored ? "anchored_true_residual_l2" : "gauged_true_residual_l2",
+        std::to_string(result->diagnostics.true_residual_l2)
+    );
+    RecordProperty(
+        anchored ? "anchored_max_defect" : "gauged_max_defect",
+        std::to_string(result->diagnostics.max_cell_constraint_defect)
+    );
+  }
+}
+
+TEST(MacPressure3D, ShiftsPreviousPressureByEachNeumannPinBeforeIterating) {
+  auto problem = MakeAffineProblem(-3, 4, false);
+  for (auto& cell : problem.cells) {
+    cell.previous_pressure = AffinePressure(cell.cell_index) + 100.0;
+  }
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces}, {.max_iterations = 1});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->diagnostics.iteration_count, 0);
+  EXPECT_DOUBLE_EQ(result->cell_pressures.front(), 0.0);
+  EXPECT_DOUBLE_EQ(result->cell_pressures.back(), 21.0);
+}
+
+TEST(MacPressure3D, RetainsAnchoredPreviousPressureMean) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1.0,
+      .target_divergence = 0.5,
+      .bulk_modulus = 2.0,
+      .previous_pressure = 4.0,
+  }};
+  const auto result = ProjectMacPressure3D({*grid, 1.0, cells, SealedFacesAtX(0)});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_TRUE(result->gauge_cell_ordinals.empty());
+  EXPECT_DOUBLE_EQ(result->cell_pressures.front(), 5.0);
+}
+
+TEST(MacPressure3D, ExhaustsOneIterationWithoutPublishingOrMutatingInputs) {
+  auto problem = MakeAffineProblem(-3, 4, false);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces}, {.max_iterations = 1});
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kAborted);
+  EXPECT_EQ(problem.cells.front().previous_pressure, 0.0);
+  EXPECT_EQ(problem.cells.back().previous_pressure, 0.0);
+  const auto converged = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(converged.ok()) << converged.status();
+  EXPECT_GT(converged->diagnostics.iteration_count, 1);
+}
+
+TEST(MacPressure3D, TinyCellMustPassLocalGateEvenWhenInitialGlobalGatePasses) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1e-6,
+      .target_divergence = 0.1,
+      .bulk_modulus = kInfinity,
+  }};
+  auto faces = SealedFacesAtX(0);
+  faces[1].open_area = 1.0;
+  faces[1].inverse_density = 1.0;
+  faces[1].pressure_gradient_distance = 1.0;
+  faces[1].pressure_link = DirichletMacPressureLink3D{0.0};
+  const auto prepared = PrepareMacPressureSystem3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(prepared.ok()) << prepared.status();
+  const auto initial = EvaluateMacPressure3D(*prepared, std::array{0.0});
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  EXPECT_LT(initial->diagnostics.true_residual_l2, 2e-6);
+  EXPECT_NEAR(initial->diagnostics.max_volume_scaled_residual, 0.1, 1e-15);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_GT(result->diagnostics.iteration_count, 0);
+  EXPECT_NEAR(result->cell_pressures.front(), 1e-7, 2e-11);
+  EXPECT_LE(result->diagnostics.max_volume_scaled_residual, 2e-5);
+  EXPECT_LE(result->diagnostics.max_cell_constraint_defect, 2e-5);
+}
+
+TEST(MacPressure3D, RejectsIterationBudgetsOutsideFixedBound) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{IncompressibleCellAtX(0)};
+  const auto faces = SealedFacesAtX(0);
+  for (const auto iterations : {std::size_t{0}, std::size_t{257}}) {
+    const auto result = ProjectMacPressure3D({*grid, 1.0, cells, faces}, {.max_iterations = iterations});
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kInvalidArgument);
+  }
+}
+
+double GraphEnergy(const pressure_internal::MacPressureLevel3D& level, std::span<const double> pressure) {
+  double energy = 0.0;
+  for (std::size_t unknown = 0; unknown < pressure.size(); ++unknown) {
+    energy += level.anchor_diagonal[unknown] * pressure[unknown] * pressure[unknown];
+  }
+  for (const auto& edge : level.edges) {
+    const double difference = pressure[edge.lower_unknown_ordinal] - pressure[edge.higher_unknown_ordinal];
+    energy += edge.conductance * difference * difference;
+  }
+  return energy;
+}
+
+TEST(MacPressure3D, SharedHierarchyPreservesGalerkinEnergyAndBoundsTerminalBlocks) {
+  auto problem = MakeAffineProblem(-4, 8, true);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  const auto hierarchy = pressure_internal::BuildMacPressureHierarchy3D(*system);
+  ASSERT_TRUE(hierarchy.ok()) << hierarchy.status();
+  ASSERT_GE(hierarchy->levels.size(), 3);
+  for (std::size_t ordinal = 0; ordinal + 1 < hierarchy->levels.size(); ++ordinal) {
+    const auto& fine = hierarchy->levels[ordinal];
+    const auto& coarse = hierarchy->levels[ordinal + 1];
+    std::vector<double> coarse_pressure(coarse.coordinates.size());
+    for (std::size_t unknown = 0; unknown < coarse_pressure.size(); ++unknown) {
+      coarse_pressure[unknown] = static_cast<double>(unknown % 7) - 3.0;
+    }
+    std::vector<double> fine_pressure(fine.coordinates.size());
+    for (std::size_t unknown = 0; unknown < fine_pressure.size(); ++unknown) {
+      fine_pressure[unknown] = coarse_pressure[fine.aggregate_ordinals[unknown]];
+    }
+    EXPECT_DOUBLE_EQ(GraphEnergy(fine, fine_pressure), GraphEnergy(coarse, coarse_pressure));
+    std::vector<int> mirror_counts(fine.edges.size(), 0);
+    for (std::size_t unknown = 0; unknown < fine.coordinates.size(); ++unknown) {
+      for (std::size_t offset = fine.row_offsets[unknown]; offset < fine.row_offsets[unknown + 1]; ++offset) {
+        const auto neighbor = fine.neighbors[offset];
+        const auto& edge = fine.edges[neighbor.edge_ordinal];
+        EXPECT_TRUE(
+            (edge.lower_unknown_ordinal == unknown && edge.higher_unknown_ordinal == neighbor.unknown_ordinal)
+            || (edge.higher_unknown_ordinal == unknown && edge.lower_unknown_ordinal == neighbor.unknown_ordinal)
+        );
+        ++mirror_counts[neighbor.edge_ordinal];
+      }
+    }
+    for (const auto count : mirror_counts) {
+      EXPECT_EQ(count, 2);
+    }
+  }
+  for (const auto& block : hierarchy->levels.back().terminal_blocks) {
+    EXPECT_LE(block.unknown_ordinals.size(), 32);
+  }
+  const auto result = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_GE(result->diagnostics.multigrid_level_count, 3);
+  EXPECT_GT(result->diagnostics.iteration_count, 0);
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    EXPECT_NEAR(result->cell_pressures[cell], AffinePressure(problem.cells[cell].cell_index), 5e-5);
+  }
+}
+
+TEST(MacPressure3D, SignedCoordinatePlateauUsesLinkedPairCoarsening) {
+  auto problem = MakeAffineProblem(-1, 2, true);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  const auto hierarchy = pressure_internal::BuildMacPressureHierarchy3D(*system);
+  ASSERT_TRUE(hierarchy.ok()) << hierarchy.status();
+  ASSERT_EQ(hierarchy->levels.size(), 2);
+  const auto& fine = hierarchy->levels.front();
+  EXPECT_LT(hierarchy->levels.back().coordinates.size(), fine.coordinates.size());
+  for (std::size_t unknown = 0; unknown < fine.coordinates.size(); ++unknown) {
+    bool has_linked_partner = false;
+    for (std::size_t offset = fine.row_offsets[unknown]; offset < fine.row_offsets[unknown + 1]; ++offset) {
+      has_linked_partner |=
+          fine.aggregate_ordinals[unknown] == fine.aggregate_ordinals[fine.neighbors[offset].unknown_ordinal];
+    }
+    EXPECT_TRUE(has_linked_partner);
+  }
+}
+
+TEST(MacPressure3D, EliminatedArticulationPinRetainsConductanceInSeparateSingletons) {
+  auto problem = MakeAffineProblem(0, 2, false);
+  problem.cells.resize(3);  // (0,0,0), (1,0,0), (0,1,0): the lowest cell joins two arms.
+  const auto contains = [&](CellIndex3D index) {
+    return std::ranges::any_of(problem.cells, [&](const auto& cell) {
+      return cell.cell_index.x == index.x && cell.cell_index.y == index.y && cell.cell_index.z == index.z;
+    });
+  };
+  std::erase_if(problem.faces, [&](auto& face) {
+    const auto index = face.face_index.lattice_index;
+    const auto axis = face.face_index.axis;
+    const CellIndex3D head{index.x, index.y, index.z};
+    const CellIndex3D tail{
+        index.x - (axis == FaceNormalAxis::kX ? 1 : 0),
+        index.y - (axis == FaceNormalAxis::kY ? 1 : 0),
+        index.z - (axis == FaceNormalAxis::kZ ? 1 : 0),
+    };
+    const bool has_tail = contains(tail);
+    const bool has_head = contains(head);
+    if (!has_tail && !has_head) {
+      return true;
+    }
+    if (!has_tail || !has_head) {
+      face.open_area = 0.0;
+      face.predicted_normal_velocity = 0.0;
+      face.pressure_link = SealedMacPressureLink3D{};
+    }
+    return false;
+  });
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto system = PrepareMacPressureSystem3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(system.ok()) << system.status();
+  const auto hierarchy = pressure_internal::BuildMacPressureHierarchy3D(*system);
+  ASSERT_TRUE(hierarchy.ok()) << hierarchy.status();
+  EXPECT_EQ(hierarchy->unknown_to_cell, (std::vector<std::size_t>{1, 2}));
+  EXPECT_EQ(hierarchy->cell_to_unknown.front(), pressure_internal::kNoPressureUnknown3D);
+  ASSERT_EQ(hierarchy->levels.size(), 1);
+  EXPECT_TRUE(hierarchy->levels.front().edges.empty());
+  EXPECT_EQ(hierarchy->levels.front().anchor_diagonal, (std::vector{1.0, 1.0}));
+  EXPECT_EQ(hierarchy->levels.front().terminal_blocks.size(), 2);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->cell_pressures, (std::vector{0.0, 1.0, 2.0}));
+}
+
+TEST(MacPressure3D, ReplacesFalseConvergedFp32ResidualAndRestartsWithinSameBudget) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1e-6,
+      .target_divergence = 1e6,
+      .bulk_modulus = 1e-6 / 1.1,
+  }};
+  const auto faces = SealedFacesAtX(0);
+  const auto exhausted = ProjectMacPressure3D({*grid, 1.0, cells, faces}, {.max_iterations = 1});
+  EXPECT_EQ(exhausted.status().code(), absl::StatusCode::kAborted);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_GE(result->diagnostics.iteration_count, 2);
+  EXPECT_NEAR(result->cell_pressures.front(), 1.0 / 1.1, 2e-11);
+  EXPECT_LE(result->diagnostics.max_volume_scaled_residual, 2e-5);
+  EXPECT_LE(result->diagnostics.max_cell_constraint_defect, 2e-5);
+}
+
+TEST(MacPressure3D, RejectsCoefficientsOutsideFineRangeAndPreservesPreparedRangeChecks) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto cells = std::array{IncompressibleCellAtX(0)};
+  auto faces = SealedFacesAtX(0);
+  faces[1].open_area = 1.0;
+  faces[1].pressure_gradient_distance = 1.0;
+  faces[1].predicted_normal_velocity = 1.0;
+  faces[1].pressure_link = DirichletMacPressureLink3D{0.0};
+  for (const double inverse_density : {1e-100, 1e39}) {
+    faces[1].inverse_density = inverse_density;
+    const auto result = ProjectMacPressure3D({*grid, 1.0, cells, faces});
+    EXPECT_EQ(result.status().code(), absl::StatusCode::kOutOfRange);
+  }
+  cells[0].fluid_volume = std::numeric_limits<double>::denorm_min();
+  cells[0].target_divergence = 0.25;
+  const auto result = ProjectMacPressure3D({*grid, 1.0, cells, SealedFacesAtX(0)});
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kOutOfRange);
+}
+}  // namespace
+}  // namespace fluidity

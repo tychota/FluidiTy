@@ -46,6 +46,9 @@ add_library(fluidity_native STATIC
   native/src/transfers.cc
   native/src/transfers_3d.cc
   native/src/pressure.cc
+  native/src/mac_pressure_3d_system.cc
+  native/src/mac_pressure_3d.cc
+  native/src/mac_pressure_3d_multigrid.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
@@ -68,6 +71,8 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/transfers.cu
     native/cuda/transfer_3d_host.cc
     native/cuda/transfers_3d.cu
+    native/cuda/mac_pressure_3d_host.cc
+    native/cuda/mac_pressure_3d.cu
     native/cuda/pressure_host.cc
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
@@ -113,7 +118,7 @@ if(BUILD_TESTING)
             --overwrite
     COMMAND "${CMAKE_COMMAND}" -E touch "${fixture_export_stamp}"
     DEPENDS "${reference_src}/__init__.py" "${reference_src}/cli.py" "${reference_src}/fixtures.py"
-            "${reference_src}/transfer_3d_fixtures.py"
+            "${reference_src}/transfer_3d_fixtures.py" "${reference_src}/pressure_3d_fixtures.py"
             "${PROJECT_SOURCE_DIR}/reference/pyproject.toml" "${PROJECT_SOURCE_DIR}/reference/uv.lock"
     COMMENT "Exporting independent reference fixtures"
     VERBATIM)
@@ -132,6 +137,16 @@ if(BUILD_TESTING)
 
   fluidity_compile_fixtures(fluidity_fixture_headers "${FLUIDITY_FIXTURE_DIRECTORY}"
                            "${fixture_header}" "${fixture_export_stamp}")
+  # Shared decoded pressure fixtures for evaluator, CPU solver and future CUDA tests.
+  add_library(fluidity_pressure_3d_test_support STATIC native/tests/mac_pressure_3d_fixture.cc)
+  add_dependencies(fluidity_pressure_3d_test_support fluidity_fixture_headers)
+  target_include_directories(fluidity_pressure_3d_test_support
+    PUBLIC "${PROJECT_SOURCE_DIR}/native/tests"
+    PRIVATE "${generated_dir}")
+  target_compile_features(fluidity_pressure_3d_test_support PUBLIC cxx_std_20)
+  target_compile_options(fluidity_pressure_3d_test_support PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+  target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
+
   add_executable(fluidity_native_tests
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
@@ -141,8 +156,10 @@ if(BUILD_TESTING)
     native/tests/test_transfers.cc
     native/tests/test_transfers_3d.cc
     native/tests/test_pressure.cc
+    native/tests/test_mac_pressure_3d_system.cc
+    native/tests/test_mac_pressure_3d.cc
     native/tests/test_viscosity.cc)
-  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
+  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
   # Use a separate test executable for the synthetic case so each executable owns one data set.
@@ -171,10 +188,12 @@ if(BUILD_TESTING)
     add_executable(fluidity_cuda_operator_tests
       native/tests/test_cuda_transfers.cc
       native/tests/test_cuda_transfers_3d.cc
-      native/tests/test_cuda_pressure.cc)
+      native/tests/test_cuda_pressure.cc
+      native/tests/test_cuda_mac_pressure_3d.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
-    target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
+    target_link_libraries(fluidity_cuda_operator_tests
+      PRIVATE fluidity_cuda_operators fluidity_pressure_3d_test_support CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     if(WIN32)
       foreach(target IN ITEMS fluidity_cuda_probe_tests fluidity_cuda_operator_tests)

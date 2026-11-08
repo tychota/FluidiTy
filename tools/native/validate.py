@@ -29,12 +29,13 @@ FIXTURE_TESTS = {
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
     "stiff_viscosity.json": "Viscosity.StiffFixture",
     "two_cell_pressure.json": "Pressure.TwoCellFixtureUsesPositiveInternalJump",
+    "uniform_mac_pressure_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_transfer_3d.json": "MacTransfer3D.AffineCornerMatchesOracle",
 }
 CPU_REQUIRED = {
     *FIXTURE_TESTS.values(),
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FiveFixturesPresent",
+    "FixtureBridge.CanonicalFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
 }
 GPU_PROBE_RECEIPT_CASE = "CudaProbe.SharedVec2Math"
@@ -42,7 +43,12 @@ GPU_PROBE_CASES = {GPU_PROBE_RECEIPT_CASE, "CudaProbe.LaunchIgnoresPriorRuntimeE
 GPU_OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
 GPU_DEPOSIT_3D_RECEIPT_CASE = "CudaMacTransfer3D.DepositCornerMatchesOracleAndCpu"
 GPU_GATHER_3D_RECEIPT_CASE = "CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu"
+GPU_PRESSURE_3D_MIXED_CASE = "CudaMacPressure3D.MixedLinksMatchOracle"
+GPU_PRESSURE_3D_MULTILEVEL_CASE = "CudaMacPressure3D.MultilevelProjectionMatchesCpu"
 GPU_OPERATOR_MEMCHECK_CASES = {
+    GPU_PRESSURE_3D_MIXED_CASE,
+    GPU_PRESSURE_3D_MULTILEVEL_CASE,
+    "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
     GPU_DEPOSIT_3D_RECEIPT_CASE,
     GPU_GATHER_3D_RECEIPT_CASE,
     "CudaMacTransfer3D.RejectionPreservesOutputs",
@@ -67,6 +73,8 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_PRESSURE_3D_MIXED_CASE: "pressure_3d_mixed",
+    GPU_PRESSURE_3D_MULTILEVEL_CASE: "pressure_3d_multilevel",
     GPU_DEPOSIT_3D_RECEIPT_CASE: "p2g_3d",
     GPU_GATHER_3D_RECEIPT_CASE: "g2p_3d",
     "CudaTransfer.DepositAnalyticAndCpuParity": "p2g",
@@ -400,7 +408,7 @@ def hash_fixtures(directory, build):
     entries = parse_schema1_json_object(contents)["fixtures"]
     actual = {path.name for path in directory.iterdir() if path.suffix.lower() == ".json"}
     if entries.keys() != FIXTURE_TESTS.keys() or actual != {*FIXTURE_TESTS, "manifest.json"}:
-        raise ValueError("expected the five exported fixture JSON files and their manifest")
+        raise ValueError("expected the canonical exported fixture JSON files and their manifest")
     for name, expected in entries.items():
         if sha256((directory / name).read_bytes()) != expected:
             raise ValueError(f"fixture hash mismatch: {name}")

@@ -1,6 +1,6 @@
 # Exact pressure, transfer, integer and tile contracts
 
-This pinned Lean project checks the M0 F5/F8 pilots and the first uniform-transfer slice of
+This pinned Lean project checks the M0 F5/F8 pilots, integrated-pressure F5/F6, and the first uniform-transfer slice of
 [F1, F2, F8 and F10](../docs/references/formal-contracts.md). It does not discharge all ten contract
 families or the full M1 milestone. All theorem arithmetic is over mathematical reals and integers.
 
@@ -15,6 +15,8 @@ No third-party source is vendored. From `proofs/`, with the pinned toolchain and
 lake exe cache get
 lake --wfail build
 lake env lean Fluidity/Pressure.lean
+lake env lean Fluidity/PressureTopology.lean
+lake env lean Fluidity/PressureCorrection.lean
 lake env lean Fluidity/FixedPoint.lean
 lake env lean Fluidity/UniformTransfer.lean
 lake env lean Fluidity/UniformTile.lean
@@ -190,16 +192,121 @@ its eight-index tile; this directly includes 2D and 3D mixed stencils. Tile incl
 about allocation, signed machine-index representability, THB support, or whether an upstream
 timestep estimator established the motion hypothesis. Runtime guards remain necessary.
 
-## Retained F5 pressure pilots
+## F5: integrated pressure topology, kernel, gauge and solvability
 
-`pressure_quadratic_form_eq` expands the quadratic form of the independently defined component
-action `A x = R diag(k) Rᵀ x + diag(C) x` into
-`Σf k_f (Σi R_if x_i)^2 + Σi C_i x_i^2`, without sign assumptions.
-`pressure_psd` concludes nonnegativity when every `k_f` and `C_i` is nonnegative.
-The finite real incidence model supports zero cells/faces and zero coefficients. No incidence
-topology, connected-component kernel characterization, strict positive definiteness, solvability
-or gauge theorem is proved. Those remain F5 obligations.
+The retained `pressure_quadratic_form_eq` and `pressure_psd` targets describe
+`pressureAction R k C x i = Σf R_if k_f (Σj R_jf x_j) + C_i x_i` and its quadratic form
+`Σi x_i (A x)_i`. They support arbitrary real incidence and zero cells/faces.
 
+`PressureGraph n m` supplies `tail head : Fin m → Fin n`,
+`conductance : Fin m → ℝ`, `anchor : Fin n → ℝ`, and proofs that both coefficient arrays
+are nonnegative. `anchor` is the sum of Dirichlet and compliance diagonals. Its incidence is
+`R_if = (if i=tail_f then 1 else 0) - (if i=head_f then 1 else 0)`.
+`Reachable i j` is the reflexive, symmetric, transitive closure (`Relation.EqvGen`) of
+actual oriented edges with strictly positive conductance. Zero edges do not connect cells;
+self-loops cancel in the incidence. No supplied partition or kernel premise is accepted.
+
+The three new topology signatures quantify over any `g : PressureGraph n m`:
+
+| Audited target | Exact signature and conclusion |
+| --- | --- |
+| `pressure_kernel_eq_component_constants (g) (x : Fin n → ℝ)` | `(∀i, pressureAction g.incidence g.conductance g.anchor x i = 0) ↔ g.ComponentConstants x`. |
+| `pressure_gauge_positive_definite (g) (pin : Fin n → Prop) (covers : ∀i, g.Unanchored i → ∃j, g.Reachable i j ∧ pin j) (x : Fin n → ℝ) (zeroPins : ∀i, pin i → x i = 0) (nonzero : x ≠ 0)` | `0 < pressureQuadraticForm g.incidence g.conductance g.anchor x`. |
+| `pressure_solvable_iff_component_compatible (g) (b : Fin n → ℝ)` | `(∃p, ∀i, pressureAction g.incidence g.conductance g.anchor p i = b i) ↔ g.Compatible b`. |
+
+`ComponentConstants x` is precisely `(∀i j, Reachable i j → x_i=x_j)` together with
+`∀i, 0<anchor_i → x_i=0`. Hence an anchor forces zero throughout its whole component.
+`Unanchored i` means every anchor reachable from i is zero. `Compatible b` means
+`∀i, Unanchored i → Σj (if Reachable i j then b_j else 0)=0`. Repeated representatives state
+the same component condition and do not weaken it.
+
+Zero energy forces every nonnegative edge/anchor square to vanish; actual reachability then
+propagates constants. Conversely, those constants annihilate the original action. Gauge pins
+meet every unanchored component; choosing no pins proves strict positivity when all components
+are anchored. If a component is unanchored, its nonzero characteristic vector lies in the kernel,
+so the unrestricted matrix is not SPD. The runtime chooses one lowest-ordinal pin, while the
+proof allows any covering pin set. Restriction means zero pressure at pins; retained neighboring
+pin conductance is still part of the original quadratic form.
+
+For solvability, a linear map on real Euclidean space is built from the same `pressureAction`.
+Finite-sum transposition proves it symmetric. The proof uses
+`LinearMap.IsSymmetric.orthogonal_range` and finite-dimensional double orthogonal complement
+to identify range with kernel orthogonal complement. Characteristic vectors prove necessity;
+partitioning the dot product by the quotient of actual reachability classes proves sufficiency.
+No symmetry, component partition, kernel characterization or solvability conclusion is assumed.
+
+## F6: shared integrated links and arbitrary-pressure physical defect
+
+`PressureLinks n m` stores one frozen incidence `R`, physical open/full areas `a, A`, velocity
+scale `q`, predicted/wall velocities `u*, u_wall`, signed lift `J`, compliance `C`, integrated
+source `S=V s`, and previous pressure `p_old`. The same object defines all of:
+
+```text
+k_f = a_f q_f
+F_corrected,f(p) = a_f [u*_f + q_f (Σi R_if p_i + J_f)]
+W_i = Σf R_if (A_f-a_f) u_wall,f
+b_i = S_i - Σf R_if (a_f u*_f + k_f J_f) - W_i + C_i p_old,i
+r_i(p) = b_i - pressureAction R k C p i
+defect_i(p) = Σf R_if F_corrected,f(p) + W_i - S_i + C_i(p_i-p_old,i)
+```
+
+The exact audited signature is
+`pressure_corrected_flux_defect_eq_neg_residual {n m : ℕ} (l : PressureLinks n m)
+(p : Fin n → ℝ) (i : Fin n) : l.defect p i = -l.residual p i`.
+No solved-pressure, residual bound, positivity, or convergence premise occurs. This algebraic
+identity is valid for arbitrary real frozen data. Physical use additionally requires the runtime
+validation below. Dividing both sides by a strictly positive cell volume gives the physical
+constraint defect in s^-1 and the signed local residual criterion.
+
+For internal links `J` is the oriented pressure jump; for a one-cell Dirichlet link it is
+`-p_ext` at a tail or `+p_ext` at a head, with no extra internal jump. Sealed links have `a=0`;
+blocked-area wall flux remains. Internal columns have +1/-1, Dirichlet columns one signed entry.
+In F5 the latter contributions become the nonnegative Dirichlet anchor diagonal; F6 retains
+those columns and their lifts explicitly. Units are pressure/lift Pa, areas m², velocity m/s,
+`q=dt β/d` in m/(Pa s), `k,C` in m³/(Pa s), and `S,W,b,r,defect` in m³/s.
+
+The default-build consumers require all four complete signatures. Concrete consumers use a
+closed two-cell component plus an independently anchored singleton, permitting a nonzero RHS
+sum on the anchored component. An unsolved Dirichlet/compliance candidate has residual -3 and
+physical integrated defect +3. Changing only correction's scale makes the defect 2 while the
+original minus-residual remains 3; the negative control proves these differ.
+
+The common `MODULE_TARGETS` audit/export inventory now has 21 targets: all 17 earlier targets,
+three in `PressureTopology`, and one in `PressureCorrection`. Missing any new closure fails the
+Python audit. Every target is independently exported and checked; only `propext`,
+`Classical.choice`, and `Quot.sound` are allowed. No IEEE arithmetic, numerical convergence rate,
+geometry accuracy, multigrid effectiveness, or GPU correctness is established by these theorems.
+
+## Pressure runtime hypothesis bridge
+
+The existing Task 1–4 cases supply the separate numerical bridge:
+
+- `reference/tests/test_pressure_3d_fixtures.py` assembles independent dense incidence/matrices
+  and tests all three signed block seams, both partial-area moving-wall Dirichlet incidences,
+  zero-area separation, isolated compliance, and mixed disconnected components. Its
+  `test_incompatible_components_cannot_cancel_across_closed_face` checks compatibility per
+  actual component. `test_mismatched_correction_scale_breaks_the_signed_f6_identity` uses the
+  unsolved two-cell candidate `(0,0.75)`, checks residual `(-0.25,0.25)` and defects
+  `(0.25,-0.25)`, then changes only correction mobility and obtains a nonzero identity error.
+- `MacPressureSystem3D.EvaluatesAllIndependentFixtureCases` and
+  `ChecksPhysicalCompatibilityPerComponentWithoutAbsoluteFloor` cover frozen assembly,
+  anchors and component gauges. `EvaluatesUnconvergedCandidateOnEveryOriginalRow` checks the
+  original pin row too, and confirms frozen data survive changes to caller inputs.
+- `MacPressure3D.SolvesAllIndependentFixtureCases`,
+  `RetainsAnchoredPreviousPressureMean`, and
+  `EliminatedArticulationPinRetainsConductanceInSeparateSingletons` exercise original-row
+  solutions, compliant means, and pin restriction without losing neighboring diagonals.
+  `TinyCellMustPassLocalGateEvenWhenInitialGlobalGatePasses` checks the volume-scaled criterion;
+  the independent Python tiny-cell case has integrated error 1e-7 m³/s but defect 0.1 s^-1.
+- `CudaMacPressure3D.MixedLinksMatchOracle`, `MultilevelProjectionMatchesCpu`, and
+  `RejectsIncompatibleAndUnconverged` qualify the same inventory and actual device execution,
+  multilevel iteration, original residual/physical defect, and transactional failures.
+
+Runtime validates finite positive volumes/dt, coefficient representability, typed endpoints,
+owned faces, and shared frozen link coefficients; it enforces both global/local residual gates
+and the independent physical defect/identity roundoff checks. Numerical tests and device evidence
+remain separate from exact-real theorem acceptance; the formal definitions do not prove that
+floating implementations or geometry preparation meet these hypotheses automatically.
 ## Numerical hypothesis bridge and scope
 
 `reference/tests/test_transfer_3d_fixtures.py` checks signed rational positions including knots,

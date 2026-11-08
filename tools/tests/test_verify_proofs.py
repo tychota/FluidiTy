@@ -154,3 +154,25 @@ def test_new_contract_missing_closure_fails_audit(missing):
     )
     with pytest.raises(ValueError, match='missing target'):
         verify.audit_axioms(output)
+
+PRESSURE_CONTRACTS = {
+    'Fluidity.pressure_kernel_eq_component_constants',
+    'Fluidity.pressure_gauge_positive_definite',
+    'Fluidity.pressure_solvable_iff_component_compatible',
+    'Fluidity.pressure_corrected_flux_defect_eq_neg_residual',
+}
+
+
+def test_pressure_topology_and_defect_inventory():
+    assert PRESSURE_CONTRACTS <= set(verify.TARGETS)
+    assert len(verify.TARGETS) == 21
+
+
+@pytest.mark.parametrize('missing', sorted(PRESSURE_CONTRACTS))
+def test_pressure_contract_missing_closure_fails_audit(missing):
+    output = '\n'.join(
+        f"'{name}' depends on axioms: [propext, Classical.choice, Quot.sound]"
+        for name in verify.TARGETS if name != missing
+    )
+    with pytest.raises(ValueError, match='missing target'):
+        verify.audit_axioms(output)

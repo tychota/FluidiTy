@@ -1,9 +1,12 @@
 import Fluidity.Pressure
+import Fluidity.PressureTopology
+import Fluidity.PressureCorrection
 import Fluidity.FixedPoint
 import Fluidity.UniformTransfer
 import Fluidity.UniformTile
 
 open scoped BigOperators
+attribute [local instance] Classical.propDecidable
 
 namespace Fluidity
 
@@ -44,7 +47,6 @@ example (n : ℕ) : |(([2 ^ 62] : List ℤ).take n).sum| ≤ 2 ^ 62 := by
   exact fixed_point_partial_bound _ (2 ^ 62) (by decide) n
 
 end Fluidity
-
 
 namespace Fluidity
 
@@ -125,5 +127,103 @@ example :
       ∑ l, distinctRows 0 l * cubicMoment 1 l 1) : ℝ) = -6 ∧
     (-9 / 2 : ℝ) ≠ -6 := by
   norm_num [Fin.sum_univ_succ, distinctRows, cubicMoment]
+
+end Fluidity
+
+namespace Fluidity
+
+-- These typed consumers require component conclusions, not merely exported names.
+example {n m : ℕ} (g : PressureGraph n m) (p : Fin n → ℝ)
+    (kernel : ∀ i, pressureAction g.incidence g.conductance g.anchor p i = 0)
+    (i j a : Fin n) (same : g.Reachable i j) (anchored : 0 < g.anchor a) :
+    p i = p j ∧ p a = 0 := by
+  have result := (pressure_kernel_eq_component_constants g p).mp kernel
+  exact ⟨result.1 i j same, result.2 a anchored⟩
+
+-- Disconnected components may carry different constants. Pressure vanishes on anchored components.
+example {n m : ℕ} (g : PressureGraph n m) (p : Fin n → ℝ)
+    (constant : ∀ i j, g.Reachable i j → p i = p j)
+    (anchored : ∀ i, 0 < g.anchor i → p i = 0) :
+    ∀ i, pressureAction g.incidence g.conductance g.anchor p i = 0 := by
+  exact (pressure_kernel_eq_component_constants g p).mpr ⟨constant, anchored⟩
+
+example {n m : ℕ} (g : PressureGraph n m) (pin : Fin n → Prop)
+    (covers : ∀ i, g.Unanchored i → ∃ j, g.Reachable i j ∧ pin j)
+    (p : Fin n → ℝ) (zeroPins : ∀ i, pin i → p i = 0) (nonzero : p ≠ 0) :
+    0 < pressureQuadraticForm g.incidence g.conductance g.anchor p := by
+  exact pressure_gauge_positive_definite g pin covers p zeroPins nonzero
+
+example {n m : ℕ} (g : PressureGraph n m) (b : Fin n → ℝ)
+    (sums : ∀ i, g.Unanchored i → ∑ j, (if g.Reachable i j then b j else 0) = 0) :
+    ∃ p, ∀ i, pressureAction g.incidence g.conductance g.anchor p i = b i := by
+  exact (pressure_solvable_iff_component_compatible g b).mpr sums
+
+example {n m : ℕ} (g : PressureGraph n m) (b p : Fin n → ℝ)
+    (solves : ∀ i, pressureAction g.incidence g.conductance g.anchor p i = b i)
+    (i : Fin n) (unanchored : g.Unanchored i) :
+    ∑ j, (if g.Reachable i j then b j else 0) = 0 := by
+  exact (pressure_solvable_iff_component_compatible g b).mp ⟨p, solves⟩ i unanchored
+
+-- No solve or residual-smallness premise is permitted here.
+example {n m : ℕ} (links : PressureLinks n m) (candidate : Fin n → ℝ) (i : Fin n) :
+    links.defect candidate i = -links.residual candidate i := by
+  exact pressure_corrected_flux_defect_eq_neg_residual links candidate i
+
+end Fluidity
+
+namespace Fluidity
+
+-- A closed two-cell component and an independent positively anchored singleton.
+private def disconnectedPressureGraph : PressureGraph 3 1 where
+  tail := fun _ => 0
+  head := fun _ => 1
+  conductance := fun _ => 2
+  anchor := ![0, 0, 3]
+  conductance_nonneg := by intro f; norm_num
+  anchor_nonneg := by intro i; fin_cases i <;> norm_num
+
+example (componentPressure : ℝ) :
+    disconnectedPressureGraph.ComponentConstants ![componentPressure, componentPressure, 0] := by
+  apply (pressure_kernel_eq_component_constants disconnectedPressureGraph _).mp
+  intro i
+  fin_cases i <;>
+    simp [pressureAction, PressureGraph.incidence, disconnectedPressureGraph, Fin.sum_univ_succ]
+
+-- The anchored singleton RHS may have nonzero sum; only the closed pair must balance.
+example : disconnectedPressureGraph.Compatible ![-2, 2, 7] := by
+  apply (pressure_solvable_iff_component_compatible disconnectedPressureGraph _).mp
+  refine ⟨![0, 1, 7 / 3], ?_⟩
+  intro i
+  fin_cases i <;>
+    norm_num [pressureAction, PressureGraph.incidence, disconnectedPressureGraph, Fin.sum_univ_succ]
+
+private noncomputable def defectConsumerLinks : PressureLinks 1 1 where
+  incidence := fun _ _ => 1
+  openArea := fun _ => 1 / 2
+  fullArea := fun _ => 1
+  velocityScale := fun _ => 2
+  predictedVelocity := fun _ => 1
+  wallVelocity := fun _ => 2
+  lift := fun _ => -3
+  compliance := fun _ => 1 / 2
+  source := fun _ => 1
+  previousPressure := fun _ => 4
+
+-- Unsolved p=5 has original residual -3 and independently accumulated defect +3.
+example : defectConsumerLinks.residual (fun _ => 5) 0 = -3 ∧
+    defectConsumerLinks.defect (fun _ => 5) 0 = 3 := by
+  constructor
+  · norm_num [PressureLinks.residual, PressureLinks.rhs, PressureLinks.wallFlux,
+      PressureLinks.conductance, pressureAction, defectConsumerLinks, Fin.sum_univ_succ]
+  · rw [pressure_corrected_flux_defect_eq_neg_residual]
+    norm_num [PressureLinks.residual, PressureLinks.rhs, PressureLinks.wallFlux,
+      PressureLinks.conductance, pressureAction, defectConsumerLinks, Fin.sum_univ_succ]
+
+-- Change only correction's velocity scale: defect becomes 2, original -residual stays 3.
+example : ({ defectConsumerLinks with velocityScale := fun _ => 1 } : PressureLinks 1 1).defect
+      (fun _ => 5) 0 ≠ -defectConsumerLinks.residual (fun _ => 5) 0 := by
+  norm_num [PressureLinks.defect, PressureLinks.correctedFlux, PressureLinks.residual,
+    PressureLinks.rhs, PressureLinks.wallFlux, PressureLinks.conductance,
+    pressureAction, defectConsumerLinks, Fin.sum_univ_succ]
 
 end Fluidity
