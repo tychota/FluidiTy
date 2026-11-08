@@ -22,30 +22,44 @@ CPU_CASES = (
     *(f"Cpu.Case{index}" for index in range(116)),
 )
 FIXTURES = ("affine_apic.json", "compliant_pressure.json", "stiff_viscosity.json", "two_cell_pressure.json")
+PYTHON_NODE_IDS = (
+    "tests/test_reference.py::test_analytic",
+    "test_tools.py::test_export[0]",
+    "test_native.py::TestNative::test_fixture[path::value]",
+)
+PYTHON_CASES = (
+    ("tests.test_reference", "test_analytic"),
+    ("test_tools", "test_export[0]"),
+    ("test_native.TestNative", "test_fixture[path::value]"),
+)
+PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml")
 
 
 @pytest.fixture
-def invocation(tmp_path, monkeypatch, capsys):
+def validator(monkeypatch):
+    spec = importlib.util.spec_from_file_location("validate", ROOT / "tools/native/validate.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    monkeypatch.syspath_prepend(str(ROOT / "tools/native"))
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
+    return module
+
+
+@pytest.fixture
+def invocation(tmp_path, monkeypatch, capsys, validator):
     root = tmp_path / "checkout with spaces"
     output = tmp_path / "evidence with spaces"
     root.mkdir()
     output.mkdir()
-    (output / "summary.json").write_text('{"stale":true}', encoding="utf-8")
+    for name in PUBLIC_REPORTS:
+        (output / name).write_text("stale", encoding="utf-8")
     monkeypatch.chdir(root)
 
-    def run(preset="windows-debug-cpu"):
-        spec = importlib.util.spec_from_file_location("validate", ROOT / "tools/native/validate.py")
-        module = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, spec.name, module)
-        monkeypatch.syspath_prepend(str(ROOT / "tools/native"))
-        try:
-            spec.loader.exec_module(module)
-        except FileNotFoundError:
-            pytest.fail("native validation CLI is missing")
-        monkeypatch.setattr(module.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
-        return module.main(
-            [
+    def run(preset="windows-debug-cpu", *, argv=None):
+        if argv is None:
+            argv = [
                 "--preset",
                 preset,
                 "--host-profile",
@@ -55,7 +69,7 @@ def invocation(tmp_path, monkeypatch, capsys):
                 "--output",
                 str(output),
             ]
-        )
+        return validator.main(argv)
 
     def rejected(expected, preset="windows-debug-cpu"):
         assert run(preset) != 0
@@ -144,9 +158,14 @@ def scenario(invocation, monkeypatch):
         stale_lock = False
         cpu_cases = CPU_CASES
         skipped_cpu = False
+        gtest_result = None
+        python_cases = PYTHON_CASES
+        python_deselected = False
+        collection_deselected = False
 
         def __init__(self):
             self.commands = []
+            self.environments = {}
 
         def run(self, argv, *, cwd, **options):
             assert isinstance(argv, list)
@@ -155,6 +174,7 @@ def scenario(invocation, monkeypatch):
             self.commands.append(argv)
             command = Path(argv[0]).stem
             arguments = argv[1:]
+            self.environments[(command, tuple(arguments[:2]))] = options.get("env") or {}
             stdout = ""
             if command == "git":
                 if arguments[0] == "hash-object" and self.stale_lock:
@@ -191,18 +211,48 @@ def scenario(invocation, monkeypatch):
                     return subprocess.CompletedProcess(argv, 8, "test failed")
                 cases = self.cpu_cases
                 suite = ET.Element(
-                    "testsuite", tests=str(len(cases)), failures="0", skipped=str(int(self.skipped_cpu)), disabled="0"
+                    "testsuite",
+                    name="(empty)",
+                    tests=str(len(cases)),
+                    failures="0",
+                    skipped=str(int(self.skipped_cpu)),
+                    disabled="0",
                 )
                 for index, name in enumerate(cases):
-                    testcase = ET.SubElement(suite, "testcase", name=name, status="run")
-                    ET.SubElement(testcase, "system-out").text = str(root)
+                    status = "notrun" if self.skipped_cpu and index == 0 else "run"
+                    testcase = ET.SubElement(suite, "testcase", name=name, classname=name, status=status, time="0.01")
+                    reported = self.gtest_result if index == 0 and self.gtest_result is not None else name
+                    console = (
+                        f"[ RUN      ] {reported}\n[       OK ] {reported} (0 ms)\n[  PASSED  ] 1 test."
+                        if reported
+                        else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
+                    )
+                    ET.SubElement(testcase, "system-out").text = f"{root}\n{console}\n"
                     if self.skipped_cpu and index == 0:
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
             elif arguments[:2] == ["-m", "pytest"]:
-                suite = ET.Element("testsuite", tests="1", failures="0", errors="0", skipped="0")
-                ET.SubElement(suite, "testcase", name="passed")
-                ET.ElementTree(suite).write(arguments[arguments.index("--junitxml") + 1])
+                if "--collect-only" in arguments:
+                    summary = "3 tests collected in 0.01s"
+                    if self.collection_deselected:
+                        summary = "3/4 tests collected (1 deselected) in 0.01s"
+                    stdout = "\n".join((*PYTHON_NODE_IDS, "", summary, ""))
+                else:
+                    report = ET.Element("testsuites")
+                    suite = ET.SubElement(
+                        report,
+                        "testsuite",
+                        name="pytest",
+                        tests=str(len(self.python_cases)),
+                        failures="0",
+                        errors="0",
+                        skipped="0",
+                    )
+                    for classname, name in self.python_cases:
+                        ET.SubElement(suite, "testcase", classname=classname, name=name, time="0.01")
+                    ET.ElementTree(report).write(arguments[arguments.index("--junitxml") + 1])
+                    deselection = ", 1 deselected" if self.python_deselected else ""
+                    stdout = f"{len(self.python_cases)} passed{deselection} in 0.01s\n"
             else:
                 pytest.fail(f"unexpected command: {argv}")
             return subprocess.CompletedProcess(argv, 0, stdout)
@@ -214,6 +264,48 @@ def scenario(invocation, monkeypatch):
 
 def test_wrong_preset_invalidates_stale_success(invocation):
     invocation[3]("preset", "windows-debug-gpu")
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_invalid_cli_clears_the_one_named_output(invocation, joined):
+    _, output, run, _ = invocation
+    args = [f"--output={output}"] if joined else ["--output", str(output)]
+    with pytest.raises(SystemExit) as error:
+        run(argv=args)
+    assert error.value.code == 2
+    assert not any((output / name).exists() for name in PUBLIC_REPORTS)
+
+
+def test_help_retains_output(invocation):
+    _, output, run, _ = invocation
+    with pytest.raises(SystemExit) as error:
+        run(argv=["--output", str(output), "--help"])
+    assert error.value.code == 0
+    assert all((output / name).exists() for name in PUBLIC_REPORTS)
+
+
+def test_ambiguous_output_retains_both_destinations(invocation):
+    root, output, run, _ = invocation
+    alternate = root / "another output"
+    alternate.mkdir()
+    (alternate / "summary.json").write_text("stale", encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        run(
+            argv=[
+                "--preset",
+                "windows-debug-cpu",
+                "--host-profile",
+                "host",
+                "--build-profile",
+                "build",
+                "--output",
+                str(output),
+                f"--output={alternate}",
+            ]
+        )
+    assert error.value.code == 2
+    assert all((output / name).exists() for name in PUBLIC_REPORTS)
+    assert (alternate / "summary.json").exists()
 
 
 def test_worktree_lock_must_match_committed_lock(scenario):
@@ -259,12 +351,86 @@ def test_cpu_suite_must_run_in_full(scenario, missing):
     rejected("cpu")
 
 
-def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scenario):
+@pytest.mark.parametrize("reported", ["", "Different.Test"])
+def test_ctest_must_prove_each_expected_case_executed(scenario, reported):
+    processes, _, output, _, rejected = scenario
+    processes.gtest_result = reported
+    rejected("GoogleTest")
+    assert not (output / "ctest-cpu.xml").exists()
+
+
+@pytest.mark.parametrize("problem", ["partial", "duplicate", "unexpected", "deselected", "collection_deselected"])
+def test_python_results_must_match_full_collection(scenario, problem):
+    processes, _, _, _, rejected = scenario
+    if problem == "partial":
+        processes.python_cases = PYTHON_CASES[:1]
+    elif problem == "duplicate":
+        processes.python_cases = (*PYTHON_CASES[:2], PYTHON_CASES[0])
+    elif problem == "unexpected":
+        processes.python_cases = (*PYTHON_CASES[:2], ("another_test", "test_unexpected"))
+    elif problem == "deselected":
+        processes.python_deselected = True
+    else:
+        processes.collection_deselected = True
+    rejected("Python")
+
+
+@pytest.mark.parametrize(
+    ("producer", "xml"),
+    [
+        ("ctest", '<unexpected><testsuite tests="1"><testcase /></testsuite></unexpected>'),
+        ("ctest", '<testsuite name="ctest" tests="0" failures="0" skipped="0" disabled="-1"/>'),
+        (
+            "ctest",
+            '<testsuite name="ctest" tests="1" failures="0" skipped="0" disabled="0"><testcase name="A" classname="A" /></testsuite>',
+        ),
+        ("pytest", '<testsuite name="pytest" tests="0" failures="0" errors="0" skipped="0" />'),
+        ("pytest", '<testsuites><testsuite name="pytest" tests="0" failures="0" skipped="0" /></testsuites>'),
+        (
+            "pytest",
+            '<testsuites><testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0"><testcase classname="Tests" /></testsuite></testsuites>',
+        ),
+        (
+            "pytest",
+            '<testsuites><testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0"><testcase classname="Tests" name="test_case"><unexpected /></testcase></testsuite></testsuites>',
+        ),
+    ],
+)
+def test_junit_rejects_unknown_shape_or_invalid_required_fields(validator, tmp_path, producer, xml):
+    report = tmp_path / f"{producer}.xml"
+    report.write_text(xml, encoding="utf-8")
+    with pytest.raises(ValueError, match="JUnit"):
+        validator.junit_cases(report)
+
+
+@pytest.mark.parametrize("driver_field", ["KMD version", "Driver Version"])
+def test_windows_versions_measure_driver_separately_from_nvidia_smi(validator, driver_field):
+    versions = validator.windows_versions(
+        {
+            "host": {},
+            "mode": "cuda",
+            "tools": {
+                "nvcc": {"version": "Cuda compilation tools, release 13.4, V13.4.59"},
+                "nvidia-smi": {"version": f"NVIDIA-SMI version  : 612.00\n{driver_field} : 610.88\n"},
+            },
+            "cuda": {"runtime": "Shared"},
+        }
+    )
+    assert versions["nvidia_driver"] == "610.88"
+    assert versions["nvidia_smi"] == "612.00"
+
+
+def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scenario, monkeypatch):
     processes, root, output, run, _ = scenario
+    monkeypatch.setenv("GTEST_TOTAL_SHARDS", "2")
+    monkeypatch.setenv("GTEST_SHARD_INDEX", "1")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-k test_analytic")
+    monkeypatch.setenv("PYTEST_PLUGINS", "unexpected_plugin")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     assert run() == 0
     summary = (output / "summary.json").read_text(encoding="utf-8")
     evidence = json.loads(summary)["evidence"]
-    assert evidence["python"] == {"status": "passed", "tests": 1}
+    assert evidence["python"] == {"status": "passed", "tests": 3}
     assert evidence["native_cpu"] == {"status": "passed", "tests": 123}
     for gate in ("gpu", "cuda_mock", "sanitizer", "proof"):
         assert evidence[gate]["status"] == "not_run"
@@ -276,5 +442,11 @@ def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scena
     junit = next(argv for argv in processes.commands if "--output-junit" in argv)
     assert Path(junit[junit.index("--output-junit") + 1]).parent.is_dir()
     assert " " in junit[junit.index("--output-junit") + 1]
+    ctest_env = processes.environments[("ctest", ("--preset", "windows-debug-cpu"))]
+    assert not any(key.startswith("GTEST_") for key in ctest_env)
+    assert ctest_env["CUDA_VISIBLE_DEVICES"] == "-1"
+    pytest_env = processes.environments[(Path(sys.executable).stem, ("-m", "pytest"))]
+    assert "PYTEST_ADDOPTS" not in pytest_env and "PYTEST_PLUGINS" not in pytest_env
+    assert pytest_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert str(root) not in summary and "Private Toolchain" not in summary
     assert str(root) not in (output / "ctest-cpu.xml").read_text(encoding="utf-8")

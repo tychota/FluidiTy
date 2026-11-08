@@ -114,10 +114,13 @@ and path-free CTest reports under `--output`. The receipt records the source rev
 working source hash, both lock hashes, profile and effective ABI hashes, tool versions,
 fixture and header hashes, commands and separate results for Python, native CPU, GPU,
 CUDA doubles, sanitizer and proofs. The proof gate remains `not_run` in this validator.
+The validator clears inherited GoogleTest and pytest selectors. It checks each named native
+case's execution output and compares the Python results with the complete pytest collection.
 
 Full command arguments, tool output, Python and CTest XML, and the live requalification
 receipt stay under `out/native-validation/<preset>/run-*/`. These local files can contain
-machine paths. Each invocation clears an earlier success summary at its output destination.
+machine paths. An invocation with one valid `--output` destination clears its previous reports,
+including when another command-line argument is invalid.
 On failure, read the named stage's log and CTest report if the suite ran. Requalify after
 compiler, SDK, toolkit, driver or device changes. If CMake cached a different compiler,
 start with a fresh preset build tree. A localized MSVC include scan requires code page
