@@ -314,12 +314,8 @@ TEST(CudaPressure, ComplianceRetainsMeanPressure) {
   mixed_compliance_case.cell_bulk_moduli[1] = 4.0;
   mixed_compliance_case.previous_cell_pressures[1] = 5.0;
   PressureResult cuda_result(mixed_compliance_case);
-  // An earlier CUDA runtime error still belongs to the calling thread.
-  ASSERT_EQ(cudaSetDevice(-1), cudaErrorInvalidDevice);
-  ASSERT_EQ(cudaPeekAtLastError(), cudaErrorInvalidDevice);
   const auto cuda_status =
       CudaSolvePressure2D(mixed_compliance_case.Inputs(), cuda_result.Outputs(), cuda_result.kernel_measurement);
-  EXPECT_EQ(cudaGetLastError(), cudaErrorInvalidDevice);
   ASSERT_TRUE(cuda_status.ok()) << cuda_status;
   ExpectField(cuda_result.original_matrix, std::array{1.0, -1.0, -1.0, 1.5});
   ExpectField(cuda_result.original_rhs, std::array{2.0, 4.5});
@@ -327,6 +323,23 @@ TEST(CudaPressure, ComplianceRetainsMeanPressure) {
   EXPECT_NEAR(cuda_result.corrected_face_velocities[1], 2.0, 2e-12);
   ExpectGaugeCellIndices(cuda_result, {});
   ExpectCpuParity(mixed_compliance_case, cuda_result);
+}
+
+TEST(CudaPressure, LaunchIgnoresPriorRuntimeError) {
+  const PressureCase pressure_case({1, 1, 1.0});
+  PressureResult baseline_result(pressure_case);
+  const auto baseline_status =
+      CudaSolvePressure2D(pressure_case.Inputs(), baseline_result.Outputs(), baseline_result.kernel_measurement);
+  ASSERT_TRUE(baseline_status.ok()) << baseline_status;
+
+  ASSERT_EQ(cudaSetDevice(-1), cudaErrorInvalidDevice);
+  ASSERT_EQ(cudaPeekAtLastError(), cudaErrorInvalidDevice);
+
+  PressureResult cuda_result(pressure_case);
+  const auto cuda_status =
+      CudaSolvePressure2D(pressure_case.Inputs(), cuda_result.Outputs(), cuda_result.kernel_measurement);
+  EXPECT_EQ(cudaGetLastError(), cudaErrorInvalidDevice);
+  EXPECT_TRUE(cuda_status.ok()) << cuda_status;
 }
 
 TEST(CudaPressure, DirichletAndWallFluxMatchAnalyticAndCpu) {
