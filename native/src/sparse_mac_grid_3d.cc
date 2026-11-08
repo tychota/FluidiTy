@@ -44,10 +44,15 @@ auto BlockSortKey(BlockIndex3D block_index) {
   return std::tuple{block_index.z, block_index.y, block_index.x};
 }
 
-// C++ division truncates toward zero; a negative remainder belongs to the previous block.
+// Owner blocks use mathematical floor. Map negative indices through a
+// nonnegative quotient, including exact block edges. Adding one before
+// negating keeps INT64_MIN representable.
 std::int64_t FloorDivideByBlockWidth(std::int64_t index) {
-  const std::int64_t quotient = index / kCellsPerBlockAxis;
-  return index % kCellsPerBlockAxis < 0 ? quotient - 1 : quotient;
+  if (index >= 0) {
+    return index / kCellsPerBlockAxis;
+  }
+  const std::int64_t mirrored_index = -(index + 1);
+  return -1 - mirrored_index / kCellsPerBlockAxis;
 }
 
 bool IsValidAxis(FaceNormalAxis axis) {
