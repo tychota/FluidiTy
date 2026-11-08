@@ -53,7 +53,7 @@ enum class MacTransferArithmeticError3D : int {
 
 struct MacTransferKernelReport3D {
   int compiled_architecture;
-  int arithmetic_error;  // TransferError3D written atomically by failing lanes.
+  int arithmetic_error;  // MacTransferArithmeticError3D written atomically by failing lanes.
 };
 
 // Launches deposit on completely resolved stencils or clears all destination

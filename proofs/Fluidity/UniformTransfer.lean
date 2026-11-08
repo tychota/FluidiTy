@@ -249,7 +249,7 @@ theorem affine_reconstruction_of_moments {ι : Type} [Fintype ι] {d : ℕ}
 #print axioms affine_reconstruction_of_moments
 
 
-/-- Unrounded, force-free per-component mass and pure momentum deposited by faceNormal
+/-- Unrounded, force-free per-component mass and pure momentum deposited by a
 finite particle population. Faces and moments may differ between components. -/
 def depositedMacMass {particleCount faceCount d : ℕ} (mass : Fin particleCount → ℝ) (weight : Fin particleCount → Fin d → Fin faceCount → ℝ)
     (axis : Fin d) (face : Fin faceCount) : ℝ := ∑ particle, mass particle * weight particle axis face
@@ -260,7 +260,7 @@ def depositedMacPureMomentum {particleCount faceCount d : ℕ} (mass : Fin parti
   ∑ particle, mass particle * weight particle axis face * affineSamples (velocity particle axis) (row particle axis) (offset particle axis) face
 
 /-- F2: each component represents the same particle inventory; angular momentum
-is the difference of two distinct component-face faceMomentumMoment sums. No common D or
+is the difference of two distinct component-face spatial sums. No common D or
 inverse is assumed. Anchors are bound to particle positions and row offsets. -/
 theorem mac_deposit_conserves_row_moments {particleCount faceCount d : ℕ}
     (mass : Fin particleCount → ℝ) (_nonnegativeMass : ∀ particle, 0 ≤ mass particle)
