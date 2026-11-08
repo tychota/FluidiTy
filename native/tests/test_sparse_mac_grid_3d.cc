@@ -301,6 +301,34 @@ TEST(SparseMacGrid3D, PreservesTranslatedParticleBinEdge) {
   EXPECT_EQ(bin->x, 0);
 }
 
+TEST(SparseMacGrid3D, FaceAnchorRetainsTranslatedWorldResidual) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-0.5, 0.0, 0.0},
+      .cell_width = 0.1,
+  };
+  constexpr std::array blocks{BlockIndex3D{1, 0, 0}};
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, blocks, blocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const auto anchor = mac_grid->FaceWorldAnchor({FaceNormalAxis::kX, {5, 2, 2}});
+  ASSERT_TRUE(anchor.ok()) << anchor.status();
+  // For the stored cell width, the exact affine map is -0.5 + 5 * 0.1 = 2^-55.
+  EXPECT_EQ(anchor->x, 0x1p-55);
+  const auto stencil = BuildOwnedMacFaceStencil3D(*mac_grid, FaceNormalAxis::kY, *anchor, *anchor);
+  EXPECT_TRUE(stencil.ok()) << stencil.status();
+}
+
+TEST(SparseMacGrid3D, CellCenterRetainsTranslatedWorldResidual) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-0.45, 0.0, 0.0},
+      .cell_width = 0.1,
+  };
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, {}, 0);
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const auto center = mac_grid->CellWorldCenter({4, 2, 2});
+  ASSERT_TRUE(center.ok()) << center.status();
+  EXPECT_EQ(center->x, 0x1p-56);
+}
+
 TEST(SparseMacGrid3D, ComputesFiniteAnchorAfterProductOverflow) {
   constexpr double largest = std::numeric_limits<double>::max();
   constexpr UniformMacGeometry3D geometry{

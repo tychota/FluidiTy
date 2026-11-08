@@ -62,20 +62,12 @@ std::array<double, 3> FaceLatticeShifts(FaceNormalAxis axis) {
   };
 }
 
-double WorldCoordinate(double world_origin, double cell_width, double normalized_coordinate) {
-  const double world_coordinate = world_origin + cell_width * normalized_coordinate;
-  if (std::isfinite(world_coordinate)) {
-    return world_coordinate;
-  }
-  // A finite origin can cancel an overflowing product.
-  return std::fma(cell_width, normalized_coordinate, world_origin);
-}
-
 absl::StatusOr<Vec3> ReconstructWorldPosition(UniformMacGeometry3D geometry, Vec3 normalized_position) {
+  // Preserve the affine residual through translation, as the stencil edge comparisons do.
   const Vec3 world_position{
-      .x = WorldCoordinate(geometry.world_origin.x, geometry.cell_width, normalized_position.x),
-      .y = WorldCoordinate(geometry.world_origin.y, geometry.cell_width, normalized_position.y),
-      .z = WorldCoordinate(geometry.world_origin.z, geometry.cell_width, normalized_position.z),
+      .x = std::fma(geometry.cell_width, normalized_position.x, geometry.world_origin.x),
+      .y = std::fma(geometry.cell_width, normalized_position.y, geometry.world_origin.y),
+      .z = std::fma(geometry.cell_width, normalized_position.z, geometry.world_origin.z),
   };
   if (!IsFinite(world_position)) {
     return absl::OutOfRangeError("world position is outside the finite range");
