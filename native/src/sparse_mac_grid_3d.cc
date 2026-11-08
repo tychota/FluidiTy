@@ -31,11 +31,11 @@ bool IsFinite(Vec3 value) {
 
 absl::Status ValidateGeometry(UniformMacGeometry3D geometry) {
   if (!IsFinite(geometry.world_origin)) {
-    return absl::InvalidArgumentError("grid origin must be finite");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const bool cell_width_is_positive_normal = geometry.cell_width > 0.0 && std::isnormal(geometry.cell_width);
   if (!cell_width_is_positive_normal) {
-    return absl::InvalidArgumentError("cell width must be positive and normal");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   return absl::OkStatus();
 }
@@ -75,7 +75,7 @@ absl::StatusOr<Vec3> ReconstructWorldPosition(UniformMacGeometry3D geometry, Vec
       .z = std::fma(geometry.cell_width, normalized_position.z, geometry.world_origin.z),
   };
   if (!IsFinite(world_position)) {
-    return absl::OutOfRangeError("world position is outside the finite range");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return world_position;
 }
@@ -168,7 +168,7 @@ using NormalizedPosition = std::array<NormalizedCoordinate, 3>;
 
 absl::StatusOr<NormalizedPosition> NormalizePosition(UniformMacGeometry3D geometry, Vec3 world_position) {
   if (!IsFinite(world_position)) {
-    return absl::InvalidArgumentError("particle world position must be finite");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const NormalizedPosition normalized_position{
       NormalizeCoordinate(world_position.x, geometry.world_origin.x, geometry.cell_width),
@@ -177,7 +177,7 @@ absl::StatusOr<NormalizedPosition> NormalizePosition(UniformMacGeometry3D geomet
   };
   for (const auto& coordinate : normalized_position) {
     if (!std::isfinite(coordinate.rounded_coordinate_in_cells)) {
-      return absl::OutOfRangeError("normalized particle position is outside the finite range");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
   }
   return normalized_position;
@@ -206,7 +206,7 @@ absl::StatusOr<ParticleBinIndex3D> CheckedParticleSortBin(const NormalizedPositi
   for (std::size_t axis_index = 0; axis_index < sorted_normalized_position.size(); ++axis_index) {
     const auto& coordinate = sorted_normalized_position[axis_index];
     if (coordinate.IsBelow(first_bin_edge) || !coordinate.IsBelow(past_last_bin_edge)) {
-      return absl::OutOfRangeError("particle bin index is outside the int32 range");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
     const std::int64_t bin_index =
         FloorDivideByBlockWidth(FloorShiftedCoordinate(coordinate, kParticleBinShiftInCells));
@@ -273,13 +273,13 @@ absl::StatusOr<AxisStencil> BuildCheckedAxisStencil(
   const double first_support_edge = static_cast<double>(kMinSignedIndex) + start_shift;
   const double past_last_support_edge = static_cast<double>(kMaxSignedIndex - 1) + start_shift;
   if (coordinate.IsBelow(first_support_edge) || !coordinate.IsBelow(past_last_support_edge)) {
-    return absl::OutOfRangeError("quadratic stencil face index is outside the int32 range");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   const std::int64_t first_lattice_index = FloorShiftedCoordinate(coordinate, start_shift);
   const std::int64_t tile_start = static_cast<std::int64_t>(bin_index) * kCellsPerBlockAxis;
   const std::int64_t last_lattice_index = first_lattice_index + 2;
   if (first_lattice_index < tile_start || last_lattice_index >= tile_start + kTransferTileWidthInCells) {
-    return absl::FailedPreconditionError("quadratic stencil leaves the sorted particle tile");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
 
   // Evaluate the outer weights from the distances to their exact support edges.
@@ -351,15 +351,15 @@ absl::StatusOr<SparseMacGrid3D> SparseMacGrid3D::Create(
     return geometry_status;
   }
   if (active_block_indices.size() > block_capacity) {
-    return absl::ResourceExhaustedError("active block count exceeds block capacity");
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   if (active_block_indices.size() > std::numeric_limits<std::size_t>::max() / kFacesPerBlock) {
-    return absl::OutOfRangeError("owned face count is outside the size_t range");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   for (BlockIndex3D block_index : active_block_indices) {
     for (std::int32_t coordinate : {block_index.x, block_index.y, block_index.z}) {
       if (coordinate < kMinBlockIndex || coordinate > kMaxBlockIndex) {
-        return absl::OutOfRangeError("active block faces are outside the int32 lattice");
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
   }
@@ -368,37 +368,33 @@ absl::StatusOr<SparseMacGrid3D> SparseMacGrid3D::Create(
   std::ranges::sort(sorted_block_indices, {}, BlockSortKey);
   const auto duplicate = std::ranges::adjacent_find(sorted_block_indices, {}, BlockSortKey);
   if (duplicate != sorted_block_indices.end()) {
-    return absl::InvalidArgumentError("active block keys must be unique");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   return SparseMacGrid3D(geometry, std::move(sorted_block_indices));
 }
 
-UniformMacGeometry3D SparseMacGrid3D::geometry() const {
+UniformMacGeometry3D SparseMacGridView3D::geometry() const {
   return geometry_;
 }
 
-std::size_t SparseMacGrid3D::face_count() const {
+std::size_t SparseMacGridView3D::face_count() const {
   return kFacesPerBlock * active_block_indices_.size();
 }
 
-std::span<const BlockIndex3D> SparseMacGrid3D::active_block_indices() const {
+std::span<const BlockIndex3D> SparseMacGridView3D::active_block_indices() const {
   return active_block_indices_;
 }
 
-absl::StatusOr<std::size_t> SparseMacGrid3D::FaceSlot(FaceIndex3D face_index) const {
+absl::StatusOr<std::size_t> SparseMacGridView3D::FaceSlot(FaceIndex3D face_index) const {
   if (!IsValidAxis(face_index.axis)) {
-    return absl::InvalidArgumentError("face axis is invalid");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const FaceLatticeIndex3D lattice_index = face_index.lattice_index;
-  const BlockIndex3D owner{
-      .x = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.x)),
-      .y = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.y)),
-      .z = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.z)),
-  };
+  const BlockIndex3D owner = MacOwnerBlock3D(lattice_index);
   const auto owner_key = BlockSortKey(owner);
   const auto owner_block_iterator = std::ranges::lower_bound(active_block_indices_, owner_key, {}, BlockSortKey);
   if (owner_block_iterator == active_block_indices_.end() || BlockSortKey(*owner_block_iterator) != owner_key) {
-    return absl::FailedPreconditionError("face owner block is inactive");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
 
   const std::int64_t local_x = lattice_index.x - kCellsPerBlockAxis * owner.x;
@@ -412,9 +408,9 @@ absl::StatusOr<std::size_t> SparseMacGrid3D::FaceSlot(FaceIndex3D face_index) co
   return block_ordinal * kFacesPerBlock + axis_ordinal * kFacesPerNormalInBlock + local_face_ordinal;
 }
 
-absl::StatusOr<Vec3> SparseMacGrid3D::FaceWorldAnchor(FaceIndex3D face_index) const {
+absl::StatusOr<Vec3> SparseMacGridView3D::FaceWorldAnchor(FaceIndex3D face_index) const {
   if (!IsValidAxis(face_index.axis)) {
-    return absl::InvalidArgumentError("face axis is invalid");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const auto face_lattice_shifts = FaceLatticeShifts(face_index.axis);
   const FaceLatticeIndex3D lattice_index = face_index.lattice_index;
@@ -428,7 +424,7 @@ absl::StatusOr<Vec3> SparseMacGrid3D::FaceWorldAnchor(FaceIndex3D face_index) co
   );
 }
 
-absl::StatusOr<Vec3> SparseMacGrid3D::CellWorldCenter(CellIndex3D cell_index) const {
+absl::StatusOr<Vec3> SparseMacGridView3D::CellWorldCenter(CellIndex3D cell_index) const {
   return ReconstructWorldPosition(
       geometry_,
       {
@@ -452,16 +448,18 @@ ComputeParticleSortBin3D(UniformMacGeometry3D geometry, Vec3 sorted_particle_wor
   return CheckedParticleSortBin(*sorted_normalized_position);
 }
 
-absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
-    const SparseMacGrid3D& mac_grid,
+absl::StatusOr<MacFaceGeometryStencil3D> BuildMacFaceGeometryStencil3D(
+    UniformMacGeometry3D geometry,
     FaceNormalAxis axis,
     Vec3 sorted_particle_world_position,
     Vec3 trial_particle_world_position
 ) {
   if (!IsValidAxis(axis)) {
-    return absl::InvalidArgumentError("face axis is invalid");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  const UniformMacGeometry3D geometry = mac_grid.geometry();
+  if (const auto status = ValidateGeometry(geometry); !status.ok()) {
+    return status;
+  }
   const auto sorted_normalized_position = NormalizePosition(geometry, sorted_particle_world_position);
   if (!sorted_normalized_position.ok()) {
     return sorted_normalized_position.status();
@@ -480,7 +478,7 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
       && WithinHalfCell(sorted_particle_world_position.y, trial_particle_world_position.y, cell_width)
       && WithinHalfCell(sorted_particle_world_position.z, trial_particle_world_position.z, cell_width);
   if (!motion_within_half_cell) {
-    return absl::FailedPreconditionError("particle motion exceeds half a cell");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
 
   const auto face_lattice_shifts = FaceLatticeShifts(axis);
@@ -499,7 +497,7 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
     axis_stencils[axis_index] = *stencil;
   }
 
-  MacFaceStencil3D stencil;
+  MacFaceGeometryStencil3D stencil;
   std::size_t sample_index = 0;
   for (const AxisStencilSample& z_sample : axis_stencils[2]) {
     for (const AxisStencilSample& y_sample : axis_stencils[1]) {
@@ -508,10 +506,6 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
             .axis = axis,
             .lattice_index = {x_sample.lattice_index, y_sample.lattice_index, z_sample.lattice_index},
         };
-        const auto face_slot = mac_grid.FaceSlot(face_index);
-        if (!face_slot.ok()) {
-          return face_slot.status();
-        }
         const Vec3 displacement{
             .x = x_sample.face_offset_from_particle,
             .y = y_sample.face_offset_from_particle,
@@ -538,10 +532,10 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
             ),
         };
         if (!IsFinite(displacement) || !IsFinite(gradient)) {
-          return absl::OutOfRangeError("quadratic stencil displacement or gradient is outside the finite range");
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
         }
         stencil[sample_index] = {
-            .face_slot = *face_slot,
+            .face_index = face_index,
             .weight = x_sample.weight.rounded_factor * y_sample.weight.rounded_factor * z_sample.weight.rounded_factor,
             .face_offset_from_particle = displacement,
             .weight_gradient = gradient,
@@ -551,6 +545,129 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
     }
   }
   return stencil;
+}
+
+SparseMacGridView3D::SparseMacGridView3D(
+    UniformMacGeometry3D geometry,
+    std::span<const BlockIndex3D> active_block_indices
+)
+    : geometry_(geometry), active_block_indices_(active_block_indices) {
+}
+
+absl::StatusOr<SparseMacGridView3D>
+SparseMacGridView3D::Create(UniformMacGeometry3D geometry, std::span<const BlockIndex3D> active_block_indices) {
+  if (const auto status = ValidateGeometry(geometry); !status.ok()) {
+    return status;
+  }
+  if (active_block_indices.size() > std::numeric_limits<std::size_t>::max() / kFacesPerBlock) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  for (std::size_t index = 0; index < active_block_indices.size(); ++index) {
+    const auto block = active_block_indices[index];
+    for (const auto coordinate : {block.x, block.y, block.z}) {
+      if (coordinate < kMinBlockIndex || coordinate > kMaxBlockIndex) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+    }
+    if (index > 0 && BlockSortKey(active_block_indices[index - 1]) >= BlockSortKey(block)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+  return SparseMacGridView3D(geometry, active_block_indices);
+}
+
+BlockIndex3D MacOwnerBlock3D(FaceLatticeIndex3D lattice_index) {
+  return {
+      .x = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.x)),
+      .y = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.y)),
+      .z = static_cast<std::int32_t>(FloorDivideByBlockWidth(lattice_index.z)),
+  };
+}
+
+absl::StatusOr<FaceIndex3D> SparseMacGridView3D::FaceIndex(std::size_t face_slot) const {
+  if (face_slot >= face_count()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto block = active_block_indices_[face_slot / kFacesPerBlock];
+  const auto within_block = face_slot % kFacesPerBlock;
+  const auto local_ordinal = within_block % kFacesPerNormalInBlock;
+  return FaceIndex3D{
+      .axis = static_cast<FaceNormalAxis>(within_block / kFacesPerNormalInBlock),
+      .lattice_index =
+          {
+              .x = block.x * 4 + static_cast<std::int32_t>(local_ordinal % 4),
+              .y = block.y * 4 + static_cast<std::int32_t>((local_ordinal / 4) % 4),
+              .z = block.z * 4 + static_cast<std::int32_t>(local_ordinal / 16),
+          },
+  };
+}
+
+SparseMacGridView3D SparseMacGrid3D::view() const {
+  return SparseMacGridView3D(geometry_, active_block_indices_);
+}
+UniformMacGeometry3D SparseMacGrid3D::geometry() const {
+  return view().geometry();
+}
+std::size_t SparseMacGrid3D::face_count() const {
+  return view().face_count();
+}
+std::span<const BlockIndex3D> SparseMacGrid3D::active_block_indices() const {
+  return view().active_block_indices();
+}
+absl::StatusOr<std::size_t> SparseMacGrid3D::FaceSlot(FaceIndex3D face_index) const {
+  return view().FaceSlot(face_index);
+}
+absl::StatusOr<Vec3> SparseMacGrid3D::FaceWorldAnchor(FaceIndex3D face_index) const {
+  return view().FaceWorldAnchor(face_index);
+}
+absl::StatusOr<Vec3> SparseMacGrid3D::CellWorldCenter(CellIndex3D cell_index) const {
+  return view().CellWorldCenter(cell_index);
+}
+
+absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
+    SparseMacGridView3D mac_grid,
+    FaceNormalAxis axis,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position
+) {
+  const auto geometry_stencil = BuildMacFaceGeometryStencil3D(
+      mac_grid.geometry(),
+      axis,
+      sorted_particle_world_position,
+      trial_particle_world_position
+  );
+  if (!geometry_stencil.ok()) {
+    return geometry_stencil.status();
+  }
+  MacFaceStencil3D stencil;
+  for (std::size_t index = 0; index < stencil.size(); ++index) {
+    const auto& sample = (*geometry_stencil)[index];
+    const auto slot = mac_grid.FaceSlot(sample.face_index);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    stencil[index] = {
+        .face_slot = *slot,
+        .weight = sample.weight,
+        .face_offset_from_particle = sample.face_offset_from_particle,
+        .weight_gradient = sample.weight_gradient,
+    };
+  }
+  return stencil;
+}
+
+absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
+    const SparseMacGrid3D& mac_grid,
+    FaceNormalAxis axis,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position
+) {
+  return BuildOwnedMacFaceStencil3D(
+      mac_grid.view(),
+      axis,
+      sorted_particle_world_position,
+      trial_particle_world_position
+  );
 }
 
 }  // namespace fluidity
