@@ -519,17 +519,22 @@ absl::Status ValidateFrozenView(const FrozenLiquidBoundaryGeometryView3D& geomet
   if (geometry.cells.size() > 4096 || geometry.faces.size() > 24576) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
+  const double cell_width = geometry.mac_grid.geometry().cell_width;
+  const double full_face_area = cell_width * cell_width;
+  const double full_cell_volume = full_face_area * cell_width;
+  const double inverse_density = 1 / geometry.liquid_density;
+  // Public borrows must preserve the physical representability checks from freeze.
+  if (!std::isnormal(full_face_area) || !std::isnormal(full_cell_volume) || !std::isnormal(inverse_density)) {
+    return UnrepresentableGeometry(true);
+  }
   const auto samples_status = ValidateSamples(geometry.center_distances, true);
   if (!samples_status.ok()) {
     return samples_status;
   }
-  const double h = geometry.mac_grid.geometry().cell_width;
-  const double area = h * h;
-  const double volume = area * h;
   for (std::size_t i = 0; i < geometry.cells.size(); ++i) {
     const auto& cell = geometry.cells[i];
-    if (!IsPositiveFinite(cell.fluid_volume) || cell.fluid_volume > volume || !std::isfinite(cell.center_distance)
-        || cell.center_distance >= 0 || !std::isfinite(cell.curvature)) {
+    if (!IsPositiveFinite(cell.fluid_volume) || cell.fluid_volume > full_cell_volume
+        || !std::isfinite(cell.center_distance) || cell.center_distance >= 0 || !std::isfinite(cell.curvature)) {
       return invalid();
     }
     if (i > 0 && CellKey(cell.cell_index) <= CellKey(geometry.cells[i - 1].cell_index)) {
@@ -545,9 +550,46 @@ absl::Status ValidateFrozenView(const FrozenLiquidBoundaryGeometryView3D& geomet
     if (*slot != face.face_slot || (i > 0 && face.face_slot <= geometry.faces[i - 1].face_slot)) {
       return invalid();
     }
-    if (!std::isfinite(face.open_area) || face.open_area < 0 || face.open_area > area
-        || face.blocked_area != area - face.open_area || !std::isfinite(face.wall_normal_velocity)) {
+    if (!std::isfinite(face.open_area) || face.open_area < 0 || face.open_area > full_face_area
+        || face.blocked_area != full_face_area - face.open_area || !std::isfinite(face.wall_normal_velocity)) {
       return invalid();
+    }
+    const auto index = face.face_index.lattice_index;
+    const CellIndex3D head{index.x, index.y, index.z};
+    const auto tail = OffsetCellIndex(head, static_cast<int>(face.face_index.axis), -1, true);
+    const bool has_head = FindCell(geometry.cells, head) != geometry.cells.size();
+    const bool has_tail = tail.ok() && FindCell(geometry.cells, *tail) != geometry.cells.size();
+    // A sealed face at INT32_MIN has no representable tail, but its selected head
+    // still makes it incident. Without either endpoint it is an extraneous face.
+    if (!has_head && !has_tail) {
+      return MissingBoundarySample(true);
+    }
+    if (!tail.ok() && face.open_area > 0) {
+      return tail.status();
+    }
+  }
+  // The sorted face union must contain every incident owner, including closed
+  // faces. Check membership without an allocating set or mutable scratch.
+  for (const auto& cell : geometry.cells) {
+    for (int axis = 0; axis < 3; ++axis) {
+      for (int side = 0; side < 2; ++side) {
+        const auto shifted = OffsetCellIndex(cell.cell_index, axis, side, true);
+        if (!shifted.ok()) {
+          return shifted.status();
+        }
+        const FaceIndex3D face{
+            static_cast<FaceNormalAxis>(axis),
+            {shifted->x, shifted->y, shifted->z},
+        };
+        const auto slot = geometry.mac_grid.FaceSlot(face);
+        if (!slot.ok()) {
+          return slot.status();
+        }
+        const auto found = std::ranges::lower_bound(geometry.faces, *slot, {}, &FrozenLiquidFace3D::face_slot);
+        if (found == geometry.faces.end() || found->face_slot != *slot) {
+          return MissingBoundarySample(true);
+        }
+      }
     }
   }
   return absl::OkStatus();

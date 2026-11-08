@@ -289,6 +289,139 @@ TEST(LiquidBoundaryWorkspace3D, MalformedFrozenViewFailsBeforeLatticeAccessAndPr
   );
   EXPECT_DOUBLE_EQ(links->faces[0].inverse_density, 0.001);
 }
+TEST(LiquidBoundaryWorkspace3D, UnrepresentableDensityPreservesPublishedPressureLinks) {
+  Fixture fixture;
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(fixture.geometry(), *workspace);
+  ASSERT_TRUE(frozen.ok());
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 7}};
+  const std::array<double, 6> velocities{};
+  const auto links = BuildLiquidPressureLinks3D(*frozen, {fields, velocities, 9}, *workspace);
+  ASSERT_TRUE(links.ok());
+  const auto* published_cells = links->cells.data();
+  const auto* published_faces = links->faces.data();
+  for (double density : {std::numeric_limits<double>::denorm_min(), std::numeric_limits<double>::max()}) {
+    auto malformed = *frozen;
+    malformed.liquid_density = density;
+    const auto rejected = BuildLiquidPressureLinks3D(malformed, {fields, velocities, 9}, *workspace);
+    EXPECT_EQ(rejected.status().code(), absl::StatusCode::kOutOfRange);
+    EXPECT_TRUE(rejected.status().message().empty());
+    EXPECT_EQ(links->cells.data(), published_cells);
+    EXPECT_EQ(links->faces.data(), published_faces);
+    EXPECT_DOUBLE_EQ(links->cells[0].previous_pressure, 7);
+    for (const auto& face : links->faces) {
+      EXPECT_DOUBLE_EQ(face.inverse_density, 0.001);
+      EXPECT_DOUBLE_EQ(face.pressure_gradient_distance, 0.5);
+      EXPECT_DOUBLE_EQ(std::get<DirichletMacPressureLink3D>(face.pressure_link).exterior_pressure, 9);
+    }
+  }
+}
+TEST(LiquidBoundaryWorkspace3D, UnrepresentablePhysicalAreaOrVolumeRejectsEmptyFrozenView) {
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  // Normal h and 1/h are not sufficient: h squared/cubed can underflow or overflow.
+  for (double cell_width : {0x1p-600, 0x1p-520, 0x1p-400, 0x1p-350, 0x1p400, 0x1p600}) {
+    const auto grid = SparseMacGridView3D::Create({{}, cell_width}, {});
+    ASSERT_TRUE(grid.ok());
+    const FrozenLiquidBoundaryGeometryView3D malformed{
+        .mac_grid = *grid,
+        .step_duration = 0.01,
+        .liquid_density = 1000,
+    };
+    const auto rejected = BuildLiquidPressureLinks3D(malformed, {{}, {}, 0}, *workspace);
+    EXPECT_EQ(rejected.status().code(), absl::StatusCode::kOutOfRange);
+    EXPECT_TRUE(rejected.status().message().empty());
+  }
+}
+TEST(LiquidBoundaryWorkspace3D, MissingIncidentFacePreservesPublishedPressureLinks) {
+  Fixture fixture;
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(fixture.geometry(), *workspace);
+  ASSERT_TRUE(frozen.ok());
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 0}};
+  const std::array<double, 6> velocities{};
+  const auto links = BuildLiquidPressureLinks3D(*frozen, {fields, velocities, 0}, *workspace);
+  ASSERT_TRUE(links.ok());
+  const auto* published_faces = links->faces.data();
+  auto malformed = *frozen;
+  malformed.faces = frozen->faces.first(5);
+  const auto rejected = BuildLiquidPressureLinks3D(malformed, {fields, std::span(velocities).first(5), 0}, *workspace);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(rejected.status().message().empty());
+  EXPECT_EQ(links->faces.data(), published_faces);
+  ASSERT_EQ(links->faces.size(), 6);
+  EXPECT_DOUBLE_EQ(links->faces.back().inverse_density, 0.001);
+}
+TEST(LiquidBoundaryWorkspace3D, ExtraSealedFaceAtMinimumSignedIndexIsNotAnIncidentUnion) {
+  constexpr auto minimum_index = std::numeric_limits<std::int32_t>::min();
+  constexpr std::array blocks{BlockIndex3D{minimum_index / 4, 0, 0}};
+  const auto grid = SparseMacGridView3D::Create({{}, 1}, blocks);
+  ASSERT_TRUE(grid.ok());
+  const FaceIndex3D face{FaceNormalAxis::kX, {minimum_index, 0, 0}};
+  const auto slot = grid->FaceSlot(face);
+  ASSERT_TRUE(slot.ok());
+  const std::array faces{FrozenLiquidFace3D{face, *slot, 0, 1, 0}};
+  const FrozenLiquidBoundaryGeometryView3D malformed{
+      .mac_grid = *grid,
+      .faces = faces,
+      .step_duration = 0.01,
+      .liquid_density = 1000,
+  };
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const std::array<double, 1> velocities{};
+  const auto rejected = BuildLiquidPressureLinks3D(malformed, {{}, velocities, 0}, *workspace);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(rejected.status().message().empty());
+}
+TEST(LiquidBoundaryWorkspace3D, SealedIncidentLowFaceAtMinimumSignedIndexRemainsValidAndRequired) {
+  constexpr auto minimum_index = std::numeric_limits<std::int32_t>::min();
+  constexpr std::array blocks{BlockIndex3D{minimum_index / 4, 0, 0}};
+  const auto grid = SparseMacGridView3D::Create({{2147483648.0, 0, 0}, 1}, blocks);
+  ASSERT_TRUE(grid.ok());
+  const std::array candidates{CellIndex3D{minimum_index, 1, 1}};
+  std::vector<LiquidCenterDistance3D> centers;
+  std::vector<LiquidCornerDistance3D> corners;
+  for (int z = 0; z < 3; ++z) {
+    for (int y = 0; y < 3; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        centers.push_back({{minimum_index + x, y, z}, x == 0 && y == 1 && z == 1 ? -0.5 : 0.5});
+        corners.push_back({{minimum_index + x, y, z}, -1});
+      }
+    }
+  }
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(
+      {
+          .mac_grid = *grid,
+          .cell_indices = candidates,
+          .center_distances = centers,
+          .corner_distances = corners,
+          .obstacle = TranslatingHalfspace3D{{1, 0, 0}, 0.25, {}},
+          .step_duration = 0.01,
+          .liquid_density = 1000,
+      },
+      *workspace
+  );
+  ASSERT_TRUE(frozen.ok());
+  ASSERT_EQ(frozen->faces.size(), 6);
+  EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 0.75);
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 0}};
+  const std::array<double, 6> velocities{};
+  const auto links = BuildLiquidPressureLinks3D(*frozen, {fields, velocities, 2}, *workspace);
+  ASSERT_TRUE(links.ok()) << links.status();
+  EXPECT_TRUE(std::holds_alternative<SealedMacPressureLink3D>(links->faces[0].pressure_link));
+  EXPECT_DOUBLE_EQ(links->faces[0].open_area, 0);
+  auto malformed = *frozen;
+  malformed.faces = frozen->faces.subspan(1);
+  EXPECT_EQ(
+      BuildLiquidPressureLinks3D(malformed, {fields, std::span(velocities).subspan(1), 2}, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
 boundary_transfer_test::TransferCases BoundedTransferCases(LiquidBoundaryWorkspace3D& workspace) {
   return {
       [&workspace](const LiquidBoundaryDepositInputs3D& inputs) -> absl::StatusOr<LiquidBoundaryFaceDeposits3D> {
@@ -301,7 +434,7 @@ boundary_transfer_test::TransferCases BoundedTransferCases(LiquidBoundaryWorkspa
         }
         return LiquidBoundaryFaceDeposits3D{
             {result->face_quanta.begin(), result->face_quanta.end()},
-            {result->compatible_stencils.begin(), result->compatible_stencils.end()}
+            {result->compatible_stencils.begin(), result->compatible_stencils.end()},
         };
       },
       [&workspace](
@@ -316,17 +449,19 @@ boundary_transfer_test::TransferCases BoundedTransferCases(LiquidBoundaryWorkspa
         return NormalizedLiquidMacFaces3D{
             {result->face_masses.begin(), result->face_masses.end()},
             {result->face_velocities.begin(), result->face_velocities.end()},
-            {result->validity.begin(), result->validity.end()}
+            {result->validity.begin(), result->validity.end()},
         };
       },
       [&workspace](const LiquidBoundaryGatherInputs3D& inputs) -> absl::StatusOr<LiquidBoundaryGatherResults3D> {
         const auto result = GatherLiquidBoundaryParticles3D(
-            {inputs.mac_grid.view(),
-             inputs.particles,
-             inputs.old_time,
-             inputs.new_time,
-             inputs.old_history,
-             inputs.new_history},
+            {
+                .mac_grid = inputs.mac_grid.view(),
+                .particles = inputs.particles,
+                .old_time = inputs.old_time,
+                .new_time = inputs.new_time,
+                .old_history = inputs.old_history,
+                .new_history = inputs.new_history,
+            },
             workspace
         );
         if (!result.ok()) {
@@ -646,6 +781,64 @@ TEST(LiquidBoundaryWorkspace3D, GhostAndLateRejectedAttemptsDoNotAllocateOrDestr
   EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 1);
   EXPECT_EQ(deposited->face_quanta[missing_slot].mass_quanta_sum, std::int64_t{3} << 27);
   EXPECT_DOUBLE_EQ(normalized->face_masses[missing_slot], 0.375);
+}
+TEST(LiquidBoundaryWorkspace3D, RejectedFrozenViewInvariantsHaveNoHeapActivityIncludingDestruction) {
+  Fixture fixture;
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(fixture.geometry(), *workspace);
+  ASSERT_TRUE(frozen.ok());
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 0}};
+  const std::array<double, 6> velocities{};
+  const auto links = BuildLiquidPressureLinks3D(*frozen, {fields, velocities, 0}, *workspace);
+  ASSERT_TRUE(links.ok());
+  const auto* published_faces = links->faces.data();
+  const auto small_grid = SparseMacGridView3D::Create({{}, 0x1p-400}, {});
+  ASSERT_TRUE(small_grid.ok());
+  constexpr auto minimum_index = std::numeric_limits<std::int32_t>::min();
+  constexpr std::array blocks{BlockIndex3D{minimum_index / 4, 0, 0}};
+  const auto minimum_grid = SparseMacGridView3D::Create({{}, 1}, blocks);
+  ASSERT_TRUE(minimum_grid.ok());
+  const std::array extra_faces{FrozenLiquidFace3D{{FaceNormalAxis::kX, {minimum_index, 0, 0}}, 0, 0, 1, 0}};
+  const std::array<double, 1> extra_velocities{};
+  std::array<absl::StatusCode, 5> codes{};
+  allocations = 0;
+  frees = 0;
+  previous_hook = _CrtSetAllocHook(AllocationHook);
+  {
+    auto malformed = *frozen;
+    malformed.liquid_density = std::numeric_limits<double>::denorm_min();
+    auto rejected = BuildLiquidPressureLinks3D(malformed, {fields, velocities, 0}, *workspace);
+    codes[0] = rejected.status().code();
+    malformed.liquid_density = std::numeric_limits<double>::max();
+    rejected = BuildLiquidPressureLinks3D(malformed, {fields, velocities, 0}, *workspace);
+    codes[1] = rejected.status().code();
+    malformed = *frozen;
+    malformed.faces = frozen->faces.first(5);
+    rejected = BuildLiquidPressureLinks3D(malformed, {fields, std::span(velocities).first(5), 0}, *workspace);
+    codes[2] = rejected.status().code();
+    malformed.mac_grid = *small_grid;
+    malformed.cells = {};
+    malformed.faces = {};
+    rejected = BuildLiquidPressureLinks3D(malformed, {{}, {}, 0}, *workspace);
+    codes[3] = rejected.status().code();
+    malformed.mac_grid = *minimum_grid;
+    malformed.faces = extra_faces;
+    rejected = BuildLiquidPressureLinks3D(malformed, {{}, extra_velocities, 0}, *workspace);
+    codes[4] = rejected.status().code();
+  }
+  _CrtSetAllocHook(previous_hook);
+  EXPECT_EQ(allocations, 0);
+  EXPECT_EQ(frees, 0);
+  EXPECT_EQ(codes[0], absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(codes[1], absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(codes[2], absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(codes[3], absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(codes[4], absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(links->faces.data(), published_faces);
+  for (const auto& face : links->faces) {
+    EXPECT_DOUBLE_EQ(face.inverse_density, 0.001);
+  }
 }
 TEST(LiquidBoundaryWorkspace3D, ActualPartialReservationFailureHasNoSecondaryErrorAllocation) {
   allocations = 0;

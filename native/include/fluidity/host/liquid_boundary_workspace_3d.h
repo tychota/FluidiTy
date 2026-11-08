@@ -114,7 +114,9 @@ class LiquidBoundaryWorkspace3D {
   // face union <= faces. Rejections leave the last geometry region intact.
   absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> Freeze(const LiquidBoundaryGeometryViewInputs3D& inputs);
   // Builds typed links from a live frozen view and finite pressure fields, with
-  // the owning API's units/statuses. Checks view metadata before signed access.
+  // the owning API's units/statuses. Checks view metadata and the exact incident
+  // union before signed access/publication. Nonnormal full-cell area/volume or
+  // density reciprocal returns code-only OutOfRange.
   absl::StatusOr<LiquidPressureProblemView3D>
   BuildLinks(const FrozenLiquidBoundaryGeometryView3D& geometry, const LiquidPressureFields3D& fields);
   // Deposits compatible integer mass/pure momentum using the owning API's exact
