@@ -42,14 +42,14 @@ inline absl::Status CheckCuda(cudaError_t error, const char* operation) {
 // Owns one call's device buffers, stream and events. Callers keep host upload
 // storage alive through destruction and combine cleanup_status with the execution
 // status before publishing any staged data.
-class OperatorRuntime {
+class CudaOperatorRuntime {
  public:
-  explicit OperatorRuntime(absl::Status& cleanup_status) : cleanup_status_(cleanup_status) {
+  explicit CudaOperatorRuntime(absl::Status& cleanup_status) : cleanup_status_(cleanup_status) {
   }
-  OperatorRuntime(const OperatorRuntime&) = delete;
-  OperatorRuntime& operator=(const OperatorRuntime&) = delete;
+  CudaOperatorRuntime(const CudaOperatorRuntime&) = delete;
+  CudaOperatorRuntime& operator=(const CudaOperatorRuntime&) = delete;
 
-  ~OperatorRuntime() noexcept {
+  ~CudaOperatorRuntime() noexcept {
     // Early errors can occur while uploads or a kernel are still in flight.
     if (stream_ != nullptr) {
       cleanup_status_.Update(CheckCuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize (cleanup)"));
@@ -158,12 +158,12 @@ class OperatorRuntime {
     return CheckCuda(cudaMemsetAsync(device_buffer, 0, element_count * sizeof(T), stream_), "cudaMemsetAsync");
   }
 
-  absl::Status BeginKernel() {
+  absl::Status RecordKernelStart() {
     return CheckCuda(cudaEventRecord(kernel_start_, stream_), "cudaEventRecord (start)");
   }
 
   // Completes all work on the stream before any result is read by the host.
-  absl::Status FinishKernel() {
+  absl::Status SynchronizeAndMeasureKernel() {
     if (auto status = CheckCuda(cudaEventRecord(kernel_end_, stream_), "cudaEventRecord (end)"); !status.ok()) {
       return status;
     }
@@ -173,7 +173,7 @@ class OperatorRuntime {
     return CheckCuda(cudaEventElapsedTime(&kernel_ms_, kernel_start_, kernel_end_), "cudaEventElapsedTime");
   }
 
-  // Call only after FinishKernel has synchronized the stream.
+  // Call only after SynchronizeAndMeasureKernel has synchronized the stream.
   template <typename T>
   absl::Status Download(const T* device_buffer, std::span<T> host_values) {
     if (host_values.empty()) {
@@ -186,7 +186,7 @@ class OperatorRuntime {
   }
 
   // The marker must be written by the kernel image that just executed.
-  absl::StatusOr<CudaOperatorMeasurement> Measurement(int compiled_architecture) const {
+  absl::StatusOr<CudaOperatorMeasurement> ValidateKernelMeasurement(int compiled_architecture) const {
     if (compiled_architecture != device_architecture_) {
       return absl::FailedPreconditionError("CUDA operator image architecture differs from device architecture");
     }

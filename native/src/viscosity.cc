@@ -163,22 +163,22 @@ absl::Status AccumulateStrainRow(
       continue;
     }
     if (wall_strain != 0.0) {
-      const double contribution = ScaledProduct(quadrature, row_coefficient, wall_strain);
-      if (!std::isnormal(contribution)) {
+      const double wall_load_contribution = ScaledProduct(quadrature, row_coefficient, wall_strain);
+      if (!std::isnormal(wall_load_contribution)) {
         return absl::OutOfRangeError("wall load term is outside normal double range");
       }
-      wall_load[face_row] += contribution;
+      wall_load[face_row] += wall_load_contribution;
     }
     for (std::size_t face_column = 0; face_column <= face_row; ++face_column) {
       const double column_coefficient = strain_coefficients[face_column];
       if (column_coefficient == 0.0) {
         continue;
       }
-      const double contribution = ScaledProduct(quadrature, row_coefficient, column_coefficient);
-      if (!std::isnormal(contribution)) {
+      const double stiffness_coefficient_contribution = ScaledProduct(quadrature, row_coefficient, column_coefficient);
+      if (!std::isnormal(stiffness_coefficient_contribution)) {
         return absl::OutOfRangeError("viscous stiffness term is outside normal double range");
       }
-      stiffness[face_row * columns + face_column] += contribution;
+      stiffness[face_row * columns + face_column] += stiffness_coefficient_contribution;
     }
   }
   return absl::OkStatus();
@@ -256,7 +256,7 @@ absl::Status ApplyForwardEuler(
     const ViscosityInputsView& inputs,
     std::span<const double> stiffness,
     std::span<const double> wall_load,
-    std::span<double> next_velocity
+    std::span<double> updated_face_velocities
 ) {
   const std::size_t columns = inputs.face_velocities.size();
   for (std::size_t row = 0; row < columns; ++row) {
@@ -272,7 +272,7 @@ absl::Status ApplyForwardEuler(
     if (!std::isfinite(velocity_increment)) {
       return absl::OutOfRangeError("explicit viscous increment is nonfinite");
     }
-    next_velocity[row] = inputs.face_velocities[row] + velocity_increment;
+    updated_face_velocities[row] = inputs.face_velocities[row] + velocity_increment;
   }
   return absl::OkStatus();
 }
@@ -280,18 +280,19 @@ absl::Status ApplyForwardEuler(
 // Assemble I + dt S in place, preserving the symmetry of the mass-scaled system.
 // Its largest diagonal sets the scale of attenuation through the solve.
 absl::StatusOr<double>
-BuildImplicitSystem(double dt, std::span<double> system_matrix, std::span<const double> sqrt_mass) {
+BuildImplicitSystem(double step_duration, std::span<double> system_matrix, std::span<const double> sqrt_mass) {
   const std::size_t columns = sqrt_mass.size();
   double largest_diagonal = 1.0;
   for (std::size_t row = 0; row < columns; ++row) {
     for (std::size_t column = 0; column <= row; ++column) {
-      const double stiffness = system_matrix[row * columns + column];
-      const double mass_scaled = MassScaledStiffness(stiffness, sqrt_mass[row], sqrt_mass[column]);
-      const double step_coefficient = dt * mass_scaled;
-      if (stiffness != 0.0 && !std::isnormal(step_coefficient)) {
+      const double stiffness_coefficient = system_matrix[row * columns + column];
+      const double mass_scaled_stiffness_coefficient =
+          MassScaledStiffness(stiffness_coefficient, sqrt_mass[row], sqrt_mass[column]);
+      const double step_scaled_stiffness_coefficient = step_duration * mass_scaled_stiffness_coefficient;
+      if (stiffness_coefficient != 0.0 && !std::isnormal(step_scaled_stiffness_coefficient)) {
         return absl::OutOfRangeError("implicit viscous stiffness is outside normal double range");
       }
-      double system_coefficient = step_coefficient;
+      double system_coefficient = step_scaled_stiffness_coefficient;
       if (row == column) {
         system_coefficient += 1.0;
         largest_diagonal = std::max(largest_diagonal, system_coefficient);
@@ -423,7 +424,7 @@ absl::Status ApplyBackwardEuler(
     std::span<const double> wall_load,
     std::span<const double> sqrt_mass,
     std::span<double> solve_rhs,
-    std::span<double> next_velocity,
+    std::span<double> implicit_solution_storage,
     SmallSolveWorkspace& solve
 ) {
   const auto largest_diagonal = BuildImplicitSystem(inputs.dt, system_matrix, sqrt_mass);
@@ -438,16 +439,16 @@ absl::Status ApplyBackwardEuler(
   if (!staged.ok()) {
     return staged;
   }
-  const auto solved = SolveSmallSpd(system_matrix, solve_rhs, next_velocity, solve);
+  const auto solved = SolveSmallSpd(system_matrix, solve_rhs, implicit_solution_storage, solve);
   if (!solved.ok()) {
     return solved;
   }
-  return RestoreImplicitVelocity(system_matrix, solve_rhs, sqrt_mass, *rhs_shift, next_velocity);
+  return RestoreImplicitVelocity(system_matrix, solve_rhs, sqrt_mass, *rhs_shift, implicit_solution_storage);
 }
 
 absl::Status ComputeEnergyAndWallWork(
     const ViscosityInputsView& inputs,
-    std::span<const double> next_velocity,
+    std::span<const double> updated_face_velocities,
     std::span<const double> wall_load,
     std::span<const double> sqrt_mass,
     ViscosityDiagnostics& diagnostics
@@ -456,20 +457,20 @@ absl::Status ComputeEnergyAndWallWork(
   // its energy balance subtracts half the squared mass norm of the increment.
   // Backward Euler uses the new velocity and adds that same increment energy.
   const bool explicit_step = diagnostics.method == ViscosityMethod::kExplicit;
-  for (std::size_t face = 0; face < next_velocity.size(); ++face) {
-    if (!std::isfinite(next_velocity[face])) {
+  for (std::size_t face = 0; face < updated_face_velocities.size(); ++face) {
+    if (!std::isfinite(updated_face_velocities[face])) {
       return absl::OutOfRangeError("updated viscous velocity is nonfinite");
     }
     const double old_weighted_velocity = sqrt_mass[face] * inputs.face_velocities[face];
-    const double new_weighted_velocity = sqrt_mass[face] * next_velocity[face];
-    const double velocity_increment = next_velocity[face] - inputs.face_velocities[face];
+    const double new_weighted_velocity = sqrt_mass[face] * updated_face_velocities[face];
+    const double velocity_increment = updated_face_velocities[face] - inputs.face_velocities[face];
     const bool unweighted_increment_fits = std::isfinite(velocity_increment);
     // Subtract first to retain small changes. If opposite large velocities
     // overflow the subtraction, apply the mass metric before subtracting.
     const double weighted_increment = unweighted_increment_fits ? sqrt_mass[face] * velocity_increment
                                                                 : new_weighted_velocity - old_weighted_velocity;
 
-    const double work_velocity = explicit_step ? inputs.face_velocities[face] : next_velocity[face];
+    const double work_velocity = explicit_step ? inputs.face_velocities[face] : updated_face_velocities[face];
 
     diagnostics.energy_before = std::fma(0.5 * old_weighted_velocity, old_weighted_velocity, diagnostics.energy_before);
     diagnostics.energy_after = std::fma(0.5 * new_weighted_velocity, new_weighted_velocity, diagnostics.energy_after);

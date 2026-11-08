@@ -33,8 +33,11 @@ __device__ double IntegratedFaceFlux(
   return face_coefficients.open_area * fluid_face_velocity + face_coefficients.wall_area * wall_face_velocity;
 }
 
-__device__ void
-AccumulateOutward(const PressureFaceInput& pressure_face, double oriented_face_flux, double* outward_cell_fluxes) {
+__device__ void AccumulateOutwardFaceFlux(
+    const PressureFaceInput& pressure_face,
+    double oriented_face_flux,
+    double* outward_cell_fluxes
+) {
   if (pressure_face.tail_cell_index >= 0) {
     outward_cell_fluxes[pressure_face.tail_cell_index] += oriented_face_flux;
   }
@@ -63,7 +66,7 @@ __device__ PressureKernelError AssembleOriginalSystem(
     face_coefficients.wall_area = pressure_face.face_area - open_face_area;
     const double predicted_face_flux =
         IntegratedFaceFlux(face_coefficients, pressure_face.predicted_face_velocity, pressure_face.wall_face_velocity);
-    AccumulateOutward(pressure_face, predicted_face_flux, predicted_outward_fluxes);
+    AccumulateOutwardFaceFlux(pressure_face, predicted_face_flux, predicted_outward_fluxes);
 
     const bool has_tail_cell = pressure_face.tail_cell_index >= 0;
     const bool has_head_cell = pressure_face.head_cell_index >= 0;
@@ -80,7 +83,7 @@ __device__ PressureKernelError AssembleOriginalSystem(
     }
     face_coefficients.pressure_to_velocity_scale = face_pressure_to_velocity_scale;
     const double jump_flux_lift = face_conductance * pressure_face.oriented_pressure_jump;
-    AccumulateOutward(pressure_face, jump_flux_lift, jump_flux_lifts);
+    AccumulateOutwardFaceFlux(pressure_face, jump_flux_lift, jump_flux_lifts);
     if (is_internal_face) {
       const auto tail_cell_index = static_cast<std::size_t>(pressure_face.tail_cell_index);
       const auto head_cell_index = static_cast<std::size_t>(pressure_face.head_cell_index);
@@ -94,7 +97,7 @@ __device__ PressureKernelError AssembleOriginalSystem(
       face_coefficients.signed_dirichlet_pressure =
           has_tail_cell ? pressure_face.dirichlet_pressure : -pressure_face.dirichlet_pressure;
       const double dirichlet_flux_lift = face_conductance * face_coefficients.signed_dirichlet_pressure;
-      AccumulateOutward(pressure_face, dirichlet_flux_lift, dirichlet_flux_lifts);
+      AccumulateOutwardFaceFlux(pressure_face, dirichlet_flux_lift, dirichlet_flux_lifts);
       pressure_result.original_matrix[boundary_cell_index * cell_count + boundary_cell_index] += face_conductance;
       pressure_workspace.cell_has_pressure_anchor[boundary_cell_index] = true;
     }
@@ -154,13 +157,13 @@ __device__ PressureKernelError SelectGauges(
   for (std::size_t cell_index = 0; cell_index < cell_count; ++cell_index) {
     for (std::size_t neighbor_cell_index = cell_index + 1; neighbor_cell_index < cell_count; ++neighbor_cell_index) {
       if (pressure_result.original_matrix[cell_index * cell_count + neighbor_cell_index] < 0.0) {
-        const std::size_t cell_root_index = FindComponentRootCellIndex(parent_cell_indices, cell_index);
+        const std::size_t current_root_cell_index = FindComponentRootCellIndex(parent_cell_indices, cell_index);
         const std::size_t neighbor_root_cell_index =
             FindComponentRootCellIndex(parent_cell_indices, neighbor_cell_index);
         const std::size_t lower_root_cell_index =
-            cell_root_index < neighbor_root_cell_index ? cell_root_index : neighbor_root_cell_index;
+            current_root_cell_index < neighbor_root_cell_index ? current_root_cell_index : neighbor_root_cell_index;
         const std::size_t upper_root_cell_index =
-            cell_root_index < neighbor_root_cell_index ? neighbor_root_cell_index : cell_root_index;
+            current_root_cell_index < neighbor_root_cell_index ? neighbor_root_cell_index : current_root_cell_index;
         parent_cell_indices[upper_root_cell_index] = lower_root_cell_index;
       }
     }
@@ -291,7 +294,7 @@ __device__ PressureKernelError CorrectVelocityAndEvaluateDefects(
     pressure_result.corrected_face_velocities[face_index] = corrected_face_velocity;
     const double corrected_face_flux =
         IntegratedFaceFlux(face_coefficients, corrected_face_velocity, pressure_face.wall_face_velocity);
-    AccumulateOutward(pressure_face, corrected_face_flux, corrected_outward_fluxes);
+    AccumulateOutwardFaceFlux(pressure_face, corrected_face_flux, corrected_outward_fluxes);
   }
 
   const std::size_t cell_count = pressure_inputs.cell_count;

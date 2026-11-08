@@ -227,28 +227,31 @@ double IntegratedFaceFlux(const FaceLink& face, double fluid_velocity, double wa
   return face.open_area * fluid_velocity + face.wall_area * wall_velocity;
 }
 
-void AccumulateOutward(const FaceLink& face, double face_value, std::span<double> cell_values) {
+void AccumulateOutwardFaceFlux(const FaceLink& face, double oriented_face_flux, std::span<double> outward_cell_fluxes) {
   if (face.tail >= 0) {
-    cell_values[static_cast<std::size_t>(face.tail)] += face_value;
+    outward_cell_fluxes[static_cast<std::size_t>(face.tail)] += oriented_face_flux;
   }
   if (face.head >= 0) {
-    cell_values[static_cast<std::size_t>(face.head)] -= face_value;
+    outward_cell_fluxes[static_cast<std::size_t>(face.head)] -= oriented_face_flux;
   }
 }
 
 // Assemble A = R diag(k) R^T + C and b in integrated flux units.
-absl::Status
-AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchored_cells, PressureWorkspace& workspace) {
-  const std::size_t cell_count = anchored_cells.size();
-  auto matrix = std::span(workspace.original_matrix).first(cell_count * cell_count);
-  auto rhs = std::span(workspace.rhs).first(cell_count);
-  std::ranges::fill(matrix, 0.0);
+absl::Status AssembleOriginalSystem(
+    const PressureInputsView& inputs,
+    std::span<bool> cell_has_pressure_anchor,
+    PressureWorkspace& workspace
+) {
+  const std::size_t cell_count = cell_has_pressure_anchor.size();
+  auto original_matrix = std::span(workspace.original_matrix).first(cell_count * cell_count);
+  auto original_rhs = std::span(workspace.rhs).first(cell_count);
+  std::ranges::fill(original_matrix, 0.0);
 
   // Keep the three incidence products separate. Balance source and predicted flux
   // before adding the pressure lifts so cancellation preserves small contributions.
-  std::array<double, kMaxPressureCells> predicted_outward_flux{};
-  std::array<double, kMaxPressureCells> jump_flux_lift{};
-  std::array<double, kMaxPressureCells> dirichlet_flux_lift{};
+  std::array<double, kMaxPressureCells> predicted_outward_fluxes{};
+  std::array<double, kMaxPressureCells> jump_flux_lifts{};
+  std::array<double, kMaxPressureCells> dirichlet_flux_lifts{};
 
   for (std::size_t face_index = 0; face_index < inputs.predicted_face_velocities.size(); ++face_index) {
     const auto face = BuildFaceLink(inputs, face_index);
@@ -256,121 +259,130 @@ AssembleOriginalSystem(const PressureInputsView& inputs, std::span<bool> anchore
       return face.status();
     }
     workspace.faces[face_index] = *face;
-    const double conductance = face->conductance;
-    const double flux = IntegratedFaceFlux(
+    const double face_conductance = face->conductance;
+    const double predicted_face_flux = IntegratedFaceFlux(
         *face,
         inputs.predicted_face_velocities[face_index],
         inputs.wall_face_velocities[face_index]
     );
-    AccumulateOutward(*face, flux, predicted_outward_flux);
-    AccumulateOutward(*face, conductance * inputs.face_pressure_jumps[face_index], jump_flux_lift);
+    AccumulateOutwardFaceFlux(*face, predicted_face_flux, predicted_outward_fluxes);
+    AccumulateOutwardFaceFlux(*face, face_conductance * inputs.face_pressure_jumps[face_index], jump_flux_lifts);
     // A Dirichlet column has only one incidence, which squares its sign in the lift.
-    AccumulateOutward(*face, conductance * face->signed_boundary_pressure, dirichlet_flux_lift);
+    AccumulateOutwardFaceFlux(*face, face_conductance * face->signed_boundary_pressure, dirichlet_flux_lifts);
 
-    if (conductance == 0.0) {
+    if (face_conductance == 0.0) {
       continue;
     }
     if (IsInternal(*face)) {
-      const auto tail = static_cast<std::size_t>(face->tail);
-      const auto head = static_cast<std::size_t>(face->head);
-      matrix[tail * cell_count + tail] += conductance;
-      matrix[head * cell_count + head] += conductance;
-      matrix[tail * cell_count + head] -= conductance;
-      matrix[head * cell_count + tail] -= conductance;
+      const auto tail_cell_index = static_cast<std::size_t>(face->tail);
+      const auto head_cell_index = static_cast<std::size_t>(face->head);
+      original_matrix[tail_cell_index * cell_count + tail_cell_index] += face_conductance;
+      original_matrix[head_cell_index * cell_count + head_cell_index] += face_conductance;
+      original_matrix[tail_cell_index * cell_count + head_cell_index] -= face_conductance;
+      original_matrix[head_cell_index * cell_count + tail_cell_index] -= face_conductance;
     } else {
-      const auto cell = static_cast<std::size_t>(face->tail >= 0 ? face->tail : face->head);
-      matrix[cell * cell_count + cell] += conductance;
-      anchored_cells[cell] = true;
+      const auto boundary_cell_index = static_cast<std::size_t>(face->tail >= 0 ? face->tail : face->head);
+      original_matrix[boundary_cell_index * cell_count + boundary_cell_index] += face_conductance;
+      cell_has_pressure_anchor[boundary_cell_index] = true;
     }
   }
 
-  for (std::size_t cell = 0; cell < cell_count; ++cell) {
-    const double bulk_modulus = inputs.cell_bulk_moduli[cell];
+  for (std::size_t cell_index = 0; cell_index < cell_count; ++cell_index) {
+    const double cell_bulk_modulus = inputs.cell_bulk_moduli[cell_index];
     double bulk_modulus_times_dt = std::numeric_limits<double>::infinity();
-    double compliance = 0.0;
-    if (std::isfinite(bulk_modulus)) {
-      bulk_modulus_times_dt = bulk_modulus * inputs.dt;
+    double cell_compliance = 0.0;
+    if (std::isfinite(cell_bulk_modulus)) {
+      bulk_modulus_times_dt = cell_bulk_modulus * inputs.dt;
       if (!IsFinitePositive(bulk_modulus_times_dt)) {
         return absl::OutOfRangeError("pressure bulk modulus times dt is outside the representable range");
       }
-      compliance = inputs.cell_fluid_volumes[cell] / bulk_modulus_times_dt;
-      if (!IsPositiveNormal(compliance)) {
+      cell_compliance = inputs.cell_fluid_volumes[cell_index] / bulk_modulus_times_dt;
+      if (!IsPositiveNormal(cell_compliance)) {
         return absl::OutOfRangeError("finite-modulus pressure compliance must be a positive normal double");
       }
     }
-    workspace.bulk_modulus_times_dt[cell] = bulk_modulus_times_dt;
-    anchored_cells[cell] = anchored_cells[cell] || compliance > 0.0;
-    matrix[cell * cell_count + cell] += compliance;
-    const double integrated_source = inputs.cell_fluid_volumes[cell] * inputs.target_cell_divergence[cell];
-    rhs[cell] = integrated_source - predicted_outward_flux[cell] - jump_flux_lift[cell] + dirichlet_flux_lift[cell]
-        + compliance * inputs.previous_cell_pressures[cell];
+    workspace.bulk_modulus_times_dt[cell_index] = bulk_modulus_times_dt;
+    cell_has_pressure_anchor[cell_index] = cell_has_pressure_anchor[cell_index] || cell_compliance > 0.0;
+    original_matrix[cell_index * cell_count + cell_index] += cell_compliance;
+    const double integrated_target_flux =
+        inputs.cell_fluid_volumes[cell_index] * inputs.target_cell_divergence[cell_index];
+    original_rhs[cell_index] = integrated_target_flux - predicted_outward_fluxes[cell_index]
+        - jump_flux_lifts[cell_index] + dirichlet_flux_lifts[cell_index]
+        + cell_compliance * inputs.previous_cell_pressures[cell_index];
   }
 
-  if (!std::ranges::all_of(matrix, IsFinite) || !std::ranges::all_of(rhs, IsFinite)) {
+  if (!std::ranges::all_of(original_matrix, IsFinite) || !std::ranges::all_of(original_rhs, IsFinite)) {
     return absl::OutOfRangeError("pressure assembly is outside the representable range");
   }
   return absl::OkStatus();
 }
 
-std::size_t FindComponent(std::span<const std::size_t> parents, std::size_t cell) {
-  while (parents[cell] != cell) {
-    cell = parents[cell];
+std::size_t FindComponentRootCellIndex(std::span<const std::size_t> parent_cell_indices, std::size_t cell_index) {
+  while (parent_cell_indices[cell_index] != cell_index) {
+    cell_index = parent_cell_indices[cell_index];
   }
-  return cell;
+  return cell_index;
 }
 
 // Only positive internal conductance connects cells. Union toward the smaller root
 // so each unanchored component's root is also its deterministic gauge index.
 absl::StatusOr<std::size_t> SelectGauges(
     std::span<const FaceLink> faces,
-    std::span<const bool> anchored_cells,
-    std::span<const double> rhs,
-    std::span<std::size_t> gauges
+    std::span<const bool> cell_has_pressure_anchor,
+    std::span<const double> original_rhs,
+    std::span<std::size_t> gauge_cell_indices
 ) {
-  std::array<std::size_t, kMaxPressureCells> parents;
-  const auto components = std::span(parents).first(rhs.size());
-  std::iota(components.begin(), components.end(), std::size_t{0});
+  std::array<std::size_t, kMaxPressureCells> parent_cell_index_storage;
+  const auto parent_cell_indices = std::span(parent_cell_index_storage).first(original_rhs.size());
+  std::iota(parent_cell_indices.begin(), parent_cell_indices.end(), std::size_t{0});
   for (const FaceLink& face : faces) {
     if (face.conductance > 0.0 && IsInternal(face)) {
-      const std::size_t tail_root = FindComponent(components, static_cast<std::size_t>(face.tail));
-      const std::size_t head_root = FindComponent(components, static_cast<std::size_t>(face.head));
-      components[std::max(tail_root, head_root)] = std::min(tail_root, head_root);
+      const std::size_t tail_root_cell_index =
+          FindComponentRootCellIndex(parent_cell_indices, static_cast<std::size_t>(face.tail));
+      const std::size_t head_root_cell_index =
+          FindComponentRootCellIndex(parent_cell_indices, static_cast<std::size_t>(face.head));
+      parent_cell_indices[std::max(tail_root_cell_index, head_root_cell_index)] =
+          std::min(tail_root_cell_index, head_root_cell_index);
     }
   }
 
   struct ComponentBalance {
-    bool anchored = false;
-    double net_rhs = 0.0;
-    double rhs_norm = 0.0;
+    bool has_pressure_anchor = false;
+    double rhs_sum = 0.0;
+    double absolute_rhs_sum = 0.0;
   };
-  std::array<ComponentBalance, kMaxPressureCells> balances;
-  for (std::size_t cell = 0; cell < rhs.size(); ++cell) {
-    const std::size_t root = FindComponent(components, cell);
-    components[cell] = root;
-    balances[root].anchored = balances[root].anchored || anchored_cells[cell];
+  std::array<ComponentBalance, kMaxPressureCells> component_balances;
+  for (std::size_t cell_index = 0; cell_index < original_rhs.size(); ++cell_index) {
+    const std::size_t component_root_cell_index = FindComponentRootCellIndex(parent_cell_indices, cell_index);
+    parent_cell_indices[cell_index] = component_root_cell_index;
+    component_balances[component_root_cell_index].has_pressure_anchor =
+        component_balances[component_root_cell_index].has_pressure_anchor || cell_has_pressure_anchor[cell_index];
   }
-  for (std::size_t cell = 0; cell < rhs.size(); ++cell) {
-    auto& balance = balances[components[cell]];
-    if (!balance.anchored) {
-      balance.net_rhs += rhs[cell];
-      balance.rhs_norm += std::abs(rhs[cell]);
+  for (std::size_t cell_index = 0; cell_index < original_rhs.size(); ++cell_index) {
+    auto& component_balance = component_balances[parent_cell_indices[cell_index]];
+    if (!component_balance.has_pressure_anchor) {
+      component_balance.rhs_sum += original_rhs[cell_index];
+      component_balance.absolute_rhs_sum += std::abs(original_rhs[cell_index]);
     }
   }
 
   std::size_t gauge_count = 0;
-  for (std::size_t root = 0; root < rhs.size(); ++root) {
-    const auto& balance = balances[root];
-    if (components[root] != root || balance.anchored) {
+  for (std::size_t component_root_cell_index = 0; component_root_cell_index < original_rhs.size();
+       ++component_root_cell_index) {
+    const auto& component_balance = component_balances[component_root_cell_index];
+    if (parent_cell_indices[component_root_cell_index] != component_root_cell_index
+        || component_balance.has_pressure_anchor) {
       continue;
     }
-    if (!std::isfinite(balance.net_rhs) || !std::isfinite(balance.rhs_norm)) {
+    if (!std::isfinite(component_balance.rhs_sum) || !std::isfinite(component_balance.absolute_rhs_sum)) {
       return absl::OutOfRangeError("pressure component balance is outside the representable range");
     }
-    const double scale = std::max(balance.rhs_norm, std::numeric_limits<double>::min());
-    if (std::abs(balance.net_rhs) > kCompatibilityTolerance * scale) {
+    const double rhs_compatibility_scale =
+        std::max(component_balance.absolute_rhs_sum, std::numeric_limits<double>::min());
+    if (std::abs(component_balance.rhs_sum) > kCompatibilityTolerance * rhs_compatibility_scale) {
       return absl::FailedPreconditionError("incompatible Neumann pressure component");
     }
-    gauges[gauge_count++] = root;
+    gauge_cell_indices[gauge_count++] = component_root_cell_index;
   }
   return gauge_count;
 }
@@ -415,7 +427,7 @@ absl::Status CorrectVelocityAndAccumulateFlux(const PressureInputsView& inputs, 
     }
     workspace.corrected_face_velocities[face_index] = corrected_face_velocity;
     const double flux = IntegratedFaceFlux(face, corrected_face_velocity, inputs.wall_face_velocities[face_index]);
-    AccumulateOutward(face, flux, corrected_outward_flux);
+    AccumulateOutwardFaceFlux(face, flux, corrected_outward_flux);
   }
   return absl::OkStatus();
 }

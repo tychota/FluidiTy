@@ -15,11 +15,11 @@
 namespace fluidity {
 namespace {
 
-constexpr std::size_t kComponentCount = 2;
-constexpr std::size_t kStencilSize = std::tuple_size_v<decltype(Stencil2D::nodes)>;
+constexpr std::size_t kVelocityComponentCount = 2;
+constexpr std::size_t kTransferStencilSlotCount = std::tuple_size_v<decltype(Stencil2D::nodes)>;
 constexpr std::size_t kDepositDoublesPerFace = 2;
-constexpr std::size_t kMatrixEntryCount = kComponentCount * kComponentCount;
-constexpr std::size_t kGatherDoublesPerParticle = 2 * kComponentCount + 2 * kMatrixEntryCount;
+constexpr std::size_t kMatrixEntryCount = kVelocityComponentCount * kVelocityComponentCount;
+constexpr std::size_t kGatherDoublesPerParticle = 2 * kVelocityComponentCount + 2 * kMatrixEntryCount;
 
 bool IsFinite(Vec2 vector) {
   return std::isfinite(vector.x) && std::isfinite(vector.y);
@@ -35,89 +35,97 @@ double Dot(Vec2 lhs, Vec2 rhs) {
 
 struct FaceStencil {
   Stencil2D basis;
-  std::array<std::size_t, kStencilSize> face_indices;
-  std::array<Vec2, kStencilSize> face_positions;
+  std::array<std::size_t, kTransferStencilSlotCount> face_indices;
+  std::array<Vec2, kTransferStencilSlotCount> face_positions;
 };
 
 // FaceCount has validated the lattice sizes. Check the signed nodes before flattening them,
 // including zero-weight nodes at exact half-cell ties.
-absl::StatusOr<FaceStencil> BuildFaceStencil(const Grid2D& grid, Vec2 position, std::size_t velocity_component) {
-  const Vec2 relative_position = position - grid.origin;
-  if (!IsFinite(relative_position)) {
+absl::StatusOr<FaceStencil>
+BuildFaceStencil(const Grid2D& mac_grid, Vec2 particle_world_position, std::size_t velocity_component_index) {
+  const Vec2 particle_position_from_origin = particle_world_position - mac_grid.origin;
+  if (!IsFinite(particle_position_from_origin)) {
     return absl::OutOfRangeError("position relative to grid origin is nonfinite");
   }
-  const bool is_x_normal = velocity_component == 0;
+  const bool is_x_normal = velocity_component_index == 0;
   const Vec2 lattice_offset{
       .x = is_x_normal ? 0.0 : 0.5,
       .y = is_x_normal ? 0.5 : 0.0,
   };
-  const auto basis = QuadraticStencil2D(relative_position, grid.h, lattice_offset);
+  const auto basis = QuadraticStencil2D(particle_position_from_origin, mac_grid.h, lattice_offset);
   if (!basis.ok()) {
     return basis.status();
   }
 
-  const std::int64_t face_column_count = static_cast<std::int64_t>(grid.nx) + (is_x_normal ? 1 : 0);
-  const std::int64_t face_row_count = static_cast<std::int64_t>(grid.ny) + (is_x_normal ? 0 : 1);
-  const std::size_t orientation_face_offset = is_x_normal ? 0 : (static_cast<std::size_t>(grid.nx) + 1) * grid.ny;
+  const std::int64_t face_column_count = static_cast<std::int64_t>(mac_grid.nx) + (is_x_normal ? 1 : 0);
+  const std::int64_t face_row_count = static_cast<std::int64_t>(mac_grid.ny) + (is_x_normal ? 0 : 1);
+  const std::size_t orientation_face_offset =
+      is_x_normal ? 0 : (static_cast<std::size_t>(mac_grid.nx) + 1) * mac_grid.ny;
   FaceStencil stencil;
   stencil.basis = *basis;
-  for (std::size_t stencil_slot = 0; stencil_slot < stencil.face_indices.size(); ++stencil_slot) {
-    const Node2D node = basis->nodes[stencil_slot];
-    const bool node_on_face_lattice =
-        node.x >= 0 && node.y >= 0 && node.x < face_column_count && node.y < face_row_count;
+  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_indices.size(); ++stencil_slot_index) {
+    const Node2D lattice_node = basis->nodes[stencil_slot_index];
+    const bool node_on_face_lattice = lattice_node.x >= 0 && lattice_node.y >= 0 && lattice_node.x < face_column_count
+        && lattice_node.y < face_row_count;
     if (!node_on_face_lattice) {
       return absl::InvalidArgumentError("particle does not have complete MAC support");
     }
     const std::size_t face_index = orientation_face_offset
-        + static_cast<std::size_t>(node.y) * static_cast<std::size_t>(face_column_count)
-        + static_cast<std::size_t>(node.x);
-    const auto geometry = FaceGeometry(grid, face_index);
-    if (!geometry.ok()) {
-      return geometry.status();
+        + static_cast<std::size_t>(lattice_node.y) * static_cast<std::size_t>(face_column_count)
+        + static_cast<std::size_t>(lattice_node.x);
+    const auto face_geometry = FaceGeometry(mac_grid, face_index);
+    if (!face_geometry.ok()) {
+      return face_geometry.status();
     }
-    stencil.face_indices[stencil_slot] = face_index;
-    stencil.face_positions[stencil_slot] = geometry->position;
+    stencil.face_indices[stencil_slot_index] = face_index;
+    stencil.face_positions[stencil_slot_index] = face_geometry->position;
   }
   return stencil;
 }
 
 // With a partition of unity, subtracting this mean offset makes the weighted first moment
 // vanish. The same centering is used in the deposition velocity and the affine fit.
-absl::StatusOr<Vec2> WeightedOffsetMean(Vec2 position, std::span<const Vec2> samples, std::span<const double> weights) {
-  Vec2 mean{};
-  for (std::size_t sample = 0; sample < samples.size(); ++sample) {
-    const Vec2 offset = samples[sample] - position;
-    mean = mean + offset * weights[sample];
+absl::StatusOr<Vec2> WeightedOffsetMean(
+    Vec2 reference_position,
+    std::span<const Vec2> sample_positions,
+    std::span<const double> sample_weights
+) {
+  Vec2 weighted_offset_mean{};
+  for (std::size_t sample_index = 0; sample_index < sample_positions.size(); ++sample_index) {
+    const Vec2 sample_offset = sample_positions[sample_index] - reference_position;
+    weighted_offset_mean = weighted_offset_mean + sample_offset * sample_weights[sample_index];
   }
-  if (!IsFinite(mean)) {
+  if (!IsFinite(weighted_offset_mean)) {
     return absl::OutOfRangeError("weighted offset mean is nonfinite");
   }
-  return mean;
+  return weighted_offset_mean;
 }
 
 // Deposit one complete component stencil into batch scratch. Centering the affine term
 // makes its weighted linear momentum zero while preserving its contribution to torque.
 absl::Status DepositComponent(
     const FaceStencil& stencil,
-    Vec2 position,
-    double mass,
-    double velocity,
-    Vec2 affine_row,
-    std::span<double> staged_mass,
-    std::span<double> staged_momentum
+    Vec2 particle_world_position,
+    double particle_mass,
+    double particle_velocity_component,
+    Vec2 velocity_fit_slope_row,
+    std::span<double> staged_face_masses,
+    std::span<double> staged_face_pure_momenta
 ) {
-  const auto mean_offset = WeightedOffsetMean(position, stencil.face_positions, stencil.basis.weights);
-  if (!mean_offset.ok()) {
-    return mean_offset.status();
+  const auto weighted_face_offset_mean =
+      WeightedOffsetMean(particle_world_position, stencil.face_positions, stencil.basis.weights);
+  if (!weighted_face_offset_mean.ok()) {
+    return weighted_face_offset_mean.status();
   }
-  for (std::size_t stencil_slot = 0; stencil_slot < stencil.face_indices.size(); ++stencil_slot) {
-    const std::size_t face_index = stencil.face_indices[stencil_slot];
-    const Vec2 centered_offset = (stencil.face_positions[stencil_slot] - position) - *mean_offset;
-    const double deposited_velocity = velocity + Dot(affine_row, centered_offset);
-    const double mass_contribution = stencil.basis.weights[stencil_slot] * mass;
-    staged_mass[face_index] += mass_contribution;
-    staged_momentum[face_index] += mass_contribution * deposited_velocity;
-    if (!std::isfinite(staged_mass[face_index]) || !std::isfinite(staged_momentum[face_index])) {
+  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_indices.size(); ++stencil_slot_index) {
+    const std::size_t face_index = stencil.face_indices[stencil_slot_index];
+    const Vec2 centered_face_offset =
+        (stencil.face_positions[stencil_slot_index] - particle_world_position) - *weighted_face_offset_mean;
+    const double deposited_velocity = particle_velocity_component + Dot(velocity_fit_slope_row, centered_face_offset);
+    const double mass_contribution = stencil.basis.weights[stencil_slot_index] * particle_mass;
+    staged_face_masses[face_index] += mass_contribution;
+    staged_face_pure_momenta[face_index] += mass_contribution * deposited_velocity;
+    if (!std::isfinite(staged_face_masses[face_index]) || !std::isfinite(staged_face_pure_momenta[face_index])) {
       return absl::OutOfRangeError("deposited mass or momentum is nonfinite");
     }
   }
@@ -203,45 +211,47 @@ absl::StatusOr<Vec2> SolveAffineMoment(double moment_xx, double moment_xy, doubl
   return affine_row;
 }
 
-struct GatheredComponent {
-  double pic;
-  double increment;
-  Vec2 affine_row;
-  Vec2 gradient_row;
+struct GatherComponentResult {
+  double pic_velocity;
+  double grid_velocity_increment;
+  Vec2 velocity_fit_slope_row;
+  Vec2 velocity_gradient_row;
 };
 
 // Both face fields are validated before the batch loop. Old and new values use the same
 // basis and accumulation order so a shared old/new field gives exactly zero increment.
-absl::StatusOr<GatheredComponent> GatherComponent(
+absl::StatusOr<GatherComponentResult> GatherComponent(
     const FaceStencil& stencil,
-    Vec2 position,
+    Vec2 particle_world_position,
     std::span<const double> old_face_velocities,
     std::span<const double> new_face_velocities
 ) {
-  std::array<double, kStencilSize> new_face_velocity_samples;
-  double old_pic_component = 0.0;
-  for (std::size_t sample = 0; sample < new_face_velocity_samples.size(); ++sample) {
-    const std::size_t face = stencil.face_indices[sample];
-    new_face_velocity_samples[sample] = new_face_velocities[face];
-    old_pic_component += stencil.basis.weights[sample] * old_face_velocities[face];
+  std::array<double, kTransferStencilSlotCount> new_face_velocity_samples;
+  double old_pic_velocity = 0.0;
+  for (std::size_t stencil_slot_index = 0; stencil_slot_index < new_face_velocity_samples.size();
+       ++stencil_slot_index) {
+    const std::size_t face_index = stencil.face_indices[stencil_slot_index];
+    new_face_velocity_samples[stencil_slot_index] = new_face_velocities[face_index];
+    old_pic_velocity += stencil.basis.weights[stencil_slot_index] * old_face_velocities[face_index];
   }
-  const auto fit = FitAffine2D(position, stencil.face_positions, stencil.basis.weights, new_face_velocity_samples);
-  if (!fit.ok()) {
-    return fit.status();
+  const auto affine_fit =
+      FitAffine2D(particle_world_position, stencil.face_positions, stencil.basis.weights, new_face_velocity_samples);
+  if (!affine_fit.ok()) {
+    return affine_fit.status();
   }
-  const auto gradient = VelocityGradient2D(new_face_velocity_samples, stencil.basis.gradients);
-  if (!gradient.ok()) {
-    return gradient.status();
+  const auto velocity_gradient_row = VelocityGradient2D(new_face_velocity_samples, stencil.basis.gradients);
+  if (!velocity_gradient_row.ok()) {
+    return velocity_gradient_row.status();
   }
-  const double increment = fit->interpolated_value - old_pic_component;
-  if (!std::isfinite(increment)) {
+  const double grid_velocity_increment = affine_fit->interpolated_value - old_pic_velocity;
+  if (!std::isfinite(grid_velocity_increment)) {
     return absl::OutOfRangeError("grid velocity increment is nonfinite");
   }
-  return GatheredComponent{
-      .pic = fit->interpolated_value,
-      .increment = increment,
-      .affine_row = fit->spatial_slopes,
-      .gradient_row = *gradient,
+  return GatherComponentResult{
+      .pic_velocity = affine_fit->interpolated_value,
+      .grid_velocity_increment = grid_velocity_increment,
+      .velocity_fit_slope_row = affine_fit->spatial_slopes,
+      .velocity_gradient_row = *velocity_gradient_row,
   };
 }
 
@@ -302,46 +312,50 @@ absl::Status P2G(
   }
 
   std::ranges::fill(scratch, 0.0);
-  auto staged_mass = scratch.first(face_count);
-  auto staged_momentum = scratch.last(face_count);
-  for (std::size_t particle = 0; particle < particle_count; ++particle) {
-    const Vec2 position = particles.positions[particle];
-    const double mass = particles.masses[particle];
-    const Vec2 velocity = particles.velocities[particle];
-    const Mat2 affine = particles.velocity_fit_slopes[particle];
-    if (!IsFinite(position) || !IsFinite(velocity) || !IsFinite(affine)) {
+  auto staged_face_masses = scratch.first(face_count);
+  auto staged_face_pure_momenta = scratch.last(face_count);
+  for (std::size_t particle_index = 0; particle_index < particle_count; ++particle_index) {
+    const Vec2 particle_world_position = particles.positions[particle_index];
+    const double particle_mass = particles.masses[particle_index];
+    const Vec2 particle_velocity = particles.velocities[particle_index];
+    const Mat2 particle_velocity_fit_slopes = particles.velocity_fit_slopes[particle_index];
+    if (!IsFinite(particle_world_position) || !IsFinite(particle_velocity) || !IsFinite(particle_velocity_fit_slopes)) {
       return absl::InvalidArgumentError("particle position, velocity and affine fit must be finite");
     }
-    const bool valid_mass = std::isfinite(mass) && mass >= 0.0;
+    const bool valid_mass = std::isfinite(particle_mass) && particle_mass >= 0.0;
     if (!valid_mass) {
       return absl::InvalidArgumentError("particle mass must be finite and nonnegative");
     }
-    const std::array component_velocities{velocity.x, velocity.y};
-    const std::array affine_rows{Vec2{affine.xx, affine.xy}, Vec2{affine.yx, affine.yy}};
+    const std::array component_velocities{particle_velocity.x, particle_velocity.y};
+    const std::array velocity_fit_slope_rows{
+        Vec2{particle_velocity_fit_slopes.xx, particle_velocity_fit_slopes.xy},
+        Vec2{particle_velocity_fit_slopes.yx, particle_velocity_fit_slopes.yy}
+    };
 
-    for (std::size_t component = 0; component < kComponentCount; ++component) {
-      const auto stencil = BuildFaceStencil(grid, position, component);
+    for (std::size_t velocity_component_index = 0; velocity_component_index < kVelocityComponentCount;
+         ++velocity_component_index) {
+      const auto stencil = BuildFaceStencil(grid, particle_world_position, velocity_component_index);
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const auto deposited = DepositComponent(
+      const auto deposit_status = DepositComponent(
           *stencil,
-          position,
-          mass,
-          component_velocities[component],
-          affine_rows[component],
-          staged_mass,
-          staged_momentum
+          particle_world_position,
+          particle_mass,
+          component_velocities[velocity_component_index],
+          velocity_fit_slope_rows[velocity_component_index],
+          staged_face_masses,
+          staged_face_pure_momenta
       );
-      if (!deposited.ok()) {
-        return deposited;
+      if (!deposit_status.ok()) {
+        return deposit_status;
       }
     }
   }
 
   // All particles have complete support and every accumulated face is finite.
-  std::ranges::copy(staged_mass, face_mass.begin());
-  std::ranges::copy(staged_momentum, face_momentum.begin());
+  std::ranges::copy(staged_face_masses, face_mass.begin());
+  std::ranges::copy(staged_face_pure_momenta, face_momentum.begin());
   return absl::OkStatus();
 }
 
@@ -408,7 +422,7 @@ absl::Status G2P(
   }
 
   // Stage the four particle outputs in double slices, independent of Vec2 and Mat2 layout.
-  const std::size_t vector_value_count = kComponentCount * particle_count;
+  const std::size_t vector_value_count = kVelocityComponentCount * particle_count;
   const std::size_t matrix_value_count = kMatrixEntryCount * particle_count;
   auto staged_pic_velocities = gather_scratch.first(vector_value_count);
   auto staged_grid_velocity_increments = gather_scratch.subspan(vector_value_count, vector_value_count);
@@ -419,30 +433,30 @@ absl::Status G2P(
     if (!IsFinite(particle_world_position)) {
       return absl::InvalidArgumentError("particle position must be finite");
     }
-    for (std::size_t velocity_component_index = 0; velocity_component_index < kComponentCount;
+    for (std::size_t velocity_component_index = 0; velocity_component_index < kVelocityComponentCount;
          ++velocity_component_index) {
       const auto stencil = BuildFaceStencil(mac_grid, particle_world_position, velocity_component_index);
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const auto gathered =
+      const auto component_result =
           GatherComponent(*stencil, particle_world_position, old_face_velocities, new_face_velocities);
-      if (!gathered.ok()) {
-        return gathered.status();
+      if (!component_result.ok()) {
+        return component_result.status();
       }
-      const std::size_t vector_entry = kComponentCount * particle_index + velocity_component_index;
-      const std::size_t matrix_row_offset = kComponentCount * vector_entry;
-      staged_pic_velocities[vector_entry] = gathered->pic;
-      staged_grid_velocity_increments[vector_entry] = gathered->increment;
-      staged_velocity_fit_slopes[matrix_row_offset] = gathered->affine_row.x;
-      staged_velocity_fit_slopes[matrix_row_offset + 1] = gathered->affine_row.y;
-      staged_velocity_gradients[matrix_row_offset] = gathered->gradient_row.x;
-      staged_velocity_gradients[matrix_row_offset + 1] = gathered->gradient_row.y;
+      const std::size_t vector_component_offset = kVelocityComponentCount * particle_index + velocity_component_index;
+      const std::size_t matrix_row_offset = kVelocityComponentCount * vector_component_offset;
+      staged_pic_velocities[vector_component_offset] = component_result->pic_velocity;
+      staged_grid_velocity_increments[vector_component_offset] = component_result->grid_velocity_increment;
+      staged_velocity_fit_slopes[matrix_row_offset] = component_result->velocity_fit_slope_row.x;
+      staged_velocity_fit_slopes[matrix_row_offset + 1] = component_result->velocity_fit_slope_row.y;
+      staged_velocity_gradients[matrix_row_offset] = component_result->velocity_gradient_row.x;
+      staged_velocity_gradients[matrix_row_offset + 1] = component_result->velocity_gradient_row.y;
     }
   }
 
   for (std::size_t particle_index = 0; particle_index < particle_count; ++particle_index) {
-    const std::size_t vector_offset = kComponentCount * particle_index;
+    const std::size_t vector_offset = kVelocityComponentCount * particle_index;
     const std::size_t matrix_offset = kMatrixEntryCount * particle_index;
     pic_velocities[particle_index] = {staged_pic_velocities[vector_offset], staged_pic_velocities[vector_offset + 1]};
     grid_velocity_increments[particle_index] = {

@@ -177,7 +177,7 @@ PreparePressureInputs(const PressureInputsView& pressure_inputs, PreparedPressur
 }
 
 absl::Status CollectPressure(
-    cuda_internal::OperatorRuntime& runtime,
+    cuda_internal::CudaOperatorRuntime& runtime,
     const PreparedPressureInputs& prepared_pressure_inputs,
     PressureKernelResult& staged_pressure_result,
     CudaOperatorMeasurement& staged_kernel_measurement
@@ -193,7 +193,7 @@ absl::Status CollectPressure(
   if (auto status = runtime.AllocateZeroed(1, device_pressure_result); !status.ok()) {
     return status;
   }
-  if (auto status = runtime.BeginKernel(); !status.ok()) {
+  if (auto status = runtime.RecordKernelStart(); !status.ok()) {
     return status;
   }
   const auto launch_error = static_cast<cudaError_t>(
@@ -202,7 +202,7 @@ absl::Status CollectPressure(
   if (auto status = cuda_internal::CheckCuda(launch_error, "CUDA pressure launch"); !status.ok()) {
     return status;
   }
-  if (auto status = runtime.FinishKernel(); !status.ok()) {
+  if (auto status = runtime.SynchronizeAndMeasureKernel(); !status.ok()) {
     return status;
   }
   if (auto status = runtime.Download(device_pressure_result, std::span(&staged_pressure_result, 1)); !status.ok()) {
@@ -220,7 +220,8 @@ absl::Status CollectPressure(
     default:
       return absl::InternalError("unknown CUDA pressure kernel error");
   }
-  const auto completed_kernel_measurement = runtime.Measurement(staged_pressure_result.compiled_architecture);
+  const auto completed_kernel_measurement =
+      runtime.ValidateKernelMeasurement(staged_pressure_result.compiled_architecture);
   if (!completed_kernel_measurement.ok()) {
     return completed_kernel_measurement.status();
   }
@@ -275,7 +276,7 @@ absl::Status CudaSolvePressure2D(
   absl::Status pressure_status;
   absl::Status cleanup_status;
   {
-    cuda_internal::OperatorRuntime runtime(cleanup_status);
+    cuda_internal::CudaOperatorRuntime runtime(cleanup_status);
     pressure_status =
         CollectPressure(runtime, prepared_pressure_inputs, staged_pressure_result, staged_kernel_measurement);
   }

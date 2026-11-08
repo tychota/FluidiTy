@@ -11,17 +11,17 @@
 namespace fluidity {
 namespace {
 
-constexpr std::size_t kAxisNodeCount = 3;
+constexpr std::size_t kAxisStencilNodeCount = 3;
 
 struct AxisStencil {
-  std::int64_t first_node;
-  std::array<double, kAxisNodeCount> weights;
-  std::array<double, kAxisNodeCount> derivatives;
+  std::int64_t first_node_index;
+  std::array<double, kAxisStencilNodeCount> weights;
+  std::array<double, kAxisStencilNodeCount> derivatives;
 };
 
 // Computes the three nodes and dimensionless derivatives for one axis. Keep the normalized
 // position and offset separate so their difference retains precision near half-cell ties.
-absl::StatusOr<AxisStencil> QuadraticAxis(double normalized_position, double lattice_offset) {
+absl::StatusOr<AxisStencil> QuadraticAxisStencil(double normalized_position, double lattice_offset) {
   const double rounded_lattice_coordinate = normalized_position - lattice_offset;
   constexpr double index_limit = 0x1p63;
   const bool coordinate_fits = rounded_lattice_coordinate >= -index_limit && rounded_lattice_coordinate <= index_limit;
@@ -67,7 +67,7 @@ absl::StatusOr<AxisStencil> QuadraticAxis(double normalized_position, double lat
     return absl::OutOfRangeError("quadratic stencil node is outside the int64_t range");
   }
 
-  const std::int64_t first_node = provisional_center_index + center_index_correction - 1;
+  const std::int64_t first_node_index = provisional_center_index + center_index_correction - 1;
   const double normalized_center_displacement = (rounded_fraction - half_cell_shift) + residual_fraction;
   // Keep the support-edge distances even when the center displacement rounds to a half cell.
   const double left_support_distance = ((0.5 + half_cell_shift) - rounded_fraction) - residual_fraction;
@@ -78,7 +78,7 @@ absl::StatusOr<AxisStencil> QuadraticAxis(double normalized_position, double lat
       0.5 * right_support_distance * right_support_distance,
   };
   return AxisStencil{
-      .first_node = first_node,
+      .first_node_index = first_node_index,
       .weights = weights,
       .derivatives = {-left_support_distance, -2.0 * normalized_center_displacement, right_support_distance},
   };
@@ -98,26 +98,26 @@ absl::StatusOr<Stencil2D> QuadraticStencil2D(Vec2 relative_position, double spac
     return absl::InvalidArgumentError("stencil offset must be finite");
   }
 
-  const auto x_stencil = QuadraticAxis(relative_position.x / spacing, offset.x);
+  const auto x_stencil = QuadraticAxisStencil(relative_position.x / spacing, offset.x);
   if (!x_stencil.ok()) {
     return x_stencil.status();
   }
-  const auto y_stencil = QuadraticAxis(relative_position.y / spacing, offset.y);
+  const auto y_stencil = QuadraticAxisStencil(relative_position.y / spacing, offset.y);
   if (!y_stencil.ok()) {
     return y_stencil.status();
   }
 
   Stencil2D stencil;
-  for (std::size_t x_slot = 0; x_slot < kAxisNodeCount; ++x_slot) {
-    for (std::size_t y_slot = 0; y_slot < kAxisNodeCount; ++y_slot) {
-      const std::size_t node_index = kAxisNodeCount * x_slot + y_slot;
-      stencil.nodes[node_index] = {
-          .x = x_stencil->first_node + static_cast<std::int64_t>(x_slot),
-          .y = y_stencil->first_node + static_cast<std::int64_t>(y_slot),
+  for (std::size_t x_slot = 0; x_slot < kAxisStencilNodeCount; ++x_slot) {
+    for (std::size_t y_slot = 0; y_slot < kAxisStencilNodeCount; ++y_slot) {
+      const std::size_t stencil_slot_index = kAxisStencilNodeCount * x_slot + y_slot;
+      stencil.nodes[stencil_slot_index] = {
+          .x = x_stencil->first_node_index + static_cast<std::int64_t>(x_slot),
+          .y = y_stencil->first_node_index + static_cast<std::int64_t>(y_slot),
       };
       const double x_weight = x_stencil->weights[x_slot];
       const double y_weight = y_stencil->weights[y_slot];
-      stencil.weights[node_index] = x_weight * y_weight;
+      stencil.weights[stencil_slot_index] = x_weight * y_weight;
 
       // Weight before dividing by tiny spacing to avoid spurious overflow.
       const Vec2 gradient{
@@ -127,7 +127,7 @@ absl::StatusOr<Stencil2D> QuadraticStencil2D(Vec2 relative_position, double spac
       if (!std::isfinite(gradient.x) || !std::isfinite(gradient.y)) {
         return absl::OutOfRangeError("stencil gradient is outside the representable range");
       }
-      stencil.gradients[node_index] = gradient;
+      stencil.gradients[stencil_slot_index] = gradient;
     }
   }
   return stencil;
