@@ -16,7 +16,9 @@ struct ParticleView2D {
   std::span<const Vec2> positions;  // World positions in m.
   std::span<const double> masses;  // Nonnegative masses in kg.
   std::span<const Vec2> velocities;  // Velocities in m/s.
-  std::span<const Mat2> affine;  // Affine fits C in 1/s, one row per velocity component.
+  // Each row of the affine fit C gives the slope of one velocity component in 1/s.
+  // P2G applies it to the face displacement after subtracting the stencil's weighted mean displacement.
+  std::span<const Mat2> velocity_fit_slopes;
 };
 
 struct AffineFit2D {

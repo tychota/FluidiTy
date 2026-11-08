@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -35,14 +36,40 @@ CPU_REQUIRED = {
     "FixtureBridge.FourFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
 }
-GPU_REQUIRED = {"CudaProbe.SharedVec2Math", "CudaProbe.LaunchIgnoresPriorRuntimeError"}
+GPU_PROBE_RECEIPT_CASE = "CudaProbe.SharedVec2Math"
+GPU_PROBE_CASES = {GPU_PROBE_RECEIPT_CASE, "CudaProbe.LaunchIgnoresPriorRuntimeError"}
+GPU_OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
+GPU_OPERATOR_MEMCHECK_CASES = {
+    "CudaTransfer.DepositAnalyticAndCpuParity",
+    "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
+    "CudaTransfer.DepositRejectsInvalidSupportRangeAndCapacity",
+    "CudaTransfer.DepositEmptyBatchClearsOutputs",
+    "CudaTransfer.GatherAffineMatchesFixtureAndCpu",
+    "CudaTransfer.GatherNonlinearKeepsTrueGradientSeparate",
+    "CudaTransfer.GatherFailurePreservesOutputs",
+    "CudaPressure.NeumannJumpMatchesFixture",
+    "CudaPressure.ComplianceRetainsMeanPressure",
+    "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
+    "CudaPressure.CapacityAndIncompatibilityPreserveOutputs",
+}
+GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE}
+GPU_OPERATOR_RECEIPT_CASES = {
+    "CudaTransfer.DepositAnalyticAndCpuParity": "p2g",
+    "CudaTransfer.GatherAffineMatchesFixtureAndCpu": "g2p",
+    "CudaPressure.NeumannJumpMatchesFixture": "pressure_neumann",
+    "CudaPressure.ComplianceRetainsMeanPressure": "pressure_compliance",
+}
 # The floor prevents partially discovered suites from passing. New tests may increase the count.
-MINIMUM_TESTS = {"cpu": 123, "gpu": 2, "cuda-mock": 11}
+MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11}
 GPU_RECORD = re.compile(
     r"^device=(?P<device>[\w ()+.-]+) capability=(?P<capability>\d+\.\d+) "
     r"compiled_architecture=(?P<compiled_architecture>\d+) driver_api=(?P<driver_api>\d+) "
     r"runtime_api=(?P<runtime_api>\d+) launch=0 copy=0 synchronize=0 elements=17 sentinel=\(0,0\)$",
     re.MULTILINE,
+)
+OPERATOR_RECORD = re.compile(
+    r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
+    r"kernel_ms=(?P<kernel_ms>[0-9]+\.[0-9]+)"
 )
 
 
@@ -492,49 +519,74 @@ def run_ctest(run, label, required):
     if len(cases) != len(names) or len(names) < MINIMUM_TESTS[label] or not required <= names:
         raise ValueError(f"ctest {label} is missing expected tests or contains duplicate results")
     if label == "gpu" and names != required:
-        raise ValueError("ctest gpu must contain exactly the two hardware probe tests")
+        raise ValueError("ctest gpu must contain exactly the required hardware probe and operator tests")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
     return {"status": "passed", "tests": len(cases)}, cases
 
 
-def gpu_receipt(output, qualified, config):
-    records = GPU_RECORD.findall(output)
-    device = qualified["cuda"]["configurations"][config]
-    architecture = qualified["cuda"]["architecture"]
-    capability = f"{architecture // 10}.{architecture % 10}"
-    expected = (
-        device["device"],
-        capability,
-        str(architecture * 10),
-        str(device["driver_api_version"]),
-        str(device["runtime_version"]),
+def gpu_receipt(probe_output, qualification, config):
+    observed_probe_records = GPU_RECORD.findall(probe_output)
+    qualified_cuda = qualification["cuda"]
+    qualified_device = qualified_cuda["configurations"][config]
+    qualified_architecture_code = qualified_cuda["architecture"]
+    compute_capability = f"{qualified_architecture_code // 10}.{qualified_architecture_code % 10}"
+    expected_compiled_architecture = qualified_architecture_code * 10
+    expected_probe_record = (
+        qualified_device["device"],
+        compute_capability,
+        str(expected_compiled_architecture),
+        str(qualified_device["driver_api_version"]),
+        str(qualified_device["runtime_version"]),
     )
-    if records != [expected]:
+    if observed_probe_records != [expected_probe_record]:
         raise ValueError("hardware probe did not report the qualified CUDA device and successful launch")
     return {
-        "device": records[0][0],
-        "compute_capability": capability,
-        "compiled_architecture": architecture * 10,
-        "driver_api": device["driver_api_version"],
-        "runtime_api": device["runtime_version"],
+        "device": qualified_device["device"],
+        "compute_capability": compute_capability,
+        "compiled_architecture": expected_compiled_architecture,
+        "driver_api": qualified_device["driver_api_version"],
+        "runtime_api": qualified_device["runtime_version"],
     }
 
 
-def run_sanitizer(run, qualified, build):
-    if run.config != "Release":
-        return {"status": "not_run", "reason": "release_only"}
-    toolkit = Path(qualified["tools"]["nvcc"]["executable"]).parent.parent
-    sanitizer = toolkit / "compute-sanitizer/compute-sanitizer.exe"
-    if not sanitizer.is_file():
-        return {"status": "not_run", "reason": "unavailable"}
-    run.redactions[str(sanitizer)] = "compute-sanitizer"
-    version = run.execute("sanitizer-version", sanitizer, "--version", timeout=15).stdout
-    match = re.search(r"^Version (\d+\.\d+\.\d+\.\d+) \(build (\d+)\)", version, re.MULTILINE)
-    if match is None:
-        raise ValueError("Compute Sanitizer did not report a usable version")
-    output = run.execute(
-        "sanitizer-memcheck",
+def operator_receipt_lines(test_output):
+    return [line for line in test_output.splitlines() if line.lstrip().startswith("operator=")]
+
+
+def operator_measurements(case_outputs, expected_compiled_architecture, evidence_label):
+    measurements = {}
+    for case_name, case_output in case_outputs.items():
+        expected_operator = GPU_OPERATOR_RECEIPT_CASES.get(case_name)
+        observed_receipt_lines = operator_receipt_lines(case_output)
+        if expected_operator is None:
+            if observed_receipt_lines:
+                raise ValueError(f"{evidence_label}: unexpected operator receipt in {case_name}")
+            continue
+        if len(observed_receipt_lines) != 1:
+            raise ValueError(f"{evidence_label}: {case_name} must report exactly one operator receipt")
+        receipt_match = OPERATOR_RECORD.fullmatch(observed_receipt_lines[0])
+        if receipt_match is None:
+            raise ValueError(f"{evidence_label}: malformed operator receipt in {case_name}")
+        observed_operator = receipt_match["operator"]
+        observed_architecture_text = receipt_match["compiled_architecture"]
+        observed_kernel_ms = float(receipt_match["kernel_ms"])
+        if observed_operator != expected_operator:
+            raise ValueError(f"{evidence_label}: {case_name} must report operator {expected_operator}")
+        if observed_architecture_text != str(expected_compiled_architecture):
+            raise ValueError(f"{evidence_label}: {case_name} reported a mismatched compiled architecture")
+        if not math.isfinite(observed_kernel_ms):
+            raise ValueError(f"{evidence_label}: {case_name} reported nonfinite kernel time")
+        measurements[observed_operator] = {
+            "compiled_architecture": expected_compiled_architecture,
+            "kernel_ms": observed_kernel_ms,
+        }
+    return measurements
+
+
+def run_memcheck(run, sanitizer, stage, executable, expected_case_names, *test_arguments):
+    memcheck_output = run.execute(
+        stage,
         sanitizer,
         "--tool",
         "memcheck",
@@ -544,24 +596,96 @@ def run_sanitizer(run, qualified, build):
         "97",
         "--launch-timeout",
         "30",
-        build.relative_to(run.root) / "fluidity_cuda_probe_tests.exe",
-        "--gtest_filter=CudaProbe.SharedVec2Math",
+        executable,
+        *test_arguments,
         timeout=90,
         env={**without_test_controls("GTEST_"), "NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE": "named-pipes"},
     ).stdout
-    if not re.search(r"^========= ERROR SUMMARY: 0 errors\s*$", output, re.MULTILINE):
-        raise ValueError("Compute Sanitizer did not report zero errors")
-    if not re.search(r"^\[  PASSED  \] 1 test\.\s*$", output, re.MULTILINE):
-        raise ValueError("Compute Sanitizer did not run the required hardware test")
-    gpu_receipt(output, qualified, run.config)
+    output_lines = memcheck_output.splitlines()
+    error_summaries = [line.rstrip() for line in output_lines if line.startswith("========= ERROR SUMMARY:")]
+    if error_summaries != ["========= ERROR SUMMARY: 0 errors"]:
+        raise ValueError(f"Compute Sanitizer {executable.name} did not report one zero-error summary")
+    expected_test_count = len(expected_case_names)
+    expected_test_total = "1 test" if expected_test_count == 1 else f"{expected_test_count} tests"
+    passed_summaries = [line for line in output_lines if line.startswith("[  PASSED  ]")]
+    if passed_summaries != [f"[  PASSED  ] {expected_test_total}."] or any(
+        line.startswith(("[  SKIPPED ]", "[  FAILED  ]")) for line in output_lines
+    ):
+        raise ValueError(f"Compute Sanitizer {executable.name} did not pass all required hardware tests")
+
+    # Match each RUN with its own OK and attribute the output only to that testcase.
+    case_markers = list(re.finditer(r"^\[( RUN      |       OK )\] (.+)$", memcheck_output, re.MULTILINE))
+    if len(case_markers) != 2 * expected_test_count:
+        raise ValueError(f"Compute Sanitizer {executable.name} did not run and complete every required hardware test")
+    case_outputs = {}
+    for started_case, completed_case in zip(case_markers[::2], case_markers[1::2]):
+        observed_case_name = started_case[2]
+        expected_completion = rf"{re.escape(observed_case_name)} \([0-9]+ ms\)"
+        if (
+            started_case[1] != " RUN      "
+            or completed_case[1] != "       OK "
+            or re.fullmatch(expected_completion, completed_case[2]) is None
+            or observed_case_name in case_outputs
+        ):
+            raise ValueError(f"Compute Sanitizer {executable.name} has mismatched or duplicate GoogleTest results")
+        case_outputs[observed_case_name] = memcheck_output[started_case.end() : completed_case.start()]
+    if case_outputs.keys() != expected_case_names:
+        raise ValueError(f"Compute Sanitizer {executable.name} did not run the required hardware cases")
+    # Count the entire process output, including any lines outside the testcase intervals.
+    expected_probe_receipt_count = int(GPU_PROBE_RECEIPT_CASE in expected_case_names)
+    observed_probe_receipt_count = sum(line.lstrip().startswith("device=") for line in output_lines)
+    if observed_probe_receipt_count != expected_probe_receipt_count:
+        raise ValueError(
+            f"Compute Sanitizer {executable.name} expected {expected_probe_receipt_count} hardware probe receipts, "
+            f"found {observed_probe_receipt_count}"
+        )
+    attributed_receipt_count = sum(len(operator_receipt_lines(case_output)) for case_output in case_outputs.values())
+    if attributed_receipt_count != len(operator_receipt_lines(memcheck_output)):
+        raise ValueError(f"Compute Sanitizer {executable.name} reported an operator receipt outside its testcase")
+    return case_outputs
+
+
+def run_sanitizer(run, qualification, build, expected_compiled_architecture):
+    if run.config != "Release":
+        return {"status": "not_run", "reason": "release_only"}
+    toolkit = Path(qualification["tools"]["nvcc"]["executable"]).parent.parent
+    sanitizer = toolkit / "compute-sanitizer/compute-sanitizer.exe"
+    if not sanitizer.is_file():
+        raise ValueError("Compute Sanitizer is required for Windows CUDA Release. Install it in the qualified toolkit")
+    run.redactions[str(sanitizer)] = "compute-sanitizer"
+    version_output = run.execute("sanitizer-version", sanitizer, "--version", timeout=15).stdout
+    version_match = re.search(r"^Version (\d+\.\d+\.\d+\.\d+) \(build (\d+)\)", version_output, re.MULTILINE)
+    if version_match is None:
+        raise ValueError("Compute Sanitizer did not report a usable version")
+    relative_build = build.relative_to(run.root)
+    probe_case_outputs = run_memcheck(
+        run,
+        sanitizer,
+        "sanitizer-memcheck",
+        relative_build / "fluidity_cuda_probe_tests.exe",
+        {GPU_PROBE_RECEIPT_CASE},
+        f"--gtest_filter={GPU_PROBE_RECEIPT_CASE}",
+    )
+    gpu_receipt(probe_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
+    operator_case_outputs = run_memcheck(
+        run,
+        sanitizer,
+        "sanitizer-operators-memcheck",
+        relative_build / "fluidity_cuda_operator_tests.exe",
+        GPU_OPERATOR_MEMCHECK_CASES,
+        f"--gtest_filter=*-{GPU_OPERATOR_ERROR_CASE}",
+    )
+    operator_measurements(
+        {**probe_case_outputs, **operator_case_outputs}, expected_compiled_architecture, "Compute Sanitizer"
+    )
     return {
         "status": "passed",
-        "version": match[1],
-        "build": match[2],
+        "version": version_match[1],
+        "build": version_match[2],
         "tool": "memcheck",
         "local_connection": "named-pipes",
         "errors": 0,
-        "tests": 1,
+        "tests": len(probe_case_outputs) + len(operator_case_outputs),
     }
 
 
@@ -662,10 +786,15 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     evidence["native_cpu"] = cpu
     if run.mode == "cuda":
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
-        evidence["gpu"], cases = run_ctest(run, "gpu", GPU_REQUIRED)
-        probe = next(case for case in cases if case.get("name") == "CudaProbe.SharedVec2Math")
-        evidence["gpu"].update(gpu_receipt(probe.findtext("system-out", ""), qualification, run.config))
-        evidence["sanitizer"] = run_sanitizer(run, qualification, build)
+        evidence["gpu"], gpu_cases = run_ctest(run, "gpu", GPU_REQUIRED)
+        gpu_case_outputs = {case.attrib["name"]: case.findtext("system-out", "") for case in gpu_cases}
+        probe_evidence = gpu_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
+        evidence["gpu"].update(probe_evidence)
+        expected_compiled_architecture = probe_evidence["compiled_architecture"]
+        evidence["gpu"]["operators"] = operator_measurements(
+            gpu_case_outputs, expected_compiled_architecture, "CTest gpu"
+        )
+        evidence["sanitizer"] = run_sanitizer(run, qualification, build, expected_compiled_architecture)
     evidence["python"] = run_python(run)
 
     if (

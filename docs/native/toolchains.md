@@ -58,8 +58,25 @@ The device build used C++20 with `--fmad=false --ftz=false --prec-div=true --pre
 `Shared` runtime setting and linked `CUDA::cudart` from the installed toolkit. The earlier
 direct nvcc probe recorded the Windows `shared` deprecation described above.
 
-The `gpu` label runs both hardware tests. The `cuda-mock` and `cpu` labels record separate evidence.
+This probe-only run recorded both hardware tests under the `gpu` label. The `cuda-mock` and `cpu` labels record separate evidence.
 The probe qualifies CUDA build and execution infrastructure and shared vector arithmetic.
+
+## Windows uniform CUDA operator gate measured on 2026-11-08
+
+The locked four-preset matrix ran on the same qualified toolchain and GPU. Both CPU-only
+presets passed 123 native CPU tests and 214 Python tests. The CUDA results were as follows.
+
+| Check | Debug CUDA | Release CUDA |
+| --- | --- | --- |
+| Hardware tests (`gpu`) | 14 passed | 14 passed |
+| CPU-labeled tests | 123 passed | 123 passed |
+| CUDA API doubles (`cuda-mock`) | 11 passed | 11 passed |
+| Python tests | 214 passed | 214 passed |
+| Compute Sanitizer memcheck 2026.3.0.0 (build 38637409) | Release gate | 1 probe and 11 operator cases passed, zero errors in both runs |
+
+The Release probe and operator executables contained `sm_120` cubins and embedded PTX generated for
+`compute_120`. The four operator kernel timings in each CUDA receipt are smoke measurements for
+the bounded fixtures. See the [CUDA validation commands](README.md#cuda-hardware-and-sanitizer-gates).
 
 ## Locked dependencies and ABI
 
@@ -118,17 +135,8 @@ uv @uvArgs cmake --build --preset $preset
 uv @uvArgs ctest --preset $preset -L cpu --output-on-failure
 ```
 
-With the CUDA presets, run the hardware gate in both configurations and memcheck in Release.
-Use a process-local override to select named pipes for the Windows sanitizer connection.
-
-```powershell
-uv @uvArgs ctest --preset windows-debug-cuda -L gpu --output-on-failure
-uv @uvArgs ctest --preset windows-release-cuda -L gpu --output-on-failure
-$sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
-$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
-& $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
-  out/build/windows-release-cuda/fluidity_cuda_probe_tests.exe --gtest_filter=CudaProbe.SharedVec2Math
-```
+For the locked CUDA matrix and both Release memcheck invocations, follow the
+[CUDA hardware and sanitizer gates](README.md#cuda-hardware-and-sanitizer-gates).
 
 For a different GPU, generate a separate receipt using `--cuda-architecture` and a distinct
 `--output`. Configure with explicit `CMAKE_CUDA_ARCHITECTURES` and `FLUIDITY_TOOLCHAIN_RECEIPT`

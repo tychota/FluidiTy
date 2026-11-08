@@ -174,7 +174,7 @@ TEST(Transfer, MassAndAngularMoments) {
       .positions = positions,
       .masses = masses,
       .velocities = velocities,
-      .affine = affine,
+      .velocity_fit_slopes = affine,
   };
   std::array<double, kFaceCount> face_mass;
   std::array<double, kFaceCount> face_momentum;
@@ -314,7 +314,7 @@ TEST(Transfer, DepositDoesNotPublishOnError) {
       .positions = positions,
       .masses = masses,
       .velocities = velocities,
-      .affine = affine,
+      .velocity_fit_slopes = affine,
   };
   std::array<double, kFaceCount> face_mass;
   std::array<double, kFaceCount> face_momentum;

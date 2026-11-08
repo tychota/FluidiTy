@@ -10,6 +10,10 @@
   the closing brace on its own line at the starting indentation. Prefer designated fields when they clarify the layout.
 - Use consistent, searchable names that say what a value represents in the domain. Distinguish an index, coordinate,
   extent, and result. Keep standard coordinate and ABI names such as `Vec2::x` and `Grid2D::nx`.
+- Name numerical intermediates so readers can distinguish a per-particle contribution from a face sum and a physical
+  quantity from its scaled value or quantized integer. Public parameters should identify the quantity and, when relevant,
+  its coordinate frame or time level without requiring the function body. Keep the quantity name consistent across stages, as in
+  `stress_force_contribution`, `scaled_stress_force_contribution`, `quantized_stress_force_contribution`, and `stress_force_quanta_sum`.
 - Prefer clear C++20 facilities where they express intent directly. Use `constexpr` for compile-time values, `std::array`
   for fixed-size host data, `std::span` for non-owning host views, and concepts when a template needs a type constraint.
   Ordinary loops are appropriate for numerical kernels whose iteration order matters.
