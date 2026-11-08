@@ -21,6 +21,31 @@ CPU_CASES = (
     "Viscosity.StiffFixture",
     *(f"Cpu.Case{index}" for index in range(116)),
 )
+PROBE_CASES = ("CudaProbe.SharedVec2Math", "CudaProbe.LaunchIgnoresPriorRuntimeError")
+OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
+MEMCHECK_OPERATOR_CASES = (
+    "CudaTransfer.DepositAnalyticAndCpuParity",
+    "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
+    "CudaTransfer.DepositRejectsInvalidSupportRangeAndCapacity",
+    "CudaTransfer.DepositEmptyBatchClearsOutputs",
+    "CudaTransfer.GatherAffineMatchesFixtureAndCpu",
+    "CudaTransfer.GatherNonlinearKeepsTrueGradientSeparate",
+    "CudaTransfer.GatherFailurePreservesOutputs",
+    "CudaPressure.NeumannJumpMatchesFixture",
+    "CudaPressure.ComplianceRetainsMeanPressure",
+    "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
+    "CudaPressure.CapacityAndIncompatibilityPreserveOutputs",
+)
+PROBE_RECEIPT = (
+    "device=NVIDIA GeForce RTX 5060 Ti capability=12.0 compiled_architecture=1200 driver_api=13030 "
+    "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
+)
+OPERATOR_RECEIPTS = {
+    "CudaTransfer.DepositAnalyticAndCpuParity": "operator=p2g compiled_architecture=1200 kernel_ms=0.125",
+    "CudaTransfer.GatherAffineMatchesFixtureAndCpu": "operator=g2p compiled_architecture=1200 kernel_ms=0.25",
+    "CudaPressure.NeumannJumpMatchesFixture": "operator=pressure_neumann compiled_architecture=1200 kernel_ms=0.5",
+    "CudaPressure.ComplianceRetainsMeanPressure": "operator=pressure_compliance compiled_architecture=1200 kernel_ms=1.0",
+}
 FIXTURES = ("affine_apic.json", "compliant_pressure.json", "stiff_viscosity.json", "two_cell_pressure.json")
 PYTHON_NODE_IDS = (
     "tests/test_reference.py::test_analytic",
@@ -93,8 +118,9 @@ def scenario(invocation, monkeypatch):
         path.write_text("{}", encoding="utf-8")
     for context in ("host", "build"):
         (root / f"{context} profile").write_text(f"[settings]\n# {context}", encoding="utf-8")
-    for mode in ("cpu", "cuda"):
-        fixture_dir = root / f"out/fixtures/windows-debug-{mode}"
+    for preset in ("windows-debug-cpu", "windows-debug-cuda", "windows-release-cuda"):
+        _, config, mode = preset.split("-")
+        fixture_dir = root / "out/fixtures" / preset
         fixture_dir.mkdir(parents=True)
         for name in FIXTURES:
             (fixture_dir / name).write_text("{}", encoding="utf-8")
@@ -102,15 +128,15 @@ def scenario(invocation, monkeypatch):
         (fixture_dir / "manifest.json").write_text(
             json.dumps({"schema_version": 1, "fixtures": manifest}), encoding="utf-8"
         )
-        build = root / f"out/build/windows-debug-{mode}"
+        build = root / "out/build" / preset
         (build / "generated").mkdir(parents=True)
         (build / "generated/fixture_data.h").write_text("// generated", encoding="utf-8")
         receipt = "windows.json" if mode == "cuda" else "windows-cpu.json"
         (build / "CMakeCache.txt").write_text(
-            "CMAKE_BUILD_TYPE:STRING=Debug\nCMAKE_GENERATOR:INTERNAL=Ninja\nBUILD_TESTING:BOOL=TRUE\n"
+            f"CMAKE_BUILD_TYPE:STRING={config.title()}\nCMAKE_GENERATOR:INTERNAL=Ninja\nBUILD_TESTING:BOOL=TRUE\n"
             f"FLUIDITY_ENABLE_CUDA:BOOL={'TRUE' if mode == 'cuda' else 'FALSE'}\n"
             f"FLUIDITY_FIXTURE_DIRECTORY:PATH={fixture_dir}\n"
-            f"CMAKE_TOOLCHAIN_FILE:FILEPATH={root / f'out/conan/windows-debug-{mode}/conan_toolchain.cmake'}\n"
+            f"CMAKE_TOOLCHAIN_FILE:FILEPATH={root / 'out/conan' / preset / 'conan_toolchain.cmake'}\n"
             f"FLUIDITY_TOOLCHAIN_RECEIPT:FILEPATH={root / 'out/qualification' / receipt}\n",
             encoding="utf-8",
         )
@@ -135,8 +161,13 @@ def scenario(invocation, monkeypatch):
         "ninja": "1.13.2",
     }
 
+    toolkit = root / "Private Toolchain"
+    sanitizer_path = toolkit / "compute-sanitizer/compute-sanitizer.exe"
+    sanitizer_path.parent.mkdir(parents=True)
+    sanitizer_path.touch()
+
     def qualified_receipt(mode):
-        return {
+        receipt = {
             "schema_version": 1,
             "mode": mode,
             "source_sha256": {"cpu probe.cc": "0" * 64},
@@ -144,10 +175,34 @@ def scenario(invocation, monkeypatch):
             "host": {
                 "architecture": "x64",
                 "pointer_bits": 64,
-                "configurations": {"Debug": {"compiler_version": "19.44.35229"}},
+                "configurations": {
+                    config: {"compiler_version": "19.44.35229"} for config in ("Debug", "Release")
+                },
             },
             "commands": [{"argv": ["C:/Private Toolchain/cl.exe"], "exit_code": 0}],
         }
+
+        if mode == "cuda":
+            receipt["tools"].update(
+                nvcc={"executable": str(toolkit / "bin/nvcc.exe"), "version": "Cuda release 13.4, V13.4.59"},
+                **{"nvidia-smi": {"executable": "nvidia-smi", "version": "NVIDIA-SMI version : 612.00\nKMD version : 610.88"}},
+            )
+            receipt["cuda"] = {
+                "architecture": 120,
+                "runtime": "Shared",
+                "configurations": {
+                    config: {
+                        "device": "NVIDIA GeForce RTX 5060 Ti",
+                        "device_architecture": 120,
+                        "kernel_architecture": 120,
+                        "result": 7,
+                        "runtime_version": 13030,
+                        "driver_api_version": 13030,
+                    }
+                    for config in ("Debug", "Release")
+                },
+            }
+        return receipt
 
     for mode, name in (("cpu", "windows-cpu"), ("cuda", "windows")):
         (root / f"out/qualification/{name}.json").write_text(json.dumps(qualified_receipt(mode)), encoding="utf-8")
@@ -159,6 +214,11 @@ def scenario(invocation, monkeypatch):
         cpu_cases = CPU_CASES
         first_cpu_status = "run"
         gtest_result = None
+        gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE)
+        skipped_gpu_case = None
+        sanitizer_cases = MEMCHECK_OPERATOR_CASES
+        sanitizer_result = None
+        operator_sanitizer_error_summary = "========= ERROR SUMMARY: 0 errors"
         python_cases = PYTHON_CASES
         python_deselected = False
         collection_deselected = False
@@ -166,6 +226,13 @@ def scenario(invocation, monkeypatch):
         def __init__(self):
             self.commands = []
             self.environments = {}
+            self.sanitizer_path = sanitizer_path
+            self.gpu_receipts = {PROBE_CASES[0]: PROBE_RECEIPT, **OPERATOR_RECEIPTS}
+            self.sanitizer_receipts = OPERATOR_RECEIPTS.copy()
+
+        @staticmethod
+        def gtest_case_output(case_name, case_receipt, result="       OK"):
+            return f"[ RUN      ] {case_name}\n{case_receipt}\n[{result} ] {case_name} (0 ms)\n"
 
         def run(self, argv, *, cwd, **options):
             assert isinstance(argv, list)
@@ -186,10 +253,11 @@ def scenario(invocation, monkeypatch):
             elif arguments[:2] == ["profile", "path"]:
                 stdout = str(root / arguments[2])
             elif arguments[:2] == ["profile", "show"]:
+                host_config = next(value.removeprefix("build_type=") for value in arguments if value.startswith("build_type="))
                 stdout = json.dumps(
                     {
                         context: {"settings": dict(settings, build_type=config, **{"compiler.runtime_type": config})}
-                        for context, config in (("host", "Debug"), ("build", "Release"))
+                        for context, config in (("host", host_config), ("build", "Release"))
                     }
                 )
             elif arguments and arguments[0].endswith("qualify_toolchain.py"):
@@ -203,27 +271,67 @@ def scenario(invocation, monkeypatch):
                 path.write_text(json.dumps(receipt), encoding="utf-8")
             elif arguments and arguments[0] == "install":
                 assert command == "conan"
+            elif command == "compute-sanitizer":
+                if arguments == ["--version"]:
+                    stdout = "Version 2026.3.0.0 (build 12345)"
+                else:
+                    assert arguments[:8] == [
+                        "--tool", "memcheck", "--require-cuda-init", "yes",
+                        "--error-exitcode", "97", "--launch-timeout", "30",
+                    ]
+                    assert options["timeout"] == 90
+                    assert options["env"]["NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE"] == "named-pipes"
+                    assert not any(key.startswith("GTEST_") for key in options["env"])
+                    executable = Path(arguments[8]).name
+                    if executable == "fluidity_cuda_probe_tests.exe":
+                        assert arguments[9:] == ["--gtest_filter=CudaProbe.SharedVec2Math"]
+                        stdout = self.gtest_case_output(PROBE_CASES[0], PROBE_RECEIPT)
+                        stdout += "[  PASSED  ] 1 test.\n========= ERROR SUMMARY: 0 errors"
+                    else:
+                        assert executable == "fluidity_cuda_operator_tests.exe"
+                        assert arguments[9:] == ["--gtest_filter=*-CudaPressure.LaunchIgnoresPriorRuntimeError"]
+                        stdout = "".join(
+                            self.gtest_case_output(
+                                case_name,
+                                self.sanitizer_receipts.get(case_name, ""),
+                                self.sanitizer_result if index == 1 and self.sanitizer_result else "       OK",
+                            )
+                            for index, case_name in enumerate(self.sanitizer_cases)
+                        )
+                        stdout += "[  PASSED  ] 11 tests.\n"
+                        stdout += self.operator_sanitizer_error_summary
             elif command == "cmake":
                 if self.failure == "build" and "--build" in arguments and "--target" not in arguments:
                     return subprocess.CompletedProcess(argv, 2, "compile failed")
             elif command == "ctest":
                 if self.failure == "ctest":
                     return subprocess.CompletedProcess(argv, 8, "test failed")
+                label = arguments[arguments.index("-L") + 1]
                 cases = self.cpu_cases
+                skipped = int(self.first_cpu_status == "notrun")
+                disabled = int(self.first_cpu_status == "disabled")
+                if label == "^gpu$":
+                    cases = self.gpu_cases
+                    skipped, disabled = int(self.skipped_gpu_case is not None), 0
+                elif label == "^cuda-mock$":
+                    cases = tuple(f"CudaMock.Case{index}" for index in range(11))
+                    skipped, disabled = 0, 0
                 suite = ET.Element(
                     "testsuite",
                     name="(empty)",
                     tests=str(len(cases)),
                     failures="0",
-                    skipped=str(int(self.first_cpu_status == "notrun")),
-                    disabled=str(int(self.first_cpu_status == "disabled")),
+                    skipped=str(skipped),
+                    disabled=str(disabled),
                 )
                 for index, name in enumerate(cases):
-                    status = self.first_cpu_status if index == 0 else "run"
+                    status = self.first_cpu_status if index == 0 and label == "^cpu$" else "run"
+                    if label == "^gpu$" and name == self.skipped_gpu_case:
+                        status = "notrun"
                     testcase = ET.SubElement(suite, "testcase", name=name, classname=name, status=status, time="0.01")
                     reported = self.gtest_result if index == 0 and self.gtest_result is not None else name
                     console = (
-                        f"[ RUN      ] {reported}\n[       OK ] {reported} (0 ms)\n[  PASSED  ] 1 test."
+                        self.gtest_case_output(reported, self.gpu_receipts.get(name, "")) + "[  PASSED  ] 1 test."
                         if reported
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
@@ -259,6 +367,7 @@ def scenario(invocation, monkeypatch):
 
     processes = ExternalProcesses()
     monkeypatch.setattr(subprocess, "run", processes.run)
+
     return processes, root, output, run, rejected
 
 
@@ -465,3 +574,110 @@ def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scena
     assert pytest_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert str(root) not in summary and "Private Toolchain" not in summary
     assert str(root) not in (output / "ctest-cpu.xml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("config", ["debug", "release"])
+def test_cuda_success_requires_all_hardware_cases_and_reports_four_measurements(scenario, config):
+    _, _, output, run, _ = scenario
+    assert run(f"windows-{config}-cuda") == 0
+    gpu_names = {case.attrib["name"] for case in ET.parse(output / "ctest-gpu.xml").findall("testcase")}
+    assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE}
+    evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
+    assert evidence["gpu"] == {
+        "status": "passed",
+        "tests": 14,
+        "device": "NVIDIA GeForce RTX 5060 Ti",
+        "compute_capability": "12.0",
+        "compiled_architecture": 1200,
+        "driver_api": 13030,
+        "runtime_api": 13030,
+        "operators": {
+            "p2g": {"compiled_architecture": 1200, "kernel_ms": 0.125},
+            "g2p": {"compiled_architecture": 1200, "kernel_ms": 0.25},
+            "pressure_neumann": {"compiled_architecture": 1200, "kernel_ms": 0.5},
+            "pressure_compliance": {"compiled_architecture": 1200, "kernel_ms": 1.0},
+        },
+    }
+    if config == "release":
+        assert evidence["sanitizer"] == {
+            "status": "passed",
+            "version": "2026.3.0.0",
+            "build": "12345",
+            "tool": "memcheck",
+            "local_connection": "named-pipes",
+            "errors": 0,
+            "tests": 12,
+        }
+    else:
+        assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
+
+
+@pytest.mark.parametrize(
+    "omitted_cases",
+    [MEMCHECK_OPERATOR_CASES, (MEMCHECK_OPERATOR_CASES[-1],), (OPERATOR_ERROR_CASE,)],
+    ids=["all-memcheck-operators", "one-memcheck-operator", "error-injection"],
+)
+def test_gpu_requires_each_operator_case(scenario, omitted_cases):
+    processes, _, _, _, rejected = scenario
+    processes.gpu_cases = tuple(case_name for case_name in processes.gpu_cases if case_name not in omitted_cases)
+    rejected("missing expected tests", "windows-debug-cuda")
+
+
+def test_gpu_rejects_a_skipped_operator(scenario):
+    processes, _, _, _, rejected = scenario
+    processes.skipped_gpu_case = "CudaTransfer.GatherFailurePreservesOutputs"
+    rejected("contains skipped or failed tests", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        "",
+        OPERATOR_RECEIPTS["CudaTransfer.DepositAnalyticAndCpuParity"] + "\n"
+        + OPERATOR_RECEIPTS["CudaTransfer.DepositAnalyticAndCpuParity"],
+        "operator=p2g compiled_architecture=890 kernel_ms=0.125",
+        "operator=g2p compiled_architecture=1200 kernel_ms=0.125",
+        "operator=p2g compiled_architecture=1200 kernel_ms=-0.125",
+        "operator=p2g compiled_architecture=1200 kernel_ms=nan",
+        "operator=p2g compiled_architecture=1200 kernel_ms=inf",
+        "operator=p2g compiled_architecture=1200 kernel_ms=" + "9" * 310 + ".0",
+    ],
+    ids=["missing", "duplicate", "wrong-architecture", "wrong-operator", "negative", "nan", "inf", "overflow"],
+)
+def test_gpu_rejects_invalid_receipts_in_a_passed_operator_case(scenario, receipt):
+    processes, _, _, _, rejected = scenario
+    processes.gpu_receipts["CudaTransfer.DepositAnalyticAndCpuParity"] = receipt
+    rejected("CudaTransfer.DepositAnalyticAndCpuParity", "windows-debug-cuda")
+
+
+def test_gpu_rejects_an_operator_receipt_from_an_unmeasured_case(scenario):
+    processes, _, _, _, rejected = scenario
+    case_name = "CudaTransfer.DepositEmptyBatchClearsOutputs"
+    processes.gpu_receipts[case_name] = OPERATOR_RECEIPTS["CudaTransfer.DepositAnalyticAndCpuParity"]
+    rejected(case_name, "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "skipped", "missing-receipt", "wrong-receipt", "errors"])
+def test_release_rejects_incomplete_operator_memcheck(scenario, problem):
+    processes, _, _, _, rejected = scenario
+    if problem == "missing":
+        processes.sanitizer_cases = MEMCHECK_OPERATOR_CASES[:-1]
+    elif problem == "wrong-name":
+        processes.sanitizer_cases = (*MEMCHECK_OPERATOR_CASES[:-1], "CudaPressure.DifferentTest")
+    elif problem == "skipped":
+        processes.sanitizer_result = "  SKIPPED"
+    elif problem == "missing-receipt":
+        del processes.sanitizer_receipts["CudaPressure.ComplianceRetainsMeanPressure"]
+    elif problem == "wrong-receipt":
+        processes.sanitizer_receipts["CudaPressure.ComplianceRetainsMeanPressure"] = (
+            OPERATOR_RECEIPTS["CudaPressure.NeumannJumpMatchesFixture"]
+        )
+    else:
+        processes.operator_sanitizer_error_summary += "\n========= ERROR SUMMARY: 1 error"
+    rejected("Compute Sanitizer", "windows-release-cuda")
+
+
+def test_release_does_not_publish_success_when_required_memcheck_is_unavailable(scenario):
+    processes, _, _, _, rejected = scenario
+    processes.sanitizer_path.unlink()
+    rejected("Compute Sanitizer is required", "windows-release-cuda")

@@ -1,9 +1,9 @@
 # Native build and validation
 
-The native foundation contains a C++20 CPU reference implementation and a small CUDA hardware
-probe. CMake presets use Ninja and separate Conan, build and fixture directories for every
-configuration. The [toolchain matrix](toolchains.md) records the measured Windows configuration
-and its recipe revisions.
+The native foundation contains a C++20 CPU reference implementation, a CUDA hardware probe,
+and CUDA operators for uniform 2D MAC transfers and a tiny pressure solve. CMake presets use
+Ninja and separate Conan, build and fixture directories for every configuration. The
+[toolchain matrix](toolchains.md) records the measured Windows configuration and its recipe revisions.
 
 ## Windows prerequisites
 
@@ -72,7 +72,8 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets run the two real `gpu` tests and the `cuda-mock` API-double tests.
+separate. Both presets require the exact 14 `gpu` cases, including two probe cases and
+12 transfer and pressure cases. They also run the `cuda-mock` API-double suite.
 
 ```powershell
 uv @uvArgs python tools/native/qualify_toolchain.py --mode cuda --output out/qualification/windows.json
@@ -85,13 +86,30 @@ foreach ($preset in @('windows-debug-cuda', 'windows-release-cuda')) {
 }
 ```
 
-Release invokes the qualified toolkit's Compute Sanitizer on `CudaProbe.SharedVec2Math`
-when installed. The validator sets the named-pipe connection override in the sanitizer
-process environment and bounds launch and execution time. A passing result requires the
-real launch receipt, one completed test and a zero-error memcheck. An unavailable
-sanitizer leaves that gate at `not_run` with reason `unavailable`.
+Both CUDA presets require the qualified device and launch receipt from `CudaProbe.SharedVec2Math`.
+They also require exactly one timing receipt from each case below, with the operator name
+shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event time.
 
-For the equivalent manual memcheck, keep the connection setting scoped to the command.
+| GoogleTest case | Receipt operator |
+| --- | --- |
+| `CudaTransfer.DepositAnalyticAndCpuParity` | `p2g` |
+| `CudaTransfer.GatherAffineMatchesFixtureAndCpu` | `g2p` |
+| `CudaPressure.NeumannJumpMatchesFixture` | `pressure_neumann` |
+| `CudaPressure.ComplianceRetainsMeanPressure` | `pressure_compliance` |
+
+Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
+The validator runs memcheck on `CudaProbe.SharedVec2Math` and eleven transfer and pressure
+cases. CTest also runs the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally
+trigger CUDA API errors and are excluded from memcheck. Both memcheck invocations must exit
+successfully and report zero errors. The validator checks the exact GoogleTest start and
+completion names, the probe launch receipt and the four timing receipts in their matching
+operator cases. It sets the named-pipe connection override only in the sanitizer process
+environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
+A missing sanitizer, skipped case or incomplete run prevents publication of a Release
+success receipt.
+
+For direct memcheck runs, scope the connection setting to the commands. Use the validator
+for the full evidence checks.
 
 ```powershell
 $sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
@@ -100,10 +118,25 @@ try {
     $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
     & $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
         out/build/windows-release-cuda/fluidity_cuda_probe_tests.exe --gtest_filter=CudaProbe.SharedVec2Math
-    if ($LASTEXITCODE) { throw 'Release memcheck failed.' }
+    if ($LASTEXITCODE) { throw 'Release probe memcheck failed.' }
+    & $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
+        out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe `
+        --gtest_filter=*-CudaPressure.LaunchIgnoresPriorRuntimeError
+    if ($LASTEXITCODE) { throw 'Release operator memcheck failed.' }
 } finally {
     $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = $previousConnection
 }
+```
+
+Inspect the Release operator executable for the `sm_120` cubins and embedded PTX
+from the `compute_120` virtual architecture. The PTX dump reports `.target sm_120`.
+
+```powershell
+$cuobjdump = Join-Path $env:CUDA_PATH 'bin/cuobjdump.exe'
+$operators = 'out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe'
+& $cuobjdump --list-elf $operators
+& $cuobjdump --list-ptx $operators
+& $cuobjdump --dump-ptx $operators | Select-String '^\.target'
 ```
 
 ## Fixtures and evidence
@@ -127,10 +160,12 @@ fixture and header hashes, commands and separate results for Python, native CPU,
 CUDA doubles, sanitizer and proofs. The proof gate remains `not_run` in this validator.
 The validator clears inherited GoogleTest and pytest selectors. It checks each named native
 case's execution output and compares the Python results with the complete pytest collection.
+The CUDA receipt records the four tiny-kernel smoke measurements in `evidence.gpu.operators`.
+The times cover the measured kernel work and carry no throughput or scaling claim.
 
 Full command arguments, tool output, Python and CTest XML, and the live requalification
-receipt stay under `out/native-validation/<preset>/run-*/`. These local files can contain
-machine paths. An invocation with one valid `--output` destination clears its previous reports,
+receipt and both Release memcheck logs stay under `out/native-validation/<preset>/run-*/`.
+These local files can contain machine paths. An invocation with one valid `--output` destination clears its previous reports,
 including when another command-line argument is invalid.
 On failure, read the named stage's log and CTest report if the suite ran. Requalify after
 compiler, SDK, toolkit, driver or device changes. If CMake cached a different compiler,
@@ -146,8 +181,9 @@ configuration-keyed Conan caches and uploads the path-free receipt and CTest rep
 The measured Windows hardware runs are documented in the [toolchain matrix](toolchains.md).
 Hosted CPU checks leave the CUDA, sanitizer and proof results at `not_run`.
 
-M0 still requires the Blender reader, uniform MAC CUDA transfer and pressure spikes,
-CUDA Graph execution and the 2D adaptive-basis spike, each with measured results.
-Proof pilots and later formal contracts use the separate [Lean workflow](../../proofs/README.md).
-A release license decision remains open. See the [design milestones and evidence
+The uniform CUDA spike covers complete-support quadratic MAC transfers with host-prepared
+geometry and a dense pressure solve for up to eight cells. M0 still requires measured
+Blender reader, CUDA Graph execution and 2D adaptive-basis spikes. Proof pilots and later
+formal contracts use the separate [Lean workflow](../../proofs/README.md). A release
+license decision remains open. See the [design milestones and evidence
 requirements](../superpowers/specs/2026-11-07-fluidity-design.md#15-validation-milestones-and-review-boundary).
