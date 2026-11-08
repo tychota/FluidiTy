@@ -66,6 +66,8 @@ if(FLUIDITY_ENABLE_CUDA)
   add_library(fluidity_cuda_operators STATIC
     native/cuda/transfer_host.cc
     native/cuda/transfers.cu
+    native/cuda/transfer_3d_host.cc
+    native/cuda/transfers_3d.cu
     native/cuda/pressure_host.cc
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
@@ -164,19 +166,22 @@ if(BUILD_TESTING)
     add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)
     target_link_libraries(fluidity_cuda_probe_tests PRIVATE fluidity_cuda_probe CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_probe_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
-    if(WIN32)
-      target_compile_definitions(fluidity_cuda_probe_tests
-        PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
-    endif()
     gtest_discover_tests(fluidity_cuda_probe_tests PROPERTIES LABELS gpu)
 
     add_executable(fluidity_cuda_operator_tests
       native/tests/test_cuda_transfers.cc
+      native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_operator_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    if(WIN32)
+      foreach(target IN ITEMS fluidity_cuda_probe_tests fluidity_cuda_operator_tests)
+        target_compile_definitions(${target}
+          PRIVATE "FLUIDITY_QUALIFIED_CUDA_DEVICE=\"${FLUIDITY_QUALIFIED_CUDA_DEVICE}\"")
+      endforeach()
+    endif()
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
     add_executable(fluidity_cuda_graph_tests
