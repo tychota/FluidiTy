@@ -13,13 +13,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 CPU_CASES = (
     "Build.Cxx20StatusRoundTrip",
-    "FixtureBridge.FourFixturesPresent",
+    "FixtureBridge.FiveFixturesPresent",
     "FixtureBridge.EscapedStringsAndTypedLiteralsRoundTrip",
     "Transfer.LocalAffineFixture",
     "Pressure.TwoCellFixtureUsesPositiveInternalJump",
     "Pressure.CompliantFixtureRetainsMeanPressure",
     "Viscosity.StiffFixture",
-    *(f"Cpu.Case{index}" for index in range(116)),
+    "MacTransfer3D.AffineCornerMatchesOracle",
+    *(f"Cpu.Case{index}" for index in range(115)),
 )
 PROBE_CASES = ("CudaProbe.SharedVec2Math", "CudaProbe.LaunchIgnoresPriorRuntimeError")
 OPERATOR_ERROR_CASE = "CudaPressure.LaunchIgnoresPriorRuntimeError"
@@ -57,7 +58,13 @@ OPERATOR_RECEIPTS = {
     "CudaPressure.NeumannJumpMatchesFixture": "operator=pressure_neumann compiled_architecture=1200 kernel_ms=0.5",
     "CudaPressure.ComplianceRetainsMeanPressure": "operator=pressure_compliance compiled_architecture=1200 kernel_ms=1.0",
 }
-FIXTURES = ("affine_apic.json", "compliant_pressure.json", "stiff_viscosity.json", "two_cell_pressure.json")
+FIXTURES = (
+    "affine_apic.json",
+    "compliant_pressure.json",
+    "stiff_viscosity.json",
+    "two_cell_pressure.json",
+    "uniform_mac_transfer_3d.json",
+)
 PYTHON_NODE_IDS = (
     "tests/test_reference.py::test_analytic",
     "test_tools.py::test_export[0]",

@@ -44,6 +44,7 @@ add_library(fluidity_native STATIC
   native/src/basis.cc
   native/src/small_solve.cc
   native/src/transfers.cc
+  native/src/transfers_3d.cc
   native/src/pressure.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
@@ -110,6 +111,7 @@ if(BUILD_TESTING)
             --overwrite
     COMMAND "${CMAKE_COMMAND}" -E touch "${fixture_export_stamp}"
     DEPENDS "${reference_src}/__init__.py" "${reference_src}/cli.py" "${reference_src}/fixtures.py"
+            "${reference_src}/transfer_3d_fixtures.py"
             "${PROJECT_SOURCE_DIR}/reference/pyproject.toml" "${PROJECT_SOURCE_DIR}/reference/uv.lock"
     COMMENT "Exporting independent reference fixtures"
     VERBATIM)
@@ -135,6 +137,7 @@ if(BUILD_TESTING)
     native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
+    native/tests/test_transfers_3d.cc
     native/tests/test_pressure.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)

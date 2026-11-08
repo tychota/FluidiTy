@@ -11,12 +11,13 @@
 namespace fluidity::fixtures {
 namespace {
 
-TEST(FixtureBridge, FourFixturesPresent) {
-  constexpr std::array<std::string_view, 4> kFixtureNames{
+TEST(FixtureBridge, FiveFixturesPresent) {
+  constexpr std::array<std::string_view, 5> kFixtureNames{
       "affine_apic",
       "compliant_pressure",
       "stiff_viscosity",
       "two_cell_pressure",
+      "uniform_mac_transfer_3d",
   };
   const auto fixtures = AllFixtures();
   ASSERT_EQ(fixtures.size(), kFixtureNames.size());
@@ -38,7 +39,10 @@ TEST(FixtureBridge, FourFixturesPresent) {
       const auto found = FindArray(fixture, array.name);
       ASSERT_TRUE(found.ok()) << found.status();
       EXPECT_EQ(*found, &array);
-      EXPECT_EQ(array.units, "1");
+      EXPECT_FALSE(array.units.empty());
+      if (fixture.name != "uniform_mac_transfer_3d") {
+        EXPECT_EQ(array.units, "1");
+      }
       const auto count = std::accumulate(
           array.shape.begin(),
           array.shape.end(),
