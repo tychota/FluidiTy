@@ -76,6 +76,8 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/transfers_3d.cu
     native/cuda/liquid_boundary_geometry_3d_host.cc
     native/cuda/liquid_boundary_geometry_3d.cu
+    native/cuda/liquid_boundary_transfer_3d.cu
+    native/cuda/liquid_boundary_transfer_3d_host.cc
     native/cuda/liquid_wall_contact_3d_host.cc
     native/cuda/liquid_wall_contact_3d.cu
     native/cuda/mac_pressure_3d_host.cc
@@ -84,7 +86,7 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
   if(MSVC)
-    set_source_files_properties(native/cuda/liquid_boundary_geometry_3d.cu native/cuda/liquid_wall_contact_3d.cu
+    set_source_files_properties(native/cuda/liquid_boundary_transfer_3d.cu native/cuda/liquid_boundary_geometry_3d.cu native/cuda/liquid_wall_contact_3d.cu
       PROPERTIES COMPILE_OPTIONS "-Xcompiler=/Zc:preprocessor" )
   endif()
 

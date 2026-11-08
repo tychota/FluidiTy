@@ -37,6 +37,8 @@ MAC_PRESSURE_3D_CASES = (
 BOUNDARY_3D_CASES = (
     "CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle",
     "CudaLiquidBoundary3D.SweptContactMatchesOracle",
+    "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu",
+    "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure",
 )
 MEMCHECK_OPERATOR_CASES = (
     *BOUNDARY_3D_CASES,
@@ -72,6 +74,8 @@ PROBE_RECEIPT = (
 OPERATOR_RECEIPTS = {
     BOUNDARY_3D_CASES[0]: "operator=liquid_boundary_geometry_3d compiled_architecture=1200 kernel_ms=0.875",
     BOUNDARY_3D_CASES[1]: "operator=liquid_wall_contact_3d compiled_architecture=1200 kernel_ms=1.5",
+    BOUNDARY_3D_CASES[2]: "operator=liquid_boundary_transfer_3d compiled_architecture=1200 kernel_ms=0.5",
+    BOUNDARY_3D_CASES[3]: "operator=liquid_boundary_coupled_3d compiled_architecture=1200 kernel_ms=0.75",
     MAC_PRESSURE_3D_CASES[0]: "operator=pressure_3d_mixed compiled_architecture=1200 kernel_ms=0.625",
     MAC_PRESSURE_3D_CASES[1]: "operator=pressure_3d_multilevel compiled_architecture=1200 kernel_ms=1.25",
     MAC_TRANSFER_3D_CASES[0]: "operator=p2g_3d compiled_architecture=1200 kernel_ms=0.375",
@@ -671,13 +675,15 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 26,
+        "tests": 28,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
         "driver_api": 13030,
         "runtime_api": 13030,
         "operators": {
+            "liquid_boundary_transfer_3d": {"compiled_architecture": 1200, "kernel_ms": 0.5},
+            "liquid_boundary_coupled_3d": {"compiled_architecture": 1200, "kernel_ms": 0.75},
             "liquid_boundary_geometry_3d": {"compiled_architecture": 1200, "kernel_ms": 0.875},
             "liquid_wall_contact_3d": {"compiled_architecture": 1200, "kernel_ms": 1.5},
             "p2g": {"compiled_architecture": 1200, "kernel_ms": 0.125},
@@ -707,7 +713,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 24,
+            "tests": 26,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}

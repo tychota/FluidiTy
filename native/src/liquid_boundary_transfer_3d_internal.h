@@ -3,19 +3,9 @@
 #include <span>
 
 #include "absl/status/statusor.h"
-#include "fluidity/base/mac_types_3d.h"
+#include "fluidity/base/liquid_boundary_transfer_math_3d.h"
 
 namespace fluidity::internal {
-
-struct LiquidGhostFitSample3D {
-  Vec3 offset_in_cell_widths;
-  double velocity;
-};
-struct LiquidGhostAffineFit3D {
-  bool full_rank;
-  double velocity_at_target;
-  Vec3 velocity_slopes_in_cell_widths;
-};
 
 // Internal host numerical seam for the bounded ghost kernel. Fits [1,x,y,z]
 // in supplied donor order using deterministic pivoted QR. At most 125 finite

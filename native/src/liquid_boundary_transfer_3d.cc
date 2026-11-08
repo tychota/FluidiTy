@@ -251,112 +251,19 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
 
 namespace internal {
 absl::StatusOr<LiquidGhostAffineFit3D> FitLiquidGhostAffine3D(std::span<const LiquidGhostFitSample3D> samples) {
-  if (samples.size() > kMaxDonors) {
+  if (samples.size() > 125) {
     return absl::ResourceExhaustedError("affine ghost fit exceeds bounded row count");
   }
-  std::array<std::array<double, 4>, kMaxDonors> matrix{};
-  std::array<double, kMaxDonors> rhs{};
-  double velocity_scale = 0.0;
-  for (std::size_t row = 0; row < samples.size(); ++row) {
-    const auto& sample = samples[row];
-    if (!IsFinite(sample.offset_in_cell_widths) || !std::isfinite(sample.velocity)) {
-      return absl::InvalidArgumentError("ghost fit rows must be finite");
+  const auto fit = FitLiquidGhostAffineCore3D(samples);
+  if (!fit.ok()) {
+    if (fit.status() == boundary_internal::Error::kInvalid) {
+      return absl::InvalidArgumentError("invalid ghost fit rows");
     }
-    matrix[row] = {1.0, sample.offset_in_cell_widths.x, sample.offset_in_cell_widths.y, sample.offset_in_cell_widths.z};
-    velocity_scale = std::max(velocity_scale, std::abs(sample.velocity));
+    return absl::OutOfRangeError("unrepresentable ghost fit arithmetic");
   }
-  if (samples.size() < 4) {
-    return LiquidGhostAffineFit3D{};
-  }
-  if (velocity_scale == 0.0) {
-    velocity_scale = 1.0;
-  }
-  for (std::size_t row = 0; row < samples.size(); ++row) {
-    rhs[row] = samples[row].velocity / velocity_scale;
-  }
-  std::array<std::size_t, 4> column_order{0, 1, 2, 3};
-  double largest_pivot = 0.0;
-  // Householder QR with recomputed residual norms avoids squaring a condition
-  // number as normal equations would. Strict pivot comparison gives stable
-  // column-order ties. All spatial columns are dimensionless offsets / h.
-  for (std::size_t pivot = 0; pivot < 4; ++pivot) {
-    std::size_t selected_column = pivot;
-    double selected_norm = 0.0;
-    for (std::size_t column = pivot; column < 4; ++column) {
-      double norm = 0.0;
-      for (std::size_t row = pivot; row < samples.size(); ++row) {
-        norm = std::hypot(norm, matrix[row][column]);
-      }
-      if (norm > selected_norm) {
-        selected_norm = norm;
-        selected_column = column;
-      }
-    }
-    if (!std::isfinite(selected_norm)) {
-      return absl::OutOfRangeError("ghost QR pivot is unrepresentable");
-    }
-    largest_pivot = std::max(largest_pivot, selected_norm);
-    if (selected_norm == 0.0 || selected_norm < 1e-10 * largest_pivot) {
-      return LiquidGhostAffineFit3D{};
-    }
-    std::swap(column_order[pivot], column_order[selected_column]);
-    for (std::size_t row = 0; row < samples.size(); ++row) {
-      std::swap(matrix[row][pivot], matrix[row][selected_column]);
-    }
-    const double diagonal = -std::copysign(selected_norm, matrix[pivot][pivot]);
-    std::array<double, kMaxDonors> reflector{};
-    double reflector_norm = 0.0;
-    for (std::size_t row = pivot; row < samples.size(); ++row) {
-      // Divide before subtracting: each reflector entry stays bounded by two.
-      reflector[row] = matrix[row][pivot] / selected_norm;
-      if (row == pivot) {
-        reflector[row] -= diagonal / selected_norm;
-      }
-      reflector_norm = std::hypot(reflector_norm, reflector[row]);
-    }
-    for (std::size_t row = pivot; row < samples.size(); ++row) {
-      reflector[row] /= reflector_norm;
-    }
-    for (std::size_t column = pivot + 1; column < 4; ++column) {
-      double projection = 0.0;
-      for (std::size_t row = pivot; row < samples.size(); ++row) {
-        projection += reflector[row] * matrix[row][column];
-      }
-      for (std::size_t row = pivot; row < samples.size(); ++row) {
-        matrix[row][column] -= 2.0 * reflector[row] * projection;
-        if (!std::isfinite(matrix[row][column])) {
-          return absl::OutOfRangeError("ghost QR arithmetic is nonfinite");
-        }
-      }
-    }
-    double rhs_projection = 0.0;
-    for (std::size_t row = pivot; row < samples.size(); ++row) {
-      rhs_projection += reflector[row] * rhs[row];
-    }
-    for (std::size_t row = pivot; row < samples.size(); ++row) {
-      rhs[row] -= 2.0 * reflector[row] * rhs_projection;
-    }
-    matrix[pivot][pivot] = diagonal;
-  }
-  std::array<double, 4> pivoted_coefficients{};
-  std::array<double, 4> coefficients{};
-  for (int pivot = 3; pivot >= 0; --pivot) {
-    double residual = rhs[pivot];
-    for (int column = pivot + 1; column < 4; ++column) {
-      residual -= matrix[pivot][column] * pivoted_coefficients[column];
-    }
-    pivoted_coefficients[pivot] = residual / matrix[pivot][pivot];
-    coefficients[column_order[pivot]] = pivoted_coefficients[pivot] * velocity_scale;
-    if (!std::isfinite(coefficients[column_order[pivot]])) {
-      return absl::OutOfRangeError("ghost affine coefficient is unrepresentable");
-    }
-  }
-  return LiquidGhostAffineFit3D{
-      .full_rank = true,
-      .velocity_at_target = coefficients[0],
-      .velocity_slopes_in_cell_widths = {coefficients[1], coefficients[2], coefficients[3]},
-  };
+  return *fit;
 }
+
 }  // namespace internal
 
 absl::StatusOr<LiquidBoundaryFaceDeposits3D> DepositCompatibleMacQuanta3D(const LiquidBoundaryDepositInputs3D& inputs) {

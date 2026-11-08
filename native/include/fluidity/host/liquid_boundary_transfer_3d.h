@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "fluidity/base/liquid_boundary_transfer_types_3d.h"
 #include "fluidity/host/transfers_3d.h"
 
 namespace fluidity {
@@ -15,24 +16,6 @@ namespace fluidity {
 inline constexpr std::size_t kLiquidBoundaryParticleCapacity3D = 1024;
 inline constexpr std::size_t kLiquidBoundaryFaceCapacity3D = 24576;
 
-struct LiquidBoundaryParticle3D {
-  MacTransferParticle3D transfer;
-  std::int64_t side_tag = 0;  // Equality identifies the same material/body side.
-  bool affine_enabled = true;  // False makes deposition consume a zero affine row.
-};
-
-struct LiquidBoundaryFaceTag3D {
-  std::int64_t side_tag = 0;
-  bool structurally_eligible = true;  // Independent of allocation and deposited mass.
-};
-
-struct CompatibleMacFaceSample3D {
-  std::size_t face_slot;  // Original owned slot, retained even for excluded pairs.
-  bool compatible;  // Structural eligibility and side equality, independent of mass.
-  double normalized_weight;  // N/S, dimensionless; zero on excluded pairs.
-  Vec3 normalized_weight_gradient;  // Quotient-rule derivative, inverse meters.
-  Vec3 centered_face_offset;  // r minus the compatible weighted mean, meters.
-};
 using CompatibleMacFaceStencil3D = std::array<CompatibleMacFaceSample3D, 27>;
 
 struct LiquidBoundaryDepositInputs3D {
@@ -61,12 +44,6 @@ struct LiquidBoundaryFaceDeposits3D {
 // Inputs are borrowed read-only and may alias; errors publish no result.
 absl::StatusOr<LiquidBoundaryFaceDeposits3D> DepositCompatibleMacQuanta3D(const LiquidBoundaryDepositInputs3D& inputs);
 
-enum class LiquidFaceValidity3D : std::uint8_t {
-  kMissing,
-  kValid,
-  kPredicted,  // Explicit finite continuation eligible as a donor, without mass.
-  kLowMass,  // Positive mass at or below the minimum; forces PIC retention off.
-};
 struct NormalizedLiquidMacFaces3D {
   std::vector<double> face_masses;  // Kilograms.
   std::vector<double> face_velocities;  // m/s; zero for missing/low-mass slots.
@@ -85,12 +62,6 @@ absl::StatusOr<NormalizedLiquidMacFaces3D> NormalizeLiquidMacFaces3D(
     double minimum_face_mass
 );
 
-struct LiquidPrescribedWallSample3D {
-  bool available = false;
-  std::int64_t side_tag = 0;  // Wall continuation is usable only by this side.
-  Vec3 unit_normal{};  // World Cartesian normal, unit length when available.
-  Vec3 wall_velocity{};  // World m/s at this history's wall_sample_time.
-};
 struct LiquidBoundaryVelocityHistory3D {
   double velocity_sample_time;  // Seconds, must match the requested stage time.
   double wall_sample_time;  // Seconds, must match velocity_sample_time.
@@ -107,17 +78,7 @@ struct LiquidBoundaryGatherInputs3D {
   LiquidBoundaryVelocityHistory3D old_history;
   LiquidBoundaryVelocityHistory3D new_history;
 };
-struct LiquidBoundaryParticleGather3D {
-  Vec3 new_pic_velocity{};  // m/s from the complete new filled stencil.
-  Vec3 grid_velocity_increment{};  // new PIC minus old PIC, m/s.
-  Vec3 particle_minus_old_pic_velocity{};  // Retained particle residual, m/s.
-  Mat3 fitted_velocity_slopes{};  // Complete second-moment fit, inverse seconds.
-  Mat3 velocity_gradient{};  // True original-basis derivative, inverse seconds.
-  bool affine_enabled = true;  // False on input affine-off or any stage fallback.
-  bool old_pic_fallback = false;  // Any old-stage ghost required rank fallback.
-  bool new_pic_fallback = false;  // Any new-stage ghost required rank fallback.
-  bool low_mass_fallback = false;  // Either complete history touches low mass.
-};
+
 struct LiquidBoundaryGatherResults3D {
   std::vector<LiquidBoundaryParticleGather3D> particles;
   std::size_t old_pic_fallback_particle_count = 0;
