@@ -66,9 +66,9 @@ TEST(Transfer, LocalAffineFixture) {
   const auto expect_fixture_value = [&](double actual, double expected) {
     EXPECT_NEAR(actual, expected, fixture->atol + fixture->rtol * std::abs(expected));
   };
-  expect_fixture_value(fit->value, (*expected_value)->f64_data[0]);
-  expect_fixture_value(fit->row.x, (*expected_affine)->f64_data[0]);
-  expect_fixture_value(fit->row.y, (*expected_affine)->f64_data[1]);
+  expect_fixture_value(fit->interpolated_value, (*expected_value)->f64_data[0]);
+  expect_fixture_value(fit->spatial_slopes.x, (*expected_affine)->f64_data[0]);
+  expect_fixture_value(fit->spatial_slopes.y, (*expected_affine)->f64_data[1]);
 }
 
 TEST(Transfer, FitUsesFullCenteredMoment) {
@@ -77,8 +77,8 @@ TEST(Transfer, FitUsesFullCenteredMoment) {
   const std::array values{1.0, 3.0, 1.0};
   const auto fit = FitAffine2D({-2.0, 3.0}, samples, weights, values);
   ASSERT_TRUE(fit.ok()) << fit.status();
-  ExpectNear(fit->value, 1.5);
-  ExpectVec(fit->row, {2.0, -4.0});
+  ExpectNear(fit->interpolated_value, 1.5);
+  ExpectVec(fit->spatial_slopes, {2.0, -4.0});
 }
 
 TEST(Transfer, FitKeepsRepresentableLargeCoupledRow) {
@@ -89,8 +89,8 @@ TEST(Transfer, FitKeepsRepresentableLargeCoupledRow) {
   // its (1, 1) eigenvector with eigenvalue 1/4.
   const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
   ASSERT_TRUE(fit.ok()) << fit.status();
-  EXPECT_EQ(fit->value, 0.0);
-  ExpectVec(fit->row, {1.3e308, 1.3e308});
+  EXPECT_EQ(fit->interpolated_value, 0.0);
+  ExpectVec(fit->spatial_slopes, {1.3e308, 1.3e308});
 }
 
 TEST(Transfer, FitPreservesIndependentCoefficientsAcrossExponentRange) {
@@ -99,8 +99,8 @@ TEST(Transfer, FitPreservesIndependentCoefficientsAcrossExponentRange) {
   constexpr std::array values{8e307, -8e307, 1e-100, -1e-100};
   const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
   ASSERT_TRUE(fit.ok()) << fit.status();
-  ExpectNear(fit->row.x, 1.6e308);
-  EXPECT_NEAR(fit->row.y, 2e-100, 2e-112);
+  ExpectNear(fit->spatial_slopes.x, 1.6e308);
+  EXPECT_NEAR(fit->spatial_slopes.y, 2e-100, 2e-112);
 
   constexpr std::array overflowing_values{1e308, -1e308, 1e-100, -1e-100};
   const auto overflow = FitAffine2D({0.0, 0.0}, samples, weights, overflowing_values);
@@ -115,8 +115,8 @@ TEST(Transfer, FitKeepsSmallRepresentableRowWithLargeMoment) {
   // rounds the smaller RHS to subnormal precision before dividing by the determinant.
   const auto fit = FitAffine2D({0.0, 0.0}, samples, weights, values);
   ASSERT_TRUE(fit.ok()) << fit.status();
-  ExpectNear(fit->row.x, 1.0);
-  EXPECT_NEAR(fit->row.y, 1e-307, 1e-319);
+  ExpectNear(fit->spatial_slopes.x, 1.0);
+  EXPECT_NEAR(fit->spatial_slopes.y, 1e-307, 1e-319);
 }
 
 TEST(Transfer, StaggeredAffine) {

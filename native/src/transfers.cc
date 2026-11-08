@@ -36,7 +36,7 @@ double Dot(Vec2 lhs, Vec2 rhs) {
 struct FaceStencil {
   Stencil2D basis;
   std::array<std::size_t, kStencilSize> face_indices;
-  std::array<Vec2, kStencilSize> samples;
+  std::array<Vec2, kStencilSize> face_positions;
 };
 
 // FaceCount has validated the lattice sizes. Check the signed nodes before flattening them,
@@ -76,7 +76,7 @@ absl::StatusOr<FaceStencil> BuildFaceStencil(const Grid2D& grid, Vec2 position, 
       return geometry.status();
     }
     stencil.face_indices[stencil_slot] = face_index;
-    stencil.samples[stencil_slot] = geometry->position;
+    stencil.face_positions[stencil_slot] = geometry->position;
   }
   return stencil;
 }
@@ -106,13 +106,13 @@ absl::Status DepositComponent(
     std::span<double> staged_mass,
     std::span<double> staged_momentum
 ) {
-  const auto mean_offset = WeightedOffsetMean(position, stencil.samples, stencil.basis.weights);
+  const auto mean_offset = WeightedOffsetMean(position, stencil.face_positions, stencil.basis.weights);
   if (!mean_offset.ok()) {
     return mean_offset.status();
   }
   for (std::size_t stencil_slot = 0; stencil_slot < stencil.face_indices.size(); ++stencil_slot) {
     const std::size_t face_index = stencil.face_indices[stencil_slot];
-    const Vec2 centered_offset = (stencil.samples[stencil_slot] - position) - *mean_offset;
+    const Vec2 centered_offset = (stencil.face_positions[stencil_slot] - position) - *mean_offset;
     const double deposited_velocity = velocity + Dot(affine_row, centered_offset);
     const double mass_contribution = stencil.basis.weights[stencil_slot] * mass;
     staged_mass[face_index] += mass_contribution;
@@ -215,32 +215,32 @@ struct GatheredComponent {
 absl::StatusOr<GatheredComponent> GatherComponent(
     const FaceStencil& stencil,
     Vec2 position,
-    std::span<const double> old_faces,
-    std::span<const double> new_faces
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities
 ) {
-  std::array<double, kStencilSize> new_samples;
-  double old_value = 0.0;
-  for (std::size_t sample = 0; sample < new_samples.size(); ++sample) {
+  std::array<double, kStencilSize> new_face_velocity_samples;
+  double old_pic_component = 0.0;
+  for (std::size_t sample = 0; sample < new_face_velocity_samples.size(); ++sample) {
     const std::size_t face = stencil.face_indices[sample];
-    new_samples[sample] = new_faces[face];
-    old_value += stencil.basis.weights[sample] * old_faces[face];
+    new_face_velocity_samples[sample] = new_face_velocities[face];
+    old_pic_component += stencil.basis.weights[sample] * old_face_velocities[face];
   }
-  const auto fit = FitAffine2D(position, stencil.samples, stencil.basis.weights, new_samples);
+  const auto fit = FitAffine2D(position, stencil.face_positions, stencil.basis.weights, new_face_velocity_samples);
   if (!fit.ok()) {
     return fit.status();
   }
-  const auto gradient = VelocityGradient2D(new_samples, stencil.basis.gradients);
+  const auto gradient = VelocityGradient2D(new_face_velocity_samples, stencil.basis.gradients);
   if (!gradient.ok()) {
     return gradient.status();
   }
-  const double increment = fit->value - old_value;
+  const double increment = fit->interpolated_value - old_pic_component;
   if (!std::isfinite(increment)) {
     return absl::OutOfRangeError("grid velocity increment is nonfinite");
   }
   return GatheredComponent{
-      .pic = fit->value,
+      .pic = fit->interpolated_value,
       .increment = increment,
-      .affine_row = fit->row,
+      .affine_row = fit->spatial_slopes,
       .gradient_row = *gradient,
   };
 }
@@ -346,51 +346,53 @@ absl::Status P2G(
 }
 
 absl::Status G2P(
-    const Grid2D& grid,
-    std::span<const Vec2> positions,
-    std::span<const double> old_faces,
-    std::span<const double> new_faces,
-    std::span<Vec2> pic,
-    std::span<Vec2> increments,
-    std::span<Mat2> affine,
-    std::span<Mat2> gradient,
-    std::span<double> scratch
+    const Grid2D& mac_grid,
+    std::span<const Vec2> particle_world_positions,
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities,
+    std::span<Vec2> pic_velocities,
+    std::span<Vec2> grid_velocity_increments,
+    std::span<Mat2> velocity_fit_slopes,
+    std::span<Mat2> velocity_gradients,
+    std::span<double> gather_scratch
 ) {
-  const auto face_count = FaceCount(grid);
+  const auto face_count = FaceCount(mac_grid);
   if (!face_count.ok()) {
     return face_count.status();
   }
-  const std::size_t particle_count = positions.size();
+  const std::size_t particle_count = particle_world_positions.size();
   const auto scratch_count = G2PScratchDoubles(particle_count);
   if (!scratch_count.ok()) {
     return scratch_count.status();
   }
-  const auto face_extents = CheckExtents(*face_count, {old_faces.size(), new_faces.size()});
+  const auto face_extents = CheckExtents(*face_count, {old_face_velocities.size(), new_face_velocities.size()});
   if (!face_extents.ok()) {
     return face_extents;
   }
-  const auto particle_extents =
-      CheckExtents(particle_count, {pic.size(), increments.size(), affine.size(), gradient.size()});
+  const auto particle_extents = CheckExtents(
+      particle_count,
+      {pic_velocities.size(), grid_velocity_increments.size(), velocity_fit_slopes.size(), velocity_gradients.size()}
+  );
   if (!particle_extents.ok()) {
     return particle_extents;
   }
-  const auto scratch_extent = ValidateExtent(scratch.size(), *scratch_count);
+  const auto scratch_extent = ValidateExtent(gather_scratch.size(), *scratch_count);
   if (!scratch_extent.ok()) {
     return scratch_extent;
   }
   const auto disjoint = CheckWritableViews(
       {
-          std::as_bytes(pic),
-          std::as_bytes(increments),
-          std::as_bytes(affine),
-          std::as_bytes(gradient),
-          std::as_bytes(scratch),
+          std::as_bytes(pic_velocities),
+          std::as_bytes(grid_velocity_increments),
+          std::as_bytes(velocity_fit_slopes),
+          std::as_bytes(velocity_gradients),
+          std::as_bytes(gather_scratch),
       },
       {
-          std::as_bytes(std::span(&grid, 1)),
-          std::as_bytes(positions),
-          std::as_bytes(old_faces),
-          std::as_bytes(new_faces),
+          std::as_bytes(std::span(&mac_grid, 1)),
+          std::as_bytes(particle_world_positions),
+          std::as_bytes(old_face_velocities),
+          std::as_bytes(new_face_velocities),
       }
   );
   if (!disjoint.ok()) {
@@ -400,58 +402,64 @@ absl::Status G2P(
   const auto finite_face = [](double value) {
     return std::isfinite(value);
   };
-  if (!std::ranges::all_of(old_faces, finite_face) || !std::ranges::all_of(new_faces, finite_face)) {
+  if (!std::ranges::all_of(old_face_velocities, finite_face)
+      || !std::ranges::all_of(new_face_velocities, finite_face)) {
     return absl::InvalidArgumentError("old and new face velocities must be finite");
   }
 
   // Stage the four particle outputs in double slices, independent of Vec2 and Mat2 layout.
-  const std::size_t vector_doubles = kComponentCount * particle_count;
-  const std::size_t matrix_doubles = kMatrixEntryCount * particle_count;
-  auto staged_pic = scratch.first(vector_doubles);
-  auto staged_increments = scratch.subspan(vector_doubles, vector_doubles);
-  auto staged_affine = scratch.subspan(2 * vector_doubles, matrix_doubles);
-  auto staged_gradient = scratch.last(matrix_doubles);
-  for (std::size_t particle = 0; particle < particle_count; ++particle) {
-    const Vec2 position = positions[particle];
-    if (!IsFinite(position)) {
+  const std::size_t vector_value_count = kComponentCount * particle_count;
+  const std::size_t matrix_value_count = kMatrixEntryCount * particle_count;
+  auto staged_pic_velocities = gather_scratch.first(vector_value_count);
+  auto staged_grid_velocity_increments = gather_scratch.subspan(vector_value_count, vector_value_count);
+  auto staged_velocity_fit_slopes = gather_scratch.subspan(2 * vector_value_count, matrix_value_count);
+  auto staged_velocity_gradients = gather_scratch.last(matrix_value_count);
+  for (std::size_t particle_index = 0; particle_index < particle_count; ++particle_index) {
+    const Vec2 particle_world_position = particle_world_positions[particle_index];
+    if (!IsFinite(particle_world_position)) {
       return absl::InvalidArgumentError("particle position must be finite");
     }
-    for (std::size_t component = 0; component < kComponentCount; ++component) {
-      const auto stencil = BuildFaceStencil(grid, position, component);
+    for (std::size_t velocity_component_index = 0; velocity_component_index < kComponentCount;
+         ++velocity_component_index) {
+      const auto stencil = BuildFaceStencil(mac_grid, particle_world_position, velocity_component_index);
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const auto gathered = GatherComponent(*stencil, position, old_faces, new_faces);
+      const auto gathered =
+          GatherComponent(*stencil, particle_world_position, old_face_velocities, new_face_velocities);
       if (!gathered.ok()) {
         return gathered.status();
       }
-      const std::size_t vector_entry = kComponentCount * particle + component;
+      const std::size_t vector_entry = kComponentCount * particle_index + velocity_component_index;
       const std::size_t matrix_row_offset = kComponentCount * vector_entry;
-      staged_pic[vector_entry] = gathered->pic;
-      staged_increments[vector_entry] = gathered->increment;
-      staged_affine[matrix_row_offset] = gathered->affine_row.x;
-      staged_affine[matrix_row_offset + 1] = gathered->affine_row.y;
-      staged_gradient[matrix_row_offset] = gathered->gradient_row.x;
-      staged_gradient[matrix_row_offset + 1] = gathered->gradient_row.y;
+      staged_pic_velocities[vector_entry] = gathered->pic;
+      staged_grid_velocity_increments[vector_entry] = gathered->increment;
+      staged_velocity_fit_slopes[matrix_row_offset] = gathered->affine_row.x;
+      staged_velocity_fit_slopes[matrix_row_offset + 1] = gathered->affine_row.y;
+      staged_velocity_gradients[matrix_row_offset] = gathered->gradient_row.x;
+      staged_velocity_gradients[matrix_row_offset + 1] = gathered->gradient_row.y;
     }
   }
 
-  for (std::size_t particle = 0; particle < particle_count; ++particle) {
-    const std::size_t vector_offset = kComponentCount * particle;
-    const std::size_t matrix_offset = kMatrixEntryCount * particle;
-    pic[particle] = {staged_pic[vector_offset], staged_pic[vector_offset + 1]};
-    increments[particle] = {staged_increments[vector_offset], staged_increments[vector_offset + 1]};
-    affine[particle] = {
-        .xx = staged_affine[matrix_offset],
-        .xy = staged_affine[matrix_offset + 1],
-        .yx = staged_affine[matrix_offset + 2],
-        .yy = staged_affine[matrix_offset + 3],
+  for (std::size_t particle_index = 0; particle_index < particle_count; ++particle_index) {
+    const std::size_t vector_offset = kComponentCount * particle_index;
+    const std::size_t matrix_offset = kMatrixEntryCount * particle_index;
+    pic_velocities[particle_index] = {staged_pic_velocities[vector_offset], staged_pic_velocities[vector_offset + 1]};
+    grid_velocity_increments[particle_index] = {
+        staged_grid_velocity_increments[vector_offset],
+        staged_grid_velocity_increments[vector_offset + 1],
     };
-    gradient[particle] = {
-        .xx = staged_gradient[matrix_offset],
-        .xy = staged_gradient[matrix_offset + 1],
-        .yx = staged_gradient[matrix_offset + 2],
-        .yy = staged_gradient[matrix_offset + 3],
+    velocity_fit_slopes[particle_index] = {
+        .xx = staged_velocity_fit_slopes[matrix_offset],
+        .xy = staged_velocity_fit_slopes[matrix_offset + 1],
+        .yx = staged_velocity_fit_slopes[matrix_offset + 2],
+        .yy = staged_velocity_fit_slopes[matrix_offset + 3],
+    };
+    velocity_gradients[particle_index] = {
+        .xx = staged_velocity_gradients[matrix_offset],
+        .xy = staged_velocity_gradients[matrix_offset + 1],
+        .yx = staged_velocity_gradients[matrix_offset + 2],
+        .yy = staged_velocity_gradients[matrix_offset + 3],
     };
   }
   return absl::OkStatus();
@@ -459,28 +467,28 @@ absl::Status G2P(
 
 absl::StatusOr<AffineFit2D> FitAffine2D(
     Vec2 position,
-    std::span<const Vec2> samples,
-    std::span<const double> weights,
-    std::span<const double> values
+    std::span<const Vec2> sample_positions,
+    std::span<const double> sample_weights,
+    std::span<const double> sample_values
 ) {
   if (!IsFinite(position)) {
     return absl::InvalidArgumentError("fit position must be finite");
   }
-  if (samples.empty()) {
+  if (sample_positions.empty()) {
     return absl::InvalidArgumentError("affine fit needs samples");
   }
-  const auto extents = CheckExtents(samples.size(), {weights.size(), values.size()});
+  const auto extents = CheckExtents(sample_positions.size(), {sample_weights.size(), sample_values.size()});
   if (!extents.ok()) {
     return extents;
   }
   // The reference compares the weight sum to one with absolute and relative tolerances of 1e-12.
   constexpr double partition_tolerance = 2e-12;
   double total_weight = 0.0;
-  for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
-    if (!IsFinite(samples[sample_index]) || !std::isfinite(values[sample_index])) {
+  for (std::size_t sample_index = 0; sample_index < sample_positions.size(); ++sample_index) {
+    if (!IsFinite(sample_positions[sample_index]) || !std::isfinite(sample_values[sample_index])) {
       return absl::InvalidArgumentError("sample positions and values must be finite");
     }
-    const double weight = weights[sample_index];
+    const double weight = sample_weights[sample_index];
     const bool valid_weight = std::isfinite(weight) && weight >= 0.0;
     if (!valid_weight) {
       return absl::InvalidArgumentError("weights must be finite and nonnegative");
@@ -494,28 +502,28 @@ absl::StatusOr<AffineFit2D> FitAffine2D(
   if (1.0 - total_weight > partition_tolerance) {
     return absl::InvalidArgumentError("weights must form a partition of unity");
   }
-  const auto mean_offset = WeightedOffsetMean(position, samples, weights);
+  const auto mean_offset = WeightedOffsetMean(position, sample_positions, sample_weights);
   if (!mean_offset.ok()) {
     return mean_offset.status();
   }
 
-  double value = 0.0;
+  double interpolated_value = 0.0;
   double moment_xx = 0.0;
   double moment_xy = 0.0;
   double moment_yy = 0.0;
   Vec2 offset_value_moment{};
-  for (std::size_t sample_index = 0; sample_index < samples.size(); ++sample_index) {
-    const Vec2 centered_offset = (samples[sample_index] - position) - *mean_offset;
-    const Vec2 weighted_centered_offset = centered_offset * weights[sample_index];
-    const double weighted_value = weights[sample_index] * values[sample_index];
-    value += weighted_value;
+  for (std::size_t sample_index = 0; sample_index < sample_positions.size(); ++sample_index) {
+    const Vec2 centered_offset = (sample_positions[sample_index] - position) - *mean_offset;
+    const Vec2 weighted_centered_offset = centered_offset * sample_weights[sample_index];
+    const double weighted_value = sample_weights[sample_index] * sample_values[sample_index];
+    interpolated_value += weighted_value;
     moment_xx += weighted_centered_offset.x * centered_offset.x;
     moment_xy += weighted_centered_offset.x * centered_offset.y;
     moment_yy += weighted_centered_offset.y * centered_offset.y;
     offset_value_moment = offset_value_moment + centered_offset * weighted_value;
   }
   const bool finite_moment = std::isfinite(moment_xx) && std::isfinite(moment_xy) && std::isfinite(moment_yy);
-  if (!finite_moment || !IsFinite(offset_value_moment) || !std::isfinite(value)) {
+  if (!finite_moment || !IsFinite(offset_value_moment) || !std::isfinite(interpolated_value)) {
     return absl::OutOfRangeError("affine moment, right-hand side or gathered value is nonfinite");
   }
   const auto affine_row = SolveAffineMoment(moment_xx, moment_xy, moment_yy, offset_value_moment);
@@ -523,65 +531,72 @@ absl::StatusOr<AffineFit2D> FitAffine2D(
     return affine_row.status();
   }
   return AffineFit2D{
-      .value = value,
-      .row = *affine_row,
+      .interpolated_value = interpolated_value,
+      .spatial_slopes = *affine_row,
   };
 }
 
-absl::StatusOr<Vec2> VelocityGradient2D(std::span<const double> values, std::span<const Vec2> gradients) {
-  if (values.empty()) {
+absl::StatusOr<Vec2>
+VelocityGradient2D(std::span<const double> face_velocity_samples, std::span<const Vec2> basis_weight_gradients) {
+  if (face_velocity_samples.empty()) {
     return absl::InvalidArgumentError("velocity gradient needs samples");
   }
-  const auto extent = ValidateExtent(gradients.size(), values.size());
+  const auto extent = ValidateExtent(basis_weight_gradients.size(), face_velocity_samples.size());
   if (!extent.ok()) {
     return extent;
   }
-  Vec2 gradient{};
-  for (std::size_t sample = 0; sample < values.size(); ++sample) {
-    if (!std::isfinite(values[sample]) || !IsFinite(gradients[sample])) {
+  Vec2 velocity_gradient{};
+  for (std::size_t sample_index = 0; sample_index < face_velocity_samples.size(); ++sample_index) {
+    if (!std::isfinite(face_velocity_samples[sample_index]) || !IsFinite(basis_weight_gradients[sample_index])) {
       return absl::InvalidArgumentError("velocity samples and weight gradients must be finite");
     }
-    gradient = gradient + gradients[sample] * values[sample];
+    velocity_gradient = velocity_gradient + basis_weight_gradients[sample_index] * face_velocity_samples[sample_index];
   }
-  if (!IsFinite(gradient)) {
+  if (!IsFinite(velocity_gradient)) {
     return absl::OutOfRangeError("velocity gradient is nonfinite");
   }
-  return gradient;
+  return velocity_gradient;
 }
 
-absl::StatusOr<VelocityPair> BlendHistory2D(Vec2 pic, Vec2 residual, double energy, Phase phase, double separation) {
-  if (!IsFinite(pic) || !IsFinite(residual)) {
+absl::StatusOr<VelocityPair> BlendHistory2D(
+    Vec2 pic_velocity,
+    Vec2 history_velocity_residual,
+    double energy_control,
+    Phase phase,
+    double separation_factor
+) {
+  if (!IsFinite(pic_velocity) || !IsFinite(history_velocity_residual)) {
     return absl::InvalidArgumentError("PIC and history residual must be finite");
   }
-  const bool valid_energy = energy >= 0.0 && energy <= 1.0;
+  const bool valid_energy = energy_control >= 0.0 && energy_control <= 1.0;
   if (!valid_energy) {
     return absl::InvalidArgumentError("energy must be in [0, 1]");
   }
-  const bool valid_separation = separation >= 0.0 && separation <= 1.0;
+  const bool valid_separation = separation_factor >= 0.0 && separation_factor <= 1.0;
   if (!valid_separation) {
     return absl::InvalidArgumentError("separation must be in [0, 1]");
   }
 
-  double alpha = 0.99 * energy;
-  double beta = 0.0;
+  double history_retention_factor = 0.99 * energy_control;
+  double advection_separation_factor = 0.0;
   switch (phase) {
     case Phase::kGas:
-      alpha = 0.0;
+      history_retention_factor = 0.0;
       break;
     case Phase::kElastic:
       break;
     case Phase::kLiquid:
     case Phase::kGranular:
     case Phase::kSnow:
-      beta = energy * separation;
+      advection_separation_factor = energy_control * separation_factor;
       break;
     default:
       return absl::InvalidArgumentError("unknown history blend phase");
   }
 
   const VelocityPair velocities{
-      .stored = pic + alpha * residual,
-      .advecting = pic + (beta * alpha) * residual,
+      .stored = pic_velocity + history_retention_factor * history_velocity_residual,
+      .advecting = pic_velocity + (advection_separation_factor * history_retention_factor) * history_velocity_residual,
   };
   if (!IsFinite(velocities.stored) || !IsFinite(velocities.advecting)) {
     return absl::OutOfRangeError("history-blended velocity is nonfinite");
