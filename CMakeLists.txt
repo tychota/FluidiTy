@@ -46,6 +46,7 @@ add_library(fluidity_native STATIC
   native/src/transfers.cc
   native/src/transfers_3d.cc
   native/src/pressure.cc
+  native/src/mac_pressure_3d_system.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
@@ -141,6 +142,7 @@ if(BUILD_TESTING)
     native/tests/test_transfers.cc
     native/tests/test_transfers_3d.cc
     native/tests/test_pressure.cc
+    native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native)
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)

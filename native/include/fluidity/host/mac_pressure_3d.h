@@ -1,0 +1,74 @@
+#pragma once
+
+#include <cstddef>
+#include <span>
+#include <variant>
+#include <vector>
+
+#include "fluidity/host/sparse_mac_grid_3d.h"
+
+namespace fluidity {
+
+struct MacPressureCell3D {
+  CellIndex3D cell_index;
+  double fluid_volume;  // Positive fluid volume in m³, at most the grid cell volume.
+  double target_divergence;  // Prescribed divergence in s⁻¹.
+  double bulk_modulus;  // Positive Pa. Positive infinity selects zero compliance.
+  double previous_pressure;  // Pressure before the step in Pa.
+};
+
+// The jump in Pa enters the pressure correction as p_tail − p_head + pressure_jump.
+struct InternalMacPressureLink3D {
+  double pressure_jump;
+};
+
+struct DirichletMacPressureLink3D {
+  double exterior_pressure;  // Pressure in Pa at the single missing endpoint.
+};
+
+struct SealedMacPressureLink3D {};
+
+struct MacPressureFace3D {
+  FaceIndex3D face_index;  // The lattice index names the head; the normal points from tail to head.
+  double open_area;  // Fluid aperture in m², between zero and the full face area.
+  double inverse_density;  // Face mobility in m³/kg.
+  double pressure_gradient_distance;  // Center-to-center or center-to-boundary distance in meters.
+  double predicted_normal_velocity;  // Fluid velocity along the positive normal in m/s.
+  double wall_normal_velocity;  // Wall velocity along the positive normal in m/s.
+  // Internal faces have two pressure endpoints and may have zero area.
+  // Dirichlet faces have one pressure endpoint and positive area. Sealed
+  // faces have zero area. At zero area, mobility and distance need only be finite.
+  std::variant<InternalMacPressureLink3D, DirichletMacPressureLink3D, SealedMacPressureLink3D> pressure_link;
+};
+
+// Borrowed read-only inputs. Supply 1–4096 distinct pressure cells in (z,y,x)
+// order and their exact union of incident faces (at most 24576) in owned slot
+// order. Even a sealed face must have an allocated owner.
+struct MacPressureInputs3D {
+  const SparseMacGrid3D& mac_grid;
+  double step_duration;  // Positive finite time step in seconds.
+  std::span<const MacPressureCell3D> pressure_cells;
+  std::span<const MacPressureFace3D> pressure_faces;
+};
+
+struct MacPressureDiagnostics3D {
+  std::size_t iteration_count = 0;
+  std::size_t multigrid_level_count = 0;
+  double true_residual_l2 = 0.0;  // L2 norm of the original integrated residual in m³/s.
+  double max_volume_scaled_residual = 0.0;  // Maximum |b − Ap| / V in s⁻¹.
+  double max_cell_constraint_defect = 0.0;  // Maximum absolute physical defect in s⁻¹.
+};
+
+// Owns rows in input cell order and velocities in input face order. Both
+// original-system diagnostics include the rows selected as zero-pressure pins.
+struct MacPressureProjection3D {
+  std::vector<double> cell_pressures;  // Pa.
+  std::vector<double> corrected_face_velocities;  // Positive normal, m/s.
+  std::vector<double> integrated_rhs;  // m³/s.
+  std::vector<double> true_residuals;  // b − Ap in m³/s.
+  std::vector<double> cell_constraint_defects;  // Corrected outward flux − source + compliance, divided by V, in s⁻¹.
+  std::vector<std::size_t> gauge_cell_ordinals;  // In increasing cell order.
+  MacPressureDiagnostics3D diagnostics;
+};
+
+}  // namespace fluidity
