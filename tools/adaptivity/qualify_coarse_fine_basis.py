@@ -321,7 +321,9 @@ def measure_masked_support_fixtures(dtype):
         passed = (
             all(original_level_counts)
             and retained_weights.size >= 3
+            and isfinite(removed_weight)
             and removed_weight > 0
+            and isfinite(raw_partition_defect)
             and raw_partition_defect > 0
             and affine_rank == expected_rank
         )

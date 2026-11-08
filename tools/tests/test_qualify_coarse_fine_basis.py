@@ -127,7 +127,17 @@ def test_cli_reports_the_same_timed_queries_for_both_evaluators(tmp_path):
             assert transition_sample["status"] == uniform_sample["status"] == "pass"
 
 
-def test_cli_replaces_passing_receipt_when_stencil_weight_is_nonfinite(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("nonfinite_weight", "collinear_metric"),
+    [
+        pytest.param(np.nan, "removed_weight", id="nan-removed"),
+        pytest.param(np.inf, "removed_weight", id="inf-removed"),
+        pytest.param(np.inf, "raw_partition_defect", id="inf-retained"),
+    ],
+)
+def test_cli_replaces_passing_receipt_when_stencil_weight_is_nonfinite(
+    tmp_path, monkeypatch, nonfinite_weight, collinear_metric
+):
     report_path = tmp_path / "qualification.json"
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--output", str(report_path), "--repeats", "1"])
     assert qualification.main() == 0
@@ -143,12 +153,18 @@ def test_cli_replaces_passing_receipt_when_stencil_weight_is_nonfinite(tmp_path,
             and np.array_equal(particle_world_position, [-3.0625, -7.34375])
         ):
             weights = stencil.weights.copy()
-            weights[0] = np.nan
+            weight_index = 0
+            if collinear_metric == "raw_partition_defect":
+                interface_x = kwargs["interface_origin"][0]
+                weight_index = np.flatnonzero(stencil.anchor_world_positions[:, 0] == interface_x)[0]
+            weights[weight_index] = nonfinite_weight
             return replace(stencil, weights=weights)
         return stencil
 
     monkeypatch.setattr(qualification, "evaluate_coarse_fine_basis", evaluate_with_nonfinite_weight)
-    assert qualification.main() == 1
+    # The injected infinity can encounter zero in the moment reduction.
+    with np.errstate(invalid="ignore"):
+        assert qualification.main() == 1
 
     def reject_nonfinite_json(token):
         pytest.fail(f"Invalid JSON number {token}")
@@ -170,6 +186,8 @@ def test_cli_replaces_passing_receipt_when_stencil_weight_is_nonfinite(tmp_path,
     assert sample["defects"]["affine_gradient"] is not None
     assert f"coarse_fine[0].samples[{sample_index}].defects.partition" in report["nonfinite_metrics"]
     assert "coarse_fine[0].max_defects.partition" in report["nonfinite_metrics"]
-    assert report["masked_support"][0]["status"] == "fail"
-    assert report["masked_support"][0]["removed_weight"] is None
-    assert "masked_support[0].removed_weight" in report["nonfinite_metrics"]
+    for fixture_index, metric in enumerate(("removed_weight", collinear_metric)):
+        fixture = report["masked_support"][fixture_index]
+        assert fixture["status"] == "fail"
+        assert fixture[metric] is None
+        assert f"masked_support[{fixture_index}].{metric}" in report["nonfinite_metrics"]
