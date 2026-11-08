@@ -90,3 +90,32 @@ def test_exported_staggered_rows_have_exact_mass_momentum_and_spin(tmp_path):
     assert spin == (Fraction(-7, 2), Fraction(-4), Fraction(-9, 2))
     assert wrong_row_moments[0] == [Fraction(-5, 2), Fraction(1, 2), Fraction(5, 2)]
     assert wrong_row_moments[0] != row_moments[0]
+
+
+def test_quadratic_exact_basis_hypotheses_at_signed_boundaries():
+    """Removing a tail, flipping derivative sign or shifting anchors breaks F1."""
+    from fluidity_reference.transfer_3d_fixtures import _centered_quadratic
+
+    for position in map(Fraction, ('-4.25', '-4', '-0.5', '0', '0.5', '3.75', '4', '5.5')):
+        for shift in (Fraction(0), Fraction(1, 2)):
+            weights = []
+            offsets = []
+            derivatives = []
+            for node in range(-8, 10):
+                displacement = Fraction(node) + shift - position
+                weight, derivative = _centered_quadratic(-displacement)
+                weights.append(weight)
+                offsets.append(displacement)
+                derivatives.append(derivative)
+            assert sum(weights) == 1
+            assert sum(w * r for w, r in zip(weights, offsets)) == 0
+            assert sum(w * r**2 for w, r in zip(weights, offsets)) == Fraction(1, 4)
+            assert sum(derivatives) == 0
+            assert sum(r * g for r, g in zip(offsets, derivatives)) == 1
+            # Exact central differences independently estimate each analytic derivative.
+            step = Fraction(1, 2**20)
+            for r, derivative in zip(offsets, derivatives):
+                forward, _ = _centered_quadratic(-r + step)
+                backward, _ = _centered_quadratic(-r - step)
+                # At the inner knots the curvature jump is 3: central error is 3*step/4.
+                assert abs((forward - backward) / (2 * step) - derivative) <= 3 * step / 4

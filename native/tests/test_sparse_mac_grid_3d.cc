@@ -245,6 +245,96 @@ TEST(SparseMacGrid3D, CompleteQuadraticStencilCrossesBlockCorner) {
   }
 }
 
+// Evaluate the centered piecewise spline independently of the stencil's local
+// floor polynomials. Finite differences below never use a derivative formula.
+double CenteredQuadraticWeight(double particle_minus_anchor) {
+  const double distance = std::abs(particle_minus_anchor);
+  if (distance <= 0.5) {
+    return 0.75 - distance * distance;
+  }
+  if (distance < 1.5) {
+    const double tail = 1.5 - distance;
+    return 0.5 * tail * tail;
+  }
+  return 0.0;
+}
+
+TEST(SparseMacGrid3D, ExactBasisBoundaryAndFiniteDifferenceBridge) {
+  constexpr std::array normalized_positions{
+      Vec3{3.75, -0.25, 3.75},
+      Vec3{3.5, -0.5, 3.5},
+      Vec3{4.0, 0.0, 4.0},
+      Vec3{3.0, -1.0, 3.0},
+  };
+  constexpr double normalized_step = 1e-5;
+  for (const double cell_width : {1.0, 2.0}) {
+    const UniformMacGeometry3D geometry{{1.0, -3.0, 5.0}, cell_width};
+    const auto mac_grid = SparseMacGrid3D::Create(geometry, kCornerBlocks, kCornerBlocks.size());
+    ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+    for (const Vec3 normalized : normalized_positions) {
+      const Vec3 particle_world_position{
+          geometry.world_origin.x + cell_width * normalized.x,
+          geometry.world_origin.y + cell_width * normalized.y,
+          geometry.world_origin.z + cell_width * normalized.z,
+      };
+      for (const FaceNormalAxis axis : kFaceAxes) {
+        const auto stencil =
+            BuildOwnedMacFaceStencil3D(*mac_grid, axis, particle_world_position, particle_world_position);
+        ASSERT_TRUE(stencil.ok()) << stencil.status();
+        double partition = 0.0;
+        std::array<double, 3> first_moment{};
+        std::array<double, 3> derivative_sum{};
+        std::array<std::array<double, 3>, 3> second_moment{};
+        std::array<std::array<double, 3>, 3> derivative_moment{};
+        for (const auto& sample : *stencil) {
+          const std::array displacement{
+              sample.face_offset_from_particle.x,
+              sample.face_offset_from_particle.y,
+              sample.face_offset_from_particle.z,
+          };
+          const std::array gradient{sample.weight_gradient.x, sample.weight_gradient.y, sample.weight_gradient.z};
+          std::array<double, 3> particle_minus_anchor{};
+          double independent_weight = 1.0;
+          for (std::size_t coordinate = 0; coordinate < 3; ++coordinate) {
+            particle_minus_anchor[coordinate] = -displacement[coordinate] / cell_width;
+            independent_weight *= CenteredQuadraticWeight(particle_minus_anchor[coordinate]);
+          }
+          EXPECT_NEAR(sample.weight, independent_weight, 2e-12);
+          partition += sample.weight;
+          for (std::size_t row = 0; row < 3; ++row) {
+            double forward_weight = 1.0;
+            double backward_weight = 1.0;
+            for (std::size_t coordinate = 0; coordinate < 3; ++coordinate) {
+              const double step = coordinate == row ? normalized_step : 0.0;
+              forward_weight *= CenteredQuadraticWeight(particle_minus_anchor[coordinate] + step);
+              backward_weight *= CenteredQuadraticWeight(particle_minus_anchor[coordinate] - step);
+            }
+            const double difference_gradient =
+                (forward_weight - backward_weight) / (2.0 * normalized_step * cell_width);
+            // At a piece boundary the central difference has O(step) error.
+            EXPECT_NEAR(gradient[row], difference_gradient, normalized_step / cell_width);
+            first_moment[row] += sample.weight * displacement[row];
+            derivative_sum[row] += gradient[row];
+            for (std::size_t column = 0; column < 3; ++column) {
+              second_moment[row][column] += sample.weight * displacement[row] * displacement[column];
+              derivative_moment[row][column] += displacement[row] * gradient[column];
+            }
+          }
+        }
+        EXPECT_NEAR(partition, 1.0, 2e-12);
+        for (std::size_t row = 0; row < 3; ++row) {
+          EXPECT_NEAR(first_moment[row], 0.0, 2e-12);
+          EXPECT_NEAR(derivative_sum[row], 0.0, 2e-12);
+          for (std::size_t column = 0; column < 3; ++column) {
+            EXPECT_NEAR(second_moment[row][column], row == column ? cell_width * cell_width / 4.0 : 0.0, 2e-12);
+            EXPECT_NEAR(derivative_moment[row][column], row == column ? 1.0 : 0.0, 2e-12);
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(SparseMacGrid3D, PreservesTranslatedSupportEdge) {
   constexpr UniformMacGeometry3D geometry{
       .world_origin = {-3.0, 0.0, 0.0},
