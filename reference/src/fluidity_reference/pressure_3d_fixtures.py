@@ -14,7 +14,8 @@ and constraint defect (s^-1). Decode a zero bulk modulus to positive
 infinity for incompressible cells. Faces record link kind (0 sealed,
 1 internal, 2 Dirichlet), area (m^2), inverse density (m^3/kg), gradient
 distance (m), predicted/wall/corrected velocity (m/s), and lift (Pa).
-The lift is the oriented jump, exterior pressure, or zero, respectively.
+The lift is zero for sealed links, the oriented jump for internal links,
+and exterior pressure for Dirichlet links.
 The fixture uses unit-width cells and unit full face area.
 """
 
