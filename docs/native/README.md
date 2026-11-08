@@ -98,6 +98,21 @@ shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event
 | `CudaTransfer.GatherAffineMatchesFixtureAndCpu` | `g2p` |
 | `CudaPressure.NeumannJumpMatchesFixture` | `pressure_neumann` |
 | `CudaPressure.ComplianceRetainsMeanPressure` | `pressure_compliance` |
+| `CudaMacTransfer3D.DepositCornerMatchesOracleAndCpu` | `p2g_3d` |
+| `CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu` | `g2p_3d` |
+| `CudaMacPressure3D.MixedLinksMatchOracle` | `pressure_3d_mixed` |
+| `CudaMacPressure3D.MultilevelProjectionMatchesCpu` | `pressure_3d_multilevel` |
+| `CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle` | `liquid_boundary_geometry_3d` |
+| `CudaLiquidBoundary3D.SweptContactMatchesOracle` | `liquid_wall_contact_3d` |
+| `CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu` | `liquid_boundary_transfer_3d` |
+| `CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure` | `liquid_boundary_coupled_3d` |
+
+The liquid boundary cases exercise the shared CPU analytic fixtures on the device,
+including scaled tiny cuts, interface-local capillarity, the CUDA static pressure bridge,
+and compensated continuous thin-wall contact. Geometry uses checked host topology and
+sequential POD queries with two reusable allocations. Its event time sums the device
+queries; separate diagnostic lines report aggregate successful device time and wall time
+for all calls. These bounded fixture timings do not qualify production throughput.
 
 Both CUDA presets require these four graph replay cases.
 
@@ -112,12 +127,13 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-eleven transfer and pressure cases, and all four graph replay cases. CTest also runs
+twenty-one operator cases, and all four graph replay cases (26 memcheck cases total).
+CTest requires exactly 28 real GPU cases. CTest also runs
 the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally trigger CUDA API
 errors and are excluded from memcheck. Each memcheck invocation must exit successfully
 and report one zero-error summary. The validator checks the exact GoogleTest start and
-completion names, the probe launch receipt and the five timing receipts in their
-matching cases. It sets the named-pipe connection override only in the sanitizer process
+completion names, the probe launch receipt, twelve operator timing receipts and one graph timing
+receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
 success receipt.
@@ -153,7 +169,8 @@ $cuobjdump = Join-Path $env:CUDA_PATH 'bin/cuobjdump.exe'
 $operators = 'out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe'
 & $cuobjdump --list-elf $operators
 & $cuobjdump --list-ptx $operators
-& $cuobjdump --dump-ptx $operators | Select-String '^\.target'
+& $cuobjdump --dump-ptx $operators | Select-String '^\.target|LiquidBoundaryGeometry3DKernel|LiquidWallContact3DKernel'
+& $cuobjdump --dump-sass $operators | Select-String 'arch = sm_120|LiquidBoundaryGeometry3DKernel|LiquidWallContact3DKernel'
 ```
 
 ## Fixtures and evidence
@@ -214,3 +231,14 @@ Proof pilots and later formal contracts use the separate [Lean workflow](../../p
 The project owner must select a license before public release. See the
 [design milestones and evidence
 requirements](../superpowers/specs/2026-11-07-fluidity-design.md#15-validation-milestones-and-review-boundary).
+
+The compatible boundary transfer gate executes masked basis normalization, quotient
+weight gradients, recentered affine momentum, guarded nearest-even quanta reduction,
+face velocity normalization, independent old/new ghost QR and full gather on CUDA.
+The QR uses the same device-safe arithmetic as the CPU numerical seam. The bounded
+path uses one sequential kernel and at most six allocations per call, with no CPU
+numerical fallback. It is an operator qualification path, not a throughput claim.
+The coupled case feeds CUDA-frozen geometry through CUDA pressure, old/new ghost
+histories and gather, then independently corrects stored and advecting velocity in
+CUDA contact. Informational diagnostics use `boundary_device=` and
+`CTEST_FULL_OUTPUT`; only the exact operator lines are validation receipts.

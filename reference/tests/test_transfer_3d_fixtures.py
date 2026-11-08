@@ -12,7 +12,8 @@ def test_export_includes_hashed_si_transfer_fixture(tmp_path):
     manifest = json.loads((tmp_path / "manifest.json").read_bytes())
     assert set(manifest["fixtures"]) == {
         "affine_apic.json", "compliant_pressure.json", "stiff_viscosity.json",
-        "two_cell_pressure.json", "uniform_mac_pressure_3d.json", "uniform_mac_transfer_3d.json",
+        "two_cell_pressure.json", "uniform_mac_liquid_boundary_3d.json", "uniform_mac_pressure_3d.json",
+        "uniform_mac_transfer_3d.json",
     }
     filename = "uniform_mac_transfer_3d.json"
     contents = (tmp_path / filename).read_bytes()

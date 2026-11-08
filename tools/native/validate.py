@@ -29,6 +29,7 @@ FIXTURE_TESTS = {
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
     "stiff_viscosity.json": "Viscosity.StiffFixture",
     "two_cell_pressure.json": "Pressure.TwoCellFixtureUsesPositiveInternalJump",
+    "uniform_mac_liquid_boundary_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_pressure_3d.json": "FixtureBridge.CanonicalFixturesPresent",
     "uniform_mac_transfer_3d.json": "MacTransfer3D.AffineCornerMatchesOracle",
 }
@@ -45,7 +46,15 @@ GPU_DEPOSIT_3D_RECEIPT_CASE = "CudaMacTransfer3D.DepositCornerMatchesOracleAndCp
 GPU_GATHER_3D_RECEIPT_CASE = "CudaMacTransfer3D.GatherCornerMatchesOracleAndCpu"
 GPU_PRESSURE_3D_MIXED_CASE = "CudaMacPressure3D.MixedLinksMatchOracle"
 GPU_PRESSURE_3D_MULTILEVEL_CASE = "CudaMacPressure3D.MultilevelProjectionMatchesCpu"
+GPU_BOUNDARY_GEOMETRY_3D_CASE = "CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle"
+GPU_WALL_CONTACT_3D_CASE = "CudaLiquidBoundary3D.SweptContactMatchesOracle"
+GPU_BOUNDARY_TRANSFER_3D_CASE = "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu"
+GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure"
 GPU_OPERATOR_MEMCHECK_CASES = {
+    GPU_BOUNDARY_TRANSFER_3D_CASE,
+    GPU_BOUNDARY_COUPLED_3D_CASE,
+    GPU_BOUNDARY_GEOMETRY_3D_CASE,
+    GPU_WALL_CONTACT_3D_CASE,
     GPU_PRESSURE_3D_MIXED_CASE,
     GPU_PRESSURE_3D_MULTILEVEL_CASE,
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
@@ -73,6 +82,10 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
+    GPU_BOUNDARY_COUPLED_3D_CASE: "liquid_boundary_coupled_3d",
+    GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",
+    GPU_WALL_CONTACT_3D_CASE: "liquid_wall_contact_3d",
     GPU_PRESSURE_3D_MIXED_CASE: "pressure_3d_mixed",
     GPU_PRESSURE_3D_MULTILEVEL_CASE: "pressure_3d_multilevel",
     GPU_DEPOSIT_3D_RECEIPT_CASE: "p2g_3d",

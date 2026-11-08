@@ -22,7 +22,7 @@ Face arrays are ordered x faces first (row-major `(ny, nx + 1)`), then y faces (
 `(ny + 1, nx)`). Stencil positions are relative to the grid origin.
 
 `fluidity-reference export DIRECTORY [--overwrite]` writes four dimensionless
-manufactured examples, two SI 3D fixtures, and a manifest containing SHA-256 hashes of the exact
+manufactured examples, three SI 3D fixtures, and a manifest containing SHA-256 hashes of the exact
 canonical UTF-8 fixture bytes. Existing export files require `--overwrite`.
 Each schema-version 1 array records its dtype, shape, nested data and units;
 `write_fixture(path, name, arrays, metadata)` requires `metadata['units']` to
@@ -62,6 +62,15 @@ The reference solves a dense integrated system in float64. It evaluates
 the physical constraint defect separately by summing corrected fluid and
 prescribed wall flux through each cell's faces, adding the compliance
 term and subtracting the source before dividing by fluid volume.
+
+## 3D MAC liquid boundary fixture
+
+`uniform_mac_liquid_boundary_3d.json` uses closed-form measures for a unit
+cube and its transverse face, signed-distance interpolation for a free surface,
+and analytic sphere curvature and capillary pressure. The sweep rows give the
+fraction of the step to first contact with a translating slab. A fraction of
+`-1` denotes no contact. Metadata `sweep_incident_sides` gives `-1` for
+the low side, `+1` for the high side, and `0` when there is no contact.
 
 ## State transactions
 

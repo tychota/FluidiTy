@@ -12,11 +12,12 @@ namespace fluidity::fixtures {
 namespace {
 
 TEST(FixtureBridge, CanonicalFixturesPresent) {
-  constexpr std::array<std::string_view, 6> kFixtureNames{
+  constexpr std::array<std::string_view, 7> kFixtureNames{
       "affine_apic",
       "compliant_pressure",
       "stiff_viscosity",
       "two_cell_pressure",
+      "uniform_mac_liquid_boundary_3d",
       "uniform_mac_pressure_3d",
       "uniform_mac_transfer_3d",
   };
@@ -35,7 +36,8 @@ TEST(FixtureBridge, CanonicalFixturesPresent) {
     EXPECT_FALSE(fixture.provenance.empty());
     EXPECT_FALSE(fixture.default_policy.empty());
 
-    const bool uses_si_units = fixture.name == "uniform_mac_pressure_3d" || fixture.name == "uniform_mac_transfer_3d";
+    const bool uses_si_units = fixture.name == "uniform_mac_liquid_boundary_3d"
+        || fixture.name == "uniform_mac_pressure_3d" || fixture.name == "uniform_mac_transfer_3d";
     for (const auto& array : fixture.arrays) {
       SCOPED_TRACE(array.name);
       const auto found = FindArray(fixture, array.name);

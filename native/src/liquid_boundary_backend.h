@@ -1,0 +1,60 @@
+#pragma once
+#include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+#include "fluidity/base/liquid_boundary_math.h"
+#include "fluidity/host/liquid_wall_contact_3d.h"
+namespace fluidity::boundary_internal {
+// The orchestrator validates sample ownership and order, then delegates every
+// geometry calculation. CUDA supplies this callback explicitly; it never falls back.
+struct GeometryBackend {
+  absl::StatusOr<GeometryOutput> (*compute)(void*, const GeometryInput&);
+  void* context;
+};
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);
+absl::StatusOr<LiquidPressureProblem3D>
+BuildLinks(const FrozenLiquidBoundaryGeometry3D&, const LiquidPressureFields3D&, GeometryBackend);
+inline Obstacle PackObstacle(const LiquidObstacle3D& obstacle) {
+  if (const auto* halfspace = std::get_if<TranslatingHalfspace3D>(&obstacle)) {
+    return {1, halfspace->unit_normal, halfspace->start_plane_coordinate, 0, halfspace->wall_velocity};
+  }
+  if (const auto* slab = std::get_if<TranslatingSlab3D>(&obstacle)) {
+    return {2, slab->unit_normal, slab->start_center_coordinate, slab->half_width, slab->wall_velocity};
+  }
+  return {};
+}
+inline ContactInput PackContact(const LiquidWallContactInputs3D& inputs) {
+  return {
+      inputs.start_world_position,
+      inputs.stored_world_velocity,
+      inputs.advecting_world_velocity,
+      PackObstacle(inputs.obstacle),
+      inputs.step_duration,
+      inputs.friction_coefficient,
+      inputs.penetration_tolerance,
+  };
+}
+inline absl::Status ArithmeticStatus(Error error) {
+  switch (error) {
+    case Error::kNone:
+      return absl::OkStatus();
+    case Error::kInvalid:
+      return absl::InvalidArgumentError("Invalid boundary arithmetic input");
+    case Error::kPrecondition:
+      return absl::FailedPreconditionError("Uncertified boundary geometry or contact");
+    case Error::kRange:
+      return absl::OutOfRangeError("Unrepresentable boundary arithmetic");
+  }
+  return absl::InternalError("Unknown boundary arithmetic status");
+}
+inline LiquidWallContactResult3D UnpackContact(const ContactOutput& result) {
+  return {
+      result.world_position,
+      result.stored_world_velocity,
+      result.advecting_world_velocity,
+      result.contact_fraction.has_value() ? std::optional<double>(*result.contact_fraction) : std::nullopt,
+      result.outward_normal,
+      result.incoming_stored_relative_normal_speed,
+      result.incoming_advecting_relative_normal_speed,
+      static_cast<LiquidWallContactDiagnostic3D>(result.diagnostic),
+  };
+}
+}  // namespace fluidity::boundary_internal
