@@ -62,11 +62,20 @@ std::array<double, 3> FaceLatticeShifts(FaceNormalAxis axis) {
   };
 }
 
+double WorldCoordinate(double world_origin, double cell_width, double normalized_coordinate) {
+  const double world_coordinate = world_origin + cell_width * normalized_coordinate;
+  if (std::isfinite(world_coordinate)) {
+    return world_coordinate;
+  }
+  // A finite origin can cancel an overflowing product.
+  return std::fma(cell_width, normalized_coordinate, world_origin);
+}
+
 absl::StatusOr<Vec3> ReconstructWorldPosition(UniformMacGeometry3D geometry, Vec3 normalized_position) {
   const Vec3 world_position{
-      .x = geometry.world_origin.x + geometry.cell_width * normalized_position.x,
-      .y = geometry.world_origin.y + geometry.cell_width * normalized_position.y,
-      .z = geometry.world_origin.z + geometry.cell_width * normalized_position.z,
+      .x = WorldCoordinate(geometry.world_origin.x, geometry.cell_width, normalized_position.x),
+      .y = WorldCoordinate(geometry.world_origin.y, geometry.cell_width, normalized_position.y),
+      .z = WorldCoordinate(geometry.world_origin.z, geometry.cell_width, normalized_position.z),
   };
   if (!IsFinite(world_position)) {
     return absl::OutOfRangeError("world position is outside the finite range");
@@ -74,45 +83,132 @@ absl::StatusOr<Vec3> ReconstructWorldPosition(UniformMacGeometry3D geometry, Vec
   return world_position;
 }
 
-absl::StatusOr<Vec3> NormalizePosition(UniformMacGeometry3D geometry, Vec3 world_position) {
+// Recover the roundoff from the finite subtraction. Callers use its sign
+// to distinguish coordinates that round onto the same lattice edge.
+double SubtractionRoundoff(double minuend, double subtrahend, double difference) {
+  // FastTwoSum recovers the smaller operand's contribution after subtraction.
+  if (std::abs(minuend) >= std::abs(subtrahend)) {
+    return (minuend - difference) - subtrahend;
+  }
+  return minuend - (difference + subtrahend);
+}
+
+// Retain the scaled world subtraction so lattice decisions can recover
+// position lost when the quotient rounds to a half-cell or bin edge.
+struct NormalizedCoordinate {
+  double rounded_coordinate_in_cells;
+  double scaled_world_difference;
+  double scaled_world_difference_error;
+  double scaled_cell_width;
+  int world_scale_exponent;
+
+  double ScaledOffsetFrom(double edge) const {
+    return std::fma(-edge, scaled_cell_width, scaled_world_difference) + scaled_world_difference_error;
+  }
+
+  bool IsBelow(double edge) const {
+    const double offset = rounded_coordinate_in_cells - edge;
+    // Subtraction and division together can round the coordinate across a nearby edge.
+    const double error_bound = std::abs(rounded_coordinate_in_cells) * (2.0 * std::numeric_limits<double>::epsilon());
+    if (std::abs(offset) > error_bound) {
+      return offset < 0.0;
+    }
+    return ScaledOffsetFrom(edge) < 0.0;
+  }
+
+  double OffsetFrom(double edge) const {
+    const double offset = rounded_coordinate_in_cells - edge;
+    if (std::abs(offset) >= std::abs(rounded_coordinate_in_cells) && offset != 0.0) {
+      return offset;
+    }
+    // Recompute local differences where subtraction cancels leading digits of the coordinate.
+    const double scaled_offset = ScaledOffsetFrom(edge);
+    return std::isfinite(scaled_offset) ? scaled_offset / scaled_cell_width : offset;
+  }
+
+  double FaceDisplacement(double anchor, double cell_width) const {
+    const double normalized_displacement = -OffsetFrom(anchor);
+    const double displacement = normalized_displacement * cell_width;
+    if (std::isnormal(normalized_displacement) && std::isfinite(displacement)) {
+      return displacement;
+    }
+    // A normalized offset may underflow even when the world displacement is representable.
+    const double scaled_offset = ScaledOffsetFrom(anchor);
+    return scaled_offset == 0.0 ? 0.0 : -std::scalbn(scaled_offset, -world_scale_exponent);
+  }
+};
+
+NormalizedCoordinate NormalizeCoordinate(double world_coordinate, double world_origin, double cell_width) {
+  double scaled_world_difference = world_coordinate - world_origin;
+  int world_scale_exponent = 0;
+  if (!std::isfinite(scaled_world_difference)) {
+    // If the subtraction overflowed, both operands are large enough to halve exactly.
+    world_coordinate *= 0.5;
+    world_origin *= 0.5;
+    scaled_world_difference = world_coordinate - world_origin;
+    world_scale_exponent = -1;
+  }
+  double scaled_cell_width = std::scalbn(cell_width, world_scale_exponent);
+  const double rounded_coordinate_in_cells = scaled_world_difference / scaled_cell_width;
+  double scaled_world_difference_error = SubtractionRoundoff(world_coordinate, world_origin, scaled_world_difference);
+  if (std::isfinite(rounded_coordinate_in_cells) && scaled_cell_width < 0x1p-960) {
+    // Leave room for the exact product of a normal cell width and a half-integer edge.
+    world_scale_exponent += 64;
+    scaled_world_difference = std::scalbn(scaled_world_difference, 64);
+    scaled_world_difference_error = std::scalbn(scaled_world_difference_error, 64);
+    scaled_cell_width = std::scalbn(scaled_cell_width, 64);
+  }
+  return {
+      rounded_coordinate_in_cells,
+      scaled_world_difference,
+      scaled_world_difference_error,
+      scaled_cell_width,
+      world_scale_exponent
+  };
+}
+
+using NormalizedPosition = std::array<NormalizedCoordinate, 3>;
+
+absl::StatusOr<NormalizedPosition> NormalizePosition(UniformMacGeometry3D geometry, Vec3 world_position) {
   if (!IsFinite(world_position)) {
     return absl::InvalidArgumentError("particle world position must be finite");
   }
-  const Vec3 normalized_position{
-      .x = (world_position.x - geometry.world_origin.x) / geometry.cell_width,
-      .y = (world_position.y - geometry.world_origin.y) / geometry.cell_width,
-      .z = (world_position.z - geometry.world_origin.z) / geometry.cell_width,
+  const NormalizedPosition normalized_position{
+      NormalizeCoordinate(world_position.x, geometry.world_origin.x, geometry.cell_width),
+      NormalizeCoordinate(world_position.y, geometry.world_origin.y, geometry.cell_width),
+      NormalizeCoordinate(world_position.z, geometry.world_origin.z, geometry.cell_width),
   };
-  if (!IsFinite(normalized_position)) {
-    return absl::OutOfRangeError("normalized particle position is outside the finite range");
+  for (const auto& coordinate : normalized_position) {
+    if (!std::isfinite(coordinate.rounded_coordinate_in_cells)) {
+      return absl::OutOfRangeError("normalized particle position is outside the finite range");
+    }
   }
   return normalized_position;
 }
 
-// The caller bounds the position so the integral part and its half-cell edge are exact in FP64.
-// Compare to that edge directly because position - shift can round onto the edge from below.
-std::int64_t FloorShiftedCoordinate(double normalized_position, double shift) {
-  const double integral_position = std::floor(normalized_position);
-  const auto integral_shift = static_cast<std::int64_t>(shift);
-  const double edge = integral_position + (shift - static_cast<double>(integral_shift));
-  const std::int64_t edge_correction = normalized_position < edge ? 1 : 0;
-  return static_cast<std::int64_t>(integral_position) - integral_shift - edge_correction;
+// Range checks at the call sites leave room for either correction in the widened index.
+std::int64_t FloorShiftedCoordinate(const NormalizedCoordinate& coordinate, double shift) {
+  const auto candidate_floor_index =
+      static_cast<std::int64_t>(std::floor(coordinate.rounded_coordinate_in_cells - shift));
+  const double edge = static_cast<double>(candidate_floor_index) + shift;
+  if (coordinate.IsBelow(edge)) {
+    return candidate_floor_index - 1;
+  }
+  if (coordinate.IsBelow(edge + 1.0)) {
+    return candidate_floor_index;
+  }
+  return candidate_floor_index + 1;
 }
 
-absl::StatusOr<ParticleBinIndex3D> CheckedParticleSortBin(Vec3 sorted_normalized_position) {
+absl::StatusOr<ParticleBinIndex3D> CheckedParticleSortBin(const NormalizedPosition& sorted_normalized_position) {
   constexpr double first_bin_edge =
       static_cast<double>(kMinSignedIndex * kCellsPerBlockAxis) + kParticleBinShiftInCells;
   constexpr double past_last_bin_edge =
       static_cast<double>((kMaxSignedIndex + 1) * kCellsPerBlockAxis) + kParticleBinShiftInCells;
-  const std::array coordinates{
-      sorted_normalized_position.x,
-      sorted_normalized_position.y,
-      sorted_normalized_position.z,
-  };
   std::array<std::int32_t, 3> bin_indices;
-  for (std::size_t axis_index = 0; axis_index < coordinates.size(); ++axis_index) {
-    const double coordinate = coordinates[axis_index];
-    if (coordinate < first_bin_edge || coordinate >= past_last_bin_edge) {
+  for (std::size_t axis_index = 0; axis_index < sorted_normalized_position.size(); ++axis_index) {
+    const auto& coordinate = sorted_normalized_position[axis_index];
+    if (coordinate.IsBelow(first_bin_edge) || !coordinate.IsBelow(past_last_bin_edge)) {
       return absl::OutOfRangeError("particle bin index is outside the int32 range");
     }
     const std::int64_t bin_index =
@@ -136,31 +232,53 @@ bool WithinHalfCell(double sorted_world_coordinate, double trial_world_coordinat
     return doubled_displacement < cell_width;
   }
 
-  // TwoSum recovers the subtraction residual when rounding lands on the inclusive motion limit.
-  const double recovered_low = high - displacement;
-  const double residual = (high - (displacement + recovered_low)) + (recovered_low - low);
-  return residual <= 0.0;
+  // Recover the subtraction residual when rounding lands on the inclusive motion limit.
+  return SubtractionRoundoff(greater_world_coordinate, lesser_world_coordinate, displacement) <= 0.0;
 }
+
+struct QuadraticSplineFactor {
+  double rounded_factor;
+  // An outer weight is half this squared distance, even if the factor underflowed.
+  double outer_weight_edge_distance = 0.0;
+
+  bool IsZero() const {
+    return rounded_factor == 0.0 && outer_weight_edge_distance == 0.0;
+  }
+
+  double Mantissa(int& exponent) const {
+    if (std::isnormal(rounded_factor) || outer_weight_edge_distance == 0.0) {
+      return std::frexp(rounded_factor, &exponent);
+    }
+    int distance_exponent;
+    const double distance_mantissa = std::frexp(outer_weight_edge_distance, &distance_exponent);
+    exponent = 2 * distance_exponent;
+    return 0.5 * distance_mantissa * distance_mantissa;
+  }
+};
 
 struct AxisStencilSample {
   std::int32_t lattice_index;
-  double weight;
-  double normalized_displacement;
+  QuadraticSplineFactor weight;
+  double face_offset_from_particle;
   double normalized_weight_derivative;
 };
 
 using AxisStencil = std::array<AxisStencilSample, 3>;
 
 // Checks all three indices, including the zero-weight support edge at an exact tie.
-absl::StatusOr<AxisStencil>
-BuildCheckedAxisStencil(double normalized_position, double lattice_shift, std::int32_t bin_index) {
+absl::StatusOr<AxisStencil> BuildCheckedAxisStencil(
+    const NormalizedCoordinate& coordinate,
+    double lattice_shift,
+    std::int32_t bin_index,
+    double cell_width
+) {
   const double start_shift = lattice_shift + 0.5;
   const double first_support_edge = static_cast<double>(kMinSignedIndex) + start_shift;
   const double past_last_support_edge = static_cast<double>(kMaxSignedIndex - 1) + start_shift;
-  if (normalized_position < first_support_edge || normalized_position >= past_last_support_edge) {
+  if (coordinate.IsBelow(first_support_edge) || !coordinate.IsBelow(past_last_support_edge)) {
     return absl::OutOfRangeError("quadratic stencil face index is outside the int32 range");
   }
-  const std::int64_t first_lattice_index = FloorShiftedCoordinate(normalized_position, start_shift);
+  const std::int64_t first_lattice_index = FloorShiftedCoordinate(coordinate, start_shift);
   const std::int64_t tile_start = static_cast<std::int64_t>(bin_index) * kCellsPerBlockAxis;
   const std::int64_t last_lattice_index = first_lattice_index + 2;
   if (first_lattice_index < tile_start || last_lattice_index >= tile_start + kTransferTileWidthInCells) {
@@ -170,13 +288,13 @@ BuildCheckedAxisStencil(double normalized_position, double lattice_shift, std::i
   // Evaluate the outer weights from the distances to their exact support edges.
   // Forming these distances through the center offset would round away small weights near a tie.
   const double first_anchor = static_cast<double>(first_lattice_index) + lattice_shift;
-  const double distance_to_left_edge = normalized_position - (first_anchor + 0.5);
-  const double distance_to_right_edge = (first_anchor + 1.5) - normalized_position;
-  const double particle_offset_from_center = normalized_position - (first_anchor + 1.0);
+  const double distance_to_left_edge = coordinate.OffsetFrom(first_anchor + 0.5);
+  const double distance_to_right_edge = std::abs(coordinate.OffsetFrom(first_anchor + 1.5));
+  const double particle_offset_from_center = coordinate.OffsetFrom(first_anchor + 1.0);
   const std::array weights{
-      0.5 * distance_to_right_edge * distance_to_right_edge,
-      0.75 - particle_offset_from_center * particle_offset_from_center,
-      0.5 * distance_to_left_edge * distance_to_left_edge,
+      QuadraticSplineFactor{0.5 * distance_to_right_edge * distance_to_right_edge, distance_to_right_edge},
+      QuadraticSplineFactor{0.75 - particle_offset_from_center * particle_offset_from_center},
+      QuadraticSplineFactor{0.5 * distance_to_left_edge * distance_to_left_edge, distance_to_left_edge},
   };
   const std::array derivatives{-distance_to_right_edge, -2.0 * particle_offset_from_center, distance_to_left_edge};
 
@@ -187,11 +305,37 @@ BuildCheckedAxisStencil(double normalized_position, double lattice_shift, std::i
     stencil[sample_index] = {
         .lattice_index = static_cast<std::int32_t>(lattice_index),
         .weight = weights[sample_index],
-        .normalized_displacement = anchor - normalized_position,
+        .face_offset_from_particle = coordinate.FaceDisplacement(anchor, cell_width),
         .normalized_weight_derivative = derivatives[sample_index],
     };
   }
   return stencil;
+}
+
+double PhysicalWeightGradient(
+    QuadraticSplineFactor x_factor,
+    QuadraticSplineFactor y_factor,
+    QuadraticSplineFactor z_factor,
+    double cell_width
+) {
+  const double normalized_gradient = x_factor.rounded_factor * y_factor.rounded_factor * z_factor.rounded_factor;
+  if (std::isnormal(normalized_gradient) || x_factor.IsZero() || y_factor.IsZero() || z_factor.IsZero()) {
+    return normalized_gradient / cell_width;
+  }
+
+  // Keep small outer weights and products in exponent form until applying the physical scale.
+  int x_exponent;
+  int y_exponent;
+  int z_exponent;
+  int width_exponent;
+  const double x_mantissa = x_factor.Mantissa(x_exponent);
+  const double y_mantissa = y_factor.Mantissa(y_exponent);
+  const double z_mantissa = z_factor.Mantissa(z_exponent);
+  const double width_mantissa = std::frexp(cell_width, &width_exponent);
+  return std::scalbn(
+      (x_mantissa * y_mantissa * z_mantissa) / width_mantissa,
+      x_exponent + y_exponent + z_exponent - width_exponent
+  );
 }
 
 }  // namespace
@@ -343,18 +487,14 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
   }
 
   const auto face_lattice_shifts = FaceLatticeShifts(axis);
-  const std::array trial_coordinates{
-      trial_normalized_position->x,
-      trial_normalized_position->y,
-      trial_normalized_position->z
-  };
   const std::array bin_indices{bin->x, bin->y, bin->z};
   std::array<AxisStencil, 3> axis_stencils;
   for (std::size_t axis_index = 0; axis_index < axis_stencils.size(); ++axis_index) {
     const auto stencil = BuildCheckedAxisStencil(
-        trial_coordinates[axis_index],
+        (*trial_normalized_position)[axis_index],
         face_lattice_shifts[axis_index],
-        bin_indices[axis_index]
+        bin_indices[axis_index],
+        cell_width
     );
     if (!stencil.ok()) {
       return stencil.status();
@@ -376,21 +516,36 @@ absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
           return face_slot.status();
         }
         const Vec3 displacement{
-            .x = x_sample.normalized_displacement * cell_width,
-            .y = y_sample.normalized_displacement * cell_width,
-            .z = z_sample.normalized_displacement * cell_width,
+            .x = x_sample.face_offset_from_particle,
+            .y = y_sample.face_offset_from_particle,
+            .z = z_sample.face_offset_from_particle,
         };
         const Vec3 gradient{
-            .x = (x_sample.normalized_weight_derivative * y_sample.weight * z_sample.weight) / cell_width,
-            .y = (x_sample.weight * y_sample.normalized_weight_derivative * z_sample.weight) / cell_width,
-            .z = (x_sample.weight * y_sample.weight * z_sample.normalized_weight_derivative) / cell_width,
+            .x = PhysicalWeightGradient(
+                {x_sample.normalized_weight_derivative},
+                y_sample.weight,
+                z_sample.weight,
+                cell_width
+            ),
+            .y = PhysicalWeightGradient(
+                x_sample.weight,
+                {y_sample.normalized_weight_derivative},
+                z_sample.weight,
+                cell_width
+            ),
+            .z = PhysicalWeightGradient(
+                x_sample.weight,
+                y_sample.weight,
+                {z_sample.normalized_weight_derivative},
+                cell_width
+            ),
         };
         if (!IsFinite(displacement) || !IsFinite(gradient)) {
           return absl::OutOfRangeError("quadratic stencil displacement or gradient is outside the finite range");
         }
         stencil[sample_index] = {
             .face_slot = *face_slot,
-            .weight = x_sample.weight * y_sample.weight * z_sample.weight,
+            .weight = x_sample.weight.rounded_factor * y_sample.weight.rounded_factor * z_sample.weight.rounded_factor,
             .face_offset_from_particle = displacement,
             .weight_gradient = gradient,
         };

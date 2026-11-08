@@ -206,6 +206,10 @@ TEST(SparseMacGrid3D, CompleteQuadraticStencilCrossesBlockCorner) {
           const auto face_slot = mac_grid->FaceSlot({axis, {x, y, z}});
           ASSERT_TRUE(face_slot.ok()) << face_slot.status();
           EXPECT_EQ(sample.face_slot, *face_slot);
+          if (axis == FaceNormalAxis::kX && x == 4 && y == -1 && z == 2) {
+            // Owner (1,-1,0) has ordinal 1. Local (0,3,2) adds 44.
+            EXPECT_EQ(sample.face_slot, 236u);
+          }
           if (axis == FaceNormalAxis::kX && x == 4 && y == -1 && z == 4) {
             EXPECT_EQ(sample.face_slot, 972u);
           }
@@ -239,6 +243,111 @@ TEST(SparseMacGrid3D, CompleteQuadraticStencilCrossesBlockCorner) {
       }
     }
   }
+}
+
+TEST(SparseMacGrid3D, PreservesTranslatedSupportEdge) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-3.0, 0.0, 0.0},
+      .cell_width = 1.0,
+  };
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, blocks, blocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  constexpr Vec3 particle{-0x1p-53, 2.25, 2.25};
+  const auto stencil = BuildOwnedMacFaceStencil3D(*mac_grid, FaceNormalAxis::kY, particle, particle);
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ(stencil->front().face_slot, 85u);
+  EXPECT_GT((*stencil)[12].weight, 0.0);
+  EXPECT_EQ((*stencil)[12].weight_gradient.x, -0x1.e4p-55);
+}
+
+TEST(SparseMacGrid3D, PreservesNonDyadicSupportEdge) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-3.3, 0.0, 0.0},
+      .cell_width = 1.1,
+  };
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, blocks, blocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  // The exact world edge -3.3 + 3 * 1.1 for these stored doubles is 2^-51.
+  const Vec3 particle{std::nextafter(0x1p-51, 0.0), 2.5, 2.5};
+  const auto stencil = BuildOwnedMacFaceStencil3D(*mac_grid, FaceNormalAxis::kY, particle, particle);
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ(stencil->front().face_slot, 85u);
+  EXPECT_LT((*stencil)[12].weight_gradient.x, 0.0);
+}
+
+TEST(SparseMacGrid3D, PreservesDisplacementAtTranslatedAnchor) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-2.5, 0.0, 0.0},
+      .cell_width = 1.0,
+  };
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, blocks, blocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  constexpr Vec3 particle{-0x1p-53, 2.25, 2.25};
+  const auto stencil = BuildOwnedMacFaceStencil3D(*mac_grid, FaceNormalAxis::kY, particle, particle);
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  EXPECT_EQ((*stencil)[13].face_offset_from_particle.x, 0x1p-53);
+}
+
+TEST(SparseMacGrid3D, PreservesTranslatedParticleBinEdge) {
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-5.5, 0.0, 0.0},
+      .cell_width = 1.0,
+  };
+  const auto bin = ComputeParticleSortBin3D(geometry, {-0x1p-53, 2.25, 2.25});
+  ASSERT_TRUE(bin.ok()) << bin.status();
+  EXPECT_EQ(bin->x, 0);
+}
+
+TEST(SparseMacGrid3D, ComputesFiniteAnchorAfterProductOverflow) {
+  constexpr double largest = std::numeric_limits<double>::max();
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-largest, 0.0, 0.0},
+      .cell_width = largest,
+  };
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, {}, 0);
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const auto anchor = mac_grid->FaceWorldAnchor({FaceNormalAxis::kX, {2, 0, 0}});
+  ASSERT_TRUE(anchor.ok()) << anchor.status();
+  ExpectPosition(*anchor, {largest, largest / 2.0, largest / 2.0});
+}
+
+TEST(SparseMacGrid3D, ComputesFiniteParticleBinAfterDifferenceOverflow) {
+  constexpr double largest = std::numeric_limits<double>::max();
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {-largest, 0.0, 0.0},
+      .cell_width = largest,
+  };
+  const auto bin = ComputeParticleSortBin3D(geometry, {largest, 0.0, 0.0});
+  ASSERT_TRUE(bin.ok()) << bin.status();
+  EXPECT_EQ(bin->x, 0);
+}
+
+TEST(SparseMacGrid3D, PreservesRepresentableGradientWithUnderflowingAxisWeight) {
+  constexpr double cell_width = 0x1p-300;
+  constexpr UniformMacGeometry3D geometry{
+      .world_origin = {0.0, 0.0, 0.0},
+      .cell_width = cell_width,
+  };
+  constexpr std::array blocks{
+      BlockIndex3D{-1, -1, -1},
+      BlockIndex3D{0, -1, -1},
+      BlockIndex3D{-1, 0, -1},
+      BlockIndex3D{0, 0, -1},
+      BlockIndex3D{-1, -1, 0},
+      BlockIndex3D{0, -1, 0},
+      BlockIndex3D{-1, 0, 0},
+      BlockIndex3D{0, 0, 0},
+  };
+  const auto mac_grid = SparseMacGrid3D::Create(geometry, blocks, blocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  constexpr Vec3 particle{0x1p-900, cell_width / 4.0, cell_width / 4.0};
+  const auto stencil = BuildOwnedMacFaceStencil3D(*mac_grid, FaceNormalAxis::kZ, particle, particle);
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  // At (1,-1,0), wx = 2^-1201, dwy = -3/4, wz = 11/16, and 1/h = 2^300.
+  EXPECT_EQ((*stencil)[11].weight_gradient.y, -0x1.08p-902);
 }
 
 TEST(SparseMacGrid3D, RejectsIncompleteOrUnrepresentableSupport) {

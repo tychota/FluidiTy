@@ -32,7 +32,8 @@ class SparseMacGrid3D {
   // Returns the total number of owned face slots across all active blocks.
   std::size_t face_count() const;
 
-  // Views the active keys in (z,y,x) order for the lifetime of this layout.
+  // Views the active block indices in (z,y,x) order. Obtain a new view after moving or
+  // assigning the layout. The view must not outlive the layout.
   std::span<const BlockIndex3D> active_block_indices() const;
 
   // Returns the owned slot, with blocks in (z,y,x) order, then x/y/z normals,
