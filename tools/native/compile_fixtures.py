@@ -18,25 +18,25 @@ UINT32_MAX = 2**32 - 1
 
 
 @dataclass(frozen=True)
-class Array:
+class FixtureArray:
     name: str
     dtype: str
     shape: tuple[int, ...]
-    values: tuple[float | int, ...]
+    flat_values: tuple[float | int, ...]
     units: str
 
 
 @dataclass(frozen=True)
 class Fixture:
     name: str
-    arrays: tuple[Array, ...]
+    arrays: tuple[FixtureArray, ...]
     rtol: float
     atol: float
     provenance: str
     default_policy: str
 
 
-def unique_object(pairs):
+def object_from_unique_keys(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
@@ -49,9 +49,9 @@ def reject_constant(value):
     raise ValueError(f"JSON numbers must be finite, found {value}")
 
 
-def schema_document(document_bytes):
+def parse_schema1_json_object(document_bytes):
     document = json.loads(
-        document_bytes.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=reject_constant,
+        document_bytes.decode("utf-8"), object_pairs_hook=object_from_unique_keys, parse_constant=reject_constant,
     )
     if not isinstance(document, dict):
         # The bytes are valid input. The decoded JSON violates the fixture schema.
@@ -71,7 +71,7 @@ def read_fixtures(directory):
     if not regular_file(manifest_path):
         raise ValueError(f"{MANIFEST} is missing or is not a regular file")
     try:
-        fixture_digests = schema_document(manifest_path.read_bytes())["fixtures"]
+        fixture_digests = parse_schema1_json_object(manifest_path.read_bytes())["fixtures"]
         if not isinstance(fixture_digests, dict) or not fixture_digests:
             raise ValueError("expected a nonempty fixtures object")
         seen_filenames = {MANIFEST}
@@ -109,7 +109,7 @@ def read_fixtures(directory):
     fixtures = []
     for filename, fixture_bytes in verified_fixture_bytes.items():
         try:
-            document = schema_document(fixture_bytes)
+            document = parse_schema1_json_object(fixture_bytes)
             fixtures.append(parse_fixture(document, filename.removesuffix(".json")))
         except (KeyError, ValueError) as exc:
             raise ValueError(f"{filename}: {exc}") from exc
@@ -162,10 +162,10 @@ def parse_array(name, document):
             or any(type(extent) is not int or not 0 <= extent <= INT64_MAX for extent in dimensions)):
         raise ValueError("shape must contain nonnegative int64 extents")
     shape = tuple(dimensions)
-    values = tuple(flatten_values(document["data"], shape, dtype))
-    if len(values) != math.prod(shape):
+    flat_values = tuple(flatten_values(document["data"], shape, dtype))
+    if len(flat_values) != math.prod(shape):
         raise ValueError("data count does not match declared shape")
-    return Array(name, dtype, shape, values, nonempty_string(document["units"], "units"))
+    return FixtureArray(name, dtype, shape, flat_values, nonempty_string(document["units"], "units"))
 
 
 def parse_fixture(document, name):
@@ -185,7 +185,7 @@ def parse_fixture(document, name):
         grid = arrays["grid"]
         if grid.dtype != "int64" or grid.shape != (2,):
             raise ValueError("grid must have dtype int64 and shape (2,)")
-        if any(extent <= 0 or extent > UINT32_MAX for extent in grid.values):
+        if any(extent <= 0 or extent > UINT32_MAX for extent in grid.flat_values):
             raise ValueError("grid extents must be positive and fit in Grid2D uint32_t dimensions")
 
     if is_pressure_fixture or {"grid", "spacing", "origin"} & arrays.keys():
@@ -193,7 +193,7 @@ def parse_fixture(document, name):
             array = arrays[key]
             if array.dtype != "float64" or array.shape != shape:
                 raise ValueError(f"{key} must have dtype float64 and shape {shape}")
-        if arrays["spacing"].values[0] <= 0:
+        if arrays["spacing"].flat_values[0] <= 0:
             raise ValueError("spacing must be positive")
 
     # These checks report invalid JSON schema content through the fixture diagnostic.
@@ -272,28 +272,32 @@ namespace detail {
 def render_header(fixtures):
     lines = [HEADER]
     for fixture_index, fixture in enumerate(fixtures):
-        records = []
+        array_initializers = []
         for array_index, array in enumerate(fixture.arrays):
-            identifier = f"kFixture{fixture_index}Array{array_index}"
+            array_symbol_prefix = f"kFixture{fixture_index}Array{array_index}"
             shape_literals = ", ".join(f"{extent}ULL" for extent in array.shape)
             lines.append(f"inline constexpr std::array<std::size_t, {len(array.shape)}> "
-                         f"{identifier}Shape = {{{shape_literals}}};")
+                         f"{array_symbol_prefix}Shape = {{{shape_literals}}};")
             if array.dtype == "float64":
                 kind, cpp_type = "kFloat64", "double"
-                values = [value.hex() for value in array.values]
-                f64_data, i64_data = f"{identifier}Values", "{}"
+                value_literals = [value.hex() for value in array.flat_values]
+                f64_data, i64_data = f"{array_symbol_prefix}Values", "{}"
             else:
                 kind, cpp_type = "kInt64", "std::int64_t"
-                values = [cpp_int(value) for value in array.values]
-                f64_data, i64_data = "{}", f"{identifier}Values"
-            lines.append(f"inline constexpr std::array<{cpp_type}, {len(values)}> "
-                         f"{identifier}Values = {{")
-            lines.extend(f"    {value}," for value in values)
+                value_literals = [cpp_int(value) for value in array.flat_values]
+                f64_data, i64_data = "{}", f"{array_symbol_prefix}Values"
+            lines.append(f"inline constexpr std::array<{cpp_type}, {len(value_literals)}> "
+                         f"{array_symbol_prefix}Values = {{")
+            lines.extend(f"    {value}," for value in value_literals)
             lines.append("};")
-            records.append(f"    {{{cpp_string(array.name)}, DType::{kind}, {identifier}Shape, "
-                           f"{f64_data}, {i64_data}, {cpp_string(array.units)}}},")
-        lines.append(f"inline constexpr std::array<ArrayRecord, {len(records)}> kFixture{fixture_index} = {{{{")
-        lines.extend(records)
+            array_initializers.append(
+                f"    {{{cpp_string(array.name)}, DType::{kind}, {array_symbol_prefix}Shape, "
+                f"{f64_data}, {i64_data}, {cpp_string(array.units)}}},"
+            )
+        lines.append(
+            f"inline constexpr std::array<ArrayRecord, {len(array_initializers)}> kFixture{fixture_index} = {{{{"
+        )
+        lines.extend(array_initializers)
         lines.append("}};\n")
 
     lines.append(f"inline constexpr std::array<FixtureRecord, {len(fixtures)}> kFixtures = {{{{")
