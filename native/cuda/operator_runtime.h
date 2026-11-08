@@ -113,8 +113,8 @@ class CudaOperatorRuntime {
   }
 
   // Zero-element buffers have a null device pointer and issue no runtime calls.
-  template <typename T>
-  absl::Status Allocate(std::size_t element_count, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status Allocate(std::size_t element_count, BufferElement*& device_buffer) {
     device_buffer = nullptr;
     if (element_count == 0) {
       return absl::OkStatus();
@@ -122,7 +122,7 @@ class CudaOperatorRuntime {
     if (buffer_count_ == buffers_.size()) {
       return absl::ResourceExhaustedError("CUDA operator buffer capacity exceeded");
     }
-    const auto byte_count = CheckedExtentProduct(element_count, sizeof(T));
+    const auto byte_count = CheckedExtentProduct(element_count, sizeof(BufferElement));
     if (!byte_count.ok()) {
       return byte_count.status();
     }
@@ -132,12 +132,12 @@ class CudaOperatorRuntime {
       return status;
     }
     buffers_[buffer_count_++] = allocation;
-    device_buffer = static_cast<T*>(allocation);
+    device_buffer = static_cast<BufferElement*>(allocation);
     return absl::OkStatus();
   }
 
-  template <typename T>
-  absl::Status Upload(std::span<const T> host_values, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status Upload(std::span<const BufferElement> host_values, BufferElement*& device_buffer) {
     const auto status = Allocate(host_values.size(), device_buffer);
     if (!status.ok() || host_values.empty()) {
       return status;
@@ -149,13 +149,16 @@ class CudaOperatorRuntime {
   }
 
   // The supplied element_count must match the allocation.
-  template <typename T>
-  absl::Status AllocateZeroed(std::size_t element_count, T*& device_buffer) {
+  template <typename BufferElement>
+  absl::Status AllocateZeroed(std::size_t element_count, BufferElement*& device_buffer) {
     const auto status = Allocate(element_count, device_buffer);
     if (!status.ok() || element_count == 0) {
       return status;
     }
-    return CheckCuda(cudaMemsetAsync(device_buffer, 0, element_count * sizeof(T), stream_), "cudaMemsetAsync");
+    return CheckCuda(
+        cudaMemsetAsync(device_buffer, 0, element_count * sizeof(BufferElement), stream_),
+        "cudaMemsetAsync"
+    );
   }
 
   absl::Status RecordKernelStart() {
@@ -174,8 +177,8 @@ class CudaOperatorRuntime {
   }
 
   // Call only after SynchronizeAndMeasureKernel has synchronized the stream.
-  template <typename T>
-  absl::Status Download(const T* device_buffer, std::span<T> host_values) {
+  template <typename BufferElement>
+  absl::Status Download(const BufferElement* device_buffer, std::span<BufferElement> host_values) {
     if (host_values.empty()) {
       return absl::OkStatus();
     }

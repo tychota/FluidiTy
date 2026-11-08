@@ -73,7 +73,7 @@ struct TwoFaceCase {
   std::array<double, 1> boundary_strain{0.0};
 };
 
-std::span<const double> FixtureFloats(const fixtures::FixtureRecord& fixture, std::string_view field) {
+std::span<const double> ReadFixtureFloat64Array(const fixtures::FixtureRecord& fixture, std::string_view field) {
   const auto record = fixtures::FindArray(fixture, field);
   if (!record.ok()) {
     ADD_FAILURE() << record.status();
@@ -94,16 +94,16 @@ TEST(Viscosity, StiffFixture) {
   ASSERT_TRUE(strain_operator_record.ok()) << strain_operator_record.status();
   ASSERT_EQ((*strain_operator_record)->dtype, fixtures::DType::kFloat64);
   ASSERT_EQ((*strain_operator_record)->shape.size(), 2);
-  const auto dt = FixtureFloats(*fixture, "dt");
+  const auto dt = ReadFixtureFloat64Array(*fixture, "dt");
   ASSERT_EQ(dt.size(), 1);
 
   const ViscosityInputsView inputs{
-      .face_velocities = FixtureFloats(*fixture, "velocity"),
-      .face_inertias = FixtureFloats(*fixture, "mass"),
+      .face_velocities = ReadFixtureFloat64Array(*fixture, "velocity"),
+      .face_inertias = ReadFixtureFloat64Array(*fixture, "mass"),
       .strain_operator = (*strain_operator_record)->f64_data,
       .strain_row_count = (*strain_operator_record)->shape[0],
-      .strain_quadrature_weights = FixtureFloats(*fixture, "strain_weight"),
-      .boundary_strain = FixtureFloats(*fixture, "boundary_strain"),
+      .strain_quadrature_weights = ReadFixtureFloat64Array(*fixture, "strain_weight"),
+      .boundary_strain = ReadFixtureFloat64Array(*fixture, "boundary_strain"),
       .dt = dt.front(),
   };
   ASSERT_EQ(inputs.face_velocities.size(), (*strain_operator_record)->shape[1]);
@@ -113,7 +113,7 @@ TEST(Viscosity, StiffFixture) {
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
 
-  const auto expected = FixtureFloats(*fixture, "expected_velocity");
+  const auto expected = ReadFixtureFloat64Array(*fixture, "expected_velocity");
   ASSERT_EQ(expected.size(), 2);
   ASSERT_EQ(result.updated_face_velocities.size(), expected.size());
   for (std::size_t column = 0; column < expected.size(); ++column) {
@@ -286,7 +286,7 @@ TEST(Viscosity, PermitsExplicitAtMassScaledLimit) {
   EXPECT_LT(result.diagnostics.energy_after, result.diagnostics.energy_before);
 }
 
-void CheckMovingWallWork(ViscosityMode mode, ViscosityMethod method, double expected_velocity) {
+void ExpectMovingWallEnergyBalance(ViscosityMode mode, ViscosityMethod method, double expected_velocity) {
   const std::array face_velocities{0.25};
   const std::array face_inertias{2.0};
   const std::array strain_operator{2.0};
@@ -329,11 +329,11 @@ void CheckMovingWallWork(ViscosityMode mode, ViscosityMethod method, double expe
 }
 
 TEST(Viscosity, ExplicitMovingWallEnergyIdentity) {
-  CheckMovingWallWork(ViscosityMode::kExplicit, ViscosityMethod::kExplicit, 0.55);
+  ExpectMovingWallEnergyBalance(ViscosityMode::kExplicit, ViscosityMethod::kExplicit, 0.55);
 }
 
 TEST(Viscosity, ImplicitMovingWallEnergyIdentity) {
-  CheckMovingWallWork(ViscosityMode::kImplicit, ViscosityMethod::kImplicit, 0.4375);
+  ExpectMovingWallEnergyBalance(ViscosityMode::kImplicit, ViscosityMethod::kImplicit, 0.4375);
 }
 
 TEST(Viscosity, ZeroViscosityPreservesVelocity) {

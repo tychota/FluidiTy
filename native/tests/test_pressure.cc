@@ -168,7 +168,7 @@ void ExpectResidualIdentity(const PressureCase& problem, const PressureResult& r
   }
 }
 
-std::span<const double> FixtureFloats(const fixtures::FixtureRecord& fixture, std::string_view field) {
+std::span<const double> ReadFixtureFloat64Array(const fixtures::FixtureRecord& fixture, std::string_view field) {
   const auto record = fixtures::FindArray(fixture, field);
   if (!record.ok()) {
     ADD_FAILURE() << record.status();
@@ -194,9 +194,9 @@ void CheckFixture(
   ASSERT_TRUE(grid.ok()) << grid.status();
   ASSERT_EQ((*grid)->dtype, fixtures::DType::kInt64);
   ASSERT_EQ((*grid)->i64_data.size(), 2);
-  const auto spacing = FixtureFloats(*fixture, "spacing");
-  const auto origin = FixtureFloats(*fixture, "origin");
-  const auto dt = FixtureFloats(*fixture, "dt");
+  const auto spacing = ReadFixtureFloat64Array(*fixture, "spacing");
+  const auto origin = ReadFixtureFloat64Array(*fixture, "origin");
+  const auto dt = ReadFixtureFloat64Array(*fixture, "dt");
   ASSERT_EQ(spacing.size(), 1);
   ASSERT_EQ(origin.size(), 2);
   ASSERT_EQ(dt.size(), 1);
@@ -207,7 +207,7 @@ void CheckFixture(
       .origin = {origin[0], origin[1]},
   });
   problem.dt = dt[0];
-  const auto velocity = FixtureFloats(*fixture, "velocity");
+  const auto velocity = ReadFixtureFloat64Array(*fixture, "velocity");
   ASSERT_EQ(velocity.size(), problem.faces);
   std::ranges::copy(velocity, problem.predicted_face_velocities.begin());
 
@@ -218,12 +218,12 @@ void CheckFixture(
     problem.pressure_gradient_distances[face] = geometry->pressure_gradient_distance;
   }
   if (name == "two_cell_pressure") {
-    const auto jump = FixtureFloats(*fixture, "jump");
+    const auto jump = ReadFixtureFloat64Array(*fixture, "jump");
     ASSERT_EQ(jump.size(), problem.faces);
     std::ranges::copy(jump, problem.face_pressure_jumps.begin());
   } else {
-    const auto source = FixtureFloats(*fixture, "source");
-    const auto bulk_modulus = FixtureFloats(*fixture, "bulk_modulus");
+    const auto source = ReadFixtureFloat64Array(*fixture, "source");
+    const auto bulk_modulus = ReadFixtureFloat64Array(*fixture, "bulk_modulus");
     ASSERT_EQ(source.size(), problem.cells);
     ASSERT_EQ(bulk_modulus.size(), 1);
     std::ranges::copy(source, problem.target_cell_divergence.begin());
@@ -235,8 +235,8 @@ void CheckFixture(
   const auto status = SolvePressure2D(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   const Tolerances tolerances{fixture->atol, fixture->rtol};
-  ExpectField(result.cell_pressures, FixtureFloats(*fixture, "expected_pressure"), tolerances);
-  ExpectField(result.corrected_face_velocities, FixtureFloats(*fixture, "expected_velocity"), tolerances);
+  ExpectField(result.cell_pressures, ReadFixtureFloat64Array(*fixture, "expected_pressure"), tolerances);
+  ExpectField(result.corrected_face_velocities, ReadFixtureFloat64Array(*fixture, "expected_velocity"), tolerances);
   ExpectField(result.original_matrix, expected_matrix, tolerances);
   ExpectField(result.original_rhs, expected_rhs, tolerances);
   ExpectField(result.original_residuals, std::vector<double>(problem.cells), tolerances);

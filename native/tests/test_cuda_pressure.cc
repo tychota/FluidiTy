@@ -178,7 +178,7 @@ void ExpectCpuParity(const PressureCase& pressure_case, const PressureResult& cu
   ExpectGaugeCellIndices(cuda_result, std::span(cpu_result.gauge_cell_indices).first(cpu_result.gauge_count));
 }
 
-std::span<const double> FixtureFloats(const fixtures::FixtureRecord& fixture, std::string_view field_name) {
+std::span<const double> ReadFixtureFloat64Array(const fixtures::FixtureRecord& fixture, std::string_view field_name) {
   const auto array_record = fixtures::FindArray(fixture, field_name);
   if (!array_record.ok()) {
     ADD_FAILURE() << array_record.status();
@@ -205,9 +205,9 @@ void CheckPressureFixture(
   ASSERT_TRUE(fixture_grid.ok()) << fixture_grid.status();
   ASSERT_EQ((*fixture_grid)->dtype, fixtures::DType::kInt64);
   const auto grid_dimensions = (*fixture_grid)->i64_data;
-  const auto grid_spacing = FixtureFloats(*fixture_record_iterator, "spacing");
-  const auto grid_origin = FixtureFloats(*fixture_record_iterator, "origin");
-  const auto step_duration = FixtureFloats(*fixture_record_iterator, "dt");
+  const auto grid_spacing = ReadFixtureFloat64Array(*fixture_record_iterator, "spacing");
+  const auto grid_origin = ReadFixtureFloat64Array(*fixture_record_iterator, "origin");
+  const auto step_duration = ReadFixtureFloat64Array(*fixture_record_iterator, "dt");
   ASSERT_EQ(grid_dimensions.size(), 2);
   ASSERT_EQ(grid_spacing.size(), 1);
   ASSERT_EQ(grid_origin.size(), 2);
@@ -219,7 +219,7 @@ void CheckPressureFixture(
       .origin = {grid_origin[0], grid_origin[1]},
   });
   pressure_case.step_duration = step_duration[0];
-  const auto predicted_face_velocities = FixtureFloats(*fixture_record_iterator, "velocity");
+  const auto predicted_face_velocities = ReadFixtureFloat64Array(*fixture_record_iterator, "velocity");
   ASSERT_EQ(predicted_face_velocities.size(), pressure_case.face_count);
   std::ranges::copy(predicted_face_velocities, pressure_case.predicted_face_velocities.begin());
   for (std::size_t face_index = 0; face_index < pressure_case.face_count; ++face_index) {
@@ -228,12 +228,12 @@ void CheckPressureFixture(
     pressure_case.pressure_gradient_distances[face_index] = face_geometry->pressure_gradient_distance;
   }
   if (fixture_name == "two_cell_pressure") {
-    const auto oriented_face_pressure_jumps = FixtureFloats(*fixture_record_iterator, "jump");
+    const auto oriented_face_pressure_jumps = ReadFixtureFloat64Array(*fixture_record_iterator, "jump");
     ASSERT_EQ(oriented_face_pressure_jumps.size(), pressure_case.face_count);
     std::ranges::copy(oriented_face_pressure_jumps, pressure_case.oriented_face_pressure_jumps.begin());
   } else {
-    const auto target_cell_divergences = FixtureFloats(*fixture_record_iterator, "source");
-    const auto bulk_modulus = FixtureFloats(*fixture_record_iterator, "bulk_modulus");
+    const auto target_cell_divergences = ReadFixtureFloat64Array(*fixture_record_iterator, "source");
+    const auto bulk_modulus = ReadFixtureFloat64Array(*fixture_record_iterator, "bulk_modulus");
     ASSERT_EQ(target_cell_divergences.size(), pressure_case.cell_count);
     ASSERT_EQ(bulk_modulus.size(), 1);
     std::ranges::copy(target_cell_divergences, pressure_case.target_cell_divergences.begin());
@@ -246,13 +246,13 @@ void CheckPressureFixture(
   ASSERT_TRUE(cuda_status.ok()) << cuda_status;
   ExpectField(
       cuda_result.cell_pressures,
-      FixtureFloats(*fixture_record_iterator, "expected_pressure"),
+      ReadFixtureFloat64Array(*fixture_record_iterator, "expected_pressure"),
       fixture_record_iterator->atol,
       fixture_record_iterator->rtol
   );
   ExpectField(
       cuda_result.corrected_face_velocities,
-      FixtureFloats(*fixture_record_iterator, "expected_velocity"),
+      ReadFixtureFloat64Array(*fixture_record_iterator, "expected_velocity"),
       fixture_record_iterator->atol,
       fixture_record_iterator->rtol
   );
