@@ -78,6 +78,37 @@ The Release probe and operator executables contained `sm_120` cubins and embedde
 `compute_120`. The four operator kernel timings in each CUDA receipt are smoke measurements for
 the bounded fixtures. See the [CUDA validation commands](README.md#cuda-hardware-and-sanitizer-gates).
 
+## Windows CUDA Graph replay gate measured on 2026-11-08
+
+The locked four-preset matrix ran on the qualified GeForce RTX 5060 Ti at compute
+capability 12.0 with nvcc 13.4.59 and driver 610.88. Both CUDA presets used
+`120-real;120-virtual`, reported compiled architecture 1200 and passed 18 hardware
+cases and 11 CUDA API-double cases. Both graph test executables contained `sm_120`
+cubins and PTX generated for `compute_120`. All four presets passed 123 native CPU
+cases and 267 Python tests. Release CUDA passed 16 memcheck cases across three named-pipe
+invocations with Compute Sanitizer 2026.3.0.0 (build 38637409). Each invocation
+reported zero errors.
+
+The two-cell pressure fixture warms each path with four solves. Each timed path
+then submits 64 upload, zero, solve and download sequences on the same nonblocking
+stream with fixed pinned host and device buffers. The steady clock times the
+host enqueue loop, and CUDA events bracket the complete batch on the stream.
+Each batch interval is divided by 64. Capture and instantiation use a separate,
+one-time steady-clock interval.
+
+| Pressure fixture interval | Debug (µs) | Release (µs) |
+| --- | ---: | ---: |
+| Capture and instantiate (once) | 137.700 | 125.300 |
+| Direct host submission | 22.955 | 19.695 |
+| Graph host submission | 14.100 | 14.267 |
+| Direct stream interval | 73.250 | 79.954 |
+| Graph stream interval | 68.022 | 74.005 |
+
+These are individual fixture measurements from unsanitized CTest runs. The stream
+interval includes transfers and any gaps within the batch. The graph gate checks
+receipt validity and numerical parity. The timings describe this workload and
+hardware, with no performance threshold.
+
 ## Locked dependencies and ABI
 
 Conan Center at `https://center2.conan.io` resolved these recipe revisions for both Windows
@@ -135,7 +166,7 @@ uv @uvArgs cmake --build --preset $preset
 uv @uvArgs ctest --preset $preset -L cpu --output-on-failure
 ```
 
-For the locked CUDA matrix and both Release memcheck invocations, follow the
+For the locked CUDA matrix and the three Release memcheck invocations, follow the
 [CUDA hardware and sanitizer gates](README.md#cuda-hardware-and-sanitizer-gates).
 
 For a different GPU, generate a separate receipt using `--cuda-architecture` and a distinct

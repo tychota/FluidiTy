@@ -52,7 +52,14 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
     "CudaPressure.CapacityAndIncompatibilityPreserveOutputs",
 }
-GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE}
+GPU_GRAPH_RECEIPT_CASE = "CudaGraphReplay.PressureMatchesDirectAndMeasuresReplay"
+GPU_GRAPH_CASES = {
+    "CudaGraphReplay.DepositMatchesDirectAndClearsInactiveInputs",
+    "CudaGraphReplay.RejectedDepositPreservesAcceptedOutputs",
+    "CudaGraphReplay.FailedCaptureCanBeRetried",
+    GPU_GRAPH_RECEIPT_CASE,
+}
+GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
     "CudaTransfer.DepositAnalyticAndCpuParity": "p2g",
     "CudaTransfer.GatherAffineMatchesFixtureAndCpu": "g2p",
@@ -70,6 +77,13 @@ GPU_PROBE_RECEIPT_RE = re.compile(
 OPERATOR_RECEIPT_RE = re.compile(
     r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
     r"kernel_ms=(?P<kernel_ms>[0-9]+\.[0-9]+)"
+)
+GRAPH_REPLAY_ITERATIONS = 64
+GRAPH_RECEIPT_RE = re.compile(
+    r"graph_replay compiled_architecture=(?P<compiled_architecture>[0-9]+) iterations=(?P<iterations>[0-9]+) "
+    r"capture_us=(?P<capture_us>[0-9]+\.[0-9]+) direct_submit_us=(?P<direct_submit_us>[0-9]+\.[0-9]+) "
+    r"replay_submit_us=(?P<replay_submit_us>[0-9]+\.[0-9]+) direct_stream_us=(?P<direct_stream_us>[0-9]+\.[0-9]+) "
+    r"replay_stream_us=(?P<replay_stream_us>[0-9]+\.[0-9]+)"
 )
 
 
@@ -496,6 +510,12 @@ def verify_google_test(case):
         or lines.count("[  PASSED  ] 1 test.") != 1
     ):
         raise ValueError(f"CTest did not show that GoogleTest {name} executed and passed")
+    if name == GPU_GRAPH_RECEIPT_CASE:
+        run_index = lines.index(f"[ RUN      ] {name}")
+        ok_index = lines.index(completed[0])
+        outside_case = "\n".join(lines[:run_index] + lines[ok_index + 1 :])
+        if ok_index < run_index or graph_receipt_lines(outside_case):
+            raise ValueError(f"CTest gpu: {name} reported a graph replay receipt outside its testcase")
 
 
 def run_ctest(run, label, required):
@@ -527,7 +547,7 @@ def run_ctest(run, label, required):
     if len(cases) != len(names) or len(names) < MINIMUM_TESTS[label] or not required <= names:
         raise ValueError(f"ctest {label} is missing expected tests or contains duplicate results")
     if label == "gpu" and names != required:
-        raise ValueError("ctest gpu must contain exactly the required hardware probe and operator tests")
+        raise ValueError("ctest gpu must contain exactly the required hardware probe, operator and graph replay tests")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
     return {"status": "passed", "tests": len(cases)}, cases
@@ -592,6 +612,35 @@ def verify_operator_receipts(case_outputs, expected_compiled_architecture, evide
     return measurements
 
 
+def graph_receipt_lines(test_output):
+    return [line for line in test_output.splitlines() if re.match(r"graph_replay\b", line.lstrip())]
+
+
+def verify_graph_receipt(case_outputs, expected_compiled_architecture, evidence_label):
+    for case_name, case_output in case_outputs.items():
+        if case_name != GPU_GRAPH_RECEIPT_CASE and graph_receipt_lines(case_output):
+            raise ValueError(f"{evidence_label}: unexpected graph replay receipt in {case_name}")
+
+    receipt_label = f"{evidence_label}: {GPU_GRAPH_RECEIPT_CASE}"
+    observed_lines = graph_receipt_lines(case_outputs[GPU_GRAPH_RECEIPT_CASE])
+    if len(observed_lines) != 1:
+        raise ValueError(f"{receipt_label} must report exactly one graph replay receipt")
+    receipt_match = GRAPH_RECEIPT_RE.fullmatch(observed_lines[0])
+    if receipt_match is None:
+        raise ValueError(f"{receipt_label} reported a malformed graph replay receipt")
+
+    fields = receipt_match.groupdict()
+    if fields.pop("compiled_architecture") != str(expected_compiled_architecture):
+        raise ValueError(f"{receipt_label} reported a mismatched compiled architecture")
+    if fields.pop("iterations") != str(GRAPH_REPLAY_ITERATIONS):
+        raise ValueError(f"{receipt_label} must report {GRAPH_REPLAY_ITERATIONS} iterations")
+
+    timings = {field: float(value) for field, value in fields.items()}
+    if not all(math.isfinite(value) for value in timings.values()):
+        raise ValueError(f"{receipt_label} reported nonfinite graph replay time")
+    return {"compiled_architecture": expected_compiled_architecture, "iterations": GRAPH_REPLAY_ITERATIONS, **timings}
+
+
 def run_memcheck(run, sanitizer, stage, executable, expected_case_names, *test_arguments):
     memcheck_output = run.execute(
         stage,
@@ -647,9 +696,10 @@ def run_memcheck(run, sanitizer, stage, executable, expected_case_names, *test_a
             f"Compute Sanitizer {executable.name} expected {expected_probe_receipt_count} hardware probe receipts, "
             f"found {observed_probe_receipt_count}"
         )
-    attributed_receipt_count = sum(len(operator_receipt_lines(case_output)) for case_output in case_outputs.values())
-    if attributed_receipt_count != len(operator_receipt_lines(memcheck_output)):
-        raise ValueError(f"Compute Sanitizer {executable.name} reported an operator receipt outside its testcase")
+    for receipt_type, receipt_lines in (("operator", operator_receipt_lines), ("graph replay", graph_receipt_lines)):
+        attributed_receipt_count = sum(len(receipt_lines(case_output)) for case_output in case_outputs.values())
+        if attributed_receipt_count != len(receipt_lines(memcheck_output)):
+            raise ValueError(f"Compute Sanitizer {executable.name} reported a {receipt_type} receipt outside its testcase")
     return case_outputs
 
 
@@ -683,9 +733,16 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
         GPU_OPERATOR_MEMCHECK_CASES,
         f"--gtest_filter=*-{GPU_OPERATOR_ERROR_CASE}",
     )
-    verify_operator_receipts(
-        {**probe_case_outputs, **operator_case_outputs}, expected_compiled_architecture, "Compute Sanitizer"
+    graph_case_outputs = run_memcheck(
+        run,
+        sanitizer,
+        "sanitizer-graph-memcheck",
+        relative_build / "fluidity_cuda_graph_tests.exe",
+        GPU_GRAPH_CASES,
     )
+    case_outputs = {**probe_case_outputs, **operator_case_outputs, **graph_case_outputs}
+    verify_operator_receipts(case_outputs, expected_compiled_architecture, "Compute Sanitizer")
+    verify_graph_receipt(case_outputs, expected_compiled_architecture, "Compute Sanitizer")
     return {
         "status": "passed",
         "version": version_match[1],
@@ -693,7 +750,7 @@ def run_sanitizer(run, qualification, build, expected_compiled_architecture):
         "tool": "memcheck",
         "local_connection": "named-pipes",
         "errors": 0,
-        "tests": len(probe_case_outputs) + len(operator_case_outputs),
+        "tests": len(case_outputs),
     }
 
 
@@ -806,6 +863,9 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         evidence["gpu"].update(probe_evidence)
         expected_compiled_architecture = probe_evidence["compiled_architecture"]
         evidence["gpu"]["operators"] = verify_operator_receipts(
+            gpu_case_outputs, expected_compiled_architecture, "CTest gpu"
+        )
+        evidence["gpu"]["graph_replay"] = verify_graph_receipt(
             gpu_case_outputs, expected_compiled_architecture, "CTest gpu"
         )
         evidence["sanitizer"] = run_sanitizer(run, qualification, build, expected_compiled_architecture)

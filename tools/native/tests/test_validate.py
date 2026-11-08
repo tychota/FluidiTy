@@ -36,6 +36,17 @@ MEMCHECK_OPERATOR_CASES = (
     "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
     "CudaPressure.CapacityAndIncompatibilityPreserveOutputs",
 )
+GRAPH_PRESSURE_CASE = "CudaGraphReplay.PressureMatchesDirectAndMeasuresReplay"
+GRAPH_CASES = (
+    "CudaGraphReplay.DepositMatchesDirectAndClearsInactiveInputs",
+    "CudaGraphReplay.RejectedDepositPreservesAcceptedOutputs",
+    "CudaGraphReplay.FailedCaptureCanBeRetried",
+    GRAPH_PRESSURE_CASE,
+)
+GRAPH_RECEIPT = (
+    "graph_replay compiled_architecture=1200 iterations=64 capture_us=140.800 direct_submit_us=22.058 "
+    "replay_submit_us=14.606 direct_stream_us=77.955 replay_stream_us=74.434"
+)
 PROBE_RECEIPT = (
     "device=NVIDIA GeForce RTX 5060 Ti capability=12.0 compiled_architecture=1200 driver_api=13030 "
     "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
@@ -214,7 +225,7 @@ def scenario(invocation, monkeypatch):
         cpu_cases = CPU_CASES
         first_cpu_status = "run"
         reported_gtest_case_name = None
-        gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE)
+        gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES)
         skipped_gpu_case = None
         sanitizer_cases = MEMCHECK_OPERATOR_CASES
         operator_memcheck_status_override = None
@@ -229,8 +240,18 @@ def scenario(invocation, monkeypatch):
             self.commands = []
             self.environments = {}
             self.sanitizer_path = sanitizer_path
-            self.gpu_receipts = {PROBE_CASES[0]: PROBE_RECEIPT, **OPERATOR_RECEIPTS}
+            self.gpu_receipts = {
+                PROBE_CASES[0]: PROBE_RECEIPT,
+                **OPERATOR_RECEIPTS,
+                GRAPH_PRESSURE_CASE: GRAPH_RECEIPT,
+            }
+            self.gpu_before_case = {}
+            self.gpu_after_case = {}
             self.sanitizer_receipts = OPERATOR_RECEIPTS.copy()
+            self.graph_sanitizer_output = "".join(
+                self.gtest_case_output(name, self.gpu_receipts.get(name, "")) for name in GRAPH_CASES
+            ) + "[  PASSED  ] 4 tests.\n========= ERROR SUMMARY: 0 errors\n"
+            self.graph_sanitizer_exit_code = 0
 
         @staticmethod
         def gtest_case_output(case_name, case_receipt, result="       OK"):
@@ -290,6 +311,11 @@ def scenario(invocation, monkeypatch):
                         stdout = self.gtest_case_output(PROBE_CASES[0], self.probe_sanitizer_case_receipts)
                         stdout += "[  PASSED  ] 1 test.\n========= ERROR SUMMARY: 0 errors\n"
                         stdout += self.probe_sanitizer_trailing_output
+                    elif executable == "fluidity_cuda_graph_tests.exe":
+                        assert arguments[9:] == []
+                        return subprocess.CompletedProcess(
+                            argv, self.graph_sanitizer_exit_code, self.graph_sanitizer_output
+                        )
                     else:
                         assert executable == "fluidity_cuda_operator_tests.exe"
                         assert arguments[9:] == ["--gtest_filter=*-CudaPressure.LaunchIgnoresPriorRuntimeError"]
@@ -344,7 +370,9 @@ def scenario(invocation, monkeypatch):
                         if reported
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
-                    ET.SubElement(testcase, "system-out").text = f"{root}\n{console}\n"
+                    before_case = self.gpu_before_case.get(name, "")
+                    after_case = self.gpu_after_case.get(name, "")
+                    ET.SubElement(testcase, "system-out").text = f"{root}\n{before_case}\n{console}\n{after_case}\n"
                     if status == "notrun":
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
@@ -586,15 +614,15 @@ def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scena
 
 
 @pytest.mark.parametrize("config", ["debug", "release"])
-def test_cuda_success_requires_all_hardware_cases_and_reports_four_measurements(scenario, config):
+def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_names = {case.attrib["name"] for case in ET.parse(output / "ctest-gpu.xml").findall("testcase")}
-    assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE}
+    assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 14,
+        "tests": 18,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -606,6 +634,15 @@ def test_cuda_success_requires_all_hardware_cases_and_reports_four_measurements(
             "pressure_neumann": {"compiled_architecture": 1200, "kernel_ms": 0.5},
             "pressure_compliance": {"compiled_architecture": 1200, "kernel_ms": 1.0},
         },
+        "graph_replay": {
+            "compiled_architecture": 1200,
+            "iterations": 64,
+            "capture_us": 140.8,
+            "direct_submit_us": 22.058,
+            "replay_submit_us": 14.606,
+            "direct_stream_us": 77.955,
+            "replay_stream_us": 74.434,
+        },
     }
     if config == "release":
         assert evidence["sanitizer"] == {
@@ -615,7 +652,7 @@ def test_cuda_success_requires_all_hardware_cases_and_reports_four_measurements(
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 12,
+            "tests": 16,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -714,3 +751,144 @@ def test_release_does_not_publish_success_when_required_memcheck_is_unavailable(
     processes, _, _, _, rejected = scenario
     processes.sanitizer_path.unlink()
     rejected("Compute Sanitizer is required", "windows-release-cuda")
+
+
+@pytest.mark.parametrize("missing_case", GRAPH_CASES)
+def test_gpu_requires_each_graph_case(scenario, missing_case):
+    processes, _, _, _, rejected = scenario
+    processes.gpu_cases = tuple(case for case in processes.gpu_cases if case != missing_case)
+    rejected("missing expected tests", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("problem", ["foreign", "replaced", "duplicate", "skipped"])
+def test_gpu_rejects_inexact_graph_case_inventory(scenario, problem):
+    processes, _, _, _, rejected = scenario
+    if problem == "foreign":
+        processes.gpu_cases += ("CudaGraphReplay.ForeignCase",)
+        expected = "exactly the required hardware"
+    elif problem == "replaced":
+        processes.gpu_cases = (*processes.gpu_cases[:-1], "CudaGraphReplay.ForeignCase")
+        expected = "missing expected tests"
+    elif problem == "duplicate":
+        processes.gpu_cases += (GRAPH_PRESSURE_CASE,)
+        expected = "duplicate results"
+    else:
+        processes.skipped_gpu_case = GRAPH_PRESSURE_CASE
+        expected = "contains skipped or failed tests"
+    rejected(expected, "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize(
+    ("receipt", "diagnostic"),
+    [
+        ("", "exactly one graph replay receipt"),
+        (GRAPH_RECEIPT + "\n" + GRAPH_RECEIPT, "exactly one graph replay receipt"),
+        (GRAPH_RECEIPT.replace("architecture=1200", "architecture=890"), "mismatched compiled architecture"),
+        (GRAPH_RECEIPT.replace("iterations=64", "iterations=1"), "64 iterations"),
+        (GRAPH_RECEIPT.replace("capture_us", "capture_ms"), "malformed graph replay receipt"),
+        (GRAPH_RECEIPT + " extra=1", "malformed graph replay receipt"),
+        (GRAPH_RECEIPT.replace("22.058", "-22.058"), "malformed graph replay receipt"),
+        (GRAPH_RECEIPT.replace("14.606", "nan"), "malformed graph replay receipt"),
+        (GRAPH_RECEIPT.replace("77.955", "inf"), "malformed graph replay receipt"),
+        (GRAPH_RECEIPT.replace("74.434", "9" * 310 + ".0"), "nonfinite graph replay time"),
+    ],
+    ids=[
+        "missing", "duplicate", "wrong-architecture", "wrong-iterations", "wrong-field", "extra-field",
+        "negative", "nan", "inf", "overflow",
+    ],
+)
+def test_graph_receipt_rejects_invalid_timing(scenario, producer, receipt, diagnostic):
+    processes, _, _, _, rejected = scenario
+    if producer == "ctest":
+        processes.gpu_receipts[GRAPH_PRESSURE_CASE] = receipt
+        preset = "windows-debug-cuda"
+    else:
+        processes.graph_sanitizer_output = processes.graph_sanitizer_output.replace(GRAPH_RECEIPT, receipt)
+        preset = "windows-release-cuda"
+    rejected(diagnostic, preset)
+
+
+@pytest.mark.parametrize("case_name", [GRAPH_CASES[0], PROBE_CASES[0], MEMCHECK_OPERATOR_CASES[0]])
+def test_ctest_rejects_graph_receipt_from_another_case(scenario, case_name):
+    processes, _, _, _, rejected = scenario
+    processes.gpu_receipts[case_name] = processes.gpu_receipts.get(case_name, "") + "\n" + GRAPH_RECEIPT
+    rejected(f"unexpected graph replay receipt in {case_name}", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_ctest_requires_graph_receipt_between_its_run_and_ok(scenario, position):
+    processes, _, _, _, rejected = scenario
+    del processes.gpu_receipts[GRAPH_PRESSURE_CASE]
+    misplaced = processes.gpu_before_case if position == "before" else processes.gpu_after_case
+    misplaced[GRAPH_PRESSURE_CASE] = GRAPH_RECEIPT
+    rejected("graph replay receipt outside its testcase", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement", "diagnostic"),
+    [
+        (f"[ RUN      ] {GRAPH_PRESSURE_CASE}", "", "did not run and complete every required hardware test"),
+        (GRAPH_PRESSURE_CASE, "CudaGraphReplay.ForeignCase", "did not run the required hardware cases"),
+        (GRAPH_PRESSURE_CASE, GRAPH_CASES[0], "mismatched or duplicate GoogleTest results"),
+        (f"[       OK ] {GRAPH_PRESSURE_CASE}", f"[       OK ] {GRAPH_CASES[0]}",
+         "mismatched or duplicate GoogleTest results"),
+        ("[       OK ]", "[  SKIPPED ]", "did not pass all required hardware tests"),
+        ("========= ERROR SUMMARY: 0 errors", "", "did not report one zero-error summary"),
+        ("========= ERROR SUMMARY: 0 errors", "========= ERROR SUMMARY: 1 error",
+         "did not report one zero-error summary"),
+        ("========= ERROR SUMMARY: 0 errors", "========= ERROR SUMMARY: 0 errors\n========= ERROR SUMMARY: 0 errors",
+         "did not report one zero-error summary"),
+    ],
+    ids=["missing", "foreign", "duplicate", "mismatched-ok", "skipped", "missing-summary", "errors", "duplicate-summary"],
+)
+def test_release_rejects_incomplete_graph_memcheck(scenario, original, replacement, diagnostic):
+    processes, _, _, _, rejected = scenario
+    processes.graph_sanitizer_output = processes.graph_sanitizer_output.replace(original, replacement)
+    rejected(diagnostic, "windows-release-cuda")
+
+
+def test_release_rejects_a_failing_graph_memcheck_process(scenario):
+    processes, _, _, _, rejected = scenario
+    processes.graph_sanitizer_exit_code = 97
+    rejected("sanitizer-graph-memcheck failed (exit 97)", "windows-release-cuda")
+
+
+@pytest.mark.parametrize("case_name", [GRAPH_CASES[0], PROBE_CASES[0], MEMCHECK_OPERATOR_CASES[0]])
+def test_release_rejects_graph_receipt_from_another_case(scenario, case_name):
+    processes, _, _, _, rejected = scenario
+    if case_name in GRAPH_CASES:
+        started_case = f"[ RUN      ] {case_name}"
+        processes.graph_sanitizer_output = processes.graph_sanitizer_output.replace(
+            started_case, started_case + "\n" + GRAPH_RECEIPT
+        )
+    elif case_name in PROBE_CASES:
+        processes.probe_sanitizer_case_receipts += "\n" + GRAPH_RECEIPT
+    else:
+        processes.sanitizer_receipts[case_name] += "\n" + GRAPH_RECEIPT
+    rejected(f"unexpected graph replay receipt in {case_name}", "windows-release-cuda")
+
+
+@pytest.mark.parametrize("executable", ["probe", "graph"])
+def test_release_rejects_graph_receipt_outside_a_case(scenario, executable):
+    processes, _, _, _, rejected = scenario
+    if executable == "probe":
+        processes.probe_sanitizer_trailing_output = GRAPH_RECEIPT
+    else:
+        processes.graph_sanitizer_output += GRAPH_RECEIPT
+    rejected("graph replay receipt outside its testcase", "windows-release-cuda")
+
+
+@pytest.mark.parametrize(
+    ("foreign_receipt", "diagnostic"),
+    [
+        (PROBE_RECEIPT, "hardware probe receipts"),
+        (OPERATOR_RECEIPTS[MEMCHECK_OPERATOR_CASES[0]], "unexpected operator receipt"),
+    ],
+)
+def test_release_rejects_probe_and_operator_receipts_from_graph_memcheck(scenario, foreign_receipt, diagnostic):
+    processes, _, _, _, rejected = scenario
+    processes.graph_sanitizer_output = processes.graph_sanitizer_output.replace(
+        GRAPH_RECEIPT, GRAPH_RECEIPT + "\n" + foreign_receipt
+    )
+    rejected(diagnostic, "windows-release-cuda")
