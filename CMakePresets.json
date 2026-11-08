@@ -1,0 +1,217 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 31,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "native-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "toolchainFile": "${sourceDir}/out/conan/${presetName}/conan_toolchain.cmake",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "FLUIDITY_ENABLE_CUDA": false,
+        "FLUIDITY_FIXTURE_DIRECTORY": {
+          "type": "PATH",
+          "value": "${sourceDir}/out/fixtures/${presetName}"
+        }
+      }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "native-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "FLUIDITY_TOOLCHAIN_RECEIPT": {
+          "type": "FILEPATH",
+          "value": "${sourceDir}/out/qualification/windows-cpu.json"
+        }
+      }
+    },
+    {
+      "name": "windows-cuda-base",
+      "hidden": true,
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "FLUIDITY_ENABLE_CUDA": true,
+        "FLUIDITY_TOOLCHAIN_RECEIPT": {
+          "type": "FILEPATH",
+          "value": "${sourceDir}/out/qualification/windows.json"
+        },
+        "CMAKE_CUDA_ARCHITECTURES": "120-real;120-virtual",
+        "CMAKE_CUDA_RUNTIME_LIBRARY": "Shared"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "native-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "inherits": "native-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "windows-debug-cpu",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-debug-cuda",
+      "inherits": "windows-cuda-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-release-cpu",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-release-cuda",
+      "inherits": "windows-cuda-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-debug-cpu",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-release-cpu",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "macos-debug-cpu",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "macos-release-cpu",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-debug-cpu",
+      "configurePreset": "windows-debug-cpu"
+    },
+    {
+      "name": "windows-debug-cuda",
+      "configurePreset": "windows-debug-cuda"
+    },
+    {
+      "name": "windows-release-cpu",
+      "configurePreset": "windows-release-cpu"
+    },
+    {
+      "name": "windows-release-cuda",
+      "configurePreset": "windows-release-cuda"
+    },
+    {
+      "name": "linux-debug-cpu",
+      "configurePreset": "linux-debug-cpu"
+    },
+    {
+      "name": "linux-release-cpu",
+      "configurePreset": "linux-release-cpu"
+    },
+    {
+      "name": "macos-debug-cpu",
+      "configurePreset": "macos-debug-cpu"
+    },
+    {
+      "name": "macos-release-cpu",
+      "configurePreset": "macos-release-cpu"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "native-test",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "windows-debug-cpu",
+      "inherits": "native-test",
+      "configurePreset": "windows-debug-cpu"
+    },
+    {
+      "name": "windows-debug-cuda",
+      "inherits": "native-test",
+      "configurePreset": "windows-debug-cuda"
+    },
+    {
+      "name": "windows-release-cpu",
+      "inherits": "native-test",
+      "configurePreset": "windows-release-cpu"
+    },
+    {
+      "name": "windows-release-cuda",
+      "inherits": "native-test",
+      "configurePreset": "windows-release-cuda"
+    },
+    {
+      "name": "linux-debug-cpu",
+      "inherits": "native-test",
+      "configurePreset": "linux-debug-cpu"
+    },
+    {
+      "name": "linux-release-cpu",
+      "inherits": "native-test",
+      "configurePreset": "linux-release-cpu"
+    },
+    {
+      "name": "macos-debug-cpu",
+      "inherits": "native-test",
+      "configurePreset": "macos-debug-cpu"
+    },
+    {
+      "name": "macos-release-cpu",
+      "inherits": "native-test",
+      "configurePreset": "macos-release-cpu"
+    }
+  ]
+}

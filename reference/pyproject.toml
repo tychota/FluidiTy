@@ -12,6 +12,8 @@ dependencies = ["numpy==2.2.6", "scipy==1.15.3"]
 [dependency-groups]
 dev = ["pytest==8.3.5", "setuptools==80.9.0", "wheel==0.45.1"]
 
+native = ["conan==2.34.0", "cmake==4.4.4", "ninja==1.13.2"]
+
 [tool.uv]
 required-version = ">=0.13.7"
 

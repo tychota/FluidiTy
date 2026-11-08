@@ -20,3 +20,5 @@ data/cache/
 *.engine
 *.log
 *.trace.json
+/CMakeUserPresets.json
+/Testing/

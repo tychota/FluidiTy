@@ -1,1 +1,2 @@
 *.pdf binary
+/native/tests/fixtures/escaping/*.json text eol=lf
