@@ -334,8 +334,10 @@ no directory or lock, changes no cache content, and always reports
 data fail closed. Cache checks also report operational `job_status`. A held
 whole-job lease reports `baking`. A baking marker without a lease reports
 `crashed`. With no active writer, `complete`, `cancelled` and `failed` describe the
-last terminal run, `idle` means no marker, and `unknown` means unrecognized
-marker bytes. Frame inspection remains available independently of that status.
+last terminal run and `idle` means no marker. Unrecognized or unreadable
+operational metadata reports `unknown`. Native access failures also include a
+`job_status_diagnostic` object with the status name and cause. The result
+still includes any verified frame data.
 Default decoding limits are those in `LiquidCacheLimits3D`.
 
 `device-info --backend cpu` reports CPU availability and whether CUDA was compiled;
@@ -426,7 +428,8 @@ return `ABORTED` if the reader races with a publication.
 Send `cancel` followed by LF or CRLF over redirected stdin. EOF and unrelated
 lines leave the job running. The solver checks at safe boundaries outside
 physical attempts, drains any active snapshot before releasing its resources,
-and stops without waiting for stdin to close. Previously committed frames
+and stops without waiting for stdin to close. Clients must keep reading stdout
+during a run so protocol writes can complete. Previously committed frames
 remain readable. After creating a fresh cache, the writer finishes publishing
 its frame-zero recovery point before honoring a pending cancellation.
 

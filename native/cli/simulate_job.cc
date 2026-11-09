@@ -30,10 +30,10 @@ std::string ClockJson(const LiquidClock3D& clock) {
 // PeekNamedPipe checks redirected stdin without blocking on a command or EOF.
 class CancelInput {
  public:
-  bool Poll() {
+  bool PollForCancelCommand() {
     std::array<char, 256> bytes{};
-    const auto bytes_read = ReadReadyBytes(bytes);
-    for (const char byte : std::span(bytes).first(bytes_read)) {
+    const auto command_bytes_read = ReadReadyBytes(bytes);
+    for (const char byte : std::span(bytes).first(command_bytes_read)) {
       if (byte == '\n') {
         const std::string_view command(command_.data(), command_length_);
         if (!discard_line_ && (command == "cancel" || command == "cancel\r")) {
@@ -107,15 +107,12 @@ class CancelInput {
   bool closed_ = false;
 };
 
-// Call only if no competing writer owns the lease. A leftover baking marker
-// then describes a process that exited without publishing a terminal status.
+// Decode a marker for an unowned lease. Discard this result if a competing
+// writer could have acquired the lease before the marker read.
 absl::StatusOr<std::string_view> ReadJobStatusMarker(const std::filesystem::path& cache_directory) {
   auto bytes = files::ReadBytes(cache_directory / kJobStatusName, {.maximum_bytes = 32});
   if (absl::IsNotFound(bytes.status())) {
     return std::string_view("idle");
-  }
-  if (absl::IsDataLoss(bytes.status()) || absl::IsResourceExhausted(bytes.status())) {
-    return std::string_view("unknown");
   }
   if (!bytes.ok()) {
     return bytes.status();
@@ -141,27 +138,35 @@ absl::StatusOr<std::string_view> ReadJobStatusMarker(const std::filesystem::path
 }  // namespace
 
 absl::StatusOr<std::string_view> InspectJobStatus(const std::filesystem::path& cache_directory) {
-  files::NativeFile probe;
-  const auto opened = probe.Open(cache_directory / kJobLeaseName, false, true, true);
-  if (absl::IsNotFound(opened)) {
-    return ReadJobStatusMarker(cache_directory);
+  const auto job_lease_path = cache_directory / kJobLeaseName;
+  files::NativeFile job_lease_probe;
+  auto open_status = job_lease_probe.Open(job_lease_path, false, true, true);
+  if (absl::IsNotFound(open_status)) {
+    auto marker_without_lease = ReadJobStatusMarker(cache_directory);
+    // A first or legacy-cache writer may create and lock the lease between
+    // the initial open and the marker read. Accept the unlocked read only if
+    // the lease is still absent. Existing lease files persist after job exit.
+    open_status = job_lease_probe.Open(job_lease_path, false, true, true);
+    if (absl::IsNotFound(open_status)) {
+      return marker_without_lease;
+    }
   }
-  if (!opened.ok()) {
-    return opened;
+  if (!open_status.ok()) {
+    return open_status;
   }
-  const auto locked = probe.Lock(files::NativeFileLockMode::kShared);
-  if (absl::IsAborted(locked)) {
+  const auto shared_lock_status = job_lease_probe.Lock(files::NativeFileLockMode::kShared);
+  if (absl::IsAborted(shared_lock_status)) {
     return std::string_view("baking");
   }
-  if (!locked.ok()) {
-    return locked;
+  if (!shared_lock_status.ok()) {
+    return shared_lock_status;
   }
   return ReadJobStatusMarker(cache_directory);
 }
 
 SimulateJob::SimulateJob(ProtocolWriter& writer, bool run_command) : writer_(writer) {
   if (run_command) {
-    heartbeat_ = std::thread(&SimulateJob::Watch, this);
+    heartbeat_ = std::thread(&SimulateJob::RunHeartbeatAndCancelLoop, this);
   }
 }
 
@@ -204,8 +209,8 @@ absl::Status SimulateJob::MarkBaking() {
   return marked;
 }
 
-absl::Status SimulateJob::CheckBoundary() const {
-  return absl::Status(boundary_status_.load(), "");
+absl::Status SimulateJob::CheckForJobStopRequest() const {
+  return absl::Status(stop_request_status_.load(), "");
 }
 
 void SimulateJob::SetSettledClock(LiquidBackend3D backend, LiquidClock3D clock, bool verified_checkpoint) {
@@ -229,7 +234,7 @@ absl::Status SimulateJob::ReportPublishedFrame(std::uint64_t frame_ordinal, std:
 absl::Status SimulateJob::Finish(const absl::Status& execution_status, Diagnostic* diagnostic) {
   StopHeartbeat();
   auto final_status = execution_status;
-  if (final_status.ok() && boundary_status_.load() == absl::StatusCode::kUnavailable) {
+  if (final_status.ok() && stop_request_status_.load() == absl::StatusCode::kUnavailable) {
     final_status = absl::UnavailableError("");
   }
   if (absl::IsCancelled(final_status)) {
@@ -253,16 +258,16 @@ absl::Status SimulateJob::Finish(const absl::Status& execution_status, Diagnosti
   return final_status;
 }
 
-void SimulateJob::Watch() {
+void SimulateJob::RunHeartbeatAndCancelLoop() {
   using Clock = std::chrono::steady_clock;
   CancelInput input;
   auto next_heartbeat = started_at_ + kHeartbeatInterval;
   std::unique_lock lock(progress_mutex_);
   while (!stopping_) {
     lock.unlock();
-    const bool cancel_requested = boundary_status_.load() == absl::StatusCode::kOk && input.Poll();
+    const bool cancel_requested = stop_request_status_.load() == absl::StatusCode::kOk && input.PollForCancelCommand();
     if (cancel_requested) {
-      boundary_status_.store(absl::StatusCode::kCancelled);
+      stop_request_status_.store(absl::StatusCode::kCancelled);
     }
     lock.lock();
     if (stopping_) {
@@ -271,7 +276,7 @@ void SimulateJob::Watch() {
     const auto now = Clock::now();
     if (now >= next_heartbeat) {
       if (!EmitHeartbeat(now).ok()) {
-        boundary_status_.store(absl::StatusCode::kUnavailable);
+        stop_request_status_.store(absl::StatusCode::kUnavailable);
         break;
       }
       next_heartbeat = now + kHeartbeatInterval;

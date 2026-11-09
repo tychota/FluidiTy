@@ -187,6 +187,38 @@ def case_inspection(executable, fixture, directory, cuda):
     unknown = invoke(executable, "check", "--cache", cache, "--frame", "0")
     assert unknown["job_status"] == "unknown" and unknown["frame"] == 0
     assert snapshot(directory) == invalid_marker
+
+    # An orphaned legacy marker without a lease is still a read-only crash
+    # observation. A re-probe must neither create a lease nor erase the marker.
+    job_marker = cache / ".simulate-job-status"
+    job_lease = cache / ".simulate-job.lock"
+    job_marker.write_bytes(b"v1 baking\n")
+    abandoned_files = snapshot(directory)
+    orphan = invoke(executable, "check", "--cache", cache, "--frame", "0")
+    assert orphan["job_status"] == "crashed" and orphan["frame"] == 0
+    assert not job_lease.exists() and snapshot(directory) == abandoned_files
+
+    # A malformed operational lease must not block checked physical data.
+    # A directory exercises the error on both Windows and POSIX.
+    job_lease.mkdir()
+    malformed_lease = invoke(executable, "check", "--cache", cache, "--frame", "0")
+    assert malformed_lease["job_status"] == "unknown"
+    assert malformed_lease["points_relative_name"] == result["points_relative_name"]
+    assert malformed_lease["job_status_diagnostic"]["name"] in {"DATA_LOSS", "UNAVAILABLE"}
+    assert malformed_lease["job_status_diagnostic"]["cause"]
+    assert job_lease.is_dir() and snapshot(directory) == abandoned_files
+
+    job_lease.rmdir()
+    job_marker.unlink()
+    job_marker.mkdir()
+    physical_files = snapshot(directory)
+    malformed_marker = invoke(executable, "check", "--cache", cache, "--frame", "0")
+    assert malformed_marker["job_status"] == "unknown"
+    assert malformed_marker["points_relative_name"] == result["points_relative_name"]
+    assert malformed_marker["job_status_diagnostic"]["name"] in {"DATA_LOSS", "UNAVAILABLE"}
+    assert job_marker.is_dir() and not job_lease.exists()
+    assert snapshot(directory) == physical_files
+
     manifest = next((cache / "frames").glob("*.flmf"))
     manifest.write_bytes(b"corrupt")
     corrupt = snapshot(directory)
@@ -499,15 +531,15 @@ def lifecycle_case(executable, fixture, directory, backend):
     cache = directory / "lifecycle"
     run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
     frame_zero = ["check", "--cache", cache, "--frame", 0]
-    running = RunningSimulation(executable, [*run, "--frame-end", 1])
+    cancellable_simulation = RunningSimulation(executable, [*run, "--frame-end", 1])
     try:
-        _, published = running.next_event("frame")
+        _, published = cancellable_simulation.next_event("frame")
         assert published["frame"] == 0
-        first_time, first = running.next_event("heartbeat")
-        # A first heartbeat may precede the initial snapshot. Once frame zero
+        first_heartbeat_received_at, first_heartbeat = cancellable_simulation.next_event("heartbeat")
+        # The first heartbeat may precede the initial snapshot. Once frame zero
         # has appeared on stdout, every later heartbeat must know it is published.
-        assert first["last_published_frame"] == 0 and first["backend"] == backend
-        assert first["last_settled_clock"] == {"frame": 0, "substep": 0, "epoch": 0, "accepted_step": 0}
+        assert first_heartbeat["last_published_frame"] == 0 and first_heartbeat["backend"] == backend
+        assert first_heartbeat["last_settled_clock"] == {"frame": 0, "substep": 0, "epoch": 0, "accepted_step": 0}
         before = snapshot(cache, live_job=True)
         active = invoke(executable, *frame_zero)
         assert active["job_status"] == "baking"
@@ -516,27 +548,28 @@ def lifecycle_case(executable, fixture, directory, backend):
         competing = execute(executable, *run, "--resume", "--frame-end", 0, success=False)[-1]
         assert competing["name"] == "ABORTED", competing
         # Discard an unrelated command and retain a command split across reads.
-        running.process.stdin.write("cancelled\ncan")
-        running.process.stdin.flush()
-        second_time, second = running.next_event("heartbeat")
-        assert second["last_published_frame"] == 0
-        assert second["last_settled_clock"] == first["last_settled_clock"]
-        assert 0 < second["elapsed_milliseconds"] - first["elapsed_milliseconds"] <= 1000
-        assert 0 < second_time - first_time <= 1.0, (first_time, second_time)
+        cancellable_simulation.process.stdin.write("cancelled\ncan")
+        cancellable_simulation.process.stdin.flush()
+        second_heartbeat_received_at, second_heartbeat = cancellable_simulation.next_event("heartbeat")
+        assert second_heartbeat["last_published_frame"] == 0
+        assert second_heartbeat["last_settled_clock"] == first_heartbeat["last_settled_clock"]
+        assert 0 < second_heartbeat["elapsed_milliseconds"] - first_heartbeat["elapsed_milliseconds"] <= 1000
+        heartbeat_interval_seconds = second_heartbeat_received_at - first_heartbeat_received_at
+        assert 0 < heartbeat_interval_seconds <= 1.0, heartbeat_interval_seconds
         cancel_sent = monotonic()
-        running.process.stdin.write("cel\r\n")
-        running.process.stdin.flush()
-        _, cancelled = running.next_event("error")
+        cancellable_simulation.process.stdin.write("cel\r\n")
+        cancellable_simulation.process.stdin.flush()
+        _, cancelled = cancellable_simulation.next_event("error")
         assert cancelled["name"] == "CANCELLED", cancelled
-        assert running.process.wait(timeout=10) != 0
+        assert cancellable_simulation.process.wait(timeout=10) != 0
         cancel_exit_seconds = monotonic() - cancel_sent
         assert 0 < cancel_exit_seconds <= 10, cancel_exit_seconds
-        assert not running.process.stdin.closed, "cancellation should not require EOF"
-        assert records(running.process.stderr.read()) == [cancelled]
-        _, final_line = running.lines.get(timeout=10)
+        assert not cancellable_simulation.process.stdin.closed, "cancellation should not require EOF"
+        assert records(cancellable_simulation.process.stderr.read()) == [cancelled]
+        _, final_line = cancellable_simulation.lines.get(timeout=10)
         assert final_line == "", "unexpected stdout after the terminal record"
     finally:
-        running.close()
+        cancellable_simulation.close()
     assert invoke(executable, *frame_zero)["job_status"] == "cancelled"
     assert invoke(executable, *frame_zero)["points_relative_name"] == active["points_relative_name"]
     assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before)
@@ -544,14 +577,14 @@ def lifecycle_case(executable, fixture, directory, backend):
     assert execute(executable, *run, "--resume", "--frame-end", 0)[-1]["frame"] == 0
     assert invoke(executable, *frame_zero)["job_status"] == "complete"
 
-    killed = RunningSimulation(executable, [*run, "--resume", "--frame-end", 1])
+    interruptible_simulation = RunningSimulation(executable, [*run, "--resume", "--frame-end", 1])
     try:
-        killed.next_event("frame")
+        interruptible_simulation.next_event("frame")
         assert invoke(executable, *frame_zero)["job_status"] == "baking"
-        killed.process.kill()
-        assert killed.process.wait(timeout=10) != 0
+        interruptible_simulation.process.kill()
+        assert interruptible_simulation.process.wait(timeout=10) != 0
     finally:
-        killed.close()
+        interruptible_simulation.close()
     abandoned = snapshot(cache)
     assert invoke(executable, *frame_zero)["job_status"] == "crashed"
     assert snapshot(cache) == abandoned, "crash classification must be read-only"
@@ -560,7 +593,7 @@ def lifecycle_case(executable, fixture, directory, backend):
     if backend == "cuda":
         assert published["compiled_architecture"] == 1200 and published["snapshot_copy_milliseconds"] > 0
     print(json.dumps({
-        "backend": backend, "heartbeat_interval_seconds": second_time - first_time,
+        "backend": backend, "heartbeat_interval_seconds": heartbeat_interval_seconds,
         "cancel_exit_seconds": cancel_exit_seconds, "frame_zero": published,
     }, sort_keys=True))
 

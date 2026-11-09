@@ -15,7 +15,8 @@ namespace fluidity::simulate {
 // Checks the operational sidecar in a verified cache directory without creating
 // files. A held OS lease is baking; a baking marker without its lease is crashed.
 // A missing marker and unheld lease mean idle. Invalid metadata reports unknown
-// independently of whether a committed frame can be read.
+// independently of whether a committed frame can be read. Native access errors
+// are returned to the caller as operational diagnostics alongside frame data.
 absl::StatusOr<std::string_view> InspectJobStatus(const std::filesystem::path& cache_directory);
 
 // Owns an optional run heartbeat thread and an independent whole-job writer
@@ -35,9 +36,9 @@ class SimulateJob {
   // in frame identity or checkpoint replay. Preview jobs have no writer lease.
   absl::Status MarkBaking();
 
-  // Returns Cancelled for an exact stdin cancel line and Unavailable for lost
-  // heartbeat output. Call outside physical attempts and before publication.
-  absl::Status CheckBoundary() const;
+  // Reports Cancelled for an exact stdin cancel line and Unavailable for lost
+  // heartbeat output. Check at safe boundaries outside physical attempts.
+  absl::Status CheckForJobStopRequest() const;
 
   // Replaces the heartbeat's settled clock only after a complete frame schedule.
   // verified_checkpoint indicates that this clock also names a verified manifest.
@@ -52,7 +53,7 @@ class SimulateJob {
   absl::Status Finish(const absl::Status& execution_status, Diagnostic* diagnostic);
 
  private:
-  void Watch();
+  void RunHeartbeatAndCancelLoop();
   void StopHeartbeat();
   // The caller holds progress_mutex_ across the coherent snapshot and emit.
   absl::Status EmitHeartbeat(std::chrono::steady_clock::time_point now);
@@ -69,7 +70,7 @@ class SimulateJob {
   std::optional<LiquidBackend3D> backend_;
   std::optional<LiquidClock3D> last_settled_clock_;
   std::optional<std::uint64_t> last_published_frame_;
-  std::atomic<absl::StatusCode> boundary_status_{absl::StatusCode::kOk};
+  std::atomic<absl::StatusCode> stop_request_status_{absl::StatusCode::kOk};
   std::thread heartbeat_;
 };
 }  // namespace fluidity::simulate

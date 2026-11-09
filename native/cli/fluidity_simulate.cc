@@ -200,13 +200,15 @@ absl::Status CheckScene(const Command& command, ProtocolWriter& writer, Diagnost
           + ",\"execution_id\":" + JsonString(DigestHex(frame->manifest.execution_id)) + ",\"points_relative_name\":"
           + JsonString(name->data()) + ",\"point_count\":" + std::to_string(frame->points.points.size());
     }
-    diagnostic->field = "job-status";
-    diagnostic->cause = "could not inspect the cache process lease";
-    auto job_status = InspectJobStatus(command.cache_directory);
-    if (!job_status.ok()) {
-      return job_status.status();
+    const auto job_status = InspectJobStatus(command.cache_directory);
+    if (job_status.ok()) {
+      members += ",\"job_status\":" + JsonString(*job_status);
+    } else {
+      // Operational metadata cannot invalidate a verified scene or frame.
+      members += ",\"job_status\":\"unknown\",\"job_status_diagnostic\":{\"name\":"
+          + JsonString(absl::StatusCodeToString(job_status.status().code()))
+          + ",\"cause\":\"could not read the job lease or status marker\"}";
     }
-    members += ",\"job_status\":" + JsonString(*job_status);
   } else {
     members += ",\"resolved_fingerprint\":" + JsonString(DigestHex(*explicit_fingerprint));
   }

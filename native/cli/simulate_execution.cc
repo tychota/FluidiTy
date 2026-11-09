@@ -213,7 +213,7 @@ struct Observations {
   static absl::Status
   Observe(void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
     auto& self = *static_cast<Observations*>(context);
-    EXEC_TRY(self.job.CheckBoundary());
+    EXEC_TRY(self.job.CheckForJobStopRequest());
     if (rollback) {
       self.trace.clear();
       self.selected.reset();
@@ -387,7 +387,7 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   diagnostic->cause = "checkpoint clock does not match the model-v1 absolute frame ordinal divided by 24 seconds";
   EXEC_TRY(CompatibleClock(starting));
   job.SetSettledClock(scene.backend, starting.clock, loaded);
-  EXEC_TRY(job.CheckBoundary());
+  EXEC_TRY(job.CheckForJobStopRequest());
   if (step) {
     if (starting.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
       return absl::OutOfRangeError("");
@@ -440,7 +440,7 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
     queue = std::move(*created);
   }
 #endif
-  EXEC_TRY(job.CheckBoundary());
+  EXEC_TRY(job.CheckForJobStopRequest());
   if (!cache && !read_only) {
     diagnostic->field = "cache";
     diagnostic->cause = "could not create the cache and acquire its whole-job lease";
@@ -530,7 +530,7 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
     // even if cancel arrives during the initial snapshot. Later copies can
     // drain safely and leave the accepted frame unpublished on cancellation.
     if (state->clock.frame_ordinal != 0) {
-      EXEC_TRY(job.CheckBoundary());
+      EXEC_TRY(job.CheckForJobStopRequest());
     }
     EXEC_TRY(cache->PublishFrame(*points, checkpoint ? state : nullptr, checkpoint ? &resume : nullptr));
     std::string measurements;
@@ -546,10 +546,10 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   diagnostic->field = "frame";
   diagnostic->cause = "completed state, point publication or deterministic replay verification failed";
   EXEC_TRY(complete_frame(!read_only && starting.clock.frame_ordinal == 0));
-  EXEC_TRY(job.CheckBoundary());
+  EXEC_TRY(job.CheckForJobStopRequest());
   Observations observations{command, job, {}, {}};
   for (std::uint64_t frame = starting.clock.frame_ordinal; frame < target_frame;) {
-    EXEC_TRY(job.CheckBoundary());
+    EXEC_TRY(job.CheckForJobStopRequest());
     ++frame;
     auto time = FrameTime(frame);
     if (!time.ok()) {
@@ -604,7 +604,7 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
 #else
   static_cast<void>(copy_milliseconds);
 #endif
-  EXEC_TRY(job.CheckBoundary());
+  EXEC_TRY(job.CheckForJobStopRequest());
   return members;
 }
 }  // namespace
