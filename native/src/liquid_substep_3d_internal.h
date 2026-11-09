@@ -14,6 +14,7 @@ struct Staging {
   LiquidRecords3D<double> old_velocities;
   LiquidRecords3D<double> new_velocities;
   LiquidRecords3D<LiquidFaceValidity3D> validity;
+  LiquidRecords3D<LiquidFaceValidity3D> projected_gather_validity;  // New history for pressure-supported particles.
   LiquidRecords3D<LiquidPrescribedWallSample3D> old_walls;
   LiquidRecords3D<LiquidPrescribedWallSample3D> new_walls;
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
@@ -43,6 +44,9 @@ absl::Status PrepareField(
     Staging& staging,
     const LiquidSubstepBackend3D& backend
 );
+// Certify half-open containing cells for checked MAC geometry, across the signed int32 range.
+// Returns code-only OutOfRange if a signed index or plane comparison cannot be certified.
+absl::StatusOr<CellIndex3D> CheckedContainingCell(UniformMacGeometry3D geometry, Vec3 world_position);
 absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging);
 absl::Status
 FillFaceTags(SparseMacGridView3D grid, const LiquidObstacle3D& obstacle, std::span<LiquidBoundaryFaceTag3D> tags);

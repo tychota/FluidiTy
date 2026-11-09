@@ -46,6 +46,14 @@ SUBSTEP_3D_CASES = (
     "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu",
     "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth",
     "CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu",
+    "CudaLiquidSubstep3D.PressureSupportedGatherExcludesForceOnlyNewDonors",
+)
+GATHER_CONTROL_CASES = (
+    "CudaLiquidSubstep3D.PressureSupportedGatherPreservesDisconnectedFreeFall",
+    "CudaLiquidSubstep3D.PressureSupportedGatherUsesHalfOpenContainingCell",
+    "CudaLiquidSubstep3D.PressureSupportedGatherPreservesLowMassStatus",
+    "CudaLiquidSubstep3D.PressureSupportedGatherWithNoNewDonorRollsBack",
+    "CudaLiquidSubstep3D.CompleteNonaffineGatherKeepsTrueGradientAndNativeNoDonorFailure",
 )
 SNAPSHOT_3D_CASES = (
     "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch",
@@ -54,6 +62,7 @@ SNAPSHOT_3D_CASES = (
 MEMCHECK_OPERATOR_CASES = (
     *SNAPSHOT_3D_CASES,
     *SUBSTEP_3D_CASES,
+    *GATHER_CONTROL_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
@@ -95,6 +104,8 @@ OPERATOR_RECEIPTS = {
     "substep_device_timeline_ms=12.5 timing_scope=topology_through_publication",
     SUBSTEP_3D_CASES[2]: "operator=liquid_open_tank_substep_3d compiled_architecture=1200 "
     "substep_device_timeline_ms=13.5 timing_scope=topology_through_publication",
+    SUBSTEP_3D_CASES[3]: "operator=liquid_pressure_supported_gather_3d compiled_architecture=1200 "
+    "substep_device_timeline_ms=11.5 timing_scope=topology_through_publication",
     BOUNDARY_3D_CASES[0]: "operator=liquid_boundary_geometry_3d compiled_architecture=1200 kernel_ms=0.875",
     BOUNDARY_3D_CASES[1]: "operator=liquid_wall_contact_3d compiled_architecture=1200 kernel_ms=1.5",
     BOUNDARY_3D_CASES[2]: "operator=liquid_boundary_transfer_3d compiled_architecture=1200 kernel_ms=0.5",
@@ -760,13 +771,13 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "35", "failures": "0", "skipped": "0"}
+    assert gpu_report.attrib == {"name": "gpu", "tests": "41", "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 35,
+        "tests": 41,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -783,6 +794,8 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
                                          "timing_scope": "topology_through_publication"},
             "liquid_open_tank_substep_3d": {"compiled_architecture": 1200, "substep_device_timeline_ms": 13.5,
                                             "timing_scope": "topology_through_publication"},
+            "liquid_pressure_supported_gather_3d": {"compiled_architecture": 1200, "substep_device_timeline_ms": 11.5,
+                                                    "timing_scope": "topology_through_publication"},
             "liquid_boundary_transfer_3d": {"compiled_architecture": 1200, "kernel_ms": 0.5},
             "liquid_boundary_coupled_3d": {"compiled_architecture": 1200, "kernel_ms": 0.75},
             "liquid_boundary_geometry_3d": {"compiled_architecture": 1200, "kernel_ms": 0.875},
@@ -816,7 +829,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 33,
+            "tests": 39,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -824,8 +837,8 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
 
 @pytest.mark.parametrize(
     "omitted_cases",
-    [MEMCHECK_OPERATOR_CASES, (MEMCHECK_OPERATOR_CASES[-1],), (OPERATOR_ERROR_CASE,)],
-    ids=["all-memcheck-operators", "one-memcheck-operator", "error-injection"],
+    [MEMCHECK_OPERATOR_CASES, (MEMCHECK_OPERATOR_CASES[-1],), (OPERATOR_ERROR_CASE,), GATHER_CONTROL_CASES],
+    ids=["all-memcheck-operators", "one-memcheck-operator", "error-injection", "pressure-gather-controls"],
 )
 def test_gpu_requires_each_operator_case(scenario, omitted_cases):
     processes, _, _, _, rejected = scenario

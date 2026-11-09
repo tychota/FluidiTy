@@ -273,7 +273,8 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(trial.cells.Resize(frozen->cells.size()));
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
-    if (!links->cells.empty()) {
+    const bool has_pressure = !links->cells.empty();
+    if (has_pressure) {
       const auto projection = backend.project(
           backend.context,
           grid,
@@ -317,6 +318,20 @@ struct LiquidSubstepScheduler3D::Impl {
       trial.faces[index].side_tag = staging.new_tags[index].side_tag;
       trial.faces[index].structurally_eligible = staging.new_tags[index].structurally_eligible;
     }
+    // Pressure-exterior velocities remain part of the committed carrier.
+    // The projected gather history excludes their direct and donor use.
+    if (has_pressure) {
+      for (std::size_t slot = 0; slot < trial.faces.size(); ++slot) {
+        const auto carrier_validity = staging.validity[slot];
+        const bool usable =
+            carrier_validity == LiquidFaceValidity3D::kValid || carrier_validity == LiquidFaceValidity3D::kPredicted;
+        staging.projected_gather_validity[slot] =
+            staging.new_tags[slot].structurally_eligible && usable ? LiquidFaceValidity3D::kMissing : carrier_validity;
+      }
+      for (const auto& face : frozen->faces) {
+        staging.projected_gather_validity[face.face_slot] = staging.validity[face.face_slot];
+      }
+    }
     const LiquidBoundaryVelocityHistory3D new_history{
         .velocity_sample_time = new_time,
         .wall_sample_time = new_time,
@@ -331,11 +346,26 @@ struct LiquidSubstepScheduler3D::Impl {
     // Copy each result before reusing the bounded gather bank.
     std::optional<std::int64_t> sampled_wall_side;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
-      const auto side = trial.particles[index].side_tag;
+      const auto& particle = trial.particles[index];
+      const auto side = particle.side_tag;
       if (sampled_wall_side != side) {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
         sampled_wall_side = side;
+      }
+      auto particle_new_history = new_history;
+      if (has_pressure) {
+        const auto cell_index = liquid_step_internal::CheckedContainingCell(grid.geometry(), particle.world_position);
+        if (!cell_index.ok()) {
+          return cell_index.status();
+        }
+        const auto cell_key = CellKey(*cell_index);
+        const auto cell = std::ranges::lower_bound(frozen->cells, cell_key, {}, [](const auto& frozen_cell) {
+          return CellKey(frozen_cell.cell_index);
+        });
+        if (cell != frozen->cells.end() && CellKey(cell->cell_index) == cell_key) {
+          particle_new_history.validity = staging.projected_gather_validity.values();
+        }
       }
       const auto gather = backend.gather(
           backend.context,
@@ -345,7 +375,7 @@ struct LiquidSubstepScheduler3D::Impl {
               .old_time = old_time,
               .new_time = new_time,
               .old_history = old_history,
-              .new_history = new_history,
+              .new_history = particle_new_history,
           },
           boundary
       );

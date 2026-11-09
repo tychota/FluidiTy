@@ -15,6 +15,7 @@
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_pressure_supported_gather_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 namespace fluidity {
@@ -842,6 +843,98 @@ void CheckRejectedFieldBatch() {
   ASSERT_TRUE(after.ok()) << after.status();
   EXPECT_EQ(after->identity(), identity);
   EXPECT_EQ(DeviceBytes(*after), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, PressureSupportedGatherExcludesForceOnlyNewDonors) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  fixture::Audit audit(options.capacities.faces);
+  fixture::active_audit = &audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      fixture::Initial(),
+      fixture::Scene(),
+      options,
+      fixture::Observe(audit, backend->operations())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(fixture::kDuration).ok());
+  MeasuredAttempt(*scheduler, *backend, fixture::kDuration, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  fixture::ExpectSymmetricPressureCell(*scheduler, audit);
+  Receipt("liquid_pressure_supported_gather_3d", backend->usage());
+}
+
+TEST(CudaLiquidSubstep3D, PressureSupportedGatherPreservesDisconnectedFreeFall) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  auto mixed = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(mixed.ok()) << mixed.status();
+  auto no_pressure = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(no_pressure.ok()) << no_pressure.status();
+  fixture::ExpectMixedPressureDoesNotChangeUnsupportedGather(mixed->operations(), no_pressure->operations(), options);
+}
+
+TEST(CudaLiquidSubstep3D, PressureSupportedGatherUsesHalfOpenContainingCell) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  for (const double x : {std::nextafter(-1.0, -2.0), -1.0}) {
+    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    fixture::ExpectSignedBoundaryMembership(backend->operations(), options, x);
+  }
+  auto translated = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(translated.ok()) << translated.status();
+  fixture::ExpectTranslatedMembership(translated->operations(), options);
+}
+
+TEST(CudaLiquidSubstep3D, PressureSupportedGatherPreservesLowMassStatus) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  fixture::ExpectPressureMaskKeepsLowMass(backend->operations(), options);
+}
+
+TEST(CudaLiquidSubstep3D, PressureSupportedGatherWithNoNewDonorRollsBack) {
+  namespace fixture = pressure_supported_gather_test;
+  const auto initial = fixture::NoDonorInitial();
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  options.minimum_face_mass = 1.125;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  fixture::Audit audit(options.capacities.faces);
+  fixture::active_audit = &audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      initial,
+      fixture::Scene(),
+      options,
+      fixture::Observe(audit, backend->operations())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto before = backend->AcquireCommitted();
+  ASSERT_TRUE(before.ok()) << before.status();
+  const auto bytes = DeviceBytes(*before);
+  ASSERT_TRUE(scheduler->BeginFrame(fixture::kDuration).ok());
+  MeasuredAttempt(*scheduler, *backend, fixture::kDuration, LiquidAttemptDisposition3D::kFatal);
+  fixture::ExpectNoDonorRollback(*scheduler, initial, audit);
+  const auto after = backend->AcquireCommitted();
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_EQ(after->identity(), before->identity());
+  EXPECT_EQ(DeviceBytes(*after), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, CompleteNonaffineGatherKeepsTrueGradientAndNativeNoDonorFailure) {
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  pressure_supported_gather_test::ExpectCompleteNonaffineGradient(backend->operations(), options.capacities);
 }
 
 TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {

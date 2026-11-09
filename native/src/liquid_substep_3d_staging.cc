@@ -155,6 +155,7 @@ absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities) {
   STEP_TRY(Reserve(staging.old_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.new_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.validity, capacities.faces, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.projected_gather_validity, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.old_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.new_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.pressure_fields, capacities.cells, staging.reserved_bytes));
@@ -545,6 +546,46 @@ absl::Status PrepareField(
   }
   return absl::OkStatus();
 }
+absl::StatusOr<CellIndex3D> CheckedContainingCell(UniformMacGeometry3D geometry, Vec3 world_position) {
+  const std::array world_coordinates{world_position.x, world_position.y, world_position.z};
+  const std::array world_origins{geometry.world_origin.x, geometry.world_origin.y, geometry.world_origin.z};
+  std::array<std::int32_t, 3> indices;
+  constexpr double min_index = std::numeric_limits<std::int32_t>::min();
+  constexpr double max_index = std::numeric_limits<std::int32_t>::max();
+  for (std::size_t axis = 0; axis < indices.size(); ++axis) {
+    const double world_coordinate = world_coordinates[axis];
+    const double world_origin = world_origins[axis];
+    const double estimate = std::floor((world_coordinate - world_origin) / geometry.cell_width);
+    if (!std::isfinite(estimate) || estimate < min_index - 1 || estimate > max_index + 1) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    // Rounded division can land on the wrong side of an integer plane.
+    // Widen before adding one so INT32_MAX can use its true upper plane.
+    bool certified = false;
+    for (const double index : {estimate, estimate - 1, estimate + 1}) {
+      if (index < min_index || index > max_index) {
+        continue;
+      }
+      const auto low =
+          boundary_internal::TankPlaneOffsetSign(world_coordinate, {world_origin, index, geometry.cell_width});
+      const auto high =
+          boundary_internal::TankPlaneOffsetSign(world_coordinate, {world_origin, index + 1, geometry.cell_width});
+      if (!low.ok() || !high.ok()) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (*low >= 0 && *high < 0) {
+        indices[axis] = static_cast<std::int32_t>(index);
+        certified = true;
+        break;
+      }
+    }
+    if (!certified) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+  }
+  return CellIndex3D{indices[0], indices[1], indices[2]};
+}
+
 absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging) {
   STEP_TRY(staging.particles.Resize(trial.particles.size()));
   STEP_TRY(staging.gathered.Resize(trial.particles.size()));
@@ -568,6 +609,7 @@ absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D gr
   STEP_TRY(staging.tags.Resize(count));
   STEP_TRY(staging.new_tags.Resize(count));
   STEP_TRY(staging.validity.Resize(count));
+  STEP_TRY(staging.projected_gather_validity.Resize(count));
   STEP_TRY(staging.old_velocities.Resize(count));
   STEP_TRY(staging.new_velocities.Resize(count));
   STEP_TRY(staging.old_walls.Resize(count));

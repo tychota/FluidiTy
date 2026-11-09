@@ -64,13 +64,27 @@ GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPre
 GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
 GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
 GPU_OPEN_TANK_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu"
-GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE, GPU_OPEN_TANK_SUBSTEP_3D_CASE}
+GPU_PRESSURE_SUPPORTED_GATHER_3D_CASE = "CudaLiquidSubstep3D.PressureSupportedGatherExcludesForceOnlyNewDonors"
+GPU_SUBSTEP_CASES = {
+    GPU_SUBSTEP_3D_CASE,
+    GPU_SUBSTEP_GROWTH_3D_CASE,
+    GPU_OPEN_TANK_SUBSTEP_3D_CASE,
+    GPU_PRESSURE_SUPPORTED_GATHER_3D_CASE,
+}
+GPU_PRESSURE_SUPPORTED_GATHER_CONTROLS = {
+    "CudaLiquidSubstep3D.PressureSupportedGatherPreservesDisconnectedFreeFall",
+    "CudaLiquidSubstep3D.PressureSupportedGatherUsesHalfOpenContainingCell",
+    "CudaLiquidSubstep3D.PressureSupportedGatherPreservesLowMassStatus",
+    "CudaLiquidSubstep3D.PressureSupportedGatherWithNoNewDonorRollsBack",
+    "CudaLiquidSubstep3D.CompleteNonaffineGatherKeepsTrueGradientAndNativeNoDonorFailure",
+}
 GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
 GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
 GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
     *GPU_SNAPSHOT_CASES,
     *GPU_SUBSTEP_CASES,
+    *GPU_PRESSURE_SUPPORTED_GATHER_CONTROLS,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
     GPU_BOUNDARY_GEOMETRY_3D_CASE,
@@ -109,6 +123,7 @@ GPU_OPERATOR_RECEIPT_CASES = {
     GPU_SUBSTEP_3D_CASE: "liquid_substep_3d",
     GPU_SUBSTEP_GROWTH_3D_CASE: "liquid_substep_3d_growth",
     GPU_OPEN_TANK_SUBSTEP_3D_CASE: "liquid_open_tank_substep_3d",
+    GPU_PRESSURE_SUPPORTED_GATHER_3D_CASE: "liquid_pressure_supported_gather_3d",
     GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
     GPU_BOUNDARY_COUPLED_3D_CASE: "liquid_boundary_coupled_3d",
     GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",

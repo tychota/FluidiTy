@@ -3,14 +3,17 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <vector>
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_pressure_supported_gather_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 namespace fluidity {
@@ -50,6 +53,101 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
   EXPECT_EQ(before_digest, after_digest);
   std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
+TEST(LiquidSubstep3D, PressureSupportedGatherExcludesForceOnlyNewDonors) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  fixture::Audit audit(options.capacities.faces);
+  fixture::active_audit = &audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      fixture::Initial(),
+      fixture::Scene(),
+      options,
+      fixture::Observe(audit, CpuLiquidSubstepBackend3D())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(fixture::kDuration);
+  ASSERT_TRUE(status.ok()) << status;
+  fixture::ExpectSymmetricPressureCell(*scheduler, audit);
+}
+
+TEST(LiquidSubstep3D, PressureSupportedGatherPreservesDisconnectedFreeFall) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  fixture::ExpectMixedPressureDoesNotChangeUnsupportedGather(
+      CpuLiquidSubstepBackend3D(),
+      CpuLiquidSubstepBackend3D(),
+      options
+  );
+}
+
+TEST(LiquidSubstep3D, PressureSupportedGatherUsesHalfOpenContainingCell) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  for (const double x : {std::nextafter(-1.0, -2.0), -1.0}) {
+    fixture::ExpectSignedBoundaryMembership(CpuLiquidSubstepBackend3D(), options, x);
+  }
+  fixture::ExpectTranslatedMembership(CpuLiquidSubstepBackend3D(), options);
+}
+
+TEST(LiquidSubstep3D, CheckedContainingCellCertifiesFullSignedRange) {
+  constexpr UniformMacGeometry3D geometry{{}, 1};
+  constexpr double min_index = std::numeric_limits<std::int32_t>::min();
+  constexpr double max_index = std::numeric_limits<std::int32_t>::max();
+  const auto cell = liquid_step_internal::CheckedContainingCell(geometry, {min_index, max_index + 0.5, -1});
+  ASSERT_TRUE(cell.ok()) << cell.status();
+  EXPECT_EQ(cell->x, INT32_MIN);
+  EXPECT_EQ(cell->y, INT32_MAX);
+  EXPECT_EQ(cell->z, -1);
+  for (const double x : {std::nextafter(min_index, min_index - 1), max_index + 1}) {
+    EXPECT_EQ(
+        liquid_step_internal::CheckedContainingCell(geometry, {x, 0, 0}).status().code(),
+        absl::StatusCode::kOutOfRange
+    );
+  }
+  // Compensated product arithmetic cannot certify the sign at this tiny
+  // scale. The helper fails closed before converting a candidate index.
+  const UniformMacGeometry3D tiny_grid{{}, 0x1p-970};
+  EXPECT_EQ(
+      liquid_step_internal::CheckedContainingCell(tiny_grid, {0x1p-969, 0, 0}).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+}
+
+TEST(LiquidSubstep3D, PressureSupportedGatherPreservesLowMassStatus) {
+  namespace fixture = pressure_supported_gather_test;
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  fixture::ExpectPressureMaskKeepsLowMass(CpuLiquidSubstepBackend3D(), options);
+}
+
+TEST(LiquidSubstep3D, PressureSupportedGatherWithNoNewDonorRollsBack) {
+  namespace fixture = pressure_supported_gather_test;
+  const auto initial = fixture::NoDonorInitial();
+  auto options = Options();
+  options.maximum_step_duration = fixture::kDuration;
+  options.minimum_face_mass = 1.125;
+  fixture::Audit audit(options.capacities.faces);
+  fixture::active_audit = &audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      initial,
+      fixture::Scene(),
+      options,
+      fixture::Observe(audit, CpuLiquidSubstepBackend3D())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(fixture::kDuration);
+  EXPECT_EQ(status.code(), absl::StatusCode::kFailedPrecondition);
+  fixture::ExpectNoDonorRollback(*scheduler, initial, audit);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+}
+
+TEST(LiquidSubstep3D, CompleteNonaffineGatherKeepsTrueGradientAndNativeNoDonorFailure) {
+  pressure_supported_gather_test::ExpectCompleteNonaffineGradient(CpuLiquidSubstepBackend3D(), Options().capacities);
 }
 
 TEST(LiquidSubstep3D, DeduplicatesSignedFieldKeysBeforeSampling) {
@@ -201,6 +299,9 @@ TEST(LiquidSubstep3D, FiniteExponentialVolumePreservesMassAndReferenceVolume) {
   initial.particles[0].velocity_slopes = {{0.1, 0, 0}, {0, 0.1, 0}, {0, 0, 0.1}};
   auto scene = Scene();
   scene.world_acceleration = {};
+  // The particle is near the continuous wet surface while its containing
+  // cell center is dry. Its complete history can retain the old PIC residual.
+  scene.field = LiquidAnalyticSphere3D{{2.3, 2.5, 2.5}, 1.1};
   scene.target_divergence = 0.3;
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
@@ -725,6 +826,7 @@ TEST(LiquidSubstep3D, ExponentialUsesTrueGradientAndSeparationUsesSurfaceExpansi
     double divergence = 0;
     double pic = 0;
     double residual = 0;
+    bool new_pic_fallback = false;
   } observed;
   auto backend = CpuLiquidSubstepBackend3D();
   backend.context = &observed;
@@ -735,20 +837,33 @@ TEST(LiquidSubstep3D, ExponentialUsesTrueGradientAndSeparationUsesSurfaceExpansi
             value.velocity_gradient.x_row.x + value.velocity_gradient.y_row.y + value.velocity_gradient.z_row.z,
             value.new_pic_velocity.x,
             value.particle_minus_old_pic_velocity.x,
+            value.new_pic_fallback,
         };
         return CpuLiquidSubstepBackend3D().update_particles(nullptr, inputs, particles);
       };
   auto options = Options();
   options.particle_energy_blend = 0.6;
-  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
-  ASSERT_TRUE(scheduler.ok());
-  ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
-  ASSERT_GT(observed.divergence, 0);
-  ASSERT_GT(observed.residual, 0.5);
-  const auto& particle = scheduler->committed().particles[0];
-  EXPECT_NEAR(particle.volume_ratio, std::exp(0.01 * observed.divergence), 1e-13);
-  EXPECT_NEAR(particle.world_velocity.x, observed.pic + 0.594 * observed.residual, 1e-12);
-  EXPECT_NEAR(particle.world_position.x, 3.3 + 0.01 * (observed.pic + 0.6 * 0.594 * observed.residual), 1e-12);
+  // Both points are inside the continuous wet surface. At center x=2.3 the
+  // containing cell center is dry, so its complete history can retain the
+  // old PIC residual. At x=2.5 projected donors have insufficient rank.
+  for (const bool pressure_supported : {false, true}) {
+    SCOPED_TRACE(pressure_supported);
+    scene.field = LiquidAnalyticSphere3D{{pressure_supported ? 2.5 : 2.3, 2.5, 2.5}, 1.1};
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+    ASSERT_TRUE(scheduler.ok());
+    ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
+    ASSERT_GT(observed.divergence, 0);
+    EXPECT_EQ(observed.new_pic_fallback, pressure_supported);
+    if (pressure_supported) {
+      EXPECT_DOUBLE_EQ(observed.residual, 0);
+    } else {
+      EXPECT_GT(observed.residual, 0.5);
+    }
+    const auto& particle = scheduler->committed().particles[0];
+    EXPECT_NEAR(particle.volume_ratio, std::exp(0.01 * observed.divergence), 1e-13);
+    EXPECT_NEAR(particle.world_velocity.x, observed.pic + 0.594 * observed.residual, 1e-12);
+    EXPECT_NEAR(particle.world_position.x, 3.3 + 0.01 * (observed.pic + 0.6 * 0.594 * observed.residual), 1e-12);
+  }
 }
 TEST(LiquidSubstep3D, CompleteBackendIsRequiredAndRealPressureNonconvergenceRetries) {
   auto initial = Initial(8);
