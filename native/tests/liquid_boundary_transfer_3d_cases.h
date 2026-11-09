@@ -48,7 +48,7 @@ struct BoundaryFixture {
   }
 };
 
-void ExpectVec(Vec3 value, Vec3 expected, double tolerance = 2e-12) {
+inline void ExpectVec(Vec3 value, Vec3 expected, double tolerance = 2e-12) {
   EXPECT_NEAR(value.x, expected.x, tolerance);
   EXPECT_NEAR(value.y, expected.y, tolerance);
   EXPECT_NEAR(value.z, expected.z, tolerance);

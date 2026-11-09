@@ -1,0 +1,91 @@
+#pragma once
+#include <cuda_runtime_api.h>
+
+#include <cstdint>
+#include <type_traits>
+
+#include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "liquid_arena_3d_internal.h"
+namespace fluidity::cuda_internal {
+template <typename Value>
+struct LiquidTypedRange3D {
+  Value* device;
+  std::span<Value> pinned;
+};
+// Validate byte extent and both pointer alignments before typed access. Borrow
+// ends on growth or poison; callers check readiness before every staging phase.
+template <typename Value>
+absl::StatusOr<LiquidTypedRange3D<Value>>
+CheckedLiquidRange3D(CudaLiquidArena3D& arena, CudaLiquidRange3D name, std::size_t count) {
+  static_assert(std::is_trivially_copyable_v<Value>);
+  const auto ready = arena.RecordRuntimeResult(cudaSuccess);
+  if (!ready.ok()) {
+    return ready;
+  }
+  const auto range = arena.range(name);
+  if (count > range.pinned.size() / sizeof(Value)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  if (!range.device || !range.pinned.data() || reinterpret_cast<std::uintptr_t>(range.device) % alignof(Value) != 0
+      || reinterpret_cast<std::uintptr_t>(range.pinned.data()) % alignof(Value) != 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  return LiquidTypedRange3D<Value>{
+      reinterpret_cast<Value*>(range.device),
+      {reinterpret_cast<Value*>(range.pinned.data()), count},
+  };
+}
+// Exact active bytes only. Submission failures poison before returning; no new
+// staging may start until prior transfers/launches pass FinishLiquidDispatch3D.
+template <typename Value>
+absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3D<Value>& range, bool upload) {
+  const auto ready = arena.RecordRuntimeResult(cudaSuccess);
+  if (!ready.ok() || range.pinned.empty()) {
+    return ready;
+  }
+  return arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().memcpy_async(
+      upload ? range.device : range.pinned.data(),
+      upload ? range.pinned.data() : range.device,
+      range.pinned.size_bytes(),
+      upload ? cudaMemcpyHostToDevice : cudaMemcpyDeviceToHost,
+      static_cast<cudaStream_t>(arena.stream())
+  ));
+}
+// Event belongs to the arena and is reused only after successful completion.
+inline absl::Status FinishLiquidDispatch3D(CudaLiquidArena3D& arena) {
+  auto status = arena.RecordRuntimeResult(cudaSuccess);
+  if (!status.ok()) {
+    return status;
+  }
+  status = arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().event_record(
+      static_cast<cudaEvent_t>(arena.completion_event()),
+      static_cast<cudaStream_t>(arena.stream())
+  ));
+  if (!status.ok()) {
+    return status;
+  }
+  return arena.RecordRuntimeResult(
+      LiquidArenaRuntimeCalls().event_synchronize(static_cast<cudaEvent_t>(arena.completion_event()))
+  );
+}
+// External views cannot overlap each other or any reserved staging bytes.
+inline bool
+LiquidByteRangesOverlap3D(const void* first, std::size_t first_bytes, const void* second, std::size_t second_bytes) {
+  if (first_bytes == 0 || second_bytes == 0) {
+    return false;
+  }
+  const auto left = reinterpret_cast<std::uintptr_t>(first);
+  const auto right = reinterpret_cast<std::uintptr_t>(second);
+  return left <= right ? right - left < first_bytes : left - right < second_bytes;
+}
+template <typename Value>
+bool AliasesLiquidScratch3D(CudaLiquidArena3D& arena, std::span<Value> values) {
+  for (std::size_t index = 0; index < static_cast<std::size_t>(CudaLiquidRange3D::kCount); ++index) {
+    const auto range = arena.range(static_cast<CudaLiquidRange3D>(index));
+    if (LiquidByteRangesOverlap3D(values.data(), values.size_bytes(), range.pinned.data(), range.pinned.size())) {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace fluidity::cuda_internal

@@ -38,7 +38,20 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
+find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
+find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
+include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+  native/src/liquid_boundary_workspace_3d.cc
+  native/src/liquid_step_workspace_3d.cc
+  native/src/liquid_substep_3d.cc
+  native/src/liquid_substep_3d_cpu.cc
+  native/src/liquid_substep_3d_staging.cc
+  native/src/liquid_resolved_scene_3d.cc
+  native/src/liquid_cache_3d.cc
+  native/src/liquid_cache_store_3d.cc
+  native/src/liquid_cache_files_3d.cc
+  native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
@@ -50,14 +63,18 @@ add_library(fluidity_native STATIC
   native/src/liquid_boundary_geometry_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
+  native/src/mac_pressure_3d_bounded_hierarchy.cc
+  native/src/mac_pressure_workspace_3d.cc
   native/src/mac_pressure_3d.cc
   native/src/mac_pressure_3d_multigrid.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
+add_dependencies(fluidity_native fluidity_cache_schemas)
+target_include_directories(fluidity_native PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
 target_link_libraries(fluidity_native
   PUBLIC absl::status absl::statusor
-  PRIVATE fluidity_native_options)
+  PRIVATE flatbuffers::flatbuffers BLAKE3::blake3 fluidity_native_options)
 
 if(FLUIDITY_ENABLE_CUDA)
   add_library(fluidity_cuda_probe_host OBJECT native/cuda/probe_host.cc)
@@ -70,6 +87,15 @@ if(FLUIDITY_ENABLE_CUDA)
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
   add_library(fluidity_cuda_operators STATIC
+    native/cuda/liquid_transfer_stages_3d_host.cc
+    native/cuda/liquid_pressure_stage_3d_host.cc
+    native/cuda/liquid_geometry_stages_3d_host.cc
+    native/cuda/liquid_geometry_stages_3d.cu
+    native/cuda/liquid_arena_3d_packing.cc
+    native/cuda/liquid_snapshot_3d_host.cc
+    native/cuda/liquid_substep_3d_host.cc
+    native/cuda/liquid_arena_3d_host.cc
+    native/cuda/liquid_arena_3d.cu
     native/cuda/transfer_host.cc
     native/cuda/transfers.cu
     native/cuda/transfer_3d_host.cc
@@ -86,7 +112,12 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
   if(MSVC)
-    set_source_files_properties(native/cuda/liquid_boundary_transfer_3d.cu native/cuda/liquid_boundary_geometry_3d.cu native/cuda/liquid_wall_contact_3d.cu
+    set_source_files_properties(
+      native/cuda/liquid_geometry_stages_3d.cu
+      native/cuda/liquid_arena_3d.cu
+      native/cuda/liquid_boundary_transfer_3d.cu
+      native/cuda/liquid_boundary_geometry_3d.cu
+      native/cuda/liquid_wall_contact_3d.cu
       PROPERTIES COMPILE_OPTIONS "-Xcompiler=/Zc:preprocessor" )
   endif()
 
@@ -162,6 +193,12 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_liquid_boundary_workspace_3d.cc
+    native/tests/test_liquid_step_workspace_3d.cc
+    native/tests/test_liquid_substep_3d.cc
+    native/tests/test_liquid_cache_3d.cc
+    native/tests/test_liquid_cache_store_3d.cc
+    native/tests/test_liquid_state_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
@@ -174,9 +211,14 @@ if(BUILD_TESTING)
     native/tests/test_liquid_boundary_geometry_3d.cc
     native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_liquid_wall_contact_3d.cc
+    native/tests/test_mac_pressure_workspace_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_viscosity.cc)
-  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support)
+  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
+  target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+  target_compile_definitions(fluidity_native_tests PRIVATE
+    FLUIDITY_CACHE_SCRATCH_PATH="${CMAKE_CURRENT_BINARY_DIR}/cache-test-scratch"
+    FLUIDITY_CACHE_GOLDEN_PATH="${PROJECT_SOURCE_DIR}/native/tests/fixtures/liquid_cache/resolved_defaults.hex")
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
   # Use a separate test executable for the synthetic case so each executable owns one data set.
@@ -206,6 +248,8 @@ if(BUILD_TESTING)
       native/tests/test_cuda_transfers.cc
       native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc
+      native/tests/test_cuda_liquid_snapshot_3d.cc
+      native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
       native/tests/test_cuda_mac_pressure_3d.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
@@ -229,6 +273,16 @@ if(BUILD_TESTING)
     target_compile_options(fluidity_cuda_graph_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     gtest_discover_tests(fluidity_cuda_graph_tests PROPERTIES LABELS gpu)
 
+    # Focused Task 6B/6C1/6C2/6C3a qualification. Retain in final mandatory 6D verification;
+    # Debug: 43 cases (42 real-device, 1 host-only); Release: 39 cases.
+    # The separate mandatory gpu-label inventory includes the two integrated scheduler cases.
+    add_executable(fluidity_cuda_arena_tests
+      native/tests/test_cuda_liquid_arena_3d.cc
+      native/tests/test_cuda_liquid_pressure_stage_3d.cc)
+    target_link_libraries(fluidity_cuda_arena_tests
+      PRIVATE fluidity_cuda_operators fluidity_cuda_probe fluidity_pressure_3d_test_support CUDA::cudart GTest::gtest_main)
+    target_compile_options(fluidity_cuda_arena_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+
     # Link the same host wrapper to CUDA API doubles for deterministic failure-path tests.
     add_executable(fluidity_cuda_probe_error_tests
       native/tests/test_cuda_probe_errors.cc $<TARGET_OBJECTS:fluidity_cuda_probe_host>)
@@ -241,3 +295,5 @@ if(BUILD_TESTING)
     gtest_discover_tests(fluidity_cuda_probe_error_tests PROPERTIES LABELS cuda-mock)
   endif()
 endif()
+
+include(cmake/SimulateCli.cmake)

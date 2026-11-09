@@ -1,0 +1,17 @@
+include "common.fbs";
+namespace fluidity.cache.v1;
+
+// Independently published after the matching frame commits. The inventory remains
+// immutable; retention removes only older full-state blobs, never point frames.
+table CheckpointReference {
+  schema_version:ulong = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:Clock (required, id:2);
+  resolved_fingerprint:Digest (required, id:3);
+  execution_id:Digest (required, id:4);
+  checkpoint:ContentReference (required, id:5);
+  frame_manifest:ContentReference (required, id:6);
+}
+root_type CheckpointReference;
+file_identifier "FLCR";
+file_extension "flcr";

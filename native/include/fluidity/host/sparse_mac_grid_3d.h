@@ -14,6 +14,55 @@ namespace fluidity {
 // weight and its derivative to the unique face slot that owns the value.
 using MacFaceStencil3D = std::array<MacFaceStencilSample3D, 27>;
 
+// Borrowed canonical layout. Creation checks geometry, strictly ordered unique keys,
+// signed lattice bounds and slot arithmetic without allocation. Errors are code-only.
+// The source keys must remain unchanged and alive for every query; copying the view
+// does not extend that lifetime. An empty default view has unit geometry.
+class SparseMacGridView3D {
+ public:
+  SparseMacGridView3D() = default;
+  static absl::StatusOr<SparseMacGridView3D>
+  Create(UniformMacGeometry3D geometry, std::span<const BlockIndex3D> active_block_indices);
+  // Validated world origin/cell width in meters, slot count, and borrowed canonical keys.
+  UniformMacGeometry3D geometry() const;
+  std::size_t face_count() const;
+  std::span<const BlockIndex3D> active_block_indices() const;
+  // Same ownership, units and status categories as the owning layout below.
+  absl::StatusOr<std::size_t> FaceSlot(FaceIndex3D face_index) const;
+  // Inverse owned-slot mapping; OutOfRange when face_slot >= face_count().
+  absl::StatusOr<FaceIndex3D> FaceIndex(std::size_t face_slot) const;
+  absl::StatusOr<Vec3> FaceWorldAnchor(FaceIndex3D face_index) const;
+  absl::StatusOr<Vec3> CellWorldCenter(CellIndex3D cell_index) const;
+
+ private:
+  friend class SparseMacGrid3D;
+  SparseMacGridView3D(UniformMacGeometry3D geometry, std::span<const BlockIndex3D> active_block_indices);
+  UniformMacGeometry3D geometry_{{0.0, 0.0, 0.0}, 1.0};
+  std::span<const BlockIndex3D> active_block_indices_;
+};
+
+// Mathematical floor ownership on the signed lattice; no allocation or failure.
+BlockIndex3D MacOwnerBlock3D(FaceLatticeIndex3D lattice_index);
+
+struct MacFaceGeometrySample3D {
+  FaceIndex3D face_index;  // Global signed staggered lattice identity, independent of activation.
+  double weight;  // Dimensionless quadratic tensor product, including exact zero edges.
+  Vec3 face_offset_from_particle;  // Face anchor minus trial particle position, meters.
+  Vec3 weight_gradient;  // Derivative with respect to trial position, inverse meters.
+};
+using MacFaceGeometryStencil3D = std::array<MacFaceGeometrySample3D, 27>;
+
+// Computes the exact same checked quadratic geometry as BuildOwnedMacFaceStencil3D
+// before consulting ownership. Includes all zero-weight nodes. Geometry must be valid;
+// invalid geometry/input/axis is InvalidArgument, motion/tile failure FailedPrecondition,
+// and unrepresentable indices/arithmetic OutOfRange. No partial output or allocation.
+absl::StatusOr<MacFaceGeometryStencil3D> BuildMacFaceGeometryStencil3D(
+    UniformMacGeometry3D geometry,
+    FaceNormalAxis axis,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position
+);
+
 // Owns the uniform staggered layout. Each active block has 64 cells and 64
 // low faces per axis. A cell's high face belongs to the adjacent cell's owner.
 class SparseMacGrid3D {
@@ -22,9 +71,12 @@ class SparseMacGrid3D {
   // for invalid geometry or duplicate keys, kOutOfRange for face counts or
   // keys whose faces leave the signed int32 lattice, and kResourceExhausted
   // if keys exceed block_capacity.
-  // An empty layout is valid with zero capacity.
+  // An empty layout is valid with zero capacity. All errors have code-only empty messages.
   static absl::StatusOr<SparseMacGrid3D>
   Create(UniformMacGeometry3D geometry, std::span<const BlockIndex3D> active_block_indices, std::size_t block_capacity);
+
+  // Borrows canonical keys until this owner is moved, assigned or destroyed.
+  SparseMacGridView3D view() const;
 
   // Returns the validated world origin and uniform cell width in meters.
   UniformMacGeometry3D geometry() const;
@@ -74,6 +126,15 @@ ComputeParticleSortBin3D(UniformMacGeometry3D geometry, Vec3 sorted_particle_wor
 // partial stencil.
 absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
     const SparseMacGrid3D& mac_grid,
+    FaceNormalAxis axis,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position
+);
+
+// Borrowed overload with identical numerics and failure categories; no allocation,
+// including error construction/destruction. The view's keys must remain alive.
+absl::StatusOr<MacFaceStencil3D> BuildOwnedMacFaceStencil3D(
+    SparseMacGridView3D mac_grid,
     FaceNormalAxis axis,
     Vec3 sorted_particle_world_position,
     Vec3 trial_particle_world_position

@@ -1,0 +1,32 @@
+namespace fluidity.cache.v1;
+// Fixed structs are immutable in v1; evolve tables with new numeric field IDs.
+struct Vector3 { x:double; y:double; z:double; }
+struct Matrix3 { x_row:Vector3; y_row:Vector3; z_row:Vector3; }
+struct Index3 { x:int; y:int; z:int; }
+struct Clock { time:double; frame:ulong; substep:ulong; accepted_step:ulong; epoch:ulong; }
+struct Digest { bytes:[ubyte:32]; }
+struct Capacities { particles:ulong; blocks:ulong; cells:ulong; faces:ulong; sources:ulong; }
+enum Axis:ubyte { X = 0, Y = 1, Z = 2 }
+enum Occupancy:ubyte { Air = 0, Liquid = 1, Solid = 2 }
+enum Validity:ubyte { Missing = 0, Valid = 1, Predicted = 2, LowMass = 3 }
+enum Backend:ubyte { Cpu = 0, Cuda = 1 }
+enum ContentKind:ubyte { State = 0, Points = 1, ResolvedScene = 2, Manifest = 3 }
+table Particle {
+  id:ulong (id:0);
+  tag:uint (id:1);
+  position:Vector3 (required, id:2);
+  velocity:Vector3 (required, id:3);
+  slopes:Matrix3 (required, id:4);
+  affine_enabled:bool = true (id:5);
+  mass:double = 1 (id:6);
+  reference_volume:double = 1 (id:7);
+  volume_ratio:double = 1 (id:8);
+  side:long (id:9);
+  pic_initialized:bool (id:10);
+}
+table ContentReference {
+  kind:ContentKind (id:0);
+  byte_length:ulong (id:1);
+  digest:Digest (required, id:2);
+  relative_name:string (required, id:3);
+}

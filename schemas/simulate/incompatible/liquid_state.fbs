@@ -1,0 +1,51 @@
+include "common.fbs";
+namespace fluidity.cache.v1;
+table Block {
+  index:Index3 (required, id:0);
+  generation:ulong (id:1);
+  activation_age:uint (id:2);
+  inactive_age:uint (id:3);
+}
+table Cell {
+  index:Index3 (required, id:0);
+  occupancy:Occupancy = Liquid (id:1);
+  previous_pressure:double (id:2);
+}
+table Face {
+  index:Index3 (required, id:0);
+  axis:Axis (id:1);
+  slot:ulong (id:2);
+  carrier_velocity:double (id:3);
+  validity:Validity (id:4);
+  side:long (id:5);
+  structurally_eligible:bool = true (id:6);
+}
+table SourceState {
+  ordinal:ulong (id:0);
+  next_child:ulong (id:1);
+  fractional_remainder:double (id:2);
+}
+table ResumeMetadata {
+  resolved_fingerprint:Digest (required, id:0);
+  execution_id:Digest (required, id:1);
+  capacities:Capacities (required, id:2);
+  replay_capacities:Capacities (required, id:3);
+}
+table LiquidState {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  world_origin:Vector3 (required, id:2);
+  cell_width:double = 1 (id:3);
+  clock:Clock (required, id:4);
+  random_seed:uint (id:5);
+  next_particle_id:ulong = 1 (id:6);
+  particles:[Particle] (required, id:7);
+  blocks:[Block] (required, id:8);
+  cells:[Cell] (required, id:9);
+  faces:[Face] (required, id:10);
+  sources:[SourceState] (required, id:11);
+  resume:ResumeMetadata (id:12);
+}
+root_type LiquidState;
+file_identifier "FLST";
+file_extension "flst";

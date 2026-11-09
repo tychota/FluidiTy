@@ -1,0 +1,67 @@
+include "common.fbs";
+namespace fluidity.cache.v1;
+enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1 }
+enum ObstacleKind:ubyte { None = 0, Halfspace = 1, Slab = 2 }
+enum UpstreamRole:ubyte { InitialParticles = 0, Source = 1, Obstacle = 2 }
+table Material {
+  density:double = 1000 (id:0);
+  surface_tension:double (id:1);
+  ambient_pressure:double (id:2);
+  bulk_modulus:double = inf (id:3);
+  target_divergence:double (id:4);
+  friction:double (id:5);
+  penetration_tolerance:double (id:6);
+}
+table StepOptions {
+  energy_blend:double = 0.6 (id:0);
+  maximum_step_duration:double = 0.01 (id:1);
+  minimum_face_mass:double (id:2);
+  mass_per_quantum:double = 9.094947017729282e-13 (id:3);
+  momentum_per_quantum:double = 9.094947017729282e-13 (id:4);
+  pressure_iterations:uint = 256 (id:5);
+}
+table Field {
+  kind:FieldKind (id:0);
+  center:Vector3 (required, id:1);
+  radius:double = 1 (id:2);
+}
+table Obstacle {
+  kind:ObstacleKind (id:0);
+  normal:Vector3 (required, id:1);
+  start_coordinate:double (id:2);
+  half_width:double (id:3);
+  velocity:Vector3 (required, id:4);
+}
+table EmissionSource {
+  ordinal:ulong (id:0);
+  particles_per_second:double (id:1);
+  position:Vector3 (required, id:2);
+  jitter:Vector3 (required, id:3);
+  particle_template:Particle (required, id:4);
+}
+table UpstreamContent {
+  role:UpstreamRole (id:0);
+  ordinal:ulong (id:1);
+  byte_length:ulong (id:2);
+  digest:Digest (required, id:3);
+}
+table ResolvedScene {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  model_version:uint = 1 (id:2);
+  backend:Backend (id:3);
+  build_digest:Digest (required, id:4);
+  world_origin:Vector3 (required, id:5);
+  cell_width:double = 1 (id:6);
+  random_seed:ulong (id:7);
+  acceleration:Vector3 (required, id:8);
+  material:Material (required, id:9);
+  options:StepOptions (required, id:10);
+  field:Field (required, id:11);
+  obstacle:Obstacle (required, id:12);
+  sources:[EmissionSource] (required, id:13);
+  upstream:[UpstreamContent] (required, id:14);
+}
+root_type ResolvedScene;
+file_identifier "FLRS";
+file_extension "flrs";

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "byte_length": 0,
+  "model_version": 1,
+  "backend": "Cpu",
+  "build_digest": {
+    "bytes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "world_origin": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+  },
+  "cell_width": 1,
+  "random_seed": 0,
+  "acceleration": {
+    "x": 0,
+    "y": -9.81,
+    "z": 0
+  },
+  "material": {
+    "density": 1000,
+    "surface_tension": 0,
+    "ambient_pressure": 0,
+    "bulk_modulus": "inf",
+    "target_divergence": 0,
+    "friction": 0,
+    "penetration_tolerance": 0
+  },
+  "options": {
+    "energy_blend": 0.6,
+    "maximum_step_duration": 0.01,
+    "minimum_face_mass": 0,
+    "mass_per_quantum": 9.094947017729282e-13,
+    "momentum_per_quantum": 9.094947017729282e-13,
+    "pressure_iterations": 256
+  },
+  "field": {
+    "kind": "ParticleUnion",
+    "center": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "radius": 1
+  },
+  "obstacle": {
+    "kind": "None",
+    "normal": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "start_coordinate": 0,
+    "half_width": 0,
+    "velocity": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  },
+  "sources": [],
+  "upstream": []
+}

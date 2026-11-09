@@ -1,8 +1,8 @@
 # Native build and validation
 
 The native foundation contains a C++20 CPU reference implementation, a CUDA hardware probe,
-CUDA operators for uniform 2D MAC transfers and a tiny pressure solve, and bounded CUDA Graph
-replay tests for deposition and pressure. CMake presets use Ninja and separate Conan,
+CUDA operators for uniform MAC transfers, pressure and liquid boundary stages, a persistent
+3D CUDA liquid substep backend, and bounded CUDA Graph replay tests. CMake presets use Ninja and separate Conan,
 build and fixture directories for every configuration. The
 [toolchain matrix](toolchains.md) records the measured Windows configuration and its recipe revisions.
 
@@ -73,9 +73,9 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets require the exact 18 `gpu` cases, including two probe cases,
-12 transfer and pressure cases, and four graph replay cases. They also run the
-`cuda-mock` API-double suite.
+separate. Both presets require exactly 32 `gpu` cases across two probe cases, 26 operator
+cases and four graph replay cases. The operator group includes the two integrated 3D liquid
+scheduler cases and two asynchronous snapshot cases. Both presets also run the separate `cuda-mock` API-double suite.
 
 ```powershell
 uv @uvArgs python tools/native/qualify_toolchain.py --mode cuda --output out/qualification/windows.json
@@ -89,8 +89,9 @@ foreach ($preset in @('windows-debug-cuda', 'windows-release-cuda')) {
 ```
 
 Both CUDA presets require the qualified device and launch receipt from `CudaProbe.SharedVec2Math`.
-They also require exactly one timing receipt from each case below, with the operator name
-shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event time.
+They also require exactly one timing receipt between the GoogleTest start and completion
+markers of each case below, with the listed operator name and compiled architecture 1200.
+Standalone operator receipts use finite nonnegative CUDA event times in `kernel_ms`.
 
 | GoogleTest case | Receipt operator |
 | --- | --- |
@@ -106,6 +107,30 @@ shown, a compiled architecture of 1200 and finite nonnegative elapsed CUDA event
 | `CudaLiquidBoundary3D.SweptContactMatchesOracle` | `liquid_wall_contact_3d` |
 | `CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu` | `liquid_boundary_transfer_3d` |
 | `CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure` | `liquid_boundary_coupled_3d` |
+| `CudaLiquidSubstep3D.PersistentSubstepMatchesCpu` | `liquid_substep_3d` |
+| `CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth` | `liquid_substep_3d_growth` |
+| `CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch` | `liquid_snapshot_3d` |
+| `CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot` | `liquid_snapshot_3d_failure` |
+
+The two scheduler receipts require a finite, strictly positive `substep_device_timeline_ms`
+and `timing_scope=topology_through_publication`. The CUDA events bracket the latest successful
+substep from the topology callback through publication staging. The interval includes host
+preparation and dispatch gaps and starts after the initial field staging. For the growth case,
+it describes the latest successful replayed substep. The separate `scheduler_frame_wall_us`
+diagnostic measures the full host `AdvanceFrame` call, including growth and replay in the
+growth fixture. These fixture measurements do not establish production throughput.
+
+The snapshot receipts require finite, strictly positive `snapshot_copy_ms` and
+`timing_scope=d2h_stream_events`. They measure two real CUDA events around the D2H
+submission, including stream dependencies and host submission gaps. The delayed fixture
+records its gate event after a queued host-controlled latch, then makes both copy streams
+wait for that recorded event. Both source epochs are prepared before closing the gate;
+this avoids requiring a synchronous arena upload to progress behind a blocked WDDM host
+callback. The cases verify distinct source/writer lifetimes, two live epochs, rejected
+reuse, canceled and stale completion, complete checked host decode, shared fatal poison
+and last-valid host diagnostics. Error controls return a simulated failure after actual
+copy/fence/drain work; they do not claim recovery from a genuinely lost device. There is
+no snapshot kernel: the architecture receipt comes from the actual producing arena image.
 
 The liquid boundary cases exercise the shared CPU analytic fixtures on the device,
 including scaled tiny cuts, interface-local capillarity, the CUDA static pressure bridge,
@@ -127,13 +152,12 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-twenty-one operator cases, and all four graph replay cases (26 memcheck cases total).
-CTest requires exactly 28 real GPU cases. CTest also runs
-the two `LaunchIgnoresPriorRuntimeError` cases, which intentionally trigger CUDA API
-errors and are excluded from memcheck. Each memcheck invocation must exit successfully
-and report one zero-error summary. The validator checks the exact GoogleTest start and
-completion names, the probe launch receipt, twelve operator timing receipts and one graph timing
-receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
+25 operator cases (including both scheduler and both snapshot cases), and all four graph replay cases for
+30 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
+trigger CUDA API errors and run only in the 32-case CTest inventory. Each memcheck invocation
+must exit successfully and report one zero-error summary. The validator checks the exact
+GoogleTest start and completion names, the probe launch receipt, 16 operator timing receipts
+and one graph timing receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
 success receipt.
@@ -160,6 +184,37 @@ try {
     $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = $previousConnection
 }
 ```
+
+### Focused CUDA arena and stage harness
+
+Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
+arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
+Its inventory is separate from the 32 mandatory CTest cases and 30 mandatory memcheck cases.
+Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
+runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
+
+```powershell
+foreach ($configuration in @('debug', 'release')) {
+    & "out/build/windows-$configuration-cuda/fluidity_cuda_arena_tests.exe" `
+        "--gtest_output=xml:out/arena-$configuration.xml"
+    if ($LASTEXITCODE) { throw "CUDA arena $configuration tests failed." }
+}
+
+$sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
+$previousConnection = $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE
+try {
+    $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+    & $sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 `
+        out/build/windows-release-cuda/fluidity_cuda_arena_tests.exe
+    if ($LASTEXITCODE) { throw 'Release CUDA arena memcheck failed.' }
+} finally {
+    $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = $previousConnection
+}
+```
+
+Require all 39 cases and one zero-error summary for the focused Release memcheck run.
+
+### Device images
 
 Inspect the Release operator executable for the `sm_120` cubins and embedded PTX
 from the `compute_120` virtual architecture. The PTX dump reports `.target sm_120`.
@@ -194,9 +249,8 @@ fixture and header hashes, commands and separate results for Python, native CPU,
 CUDA doubles, sanitizer and proofs. The proof gate remains `not_run` in this validator.
 The validator clears inherited GoogleTest and pytest selectors. It checks each named native
 case's execution output and compares the Python results with the complete pytest collection.
-The CUDA receipt records the four tiny-kernel smoke measurements in `evidence.gpu.operators`
-and the pressure graph measurement in `evidence.gpu.graph_replay`. Operator timings cover
-the measured kernel work. The graph receipt
+The CUDA receipt records the measured operator and scheduler timings in `evidence.gpu.operators`
+and the pressure graph measurement in `evidence.gpu.graph_replay`. The graph receipt
 contains one capture and instantiation time, the iteration count and separate
 per-sequence host submission and stream intervals for direct and graph execution.
 See the fixture and timing method in the
@@ -242,3 +296,190 @@ The coupled case feeds CUDA-frozen geometry through CUDA pressure, old/new ghost
 histories and gather, then independently corrects stored and advecting velocity in
 CUDA contact. Informational diagnostics use `boundary_device=` and
 `CTEST_FULL_OUTPUT`; only the exact operator lines are validation receipts.
+
+## Simulate command and inspection protocol
+
+`fluidity_simulate` emits protocol version 1 JSON Lines on stdout. Successful
+inspection, schema and device queries emit one `result`. Execution may emit
+progress before its terminal record. Failures emit a terminal `error` to stdout
+and the same structured record to stderr, with `E-<DOMAIN>-<NAME>`, domain, name, field,
+object and cause. Exit 0 means success, 2 means invalid arguments, and 1 means an
+operational failure or unavailable command. Successful defaults produce no stderr.
+Arguments and protocol strings are UTF-8; Windows uses the Unicode process entry
+point and filesystem APIs. Scene inputs are the shared binary `FLRS` records.
+
+```text
+fluidity_simulate schema
+fluidity_simulate check --scene resolved.flrs
+fluidity_simulate check --cache CACHE --frame 0
+fluidity_simulate check --cache CACHE --scene resolved.flrs
+fluidity_simulate device-info --backend cpu
+fluidity_simulate device-info --backend cuda --device 0
+```
+
+`schema` reports the generated FlatBuffers identifiers, the embedded shared
+resolved schema, and actual encoded runtime defaults with every scalar present.
+Positive infinity is the JSON string `"Infinity"`; finite doubles preserve round
+trip precision, including the exact mass and momentum quanta. `build_digest` is
+BLAKE3 over the actual executable bytes, independent of its filename or argv.
+These values describe this binary; they do not authorize an older cache to resume.
+
+`check` uses `OpenForInspection` and bounded verified reads. With `--cache`, it
+checks resolved cache identity; `--frame` additionally verifies that one committed
+manifest, its deterministic inspection mirror, and its point content. It does not
+scan or claim verification of unspecified frames or retained checkpoints. Adding
+`--scene` compares the explicit canonical resolved fingerprint. Inspection creates
+no directory or lock, changes no cache content, and always reports
+`resume_authorized:false`. Missing or corrupt physical records and out-of-bounds
+data fail closed. Cache checks also report operational `job_status`. A held
+whole-job lease reports `baking`. A baking marker without a lease reports
+`crashed`. With no active writer, `complete`, `cancelled` and `failed` describe the
+last terminal run and `idle` means no marker. Unrecognized or unreadable
+operational metadata reports `unknown`. Native access failures also include a
+`job_status_diagnostic` object with the status name and cause. The result
+still includes any verified frame data.
+Default decoding limits are those in `LiquidCacheLimits3D`.
+
+`device-info --backend cpu` reports CPU availability and whether CUDA was compiled;
+`cuda_available:null` means CUDA was not probed. An explicit CUDA request uses the
+qualified native arithmetic probe and reports device name, compute capability,
+executed image architecture, runtime/driver versions and successful operation
+receipts. A CPU-only binary fails explicit CUDA requests; it never substitutes CPU.
+
+The checked `simulate::Command`, `ParseCommand`, `ExecutableDigest` and
+`ProtocolWriter` interfaces are in `native/include/fluidity/host/simulate_cli.h`.
+`run --stage simulate --scene scene.flrs --cache cache --backend cpu --frame-end 20`
+executes the real scheduler. CUDA builds accept `--backend cuda --device 0` and use
+only the real persistent CUDA backend. Omitting the backend inherits the resolved
+scene; an explicit mismatch fails. Execution requires canonical checked FLRS bytes
+whose build digest matches this actual executable and whose backend matches the
+selected implementation. A moved identical binary remains compatible. Changed
+executable bytes or resolved numerical inputs fail before publication.
+
+Model version 1 fixes output cadence at **24 frames per second**. Each target is
+computed from its absolute ordinal divided by 24; time is never accumulated from
+rounded frame durations. Unrepresentable/nonadvancing frame ordinals fail, and
+retained checkpoints must have that exact clock. No local timing override is
+accepted on resume. The bounded qualification capacity plan (1024 particles,
+128 blocks, 4096 cells, 24576 faces, 256 sources) is persisted in separate resume
+metadata; it is not physical state or a fingerprint setting. Capacity exhaustion
+is explicit; this CLI does not request automatic growth.
+
+`--initial-state initial.flst` supplies a canonical raw frame-zero state, **not a
+checkpoint envelope**. Its exact bytes must be the resolved initial-particles
+upstream content. Geometry, seed, source identities, zero source counters and clock
+must match. Without such upstream content, the CLI builds an empty state with the
+resolved source identities. Unsupported external source/obstacle artifact roles
+fail explicitly. Already verified retained checkpoints need no initial file; if one
+is supplied, it is always verified. Source emission preserves binary timestep
+arithmetic: a real-valued integer rate/time product is not a promise of an integer
+birth at its rounded binary boundary.
+
+A new run publishes frame zero and its checkpoint, then the inclusive
+`--frame-start`/`--frame-end` range and any prerequisite checkpoint frames (every ten).
+It simulates omitted earlier frames without publishing their points. Existing
+caches require `--resume`; resume starts from the latest verified retained checkpoint
+at or before the explicit frame start, or the end when no start was specified.
+Previously published intermediate output is reproduced and compared by exact bytes,
+then reused by the idempotent store without modification. Retention keeps two full
+checkpoints. An older unavailable range fails `NOT_FOUND` unless a verified initial
+state is supplied for reconstruction; present intermediate frames must still match.
+
+`step --scene scene.flrs --cache cache` executes **one accepted physical substep**
+from the latest retained checkpoint (or a new verified initial state). Permitted dt
+retries remain scheduler-owned. It reports accepted state and never publishes a
+partial point frame. Repeated step requests start again from that retained state.
+`--preview` on run likewise executes read-only, creates no cache and verifies any
+existing matching frames. Cache-producing M1-B preview will require separate
+resolved settings and identity; it is not implemented by this flag.
+
+`replay --cache cache --frame N --substep 0` selects completed frame N.
+`--frame N --substep S` for S>0 selects accepted substep S during N to N+1, matching
+the persisted clock. Interior replay completes the final frame schedule and verifies
+its published points before returning the selected state. Capacity rollback discards
+observations from the abandoned pass. Replay requires that selected completed frame
+(or N+1 for an interior selection) to be published. It is read-only, including
+failures caused by a missing lock. `OpenForReplay(expected_fingerprint)` permits
+verified checkpoints but denies every publication; unauthenticated inspection still
+cannot authorize resume.
+
+CUDA numerical reuse requires the same resolved execution and selected device,
+compute capability, exact NVIDIA driver release, and CUDA driver and runtime API
+versions. A new CUDA writer durably publishes a versioned digest of these values
+in `.simulate-cuda-compatibility` before frame zero. Resume, replay, step and
+cache-backed preview check that record before solver work. A CUDA cache with a
+missing, malformed or incompatible record still supports portable `check` of its
+committed frames. Create a fresh cache to run it under another CUDA environment.
+
+`--trace` emits accepted-state records (clock, exact state digest, inventories,
+source counters/remainders and attempt/retry counts) from the final schedule of each
+frame. `published:false` distinguishes these from `frame` publication records.
+Result records include `frames_per_second`, resolved/execution identity and backend;
+CUDA results additionally carry actual compiled architecture, graph replay count,
+reserved device bytes and D2H event milliseconds. Point radius is the spherical
+radius of accepted volume V0*J in meters. Snapshots use the real bounded asynchronous
+queue: all source copies drain before the next whole-frame advance, while the host
+writer lease remains live through manifest publication. `LiquidProgressObserver3D`
+runs outside physical attempts after acceptance or rollback. It checks for
+cooperative cancellation without taking ownership of a device source lease.
+
+During `run`, the independent worker targets a heartbeat every 500 ms. It
+reports monotonic `elapsed_milliseconds`, the known `backend`, the
+`last_settled_clock` (frame, substep, epoch and accepted step), and the last
+confirmed `last_published_frame`. Unknown fields are `null`. The settled clock
+advances only after a complete frame schedule because capacity replay can
+discard its provisional substeps. Published progress advances only after a
+verified checkpoint read or successful frame publication. A live reader can
+inspect committed frames while a job runs. The short publication lock can
+return `ABORTED` if the reader races with a publication.
+
+Send `cancel` followed by LF or CRLF over redirected stdin. EOF and unrelated
+lines leave the job running. The solver checks at safe boundaries outside
+physical attempts, drains any active snapshot before releasing its resources,
+and stops without waiting for stdin to close. Clients must keep reading stdout
+during a run so protocol writes can complete. Previously committed frames
+remain readable. After creating a fresh cache, the writer finishes publishing
+its frame-zero recovery point before honoring a pending cancellation.
+
+The exclusive OS lease in `.simulate-job.lock` prevents a second CLI writer for
+the same cache. It is separate from the short publication lock and releases
+on process exit. The atomically replaced `.simulate-job-status` marker records
+run status. Neither file contributes to fingerprints, immutable frame data,
+or replay identity. Preview has a heartbeat and cancellation without writing
+operational files.
+
+Nine mandatory CTest `cli` cases launch real executables for arguments, schema,
+identity, inspection, CPU selection, CPU execution, CPU replay, validation and
+process lifecycle. Four separate `cuda-cli` cases require the real CUDA probe,
+execution, replay and process lifecycle.
+The locked validator requires exact inventories, process receipts, qualified image
+identity, positive actual graph/device reservations, finite positive D2H
+intervals and measured heartbeat and cancellation bounds.
+These gates retain the existing 32 GPU / 30 sanitizer inventories. The Python driver
+is invoked with required binary paths, rejects optimized Python, and never silently
+skips an unavailable executable or device.
+
+### Committed-state reliability campaign
+
+After building either locked Windows CUDA preset, run the longer F9 campaign
+separately from the quick CLI and operator suites. It uses the production CLI
+for 17 cooperative cancellations and 17 process kills. A test-only executable
+reports 16 injected failures after a successful real CUDA snapshot event.
+The campaign verifies every surviving manifest and point payload, then resumes
+each cache through frame 10 and compares the checkpoint and frame bytes against
+an uninterrupted execution of the same artifact. It also delays the initial
+CUDA snapshot and checks that heartbeat output continues during the wait.
+
+```powershell
+uv run --no-sync --project reference --locked --group native ctest --preset windows-release-cuda -L '^cuda-reliability$' --no-tests=error -V
+```
+
+The test prints a JSON receipt with the producing device, each stopped and
+recovered frame inventory, the recovered state digests, and the CUDA event
+timing. The registered campaign accepts a real CC12.0 device with a matching
+executed image. Qualification of the reference machine requires the receipt's
+device name to equal `NVIDIA GeForce RTX 5060 Ti`. Direct qualification runs can
+enforce this by passing `--expected-device-name "NVIDIA GeForce RTX 5060 Ti"` to
+`tools/native/tests/run_liquid_fault_campaign.py`. Keep the verbose log under the
+ignored output directory. The test fixture injects device errors after actual
+CUDA completions.

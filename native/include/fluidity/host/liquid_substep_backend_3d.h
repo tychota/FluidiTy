@@ -1,0 +1,163 @@
+#pragma once
+
+#include "fluidity/host/liquid_substep_3d.h"
+
+namespace fluidity {
+struct LiquidParticleUpdateInputs3D {
+  std::span<const LiquidBoundaryParticleGather3D> gathered;  // Frozen old/new gather, particle order.
+  std::span<const double> liquid_distances;  // Frozen x^n field, meters, particle order.
+  LiquidObstacle3D obstacle;  // Pose at substep start, constant translation during step_duration.
+  double cell_width;  // Meters.
+  double step_duration;  // Positive seconds.
+  double particle_energy_blend;  // e in [0,1], alpha=0.99e and surface beta=e.
+  double friction_coefficient;  // Nonnegative dimensionless Coulomb coefficient.
+  double penetration_tolerance;  // Meters.
+};
+struct LiquidMissingFacePredictionInputs3D {
+  SparseMacGridView3D grid;
+  LiquidBoundaryVelocityHistory3D old_history;  // Unmodified pre-force normalization/validity.
+  std::size_t face_slot;
+  std::int64_t side_tag;
+  Vec3 world_acceleration;  // m/s^2, applied once to the continued old velocity.
+  double step_duration;  // Seconds.
+};
+// Typed checked backend operations. Numeric outputs borrow their supplied
+// workspace or write only trial spans. Attempt operations return code-only
+// errors and allocate/free nothing, including on failure. Initialize and growth
+// are setup operations outside attempts and may reserve/release resources.
+// Context is borrowed and must outlive a single scheduler; the backend and
+// scheduler are single-threaded and non-reentrant. EVERY slot is mandatory:
+// Create never substitutes CPU operations for missing custom callbacks.
+// Device sorting must publish through PrepareTrialTopologyFromOrder; host
+// orchestration enumerates source/topology/sample coordinates without replacing
+// the selected backend's distance, wall, transfer or projection numerics.
+struct LiquidSubstepBackend3D {
+  // Evaluate the frozen t^n field in world meters. Particle-union evaluation
+  // visits trial_particles in input order. Return only a finite signed distance
+  // (negative inside); invalid/range errors leave caller outputs untouched.
+  using SampleField = absl::StatusOr<double>(
+      void* context,
+      const LiquidSceneField3D& field,
+      std::span<const LiquidParticleState3D> trial_particles,
+      Vec3 sample_world_position
+  );
+  // At the supplied frozen obstacle pose, fill full owned-slot face tags and/or
+  // prescribed walls. Each output is either empty (not requested) or covers the
+  // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
+  // side from each face anchor. The two output spans must not overlap inputs or
+  // one another. Failed outputs remain trial-only and are discarded by scheduler.
+  using SampleFaces = absl::Status(
+      void* context,
+      SparseMacGridView3D grid,
+      const LiquidObstacle3D& obstacle_at_sample_time,
+      std::int64_t requested_side_tag,
+      std::span<LiquidBoundaryFaceTag3D> face_tags,
+      std::span<LiquidPrescribedWallSample3D> wall_samples
+  );
+  // Prepare an independent initial device version. Failure must retain any live
+  // prior backend state; all pending resources remain owned by the backend.
+  using Initialize = absl::Status(void* context, const LiquidState3D& initial);
+  // Stage every trial family with accepted_clock (trial.clock is still t^n).
+  // Called only after physical validation; may fail, preserving the committed
+  // device version. Host FinishAttempt can still reject. Commit must be an
+  // infallible metadata flip, with no device calls or resource destruction.
+  // Discard is also infallible and allocation-free; it discards candidate control
+  // only and is safe even if this attempt never called PreparePublication.
+  using PreparePublication = absl::Status(void* context, const LiquidState3D& trial, LiquidClock3D accepted_clock);
+  using CommitPublication = void(void* context) noexcept;
+  using DiscardPublication = void(void* context) noexcept;
+  // Reserve replacement storage and stage frame_start before the host replaces
+  // any live version. Enforce the device ceiling against peak old+new ownership.
+  // Failure and host growth failure both call DiscardGrowth; success calls
+  // CommitGrowth after the host replacement. These hooks execute outside an
+  // attempt. Retire old owners only after all source leases are fenced; commit
+  // must not fail. Neither path may invalidate a still-live source lease.
+  using PrepareGrowth =
+      absl::Status(void* context, LiquidStateCapacities3D capacities, const LiquidState3D& frame_start);
+  using CommitGrowth = void(void* context) noexcept;
+  using DiscardGrowth = void(void* context) noexcept;
+  using PrepareTopology = absl::Status(
+      void* context,
+      std::span<const LiquidParticleState3D> particles,
+      std::span<const CellIndex3D> pressure_candidates,
+      const LiquidState3D& committed,
+      LiquidStepWorkspace3D& workspace
+  );
+  using Deposit = absl::StatusOr<LiquidBoundaryFaceDepositsView3D>(
+      void* context,
+      const LiquidBoundaryDepositViewInputs3D& inputs,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using Normalize = absl::StatusOr<NormalizedLiquidMacFacesView3D>(
+      void* context,
+      std::span<const MacFaceDepositQuanta3D> face_quanta,
+      MacDepositQuantization3D quantization,
+      double minimum_face_mass,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using PredictMissingFace = absl::StatusOr<double>(
+      void* context,
+      const LiquidMissingFacePredictionInputs3D& inputs,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using ApplyForces = absl::Status(
+      void* context,
+      SparseMacGridView3D grid,
+      std::span<const double> old_face_velocities,
+      Vec3 world_acceleration,
+      double step_duration,
+      std::span<double> predicted_face_velocities
+  );
+  using Freeze = absl::StatusOr<FrozenLiquidBoundaryGeometryView3D>(
+      void* context,
+      const LiquidBoundaryGeometryViewInputs3D& inputs,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using BuildLinks = absl::StatusOr<LiquidPressureProblemView3D>(
+      void* context,
+      const FrozenLiquidBoundaryGeometryView3D& geometry,
+      const LiquidPressureFields3D& fields,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using Project = absl::StatusOr<MacPressureProjectionView3D>(
+      void* context,
+      SparseMacGridView3D grid,
+      double step_duration,
+      const LiquidPressureProblemView3D& problem,
+      MacPressureSolverOptions3D options,
+      MacPressureWorkspace3D& workspace
+  );
+  using Gather = absl::StatusOr<LiquidBoundaryGatherView3D>(
+      void* context,
+      const LiquidBoundaryGatherViewInputs3D& inputs,
+      LiquidBoundaryWorkspace3D& workspace
+  );
+  using UpdateParticles = absl::Status(
+      void* context,
+      const LiquidParticleUpdateInputs3D& inputs,
+      std::span<LiquidParticleState3D> trial_particles
+  );
+  void* context = nullptr;
+  SampleField* sample_field = nullptr;
+  SampleFaces* sample_faces = nullptr;
+  Initialize* initialize = nullptr;
+  PreparePublication* prepare_publication = nullptr;
+  CommitPublication* commit_publication = nullptr;
+  DiscardPublication* discard_publication = nullptr;
+  PrepareGrowth* prepare_growth = nullptr;
+  CommitGrowth* commit_growth = nullptr;
+  DiscardGrowth* discard_growth = nullptr;
+  PrepareTopology* topology = nullptr;
+  Deposit* deposit = nullptr;
+  Normalize* normalize = nullptr;
+  PredictMissingFace* predict_missing_face = nullptr;
+  ApplyForces* forces = nullptr;
+  Freeze* freeze = nullptr;
+  BuildLinks* links = nullptr;
+  Project* project = nullptr;
+  Gather* gather = nullptr;
+  UpdateParticles* update_particles = nullptr;
+};
+// CPU operations share the accepted bounded operators and true-gradient J/contact.
+LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
+}  // namespace fluidity

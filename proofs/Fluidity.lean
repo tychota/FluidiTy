@@ -4,6 +4,7 @@ import Fluidity.PressureCorrection
 import Fluidity.FixedPoint
 import Fluidity.UniformTransfer
 import Fluidity.UniformTile
+import Fluidity.LiquidTransaction
 
 open scoped BigOperators
 attribute [local instance] Classical.propDecidable
@@ -225,5 +226,54 @@ example : ({ defectConsumerLinks with velocityScale := fun _ => 1 } : PressureLi
   norm_num [PressureLinks.defect, PressureLinks.correctedFlux, PressureLinks.residual,
     PressureLinks.rhs, PressureLinks.wallFlux, PressureLinks.conductance,
     pressureAction, defectConsumerLinks, Fin.sum_univ_succ]
+
+end Fluidity
+
+namespace Fluidity
+
+-- These consumers check the full published state and explicit trial contracts.
+example {domains : LiquidDomainTypes} {Diagnostics : Type}
+    (committed : LiquidCommittedState domains) (diagnostics : Diagnostics) (retryDuration : Option ℝ) :
+    finishLiquidAttempt committed ⟨.rejected retryDuration, diagnostics⟩ = committed :=
+  liquid_reject_preserves_committed_state committed diagnostics retryDuration
+
+example {domains : LiquidDomainTypes} {Diagnostics : Type}
+    (committed : LiquidCommittedState domains) (attempts : List (LiquidAttempt domains Diagnostics))
+    (allRejected : ∀ attempt ∈ attempts, attempt.outcome.IsRejected) :
+    attempts.foldl finishLiquidAttempt committed = committed :=
+  liquid_finite_rejects_preserve_committed_state committed attempts allRejected
+
+example {domains : LiquidDomainTypes} {Diagnostics : Type}
+    (committed : LiquidCommittedState domains) (trialFields : LiquidPersistentFields domains)
+    (diagnostics : Diagnostics) (acceptedDuration : ℝ) (completesFrame : Bool) :
+    let accepted := finishLiquidAttempt committed
+      ⟨.accepted trialFields acceptedDuration completesFrame, diagnostics⟩
+    accepted.fields = trialFields ∧
+      accepted.clock.time = committed.clock.time + acceptedDuration ∧
+      accepted.clock.acceptedStepOrdinal = committed.clock.acceptedStepOrdinal + 1 ∧
+      accepted.clock.epoch = committed.clock.epoch + 1 ∧
+      accepted.clock.frameOrdinal = (if completesFrame then committed.clock.frameOrdinal + 1
+        else committed.clock.frameOrdinal) ∧
+      accepted.clock.substepOrdinal = (if completesFrame then 0 else committed.clock.substepOrdinal + 1) :=
+  liquid_accept_advances_clock_once committed trialFields diagnostics acceptedDuration completesFrame
+
+example {domains : LiquidDomainTypes} {Diagnostics : Type}
+    (runTrial : LiquidCommittedState domains → LiquidAcceptedStepKey → LiquidAttemptOutcome domains)
+    (firstInput replayInput : LiquidCommittedState domains) (firstKey replayKey : LiquidAcceptedStepKey)
+    (firstAttempt replayAttempt : LiquidAttempt domains Diagnostics)
+    (sameInput : firstInput = replayInput) (sameKey : firstKey = replayKey)
+    (firstResult : firstAttempt.outcome = runTrial firstInput firstKey)
+    (replayedResult : replayAttempt.outcome = runTrial replayInput replayKey) :
+    firstAttempt.outcome = replayAttempt.outcome ∧
+      finishLiquidAttempt firstInput firstAttempt = finishLiquidAttempt replayInput replayAttempt :=
+  liquid_same_state_key_replays_trial
+    runTrial firstInput replayInput firstKey replayKey firstAttempt replayAttempt
+    sameInput sameKey firstResult replayedResult
+
+example {domains : LiquidDomainTypes} (inputSnapshot : LiquidCommittedState domains)
+    (adapt : LiquidCommittedState domains → LiquidPersistentFields domains) :
+    (proposeLiquidAdaptation inputSnapshot adapt).1 = inputSnapshot ∧
+      (proposeLiquidAdaptation inputSnapshot adapt).2 = adapt inputSnapshot :=
+  liquid_adaptation_preserves_input_snapshot inputSnapshot adapt
 
 end Fluidity

@@ -1,0 +1,20 @@
+include "common.fbs";
+namespace fluidity.cache.v1;
+table Point {
+  id:ulong (id:0);
+  tag:uint (id:1);
+  position:Vector3 (required, id:2);
+  velocity:Vector3 (required, id:3);
+  radius:double (id:4);
+  volume_ratio:double = 1 (id:5);
+  level:ubyte (id:6);
+}
+table PointFrame {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:Clock (required, id:2);
+  points:[Point] (required, id:3);
+}
+root_type PointFrame;
+file_identifier "FLPT";
+file_extension "flpt";

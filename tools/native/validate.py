@@ -23,7 +23,16 @@ PLATFORMS = {
 }
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml")
+PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle")}
+CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle"}
+SCHEMA_REQUIRED = {
+    f"LiquidCacheSchema.{name}"
+    for name in (
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
+    )
+}
 FIXTURE_TESTS = {
     "affine_apic.json": "Transfer.LocalAffineFixture",
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
@@ -50,7 +59,15 @@ GPU_BOUNDARY_GEOMETRY_3D_CASE = "CudaLiquidBoundary3D.GeometryAndCapillaryMatchO
 GPU_WALL_CONTACT_3D_CASE = "CudaLiquidBoundary3D.SweptContactMatchesOracle"
 GPU_BOUNDARY_TRANSFER_3D_CASE = "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu"
 GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure"
+GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
+GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
+GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE}
+GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
+GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
+GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
+    *GPU_SNAPSHOT_CASES,
+    *GPU_SUBSTEP_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
     GPU_BOUNDARY_GEOMETRY_3D_CASE,
@@ -82,6 +99,10 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_SNAPSHOT_3D_CASE: "liquid_snapshot_3d",
+    GPU_SNAPSHOT_FAILURE_3D_CASE: "liquid_snapshot_3d_failure",
+    GPU_SUBSTEP_3D_CASE: "liquid_substep_3d",
+    GPU_SUBSTEP_GROWTH_3D_CASE: "liquid_substep_3d_growth",
     GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
     GPU_BOUNDARY_COUPLED_3D_CASE: "liquid_boundary_coupled_3d",
     GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",
@@ -96,7 +117,7 @@ GPU_OPERATOR_RECEIPT_CASES = {
     "CudaPressure.ComplianceRetainsMeanPressure": "pressure_compliance",
 }
 # The floor prevents partially discovered suites from passing. New tests may increase the count.
-MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11}
+MINIMUM_TESTS = {"cli": len(CLI_REQUIRED), "cuda-cli": len(CUDA_CLI_REQUIRED), "cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11, "schema": len(SCHEMA_REQUIRED)}
 GPU_PROBE_RECEIPT_RE = re.compile(
     r"^device=(?P<device>[\w ()+.-]+) capability=(?P<capability>\d+\.\d+) "
     r"compiled_architecture=(?P<compiled_architecture>\d+) driver_api=(?P<driver_api>\d+) "
@@ -106,6 +127,16 @@ GPU_PROBE_RECEIPT_RE = re.compile(
 OPERATOR_RECEIPT_RE = re.compile(
     r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
     r"kernel_ms=(?P<kernel_ms>[0-9]+\.[0-9]+)"
+)
+SUBSTEP_RECEIPT_RE = re.compile(
+    r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
+    r"substep_device_timeline_ms=(?P<substep_device_timeline_ms>[0-9]+\.[0-9]+) "
+    r"timing_scope=topology_through_publication"
+)
+SNAPSHOT_RECEIPT_RE = re.compile(
+    r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
+    r"snapshot_copy_ms=(?P<snapshot_copy_ms>[0-9]+\.[0-9]+) "
+    r"timing_scope=d2h_stream_events"
 )
 GRAPH_REPLAY_ITERATIONS = 64
 GRAPH_RECEIPT_RE = re.compile(
@@ -233,6 +264,7 @@ def hash_sources(run):
         "-z",
         "--",
         "native",
+        "schemas/simulate",
         "cmake",
         "reference",
         "tools/native",
@@ -571,8 +603,12 @@ def run_ctest(run, label, required):
         require_success(f"ctest-{label}", result)
     cases, incomplete = junit_cases(junit)
     case_outputs = {
-        case.attrib["name"]: google_test_case_output(case, label) for case in cases if case.attrib["status"] == "run"
+        case.attrib["name"]: google_test_case_output(case, label)
+        for case in cases
+        if case.attrib["status"] == "run" and label not in ("schema", "cli", "cuda-cli")
     }
+    if label in ("cli", "cuda-cli"):
+        case_outputs = {case.attrib["name"]: case.findtext("system-out", "").strip() for case in cases}
     if cases:
         publish_ctest(run, label, cases)
     require_success(f"ctest-{label}", result)
@@ -581,9 +617,105 @@ def run_ctest(run, label, required):
         raise ValueError(f"ctest {label} is missing expected tests or contains duplicate results")
     if label == "gpu" and names != required:
         raise ValueError("ctest gpu must contain exactly the required hardware probe, operator and graph replay tests")
+    if label == "schema" and names != required:
+        raise ValueError("ctest schema must contain exactly the required versioned schema conformance tests")
+    if label in ("cli", "cuda-cli"):
+        if names != required:
+            raise ValueError(f"ctest {label} must contain exactly the required process checks")
+        for name, output in case_outputs.items():
+            lines = output.splitlines()
+            expected_lines = 2 if label == "cuda-cli" or name == "SimulateCli.cpu_lifecycle" else 1
+            if len(lines) != expected_lines or lines[-1] != f"PASS {name.removeprefix('SimulateCli.')}":
+                raise ValueError(f"ctest {label} is missing successful process evidence")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
     return {"status": "passed", "tests": len(cases)}, case_outputs
+
+
+
+def verify_cuda_cli_receipt(output, qualification, config):
+    try:
+        record = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CUDA CLI device receipt is malformed") from error
+    device = qualification["cuda"]["configurations"][config]
+    architecture = qualification["cuda"]["architecture"]
+    expected = {
+        "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
+        "cpu_available": True, "cuda_compiled": True, "cuda_available": True, "device_index": 0,
+        "device_name": device["device"], "compute_major": architecture // 10, "compute_minor": architecture % 10,
+        "compiled_architecture": architecture * 10, "driver_version": device["driver_api_version"],
+        "runtime_version": device["runtime_version"], "launch_result": 0, "copy_result": 0,
+        "synchronize_result": 0, "sample_count": 17,
+    }
+    if record != expected or any(type(record.get(key)) is not type(value) for key, value in expected.items()):
+        raise ValueError("CUDA CLI did not report the qualified device and executed image")
+    return {"device": device["device"], "compiled_architecture": architecture * 10,
+            "driver_api": device["driver_api_version"], "runtime_api": device["runtime_version"]}
+
+
+
+def verify_cli_lifecycle_receipt(output, backend, compiled_architecture=None):
+    try:
+        receipt = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CLI lifecycle receipt is malformed") from error
+    if not isinstance(receipt, dict) or receipt.get("backend") != backend:
+        raise ValueError("CLI lifecycle receipt does not identify the requested backend")
+    durations = {}
+    for name, limit_seconds in (("heartbeat_interval_seconds", 1), ("cancel_exit_seconds", 10)):
+        duration = receipt.get(name)
+        if type(duration) not in (int, float) or not 0 < duration <= limit_seconds:
+            raise ValueError(f"CLI lifecycle receipt violates its {name} bound")
+        durations[name] = duration
+    expected_frame = {"protocol_version": 1, "event": "frame", "frame": 0, "published": True}
+    if compiled_architecture is not None:
+        expected_frame["compiled_architecture"] = compiled_architecture
+    frame_zero = receipt.get("frame_zero")
+    if not isinstance(frame_zero, dict) or any(
+        frame_zero.get(name) != value or type(frame_zero.get(name)) is not type(value)
+        for name, value in expected_frame.items()
+    ):
+        raise ValueError("CLI lifecycle receipt does not identify the published initial frame")
+    if compiled_architecture is not None:
+        copy_milliseconds = frame_zero.get("snapshot_copy_milliseconds")
+        if (
+            type(copy_milliseconds) not in (int, float) or copy_milliseconds <= 0
+            or not math.isfinite(copy_milliseconds)
+        ):
+            raise ValueError("CLI lifecycle receipt has no finite positive D2H event interval")
+        expected_frame["snapshot_copy_milliseconds"] = copy_milliseconds
+    return {"backend": backend, **durations, "frame_zero": expected_frame}
+
+
+def verify_cuda_execution_receipt(output, qualification, case):
+    try:
+        record = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CUDA CLI execution receipt is malformed") from error
+    replay = case == "cuda_replay"
+    expected = {
+        "protocol_version": 1, "event": "result", "command": "replay" if replay else "run",
+        "backend": "cuda", "frame": 10 if replay else 2, "substep": 1 if replay else 0,
+        "epoch": 21 if replay else 4, "accepted_step": 21 if replay else 4,
+        "particle_count": 1, "next_particle_id": 2, "frames_per_second": 24,
+        "compiled_architecture": qualification["cuda"]["architecture"] * 10, "read_only": replay,
+    }
+    if not isinstance(record, dict) or any(record.get(key) != value or type(record.get(key)) is not type(value)
+                                          for key, value in expected.items()):
+        raise ValueError("CUDA CLI execution did not report the qualified image and accepted state")
+    for key in ("graph_replay_count", "device_reserved_bytes"):
+        if type(record.get(key)) is not int or record[key] <= 0:
+            raise ValueError("CUDA CLI execution has no actual graph/device reservation receipt")
+    elapsed = record.get("snapshot_copy_milliseconds")
+    if type(elapsed) not in (float, int) or not math.isfinite(elapsed) or elapsed <= 0:
+        raise ValueError("CUDA CLI execution has no finite positive D2H event interval")
+    for key in ("state_digest", "resolved_fingerprint", "execution_id"):
+        if not isinstance(record.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", record[key]) is None:
+            raise ValueError("CUDA CLI execution is missing exact state/cache identity")
+    return {"compiled_architecture": expected["compiled_architecture"],
+            "graph_replay_count": record["graph_replay_count"],
+            "snapshot_copy_milliseconds": elapsed, "state_digest": record["state_digest"]}
 
 
 def verify_gpu_probe_receipt(probe_output, qualification, config):
@@ -626,22 +758,41 @@ def verify_operator_receipts(case_outputs, expected_compiled_architecture, evide
             continue
         if len(observed_receipt_lines) != 1:
             raise ValueError(f"{evidence_label}: {case_name} must report exactly one operator receipt")
-        receipt_match = OPERATOR_RECEIPT_RE.fullmatch(observed_receipt_lines[0])
+        substep = case_name in GPU_SUBSTEP_CASES
+        snapshot = case_name in GPU_SNAPSHOT_CASES
+        if snapshot:
+            receipt_pattern = SNAPSHOT_RECEIPT_RE
+            duration_field = "snapshot_copy_ms"
+        elif substep:
+            receipt_pattern = SUBSTEP_RECEIPT_RE
+            duration_field = "substep_device_timeline_ms"
+        else:
+            receipt_pattern = OPERATOR_RECEIPT_RE
+            duration_field = "kernel_ms"
+        receipt_match = receipt_pattern.fullmatch(observed_receipt_lines[0])
         if receipt_match is None:
             raise ValueError(f"{evidence_label}: malformed operator receipt in {case_name}")
         observed_operator = receipt_match["operator"]
         compiled_architecture_text = receipt_match["compiled_architecture"]
-        observed_kernel_ms = float(receipt_match["kernel_ms"])
+        observed_duration_ms = float(receipt_match[duration_field])
         if observed_operator != expected_operator:
             raise ValueError(f"{evidence_label}: {case_name} must report operator {expected_operator}")
         if compiled_architecture_text != str(expected_compiled_architecture):
             raise ValueError(f"{evidence_label}: {case_name} reported a mismatched compiled architecture")
-        if not math.isfinite(observed_kernel_ms):
+        if not math.isfinite(observed_duration_ms):
             raise ValueError(f"{evidence_label}: {case_name} reported nonfinite kernel time")
         measurements[observed_operator] = {
             "compiled_architecture": expected_compiled_architecture,
-            "kernel_ms": observed_kernel_ms,
+            duration_field: observed_duration_ms,
         }
+        if snapshot:
+            if observed_duration_ms <= 0:
+                raise ValueError(f"{evidence_label}: {case_name} reported nonpositive snapshot timeline")
+            measurements[observed_operator]["timing_scope"] = "d2h_stream_events"
+        if substep:
+            if observed_duration_ms <= 0:
+                raise ValueError(f"{evidence_label}: {case_name} reported nonpositive substep timeline")
+            measurements[observed_operator]["timing_scope"] = "topology_through_publication"
     return measurements
 
 
@@ -886,9 +1037,21 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     fixture_evidence = hash_fixtures(fixtures, build)
     run.execute("build", "cmake", "--build", "--preset", run.preset, env=gtest_env)
     cpu, _ = run_ctest(run, "cpu", CPU_REQUIRED)
-    evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "sanitizer", "proof")}
+    evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "cuda_cli", "sanitizer", "proof")}
     evidence["native_cpu"] = cpu
+    evidence["schema"], _ = run_ctest(run, "schema", SCHEMA_REQUIRED)
+    evidence["cli"], portable_cli_outputs = run_ctest(run, "cli", CLI_REQUIRED)
+    evidence["cli"]["lifecycle"] = verify_cli_lifecycle_receipt(portable_cli_outputs["SimulateCli.cpu_lifecycle"], "cpu")
     if run.mode == "cuda":
+        evidence["cuda_cli"], cli_outputs = run_ctest(run, "cuda-cli", CUDA_CLI_REQUIRED)
+        evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
+        evidence["cuda_cli"]["execution"] = {
+            case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
+            for case in ("cuda_execution", "cuda_replay")
+        }
+        evidence["cuda_cli"]["lifecycle"] = verify_cli_lifecycle_receipt(
+            cli_outputs["SimulateCli.cuda_lifecycle"], "cuda", qualification["cuda"]["architecture"] * 10
+        )
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)
         probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)

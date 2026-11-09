@@ -40,7 +40,17 @@ BOUNDARY_3D_CASES = (
     "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu",
     "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure",
 )
+SUBSTEP_3D_CASES = (
+    "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu",
+    "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth",
+)
+SNAPSHOT_3D_CASES = (
+    "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch",
+    "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot",
+)
 MEMCHECK_OPERATOR_CASES = (
+    *SNAPSHOT_3D_CASES,
+    *SUBSTEP_3D_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
@@ -72,6 +82,14 @@ PROBE_RECEIPT = (
     "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
 )
 OPERATOR_RECEIPTS = {
+    SNAPSHOT_3D_CASES[0]: "operator=liquid_snapshot_3d compiled_architecture=1200 "
+    "snapshot_copy_ms=0.25 timing_scope=d2h_stream_events",
+    SNAPSHOT_3D_CASES[1]: "operator=liquid_snapshot_3d_failure compiled_architecture=1200 "
+    "snapshot_copy_ms=0.5 timing_scope=d2h_stream_events",
+    SUBSTEP_3D_CASES[0]: "operator=liquid_substep_3d compiled_architecture=1200 "
+    "substep_device_timeline_ms=10.5 timing_scope=topology_through_publication",
+    SUBSTEP_3D_CASES[1]: "operator=liquid_substep_3d_growth compiled_architecture=1200 "
+    "substep_device_timeline_ms=12.5 timing_scope=topology_through_publication",
     BOUNDARY_3D_CASES[0]: "operator=liquid_boundary_geometry_3d compiled_architecture=1200 kernel_ms=0.875",
     BOUNDARY_3D_CASES[1]: "operator=liquid_wall_contact_3d compiled_architecture=1200 kernel_ms=1.5",
     BOUNDARY_3D_CASES[2]: "operator=liquid_boundary_transfer_3d compiled_architecture=1200 kernel_ms=0.5",
@@ -104,7 +122,45 @@ PYTHON_CASES = (
     ("test_tools", "test_export[0]"),
     ("test_native.TestNative", "test_fixture[path::value]"),
 )
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml")
+SCHEMA_CASES = tuple(
+    f"LiquidCacheSchema.{name}"
+    for name in (
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
+    )
+)
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle")
+CUDA_EXECUTION_RECEIPT = {
+    "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
+    "frame": 2, "substep": 0, "epoch": 4, "accepted_step": 4, "particle_count": 1,
+    "next_particle_id": 2, "frames_per_second": 24, "compiled_architecture": 1200,
+    "graph_replay_count": 4, "device_reserved_bytes": 50000000, "snapshot_copy_milliseconds": 0.1,
+    "state_digest": "a" * 64, "resolved_fingerprint": "b" * 64, "execution_id": "c" * 64,
+    "time_seconds": 2 / 24, "read_only": False,
+}
+
+
+def lifecycle_receipt(backend):
+    published_frame = {"protocol_version": 1, "event": "frame", "frame": 0, "published": True}
+    if backend == "cuda":
+        published_frame.update(compiled_architecture=1200, snapshot_copy_milliseconds=0.1)
+    return {
+        "backend": backend,
+        "heartbeat_interval_seconds": 0.5,
+        "cancel_exit_seconds": 0.1,
+        "frame_zero": published_frame,
+    }
+
+
+CUDA_CLI_RECEIPT = {
+    "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
+    "cpu_available": True, "cuda_compiled": True, "cuda_available": True,
+    "device_index": 0, "device_name": "NVIDIA GeForce RTX 5060 Ti", "compute_major": 12, "compute_minor": 0,
+    "compiled_architecture": 1200, "driver_version": 13030, "runtime_version": 13030,
+    "launch_result": 0, "copy_result": 0, "synchronize_result": 0, "sample_count": 17,
+}
+PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
 
 
 @pytest.fixture
@@ -264,7 +320,7 @@ def scenario(invocation, monkeypatch):
         gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES)
         skipped_gpu_case = None
         sanitizer_cases = MEMCHECK_OPERATOR_CASES
-        operator_memcheck_status_override = None
+        skipped_sanitizer_case = None
         probe_sanitizer_case_receipts = PROBE_RECEIPT
         probe_sanitizer_trailing_output = ""
         operator_sanitizer_error_summary = "========= ERROR SUMMARY: 0 errors"
@@ -281,6 +337,10 @@ def scenario(invocation, monkeypatch):
                 **OPERATOR_RECEIPTS,
                 GRAPH_PRESSURE_CASE: GRAPH_RECEIPT,
             }
+            self.schema_cases = SCHEMA_CASES
+            self.cli_cases = CLI_CASES
+            self.cuda_cli_cases = CUDA_CLI_CASES
+            self.cuda_cli_receipt = CUDA_CLI_RECEIPT.copy()
             self.ctest_output_overrides = {}
             self.gpu_before_case = {}
             self.gpu_after_case = {}
@@ -360,11 +420,9 @@ def scenario(invocation, monkeypatch):
                             self.gtest_case_output(
                                 case_name,
                                 self.sanitizer_receipts.get(case_name, ""),
-                                self.operator_memcheck_status_override
-                                if index == 1 and self.operator_memcheck_status_override
-                                else "       OK",
+                                "  SKIPPED" if case_name == self.skipped_sanitizer_case else "       OK",
                             )
-                            for index, case_name in enumerate(self.sanitizer_cases)
+                            for case_name in self.sanitizer_cases
                         )
                         stdout += f"[  PASSED  ] {len(self.sanitizer_cases)} tests.\n"
                         stdout += self.operator_sanitizer_error_summary
@@ -381,6 +439,12 @@ def scenario(invocation, monkeypatch):
                 if label == "^gpu$":
                     cases = self.gpu_cases
                     skipped, disabled = int(self.skipped_gpu_case is not None), 0
+                elif label == "^schema$":
+                    cases = self.schema_cases
+                    skipped, disabled = 0, 0
+                elif label in ("^cli$", "^cuda-cli$"):
+                    cases = self.cli_cases if label == "^cli$" else self.cuda_cli_cases
+                    skipped, disabled = 0, 0
                 elif label == "^cuda-mock$":
                     cases = tuple(f"CudaMock.Case{index}" for index in range(11))
                     skipped, disabled = 0, 0
@@ -407,10 +471,28 @@ def scenario(invocation, monkeypatch):
                         if reported
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
+                    if label == "^schema$":
+                        console = "flatc conformance checked"
+                    if label in ("^cli$", "^cuda-cli$"):
+                        console = f"PASS {name.removeprefix('SimulateCli.')}"
+                        if name.endswith("_lifecycle"):
+                            backend = "cuda" if name == "SimulateCli.cuda_lifecycle" else "cpu"
+                            console = json.dumps(lifecycle_receipt(backend)) + "\n" + console
+                        elif label == "^cuda-cli$":
+                            receipt = self.cuda_cli_receipt
+                            if name != "SimulateCli.cuda_device":
+                                receipt = CUDA_EXECUTION_RECEIPT.copy()
+                                if name == "SimulateCli.cuda_replay":
+                                    receipt.update(command="replay", frame=10, substep=1, epoch=21,
+                                                   accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+                            console = json.dumps(receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
                     after_case = self.gpu_after_case.get(name, "")
-                    ET.SubElement(testcase, "system-out").text = f"{root}\n{before_case}\n{console}\n{after_case}\n"
+                    ET.SubElement(testcase, "system-out").text = (
+                        console + "\n" if label in ("^cli$", "^cuda-cli$")
+                        else f"{root}\n{before_case}\n{console}\n{after_case}\n"
+                    )
                     if status == "notrun":
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
@@ -670,18 +752,28 @@ def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scena
 def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
-    gpu_names = {case.attrib["name"] for case in ET.parse(output / "ctest-gpu.xml").findall("testcase")}
+    gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
+    assert gpu_report.attrib == {"name": "gpu", "tests": "32", "failures": "0", "skipped": "0"}
+    gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 28,
+        "tests": 32,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
         "driver_api": 13030,
         "runtime_api": 13030,
         "operators": {
+            "liquid_snapshot_3d": {"compiled_architecture": 1200, "snapshot_copy_ms": 0.25,
+                                   "timing_scope": "d2h_stream_events"},
+            "liquid_snapshot_3d_failure": {"compiled_architecture": 1200, "snapshot_copy_ms": 0.5,
+                                           "timing_scope": "d2h_stream_events"},
+            "liquid_substep_3d": {"compiled_architecture": 1200, "substep_device_timeline_ms": 10.5,
+                                  "timing_scope": "topology_through_publication"},
+            "liquid_substep_3d_growth": {"compiled_architecture": 1200, "substep_device_timeline_ms": 12.5,
+                                         "timing_scope": "topology_through_publication"},
             "liquid_boundary_transfer_3d": {"compiled_architecture": 1200, "kernel_ms": 0.5},
             "liquid_boundary_coupled_3d": {"compiled_architecture": 1200, "kernel_ms": 0.75},
             "liquid_boundary_geometry_3d": {"compiled_architecture": 1200, "kernel_ms": 0.875},
@@ -713,7 +805,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 26,
+            "tests": 30,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -764,15 +856,13 @@ def test_gpu_rejects_an_operator_receipt_from_an_unmeasured_case(scenario):
     rejected(case_name, "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("problem", ["missing", "wrong-name", "skipped", "missing-receipt", "wrong-receipt", "errors"])
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "missing-receipt", "wrong-receipt", "errors"])
 def test_release_rejects_incomplete_operator_memcheck(scenario, problem):
     processes, _, _, _, rejected = scenario
     if problem == "missing":
         processes.sanitizer_cases = MEMCHECK_OPERATOR_CASES[:-1]
     elif problem == "wrong-name":
         processes.sanitizer_cases = (*MEMCHECK_OPERATOR_CASES[:-1], "CudaPressure.DifferentTest")
-    elif problem == "skipped":
-        processes.operator_memcheck_status_override = "  SKIPPED"
     elif problem == "missing-receipt":
         del processes.sanitizer_receipts["CudaPressure.ComplianceRetainsMeanPressure"]
     elif problem == "wrong-receipt":
@@ -955,14 +1045,18 @@ def test_release_rejects_probe_and_operator_receipts_from_graph_memcheck(scenari
     rejected(diagnostic, "windows-release-cuda")
 
 
-@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2] + BOUNDARY_3D_CASES)
+@pytest.mark.parametrize(
+    "case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2] + BOUNDARY_3D_CASES + SUBSTEP_3D_CASES + SNAPSHOT_3D_CASES,
+)
 @pytest.mark.parametrize("problem", ["missing", "wrong-operator", "wrong-architecture", "duplicate", "outside-case"])
 @pytest.mark.parametrize("config", ["debug", "release"])
 def test_cuda_rejects_bad_3d_operator_evidence(scenario, case_name, problem, config):
     processes, _, _, _, rejected = scenario
     receipt = OPERATOR_RECEIPTS[case_name]
-    case_group = (BOUNDARY_3D_CASES if case_name in BOUNDARY_3D_CASES else
-                  MAC_PRESSURE_3D_CASES if case_name in MAC_PRESSURE_3D_CASES else MAC_TRANSFER_3D_CASES)
+    case_group = next(
+        group for group in (SNAPSHOT_3D_CASES, SUBSTEP_3D_CASES, BOUNDARY_3D_CASES, MAC_PRESSURE_3D_CASES, MAC_TRANSFER_3D_CASES)
+        if case_name in group
+    )
     wrong_operator = OPERATOR_RECEIPTS[next(case for case in case_group[:2] if case != case_name)]
     if config == "debug":
         receipts = processes.gpu_receipts
@@ -1006,3 +1100,256 @@ def test_gpu_requires_boundary_3d_cases(scenario, case_name, problem):
     if problem == "wrong-name":
         processes.gpu_cases += ("CudaLiquidBoundary3D.WrongCase",)
     rejected("missing expected tests", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "duplicate", "skipped"])
+def test_cuda_requires_exact_integrated_substep_cases(scenario, case_name, producer, problem):
+    processes, _, _, _, rejected = scenario
+    case_attribute, skip_attribute, preset = (
+        ("gpu_cases", "skipped_gpu_case", "windows-debug-cuda")
+        if producer == "ctest"
+        else ("sanitizer_cases", "skipped_sanitizer_case", "windows-release-cuda")
+    )
+    cases = getattr(processes, case_attribute)
+    if problem == "skipped":
+        setattr(processes, skip_attribute, case_name)
+    elif problem == "missing":
+        setattr(processes, case_attribute, tuple(case for case in cases if case != case_name))
+    else:
+        if problem == "duplicate":
+            replaced_case = next(case for case in SUBSTEP_3D_CASES if case != case_name)
+            replacement = case_name
+        else:
+            replaced_case = case_name
+            replacement = "CudaLiquidSubstep3D.WrongCase"
+        setattr(processes, case_attribute, tuple(replacement if case == replaced_case else case for case in cases))
+
+    diagnostics = {
+        "ctest": {
+            "missing": "missing expected tests",
+            "wrong-name": "missing expected tests",
+            "duplicate": "duplicate results",
+            "skipped": "contains skipped or failed tests",
+        },
+        "memcheck": {
+            "missing": "did not pass all required hardware tests",
+            "wrong-name": "did not run the required hardware cases",
+            "duplicate": "mismatched or duplicate GoogleTest results",
+            "skipped": "did not pass all required hardware tests",
+        },
+    }
+    rejected(diagnostics[producer][problem], preset)
+
+
+@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize(
+    ("timing_fields", "diagnostic"),
+    [
+        ("substep_device_timeline_ms=1.0", "malformed operator receipt"),
+        ("substep_device_timeline_ms=1.0 timing_scope=kernel_only", "malformed operator receipt"),
+        ("kernel_ms=1.0", "malformed operator receipt"),
+        ("substep_device_timeline_ms=0.0 timing_scope=topology_through_publication", "nonpositive substep timeline"),
+        ("substep_device_timeline_ms=" + "9" * 310 + ".0 timing_scope=topology_through_publication",
+         "reported nonfinite"),
+    ],
+    ids=["missing-scope", "wrong-scope", "kernel-only-receipt", "zero-duration", "overflow-duration"],
+)
+def test_cuda_rejects_invalid_integrated_substep_timing(scenario, case_name, producer, timing_fields, diagnostic):
+    processes, _, _, _, rejected = scenario
+    receipt = OPERATOR_RECEIPTS[case_name].split(" substep_device_timeline_ms=")[0] + " " + timing_fields
+    if producer == "ctest":
+        processes.gpu_receipts[case_name] = receipt
+        preset = "windows-debug-cuda"
+    else:
+        processes.sanitizer_receipts[case_name] = receipt
+        preset = "windows-release-cuda"
+    rejected(diagnostic, preset)
+
+@pytest.mark.parametrize("case_name", SNAPSHOT_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "duplicate", "skipped"])
+def test_cuda_requires_exact_snapshot_cases(scenario, case_name, producer, problem):
+    processes, _, _, _, rejected = scenario
+    case_attribute, skip_attribute, preset = (
+        ("gpu_cases", "skipped_gpu_case", "windows-debug-cuda")
+        if producer == "ctest"
+        else ("sanitizer_cases", "skipped_sanitizer_case", "windows-release-cuda")
+    )
+    cases = getattr(processes, case_attribute)
+    if problem == "skipped":
+        setattr(processes, skip_attribute, case_name)
+    elif problem == "missing":
+        setattr(processes, case_attribute, tuple(case for case in cases if case != case_name))
+    else:
+        if problem == "duplicate":
+            replaced_case = next(case for case in SNAPSHOT_3D_CASES if case != case_name)
+            replacement = case_name
+        else:
+            replaced_case = case_name
+            replacement = "CudaLiquidSnapshot3D.WrongCase"
+        setattr(processes, case_attribute, tuple(replacement if case == replaced_case else case for case in cases))
+
+    diagnostics = {
+        "ctest": {
+            "missing": "missing expected tests",
+            "wrong-name": "missing expected tests",
+            "duplicate": "duplicate results",
+            "skipped": "contains skipped or failed tests",
+        },
+        "memcheck": {
+            "missing": "did not pass all required hardware tests",
+            "wrong-name": "did not run the required hardware cases",
+            "duplicate": "mismatched or duplicate GoogleTest results",
+            "skipped": "did not pass all required hardware tests",
+        },
+    }
+    rejected(diagnostics[producer][problem], preset)
+
+
+@pytest.mark.parametrize("case_name", SNAPSHOT_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize(
+    ("timing_fields", "diagnostic"),
+    [
+        ("snapshot_copy_ms=1.0", "malformed operator receipt"),
+        ("snapshot_copy_ms=1.0 timing_scope=kernel_only", "malformed operator receipt"),
+        ("kernel_ms=1.0", "malformed operator receipt"),
+        ("snapshot_copy_ms=0.0 timing_scope=d2h_stream_events", "nonpositive snapshot timeline"),
+        ("snapshot_copy_ms=" + "9" * 310 + ".0 timing_scope=d2h_stream_events",
+         "reported nonfinite"),
+    ],
+    ids=["missing-scope", "wrong-scope", "kernel-only-receipt", "zero-duration", "overflow-duration"],
+)
+def test_cuda_rejects_invalid_snapshot_timing(scenario, case_name, producer, timing_fields, diagnostic):
+    processes, _, _, _, rejected = scenario
+    receipt = OPERATOR_RECEIPTS[case_name].split(" snapshot_copy_ms=")[0] + " " + timing_fields
+    if producer == "ctest":
+        processes.gpu_receipts[case_name] = receipt
+        preset = "windows-debug-cuda"
+    else:
+        processes.sanitizer_receipts[case_name] = receipt
+        preset = "windows-release-cuda"
+    rejected(diagnostic, preset)
+
+
+def test_schema_gate_is_required_and_recorded(scenario):
+    _, _, output, run, _ = scenario
+    run()
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 8}
+    assert (output / "ctest-schema.xml").is_file()
+
+
+@pytest.mark.parametrize("missing", ["all", "negative"])
+def test_schema_gate_rejects_missing_inventory(scenario, missing):
+    processes, _, _, _, rejected = scenario
+    processes.schema_cases = () if missing == "all" else SCHEMA_CASES[:-1]
+    rejected("schema")
+
+
+@pytest.mark.parametrize("preset", ["windows-debug-cpu", "windows-debug-cuda"])
+def test_cli_gate_is_required_and_recorded(scenario, preset):
+    _, _, output, run, _ = scenario
+    run(preset)
+    evidence = json.loads((output / "summary.json").read_text())["evidence"]
+    assert evidence["cli"] == {"status": "passed", "tests": 9, "lifecycle": lifecycle_receipt("cpu")}
+    assert (output / "ctest-cli.xml").is_file()
+    if preset.endswith("cuda"):
+        assert evidence["cuda_cli"]["tests"] == 4
+        assert evidence["cuda_cli"]["lifecycle"] == lifecycle_receipt("cuda")
+        assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
+        assert evidence["cuda_cli"]["compiled_architecture"] == 1200
+
+
+@pytest.mark.parametrize("problem", ["missing", "extra", "duplicate", "no_process_receipt"])
+@pytest.mark.parametrize("label", ["cli", "cuda_cli"])
+def test_cli_gate_rejects_incomplete_process_evidence(scenario, problem, label):
+    processes, _, _, _, rejected = scenario
+    attribute = label + "_cases"
+    original = getattr(processes, attribute)
+    if problem == "missing":
+        setattr(processes, attribute, original[:-1])
+    elif problem == "extra":
+        setattr(processes, attribute, (*original, "SimulateCli.unexpected"))
+    elif problem == "duplicate":
+        setattr(processes, attribute, (*original, original[0]))
+    else:
+        processes.ctest_output_overrides[original[0]] = ""
+    rejected("cli", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("field,value", [("device_name", "wrong device"), ("compiled_architecture", 1000),
+                                        ("launch_result", 1), ("sample_count", 0), ("cuda_available", False)])
+def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
+    processes, _, _, _, rejected = scenario
+    processes.cuda_cli_receipt[field] = value
+    rejected("CLI", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay"])
+@pytest.mark.parametrize("field,value", [
+    ("backend", "cpu"), ("compiled_architecture", 1000), ("graph_replay_count", 0),
+    ("graph_replay_count", True), ("device_reserved_bytes", 0),
+    ("snapshot_copy_milliseconds", 0), ("snapshot_copy_milliseconds", float("nan")),
+    ("snapshot_copy_milliseconds", float("inf")), ("epoch", 0), ("accepted_step", 0),
+    ("state_digest", "not-a-digest"), ("frames_per_second", 30),
+])
+def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = CUDA_EXECUTION_RECEIPT.copy()
+    if case == "cuda_replay":
+        receipt.update(command="replay", frame=10, substep=1, epoch=21,
+                       accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+    receipt[field] = value
+    processes.ctest_output_overrides["SimulateCli." + case] = json.dumps(receipt) + "\nPASS " + case
+    rejected("CLI", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case", [
+    "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay",
+    "cpu_lifecycle", "cuda_lifecycle",
+])
+def test_cli_each_execution_case_is_required(scenario, case):
+    processes, _, _, _, rejected = scenario
+    attribute = "cuda_cli_cases" if case.startswith("cuda") else "cli_cases"
+    setattr(processes, attribute, tuple(name for name in getattr(processes, attribute) if name != "SimulateCli." + case))
+    rejected("cli", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("backend", ["cpu", "cuda"])
+@pytest.mark.parametrize("field, value", [
+    ("backend", "other"),
+    ("heartbeat_interval_seconds", 1.01),
+    ("heartbeat_interval_seconds", True),
+    ("heartbeat_interval_seconds", float("nan")),
+    ("cancel_exit_seconds", 0),
+    ("cancel_exit_seconds", 10.01),
+    ("cancel_exit_seconds", float("inf")),
+    ("frame_zero", []),
+])
+def test_cli_requires_lifecycle_receipt(scenario, backend, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = lifecycle_receipt(backend)
+    receipt[field] = value
+    case = f"{backend}_lifecycle"
+    processes.ctest_output_overrides[f"SimulateCli.{case}"] = json.dumps(receipt) + f"\nPASS {case}"
+    rejected("CLI lifecycle", f"windows-debug-{backend}")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("compiled_architecture", 1000),
+    ("compiled_architecture", 1200.0),
+    ("snapshot_copy_milliseconds", 0),
+    ("snapshot_copy_milliseconds", float("nan")),
+    ("published", 1),
+    ("frame", True),
+])
+def test_cuda_cli_lifecycle_requires_real_snapshot(scenario, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = lifecycle_receipt("cuda")
+    receipt["frame_zero"][field] = value
+    processes.ctest_output_overrides["SimulateCli.cuda_lifecycle"] = json.dumps(receipt) + "\nPASS cuda_lifecycle"
+    rejected("CLI lifecycle", "windows-debug-cuda")

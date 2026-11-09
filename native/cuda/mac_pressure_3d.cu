@@ -458,6 +458,9 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
       state.error = PressureError3D::kExhausted;
       return;
     }
+    // The FP32 recursive residual can drift from the true FP64 residual.
+    // Accumulate the rounded correction in the FP64 base and restart the
+    // search from the recomputed residual within the original iteration budget.
     for (std::size_t i = 0; i < device.cell_count; ++i) {
       device.output[i] = device.output[device.cell_count + i];
     }

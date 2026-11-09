@@ -7,7 +7,10 @@ enum class BoundaryTransferOperation3D {
   kDeposit,
   kNormalize,
   kGather,
-  kFitGhost
+  kFitGhost,
+  kPredict,
+  kForces,
+  kUpdateParticles
 };
 enum class BoundaryHistoryStage3D {
   kOld,
@@ -29,6 +32,11 @@ struct BoundaryTransferFace3D {
 };
 struct BoundaryTransferParticle3D {
   LiquidBoundaryParticle3D particle{};
+  // Particle update consumes only these numerical fields; host identity/mass/V0 stay untouched.
+  LiquidBoundaryParticleGather3D gathered{};
+  double liquid_distance{};  // Frozen start-time signed distance, meters.
+  double volume_ratio{};  // Dimensionless start-time J.
+  bool pic_initialized{};  // False suppresses retained particle velocity.
   MacFaceStencilSample3D stencils[3][27]{};  // X/Y/Z, then original (z,y,x) node order.
 };
 struct BoundaryTransferFaceResult3D {
@@ -40,6 +48,9 @@ struct BoundaryTransferFaceResult3D {
 struct BoundaryTransferParticleResult3D {
   CompatibleMacFaceSample3D stencils[3][27]{};
   LiquidBoundaryParticleGather3D gathered{};
+  Vec3 updated_world_position{};  // Continuous-contact position, meters.
+  Vec3 updated_stored_velocity{};  // Retained/contact-corrected m/s, not advection velocity.
+  double updated_volume_ratio{};  // exp(dt tr L) times start-time J.
 };
 struct BoundaryTransferQuery3D {
   BoundaryTransferOperation3D operation = BoundaryTransferOperation3D::kDeposit;
@@ -51,11 +62,21 @@ struct BoundaryTransferQuery3D {
   double minimum_face_mass{};  // Finite nonnegative kilograms.
   internal::LiquidGhostFitSample3D fit_samples[125]{};
   std::size_t fit_count{};
+  std::size_t target_face_slot{};  // Checked owned slot for missing-face prediction.
+  std::int64_t side_tag{};  // Requested continuation side.
+  Vec3 world_acceleration{};  // m/s^2, applied once after old-history continuation.
+  double step_duration{};  // Positive seconds.
+  boundary_internal::Obstacle obstacle{};  // Start pose and constant translating velocity.
+  double particle_energy_blend{};  // e in [0,1].
+  double friction_coefficient{};  // Nonnegative dimensionless Coulomb coefficient.
+  double penetration_tolerance{};  // Nonnegative meters.
 };
 struct BoundaryTransferReport3D {
   boundary_internal::Error error{};
   int compiled_architecture{};
   internal::LiquidGhostAffineFit3D fit{};
+  double predicted_face_velocity{};  // Continued old velocity plus acceleration*dt, m/s.
+  bool retry_step{};  // Physical displacement/J rejection, separate from arithmetic/runtime errors.
 };
 static_assert(std::is_trivially_copyable_v<BoundaryTransferQuery3D>);
 static_assert(std::is_trivially_copyable_v<BoundaryTransferFace3D>);

@@ -11,6 +11,7 @@
 
 #include "absl/status/statusor.h"
 #include "fluidity/host/views.h"
+#include "mac_gather_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -43,12 +44,6 @@ bool IsPositiveNormalPowerOfTwo(double scale) {
 
 double Dot(Vec3 lhs, Vec3 rhs) {
   return (lhs.x * rhs.x + lhs.y * rhs.y) + lhs.z * rhs.z;
-}
-
-void AddScaled(Vec3& sum, Vec3 vector, double scale) {
-  sum.x += vector.x * scale;
-  sum.y += vector.y * scale;
-  sum.z += vector.z * scale;
 }
 
 // The range guard has already bounded the magnitude by 2^62. Truncate the
@@ -124,57 +119,7 @@ absl::Status DepositWithFaceAccumulator(
   return absl::OkStatus();
 }
 
-struct GatheredMacVelocityComponent {
-  double new_pic_velocity;
-  double grid_velocity_increment;
-  Vec3 fitted_velocity_slope_row;
-  Vec3 velocity_gradient_row;
-};
-
-absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
-    const MacFaceStencil3D& stencil,
-    double cell_width,
-    std::span<const double> old_face_velocities,
-    std::span<const double> new_face_velocities
-) {
-  double old_pic_velocity = 0.0;
-  double new_pic_velocity = 0.0;
-  Vec3 normalized_offset_velocity_moment{};
-  Vec3 velocity_gradient_row{};
-  for (const auto& sample : stencil) {
-    const double old_face_velocity = old_face_velocities[sample.face_slot];
-    const double new_face_velocity = new_face_velocities[sample.face_slot];
-    const double weighted_new_face_velocity = sample.weight * new_face_velocity;
-    old_pic_velocity += sample.weight * old_face_velocity;
-    new_pic_velocity += weighted_new_face_velocity;
-    const Vec3 normalized_face_displacement{
-        .x = sample.face_offset_from_particle.x / cell_width,
-        .y = sample.face_offset_from_particle.y / cell_width,
-        .z = sample.face_offset_from_particle.z / cell_width,
-    };
-    AddScaled(normalized_offset_velocity_moment, normalized_face_displacement, weighted_new_face_velocity);
-    AddScaled(velocity_gradient_row, sample.weight_gradient, new_face_velocity);
-  }
-  // Complete quadratic support makes the fit's normal matrix I/4 in cell
-  // coordinates. Apply its inverse before converting the slope to inverse
-  // seconds. Forming cell_width squared would narrow the usable scale range.
-  const Vec3 fitted_velocity_slope_row{
-      .x = (4.0 * normalized_offset_velocity_moment.x) / cell_width,
-      .y = (4.0 * normalized_offset_velocity_moment.y) / cell_width,
-      .z = (4.0 * normalized_offset_velocity_moment.z) / cell_width,
-  };
-  const double grid_velocity_increment = new_pic_velocity - old_pic_velocity;
-  if (!std::isfinite(new_pic_velocity) || !std::isfinite(grid_velocity_increment)
-      || !IsFinite(fitted_velocity_slope_row) || !IsFinite(velocity_gradient_row)) {
-    return absl::OutOfRangeError("gathered velocity or slope is nonfinite");
-  }
-  return GatheredMacVelocityComponent{
-      .new_pic_velocity = new_pic_velocity,
-      .grid_velocity_increment = grid_velocity_increment,
-      .fitted_velocity_slope_row = fitted_velocity_slope_row,
-      .velocity_gradient_row = velocity_gradient_row,
-  };
-}
+using internal::GatherMacVelocityComponent;
 
 }  // namespace
 
