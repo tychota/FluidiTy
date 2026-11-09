@@ -16,6 +16,7 @@
 #include "liquid_device_3d_internal.h"
 #include "liquid_geometry_stages_3d_bridge.h"
 #include "mac_pressure_3d_bridge.h"
+#include "wetted_piston_3d_bridge.h"
 
 namespace fluidity {
 namespace {
@@ -168,6 +169,9 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
   using Range = CudaLiquidRange3D;
+  const auto wet_sources = std::max<std::size_t>(1, capacity.particles);
+  const auto wet_patches =
+      std::max<std::size_t>(1, std::min(capacity.faces, wetted_piston_internal::kDevicePatchBatch));
   const bool fits = add(Range::kSampleQuery, 1, sizeof(cuda_internal::LiquidSampleQuery3D))
       && add(Range::kSampleFaceResults, capacity.faces, sizeof(cuda_internal::LiquidSampleFaceResult3D))
       && add(Range::kSortInputKeys, storage.sort_capacity, sizeof(LiquidSortKey3D))
@@ -205,7 +209,12 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
       && add(Range::kSampleDistances,
              std::max({capacity.particles, capacity.faces, capacity.cells}),
              kLiquidFieldSampleSlotsPerCapacity3D * sizeof(double))
-      && add(Range::kSampleParticles, capacity.particles, sizeof(LiquidParticleState3D));
+      && add(Range::kSampleParticles, capacity.particles, sizeof(LiquidParticleState3D))
+      && add(Range::kWettedPistonCenters, wet_sources, sizeof(Vec3))
+      && add(Range::kWettedPistonDisks, wet_sources, sizeof(wetted_piston_internal::Disk))
+      && add(Range::kWettedPistonIndices, wet_patches, sizeof(wetted_piston_internal::PatchIndex))
+      && add(Range::kWettedPistonMeasures, wet_patches, sizeof(wetted_piston_internal::PatchMeasure))
+      && add(Range::kWettedPistonIntervals, wet_sources, 2 * wet_patches * sizeof(wetted_piston_internal::Interval));
   if (!fits) {
     return Error(absl::StatusCode::kResourceExhausted);
   }

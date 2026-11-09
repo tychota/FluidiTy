@@ -74,6 +74,14 @@ enum class CudaLiquidRange3D : std::size_t {
   kSamplePositions,
   kSampleDistances,
   kSampleParticles,
+  // Actual wet-wall staging. Centers and sections reserve max(1, particles).
+  // Patch indices and results reserve up to 32; each active patch uses two
+  // interval banks of max(1, particles) each. All ranges are owned by the arena.
+  kWettedPistonCenters,
+  kWettedPistonDisks,
+  kWettedPistonIndices,
+  kWettedPistonMeasures,
+  kWettedPistonIntervals,
   kPressurePreparationScratch,  // Host-only checked assembly/hierarchy; device pointer is null.
   kCount,
 };

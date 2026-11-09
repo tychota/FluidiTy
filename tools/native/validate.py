@@ -78,6 +78,13 @@ GPU_PRESSURE_SUPPORTED_GATHER_CONTROLS = {
     "CudaLiquidSubstep3D.PressureSupportedGatherWithNoNewDonorRollsBack",
     "CudaLiquidSubstep3D.CompleteNonaffineGatherKeepsTrueGradientAndNativeNoDonorFailure",
 }
+GPU_WETTED_PISTON_CASES = {
+    "CudaWettedPiston3D.ClipsHorizontalPlaneAndKeepsBothFluxSigns",
+    "CudaWettedPiston3D.EnclosesThinOverlappingCapAndAttachesOnce",
+    "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
+    "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
+    "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+}
 GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
 GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
 GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
@@ -85,6 +92,7 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     *GPU_SNAPSHOT_CASES,
     *GPU_SUBSTEP_CASES,
     *GPU_PRESSURE_SUPPORTED_GATHER_CONTROLS,
+    *GPU_WETTED_PISTON_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
     GPU_BOUNDARY_GEOMETRY_3D_CASE,
