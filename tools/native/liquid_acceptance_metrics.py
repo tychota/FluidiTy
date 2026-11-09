@@ -356,20 +356,96 @@ class SphereUnionSections:
 
     def __init__(self, positions, radius, z_bounds, floor_y, reference_y):
         import numpy as np
+        from scipy.spatial import cKDTree
 
-        if not finite_number(radius) or radius <= 0 or not z_bounds[0] < z_bounds[1] or not floor_y < reference_y:
-            raise ValueError("invalid sphere-section geometry")
-        self.positions = np.asarray([vector3(position) for position in positions], dtype=float).reshape(-1, 3)
+        if not finite_number(radius) or radius <= 0 or not finite_number(radius * radius) or radius * radius == 0:
+            raise ValueError("invalid sphere-section radius")
+        if not all(map(finite_number, (*z_bounds, floor_y, reference_y))):
+            raise ValueError("nonfinite sphere-section bounds")
+        if not z_bounds[0] < z_bounds[1] or not floor_y < reference_y:
+            raise ValueError("invalid sphere-section bounds")
+        coordinates = np.asarray([vector3(position) for position in positions], dtype=float).reshape(-1, 3)
+        # Coincident fixed-radius spheres are one geometric support.
+        self.positions = np.unique(coordinates, axis=0)
         self.radius = radius
         self.floor_y = floor_y
         self.reference_y = reference_y
         self.z_bounds = z_bounds
 
+        # Only overlapping neighbors can contribute an intersection circle.
+        diameter = 2 * radius
+        first, second = cKDTree(self.positions).query_pairs(diameter, output_type="ndarray").T
+        offsets = self.positions[second] - self.positions[first]
+        transverse = np.hypot(offsets[:, 1], offsets[:, 2])
+        distance = np.hypot(offsets[:, 0], transverse)
+        overlaps = (distance > 0) & (distance < diameter)
+        self._pair_first = first[overlaps]
+        self._pair_second = second[overlaps]
+        self._pair_offset = offsets[overlaps]
+        self._pair_transverse = transverse[overlaps]
+        distance = distance[overlaps]
+        circle_radius = np.sqrt((radius - distance / 2) * (radius + distance / 2))
+        x_center = self.positions[self._pair_first, 0] + self._pair_offset[:, 0] / 2
+        x_span = circle_radius * (self._pair_transverse / distance)
+        self._pair_low_x = x_center - x_span
+        self._pair_high_x = x_center + x_span
+
     def x_breakpoints(self):
-        # Start x integration intervals at each sphere's support boundary.
-        for center in self.positions[:, 0]:
-            yield center - self.radius
-            yield center + self.radius
+        # Project tangencies with the sphere, each clipping plane, and
+        # each y/z clipping edge onto x. A clipped cap can fit entirely
+        # between the quadrature nodes on the sphere's full support.
+        import numpy as np
+
+        center_x, center_y, center_z = self.positions.T
+        radius_sq = np.full_like(center_x, self.radius ** 2)
+        y_distance_sq = (0, (center_y - self.floor_y) ** 2, (center_y - self.reference_y) ** 2)
+        z_low, z_high = self.z_bounds
+        z_distance_sq = (0, (center_z - z_low) ** 2, (center_z - z_high) ** 2)
+        for dy_sq in y_distance_sq:
+            for dz_sq in z_distance_sq:
+                support_sq = radius_sq - dy_sq - dz_sq
+                intersects = support_sq > 0
+                span = np.sqrt(support_sq[intersects])
+                yield from center_x[intersects] - span
+                yield from center_x[intersects] + span
+
+        yield from self._pair_low_x
+        yield from self._pair_high_x
+
+    def _pair_crossings_z(self, x, cut_radius_sq):
+        # A fixed x plane can cross a pair intersection only inside its
+        # projected x interval. Concentric cuts have no isolated crossings.
+        import numpy as np
+
+        active = (self._pair_low_x < x) & (x < self._pair_high_x) & (self._pair_transverse > 0)
+        first = self._pair_first[active]
+        second = self._pair_second[active]
+        radii_first = np.sqrt(np.maximum(0, cut_radius_sq[first]))
+        radii_second = np.sqrt(np.maximum(0, cut_radius_sq[second]))
+        distance = self._pair_transverse[active]
+        radius_difference = radii_first - radii_second
+        radius_sum = radii_first + radii_second
+        crosses = (np.abs(radius_difference) < distance) & (distance < radius_sum)
+        distance = distance[crosses]
+        if not len(distance):
+            return ()
+
+        # The circle-circle chord is perpendicular to the center offset.
+        # Factoring the squared radius difference avoids cancellation when
+        # the cross-sections have similar radii.
+        along = (distance + radius_difference[crosses] / distance * radius_sum[crosses]) / 2
+        radius = radii_first[crosses]
+        half_chord = np.sqrt(np.maximum(0, (radius - along) * (radius + along)))
+        center_yz = self.positions[first[crosses], 1:]
+        direction_yz = self._pair_offset[active, 1:][crosses] / distance[:, None]
+        chord_center = center_yz + along[:, None] * direction_yz
+        chord_offset = half_chord[:, None] * direction_yz[:, [1, 0]] * [-1, 1]
+        crossings = []
+        for endpoints in (chord_center - chord_offset, chord_center + chord_offset):
+            y, z = endpoints.T
+            visible = (y >= self.floor_y) & (self.z_bounds[0] < z) & (z < self.z_bounds[1])
+            crossings.extend(z[visible])
+        return crossings
 
     def section(self, x, tolerance):
         import numpy as np
@@ -383,6 +459,7 @@ class SphereUnionSections:
             return (0.0, 0.0), (0.0, 0.0)
         z_min, z_max = self.z_bounds
         disk_radius = np.sqrt(disk_radius_sq)
+        pair_crossings = self._pair_crossings_z(x, x_cut_radius_sq)
         edges = np.linspace(z_min, z_max, math.ceil((z_max - z_min) / self.radius) + 1)
         area = np.zeros(2)
         error = np.zeros(2)
@@ -395,7 +472,8 @@ class SphereUnionSections:
             radii_sq = disk_radius_sq[candidates]
             # A cut support starts/ends either at the disk boundary or where a
             # sphere becomes tangent to the floor or the reference plane.
-            breakpoints = []
+            # Pair crossings change which vertical intervals overlap.
+            breakpoints = [z for z in pair_crossings if low_z < z < high_z]
             for height_sq in (0, (ys - self.floor_y) ** 2, (ys - self.reference_y) ** 2):
                 support_sq = radii_sq - height_sq
                 intersects = support_sq > 0
