@@ -291,6 +291,22 @@ FLUIDITY_HD inline ProjectedSum TankPlaneOffset(double world_coordinate, const T
   return offset;
 }
 
+// Signed liquid distance at an original grid sample, retaining the product
+// and translation residuals that a reconstructed world-space y can lose.
+FLUIDITY_HD inline Value<double>
+HorizontalPlaneLatticeDistance(double world_surface_height_y, const TankLatticeAxis& lattice_y) {
+  if (!numeric::isfinite(world_surface_height_y) || !numeric::isfinite(lattice_y.world_origin)
+      || !numeric::isfinite(lattice_y.lattice_index) || !numeric::isfinite(lattice_y.cell_width)
+      || lattice_y.cell_width <= 0) {
+    return Error::kInvalid;
+  }
+  const auto offset = TankPlaneOffset(world_surface_height_y, lattice_y).Bounds();
+  if (!offset.magnitude_is_resolved()) {
+    return Error::kRange;
+  }
+  return offset.estimate == 0 ? 0.0 : -offset.estimate;
+}
+
 struct TankWallSample {
   double inward_distance;
   Vec3 inward_normal;

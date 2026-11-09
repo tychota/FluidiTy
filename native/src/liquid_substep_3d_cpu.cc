@@ -219,6 +219,18 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
             return GatherLiquidBoundaryParticles3D(inputs, workspace);
           },
       .update_particles = UpdateParticles,
+      .sample_lattice_plane =
+          [](void*, const LiquidHorizontalPlaneSurface3D& plane, UniformMacGeometry3D geometry, double sample_lattice_y
+          ) -> absl::StatusOr<double> {
+        const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+            plane.world_surface_height_y,
+            {geometry.world_origin.y, sample_lattice_y, geometry.cell_width}
+        );
+        if (!distance.ok()) {
+          return boundary_internal::ArithmeticStatus(distance.status(), true);
+        }
+        return *distance;
+      },
   };
 }
 }  // namespace fluidity

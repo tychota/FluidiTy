@@ -49,13 +49,16 @@ ComputeGeometry(void* context, const boundary_internal::GeometryInput& input) {
   STAGE_TRY(boundary_internal::ArithmeticStatus(report->pinned[0].error, true));
   return report->pinned[0].geometry;
 }
-}  // namespace
-absl::Status SampleLiquidField3D(
+
+// World and lattice queries share the checked arena ranges and one fence. The
+// lattice form packs y in cell widths and resolves its distance only on device.
+absl::Status SampleFieldOnDevice(
     CudaLiquidArena3D& arena,
     const LiquidSceneField3D& field,
     std::span<const LiquidParticleState3D> particles,
     std::span<const Vec3> positions,
-    std::span<double> distances
+    std::span<double> distances,
+    const UniformMacGeometry3D* lattice_geometry
 ) {
   STAGE_TRY(arena.RecordRuntimeResult(cudaSuccess));
   if (positions.size() != distances.size()) {
@@ -67,6 +70,11 @@ absl::Status SampleLiquidField3D(
   const double radius = sphere ? sphere->radius : (particle_union ? particle_union->radius : 0);
   if ((plane && !std::isfinite(plane->world_surface_height_y)) || (!plane && (!std::isfinite(radius) || radius <= 0))
       || (sphere && !Finite(sphere->world_center))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (lattice_geometry
+      && (!plane || !std::isfinite(lattice_geometry->world_origin.y) || !std::isfinite(lattice_geometry->cell_width)
+          || lattice_geometry->cell_width <= 0)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   if (particles.size() > arena.capacities().particles
@@ -114,15 +122,21 @@ absl::Status SampleLiquidField3D(
   if (!architecture.ok()) {
     return architecture.status();
   }
+  auto field_kind = LiquidSampleFieldKind3D::kAnalyticSphere;
+  if (plane) {
+    field_kind =
+        lattice_geometry ? LiquidSampleFieldKind3D::kLatticeHorizontalPlane : LiquidSampleFieldKind3D::kHorizontalPlane;
+  } else if (particle_union) {
+    field_kind = LiquidSampleFieldKind3D::kParticleUnion;
+  }
   query->pinned[0] = {
       .sphere_center = sphere ? sphere->world_center : Vec3{},
       .radius = radius,
       .world_surface_height_y = plane ? plane->world_surface_height_y : 0,
-      .field_kind = plane
-          ? LiquidSampleFieldKind3D::kHorizontalPlane
-          : (particle_union ? LiquidSampleFieldKind3D::kParticleUnion : LiquidSampleFieldKind3D::kAnalyticSphere),
+      .field_kind = field_kind,
       .particle_count = particles.size(),
       .sample_count = positions.size(),
+      .geometry = lattice_geometry ? *lattice_geometry : UniformMacGeometry3D{},
   };
   std::ranges::copy(positions, samples->pinned.begin());
   for (std::size_t index = 0; index < particles.size(); ++index) {
@@ -149,6 +163,17 @@ absl::Status SampleLiquidField3D(
   std::ranges::copy(output->pinned, distances.begin());
   return absl::OkStatus();
 }
+}  // namespace
+
+absl::Status SampleLiquidField3D(
+    CudaLiquidArena3D& arena,
+    const LiquidSceneField3D& field,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const Vec3> positions,
+    std::span<double> distances
+) {
+  return SampleFieldOnDevice(arena, field, particles, positions, distances, nullptr);
+}
 absl::StatusOr<double> SampleLiquidField3D(
     CudaLiquidArena3D& arena,
     const LiquidSceneField3D& field,
@@ -157,6 +182,17 @@ absl::StatusOr<double> SampleLiquidField3D(
 ) {
   double distance = 0;
   STAGE_TRY(SampleLiquidField3D(arena, field, particles, {&position, 1}, {&distance, 1}));
+  return distance;
+}
+absl::StatusOr<double> SampleLiquidLatticePlane3D(
+    CudaLiquidArena3D& arena,
+    const LiquidHorizontalPlaneSurface3D& plane,
+    UniformMacGeometry3D geometry,
+    double sample_lattice_y
+) {
+  const Vec3 lattice_position{0, sample_lattice_y, 0};
+  double distance = 0;
+  STAGE_TRY(SampleFieldOnDevice(arena, plane, {}, {&lattice_position, 1}, {&distance, 1}, &geometry));
   return distance;
 }
 absl::Status SampleLiquidFaces3D(

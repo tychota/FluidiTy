@@ -431,26 +431,33 @@ absl::Status PrepareField(
     }
     return absl::OkStatus();
   };
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field);
   if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&field)) {
     STEP_TRY(add_sphere(sphere->world_center, sphere->radius));
-  } else if (const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field)) {
+  } else if (plane) {
     STEP_TRY(PrepareTankCandidates(*plane, std::get<AxisAlignedLiquidTank3D>(obstacle), geometry, staging.candidates));
   } else {
     for (const auto& particle : trial.particles.values()) {
       STEP_TRY(add_sphere(particle.world_position, std::get<LiquidParticleSphereUnion3D>(field).radius));
     }
   }
+  const auto sample = [&](Vec3 lattice_position) -> absl::StatusOr<double> {
+    if (plane) {
+      return backend.sample_lattice_plane(backend.context, *plane, geometry, lattice_position.y);
+    }
+    const Vec3 world_position{
+        geometry.world_origin.x + lattice_position.x * geometry.cell_width,
+        geometry.world_origin.y + lattice_position.y * geometry.cell_width,
+        geometry.world_origin.z + lattice_position.z * geometry.cell_width,
+    };
+    return backend.sample_field(backend.context, field, trial.particles.values(), world_position);
+  };
   for (const auto& cell : staging.candidates.values()) {
     for (int z = -1; z <= 1; ++z) {
       for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
           const CellIndex3D index{cell.x + x, cell.y + y, cell.z + z};
-          const Vec3 position{
-              geometry.world_origin.x + (static_cast<double>(index.x) + 0.5) * geometry.cell_width,
-              geometry.world_origin.y + (static_cast<double>(index.y) + 0.5) * geometry.cell_width,
-              geometry.world_origin.z + (static_cast<double>(index.z) + 0.5) * geometry.cell_width,
-          };
-          const auto sampled = backend.sample_field(backend.context, field, trial.particles.values(), position);
+          const auto sampled = sample({index.x + 0.5, index.y + 0.5, index.z + 0.5});
           if (!sampled.ok()) {
             return sampled.status();
           }
@@ -468,12 +475,8 @@ absl::Status PrepareField(
       for (int y = 0; y <= 1; ++y) {
         for (int x = 0; x <= 1; ++x) {
           const CellCornerIndex3D index{cell.x + x, cell.y + y, cell.z + z};
-          const Vec3 position{
-              geometry.world_origin.x + index.x * geometry.cell_width,
-              geometry.world_origin.y + index.y * geometry.cell_width,
-              geometry.world_origin.z + index.z * geometry.cell_width,
-          };
-          const auto sampled = backend.sample_field(backend.context, field, trial.particles.values(), position);
+          const auto sampled =
+              sample({static_cast<double>(index.x), static_cast<double>(index.y), static_cast<double>(index.z)});
           if (!sampled.ok()) {
             return sampled.status();
           }

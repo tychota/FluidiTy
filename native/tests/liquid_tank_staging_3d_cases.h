@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <limits>
 #include <tuple>
 
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
 
@@ -54,6 +56,82 @@ inline void ExpectPlaneSupport(const LiquidSubstepBackend3D& operations, LiquidS
   for (const auto& face : state.faces.values()) {
     EXPECT_EQ(face.side_tag, 0);
   }
+}
+
+// The binary64 world center rounds onto the plane although its lattice phi is -0.375 m.
+inline void ExpectTranslatedPlaneKeepsWetCell(const LiquidSubstepBackend3D& operations, LiquidStepOptions3D options) {
+  constexpr double origin_y = 0x1p52;
+  LiquidState3D initial;
+  initial.geometry = {{0, origin_y, 0}, 1.25};
+  LiquidSceneInputs3D scene;
+  constexpr LiquidHorizontalPlaneSurface3D plane{origin_y + 1};
+  scene.field = plane;
+  scene.obstacle = AxisAlignedLiquidTank3D{0, 1.25, origin_y, 0, 1.25, 0};
+  scene.world_acceleration = {};
+  auto missing_lattice_sampler = operations;
+  missing_lattice_sampler.sample_lattice_plane = nullptr;
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, options, missing_lattice_sampler).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, operations);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  const auto& state = scheduler->committed();
+  EXPECT_EQ(state.clock.epoch, 1);
+  EXPECT_TRUE(state.particles.values().empty());
+  ASSERT_EQ(state.cells.size(), 1);
+  const auto& cell = state.cells[0];
+  EXPECT_EQ(cell.cell_index.x, 0);
+  EXPECT_EQ(cell.cell_index.y, 0);
+  EXPECT_EQ(cell.cell_index.z, 0);
+  EXPECT_EQ(cell.occupancy, LiquidCellOccupancy3D::kLiquid);
+  EXPECT_DOUBLE_EQ(cell.previous_pressure, 0);
+
+  auto staging = liquid_step_internal::Staging::Create(options.capacities);
+  ASSERT_TRUE(staging.ok()) << staging.status();
+  const auto staged = liquid_step_internal::PrepareField(scene.field, scene.obstacle, initial, *staging, operations);
+  ASSERT_TRUE(staged.ok()) << staged;
+  constexpr std::array center_distances{-1.625, -0.375, 0.875};
+  ASSERT_EQ(staging->centers.size(), 27);
+  for (const auto& sample : staging->centers.values()) {
+    ASSERT_GE(sample.cell_index.y, -1);
+    ASSERT_LE(sample.cell_index.y, 1);
+    EXPECT_DOUBLE_EQ(sample.signed_distance, center_distances[sample.cell_index.y + 1]);
+  }
+  ASSERT_EQ(staging->corners.size(), 8);
+  for (const auto& sample : staging->corners.values()) {
+    EXPECT_DOUBLE_EQ(sample.signed_distance, sample.corner_index.y == 0 ? -1.0 : 0.25);
+  }
+
+  constexpr BlockIndex3D block{};
+  const auto grid = SparseMacGridView3D::Create(initial.geometry, {&block, 1});
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto workspace = LiquidBoundaryWorkspace3D::Create(options.capacities);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto frozen = operations.freeze(
+      operations.context,
+      {
+          .mac_grid = *grid,
+          .cell_indices = staging->candidates.values(),
+          .center_distances = staging->centers.values(),
+          .corner_distances = staging->corners.values(),
+          .obstacle = scene.obstacle,
+          .step_duration = 0.01,
+          .liquid_density = scene.liquid_density,
+          .surface_tension = 0,
+      },
+      *workspace
+  );
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells.size(), 1);
+  EXPECT_DOUBLE_EQ(frozen->cells[0].center_distance, -0.375);
+  EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 1.5625);
+
+  const auto uncertifiable =
+      operations.sample_lattice_plane(operations.context, {0}, {{}, std::numeric_limits<double>::denorm_min()}, 0.5);
+  EXPECT_EQ(uncertifiable.status().code(), absl::StatusCode::kOutOfRange);
 }
 
 inline void ExpectWallSamples(const LiquidSubstepBackend3D& operations) {

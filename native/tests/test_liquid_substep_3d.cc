@@ -55,6 +55,10 @@ TEST(LiquidSubstep3D, HorizontalPlaneActivatesSignedPressureAndFaceOwnersWithout
   tank_staging_test::ExpectPlaneSupport(CpuLiquidSubstepBackend3D(), Options());
 }
 
+TEST(LiquidSubstep3D, TranslatedHorizontalPlaneRetainsWetPressureCell) {
+  tank_staging_test::ExpectTranslatedPlaneKeepsWetCell(CpuLiquidSubstepBackend3D(), Options());
+}
+
 TEST(LiquidSubstep3D, OpenTankSamplesPistonAndFixedWallsSeparately) {
   tank_staging_test::ExpectWallSamples(CpuLiquidSubstepBackend3D());
 }

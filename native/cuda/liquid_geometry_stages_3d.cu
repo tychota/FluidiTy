@@ -19,6 +19,14 @@ __global__ void LiquidFieldSamples3DKernel(
   // Preserve input particle order and strict-less tie behavior of std::min.
   for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
     const Vec3 position = positions[sample];
+    if (query->field_kind == LiquidSampleFieldKind3D::kLatticeHorizontalPlane) {
+      const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+          query->world_surface_height_y,
+          {query->geometry.world_origin.y, position.y, query->geometry.cell_width}
+      );
+      distances[sample] = distance.ok() ? *distance : boundary_internal::numeric::numeric_limits<double>::quiet_NaN();
+      continue;
+    }
     if (query->field_kind == LiquidSampleFieldKind3D::kHorizontalPlane) {
       distances[sample] = position.y - query->world_surface_height_y;
       continue;

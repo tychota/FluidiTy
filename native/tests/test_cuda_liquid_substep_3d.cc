@@ -778,6 +778,12 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   ASSERT_TRUE(plane_backend.ok()) << plane_backend.status();
   ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectPlaneSupport(plane_backend->operations(), options));
   EXPECT_EQ(plane_backend->usage().compiled_architecture, 1200);
+  auto translated_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(translated_backend.ok()) << translated_backend.status();
+  ASSERT_NO_FATAL_FAILURE(
+      tank_staging_test::ExpectTranslatedPlaneKeepsWetCell(translated_backend->operations(), options)
+  );
+  EXPECT_EQ(translated_backend->usage().compiled_architecture, 1200);
 }
 
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {

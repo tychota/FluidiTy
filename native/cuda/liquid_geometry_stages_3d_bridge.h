@@ -5,7 +5,8 @@ namespace fluidity::cuda_internal {
 enum class LiquidSampleFieldKind3D {
   kAnalyticSphere,
   kParticleUnion,
-  kHorizontalPlane
+  kHorizontalPlane,
+  kLatticeHorizontalPlane
 };
 
 // Device-only POD execution descriptor; no variant or host container crosses ABI.
@@ -28,7 +29,8 @@ struct LiquidSampleFaceResult3D {
 // All pointers refer to checked persistent ranges and remain live through fence.
 // Particle centers use Vec3 records packed by the host, never host-computed SDFs.
 // Tank face coordinates are in cell widths so the device preserves lattice
-// residuals. Other faces and field sample positions are in world meters.
+// residuals. Lattice plane sampling uses the y coordinate in cell widths.
+// Other faces and field sample positions are in world meters.
 int LaunchLiquidFieldSamples3D(const LiquidSampleQuery3D*, const Vec3*, const Vec3*, double*, int*, void*);
 int LaunchLiquidFaceSamples3D(const LiquidSampleQuery3D*, const Vec3*, LiquidSampleFaceResult3D*, int*, void*);
 }  // namespace fluidity::cuda_internal

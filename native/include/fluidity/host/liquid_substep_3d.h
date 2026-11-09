@@ -137,7 +137,7 @@ class LiquidSubstepScheduler3D {
   // staging owners with checked nothrow allocation. No borrowed scene data survives.
   static absl::StatusOr<LiquidSubstepScheduler3D>
   Create(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, LiquidStepOptions3D options);
-  // Explicit backend: every typed operation must be supplied; no CPU fallback.
+  // Explicit backend: every operation required by the scene must be supplied.
   // Backend context is borrowed through scheduler destruction and all frame attempts.
   static absl::StatusOr<LiquidSubstepScheduler3D> Create(
       const LiquidState3D& initial,
