@@ -8,6 +8,10 @@
 #include "fluidity/host/liquid_wall_contact_3d.h"
 
 namespace fluidity {
+namespace boundary_internal {
+struct GeometryBackend;
+struct BoundedGeometryAccess;
+}  // namespace boundary_internal
 // Same units, sample ordering and geometry contract as LiquidBoundaryGeometryInputs3D;
 // borrows the prepared topology grid rather than an owning grid.
 struct LiquidBoundaryGeometryViewInputs3D {
@@ -156,6 +160,14 @@ class LiquidBoundaryWorkspace3D {
   std::size_t high_water_bytes() const;
 
  private:
+  friend struct boundary_internal::BoundedGeometryAccess;
+  absl::StatusOr<FrozenLiquidBoundaryGeometryView3D>
+  FreezeWithBackend(const LiquidBoundaryGeometryViewInputs3D& inputs, boundary_internal::GeometryBackend backend);
+  absl::StatusOr<LiquidPressureProblemView3D> BuildLinksWithBackend(
+      const FrozenLiquidBoundaryGeometryView3D& geometry,
+      const LiquidPressureFields3D& fields,
+      boundary_internal::GeometryBackend backend
+  );
   friend class LiquidStepWorkspace3D;
   friend absl::StatusOr<LiquidBoundaryWorkspaceBytes3D> QueryLiquidBoundaryWorkspaceBytes3D(LiquidStateCapacities3D);
   LiquidBoundaryWorkspace3D() = default;

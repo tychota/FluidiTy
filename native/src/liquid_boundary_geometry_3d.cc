@@ -675,6 +675,12 @@ BuildLiquidPressureLinks3D(const FrozenLiquidBoundaryGeometry3D& geometry, const
 absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::Freeze(
     const LiquidBoundaryGeometryViewInputs3D& inputs
 ) {
+  return FreezeWithBackend(inputs, {CpuGeometry, this});
+}
+absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::FreezeWithBackend(
+    const LiquidBoundaryGeometryViewInputs3D& inputs,
+    boundary_internal::GeometryBackend backend
+) {
   if (inputs.cell_indices.size() > capacities_.cells || inputs.center_distances.size() > 27 * capacities_.cells) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -685,7 +691,7 @@ absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::Fr
   Resize(bank.needs_curvature, inputs.cell_indices.size());
   RecordHighWater();
   GeometryStorage storage{{bank.cells.values()}, {bank.faces.values()}};
-  const auto status = FreezeCore(inputs, {CpuGeometry, this}, storage, bank.needs_curvature.values(), true);
+  const auto status = FreezeCore(inputs, backend, storage, bank.needs_curvature.values(), true);
   if (!status.ok()) {
     return status;
   }
@@ -711,6 +717,13 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
     const FrozenLiquidBoundaryGeometryView3D& geometry,
     const LiquidPressureFields3D& fields
 ) {
+  return BuildLinksWithBackend(geometry, fields, {CpuGeometry, this});
+}
+absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLinksWithBackend(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    const LiquidPressureFields3D& fields,
+    boundary_internal::GeometryBackend backend
+) {
   if (geometry.cells.size() > capacities_.cells || geometry.faces.size() > capacities_.faces) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -723,7 +736,7 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
   Resize(bank.faces, geometry.faces.size());
   RecordHighWater();
   LinkStorage output{{bank.cells.values()}, {bank.faces.values()}};
-  const auto status = LinksCore(geometry, fields, {CpuGeometry, this}, output, true);
+  const auto status = LinksCore(geometry, fields, backend, output, true);
   if (!status.ok()) {
     return status;
   }

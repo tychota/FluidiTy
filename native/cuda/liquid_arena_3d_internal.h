@@ -11,6 +11,7 @@ struct LiquidArenaLedger3D {
   std::uint64_t next_generation = 1;
   std::size_t references = 1;
   int device_ordinal = 0;
+  bool runtime_failed = false;  // Job-wide poison; only teardown may drain/release afterward.
 };
 struct LiquidArenaRange3D {
   std::size_t offset = 0;

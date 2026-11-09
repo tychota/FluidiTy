@@ -11,6 +11,9 @@
 #include <vector>
 
 #include "../cuda/liquid_arena_3d_internal.h"
+#include "../cuda/liquid_arena_dispatch_3d.h"
+#include "../cuda/liquid_geometry_stages_3d.h"
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
@@ -450,6 +453,315 @@ TEST(CudaLiquidArena3D, GenerationExhaustionCannotReuseEarlierTicket) {
   EXPECT_EQ(cuda_internal::TakeLiquidArenaGeneration3D(ledger).status().code(), absl::StatusCode::kOutOfRange);
   EXPECT_EQ(ledger.next_generation, UINT64_MAX);
   EXPECT_EQ(cuda_internal::TakeLiquidArenaGeneration3D(ledger).status().code(), absl::StatusCode::kOutOfRange);
+}
+}  // namespace
+}  // namespace fluidity
+
+namespace fluidity {
+namespace {
+TEST(CudaLiquidGeometryStages3D, SignedSphereAndOrderedUnionMatchAnalyticAndCpu) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  const std::array<Vec3, 4> positions{{{0, 0, 0}, {3, 4, 0}, {-2, 0, 0}, {1, 0, 0}}};
+  const LiquidSceneField3D sphere = LiquidAnalyticSphere3D{{0, 0, 0}, 2};
+  std::array<double, 4> distances{};
+  ASSERT_TRUE(cuda_internal::SampleLiquidField3D(*arena, sphere, {}, positions, distances).ok());
+  const std::array expected{-2., 3., 0., -1.};
+  EXPECT_EQ(distances, expected);
+  std::array<LiquidParticleState3D, 2> particles{};
+  particles[0].world_position = {-1, 0, 0};
+  particles[1].world_position = {1, 0, 0};
+  const LiquidSceneField3D field = LiquidParticleSphereUnion3D{0.5};
+  ASSERT_TRUE(cuda_internal::SampleLiquidField3D(*arena, field, particles, positions, distances).ok());
+  EXPECT_DOUBLE_EQ(distances[0], 0.5);
+  EXPECT_DOUBLE_EQ(distances[3], -0.5);
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    EXPECT_NEAR(distances[i], liquid_step_internal::FieldDistance(field, particles, positions[i]), 2e-14);
+  }
+}
+TEST(CudaLiquidGeometryStages3D, CrossingWallAnchorUsesTimeAndBothRequestedSlabSides) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  ASSERT_TRUE(grid.ok());
+  std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count()), cpu_tags(tags.size());
+  std::vector<LiquidPrescribedWallSample3D> walls(tags.size()), cpu_walls(tags.size());
+  const auto anchor = grid->FaceSlot({FaceNormalAxis::kX, {1, 1, 1}});
+  ASSERT_TRUE(anchor.ok());
+  for (double coordinate : {0.5, 1.1, 1.5}) {
+    const LiquidObstacle3D obstacle = TranslatingSlab3D{{1, 0, 0}, coordinate, 0.2, {1, 2, 3}};
+    for (std::int64_t side : {-1, 1}) {
+      ASSERT_TRUE(cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), obstacle, side, tags, walls).ok());
+      ASSERT_TRUE(liquid_step_internal::FillFaceTags(grid->view(), obstacle, cpu_tags).ok());
+      ASSERT_TRUE(liquid_step_internal::FillWalls(grid->view(), obstacle, side, cpu_walls).ok());
+      EXPECT_EQ(tags[*anchor].side_tag, coordinate <= 1 ? 1 : -1);
+      EXPECT_EQ(tags[*anchor].structurally_eligible, coordinate != 1.1);
+      EXPECT_DOUBLE_EQ(walls[*anchor].unit_normal.x, static_cast<double>(side));
+      for (std::size_t i = 0; i < tags.size(); ++i) {
+        EXPECT_EQ(tags[i].side_tag, cpu_tags[i].side_tag);
+        EXPECT_EQ(tags[i].structurally_eligible, cpu_tags[i].structurally_eligible);
+        EXPECT_EQ(walls[i].available, cpu_walls[i].available);
+        EXPECT_EQ(walls[i].side_tag, cpu_walls[i].side_tag);
+        EXPECT_DOUBLE_EQ(walls[i].unit_normal.x, cpu_walls[i].unit_normal.x);
+        EXPECT_DOUBLE_EQ(walls[i].unit_normal.y, cpu_walls[i].unit_normal.y);
+        EXPECT_DOUBLE_EQ(walls[i].unit_normal.z, cpu_walls[i].unit_normal.z);
+        EXPECT_DOUBLE_EQ(walls[i].wall_velocity.x, cpu_walls[i].wall_velocity.x);
+        EXPECT_DOUBLE_EQ(walls[i].wall_velocity.y, cpu_walls[i].wall_velocity.y);
+        EXPECT_DOUBLE_EQ(walls[i].wall_velocity.z, cpu_walls[i].wall_velocity.z);
+      }
+    }
+  }
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kSmall);
+  ASSERT_TRUE(workspace.ok());
+  std::vector<double> velocities(tags.size(), 0);
+  std::vector<LiquidFaceValidity3D> validity(tags.size(), LiquidFaceValidity3D::kValid);
+  for (std::int64_t side : {-1, 1}) {
+    const LiquidObstacle3D start = TranslatingSlab3D{{1, 0, 0}, 0.5, 0.2, {1, 2, 3}};
+    const auto end = liquid_step_internal::ObstacleAtTime(start, 1);
+    ASSERT_TRUE(cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), start, side, tags, walls).ok());
+    const auto old_history =
+        workspace->SaveHistory({0, 0, velocities, validity, tags, walls}, LiquidVelocityTimeLevel3D::kOld);
+    ASSERT_TRUE(old_history.ok());
+    ASSERT_TRUE(cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), end, side, tags, walls).ok());
+    const auto new_history =
+        workspace->SaveHistory({1, 1, velocities, validity, tags, walls}, LiquidVelocityTimeLevel3D::kNew);
+    ASSERT_TRUE(new_history.ok());
+    EXPECT_EQ(old_history->face_tags[*anchor].side_tag, 1);
+    EXPECT_EQ(new_history->face_tags[*anchor].side_tag, -1);
+    EXPECT_DOUBLE_EQ(old_history->wall_samples[*anchor].unit_normal.x, static_cast<double>(side));
+    EXPECT_DOUBLE_EQ(new_history->wall_samples[*anchor].unit_normal.x, static_cast<double>(side));
+  }
+}
+TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  ASSERT_TRUE(grid.ok());
+  const std::array cells{CellIndex3D{1, 1, 1}};
+  std::vector<LiquidCenterDistance3D> centers;
+  std::vector<LiquidCornerDistance3D> corners;
+  for (int z = 0; z < 3; ++z) {
+    for (int y = 0; y < 3; ++y) {
+      for (int x = 0; x < 3; ++x) {
+        centers.push_back({{x, y, z}, x == 1 && y == 1 && z == 1 ? -0.5 : 0.5});
+        corners.push_back({{x, y, z}, -1});
+      }
+    }
+  }
+  const LiquidBoundaryGeometryViewInputs3D inputs{grid->view(), cells, centers, corners, {}, 0.01, 1000, 0};
+  auto frozen = cuda_internal::FreezeLiquidGeometry3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 1);
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 7}};
+  const std::array<double, 6> velocities{};
+  auto links = cuda_internal::BuildLiquidLinks3D(*arena, *frozen, {fields, velocities, 9}, *workspace);
+  ASSERT_TRUE(links.ok()) << links.status();
+  for (const auto& face : links->faces) {
+    EXPECT_DOUBLE_EQ(face.pressure_gradient_distance, 0.5);
+    EXPECT_DOUBLE_EQ(std::get<DirichletMacPressureLink3D>(face.pressure_link).exterior_pressure, 9);
+  }
+
+  // Independent derivative fixture: g=(0.5,0,0), H=(3,2,2), kappa=8.
+  for (auto& sample : centers) {
+    sample.signed_distance = 0.99;
+    if (sample.cell_index.x == 1 && sample.cell_index.y == 1 && sample.cell_index.z == 1) {
+      sample.signed_distance = -0.01;
+    }
+    if (sample.cell_index.x == 2 && sample.cell_index.y == 1 && sample.cell_index.z == 1) {
+      sample.signed_distance = 1.99;
+    }
+  }
+  auto capillary_inputs = inputs;
+  capillary_inputs.surface_tension = 0.072;
+  frozen = cuda_internal::FreezeLiquidGeometry3D(*arena, capillary_inputs, *workspace);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  EXPECT_NEAR(frozen->cells[0].curvature, 8, 2e-14);
+  EXPECT_NEAR(frozen->capillary_step_bound, std::sqrt(1000 / (4 * std::acos(-1.) * 0.072)), 1e-13);
+  links = cuda_internal::BuildLiquidLinks3D(*arena, *frozen, {fields, velocities, 3}, *workspace);
+  ASSERT_TRUE(links.ok()) << links.status();
+  EXPECT_EQ(links->lower_theta_regularization_count, 6);
+  for (const auto& face : links->faces) {
+    EXPECT_DOUBLE_EQ(face.pressure_gradient_distance, 0.05);
+    EXPECT_NEAR(std::get<DirichletMacPressureLink3D>(face.pressure_link).exterior_pressure, 3.576, 2e-14);
+  }
+  auto cpu = LiquidBoundaryWorkspace3D::Create(kSmall);
+  ASSERT_TRUE(cpu.ok());
+  auto cpu_geometry = cpu->Freeze(capillary_inputs);
+  ASSERT_TRUE(cpu_geometry.ok());
+  auto cpu_links = cpu->BuildLinks(*cpu_geometry, {fields, velocities, 3});
+  ASSERT_TRUE(cpu_links.ok());
+  EXPECT_DOUBLE_EQ(frozen->cells[0].curvature, cpu_geometry->cells[0].curvature);
+  for (std::size_t i = 0; i < links->faces.size(); ++i) {
+    EXPECT_DOUBLE_EQ(links->faces[i].pressure_gradient_distance, cpu_links->faces[i].pressure_gradient_distance);
+    EXPECT_DOUBLE_EQ(
+        std::get<DirichletMacPressureLink3D>(links->faces[i].pressure_link).exterior_pressure,
+        std::get<DirichletMacPressureLink3D>(cpu_links->faces[i].pressure_link).exterior_pressure
+    );
+  }
+  auto invalid = capillary_inputs;
+  invalid.step_duration = 2 * frozen->capillary_step_bound;
+  EXPECT_EQ(
+      cuda_internal::FreezeLiquidGeometry3D(*arena, invalid, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_DOUBLE_EQ(frozen->cells[0].curvature, 8);
+  auto invalid_fields = fields;
+  invalid_fields[0].previous_pressure = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(
+      cuda_internal::BuildLiquidLinks3D(*arena, *frozen, {invalid_fields, velocities, 3}, *workspace).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_NEAR(std::get<DirichletMacPressureLink3D>(links->faces[0].pressure_link).exterior_pressure, 3.576, 2e-14);
+  auto cut = inputs;
+  cut.obstacle = TranslatingHalfspace3D{{1, 0, 0}, 1.25, {0.2, 0, 0}};
+  auto clipped = cuda_internal::FreezeLiquidGeometry3D(*arena, cut, *workspace);
+  ASSERT_TRUE(clipped.ok()) << clipped.status();
+  EXPECT_NEAR(clipped->cells[0].fluid_volume, 0.75, 2e-14);
+  for (const auto& face : clipped->faces) {
+    if (face.face_index.axis != FaceNormalAxis::kX) {
+      EXPECT_NEAR(face.open_area, 0.75, 2e-14);
+    }
+  }
+#if defined(_WIN32) && defined(_DEBUG)
+  std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());
+  std::vector<LiquidPrescribedWallSample3D> walls(tags.size());
+  const LiquidSceneField3D sphere = LiquidAnalyticSphere3D{{}, 2};
+  ASSERT_TRUE(cuda_internal::SampleLiquidField3D(*arena, sphere, {}, Vec3{3, 0, 0}).ok());
+  ASSERT_TRUE(cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), cut.obstacle, 0, tags, walls).ok());
+  const auto before = arena->metrics();
+  bool geometry_ok = false, links_ok = false, field_ok = false, faces_ok = false, rejected = false;
+  arena_allocations = 0;
+  arena_frees = 0;
+  arena_previous_hook = _CrtSetAllocHook(ArenaAllocationHook);
+  {
+    const auto trial = cuda_internal::FreezeLiquidGeometry3D(*arena, capillary_inputs, *workspace);
+    geometry_ok = trial.ok();
+    if (trial.ok()) {
+      links_ok = cuda_internal::BuildLiquidLinks3D(*arena, *trial, {fields, velocities, 3}, *workspace).ok();
+    }
+    field_ok = cuda_internal::SampleLiquidField3D(*arena, sphere, {}, Vec3{3, 0, 0}).ok();
+    faces_ok = cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), cut.obstacle, 0, tags, walls).ok();
+    rejected = cuda_internal::FreezeLiquidGeometry3D(*arena, invalid, *workspace).status().code()
+        == absl::StatusCode::kFailedPrecondition;
+  }
+  _CrtSetAllocHook(arena_previous_hook);
+  EXPECT_TRUE(geometry_ok && links_ok && field_ok && faces_ok && rejected);
+  EXPECT_EQ(arena_allocations, 0);
+  EXPECT_EQ(arena_frees, 0);
+  ExpectNoReservationChange(before, arena->metrics());
+#endif
+}
+}  // namespace
+}  // namespace fluidity
+
+namespace fluidity {
+namespace {
+TEST(CudaLiquidGeometryStages3D, RuntimeSubmissionFailureIsFatalAndCannotPublishPreparedCandidate) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  auto initial = Fixture();
+  ASSERT_TRUE(arena->Initialize(initial).ok());
+  const auto original = arena->AcquireCommitted()->identity();
+  auto accepted = initial.clock;
+  accepted.time = 0.01;
+  accepted.epoch = 1;
+  accepted.accepted_step_ordinal = 1;
+  accepted.substep_ordinal = 1;
+  ASSERT_TRUE(arena->PreparePublication(initial, accepted).ok());
+  const auto before = arena->metrics();
+  // Inject only the shared dispatch result, without inducing a process-wide CUDA
+  // fault. Even a runtime allocation error is fatal after submission begins.
+  EXPECT_EQ(arena->RecordRuntimeResult(cudaErrorMemoryAllocation).code(), absl::StatusCode::kInternal);
+  EXPECT_EQ(arena->RecordRuntimeResult(cudaSuccess).code(), absl::StatusCode::kInternal);
+  arena->CommitPublication();
+  EXPECT_EQ(arena->AcquireCommitted()->identity(), original);
+  EXPECT_TRUE(arena->range(CudaLiquidRange3D::kSamplePositions).pinned.empty());
+  double distance = 29;
+  const Vec3 position{};
+  EXPECT_EQ(
+      cuda_internal::SampleLiquidField3D(*arena, LiquidAnalyticSphere3D{{}, 1}, {}, {&position, 1}, {&distance, 1})
+          .code(),
+      absl::StatusCode::kInternal
+  );
+  EXPECT_DOUBLE_EQ(distance, 29);
+  auto growth = kSmall;
+  growth.particles = 64;
+  arena->DiscardPublication();
+  EXPECT_EQ(arena->PrepareGrowth(growth, initial).code(), absl::StatusCode::kInternal);
+  ExpectNoReservationChange(before, arena->metrics());
+}
+TEST(CudaLiquidGeometryStages3D, InvalidAndOverflowedSamplesPreserveOutputsAndAllowValidReuse) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  std::array<Vec3, 1> positions{Vec3{1, 0, 0}};
+  std::array<double, 1> output{42};
+  EXPECT_EQ(
+      cuda_internal::SampleLiquidField3D(*arena, LiquidParticleSphereUnion3D{1}, {}, positions, output).code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(output[0], 42);
+  positions[0].x = std::numeric_limits<double>::max();
+  EXPECT_EQ(
+      cuda_internal::SampleLiquidField3D(
+          *arena,
+          LiquidAnalyticSphere3D{{-std::numeric_limits<double>::max(), 0, 0}, 1},
+          {},
+          positions,
+          output
+      )
+          .code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(output[0], 42);
+  positions[0].x = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(
+      cuda_internal::SampleLiquidField3D(*arena, LiquidAnalyticSphere3D{{}, 1}, {}, positions, output).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(output[0], 42);
+  positions[0] = {3, 0, 0};
+  ASSERT_TRUE(cuda_internal::SampleLiquidField3D(*arena, LiquidAnalyticSphere3D{{}, 1}, {}, positions, output).ok());
+  EXPECT_EQ(output[0], 2);
+  const auto oversized = cuda_internal::CheckedLiquidRange3D<double>(
+      *arena,
+      CudaLiquidRange3D::kSampleDistances,
+      std::numeric_limits<std::size_t>::max()
+  );
+  EXPECT_EQ(oversized.status().code(), absl::StatusCode::kResourceExhausted);
+  ASSERT_TRUE(cuda_internal::SampleLiquidField3D(
+                  *arena,
+                  LiquidAnalyticSphere3D{{}, 1},
+                  {},
+                  std::span<const Vec3>{},
+                  std::span<double>{}
+  )
+                  .ok());
+}
+}  // namespace
+}  // namespace fluidity
+
+namespace fluidity {
+namespace {
+TEST(CudaLiquidGeometryStages3D, OverflowedFaceDistanceCannotPublishEligibility) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  auto grid = SparseMacGrid3D::Create({{1.1e308, 1.1e308, 1.1e308}, 1e292}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count(), {99, false});
+  const double component = 1 / std::sqrt(3.);
+  const LiquidObstacle3D obstacle = TranslatingHalfspace3D{{component, component, component}, 0, {}};
+  const auto result = cuda_internal::SampleLiquidFaces3D(*arena, grid->view(), obstacle, 0, tags, {});
+  EXPECT_EQ(result.code(), absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(tags[0].side_tag, 99);
+  EXPECT_FALSE(tags[0].structurally_eligible);
 }
 }  // namespace
 }  // namespace fluidity

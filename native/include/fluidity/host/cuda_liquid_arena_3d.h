@@ -65,9 +65,11 @@ enum class CudaLiquidRange3D : std::size_t {
   kPressureRows,
   kPressureOutput,
   kPressureState,
+  kSampleQuery,  // One LiquidSampleQuery3D; frozen field/obstacle and active counts.
+  kSampleFaceResults,  // LiquidSampleFaceResult3D for each configured face.
   // Vec3/double arrays of 8*max(particles,cells,faces) elements and full-capacity
-  // LiquidParticleState3D source staging, respectively. Field descriptors remain
-  // adapter-owned POD inputs in 6C; no numeric host fallback is supplied here.
+  // LiquidParticleState3D-sized particle staging, respectively. Field sampling
+  // uses its leading particle-capacity Vec3 records for ordered sphere centers.
   kSamplePositions,
   kSampleDistances,
   kSampleParticles,
@@ -208,7 +210,8 @@ class CudaLiquidArena3D {
       const LiquidState3D* previous_state = nullptr
   );
   // Named scratch range; invalid enum returns an empty view. No writes to an
-  // immutable state bank are exposed here. Borrows end on growth commit/move.
+  // immutable state bank are exposed here. Borrows end on growth commit/move or
+  // runtime poison, after which this method returns an empty view.
   CudaLiquidRangeView3D range(CudaLiquidRange3D name) const;
   // Configured record extents, including unused capacity.
   LiquidStateCapacities3D capacities() const;
@@ -216,11 +219,18 @@ class CudaLiquidArena3D {
   CudaLiquidArenaMetrics3D metrics() const;
   // Explicit nonblocking CUDA stream and disable-timing completion event handles.
   // The caller must keep the selected device current and fence its own work before
-  // reusing pinned staging; event contents change after every arena fence.
+  // reusing pinned staging; event contents change after every arena fence. All
+  // runtime results must pass RecordRuntimeResult; raw handles do not bypass poison.
   void* stream() const;
   void* completion_event() const;
   // Fences only this arena's stream; propagates sticky CUDA errors as Internal.
   absl::Status Synchronize() const;
+  // Shared numeric-dispatch gate. Pass the exact CUDA runtime result (0 succeeds).
+  // Any submission/fence error permanently poisons this job and returns Internal,
+  // including runtime memory errors. Zero checks readiness before staging writes.
+  // Never reset after failure: possibly in-flight pinned storage remains owned,
+  // inaccessible via range(), until outside-attempt destruction drains the stream.
+  absl::Status RecordRuntimeResult(int cuda_result) const;
 
  private:
   struct Impl;

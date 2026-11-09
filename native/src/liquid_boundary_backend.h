@@ -1,6 +1,7 @@
 #pragma once
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/base/liquid_boundary_math.h"
+#include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 namespace fluidity::boundary_internal {
 // The orchestrator validates sample ownership and order, then delegates every
@@ -8,6 +9,24 @@ namespace fluidity::boundary_internal {
 struct GeometryBackend {
   absl::StatusOr<GeometryOutput> (*compute)(void*, const GeometryInput&);
   void* context;
+};
+// Internal typed seam preserves the bounded workspace publication and validation.
+struct BoundedGeometryAccess {
+  static absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> Freeze(
+      LiquidBoundaryWorkspace3D& workspace,
+      const LiquidBoundaryGeometryViewInputs3D& inputs,
+      GeometryBackend backend
+  ) {
+    return workspace.FreezeWithBackend(inputs, backend);
+  }
+  static absl::StatusOr<LiquidPressureProblemView3D> BuildLinks(
+      LiquidBoundaryWorkspace3D& workspace,
+      const FrozenLiquidBoundaryGeometryView3D& geometry,
+      const LiquidPressureFields3D& fields,
+      GeometryBackend backend
+  ) {
+    return workspace.BuildLinksWithBackend(geometry, fields, backend);
+  }
 };
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);
 absl::StatusOr<LiquidPressureProblem3D>
