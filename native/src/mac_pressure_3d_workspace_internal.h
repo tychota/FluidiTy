@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "absl/status/statusor.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "mac_pressure_3d_multigrid.h"
 
 namespace fluidity::pressure_internal {
@@ -146,6 +147,7 @@ struct PreparedMacPressureUploadView3D {
   // CUDA preparation reads this span without performing a host pressure solve.
   std::span<double> initial_pressure;
   MacPressureStoppingCriteria3D stopping;
+  MacPressureFrozenMeasurement3D frozen_measurement;
 };
 absl::StatusOr<PreparedMacPressureUploadView3D> PrepareBoundedMacPressureUpload3D(
     SparseMacGridView3D grid,

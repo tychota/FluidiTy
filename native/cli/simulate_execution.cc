@@ -39,6 +39,14 @@ std::string Number(double value) {
   );
   return {buffer.data(), result.ptr};
 }
+std::string OptionalNumber(std::optional<double> value) {
+  return value.has_value() ? Number(*value) : "null";
+}
+std::string ClockMembers(const LiquidClock3D& clock) {
+  return "\"frame\":" + std::to_string(clock.frame_ordinal) + ",\"substep\":" + std::to_string(clock.substep_ordinal)
+      + ",\"epoch\":" + std::to_string(clock.epoch)
+      + ",\"accepted_step\":" + std::to_string(clock.accepted_step_ordinal) + ",\"time_seconds\":" + Number(clock.time);
+}
 std::string Hex(const LiquidDigest3D& digest) {
   return LiquidDigestHex3D(digest).data();
 }
@@ -67,10 +75,7 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   if (!bytes.ok()) {
     return bytes.status();
   }
-  const auto& clock = state.clock;
-  std::string result = "\"frame\":" + std::to_string(clock.frame_ordinal)
-      + ",\"substep\":" + std::to_string(clock.substep_ordinal) + ",\"epoch\":" + std::to_string(clock.epoch)
-      + ",\"accepted_step\":" + std::to_string(clock.accepted_step_ordinal) + ",\"time_seconds\":" + Number(clock.time)
+  std::string result = ClockMembers(state.clock)
       + ",\"state_digest\":" + JsonString(Hex(LiquidContentDigest3D(bytes->values()))) + ",\"particle_count\":"
       + std::to_string(state.particles.size()) + ",\"block_count\":" + std::to_string(state.blocks.size())
       + ",\"cell_count\":" + std::to_string(state.cells.size()) + ",\"face_count\":"
@@ -206,11 +211,94 @@ absl::StatusOr<LiquidState3D> InitialState(const Command& command, LiquidResolve
   EXEC_TRY(ValidateLiquidState3D(state));
   return state;
 }
+// Reject unusable diagnostics before serializing a settled physical witness.
+// The finite and sign checks do not feed back into the numerical attempt.
+absl::StatusOr<std::string>
+AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepMeasurement3D& measurement) {
+  const double dt = measurement.accepted_dt_seconds;
+  if (measurement.accepted_clock != state.clock || !std::isfinite(dt) || dt <= 0) {
+    return absl::DataLossError("");
+  }
+  const auto capillary_bound = measurement.step_start_capillary_bound_seconds;
+  if (capillary_bound && (!std::isfinite(*capillary_bound) || *capillary_bound < dt)) {
+    return absl::DataLossError("");
+  }
+  const auto& pressure = measurement.pressure;
+  const double pressure_volume = measurement.step_start_pressure_cell_volume_m3;
+  const auto nonnegative = [](double value) {
+    return std::isfinite(value) && value >= 0;
+  };
+  if (!nonnegative(pressure.true_residual_l2) || !nonnegative(measurement.pressure_rhs_l2_m3_per_s)
+      || !nonnegative(pressure.max_volume_scaled_residual) || !nonnegative(pressure.max_cell_constraint_defect)
+      || !nonnegative(pressure_volume) || state.cells.values().empty() != (pressure_volume == 0)) {
+    return absl::DataLossError("");
+  }
+  const auto& piston = measurement.piston_pose;
+  const double inward_flux = measurement.step_start_inward_piston_flux_m3_per_s;
+  if (!std::isfinite(inward_flux) || (!piston && inward_flux != 0)
+      || (piston && (!std::isfinite(piston->step_start_low_x_m) || !std::isfinite(piston->step_end_low_x_m)))) {
+    return absl::DataLossError("");
+  }
+  const auto piston_start = piston ? std::optional{piston->step_start_low_x_m} : std::nullopt;
+  const auto piston_end = piston ? std::optional{piston->step_end_low_x_m} : std::nullopt;
+  return "\"accepted_measurement\":{\"accepted_dt_seconds\":" + Number(dt) + ",\"step_start_capillary_bound_seconds\":"
+      + OptionalNumber(capillary_bound) + ",\"pressure_iterations\":" + std::to_string(pressure.iteration_count)
+      + ",\"pressure_true_residual_l2_m3_per_s\":" + Number(pressure.true_residual_l2)
+      + ",\"pressure_rhs_l2_m3_per_s\":" + Number(measurement.pressure_rhs_l2_m3_per_s)
+      + ",\"pressure_max_volume_scaled_residual_per_s\":" + Number(pressure.max_volume_scaled_residual)
+      + ",\"pressure_max_constraint_defect_per_s\":" + Number(pressure.max_cell_constraint_defect)
+      + ",\"step_start_pressure_cell_volume_m3\":" + Number(pressure_volume)
+      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux) + ",\"step_start_piston_low_x_m\":"
+      + OptionalNumber(piston_start) + ",\"step_end_piston_low_x_m\":" + OptionalNumber(piston_end) + '}';
+}
+std::string GeometryMembers(const LiquidState3D& state) {
+  std::string members = "\"geometry\":{\"particles\":[";
+  const char* separator = "";
+  for (const auto& particle : state.particles.values()) {
+    const auto& position = particle.world_position;
+    members += separator
+        + ("{\"id\":" + std::to_string(particle.id) + ",\"world_position_m\":[" + Number(position.x) + ','
+           + Number(position.y) + ',' + Number(position.z) + "]}");
+    separator = ",";
+  }
+  return members + "]}";
+}
+std::string_view AttemptDispositionName(LiquidAttemptDisposition3D disposition) {
+  switch (disposition) {
+    case LiquidAttemptDisposition3D::kAccepted:
+      return "accepted";
+    case LiquidAttemptDisposition3D::kRetryDt:
+      return "retry_dt";
+    case LiquidAttemptDisposition3D::kCapacity:
+      return "capacity";
+    case LiquidAttemptDisposition3D::kFatal:
+      return "fatal";
+  }
+  return "fatal";
+}
+std::string AttemptMembers(const LiquidAttemptMeasurement3D& attempt, bool frame_settled, std::size_t settled_pass) {
+  const bool retained = frame_settled && attempt.disposition == LiquidAttemptDisposition3D::kAccepted
+      && attempt.capacity_pass == settled_pass;
+  const bool restarted_frame =
+      attempt.disposition == LiquidAttemptDisposition3D::kCapacity && attempt.capacity_pass < settled_pass;
+  return "\"target_frame\":" + std::to_string(attempt.start_clock.frame_ordinal + 1) + ",\"attempt_in_frame\":"
+      + std::to_string(attempt.attempt_in_frame) + ",\"capacity_pass\":" + std::to_string(attempt.capacity_pass)
+      + ",\"start_clock\":{" + ClockMembers(attempt.start_clock) + '}' + ",\"attempted_dt_seconds\":"
+      + Number(attempt.attempted_dt_seconds) + ",\"work_wall_seconds\":" + Number(attempt.work_wall_seconds)
+      + ",\"outcome\":" + JsonString(AttemptDispositionName(attempt.disposition))
+      + ",\"failure_code\":" + JsonString(absl::StatusCodeToString(attempt.failure_code)) + ",\"retry_dt_seconds\":"
+      + OptionalNumber(attempt.retry_dt_seconds) + ",\"retained\":" + (retained ? "true" : "false")
+      + ",\"restarted_frame\":" + (restarted_frame ? "true" : "false");
+}
 struct Observations {
   const Command& command;
   const SimulateJob& job;
   std::vector<std::string> trace;
   std::optional<std::string> selected;
+  std::vector<LiquidAttemptMeasurement3D> attempts;
+  static void ObserveAttempt(void* context, const LiquidAttemptMeasurement3D& attempt) {
+    static_cast<Observations*>(context)->attempts.push_back(attempt);
+  }
   static absl::Status
   Observe(void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
     auto& self = *static_cast<Observations*>(context);
@@ -228,7 +316,18 @@ struct Observations {
       return members.status();
     }
     if (self.command.trace) {
-      self.trace.push_back(*members);
+      if (!diagnostics.accepted_measurement) {
+        return absl::DataLossError("");
+      }
+      const auto measurement = AcceptedMeasurementMembers(state, *diagnostics.accepted_measurement);
+      if (!measurement.ok()) {
+        return measurement.status();
+      }
+      std::string trace = *members + ',' + *measurement;
+      if (self.command.trace_geometry) {
+        trace += ',' + GeometryMembers(state);
+      }
+      self.trace.push_back(std::move(trace));
     }
     if (self.command.kind == CommandKind::kStep
         || (self.command.frame == state.clock.frame_ordinal && self.command.substep == state.clock.substep_ordinal)) {
@@ -610,7 +709,18 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   diagnostic->cause = "completed state, point publication or deterministic replay verification failed";
   EXEC_TRY(complete_frame(!read_only && starting.clock.frame_ordinal == 0));
   EXEC_TRY(job.CheckForJobStopRequest());
-  Observations observations{command, job, {}, {}};
+  Observations observations{
+      .command = command,
+      .job = job,
+      .trace = {},
+      .selected = {},
+      .attempts = {},
+  };
+  const LiquidProgressObserver3D observer{
+      .context = &observations,
+      .observe = &Observations::Observe,
+      .observe_attempt = command.trace && command.kind == CommandKind::kRun ? &Observations::ObserveAttempt : nullptr,
+  };
   for (std::uint64_t frame = starting.clock.frame_ordinal; frame < target_frame;) {
     EXEC_TRY(job.CheckForJobStopRequest());
     ++frame;
@@ -620,7 +730,14 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
     }
     observations.trace.clear();
     observations.selected.reset();
-    const auto advanced = scheduler->AdvanceFrame(*time, {&observations, &Observations::Observe});
+    observations.attempts.clear();
+    const auto advanced = scheduler->AdvanceFrame(*time, observer);
+    // The attempt ledger includes work even when the schedule rolls back or
+    // cannot finish. Emit it before the terminal error or settled witnesses.
+    const auto settled_pass = scheduler->diagnostics().capacity_replays;
+    for (const auto& attempt : observations.attempts) {
+      EXEC_TRY(writer.Emit("attempt", AttemptMembers(attempt, advanced.ok(), settled_pass)));
+    }
     const bool stopped_after_one_substep = step && absl::IsCancelled(advanced) && observations.selected;
     if (!advanced.ok() && !stopped_after_one_substep) {
       return advanced;

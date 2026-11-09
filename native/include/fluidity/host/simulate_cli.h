@@ -37,6 +37,7 @@ struct Command {
   bool frame_start_explicit = false;
   bool resume = false;
   bool trace = false;
+  bool trace_geometry = false;  // Run-only; implies accepted and attempt tracing.
   bool preview = false;
 };
 // Stable protocol fields identify the failing input independently of localized

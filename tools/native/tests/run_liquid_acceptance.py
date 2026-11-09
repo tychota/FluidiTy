@@ -149,7 +149,108 @@ def verify_extent(record):
     require(record.get("source_fractional_remainders") == [], "unexpected source remainder")
 
 
-def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME_ORDINALS):
+def advanced_clock(start_clock, dt, target_time):
+    frame, substep, epoch, step, start_time = start_clock
+    accepted_time = start_time + dt
+    if dt == target_time - start_time and math.nextafter(accepted_time, target_time) == target_time:
+        accepted_time = target_time
+    if accepted_time == target_time:
+        return frame + 1, 0, epoch + 1, step + 1, accepted_time
+    return frame, substep + 1, epoch + 1, step + 1, accepted_time
+
+
+def verify_accepted_measurement(record, previous_clock, target_time, *, tank):
+    measurement = record.get("accepted_measurement")
+    require(isinstance(measurement, dict), "missing accepted_measurement")
+    dt = measurement.get("accepted_dt_seconds")
+    require(finite_number(dt) and 0 < dt <= target_time - previous_clock[-1]
+            and advanced_clock(previous_clock, dt, target_time) == clock(record), "invalid accepted_dt_seconds")
+    capillary_bound = measurement.get("step_start_capillary_bound_seconds")
+    require("step_start_capillary_bound_seconds" in measurement
+            and (capillary_bound is None or finite_number(capillary_bound) and capillary_bound >= dt),
+            "invalid step_start_capillary_bound_seconds")
+    require(integer(measurement, "pressure_iterations") <= 256, "invalid pressure_iterations")
+    fields = ("pressure_rhs_l2_m3_per_s", "pressure_true_residual_l2_m3_per_s",
+              "pressure_max_volume_scaled_residual_per_s", "pressure_max_constraint_defect_per_s",
+              "step_start_pressure_cell_volume_m3")
+    for field in fields:
+        value = measurement.get(field)
+        require(finite_number(value) and value >= 0, f"invalid {field}")
+    rhs, residual, scaled, defect, volume = (measurement[field] for field in fields)
+    require(residual <= 2e-6 + 2e-6 * rhs, "pressure_true_residual_l2_m3_per_s exceeds solver bound")
+    require(scaled <= 2e-5, "pressure_max_volume_scaled_residual_per_s exceeds solver bound")
+    require(defect <= 2e-5, "pressure_max_constraint_defect_per_s exceeds solver bound")
+    require((volume == 0) == (record["cell_count"] == 0), "step_start_pressure_cell_volume_m3 disagrees with rows")
+    for pose_field in ("step_start_piston_low_x_m", "step_end_piston_low_x_m"):
+        require(pose_field in measurement
+                and (finite_number(measurement[pose_field]) if tank else measurement[pose_field] is None),
+                f"invalid {pose_field}")
+    piston_flux = measurement.get("step_start_inward_piston_flux_m3_per_s")
+    require(finite_number(piston_flux) and (tank or piston_flux == 0),
+            "invalid step_start_inward_piston_flux_m3_per_s")
+
+
+def verify_attempt_ledger(attempts, traces, frame_start, target_frame):
+    """Reconcile actual work and survivor receipts for one settled frame."""
+    require(attempts and traces, "missing attempt ledger or accepted trace")
+    target_time = target_frame / FRAMES_PER_SECOND
+    settled_pass = integer(traces[-1], "capacity_replays")
+    expected_start = frame_start
+    active_pass = accepted_attempts = dt_retries = retries_this_step = trace_index = 0
+    next_retry_dt = None
+    for attempt_index, attempt in enumerate(attempts, start=1):
+        require(attempt.get("event") == "attempt", "invalid attempt ledger event")
+        for field, expected in (
+            ("attempt_in_frame", attempt_index), ("target_frame", target_frame), ("capacity_pass", active_pass)
+        ):
+            require(type(attempt.get(field)) is int and attempt[field] == expected, f"wrong attempt ledger {field}")
+        start = attempt.get("start_clock")
+        require(isinstance(start, dict) and clock(start) == expected_start, "wrong attempt ledger start clock")
+        dt = attempt.get("attempted_dt_seconds")
+        work = attempt.get("work_wall_seconds")
+        require(finite_number(dt) and 0 < dt <= target_time - expected_start[-1], "wrong attempt ledger duration")
+        require(next_retry_dt is None or dt == next_retry_dt, "wrong attempt ledger retry duration")
+        require(finite_number(work) and work >= 0, "invalid attempt ledger work time")
+        outcome = attempt.get("outcome")
+        retained = outcome == "accepted" and active_pass == settled_pass
+        restarted = outcome == "capacity" and active_pass < settled_pass
+        require(attempt.get("retained") is retained and attempt.get("restarted_frame") is restarted,
+                "wrong attempt ledger retention or restart")
+        require("retry_dt_seconds" in attempt, "missing attempt ledger retry duration")
+        retry_dt = attempt["retry_dt_seconds"]
+        next_retry_dt = None
+        if outcome == "retry_dt":
+            require(attempt.get("failure_code") == "ABORTED" and retries_this_step < 2
+                    and finite_number(retry_dt) and retry_dt == dt * 0.5
+                    and expected_start[-1] + retry_dt > expected_start[-1], "invalid attempt ledger retry")
+            next_retry_dt = retry_dt
+            dt_retries += 1
+            retries_this_step += 1
+            continue
+        require(retry_dt is None, "unexpected attempt ledger retry duration")
+        retries_this_step = 0
+        if restarted:
+            require(attempt.get("failure_code") == "RESOURCE_EXHAUSTED", "invalid attempt ledger capacity failure")
+            active_pass += 1
+            expected_start = frame_start
+            continue
+        require(outcome == "accepted" and attempt.get("failure_code") == "OK", "invalid settled attempt ledger outcome")
+        accepted_attempts += 1
+        expected_start = advanced_clock(expected_start, dt, target_time)
+        if retained:
+            require(trace_index < len(traces), "attempt ledger has an extra retained acceptance")
+            trace = traces[trace_index]
+            require(clock(trace) == expected_start and trace["accepted_measurement"]["accepted_dt_seconds"] == dt,
+                    "attempt ledger differs from accepted clock or duration")
+            require(trace["attempts"] == attempt_index and trace["accepted_attempts"] == accepted_attempts
+                    and trace["dt_retries"] == dt_retries and trace["capacity_replays"] == active_pass,
+                    "attempt ledger differs from accepted diagnostic counts")
+            trace_index += 1
+    require(trace_index == len(traces) and active_pass == settled_pass and expected_start[:2] == (target_frame, 0),
+            "incomplete attempt ledger")
+
+
+def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME_ORDINALS, *, tank_layout=False):
     final = records[-1]
     backend = authored_scene_identity["backend"]
     require(final.get("event") == "result" and final.get("command") == "run", "missing successful run result")
@@ -169,6 +270,9 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
     previous_dt_retry_count = 0
     last_clock = None
     last_trace = None
+    frame_start = None
+    frame_attempts = []
+    frame_traces = []
     for record in records[:-1]:
         event = record["event"]
         if event == "heartbeat":
@@ -193,10 +297,18 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
             verify_snapshot_receipt(record, backend)
             manifest_clock = clock(frames[frame_ordinal])
             require(manifest_clock == (last_clock or (0, 0, 0, 0, 0.0)), "publication and manifest clocks differ")
-            last_clock = manifest_clock
+            if published_count:
+                verify_attempt_ledger(frame_attempts, frame_traces, frame_start, frame_ordinal)
+            frame_start = last_clock = manifest_clock
+            frame_attempts.clear()
+            frame_traces.clear()
             published_count += 1
             accepted_trace_count = 0
             previous_dt_retry_count = 0
+            continue
+        if event == "attempt":
+            require(0 < published_count < len(frame_ordinals) and not frame_traces, "attempt ledger outside frame")
+            frame_attempts.append(record)
             continue
         require(event == "trace" and record.get("published") is False, "unexpected run event")
         require(0 < published_count < len(frame_ordinals), "trace outside expected run frames")
@@ -212,6 +324,10 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
         else:
             require(frame == published_count - 1 and time < published_count / FRAMES_PER_SECOND, "wrong interior trace clock")
         verify_extent(record)
+        verify_accepted_measurement(
+            record, last_clock, published_count / FRAMES_PER_SECOND, tank=tank_layout,
+        )
+        frame_traces.append(record)
         accepted_trace_count += 1
         dt_retry_count = integer(record, "dt_retries")
         require(dt_retry_count <= 2, "pressure retry bound exceeded")
@@ -282,6 +398,25 @@ def verify_tank_layout(frames, solver_records):
         if record["event"] in ("trace", "result"):
             for field, count in expected.items():
                 require(integer(record, field) == count, f"unexpected tank-layout {field}")
+    traces = [record for record in solver_records if record["event"] == "trace"]
+    require(bool(traces), "missing tank-layout accepted trace")
+    first = traces[0]["accepted_measurement"]
+    # Two unit y-z faces at the low-x piston move at +0.125 m/s.
+    # Four selected unit-base cells start with liquid height 0.75 m.
+    require(first["step_start_inward_piston_flux_m3_per_s"] == 0.25, "wrong first inward piston flux")
+    require(first["step_start_pressure_cell_volume_m3"] == 3, "wrong first frozen pressure volume")
+    require(first["step_start_piston_low_x_m"] == -1, "wrong first piston start pose")
+    require(first["step_end_piston_low_x_m"] == -1 + 0.125 * first["accepted_dt_seconds"],
+            "wrong first piston end pose")
+    for trace in traces:
+        particles = trace.get("geometry", {}).get("particles")
+        require(isinstance(particles, list) and len(particles) == 1, "missing accepted geometry particles")
+        require(integer(particles[0], "id") == 1, "wrong geometry particle ID")
+        position = particles[0].get("world_position_m")
+        require(isinstance(position, list) and len(position) == 3 and all(map(finite_number, position)),
+                "invalid accepted world position")
+    require(traces[-1]["geometry"]["particles"][0]["world_position_m"] == frames[-1]["points"][0]["world_position"],
+            "settled trace geometry differs from verified points")
     for frame in frames:
         points = frame["points"]
         require(len(points) == 1 and integer(points[0], "id") == 1, "wrong tank-layout point inventory")
@@ -360,7 +495,8 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
     records = run_child(
         output, "simulate-run", solver_executable_path, "run", "--stage", "simulate", "--scene", scene,
         "--initial-state", seed,
-        "--backend", backend, "--cache", cache, "--frame-end", last_frame, "--trace", timeout=180,
+        "--backend", backend, "--cache", cache, "--frame-end", last_frame,
+        "--trace-geometry" if tank_layout else "--trace", timeout=180,
     )
     before = snapshot(cache)
     fingerprint = authored_scene_identity["resolved_fingerprint"]
@@ -379,7 +515,7 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
             "unexpected on-disk committed-frame inventory")
     require((cache / "resolved.flrs").read_bytes() == scene.read_bytes(), "cache resolved scene differs from authored bytes")
     verify_frames(frames, authored_scene_identity, frame_ordinals)
-    final = verify_solver(records, frames, authored_scene_identity, frame_ordinals)
+    final = verify_solver(records, frames, authored_scene_identity, frame_ordinals, tank_layout=tank_layout)
     if tank_layout:
         measurements = verify_tank_layout(frames, records)
         verify_tank_refusals(output, solver_executable_path, backend, scene, seed)
