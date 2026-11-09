@@ -8,6 +8,9 @@
 #include "fluidity/host/liquid_state_3d.h"
 
 namespace fluidity {
+namespace pressure_internal {
+struct BoundedCudaPressureAccess3D;
+}
 // Read-only projection in input cell/face order. Units and diagnostics match
 // MacPressureProjection3D, including original residual and physical defect at
 // every gauge row. Borrows survive all rejected attempts; the next successful
@@ -40,7 +43,7 @@ struct MacPressureWorkspaceBytes3D {
 // ResourceExhausted. Both zero capacities reserve zero bytes. No allocation.
 absl::StatusOr<MacPressureWorkspaceBytes3D>
 QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_capacity);
-// Single-threaded fixed CPU owner. Only Create/move/destruction may allocate or
+// Single-threaded fixed host owner. Only Create/move/destruction may allocate or
 // free. Every attempted projection, including rejection and result destruction,
 // uses inline status codes and preallocated checked spans. Format detailed
 // diagnostics outside physical attempts. Scratch addresses do not escape.
@@ -67,6 +70,7 @@ class MacPressureWorkspace3D {
 
  private:
   friend class LiquidStepWorkspace3D;
+  friend struct pressure_internal::BoundedCudaPressureAccess3D;
   MacPressureWorkspace3D() = default;
   struct ProjectionBank {
     LiquidRecords3D<double> pressures;

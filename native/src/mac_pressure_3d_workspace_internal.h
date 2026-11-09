@@ -142,6 +142,8 @@ BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacP
 struct PreparedMacPressureUploadView3D {
   PreparedMacPressureView3D system;
   MacPressureHierarchyView3D hierarchy;
+  // Gauge-adjusted Pa; mutable FP64 accumulated restart base for the CPU solver.
+  // CUDA preparation reads this span without performing a host pressure solve.
   std::span<double> initial_pressure;
   MacPressureStoppingCriteria3D stopping;
 };
