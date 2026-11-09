@@ -226,6 +226,12 @@ class CudaLiquidArena3D {
   // runtime results must pass RecordRuntimeResult; raw handles do not bypass poison.
   void* stream() const;
   void* completion_event() const;
+  // Begin/end a measured interval on the current explicit stream. End fences and
+  // returns finite nonnegative elapsed milliseconds; intervals include host gaps.
+  // Both use reserved events, allocate nothing, and poison on runtime failure.
+  // End without Begin is FailedPrecondition. Growth starts a fresh interval owner.
+  absl::Status BeginDeviceTimeline();
+  absl::StatusOr<float> EndDeviceTimeline();
   // Fences only this arena's stream; propagates sticky CUDA errors as Internal.
   absl::Status Synchronize() const;
   // Shared numeric-dispatch gate. Pass the exact CUDA runtime result (0 succeeds).

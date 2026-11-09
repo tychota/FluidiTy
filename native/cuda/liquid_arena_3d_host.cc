@@ -296,6 +296,13 @@ absl::StatusOr<LiquidArenaStorage3D*> BuildStorage(LiquidArenaLedger3D& ledger, 
     if (!status.ok()) {
       return status;
     }
+    for (auto& event : storage->timeline_events) {
+      ++metrics.event_creations;
+      status = RuntimeResult(*storage, cudaEventCreate(&event));
+      if (!status.ok()) {
+        return status;
+      }
+    }
     status = RuntimeResult(
         *storage,
         cuda_internal::LiquidArenaRuntimeCalls()
@@ -491,6 +498,15 @@ bool DrainAndReleaseResources(LiquidArenaStorage3D& storage) {
       return false;
     }
     storage.graph = nullptr;
+  }
+  for (auto& event : storage.timeline_events) {
+    if (event) {
+      ++metrics.event_destructions;
+      if (!CleanupSucceeded(storage, cudaEventDestroy(event))) {
+        return false;
+      }
+      event = nullptr;
+    }
   }
   if (storage.completion) {
     ++metrics.event_destructions;
@@ -843,6 +859,49 @@ CudaLiquidArenaMetrics3D CudaLiquidArena3D::metrics() const {
 }
 void* CudaLiquidArena3D::stream() const {
   return impl_->current->stream;
+}
+absl::Status CudaLiquidArena3D::BeginDeviceTimeline() {
+  auto status = RecordRuntimeResult(cudaSuccess);
+  if (!status.ok()) {
+    return status;
+  }
+  auto& storage = *impl_->current;
+  status = RecordRuntimeResult(
+      cuda_internal::LiquidArenaRuntimeCalls().event_record(storage.timeline_events[0], storage.stream)
+  );
+  storage.timeline_started = status.ok();
+  return status;
+}
+absl::StatusOr<float> CudaLiquidArena3D::EndDeviceTimeline() {
+  auto status = RecordRuntimeResult(cudaSuccess);
+  if (!status.ok()) {
+    return status;
+  }
+  auto& storage = *impl_->current;
+  if (!storage.timeline_started) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  status = RecordRuntimeResult(
+      cuda_internal::LiquidArenaRuntimeCalls().event_record(storage.timeline_events[1], storage.stream)
+  );
+  if (!status.ok()) {
+    return status;
+  }
+  status = RecordRuntimeResult(cuda_internal::LiquidArenaRuntimeCalls().event_synchronize(storage.timeline_events[1]));
+  if (!status.ok()) {
+    return status;
+  }
+  float milliseconds = 0;
+  status =
+      RecordRuntimeResult(cudaEventElapsedTime(&milliseconds, storage.timeline_events[0], storage.timeline_events[1]));
+  if (!status.ok()) {
+    return status;
+  }
+  if (!std::isfinite(milliseconds) || milliseconds < 0) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  storage.timeline_started = false;
+  return milliseconds;
 }
 void* CudaLiquidArena3D::completion_event() const {
   return impl_->current->completion;

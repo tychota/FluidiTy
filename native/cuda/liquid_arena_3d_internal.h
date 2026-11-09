@@ -59,6 +59,8 @@ struct LiquidArenaStorage3D {
   std::size_t sort_capacity = 0;
   cudaStream_t stream = nullptr;
   cudaEvent_t completion = nullptr;
+  std::array<cudaEvent_t, 2> timeline_events{};
+  bool timeline_started = false;
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t executable = nullptr;
   LiquidArenaStorage3D* retired_next = nullptr;

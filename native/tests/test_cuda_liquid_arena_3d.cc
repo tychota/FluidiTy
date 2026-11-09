@@ -893,7 +893,7 @@ TEST(CudaLiquidArena3D, GrowthRuntimeSubmissionErrorsPoisonWithoutChangingCommit
     EXPECT_EQ(after.live_pinned_bytes, before.live_pinned_bytes);
     EXPECT_EQ(after.quarantined_storage_count, 0);
     EXPECT_EQ(after.stream_destructions, before.stream_destructions + 1);
-    EXPECT_EQ(after.event_destructions, before.event_destructions + 1);
+    EXPECT_EQ(after.event_destructions, before.event_destructions + 3);
     EXPECT_EQ(after.graph_destructions - before.graph_destructions, after.graph_creations - before.graph_creations);
     EXPECT_EQ(
         after.executable_destructions - before.executable_destructions,

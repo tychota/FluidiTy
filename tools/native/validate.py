@@ -50,7 +50,11 @@ GPU_BOUNDARY_GEOMETRY_3D_CASE = "CudaLiquidBoundary3D.GeometryAndCapillaryMatchO
 GPU_WALL_CONTACT_3D_CASE = "CudaLiquidBoundary3D.SweptContactMatchesOracle"
 GPU_BOUNDARY_TRANSFER_3D_CASE = "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu"
 GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure"
+GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
+GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
+GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
+    *GPU_SUBSTEP_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
     GPU_BOUNDARY_GEOMETRY_3D_CASE,
@@ -82,6 +86,8 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_SUBSTEP_3D_CASE: "liquid_substep_3d",
+    GPU_SUBSTEP_GROWTH_3D_CASE: "liquid_substep_3d_growth",
     GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
     GPU_BOUNDARY_COUPLED_3D_CASE: "liquid_boundary_coupled_3d",
     GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",
@@ -106,6 +112,11 @@ GPU_PROBE_RECEIPT_RE = re.compile(
 OPERATOR_RECEIPT_RE = re.compile(
     r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
     r"kernel_ms=(?P<kernel_ms>[0-9]+\.[0-9]+)"
+)
+SUBSTEP_RECEIPT_RE = re.compile(
+    r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
+    r"substep_device_timeline_ms=(?P<substep_device_timeline_ms>[0-9]+\.[0-9]+) "
+    r"timing_scope=topology_through_publication"
 )
 GRAPH_REPLAY_ITERATIONS = 64
 GRAPH_RECEIPT_RE = re.compile(
@@ -626,22 +637,29 @@ def verify_operator_receipts(case_outputs, expected_compiled_architecture, evide
             continue
         if len(observed_receipt_lines) != 1:
             raise ValueError(f"{evidence_label}: {case_name} must report exactly one operator receipt")
-        receipt_match = OPERATOR_RECEIPT_RE.fullmatch(observed_receipt_lines[0])
+        substep = case_name in GPU_SUBSTEP_CASES
+        receipt_pattern = SUBSTEP_RECEIPT_RE if substep else OPERATOR_RECEIPT_RE
+        receipt_match = receipt_pattern.fullmatch(observed_receipt_lines[0])
         if receipt_match is None:
             raise ValueError(f"{evidence_label}: malformed operator receipt in {case_name}")
         observed_operator = receipt_match["operator"]
         compiled_architecture_text = receipt_match["compiled_architecture"]
-        observed_kernel_ms = float(receipt_match["kernel_ms"])
+        duration_field = "substep_device_timeline_ms" if substep else "kernel_ms"
+        observed_duration_ms = float(receipt_match[duration_field])
         if observed_operator != expected_operator:
             raise ValueError(f"{evidence_label}: {case_name} must report operator {expected_operator}")
         if compiled_architecture_text != str(expected_compiled_architecture):
             raise ValueError(f"{evidence_label}: {case_name} reported a mismatched compiled architecture")
-        if not math.isfinite(observed_kernel_ms):
+        if not math.isfinite(observed_duration_ms):
             raise ValueError(f"{evidence_label}: {case_name} reported nonfinite kernel time")
         measurements[observed_operator] = {
             "compiled_architecture": expected_compiled_architecture,
-            "kernel_ms": observed_kernel_ms,
+            duration_field: observed_duration_ms,
         }
+        if substep:
+            if observed_duration_ms <= 0:
+                raise ValueError(f"{evidence_label}: {case_name} reported nonpositive substep timeline")
+            measurements[observed_operator]["timing_scope"] = "topology_through_publication"
     return measurements
 
 

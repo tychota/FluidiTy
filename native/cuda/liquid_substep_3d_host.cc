@@ -1,0 +1,207 @@
+#include <new>
+#include <utility>
+
+#include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "liquid_geometry_stages_3d.h"
+#include "liquid_pressure_stage_3d.h"
+#include "liquid_transfer_stages_3d.h"
+
+namespace fluidity {
+struct CudaLiquidSubstepBackend3D::Impl {
+  explicit Impl(CudaLiquidArena3D storage) : arena(std::move(storage)) {
+  }
+  CudaLiquidArena3D arena;
+  float substep_device_timeline_ms = 0;
+};
+CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(CudaLiquidSubstepBackend3D&&) noexcept = default;
+CudaLiquidSubstepBackend3D& CudaLiquidSubstepBackend3D::operator=(CudaLiquidSubstepBackend3D&&) noexcept = default;
+CudaLiquidSubstepBackend3D::~CudaLiquidSubstepBackend3D() = default;
+absl::StatusOr<CudaLiquidSubstepBackend3D>
+CudaLiquidSubstepBackend3D::Create(LiquidStateCapacities3D capacities, int device_ordinal) {
+  auto arena = CudaLiquidArena3D::Create(capacities, device_ordinal);
+  if (!arena.ok()) {
+    return arena.status();
+  }
+  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena)));
+  if (!impl) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return CudaLiquidSubstepBackend3D(std::move(impl));
+}
+absl::StatusOr<CudaLiquidEpochLease3D> CudaLiquidSubstepBackend3D::AcquireCommitted() {
+  return impl_->arena.AcquireCommitted();
+}
+void CudaLiquidSubstepBackend3D::CollectRetired() noexcept {
+  impl_->arena.CollectRetired();
+}
+LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
+  return {
+      .context = impl_.get(),
+      .sample_field =
+          [](void* context,
+             const LiquidSceneField3D& field,
+             std::span<const LiquidParticleState3D> particles,
+             Vec3 position) {
+            return cuda_internal::SampleLiquidField3D(static_cast<Impl*>(context)->arena, field, particles, position);
+          },
+      .sample_faces =
+          [](void* context,
+             SparseMacGridView3D grid,
+             const LiquidObstacle3D& obstacle,
+             std::int64_t side,
+             std::span<LiquidBoundaryFaceTag3D> tags,
+             std::span<LiquidPrescribedWallSample3D> walls) {
+            return cuda_internal::SampleLiquidFaces3D(
+                static_cast<Impl*>(context)->arena,
+                grid,
+                obstacle,
+                side,
+                tags,
+                walls
+            );
+          },
+      .initialize =
+          [](void* context, const LiquidState3D& initial) {
+            return static_cast<Impl*>(context)->arena.Initialize(initial);
+          },
+      .prepare_publication =
+          [](void* context, const LiquidState3D& trial, LiquidClock3D accepted_clock) {
+            auto& owner = *static_cast<Impl*>(context);
+            auto status = owner.arena.PreparePublication(trial, accepted_clock);
+            if (!status.ok()) {
+              return status;
+            }
+            const auto elapsed = owner.arena.EndDeviceTimeline();
+            if (!elapsed.ok()) {
+              return elapsed.status();
+            }
+            owner.substep_device_timeline_ms = *elapsed;
+            return absl::OkStatus();
+          },
+      .commit_publication =
+          [](void* context) noexcept {
+            static_cast<Impl*>(context)->arena.CommitPublication();
+          },
+      .discard_publication =
+          [](void* context) noexcept {
+            static_cast<Impl*>(context)->arena.DiscardPublication();
+          },
+      .prepare_growth =
+          [](void* context, LiquidStateCapacities3D capacities, const LiquidState3D& frame_start) {
+            return static_cast<Impl*>(context)->arena.PrepareGrowth(capacities, frame_start);
+          },
+      .commit_growth =
+          [](void* context) noexcept {
+            static_cast<Impl*>(context)->arena.CommitGrowth();
+          },
+      .discard_growth =
+          [](void* context) noexcept {
+            static_cast<Impl*>(context)->arena.DiscardGrowth();
+          },
+      .topology =
+          [](void* context,
+             std::span<const LiquidParticleState3D> particles,
+             std::span<const CellIndex3D> pressure_candidates,
+             const LiquidState3D& committed,
+             LiquidStepWorkspace3D& workspace) {
+            auto& arena = static_cast<Impl*>(context)->arena;
+            const auto status = arena.BeginDeviceTimeline();
+            if (!status.ok()) {
+              return status;
+            }
+            return arena.PrepareTopology(particles, pressure_candidates, workspace, &committed);
+          },
+      .deposit =
+          [](void* context, const LiquidBoundaryDepositViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::DepositLiquid3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
+      .normalize =
+          [](void* context,
+             std::span<const MacFaceDepositQuanta3D> face_quanta,
+             MacDepositQuantization3D quantization,
+             double minimum_face_mass,
+             LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::NormalizeLiquid3D(
+                static_cast<Impl*>(context)->arena,
+                face_quanta,
+                quantization,
+                minimum_face_mass,
+                workspace
+            );
+          },
+      .predict_missing_face =
+          [](void* context, const LiquidMissingFacePredictionInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::PredictMissingLiquidFace3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
+      .forces =
+          [](void* context,
+             SparseMacGridView3D grid,
+             std::span<const double> old_face_velocities,
+             Vec3 world_acceleration,
+             double step_duration,
+             std::span<double> predicted_face_velocities) {
+            return cuda_internal::ApplyLiquidForces3D(
+                static_cast<Impl*>(context)->arena,
+                grid,
+                old_face_velocities,
+                world_acceleration,
+                step_duration,
+                predicted_face_velocities
+            );
+          },
+      .freeze =
+          [](void* context, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::FreezeLiquidGeometry3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
+      .links =
+          [](void* context,
+             const FrozenLiquidBoundaryGeometryView3D& geometry,
+             const LiquidPressureFields3D& fields,
+             LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::BuildLiquidLinks3D(static_cast<Impl*>(context)->arena, geometry, fields, workspace);
+          },
+      .project =
+          [](void* context,
+             SparseMacGridView3D grid,
+             double step_duration,
+             const LiquidPressureProblemView3D& problem,
+             MacPressureSolverOptions3D options,
+             MacPressureWorkspace3D& workspace) {
+            return cuda_internal::ProjectLiquidPressure3D(
+                static_cast<Impl*>(context)->arena,
+                grid,
+                step_duration,
+                problem,
+                options,
+                workspace
+            );
+          },
+      .gather =
+          [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+            return cuda_internal::GatherLiquid3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
+      .update_particles =
+          [](void* context, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> trial_particles
+          ) {
+            return cuda_internal::UpdateLiquidParticles3D(static_cast<Impl*>(context)->arena, inputs, trial_particles);
+          },
+  };
+}
+CudaLiquidSubstepUsage3D CudaLiquidSubstepBackend3D::usage() const {
+  const auto metrics = impl_->arena.metrics();
+  return {
+      .device_reserved_bytes = metrics.live_device_bytes,
+      .pinned_reserved_bytes = metrics.live_pinned_bytes,
+      .device_memory_ceiling_bytes = metrics.device_byte_limit,
+      .device_allocation_count = static_cast<std::size_t>(metrics.device_reservations),
+      .device_free_count = static_cast<std::size_t>(metrics.device_frees),
+      .graph_preparation_count = static_cast<std::size_t>(metrics.graph_creations),
+      .graph_replay_count = static_cast<std::size_t>(metrics.sort_replays),
+      .arena_metrics = metrics,
+      .compiled_architecture = metrics.compiled_architecture,
+      .substep_device_timeline_ms = impl_->substep_device_timeline_ms,
+  };
+}
+}  // namespace fluidity

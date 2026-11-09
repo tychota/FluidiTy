@@ -83,6 +83,7 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/liquid_geometry_stages_3d_host.cc
     native/cuda/liquid_geometry_stages_3d.cu
     native/cuda/liquid_arena_3d_packing.cc
+    native/cuda/liquid_substep_3d_host.cc
     native/cuda/liquid_arena_3d_host.cc
     native/cuda/liquid_arena_3d.cu
     native/cuda/transfer_host.cc
@@ -231,6 +232,7 @@ if(BUILD_TESTING)
       native/tests/test_cuda_transfers.cc
       native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc
+      native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
       native/tests/test_cuda_mac_pressure_3d.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
@@ -256,7 +258,7 @@ if(BUILD_TESTING)
 
     # Focused Task 6B/6C1/6C2/6C3a qualification. Retain in final mandatory 6D verification;
     # Debug: 43 cases (42 real-device, 1 host-only); Release: 39 cases.
-    # The existing strict 28-case gpu-label inventory is unchanged.
+    # The separate mandatory gpu-label inventory includes the two integrated scheduler cases.
     add_executable(fluidity_cuda_arena_tests
       native/tests/test_cuda_liquid_arena_3d.cc
       native/tests/test_cuda_liquid_pressure_stage_3d.cc)

@@ -40,7 +40,12 @@ BOUNDARY_3D_CASES = (
     "CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu",
     "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure",
 )
+SUBSTEP_3D_CASES = (
+    "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu",
+    "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth",
+)
 MEMCHECK_OPERATOR_CASES = (
+    *SUBSTEP_3D_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
@@ -72,6 +77,10 @@ PROBE_RECEIPT = (
     "runtime_api=13030 launch=0 copy=0 synchronize=0 elements=17 sentinel=(0,0)"
 )
 OPERATOR_RECEIPTS = {
+    SUBSTEP_3D_CASES[0]: "operator=liquid_substep_3d compiled_architecture=1200 "
+    "substep_device_timeline_ms=10.5 timing_scope=topology_through_publication",
+    SUBSTEP_3D_CASES[1]: "operator=liquid_substep_3d_growth compiled_architecture=1200 "
+    "substep_device_timeline_ms=12.5 timing_scope=topology_through_publication",
     BOUNDARY_3D_CASES[0]: "operator=liquid_boundary_geometry_3d compiled_architecture=1200 kernel_ms=0.875",
     BOUNDARY_3D_CASES[1]: "operator=liquid_wall_contact_3d compiled_architecture=1200 kernel_ms=1.5",
     BOUNDARY_3D_CASES[2]: "operator=liquid_boundary_transfer_3d compiled_architecture=1200 kernel_ms=0.5",
@@ -675,13 +684,17 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 28,
+        "tests": 30,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
         "driver_api": 13030,
         "runtime_api": 13030,
         "operators": {
+            "liquid_substep_3d": {"compiled_architecture": 1200, "substep_device_timeline_ms": 10.5,
+                                  "timing_scope": "topology_through_publication"},
+            "liquid_substep_3d_growth": {"compiled_architecture": 1200, "substep_device_timeline_ms": 12.5,
+                                         "timing_scope": "topology_through_publication"},
             "liquid_boundary_transfer_3d": {"compiled_architecture": 1200, "kernel_ms": 0.5},
             "liquid_boundary_coupled_3d": {"compiled_architecture": 1200, "kernel_ms": 0.75},
             "liquid_boundary_geometry_3d": {"compiled_architecture": 1200, "kernel_ms": 0.875},
@@ -713,7 +726,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 26,
+            "tests": 28,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
