@@ -991,10 +991,23 @@ def parse_pytest_collection(output):
     return cases
 
 
-def run_python(run):
+def run_python(run, build, system):
+    suffix = ".exe" if system == "Windows" else ""
+    fixture = build / f"fluidity_liquid_acceptance_fixture{suffix}"
+    solver = build / f"fluidity_simulate{suffix}"
+    for executable in (fixture, solver):
+        if not executable.is_file():
+            raise ValueError(f"missing native Python test executable: {executable.name}")
+
     junit = run.run_log_dir / "pytest.xml"
     env = without_test_controls("PYTEST_")
-    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env.update(
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+        FLUIDITY_ACCEPTANCE_FIXTURE=str(fixture),
+        FLUIDITY_ACCEPTANCE_SOLVER=str(solver),
+        FLUIDITY_DROP_FIXTURE=str(fixture),
+        FLUIDITY_DROP_SOLVER=str(solver),
+    )
     command = (
         sys.executable,
         "-m",
@@ -1101,7 +1114,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
             gpu_case_outputs, expected_compiled_architecture, "CTest gpu"
         )
         evidence["sanitizer"] = run_sanitizer(run, qualification, build, expected_compiled_architecture)
-    evidence["python"] = run_python(run)
+    evidence["python"] = run_python(run, build, system)
 
     if (
         lockfile_evidence != check_locks(run)

@@ -240,8 +240,14 @@ def invocation(tmp_path, monkeypatch, capsys, validator):
 
 
 @pytest.fixture
-def scenario(invocation, monkeypatch):
+def scenario(invocation, monkeypatch, request, validator):
     root, output, run, rejected = invocation
+    platform_name = getattr(request, "param", "Windows")
+    monkeypatch.setattr(validator.platform, "system", lambda: platform_name)
+    prefix, system, compiler, compiler_id = validator.PLATFORMS[platform_name]
+    compiler_version = {"MSVC": "19.44.35229", "GNU": "13.3.0", "AppleClang": "16.0.0"}[compiler_id]
+    profile_version = {"MSVC": "194", "GNU": "13", "AppleClang": "16"}[compiler_id]
+    suffix = ".exe" if platform_name == "Windows" else ""
     for name in (
         "conan.lock",
         "reference/uv.lock",
@@ -253,7 +259,10 @@ def scenario(invocation, monkeypatch):
         path.write_text("{}", encoding="utf-8")
     for context in ("host", "build"):
         (root / f"{context} profile").write_text(f"[settings]\n# {context}", encoding="utf-8")
-    for preset in ("windows-debug-cpu", "windows-debug-cuda", "windows-release-cuda"):
+    presets = [f"{prefix}-debug-cpu", f"{prefix}-release-cpu"]
+    if platform_name == "Windows":
+        presets.extend(("windows-debug-cuda", "windows-release-cuda"))
+    for preset in presets:
         _, config, mode = preset.split("-")
         fixture_dir = root / "out/fixtures" / preset
         fixture_dir.mkdir(parents=True)
@@ -266,6 +275,8 @@ def scenario(invocation, monkeypatch):
         build = root / "out/build" / preset
         (build / "generated").mkdir(parents=True)
         (build / "generated/fixture_data.h").write_text("// generated", encoding="utf-8")
+        for executable in ("fluidity_liquid_acceptance_fixture", "fluidity_simulate"):
+            (build / (executable + suffix)).touch()
         receipt = "windows.json" if mode == "cuda" else "windows-cpu.json"
         (build / "CMakeCache.txt").write_text(
             f"CMAKE_BUILD_TYPE:STRING={config.title()}\nCMAKE_GENERATOR:INTERNAL=Ninja\nBUILD_TESTING:BOOL=TRUE\n"
@@ -277,17 +288,22 @@ def scenario(invocation, monkeypatch):
         )
         (build / "CMakeFiles/4.4.4").mkdir(parents=True)
         (build / "CMakeFiles/4.4.4/CMakeCXXCompiler.cmake").write_text(
-            'set(CMAKE_CXX_COMPILER_ID "MSVC")\nset(CMAKE_CXX_COMPILER_VERSION "19.44.35229")\n', encoding="utf-8"
+            f'set(CMAKE_CXX_COMPILER_ID "{compiler_id}")\n'
+            f'set(CMAKE_CXX_COMPILER_VERSION "{compiler_version}")\n',
+            encoding="utf-8",
         )
 
     settings = {
-        "os": "Windows",
+        "os": system,
         "arch": "x86_64",
-        "compiler": "msvc",
-        "compiler.version": "194",
+        "compiler": compiler,
+        "compiler.version": profile_version,
         "compiler.cppstd": "20",
-        "compiler.runtime": "dynamic",
     }
+    if compiler == "msvc":
+        settings["compiler.runtime"] = "dynamic"
+    else:
+        settings["compiler.libcxx"] = "libstdc++11" if compiler == "gcc" else "libc++"
     versions = {
         "uv": "uv 0.13.7",
         "conan": "Conan version 2.34.0",
@@ -363,6 +379,7 @@ def scenario(invocation, monkeypatch):
         def __init__(self):
             self.commands = []
             self.environments = {}
+            self.python_environments = []
             self.sanitizer_path = sanitizer_path
             self.gpu_receipts = {
                 PROBE_CASES[0]: PROBE_RECEIPT,
@@ -529,6 +546,7 @@ def scenario(invocation, monkeypatch):
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
             elif arguments[:2] == ["-m", "pytest"]:
+                self.python_environments.append(options["env"])
                 if "--collect-only" in arguments:
                     summary = "3 tests collected in 0.01s"
                     if self.collection_deselected:
@@ -746,6 +764,39 @@ def test_windows_versions_measure_driver_separately_from_nvidia_smi(validator, d
     )
     assert versions["nvidia_driver"] == "610.88"
     assert versions["nvidia_smi"] == "612.00"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "preset", "suffix"),
+    [
+        ("Windows", "windows-debug-cpu", ".exe"),
+        ("Windows", "windows-release-cuda", ".exe"),
+        ("Linux", "linux-release-cpu", ""),
+        ("Darwin", "macos-debug-cpu", ""),
+    ],
+    indirect=["scenario"],
+)
+def test_python_controls_use_current_preset_binaries(scenario, preset, suffix, monkeypatch):
+    processes, root, _, run, _ = scenario
+    build = root / "out/build" / preset
+    expected = {
+        f"FLUIDITY_{family}_{role}": str(build / (target + suffix))
+        for family in ("ACCEPTANCE", "DROP")
+        for role, target in (("FIXTURE", "fluidity_liquid_acceptance_fixture"), ("SOLVER", "fluidity_simulate"))
+    }
+    for variable in expected:
+        monkeypatch.setenv(variable, str(root / "unrelated build"))
+    assert run(preset) == 0
+    assert len(processes.python_environments) == 2
+    for env in processes.python_environments:
+        assert {variable: env.get(variable) for variable in expected} == expected
+
+
+def test_missing_native_python_executable_invalidates_stale_success(scenario):
+    processes, root, _, _, rejected = scenario
+    (root / "out/build/windows-debug-cpu/fluidity_liquid_acceptance_fixture.exe").unlink()
+    rejected("missing native Python test executable")
+    assert not processes.python_environments
 
 
 def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scenario, monkeypatch):
