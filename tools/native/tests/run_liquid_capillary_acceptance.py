@@ -6,6 +6,7 @@ import hashlib
 from itertools import product
 import math
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -59,6 +60,12 @@ PARTICLE_COUNTS = {STATIC_COARSE_CASE: 136, STATIC_FINE_CASE: 552, DROP_CASE: 55
 CAPACITIES = [1024, 128, 4096, 24576, 256]
 DAM_SUPPORT_RADIUS_M = 0.9 * DAM_CELL_WIDTH_M
 ZERO_CLOCK = (0, 0, 0, 0, 0)
+CUDA_COMPATIBILITY_FILE = ".simulate-cuda-compatibility"
+CUDA_COMPATIBILITY_RECORD_SIZE = len(b"FLCUDA1\n") + 64 + 1
+CUDA_PROBE_IDENTITY_FIELDS = (
+    "device_index", "device_name", "compute_major", "compute_minor", "compiled_architecture",
+    "driver_version", "runtime_version",
+)
 
 
 def file_sha256(path):
@@ -247,6 +254,23 @@ def check_preflight_pressure(case, traces):
     }
 
 
+def cuda_probe_identity(device):
+    verify_device(device, "cuda")
+    require("RTX" in device["device_name"], "expected actual RTX device")
+    return {field: device[field] for field in CUDA_PROBE_IDENTITY_FIELDS}
+
+
+def read_cuda_compatibility_record(cache):
+    # Match the pinned CLI's exact byte format, including LF and lowercase hex.
+    try:
+        with (cache / CUDA_COMPATIBILITY_FILE).open("rb") as stream:
+            record = stream.read(CUDA_COMPATIBILITY_RECORD_SIZE + 1)
+    except FileNotFoundError as error:
+        raise ValueError("missing CUDA compatibility record") from error
+    require(re.fullmatch(rb"FLCUDA1\n[0-9a-f]{64}\n", record) is not None, "malformed CUDA compatibility record")
+    return record
+
+
 def verify_group_identity(group, backend, members):
     require(tuple(members) == GROUPS[group], "incomplete or unexpected scene group")
     identities = []
@@ -259,13 +283,25 @@ def verify_group_identity(group, backend, members):
         require(len({digest(record, field) for record in identities}) == len(identities), f"group reused {field}")
     seed_count = len({digest(record, "seed_digest") for record in identities})
     require(seed_count == (1 if group == "dam" else len(identities)), "wrong group seed identities")
+    if backend == "cuda":
+        # The CLI's compatibility digest includes the scene fingerprint. Across
+        # scenes the public probe fields can be compared, while the UUID is hidden.
+        devices = [cuda_probe_identity(member.get("device", {})) for member in members.values()]
+        for field in CUDA_PROBE_IDENTITY_FIELDS:
+            require(len({device[field] for device in devices}) == 1, f"group CUDA probe differs on {field}")
 
 
-def verify_cache(output, label, cache, fixture, scene, seed, authored, case, records, last_frame, support_radius_m):
+def verify_cache(output, label, cache, fixture, scene, seed, authored, case, records, last_frame, support_radius_m, *,
+                 cuda_compatibility_record=None):
     h, particle_count, reference_volume_m3, _ = frozen_scene(case)
     ordinals = tuple(range(last_frame + 1))
     fingerprint = authored["resolved_fingerprint"]
     before = snapshot(cache)
+    if authored["backend"] == "cuda":
+        require(cuda_compatibility_record is not None, "missing CUDA compatibility evidence")
+        record_sha256 = hashlib.sha256(cuda_compatibility_record).hexdigest()
+        require(CUDA_COMPATIBILITY_FILE in before and before[CUDA_COMPATIBILITY_FILE][1] == record_sha256,
+                "CUDA compatibility record changed before cache verification")
     names = {Path(name).as_posix() for name in before}
     expected_manifests = {f"frames/{frame:020d}.{suffix}" for frame in ordinals for suffix in ("flmf", "json")}
     checkpoint_refs = tuple(range(0, last_frame + 1, 10))
@@ -371,9 +407,13 @@ def verify_pins(solver, fixture, pins):
 def run_scene(output, solver, fixture, backend, case, pins):
     verify_pins(solver, fixture, pins)
     device = one_record(record_child(output, "device", solver, "device-info", "--backend", backend), "result")
-    verify_device(device, backend)
+    probe_identity = None
+    device_arguments = ()
     if backend == "cuda":
-        require("RTX" in device["device_name"], "expected actual RTX device")
+        probe_identity = cuda_probe_identity(device)
+        device_arguments = ("--device", probe_identity["device_index"])
+    else:
+        verify_device(device, backend)
     write_measurements(output / "binary-identity.json", {"sha256": pins, "device": device})
     scene = output / "scene.flrs"
     seed = scene.with_suffix(".flrs.flst")
@@ -409,18 +449,30 @@ def run_scene(output, solver, fixture, backend, case, pins):
     write_measurements(output / "authored-inputs.json", {"sha256": input_hashes, "authored": authored})
 
     arguments = ("run", "--stage", "simulate", "--scene", scene, "--initial-state", seed, "--backend", backend,
-                 "--trace", "--measure-job")
+                 *device_arguments, "--trace", "--measure-job")
+    preflight_compatibility = None
     for label, last_frame in (("preflight", 1), ("full", frozen_scene(case)[-1])):
         cache = output / ("pre" if label == "preflight" else "cache")
         verify_pins(solver, fixture, pins)
         records = record_child(output, label, solver, *arguments, "--cache", cache, "--frame-end", last_frame,
                                timeout=None)
+        compatibility = None
+        if probe_identity is not None:
+            compatibility = read_cuda_compatibility_record(cache)
+            if label == "preflight":
+                preflight_compatibility = compatibility
+            else:
+                require(compatibility == preflight_compatibility,
+                        "CUDA compatibility record differs between preflight and full run")
         verified = verify_cache(output, label, cache, fixture, scene, seed, authored, case, records, last_frame,
-                                support_radius_m)
+                                support_radius_m, cuda_compatibility_record=compatibility)
         verify_pins(solver, fixture, pins)
         require({path.name: file_sha256(path) for path in (scene, seed)} == input_hashes,
                 "native execution or verification changed authored inputs")
         evidence = verified["evidence"]
+        if compatibility is not None:
+            verified["device"] = device
+            evidence.update(cuda_probe_identity=probe_identity, cuda_compatibility_record=compatibility.decode("ascii"))
         write_measurements(output / f"{label}-evidence.json", evidence)
         if label == "preflight" and not evidence["pressure_check"]["passed"]:
             material_budget_passed = None

@@ -107,3 +107,102 @@ def test_dam_comparison_rejects_mismatched_accepted_clocks_at_shared_time():
     changed[24] = {**frames[24], "epoch": 121, "accepted_step": 121}
     with pytest.raises(ValueError, match="comparison clock.*24"):
         runner.verify_dam_comparison_clocks({0: frames, 0.6: frames, 1: changed})
+
+
+def cuda_probe():
+    return {
+        "event": "result", "command": "device-info", "backend": "cuda", "cpu_available": True,
+        "cuda_compiled": True, "cuda_available": True, "device_index": 0, "device_name": "NVIDIA GeForce RTX 5060 Ti",
+        "compute_major": 12, "compute_minor": 0, "compiled_architecture": 1200, "sample_count": 17,
+        "driver_version": 13020, "runtime_version": 13010, "launch_result": 0, "copy_result": 0,
+        "synchronize_result": 0,
+    }
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("device_name", "NVIDIA GeForce RTX 5080"),
+    ("driver_version", 13010),
+    ("runtime_version", 13020),
+])
+def test_paired_cuda_cases_reject_changed_probe_identity(field, value):
+    cases = ("static-sphere-coarse", "static-sphere-fine")
+    members = {
+        case: {
+            "authored": {
+                "case": case, "backend": "cuda", "solver_digest": "a" * 64, "seed_digest": ordinal * 64,
+                "resolved_fingerprint": ordinal * 64, "execution_id": execution * 64,
+            },
+            "device": cuda_probe(),
+        }
+        for case, ordinal, execution in zip(cases, "01", "23")
+    }
+    runner.verify_group_identity("static", "cuda", members)
+    members[cases[1]]["device"][field] = value
+    with pytest.raises(ValueError, match=field):
+        runner.verify_group_identity("static", "cuda", members)
+
+
+CUDA_COMPATIBILITY_BYTES = b"FLCUDA1\n" + b"a" * 64 + b"\n"
+
+
+@pytest.fixture
+def launch_static_cuda_case(tmp_path, monkeypatch):
+    """Exercise run_scene at the process boundary without a CUDA device."""
+    seed_bytes = b"seed"
+    case = "static-sphere-coarse"
+    authored = {
+        "event": "scene", "case": case, "backend": "cuda", "energy_blend": 0.6, "solver_digest": "a" * 64,
+        "seed_digest": "b" * 64, "resolved_fingerprint": "c" * 64, "execution_id": "d" * 64,
+        "seed_byte_length": len(seed_bytes),
+    }
+    fixture = tmp_path / "fixture.exe"
+    solver = tmp_path / "solver.exe"
+    fixture.write_bytes(b"fixture")
+    solver.write_bytes(b"solver")
+    pins = {"fixture": runner.file_sha256(fixture), "solver": runner.file_sha256(solver)}
+
+    def run(full_record):
+        def child(_output, name, _executable, *arguments, **_options):
+            if name == "device":
+                return [cuda_probe()]
+            if name == "scene-author":
+                scene = arguments[4]
+                scene.write_bytes(b"scene")
+                scene.with_suffix(".flrs.flst").write_bytes(seed_bytes)
+                return [authored]
+            cache = arguments[arguments.index("--cache") + 1]
+            cache.mkdir()
+            record = CUDA_COMPATIBILITY_BYTES if name == "preflight" else full_record
+            if record is not None:
+                (cache / ".simulate-cuda-compatibility").write_bytes(record)
+            return []
+
+        monkeypatch.setattr(runner, "record_child", child)
+        # The verified FLPT and solver receipts are a separate native boundary.
+        monkeypatch.setattr(runner, "verify_cache", lambda *args, **kwargs: {
+            "evidence": {"pressure_check": {"passed": True}}, "traces": [],
+        })
+        monkeypatch.setattr(runner, "verify_capillary_steps", lambda *args, **kwargs: {"passed": True})
+        return runner.run_scene(tmp_path, solver, fixture, "cuda", case, pins)
+
+    return run
+
+
+@pytest.mark.parametrize(("full_record", "diagnostic"), [
+    (b"FLCUDA1\n" + b"b" * 64 + b"\n", "CUDA compatibility record differs"),
+    (None, "missing CUDA compatibility record"),
+    (CUDA_COMPATIBILITY_BYTES.upper(), "malformed CUDA compatibility record"),
+    (CUDA_COMPATIBILITY_BYTES.replace(b"\n", b"\r\n"), "malformed CUDA compatibility record"),
+    (CUDA_COMPATIBILITY_BYTES[:-1], "malformed CUDA compatibility record"),
+    (CUDA_COMPATIBILITY_BYTES + b"extra", "malformed CUDA compatibility record"),
+], ids=("changed", "missing", "uppercase", "crlf", "missing-final-lf", "trailing-bytes"))
+def test_cuda_scene_rejects_changed_or_invalid_compatibility_record(launch_static_cuda_case, full_record, diagnostic):
+    with pytest.raises(ValueError, match=diagnostic):
+        launch_static_cuda_case(full_record)
+
+
+def test_cuda_scene_retains_authenticated_probe_and_compatibility_record(launch_static_cuda_case):
+    result = launch_static_cuda_case(CUDA_COMPATIBILITY_BYTES)
+    assert result["passed"]
+    assert result["device"] == cuda_probe()
+    assert result["evidence"]["cuda_compatibility_record"] == CUDA_COMPATIBILITY_BYTES.decode("ascii")
