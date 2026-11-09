@@ -105,6 +105,9 @@ struct CudaLiquidArenaMetrics3D {
   std::uint64_t graph_destructions = 0;
   std::uint64_t executable_creations = 0;
   std::uint64_t executable_destructions = 0;
+  // Fatal owners whose final drain could not establish safety remain retained
+  // until process exit. Their remaining payload stays included in live bytes.
+  std::uint64_t quarantined_storage_count = 0;
   std::uint64_t sort_replays = 0;
   int compiled_architecture = 0;
   int cccl_version = 0;
@@ -229,7 +232,10 @@ class CudaLiquidArena3D {
   // Any submission/fence error permanently poisons this job and returns Internal,
   // including runtime memory errors. Zero checks readiness before staging writes.
   // Never reset after failure: possibly in-flight pinned storage remains owned,
-  // inaccessible via range(), until outside-attempt destruction drains the stream.
+  // inaccessible via range(). Final release drains before freeing; a failed drain
+  // or cleanup retains the remaining owner/ledger/payload until process exit,
+  // counts it as quarantined and keeps remaining payload in live-byte metrics.
+  // No recovery, retry or later teardown reuses a quarantined owner.
   absl::Status RecordRuntimeResult(int cuda_result) const;
 
  private:

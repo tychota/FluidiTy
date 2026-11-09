@@ -765,3 +765,197 @@ TEST(CudaLiquidGeometryStages3D, OverflowedFaceDistanceCannotPublishEligibility)
 }
 }  // namespace
 }  // namespace fluidity
+
+namespace fluidity {
+namespace {
+enum class ArenaRuntimeFault {
+  kMemset,
+  kSort,
+  kArchitecture,
+  kEndCapture,
+  kWarmLaunch,
+  kDrain
+};
+class ScopedArenaRuntimeFault {
+ public:
+  explicit ScopedArenaRuntimeFault(ArenaRuntimeFault fault) : previous_(cuda_internal::LiquidArenaRuntimeCalls()) {
+    selected_ = fault;
+    calls_ = 0;
+    auto& runtime = cuda_internal::LiquidArenaRuntimeCalls();
+    runtime.memset_async = Memset;
+    runtime.sort_bins = Sort;
+    runtime.launch_architecture = Architecture;
+    runtime.end_capture = EndCapture;
+    runtime.graph_launch = GraphLaunch;
+    runtime.stream_synchronize = Drain;
+  }
+  ~ScopedArenaRuntimeFault() {
+    cuda_internal::LiquidArenaRuntimeCalls() = previous_;
+  }
+  std::size_t calls() const {
+    return calls_;
+  }
+
+ private:
+  static cudaError_t Inject(ArenaRuntimeFault call, cudaError_t result) {
+    if (selected_ == call && result == cudaSuccess) {
+      ++calls_;
+      return cudaErrorMemoryAllocation;
+    }
+    return result;
+  }
+  static cudaError_t Memset(void* pointer, int value, std::size_t bytes, cudaStream_t stream) {
+    return Inject(ArenaRuntimeFault::kMemset, cudaMemsetAsync(pointer, value, bytes, stream));
+  }
+  static int Sort(
+      void* temporary,
+      std::size_t& temporary_bytes,
+      cuda_internal::LiquidSortKey3D* input,
+      cuda_internal::LiquidSortKey3D* output,
+      std::size_t* incoming,
+      std::size_t* ordered,
+      std::size_t capacity,
+      void* stream
+  ) {
+    return static_cast<int>(Inject(
+        ArenaRuntimeFault::kSort,
+        static_cast<cudaError_t>(
+            cuda_internal::
+                SortLiquidBins3D(temporary, temporary_bytes, input, output, incoming, ordered, capacity, stream)
+        )
+    ));
+  }
+  static int Architecture(int* architecture, void* stream) {
+    return static_cast<int>(Inject(
+        ArenaRuntimeFault::kArchitecture,
+        static_cast<cudaError_t>(cuda_internal::LaunchLiquidArenaArchitecture3D(architecture, stream))
+    ));
+  }
+  static cudaError_t EndCapture(cudaStream_t stream, cudaGraph_t* graph) {
+    return Inject(ArenaRuntimeFault::kEndCapture, cudaStreamEndCapture(stream, graph));
+  }
+  static cudaError_t GraphLaunch(cudaGraphExec_t graph, cudaStream_t stream) {
+    return Inject(ArenaRuntimeFault::kWarmLaunch, cudaGraphLaunch(graph, stream));
+  }
+  static cudaError_t Drain(cudaStream_t stream) {
+    // Real successful synchronization establishes safety in this process before
+    // the synthetic failure exercises conservative production quarantine.
+    return Inject(ArenaRuntimeFault::kDrain, cudaStreamSynchronize(stream));
+  }
+  cuda_internal::LiquidArenaRuntimeCalls3D previous_;
+  static inline ArenaRuntimeFault selected_ = ArenaRuntimeFault::kMemset;
+  static inline std::size_t calls_ = 0;
+};
+TEST(CudaLiquidArena3D, GrowthRuntimeSubmissionErrorsPoisonWithoutChangingCommittedLease) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  constexpr std::array faults{
+      ArenaRuntimeFault::kMemset,
+      ArenaRuntimeFault::kSort,
+      ArenaRuntimeFault::kArchitecture,
+      ArenaRuntimeFault::kEndCapture,
+      ArenaRuntimeFault::kWarmLaunch,
+  };
+  for (const auto fault : faults) {
+    SCOPED_TRACE(static_cast<int>(fault));
+    auto arena = CudaLiquidArena3D::Create(kSmall);
+    ASSERT_TRUE(arena.ok());
+    auto initial = Fixture();
+    ASSERT_TRUE(arena->Initialize(initial).ok());
+    auto lease = arena->AcquireCommitted();
+    ASSERT_TRUE(lease.ok());
+    const auto identity = lease->identity();
+    const auto committed_bytes = PackedBytes(*lease);
+    const auto* device_bytes = lease->device_bytes().data();
+    const auto before = arena->metrics();
+    auto growth = kSmall;
+    growth.particles = 64;
+    {
+      ScopedArenaRuntimeFault injection(fault);
+      EXPECT_EQ(arena->PrepareGrowth(growth, initial).code(), absl::StatusCode::kInternal);
+      EXPECT_EQ(injection.calls(), 1);
+    }
+    EXPECT_EQ(arena->RecordRuntimeResult(cudaSuccess).code(), absl::StatusCode::kInternal);
+    EXPECT_EQ(arena->AcquireCommitted()->identity(), identity);
+    EXPECT_EQ(lease->identity(), identity);
+    EXPECT_EQ(lease->device_bytes().data(), device_bytes);
+    // Injection returned an error after real successful calls; the actual CUDA
+    // context remains healthy, so this test-only raw read can compare bytes.
+    EXPECT_EQ(PackedBytes(*lease), committed_bytes);
+    EXPECT_TRUE(arena->range(CudaLiquidRange3D::kSamplePositions).pinned.empty());
+    const auto after = arena->metrics();
+    EXPECT_EQ(after.device_reservations, before.device_reservations + 1);
+    EXPECT_EQ(after.pinned_reservations, before.pinned_reservations + 1);
+    EXPECT_EQ(after.device_frees, before.device_frees + 1);
+    EXPECT_EQ(after.pinned_frees, before.pinned_frees + 1);
+    EXPECT_EQ(after.live_device_bytes, before.live_device_bytes);
+    EXPECT_EQ(after.live_pinned_bytes, before.live_pinned_bytes);
+    EXPECT_EQ(after.quarantined_storage_count, 0);
+    EXPECT_EQ(after.stream_destructions, before.stream_destructions + 1);
+    EXPECT_EQ(after.event_destructions, before.event_destructions + 1);
+    EXPECT_EQ(after.graph_destructions - before.graph_destructions, after.graph_creations - before.graph_creations);
+    EXPECT_EQ(
+        after.executable_destructions - before.executable_destructions,
+        after.executable_creations - before.executable_creations
+    );
+    EXPECT_EQ(arena->PrepareGrowth(growth, initial).code(), absl::StatusCode::kInternal);
+    ExpectNoReservationChange(after, arena->metrics());
+    EXPECT_EQ(
+        cuda_internal::SampleLiquidField3D(*arena, LiquidAnalyticSphere3D{{}, 1}, {}, Vec3{}).status().code(),
+        absl::StatusCode::kInternal
+    );
+  }
+}
+TEST(CudaLiquidArena3D, FailedRetiredDrainQuarantinesPayloadAndPoisonsSurvivingLease) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok());
+  auto initial = Fixture();
+  ASSERT_TRUE(arena->Initialize(initial).ok());
+  const auto original_reservation = arena->metrics();
+  auto growth = kSmall;
+  growth.particles = 64;
+  ASSERT_TRUE(arena->PrepareGrowth(growth, initial).ok());
+  arena->CommitGrowth();
+  auto lease = arena->AcquireCommitted();
+  ASSERT_TRUE(lease.ok());
+  const auto identity = lease->identity();
+  const auto* device_bytes = lease->device_bytes().data();
+  const auto before = arena->metrics();
+  {
+    ScopedArenaRuntimeFault injection(ArenaRuntimeFault::kDrain);
+    arena->CollectRetired();
+    EXPECT_EQ(injection.calls(), 1);
+  }
+  const auto after = arena->metrics();
+  EXPECT_EQ(after.quarantined_storage_count, 1);
+  ExpectNoReservationChange(before, after);
+  EXPECT_EQ(after.stream_destructions, before.stream_destructions);
+  EXPECT_EQ(after.event_destructions, before.event_destructions);
+  EXPECT_EQ(after.graph_destructions, before.graph_destructions);
+  EXPECT_EQ(after.executable_destructions, before.executable_destructions);
+  EXPECT_EQ(after.live_device_bytes, before.live_device_bytes);
+  EXPECT_EQ(after.live_pinned_bytes, before.live_pinned_bytes);
+  EXPECT_EQ(arena->RecordRuntimeResult(cudaSuccess).code(), absl::StatusCode::kInternal);
+  EXPECT_EQ(arena->AcquireCommitted()->identity(), identity);
+  EXPECT_EQ(lease->identity(), identity);
+  EXPECT_EQ(lease->device_bytes().data(), device_bytes);
+  EXPECT_EQ(lease->Readback(initial).code(), absl::StatusCode::kInternal);
+  EXPECT_TRUE(arena->range(CudaLiquidRange3D::kSamplePositions).pinned.empty());
+  arena->CollectRetired();
+  ExpectNoReservationChange(after, arena->metrics());
+  {
+    auto retiring_arena = std::move(*arena);
+  }
+  // Quarantine and the surviving immutable lease keep both physical owners and
+  // the poisoned ledger alive after destruction of the scheduler's arena owner.
+  EXPECT_EQ(lease->metrics().quarantined_storage_count, 1);
+  EXPECT_EQ(lease->metrics().live_device_bytes, after.live_device_bytes);
+  EXPECT_EQ(lease->metrics().live_pinned_bytes, after.live_pinned_bytes);
+  EXPECT_EQ(lease->identity(), identity);
+  EXPECT_EQ(lease->Readback(initial).code(), absl::StatusCode::kInternal);
+  std::cout << "fatal_quarantine owners=" << after.quarantined_storage_count
+            << " retained_device_bytes=" << original_reservation.live_device_bytes
+            << " retained_pinned_bytes=" << original_reservation.live_pinned_bytes << '\n';
+}
+}  // namespace
+}  // namespace fluidity

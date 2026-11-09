@@ -1,6 +1,7 @@
 #include <cuda_runtime_api.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -21,6 +22,7 @@ using cuda_internal::LiquidArenaLedger3D;
 using cuda_internal::LiquidArenaStorage3D;
 using cuda_internal::LiquidSortKey3D;
 using cuda_internal::ReleaseLiquidArenaStorage3D;
+using LiquidArenaStorageOwner3D = std::unique_ptr<LiquidArenaStorage3D, decltype(&ReleaseLiquidArenaStorage3D)>;
 constexpr std::size_t kAlignment = 128;
 constexpr std::size_t kByteLimit = static_cast<std::size_t>(PTRDIFF_MAX);
 absl::Status Error(absl::StatusCode code) {
@@ -40,6 +42,14 @@ absl::Status RuntimeResult(LiquidArenaStorage3D& storage, cudaError_t result) {
     storage.ledger->runtime_failed = true;
   }
   return storage.ledger->runtime_failed ? Error(absl::StatusCode::kInternal) : absl::OkStatus();
+}
+// Only explicit payload allocation OOM is a retryable setup capacity failure.
+// Other CUDA errors can report earlier asynchronous faults and poison this job.
+absl::Status AllocationResult(LiquidArenaStorage3D& storage, cudaError_t result) {
+  if (result == cudaErrorMemoryAllocation) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  return RuntimeResult(storage, result);
 }
 // Every product and alignment addition is checked before advancing the cursor.
 class ByteLayout {
@@ -120,10 +130,19 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
   };
   storage.sort_capacity = std::max<std::size_t>(capacity.particles, 1);
   std::size_t temporary_bytes = 0;
-  auto status = CheckedCuda(static_cast<cudaError_t>(
-      cuda_internal::
-          SortLiquidBins3D(nullptr, temporary_bytes, nullptr, nullptr, nullptr, nullptr, storage.sort_capacity, nullptr)
-  ));
+  auto status = RuntimeResult(
+      storage,
+      static_cast<cudaError_t>(cuda_internal::SortLiquidBins3D(
+          nullptr,
+          temporary_bytes,
+          nullptr,
+          nullptr,
+          nullptr,
+          nullptr,
+          storage.sort_capacity,
+          nullptr
+      ))
+  );
   if (!status.ok()) {
     return status;
   }
@@ -220,7 +239,7 @@ absl::Status TransferRange(LiquidArenaStorage3D& storage, CudaLiquidRange3D name
 // Construction and cleanup happen outside attempts. A single device/pinned
 // allocation makes all named slices stable and accounts padding exactly.
 absl::StatusOr<LiquidArenaStorage3D*> BuildStorage(LiquidArenaLedger3D& ledger, LiquidStateCapacities3D capacities) {
-  std::unique_ptr<LiquidArenaStorage3D> storage(new (std::nothrow) LiquidArenaStorage3D{});
+  LiquidArenaStorageOwner3D storage(new (std::nothrow) LiquidArenaStorage3D{}, ReleaseLiquidArenaStorage3D);
   if (!storage) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -231,105 +250,131 @@ absl::StatusOr<LiquidArenaStorage3D*> BuildStorage(LiquidArenaLedger3D& ledger, 
   }
   ++ledger.references;
   storage->capacities = capacities;
-  auto status = PlanStorage(*storage);
-  if (!status.ok()) {
-    return status;
-  }
-  auto& metrics = ledger.metrics;
-  if (storage->reserved_device_bytes > metrics.device_byte_limit - metrics.live_device_bytes) {
-    return Error(absl::StatusCode::kResourceExhausted);
-  }
-  if (metrics.live_pinned_bytes > kByteLimit
-      || storage->reserved_pinned_bytes > kByteLimit - metrics.live_pinned_bytes) {
-    return Error(absl::StatusCode::kResourceExhausted);
-  }
-  ++metrics.device_reservations;
-  status = CheckedCuda(cudaMalloc(reinterpret_cast<void**>(&storage->device), storage->reserved_device_bytes));
-  if (!status.ok()) {
-    return status;
-  }
-  metrics.live_device_bytes += storage->reserved_device_bytes;
-  metrics.peak_device_bytes = std::max(metrics.peak_device_bytes, metrics.live_device_bytes);
-  ++metrics.pinned_reservations;
-  status = CheckedCuda(cudaMallocHost(reinterpret_cast<void**>(&storage->pinned), storage->reserved_pinned_bytes));
-  if (!status.ok()) {
-    return status;
-  }
-  metrics.live_pinned_bytes += storage->reserved_pinned_bytes;
-  metrics.peak_pinned_bytes = std::max(metrics.peak_pinned_bytes, metrics.live_pinned_bytes);
-  // Beginning a byte-array lifetime also permits implicit-lifetime POD objects
-  // in its storage (C++20); cudaMallocHost itself is not a C++ allocation expression.
-  storage->pinned = new (storage->pinned) std::byte[storage->reserved_pinned_bytes]{};
-  ++metrics.stream_creations;
-  status = CheckedCuda(cudaStreamCreateWithFlags(&storage->stream, cudaStreamNonBlocking));
-  if (!status.ok()) {
-    return status;
-  }
-  ++metrics.event_creations;
-  status = CheckedCuda(cudaEventCreateWithFlags(&storage->completion, cudaEventDisableTiming));
-  if (!status.ok()) {
-    return status;
-  }
-  status = CheckedCuda(cudaMemsetAsync(storage->device, 0, storage->reserved_device_bytes, storage->stream));
-  if (!status.ok()) {
-    return status;
-  }
-  status = Fence(*storage);
-  if (!status.ok()) {
-    return status;
-  }
-  status = CheckedCuda(cudaStreamBeginCapture(storage->stream, cudaStreamCaptureModeThreadLocal));
-  if (!status.ok()) {
-    return status;
-  }
-  auto temporary = storage->Range(CudaLiquidRange3D::kSortTemporary);
-  auto temporary_bytes = temporary.pinned.size();
-  const auto sort_error = static_cast<cudaError_t>(cuda_internal::SortLiquidBins3D(
-      temporary.device,
-      temporary_bytes,
-      Device<LiquidSortKey3D>(*storage, CudaLiquidRange3D::kSortInputKeys),
-      Device<LiquidSortKey3D>(*storage, CudaLiquidRange3D::kSortOutputKeys),
-      Device<std::size_t>(*storage, CudaLiquidRange3D::kSortInputOrdinals),
-      Device<std::size_t>(*storage, CudaLiquidRange3D::kSortOutputOrdinals),
-      storage->sort_capacity,
-      storage->stream
-  ));
-  const auto launch_error = static_cast<cudaError_t>(cuda_internal::LaunchLiquidArenaArchitecture3D(
-      Device<int>(*storage, CudaLiquidRange3D::kArchitecture),
-      storage->stream
-  ));
-  ++metrics.graph_creations;
-  const auto capture_error = cudaStreamEndCapture(storage->stream, &storage->graph);
-  if (sort_error != cudaSuccess) {
-    return CheckedCuda(sort_error);
-  }
-  if (launch_error != cudaSuccess) {
-    return CheckedCuda(launch_error);
-  }
-  if (capture_error != cudaSuccess) {
-    return CheckedCuda(capture_error);
-  }
-  ++metrics.executable_creations;
-  status = CheckedCuda(cudaGraphInstantiate(&storage->executable, storage->graph, 0));
-  if (!status.ok()) {
-    return status;
-  }
-  // Warm device/runtime graph paths outside attempts, then require device evidence.
-  status = CheckedCuda(cudaGraphLaunch(storage->executable, storage->stream));
-  if (!status.ok()) {
-    return status;
-  }
-  status = TransferRange(*storage, CudaLiquidRange3D::kArchitecture, false);
-  if (!status.ok()) {
-    return status;
-  }
-  status = Fence(*storage);
-  if (!status.ok()) {
-    return status;
-  }
-  metrics.compiled_architecture = *Pinned<int>(*storage, CudaLiquidRange3D::kArchitecture);
-  if (metrics.compiled_architecture != 1200) {
-    return Error(absl::StatusCode::kFailedPrecondition);
+  const auto construction_status = [&]() -> absl::Status {
+    auto status = PlanStorage(*storage);
+    if (!status.ok()) {
+      return status;
+    }
+    auto& metrics = ledger.metrics;
+    if (storage->reserved_device_bytes > metrics.device_byte_limit - metrics.live_device_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    if (metrics.live_pinned_bytes > kByteLimit
+        || storage->reserved_pinned_bytes > kByteLimit - metrics.live_pinned_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    ++metrics.device_reservations;
+    status = AllocationResult(
+        *storage,
+        cudaMalloc(reinterpret_cast<void**>(&storage->device), storage->reserved_device_bytes)
+    );
+    if (!status.ok()) {
+      return status;
+    }
+    metrics.live_device_bytes += storage->reserved_device_bytes;
+    metrics.peak_device_bytes = std::max(metrics.peak_device_bytes, metrics.live_device_bytes);
+    ++metrics.pinned_reservations;
+    status = AllocationResult(
+        *storage,
+        cudaMallocHost(reinterpret_cast<void**>(&storage->pinned), storage->reserved_pinned_bytes)
+    );
+    if (!status.ok()) {
+      return status;
+    }
+    metrics.live_pinned_bytes += storage->reserved_pinned_bytes;
+    metrics.peak_pinned_bytes = std::max(metrics.peak_pinned_bytes, metrics.live_pinned_bytes);
+    // Beginning a byte-array lifetime also permits implicit-lifetime POD objects
+    // in its storage (C++20); cudaMallocHost itself is not a C++ allocation expression.
+    storage->pinned = new (storage->pinned) std::byte[storage->reserved_pinned_bytes]{};
+    ++metrics.stream_creations;
+    status = RuntimeResult(*storage, cudaStreamCreateWithFlags(&storage->stream, cudaStreamNonBlocking));
+    if (!status.ok()) {
+      return status;
+    }
+    ++metrics.event_creations;
+    status = RuntimeResult(*storage, cudaEventCreateWithFlags(&storage->completion, cudaEventDisableTiming));
+    if (!status.ok()) {
+      return status;
+    }
+    status = RuntimeResult(
+        *storage,
+        cuda_internal::LiquidArenaRuntimeCalls()
+            .memset_async(storage->device, 0, storage->reserved_device_bytes, storage->stream)
+    );
+    if (!status.ok()) {
+      return status;
+    }
+    status = Fence(*storage);
+    if (!status.ok()) {
+      return status;
+    }
+    status = RuntimeResult(*storage, cudaStreamBeginCapture(storage->stream, cudaStreamCaptureModeThreadLocal));
+    if (!status.ok()) {
+      return status;
+    }
+    auto temporary = storage->Range(CudaLiquidRange3D::kSortTemporary);
+    auto temporary_bytes = temporary.pinned.size();
+    const auto sort_error = static_cast<cudaError_t>(cuda_internal::LiquidArenaRuntimeCalls().sort_bins(
+        temporary.device,
+        temporary_bytes,
+        Device<LiquidSortKey3D>(*storage, CudaLiquidRange3D::kSortInputKeys),
+        Device<LiquidSortKey3D>(*storage, CudaLiquidRange3D::kSortOutputKeys),
+        Device<std::size_t>(*storage, CudaLiquidRange3D::kSortInputOrdinals),
+        Device<std::size_t>(*storage, CudaLiquidRange3D::kSortOutputOrdinals),
+        storage->sort_capacity,
+        storage->stream
+    ));
+    status = RuntimeResult(*storage, sort_error);
+    if (status.ok()) {
+      const auto launch_error = static_cast<cudaError_t>(cuda_internal::LiquidArenaRuntimeCalls().launch_architecture(
+          Device<int>(*storage, CudaLiquidRange3D::kArchitecture),
+          storage->stream
+      ));
+      status = RuntimeResult(*storage, launch_error);
+    }
+    // A begun capture must always be ended, including after a failed submission.
+    // Closing capture is cleanup, not permission to resume a poisoned job.
+    ++metrics.graph_creations;
+    const auto capture_error = cuda_internal::LiquidArenaRuntimeCalls().end_capture(storage->stream, &storage->graph);
+    const auto capture_status = RuntimeResult(*storage, capture_error);
+    if (!status.ok()) {
+      return status;
+    }
+    if (!capture_status.ok()) {
+      return capture_status;
+    }
+    ++metrics.executable_creations;
+    status = RuntimeResult(*storage, cudaGraphInstantiate(&storage->executable, storage->graph, 0));
+    if (!status.ok()) {
+      return status;
+    }
+    // Warm device/runtime graph paths outside attempts, then require device evidence.
+    status = RuntimeResult(
+        *storage,
+        cuda_internal::LiquidArenaRuntimeCalls().graph_launch(storage->executable, storage->stream)
+    );
+    if (!status.ok()) {
+      return status;
+    }
+    status = TransferRange(*storage, CudaLiquidRange3D::kArchitecture, false);
+    if (!status.ok()) {
+      return status;
+    }
+    status = Fence(*storage);
+    if (!status.ok()) {
+      return status;
+    }
+    metrics.compiled_architecture = *Pinned<int>(*storage, CudaLiquidRange3D::kArchitecture);
+    if (metrics.compiled_architecture != 1200) {
+      return Error(absl::StatusCode::kFailedPrecondition);
+    }
+    return absl::OkStatus();
+  }();
+  if (!construction_status.ok()) {
+    // Cleanup can discover a more severe runtime fault than the setup rejection.
+    // Observe poison after release so callers never retry a failed drain as capacity.
+    storage.reset();
+    return ledger.runtime_failed ? Error(absl::StatusCode::kInternal) : construction_status;
   }
   return storage.release();
 }
@@ -385,6 +430,10 @@ StageState(LiquidArenaStorage3D& storage, std::size_t bank, const LiquidState3D&
 }
 }  // namespace
 namespace cuda_internal {
+LiquidArenaRuntimeCalls3D& LiquidArenaRuntimeCalls() {
+  static thread_local LiquidArenaRuntimeCalls3D calls;
+  return calls;
+}
 absl::StatusOr<std::uint64_t> TakeLiquidArenaGeneration3D(LiquidArenaLedger3D& ledger) {
   if (ledger.next_generation == UINT64_MAX) {
     return Error(absl::StatusCode::kOutOfRange);
@@ -402,54 +451,111 @@ CudaLiquidRangeView3D LiquidArenaStorage3D::Range(CudaLiquidRange3D name) const 
       {pinned + range.offset, range.bytes},
   };
 }
-LiquidArenaStorage3D::~LiquidArenaStorage3D() {
-  if (!ledger) {
-    return;
+namespace {
+// Intentionally no process-exit destructor: CUDA shutdown ordering cannot prove
+// completion after a failed drain. The OS/driver reclaims this fatal quarantine.
+std::atomic<LiquidArenaStorage3D*> quarantined_storage{nullptr};
+void Quarantine(LiquidArenaStorage3D& storage) {
+  ++storage.ledger->metrics.quarantined_storage_count;
+  storage.references = 1;  // The process-lifetime quarantine becomes the sole owner.
+  auto* head = quarantined_storage.load(std::memory_order_relaxed);
+  do {
+    storage.quarantined_next = head;
+  } while (
+      !quarantined_storage.compare_exchange_weak(head, &storage, std::memory_order_release, std::memory_order_relaxed)
+  );
+}
+// A previous job fault does not prohibit a fresh teardown drain. Safety depends
+// on this call's raw result, not the already-poisoned job's aggregate status.
+bool CleanupSucceeded(LiquidArenaStorage3D& storage, cudaError_t result) {
+  (void)RuntimeResult(storage, result);
+  return result == cudaSuccess;
+}
+// Device is selected by Release. Stop on the first failed operation and retain
+// every remaining handle/payload; counters record calls, live bytes only releases.
+bool DrainAndReleaseResources(LiquidArenaStorage3D& storage) {
+  auto& metrics = storage.ledger->metrics;
+  if (storage.stream && !CleanupSucceeded(storage, LiquidArenaRuntimeCalls().stream_synchronize(storage.stream))) {
+    return false;
   }
-  auto& metrics = ledger->metrics;
-  int previous_device = -1;
-  (void)cudaGetDevice(&previous_device);
-  (void)cudaSetDevice(ledger->device_ordinal);
-  if (stream) {
-    (void)cudaStreamSynchronize(stream);
-  }
-  if (executable) {
+  if (storage.executable) {
     ++metrics.executable_destructions;
-    (void)cudaGraphExecDestroy(executable);
+    if (!CleanupSucceeded(storage, cudaGraphExecDestroy(storage.executable))) {
+      return false;
+    }
+    storage.executable = nullptr;
   }
-  if (graph) {
+  if (storage.graph) {
     ++metrics.graph_destructions;
-    (void)cudaGraphDestroy(graph);
+    if (!CleanupSucceeded(storage, cudaGraphDestroy(storage.graph))) {
+      return false;
+    }
+    storage.graph = nullptr;
   }
-  if (completion) {
+  if (storage.completion) {
     ++metrics.event_destructions;
-    (void)cudaEventDestroy(completion);
+    if (!CleanupSucceeded(storage, cudaEventDestroy(storage.completion))) {
+      return false;
+    }
+    storage.completion = nullptr;
   }
-  if (stream) {
+  if (storage.stream) {
     ++metrics.stream_destructions;
-    (void)cudaStreamDestroy(stream);
+    if (!CleanupSucceeded(storage, cudaStreamDestroy(storage.stream))) {
+      return false;
+    }
+    storage.stream = nullptr;
   }
-  if (device) {
+  if (storage.device) {
     ++metrics.device_frees;
-    (void)cudaFree(device);
-    metrics.live_device_bytes -= reserved_device_bytes;
+    if (!CleanupSucceeded(storage, cudaFree(storage.device))) {
+      return false;
+    }
+    metrics.live_device_bytes -= storage.reserved_device_bytes;
+    storage.device = nullptr;
   }
-  if (pinned) {
+  if (storage.pinned) {
     ++metrics.pinned_frees;
-    (void)cudaFreeHost(pinned);
-    metrics.live_pinned_bytes -= reserved_pinned_bytes;
+    if (!CleanupSucceeded(storage, cudaFreeHost(storage.pinned))) {
+      return false;
+    }
+    metrics.live_pinned_bytes -= storage.reserved_pinned_bytes;
+    storage.pinned = nullptr;
   }
-  if (previous_device >= 0 && previous_device != ledger->device_ordinal) {
-    (void)cudaSetDevice(previous_device);
-  }
-  if (--ledger->references == 0) {
+  return true;
+}
+}  // namespace
+LiquidArenaStorage3D::~LiquidArenaStorage3D() {
+  if (ledger && --ledger->references == 0) {
     delete ledger;
   }
 }
 void ReleaseLiquidArenaStorage3D(LiquidArenaStorage3D* storage) noexcept {
-  if (storage && --storage->references == 0) {
-    delete storage;
+  if (!storage || --storage->references != 0) {
+    return;
   }
+  if (!storage->ledger) {
+    delete storage;
+    return;
+  }
+  int previous_device = -1;
+  if (!CleanupSucceeded(*storage, cudaGetDevice(&previous_device))) {
+    Quarantine(*storage);
+    return;
+  }
+  if (!CleanupSucceeded(*storage, cudaSetDevice(storage->ledger->device_ordinal))) {
+    Quarantine(*storage);
+    return;
+  }
+  const bool released = DrainAndReleaseResources(*storage);
+  if (previous_device != storage->ledger->device_ordinal) {
+    (void)RuntimeResult(*storage, cudaSetDevice(previous_device));
+  }
+  if (!released) {
+    Quarantine(*storage);
+    return;
+  }
+  delete storage;
 }
 }  // namespace cuda_internal
 struct CudaLiquidArena3D::Impl {
@@ -607,10 +713,11 @@ absl::Status CudaLiquidArena3D::PrepareGrowth(LiquidStateCapacities3D capacities
   if (!storage.ok()) {
     return storage.status();
   }
-  std::unique_ptr<LiquidArenaStorage3D> staged(*storage);
+  LiquidArenaStorageOwner3D staged(*storage, ReleaseLiquidArenaStorage3D);
   status = StageState(*staged, 0, frame_start, frame_start.clock);
   if (!status.ok()) {
-    return status;
+    staged.reset();
+    return impl_->ledger->runtime_failed ? Error(absl::StatusCode::kInternal) : status;
   }
   impl_->growth = staged.release();
   return absl::OkStatus();
