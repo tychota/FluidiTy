@@ -69,7 +69,7 @@ std::vector<std::uint8_t> Copy(const LiquidCacheBytes3D& bytes) {
 LiquidResumeMetadata3D Resume() {
   LiquidResumeMetadata3D resume;
   resume.resolved_fingerprint[0] = 13;
-  resume.execution_id[0] = 17;
+  resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = {4, 4, 4, 4, 4};
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
@@ -551,7 +551,7 @@ TEST(LiquidCache3D, MalformedPointManifestAndResolvedRecordsRejectIdentifiersAnd
   LiquidFrameManifest3D manifest{
       {},
       {},
-      {},
+      LiquidExecutionId3D({}),
       {LiquidContentKind3D::kPoints, point_bytes->size(), LiquidContentDigest3D(point_bytes->values())}
   };
   auto manifest_bytes = EncodeLiquidFrameManifest3D(manifest);
@@ -584,7 +584,7 @@ TEST(LiquidCache3D, MalformedPointManifestAndResolvedRecordsRejectIdentifiersAnd
   });
 }
 TEST(LiquidCache3D, ManifestRejectsStatusKindsAndContentPathTampering) {
-  const LiquidFrameManifest3D manifest{{}, {}, {}, {LiquidContentKind3D::kPoints, 128, {}}};
+  const LiquidFrameManifest3D manifest{{}, {}, LiquidExecutionId3D({}), {LiquidContentKind3D::kPoints, 128, {}}};
   auto encoded = EncodeLiquidFrameManifest3D(manifest);
   ASSERT_TRUE(encoded.ok());
   for (int mutation = 0; mutation < 4; ++mutation) {
@@ -629,6 +629,44 @@ TEST(LiquidCache3D, CheckpointRejectsUnrepresentableOrInsufficientCapacityAndBad
     }
     EXPECT_EQ(DecodeLiquidCheckpoint3D(bytes).status().code(), absl::StatusCode::kDataLoss) << mutation;
   }
+}
+TEST(LiquidCache3D, CheckpointEncoderRejectsInconsistentExecutionIdentity) {
+  auto resume = Resume();
+  resume.execution_id[0] ^= 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(PopulatedState(), resume).status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(LiquidCache3D, CheckpointReaderRejectsInconsistentExecutionIdentity) {
+  auto bytes = EncodeLiquidCheckpoint3D(PopulatedState(), Resume());
+  ASSERT_TRUE(bytes.ok());
+  auto* root = wire::GetMutableLiquidState(bytes->values().data());
+  auto* digest = root->mutable_resume()->mutable_execution_id()->mutable_bytes();
+  digest->Mutate(0, static_cast<std::uint8_t>(digest->Get(0) ^ 1));
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  EXPECT_EQ(DecodeLiquidState3D(bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+}
+TEST(LiquidCache3D, ManifestEncoderRejectsInconsistentExecutionIdentity) {
+  LiquidFrameManifest3D manifest{
+      {},
+      Resume().resolved_fingerprint,
+      Resume().execution_id,
+      {LiquidContentKind3D::kPoints, 128, {}},
+  };
+  manifest.resolved_fingerprint[0] ^= 1;
+  EXPECT_EQ(EncodeLiquidFrameManifest3D(manifest).status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(LiquidCache3D, ManifestReaderRejectsInconsistentExecutionIdentity) {
+  const LiquidFrameManifest3D manifest{
+      {},
+      Resume().resolved_fingerprint,
+      Resume().execution_id,
+      {LiquidContentKind3D::kPoints, 128, {}},
+  };
+  auto bytes = EncodeLiquidFrameManifest3D(manifest);
+  ASSERT_TRUE(bytes.ok());
+  auto* root = wire::GetMutableFrameManifest(bytes->values().data());
+  auto* digest = root->mutable_resolved_fingerprint()->mutable_bytes();
+  digest->Mutate(0, static_cast<std::uint8_t>(digest->Get(0) ^ 1));
+  EXPECT_EQ(DecodeLiquidFrameManifest3D(bytes->values()).status().code(), absl::StatusCode::kDataLoss);
 }
 TEST(LiquidCache3D, InvalidBooleanBytesCannotNormalizeIntoValidState) {
   auto encoded = EncodeLiquidState3D(PopulatedState());

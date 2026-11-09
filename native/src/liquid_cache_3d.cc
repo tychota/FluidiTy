@@ -80,8 +80,9 @@ bool ValidResume(const LiquidResumeMetadata3D& resume, LiquidStateCapacities3D u
       growth == LiquidStateCapacities3D{} || (cache_detail::Fits(initial, growth) && initial != growth);
   constexpr std::size_t maximum = static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(LiquidParticleState3D) / 5;
   const LiquidStateCapacities3D width_limit{maximum, maximum, maximum, maximum, maximum};
+  const bool execution_matches = resume.execution_id == LiquidExecutionId3D(resume.resolved_fingerprint);
   return cache_detail::Fits(used, initial) && growth_valid && cache_detail::Fits(initial, width_limit)
-      && cache_detail::Fits(growth, width_limit);
+      && cache_detail::Fits(growth, width_limit) && execution_matches;
 }
 absl::StatusOr<LiquidResumeMetadata3D> ReadResume(const wire::ResumeMetadata* resume, LiquidStateCapacities3D used) {
   if (!resume) {
@@ -366,7 +367,8 @@ LiquidPoint3D ReadPoint(const wire::Point* point) {
   };
 }
 absl::Status ValidManifest(const LiquidFrameManifest3D& manifest, LiquidCacheLimits3D limits) {
-  if (!cache_detail::ValidClock(manifest.clock) || manifest.clock.substep_ordinal != 0
+  const bool execution_matches = manifest.execution_id == LiquidExecutionId3D(manifest.resolved_fingerprint);
+  if (!execution_matches || !cache_detail::ValidClock(manifest.clock) || manifest.clock.substep_ordinal != 0
       || manifest.points.kind != LiquidContentKind3D::kPoints || manifest.points.byte_length < 8) {
     return Invalid();
   }

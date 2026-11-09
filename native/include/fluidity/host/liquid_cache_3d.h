@@ -45,7 +45,7 @@ struct LiquidContentReference3D {
 // device addresses, events or allocator capacity are serialized in LiquidState3D.
 struct LiquidResumeMetadata3D {
   LiquidDigest3D resolved_fingerprint{};
-  LiquidDigest3D execution_id{};
+  LiquidDigest3D execution_id{};  // Must equal LiquidExecutionId3D(resolved_fingerprint).
   LiquidStateCapacities3D capacities;
   LiquidStateCapacities3D capacity_replay_reservations;
   bool operator==(const LiquidResumeMetadata3D&) const = default;
@@ -70,7 +70,7 @@ struct LiquidPointFrame3D {
 struct LiquidFrameManifest3D {
   LiquidClock3D clock;
   LiquidDigest3D resolved_fingerprint{};
-  LiquidDigest3D execution_id{};
+  LiquidDigest3D execution_id{};  // Must equal LiquidExecutionId3D(resolved_fingerprint).
   LiquidContentReference3D points;  // Complete only; checkpoint retention has its own index.
 };
 struct LiquidUpstreamContent3D {

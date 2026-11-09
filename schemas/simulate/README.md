@@ -37,6 +37,9 @@ geometry, seed, material, solver options, forces, field, obstacle, ordered sourc
 model version, backend, numerical-build artifact digest, and ordered upstream content
 roles/ordinals/lengths/digests. Local paths, process metadata and capacities are absent.
 Execution ID uses `fluidity/simulate/execution/v1`, one NUL, and the 32 fingerprint bytes.
+Checkpoint and manifest encoders reject a mismatching execution ID as InvalidArgument;
+readers reject it as DataLoss. This internal consistency check is separate from
+comparing valid stored metadata against the current job.
 Exact content IDs instead hash artifact bytes with ordinary unkeyed BLAKE3-256.
 
 ## Downstream contracts
