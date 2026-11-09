@@ -129,7 +129,16 @@ SCHEMA_CASES = tuple(
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 )
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device",)
+CUDA_CLI_RECEIPT = {
+    "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
+    "cpu_available": True, "cuda_compiled": True, "cuda_available": True,
+    "device_index": 0, "device_name": "NVIDIA GeForce RTX 5060 Ti", "compute_major": 12, "compute_minor": 0,
+    "compiled_architecture": 1200, "driver_version": 13030, "runtime_version": 13030,
+    "launch_result": 0, "copy_result": 0, "synchronize_result": 0, "sample_count": 17,
+}
+PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
 
 
 @pytest.fixture
@@ -307,6 +316,9 @@ def scenario(invocation, monkeypatch):
                 GRAPH_PRESSURE_CASE: GRAPH_RECEIPT,
             }
             self.schema_cases = SCHEMA_CASES
+            self.cli_cases = CLI_CASES
+            self.cuda_cli_cases = CUDA_CLI_CASES
+            self.cuda_cli_receipt = CUDA_CLI_RECEIPT.copy()
             self.ctest_output_overrides = {}
             self.gpu_before_case = {}
             self.gpu_after_case = {}
@@ -408,6 +420,9 @@ def scenario(invocation, monkeypatch):
                 elif label == "^schema$":
                     cases = self.schema_cases
                     skipped, disabled = 0, 0
+                elif label in ("^cli$", "^cuda-cli$"):
+                    cases = self.cli_cases if label == "^cli$" else self.cuda_cli_cases
+                    skipped, disabled = 0, 0
                 elif label == "^cuda-mock$":
                     cases = tuple(f"CudaMock.Case{index}" for index in range(11))
                     skipped, disabled = 0, 0
@@ -436,10 +451,17 @@ def scenario(invocation, monkeypatch):
                     )
                     if label == "^schema$":
                         console = "flatc conformance checked"
+                    if label in ("^cli$", "^cuda-cli$"):
+                        console = f"PASS {name.removeprefix('SimulateCli.')}"
+                        if label == "^cuda-cli$":
+                            console = json.dumps(self.cuda_cli_receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
                     after_case = self.gpu_after_case.get(name, "")
-                    ET.SubElement(testcase, "system-out").text = f"{root}\n{before_case}\n{console}\n{after_case}\n"
+                    ET.SubElement(testcase, "system-out").text = (
+                        console + "\n" if label in ("^cli$", "^cuda-cli$")
+                        else f"{root}\n{before_case}\n{console}\n{after_case}\n"
+                    )
                     if status == "notrun":
                         ET.SubElement(testcase, "skipped")
                 ET.ElementTree(suite).write(arguments[arguments.index("--output-junit") + 1])
@@ -1195,3 +1217,41 @@ def test_schema_gate_rejects_missing_inventory(scenario, missing):
     processes, _, _, _, rejected = scenario
     processes.schema_cases = () if missing == "all" else SCHEMA_CASES[:-1]
     rejected("schema")
+
+
+@pytest.mark.parametrize("preset", ["windows-debug-cpu", "windows-debug-cuda"])
+def test_cli_gate_is_required_and_recorded(scenario, preset):
+    _, _, output, run, _ = scenario
+    run(preset)
+    evidence = json.loads((output / "summary.json").read_text())["evidence"]
+    assert evidence.get("cli") == {"status": "passed", "tests": 5}
+    assert (output / "ctest-cli.xml").is_file()
+    if preset.endswith("cuda"):
+        assert evidence["cuda_cli"]["tests"] == 1
+        assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
+        assert evidence["cuda_cli"]["compiled_architecture"] == 1200
+
+
+@pytest.mark.parametrize("problem", ["missing", "extra", "duplicate", "no_process_receipt"])
+@pytest.mark.parametrize("label", ["cli", "cuda_cli"])
+def test_cli_gate_rejects_incomplete_process_evidence(scenario, problem, label):
+    processes, _, _, _, rejected = scenario
+    attribute = label + "_cases"
+    original = getattr(processes, attribute)
+    if problem == "missing":
+        setattr(processes, attribute, original[:-1])
+    elif problem == "extra":
+        setattr(processes, attribute, (*original, "SimulateCli.unexpected"))
+    elif problem == "duplicate":
+        setattr(processes, attribute, (*original, original[0]))
+    else:
+        processes.ctest_output_overrides[original[0]] = ""
+    rejected("cli", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("field,value", [("device_name", "wrong device"), ("compiled_architecture", 1000),
+                                        ("launch_result", 1), ("sample_count", 0), ("cuda_available", False)])
+def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
+    processes, _, _, _, rejected = scenario
+    processes.cuda_cli_receipt[field] = value
+    rejected("CLI", "windows-debug-cuda")

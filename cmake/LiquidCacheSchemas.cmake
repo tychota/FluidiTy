@@ -14,7 +14,7 @@ foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_
   set(header "${FLUIDITY_CACHE_GENERATED_DIR}/${schema}_generated.h")
   add_custom_command(OUTPUT "${header}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${FLUIDITY_CACHE_GENERATED_DIR}"
-    COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --cpp --scoped-enums --gen-mutable
+    COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --cpp --scoped-enums --gen-mutable --reflect-names
             -I "${cache_schema_dir}" -o "${FLUIDITY_CACHE_GENERATED_DIR}" "${cache_schema_dir}/${schema}.fbs"
     DEPENDS "${cache_schema_dir}/${schema}.fbs" "${cache_schema_dir}/common.fbs" "${FLUIDITY_FLATC_EXECUTABLE}"
     VERBATIM)

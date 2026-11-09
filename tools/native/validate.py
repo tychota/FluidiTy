@@ -23,7 +23,9 @@ PLATFORMS = {
 }
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
+PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device")}
+CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device"}
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
@@ -115,7 +117,7 @@ GPU_OPERATOR_RECEIPT_CASES = {
     "CudaPressure.ComplianceRetainsMeanPressure": "pressure_compliance",
 }
 # The floor prevents partially discovered suites from passing. New tests may increase the count.
-MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11, "schema": len(SCHEMA_REQUIRED)}
+MINIMUM_TESTS = {"cli": len(CLI_REQUIRED), "cuda-cli": len(CUDA_CLI_REQUIRED), "cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11, "schema": len(SCHEMA_REQUIRED)}
 GPU_PROBE_RECEIPT_RE = re.compile(
     r"^device=(?P<device>[\w ()+.-]+) capability=(?P<capability>\d+\.\d+) "
     r"compiled_architecture=(?P<compiled_architecture>\d+) driver_api=(?P<driver_api>\d+) "
@@ -603,8 +605,10 @@ def run_ctest(run, label, required):
     case_outputs = {
         case.attrib["name"]: google_test_case_output(case, label)
         for case in cases
-        if case.attrib["status"] == "run" and label != "schema"
+        if case.attrib["status"] == "run" and label not in ("schema", "cli", "cuda-cli")
     }
+    if label in ("cli", "cuda-cli"):
+        case_outputs = {case.attrib["name"]: case.findtext("system-out", "").strip() for case in cases}
     if cases:
         publish_ctest(run, label, cases)
     require_success(f"ctest-{label}", result)
@@ -615,9 +619,39 @@ def run_ctest(run, label, required):
         raise ValueError("ctest gpu must contain exactly the required hardware probe, operator and graph replay tests")
     if label == "schema" and names != required:
         raise ValueError("ctest schema must contain exactly the required versioned schema conformance tests")
+    if label in ("cli", "cuda-cli"):
+        if names != required:
+            raise ValueError(f"ctest {label} must contain exactly the required process checks")
+        for name, output in case_outputs.items():
+            lines = output.splitlines()
+            expected_lines = 1 if label == "cli" else 2
+            if len(lines) != expected_lines or lines[-1] != f"PASS {name.removeprefix('SimulateCli.')}":
+                raise ValueError(f"ctest {label} is missing successful process evidence")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
     return {"status": "passed", "tests": len(cases)}, case_outputs
+
+
+
+def verify_cuda_cli_receipt(output, qualification, config):
+    try:
+        record = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CUDA CLI device receipt is malformed") from error
+    device = qualification["cuda"]["configurations"][config]
+    architecture = qualification["cuda"]["architecture"]
+    expected = {
+        "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
+        "cpu_available": True, "cuda_compiled": True, "cuda_available": True, "device_index": 0,
+        "device_name": device["device"], "compute_major": architecture // 10, "compute_minor": architecture % 10,
+        "compiled_architecture": architecture * 10, "driver_version": device["driver_api_version"],
+        "runtime_version": device["runtime_version"], "launch_result": 0, "copy_result": 0,
+        "synchronize_result": 0, "sample_count": 17,
+    }
+    if record != expected or any(type(record.get(key)) is not type(value) for key, value in expected.items()):
+        raise ValueError("CUDA CLI did not report the qualified device and executed image")
+    return {"device": device["device"], "compiled_architecture": architecture * 10,
+            "driver_api": device["driver_api_version"], "runtime_api": device["runtime_version"]}
 
 
 def verify_gpu_probe_receipt(probe_output, qualification, config):
@@ -939,10 +973,13 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     fixture_evidence = hash_fixtures(fixtures, build)
     run.execute("build", "cmake", "--build", "--preset", run.preset, env=gtest_env)
     cpu, _ = run_ctest(run, "cpu", CPU_REQUIRED)
-    evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "sanitizer", "proof")}
+    evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "cuda_cli", "sanitizer", "proof")}
     evidence["native_cpu"] = cpu
     evidence["schema"], _ = run_ctest(run, "schema", SCHEMA_REQUIRED)
+    evidence["cli"], _ = run_ctest(run, "cli", CLI_REQUIRED)
     if run.mode == "cuda":
+        evidence["cuda_cli"], cli_outputs = run_ctest(run, "cuda-cli", CUDA_CLI_REQUIRED)
+        evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)
         probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)

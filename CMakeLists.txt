@@ -295,3 +295,5 @@ if(BUILD_TESTING)
     gtest_discover_tests(fluidity_cuda_probe_error_tests PROPERTIES LABELS cuda-mock)
   endif()
 endif()
+
+include(cmake/SimulateCli.cmake)

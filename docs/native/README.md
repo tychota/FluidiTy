@@ -296,3 +296,60 @@ The coupled case feeds CUDA-frozen geometry through CUDA pressure, old/new ghost
 histories and gather, then independently corrects stored and advecting velocity in
 CUDA contact. Informational diagnostics use `boundary_device=` and
 `CTEST_FULL_OUTPUT`; only the exact operator lines are validation receipts.
+
+## Simulate command and inspection protocol
+
+`fluidity_simulate` emits protocol version 1 JSON Lines on stdout. Successful
+read-only commands emit one `result`; failures emit one `error` to stdout and the
+same structured record to stderr, with `E-<DOMAIN>-<NAME>`, domain, name, field,
+object and cause. Exit 0 means success, 2 means invalid arguments, and 1 means an
+operational failure or unavailable command. Successful defaults produce no stderr.
+Arguments and protocol strings are UTF-8; Windows uses the Unicode process entry
+point and filesystem APIs. Scene inputs are the shared binary `FLRS` records.
+
+```text
+fluidity_simulate schema
+fluidity_simulate check --scene resolved.flrs
+fluidity_simulate check --cache CACHE --frame 0
+fluidity_simulate check --cache CACHE --scene resolved.flrs
+fluidity_simulate device-info --backend cpu
+fluidity_simulate device-info --backend cuda --device 0
+```
+
+`schema` reports the generated FlatBuffers identifiers, the embedded shared
+resolved schema, and actual encoded runtime defaults with every scalar present.
+Positive infinity is the JSON string `"Infinity"`; finite doubles preserve round
+trip precision, including the exact mass and momentum quanta. `build_digest` is
+BLAKE3 over the actual executable bytes, independent of its filename or argv.
+These values describe this binary; they do not authorize an older cache to resume.
+
+`check` uses `OpenForInspection` and bounded verified reads. With `--cache`, it
+checks resolved cache identity; `--frame` additionally verifies that one committed
+manifest, its deterministic inspection mirror, and its point content. It does not
+scan or claim verification of unspecified frames or retained checkpoints. Adding
+`--scene` compares the explicit canonical resolved fingerprint. Inspection creates
+no directory or lock, changes no cache content, and always reports
+`resume_authorized:false`. Corruption, missing records and bounds fail closed.
+Default decoding limits are those in `LiquidCacheLimits3D`.
+
+`device-info --backend cpu` reports CPU availability and whether CUDA was compiled;
+`cuda_available:null` means CUDA was not probed. An explicit CUDA request uses the
+qualified native arithmetic probe and reports device name, compute capability,
+executed image architecture, runtime/driver versions and successful operation
+receipts. A CPU-only binary fails explicit CUDA requests; it never substitutes CPU.
+
+The checked `simulate::Command`, `ParseCommand`, `ExecutableDigest` and
+`ProtocolWriter` interfaces are in `native/include/fluidity/host/simulate_cli.h`.
+`run --stage simulate`, `step`, and `replay --frame N --substep N` currently return
+`E-CLI-UNIMPLEMENTED` without filesystem or numerical execution. Their typed scene,
+cache, explicit backend/device, inclusive frame range, resume/preview/trace and
+physical ordinal inputs are reserved for the execution unit. Heartbeat, process
+leases, cancellation, running, resuming and replaying are subsequent units.
+
+Five mandatory CTest `cli` cases launch real executables for arguments, schema,
+identity, inspection and CPU selection. The separate `cuda-cli` case launches an
+explicit real CUDA probe. The locked validator requires exact inventories and
+process receipts, then compares the CUDA device and image with its toolchain
+qualification. These gates do not alter the existing 32 GPU / 30 sanitizer case
+inventories. The Python process driver is invoked by CTest with required binary
+paths; pytest does not conditionally skip missing executables.
