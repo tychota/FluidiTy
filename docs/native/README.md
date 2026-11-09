@@ -340,16 +340,79 @@ receipts. A CPU-only binary fails explicit CUDA requests; it never substitutes C
 
 The checked `simulate::Command`, `ParseCommand`, `ExecutableDigest` and
 `ProtocolWriter` interfaces are in `native/include/fluidity/host/simulate_cli.h`.
-`run --stage simulate`, `step`, and `replay --frame N --substep N` currently return
-`E-CLI-UNIMPLEMENTED` without filesystem or numerical execution. Their typed scene,
-cache, explicit backend/device, inclusive frame range, resume/preview/trace and
-physical ordinal inputs are reserved for the execution unit. Heartbeat, process
-leases, cancellation, running, resuming and replaying are subsequent units.
+`run --stage simulate --scene scene.flrs --cache cache --backend cpu --frame-end 20`
+executes the real scheduler. CUDA builds accept `--backend cuda --device 0` and use
+only the real persistent CUDA backend. Omitting the backend inherits the resolved
+scene; an explicit mismatch fails. Execution requires canonical checked FLRS bytes
+whose build digest matches this actual executable and whose backend matches the
+selected implementation. A moved identical binary remains compatible. Changed
+executable bytes or resolved numerical inputs fail before publication.
 
-Five mandatory CTest `cli` cases launch real executables for arguments, schema,
-identity, inspection and CPU selection. The separate `cuda-cli` case launches an
-explicit real CUDA probe. The locked validator requires exact inventories and
-process receipts, then compares the CUDA device and image with its toolchain
-qualification. These gates do not alter the existing 32 GPU / 30 sanitizer case
-inventories. The Python process driver is invoked by CTest with required binary
-paths; pytest does not conditionally skip missing executables.
+Model version 1 fixes output cadence at **24 frames per second**. Each target is
+computed from its absolute ordinal divided by 24; time is never accumulated from
+rounded frame durations. Unrepresentable/nonadvancing frame ordinals fail, and
+retained checkpoints must have that exact clock. No local timing override is
+accepted on resume. The bounded qualification capacity plan (1024 particles,
+128 blocks, 4096 cells, 24576 faces, 256 sources) is persisted in separate resume
+metadata; it is not physical state or a fingerprint setting. Capacity exhaustion
+is explicit; this CLI does not request automatic growth.
+
+`--initial-state initial.flst` supplies a canonical raw frame-zero state, **not a
+checkpoint envelope**. Its exact bytes must be the resolved initial-particles
+upstream content. Geometry, seed, source identities, zero source counters and clock
+must match. Without such upstream content, the CLI builds an empty state with the
+resolved source identities. Unsupported external source/obstacle artifact roles
+fail explicitly. Already verified retained checkpoints need no initial file; if one
+is supplied, it is always verified. Source emission preserves binary timestep
+arithmetic: a real-valued integer rate/time product is not a promise of an integer
+birth at its rounded binary boundary.
+
+A new run publishes frame zero and its checkpoint, then the inclusive
+`--frame-start`/`--frame-end` range and any prerequisite checkpoint frames (every ten).
+It simulates omitted earlier frames without publishing their points. Existing
+caches require `--resume`; resume starts from the latest verified retained checkpoint
+at or before the explicit frame start, or the end when no start was specified.
+Previously published intermediate output is reproduced and compared by exact bytes,
+then reused by the idempotent store without modification. Retention keeps two full
+checkpoints. An older unavailable range fails `NOT_FOUND` unless a verified initial
+state is supplied for reconstruction; present intermediate frames must still match.
+
+`step --scene scene.flrs --cache cache` executes **one accepted physical substep**
+from the latest retained checkpoint (or a new verified initial state). Permitted dt
+retries remain scheduler-owned. It reports accepted state and never publishes a
+partial point frame. Repeated step requests start again from that retained state.
+`--preview` on run likewise executes read-only, creates no cache and verifies any
+existing matching frames. Cache-producing M1-B preview will require separate
+resolved settings and identity; it is not implemented by this flag.
+
+`replay --cache cache --frame N --substep 0` selects completed frame N.
+`--frame N --substep S` for S>0 selects accepted substep S during N to N+1, matching
+the persisted clock. Interior replay completes the final frame schedule and verifies
+its published points before returning the selected state. Capacity rollback discards
+observations from the abandoned pass. Replay requires that selected completed frame
+(or N+1 for an interior selection) to be published. It is read-only, including
+failures caused by a missing lock. `OpenForReplay(expected_fingerprint)` permits
+verified checkpoints but denies every publication; unauthenticated inspection still
+cannot authorize resume.
+
+`--trace` emits accepted-state records (clock, exact state digest, inventories,
+source counters/remainders and attempt/retry counts) from the final schedule of each
+frame. `published:false` distinguishes these from `frame` publication records.
+Result records include `frames_per_second`, resolved/execution identity and backend;
+CUDA results additionally carry actual compiled architecture, graph replay count,
+reserved device bytes and D2H event milliseconds. Point radius is the spherical
+radius of accepted volume V0*J in meters. Snapshots use the real bounded asynchronous
+queue: all source copies drain before the next whole-frame advance, while the host
+writer lease remains live through manifest publication. `LiquidProgressObserver3D`
+runs outside attempts after acceptance/rollback and can stop safely; a future
+heartbeat/cancel owner must not retain device source leases through that callback.
+Heartbeat, stdin cancellation and process liveness leases remain the separate 9C unit.
+
+Eight mandatory CTest `cli` cases launch real executables for arguments, schema,
+identity, inspection, CPU selection, CPU execution, CPU replay and validation.
+Three separate `cuda-cli` cases require the real CUDA probe, execution and replay.
+The locked validator requires exact inventories, process receipts, qualified image
+identity, positive actual graph/device reservations and finite positive D2H intervals.
+These gates retain the existing 32 GPU / 30 sanitizer inventories. The Python driver
+is invoked with required binary paths, rejects optimized Python, and never silently
+skips an unavailable executable or device.

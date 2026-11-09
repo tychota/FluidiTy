@@ -552,7 +552,7 @@ absl::Status LiquidSubstepScheduler3D::FinishFrame() {
   impl_->frame_active = false;
   return absl::OkStatus();
 }
-absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target) {
+absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgressObserver3D observer) {
   STEP_TRY(BeginFrame(target));
   std::optional<double> retry;
   while (committed().clock.time < target) {
@@ -566,6 +566,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target) {
     const auto outcome = Attempt(*duration);
     if (!outcome.ok()) {
       return outcome.status();
+    }
+    if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted && observer.observe != nullptr) {
+      STEP_TRY(observer.observe(observer.context, committed(), diagnostics(), false));
     }
     retry = outcome->retry_duration;
     if (outcome->disposition == LiquidAttemptDisposition3D::kFatal) {
@@ -613,6 +616,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target) {
       impl_->staging = std::move(*staging);
       impl_->options.capacities = growth;
       ++impl_->diagnostics.capacity_replays;
+      if (observer.observe != nullptr) {
+        STEP_TRY(observer.observe(observer.context, committed(), diagnostics(), true));
+      }
     }
   }
   return FinishFrame();

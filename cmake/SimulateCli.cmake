@@ -1,4 +1,4 @@
-add_executable(fluidity_simulate native/cli/fluidity_simulate.cc)
+add_executable(fluidity_simulate native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc)
 # Embed the exact runtime schema at configure time; reconfigure when it changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs")
@@ -11,7 +11,7 @@ target_include_directories(fluidity_simulate PRIVATE "${FLUIDITY_CACHE_GENERATED
 target_link_libraries(fluidity_simulate PRIVATE fluidity_native fluidity_native_options flatbuffers::flatbuffers BLAKE3::blake3)
 if(FLUIDITY_ENABLE_CUDA)
   target_compile_definitions(fluidity_simulate PRIVATE FLUIDITY_SIMULATE_CUDA=1)
-  target_link_libraries(fluidity_simulate PRIVATE fluidity_cuda_probe)
+  target_link_libraries(fluidity_simulate PRIVATE fluidity_cuda_probe fluidity_cuda_operators)
 endif()
 if(BUILD_TESTING)
   add_executable(fluidity_simulate_fixture native/tests/simulate_fixture.cc)
@@ -22,7 +22,7 @@ if(BUILD_TESTING)
   endif()
   # Ignore inherited PYTHONOPTIMIZE/PYTHONPATH while keeping Unicode paths and
   # diagnostics in UTF-8 explicitly; the driver also rejects direct -O invocation.
-  foreach(case IN ITEMS arguments schema identity inspection cpu_device)
+  foreach(case IN ITEMS arguments schema identity inspection cpu_device cpu_execution cpu_replay execution_validation)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
@@ -30,10 +30,12 @@ if(BUILD_TESTING)
     set_tests_properties(SimulateCli.${case} PROPERTIES LABELS cli)
   endforeach()
   if(FLUIDITY_ENABLE_CUDA)
-    add_test(NAME SimulateCli.cuda_device
+    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay)
+    add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
-        --case cuda_device --cuda)
-    set_tests_properties(SimulateCli.cuda_device PROPERTIES LABELS cuda-cli)
+        --case ${case} --cuda)
+    set_tests_properties(SimulateCli.${case} PROPERTIES LABELS cuda-cli)
+    endforeach()
   endif()
 endif()

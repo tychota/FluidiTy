@@ -556,6 +556,21 @@ absl::StatusOr<LiquidCache3D> LiquidCache3D::Open(
   result.limits_ = limits;
   return result;
 }
+absl::StatusOr<LiquidCache3D> LiquidCache3D::OpenForReplay(
+    const fs::path& root_directory,
+    const LiquidDigest3D& expected_fingerprint,
+    LiquidCacheLimits3D limits
+) {
+  auto result = OpenForInspection(root_directory, limits);
+  if (!result.ok()) {
+    return result.status();
+  }
+  if (result->fingerprint_ != expected_fingerprint) {
+    return Failure(absl::StatusCode::kFailedPrecondition);
+  }
+  result->inspection_only_ = false;
+  return result;
+}
 absl::StatusOr<LiquidCache3D>
 LiquidCache3D::OpenForInspection(const fs::path& requested_directory, LiquidCacheLimits3D limits) {
   auto absolute_directory = AbsoluteDirectory(requested_directory);
@@ -587,11 +602,12 @@ LiquidCache3D::OpenForInspection(const fs::path& requested_directory, LiquidCach
   result.resolved_reference_ = Reference(LiquidContentKind3D::kResolvedScene, bytes->values());
   result.limits_ = limits;
   result.inspection_only_ = true;
+  result.read_only_ = true;
   return result;
 }
 absl::StatusOr<LiquidResolvedScene3D> LiquidCache3D::ReadResolvedScene() const {
   NativeFile lease;
-  STORE_TRY(Lease(root_directory_, lease, false, inspection_only_));
+  STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   return ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
 }
 absl::Status LiquidCache3D::PublishFrame(
@@ -600,7 +616,7 @@ absl::Status LiquidCache3D::PublishFrame(
     const LiquidResumeMetadata3D* resume,
     LiquidCachePublishControl3D control
 ) const {
-  if (inspection_only_) {
+  if (read_only_) {
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
   const bool needs_checkpoint = points.clock.frame_ordinal % 10 == 0;
@@ -612,7 +628,7 @@ absl::Status LiquidCache3D::PublishFrame(
     return point_bytes.status();
   }
   NativeFile lease;
-  STORE_TRY(Lease(root_directory_, lease, false, inspection_only_));
+  STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
@@ -720,7 +736,7 @@ absl::Status LiquidCache3D::PublishFrame(
 }
 absl::StatusOr<LiquidCommittedFrame3D> LiquidCache3D::ReadCommittedFrame(std::uint64_t frame_ordinal) const {
   NativeFile lease;
-  STORE_TRY(Lease(root_directory_, lease, false, inspection_only_));
+  STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
@@ -732,7 +748,7 @@ absl::Status LiquidCache3D::PublishCheckpoint(
     const LiquidResumeMetadata3D& resume,
     LiquidCachePublishControl3D control
 ) const {
-  if (inspection_only_) {
+  if (read_only_) {
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
   auto encoded = EncodeLiquidCheckpoint3D(checkpoint, resume, limits_);
@@ -740,7 +756,7 @@ absl::Status LiquidCache3D::PublishCheckpoint(
     return encoded.status();
   }
   NativeFile lease;
-  STORE_TRY(Lease(root_directory_, lease, false, inspection_only_));
+  STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
@@ -761,7 +777,7 @@ absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t m
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
   NativeFile lease;
-  STORE_TRY(Lease(root_directory_, lease, false, inspection_only_));
+  STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();

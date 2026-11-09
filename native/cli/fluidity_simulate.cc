@@ -306,9 +306,9 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
   for (std::size_t i = 1; i < arguments.size(); ++i) {
     const std::string_view flag = arguments[i];
     const bool allowed = (flag == "--stage" && run) || (flag == "--scene" && (execution || check))
-        || (flag == "--cache" && (execution || check)) || (flag == "--backend" && (execution || device))
-        || (flag == "--device" && (execution || device)) || (flag == "--frame" && (replay || check))
-        || (flag == "--substep" && replay)
+        || (flag == "--initial-state" && execution) || (flag == "--cache" && (execution || check))
+        || (flag == "--backend" && (execution || device)) || (flag == "--device" && (execution || device))
+        || (flag == "--frame" && (replay || check)) || (flag == "--substep" && replay)
         || ((flag == "--frame-start" || flag == "--frame-end" || flag == "--resume" || flag == "--preview") && run)
         || (flag == "--trace" && execution);
     if (!allowed) {
@@ -339,6 +339,8 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
       }
     } else if (flag == "--scene") {
       command.scene_path = PathFromUtf8(value);
+    } else if (flag == "--initial-state") {
+      command.initial_state_path = PathFromUtf8(value);
     } else if (flag == "--cache") {
       command.cache_directory = PathFromUtf8(value);
     } else if (flag == "--backend") {
@@ -365,6 +367,7 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
         command.substep = ordinal;
       } else if (flag == "--frame-start") {
         command.frame_start = ordinal;
+        command.frame_start_explicit = true;
       } else {
         command.frame_end = ordinal;
       }
@@ -486,13 +489,7 @@ absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic
     return DeviceInfo(command, writer, diagnostic);
   }
   if (command.kind != CommandKind::kSchema) {
-    return Fail(
-        absl::StatusCode::kUnimplemented,
-        diagnostic,
-        "command",
-        "",
-        "execution is not yet available in this build"
-    );
+    return Execute(command, writer, diagnostic);
   }
   diagnostic->field = "schema";
   diagnostic->cause = "shared schema or executable identity could not be read";
@@ -508,7 +505,7 @@ absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic
   }
   return writer.Emit(
       "result",
-      "\"command\":\"schema\",\"execution_available\":false,\"build_digest\":" + JsonString(DigestHex(*digest))
+      "\"command\":\"schema\",\"execution_available\":true,\"build_digest\":" + JsonString(DigestHex(*digest))
           + ",\"identifiers\":{\"state\":" + JsonString(wire::LiquidStateIdentifier()) + ",\"points\":"
           + JsonString(wire::PointFrameIdentifier()) + ",\"manifest\":" + JsonString(wire::FrameManifestIdentifier())
           + ",\"resolved_scene\":" + JsonString(wire::ResolvedSceneIdentifier())

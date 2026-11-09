@@ -1,6 +1,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <vector>
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
@@ -177,6 +178,63 @@ TEST(LiquidSubstep3D, CapacityGrowthReplaysWholeFrameOnce) {
   ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
   EXPECT_EQ(scheduler->diagnostics().capacity_replays, 1);
   EXPECT_EQ(scheduler->committed().clock.epoch, 2);
+}
+TEST(LiquidSubstep3D, ProgressObserverInvalidatesDiscardedPassAndPreservesSchedule) {
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.particles = 32;
+  auto initial = Initial();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  auto reference = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  ASSERT_TRUE(scheduler.ok());
+  ASSERT_TRUE(reference.ok());
+  int emits = 0;
+  scheduler->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                            if (stage == LiquidPhysicalStage3D::kEmit
+                                                && ++*static_cast<int*>(context) == 2) {
+                                              return absl::ResourceExhaustedError("");
+                                            }
+                                            return absl::OkStatus();
+                                          }});
+  std::vector<std::pair<std::uint64_t, bool>> observations;
+  ASSERT_TRUE(scheduler
+                  ->AdvanceFrame(
+                      0.01,
+                      {&observations,
+                       [](void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D&, bool rollback) {
+                         static_cast<decltype(observations)*>(context)->emplace_back(state.clock.epoch, rollback);
+                         return absl::OkStatus();
+                       }}
+                  )
+                  .ok());
+  EXPECT_EQ(observations, (decltype(observations){{1, false}, {0, true}, {1, false}, {2, false}}));
+  ASSERT_TRUE(reference->AdvanceFrame(0.01).ok());
+  EXPECT_TRUE(scheduler->committed() == reference->committed());
+}
+TEST(LiquidSubstep3D, ProgressStopRetainsOneAcceptedSubstepWithoutFrameCompletion) {
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  auto scheduler = LiquidSubstepScheduler3D::Create(Initial(), Scene(), options);
+  ASSERT_TRUE(scheduler.ok());
+  EXPECT_EQ(
+      scheduler
+          ->AdvanceFrame(
+              0.01,
+              {nullptr,
+               [](void*, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
+                 EXPECT_FALSE(rollback);
+                 EXPECT_EQ(state.clock.epoch, 1);
+                 EXPECT_EQ(diagnostics.accepted_attempts, 1);
+                 return absl::CancelledError("");
+               }}
+          )
+          .code(),
+      absl::StatusCode::kCancelled
+  );
+  EXPECT_EQ(scheduler->committed().clock.frame_ordinal, 0);
+  EXPECT_EQ(scheduler->committed().clock.substep_ordinal, 1);
+  EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, 0.005);
 }
 TEST(LiquidSubstep3D, RepeatedGravityAndUniformTranslationRemainAnalytic) {
   for (double energy : {0.0, 0.6, 1.0}) {

@@ -24,8 +24,8 @@ PLATFORMS = {
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
 PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
-CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device")}
-CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device"}
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation")}
+CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay"}
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
@@ -654,6 +654,36 @@ def verify_cuda_cli_receipt(output, qualification, config):
             "driver_api": device["driver_api_version"], "runtime_api": device["runtime_version"]}
 
 
+def verify_cuda_execution_receipt(output, qualification, case):
+    try:
+        record = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CUDA CLI execution receipt is malformed") from error
+    replay = case == "cuda_replay"
+    expected = {
+        "protocol_version": 1, "event": "result", "command": "replay" if replay else "run",
+        "backend": "cuda", "frame": 10 if replay else 2, "substep": 1 if replay else 0,
+        "epoch": 21 if replay else 4, "accepted_step": 21 if replay else 4,
+        "particle_count": 1, "next_particle_id": 2, "frames_per_second": 24,
+        "compiled_architecture": qualification["cuda"]["architecture"] * 10, "read_only": replay,
+    }
+    if not isinstance(record, dict) or any(record.get(key) != value or type(record.get(key)) is not type(value)
+                                          for key, value in expected.items()):
+        raise ValueError("CUDA CLI execution did not report the qualified image and accepted state")
+    for key in ("graph_replay_count", "device_reserved_bytes"):
+        if type(record.get(key)) is not int or record[key] <= 0:
+            raise ValueError("CUDA CLI execution has no actual graph/device reservation receipt")
+    elapsed = record.get("snapshot_copy_milliseconds")
+    if type(elapsed) not in (float, int) or not math.isfinite(elapsed) or elapsed <= 0:
+        raise ValueError("CUDA CLI execution has no finite positive D2H event interval")
+    for key in ("state_digest", "resolved_fingerprint", "execution_id"):
+        if not isinstance(record.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", record[key]) is None:
+            raise ValueError("CUDA CLI execution is missing exact state/cache identity")
+    return {"compiled_architecture": expected["compiled_architecture"],
+            "graph_replay_count": record["graph_replay_count"],
+            "snapshot_copy_milliseconds": elapsed, "state_digest": record["state_digest"]}
+
+
 def verify_gpu_probe_receipt(probe_output, qualification, config):
     observed_probe_records = GPU_PROBE_RECEIPT_RE.findall(probe_output)
     qualified_cuda = qualification["cuda"]
@@ -980,6 +1010,10 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     if run.mode == "cuda":
         evidence["cuda_cli"], cli_outputs = run_ctest(run, "cuda-cli", CUDA_CLI_REQUIRED)
         evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
+        evidence["cuda_cli"]["execution"] = {
+            case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
+            for case in ("cuda_execution", "cuda_replay")
+        }
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)
         probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)

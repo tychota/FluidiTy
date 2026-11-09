@@ -129,8 +129,17 @@ SCHEMA_CASES = tuple(
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 )
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device"))
-CUDA_CLI_CASES = ("SimulateCli.cuda_device",)
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay")
+CUDA_EXECUTION_RECEIPT = {
+    "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
+    "frame": 2, "substep": 0, "epoch": 4, "accepted_step": 4, "particle_count": 1,
+    "next_particle_id": 2, "frames_per_second": 24, "compiled_architecture": 1200,
+    "graph_replay_count": 4, "device_reserved_bytes": 50000000, "snapshot_copy_milliseconds": 0.1,
+    "state_digest": "a" * 64, "resolved_fingerprint": "b" * 64, "execution_id": "c" * 64,
+    "time_seconds": 2 / 24, "read_only": False,
+}
+
 CUDA_CLI_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
     "cpu_available": True, "cuda_compiled": True, "cuda_available": True,
@@ -454,7 +463,13 @@ def scenario(invocation, monkeypatch):
                     if label in ("^cli$", "^cuda-cli$"):
                         console = f"PASS {name.removeprefix('SimulateCli.')}"
                         if label == "^cuda-cli$":
-                            console = json.dumps(self.cuda_cli_receipt) + "\n" + console
+                            receipt = self.cuda_cli_receipt
+                            if name != "SimulateCli.cuda_device":
+                                receipt = CUDA_EXECUTION_RECEIPT.copy()
+                                if name == "SimulateCli.cuda_replay":
+                                    receipt.update(command="replay", frame=10, substep=1, epoch=21,
+                                                   accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+                            console = json.dumps(receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
                     after_case = self.gpu_after_case.get(name, "")
@@ -1224,10 +1239,10 @@ def test_cli_gate_is_required_and_recorded(scenario, preset):
     _, _, output, run, _ = scenario
     run(preset)
     evidence = json.loads((output / "summary.json").read_text())["evidence"]
-    assert evidence.get("cli") == {"status": "passed", "tests": 5}
+    assert evidence.get("cli") == {"status": "passed", "tests": 8}
     assert (output / "ctest-cli.xml").is_file()
     if preset.endswith("cuda"):
-        assert evidence["cuda_cli"]["tests"] == 1
+        assert evidence["cuda_cli"]["tests"] == 3
         assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
         assert evidence["cuda_cli"]["compiled_architecture"] == 1200
 
@@ -1255,3 +1270,30 @@ def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
     processes, _, _, _, rejected = scenario
     processes.cuda_cli_receipt[field] = value
     rejected("CLI", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay"])
+@pytest.mark.parametrize("field,value", [
+    ("backend", "cpu"), ("compiled_architecture", 1000), ("graph_replay_count", 0),
+    ("graph_replay_count", True), ("device_reserved_bytes", 0),
+    ("snapshot_copy_milliseconds", 0), ("snapshot_copy_milliseconds", float("nan")),
+    ("snapshot_copy_milliseconds", float("inf")), ("epoch", 0), ("accepted_step", 0),
+    ("state_digest", "not-a-digest"), ("frames_per_second", 30),
+])
+def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = CUDA_EXECUTION_RECEIPT.copy()
+    if case == "cuda_replay":
+        receipt.update(command="replay", frame=10, substep=1, epoch=21,
+                       accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+    receipt[field] = value
+    processes.ctest_output_overrides["SimulateCli." + case] = json.dumps(receipt) + "\nPASS " + case
+    rejected("CLI", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case", ["cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay"])
+def test_cli_each_execution_case_is_required(scenario, case):
+    processes, _, _, _, rejected = scenario
+    attribute = "cuda_cli_cases" if case.startswith("cuda") else "cli_cases"
+    setattr(processes, attribute, tuple(name for name in getattr(processes, attribute) if name != "SimulateCli." + case))
+    rejected("cli", "windows-debug-cuda")

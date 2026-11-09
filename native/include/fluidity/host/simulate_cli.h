@@ -26,6 +26,7 @@ enum class CommandKind {
 struct Command {
   CommandKind kind = CommandKind::kSchema;
   std::filesystem::path scene_path;
+  std::filesystem::path initial_state_path;  // Optional exact raw FLST upstream, never a checkpoint envelope.
   std::filesystem::path cache_directory;
   std::optional<LiquidBackend3D> backend;
   int device_index = 0;
@@ -33,6 +34,7 @@ struct Command {
   std::optional<std::uint64_t> substep;
   std::uint64_t frame_start = 0;
   std::uint64_t frame_end = 1;
+  bool frame_start_explicit = false;
   bool resume = false;
   bool trace = false;
   bool preview = false;
@@ -72,9 +74,15 @@ class ProtocolWriter {
   std::FILE* diagnostics_;
   std::mutex mutex_;
 };
-// Read-only 9A dispatch. check verifies portable self-consistency only, never
-// authorizes resume; optional --scene additionally compares canonical identity.
-// run/step/replay return Unimplemented until the execution unit supplies them.
+// Executes run, one accepted-substep step, or read-only replay. Frame ordinals in
+// replay name the physical clock: N/0 is completed frame N, N/S is accepted step
+// S during N->N+1. Interior replay completes/verifies that final frame's schedule.
+// Preview and step never publish. A new run publishes frame zero, prerequisite
+// checkpoints and the inclusive selected range; resume verifies/reuses existing
+// content without replacement. No process lifecycle/heartbeat is owned here.
+absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic);
+// Dispatch checked inspection or execution. Execution validates the actual module
+// digest, resolved backend and model-v1 24 fps schedule before cache mutation.
 // All result publication occurs after successful verification; errors are returned
 // with diagnostic context for the entry point to emit exactly once.
 absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic);

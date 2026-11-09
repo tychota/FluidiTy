@@ -98,6 +98,17 @@ struct LiquidSubstepBackend3D;
 // Raw standard Philox4x32-10; counter/key word order is little-word first. No allocation.
 std::array<std::uint32_t, 4>
 LiquidPhilox4x32_10(std::array<std::uint32_t, 4> counter, std::array<std::uint32_t, 2> key);
+// Called outside physical attempts after acceptance or a capacity rollback. State
+// and diagnostics borrow only through the call. rollback invalidates every prior
+// intra-frame observation from this pass. A non-OK status stops scheduling with
+// the latest coherent state retained; it does not publish a point frame. The
+// callback must not reenter the scheduler or retain device source leases. Drain
+// pending snapshot sources before AdvanceFrame; this callback is not a device
+// reuse gate. Default-empty observers preserve the numerical schedule exactly.
+struct LiquidProgressObserver3D {
+  void* context = nullptr;
+  absl::Status (*observe)(void*, const LiquidState3D&, const LiquidStepDiagnostics3D&, bool rollback) = nullptr;
+};
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
@@ -148,7 +159,7 @@ class LiquidSubstepScheduler3D {
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
   // accepts at most two dt halvings and one configured frame capacity replay.
   // A failure preserves the latest accepted version (or replay's frame start).
-  absl::Status AdvanceFrame(double target_time);
+  absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
   struct Impl;

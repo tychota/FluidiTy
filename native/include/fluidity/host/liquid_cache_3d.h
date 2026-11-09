@@ -222,6 +222,16 @@ class LiquidCache3D {
       const LiquidDigest3D& expected_fingerprint,
       LiquidCacheLimits3D limits = {}
   );
+  // Authenticated read-only replay: verifies an externally expected fingerprint,
+  // requires an existing lease file and permits verified retained checkpoint reads.
+  // Never creates/writes files; PublishFrame/PublishCheckpoint always return
+  // FailedPrecondition before touching content, including after lease removal.
+  // Unlike inspection, this requires the caller to establish build/backend identity.
+  static absl::StatusOr<LiquidCache3D> OpenForReplay(
+      const std::filesystem::path& root_directory,
+      const LiquidDigest3D& expected_fingerprint,
+      LiquidCacheLimits3D limits = {}
+  );
   // Verifies portable cache self-consistency without creating or writing files.
   // Requires an existing lease file. Inspection instances reject PublishFrame,
   // PublishCheckpoint and ReadCheckpoint with FailedPrecondition; only Open with
@@ -278,5 +288,6 @@ class LiquidCache3D {
   LiquidContentReference3D resolved_reference_;
   LiquidCacheLimits3D limits_;
   bool inspection_only_ = false;
+  bool read_only_ = false;
 };
 }  // namespace fluidity

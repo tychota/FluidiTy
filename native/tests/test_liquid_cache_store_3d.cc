@@ -547,6 +547,34 @@ TEST_F(LiquidCacheStore3D, PortableInspectionCannotPublishOrAuthorizeResume) {
   ASSERT_TRUE(compatible.ok());
   EXPECT_TRUE(compatible->ReadCheckpoint().ok());
 }
+TEST_F(LiquidCacheStore3D, AuthenticatedReplayReadsCheckpointsButCannotWriteEvenAfterLeaseRemoval) {
+  auto cache = LiquidCache3D::Create(root, scene);
+  ASSERT_TRUE(cache.ok());
+  ASSERT_TRUE(Publish(*cache, 0).ok());
+  auto wrong = resume.resolved_fingerprint;
+  wrong[0] ^= 1;
+  EXPECT_EQ(LiquidCache3D::OpenForReplay(root, wrong).status().code(), absl::StatusCode::kFailedPrecondition);
+  auto replay = LiquidCache3D::OpenForReplay(root, resume.resolved_fingerprint);
+  ASSERT_TRUE(replay.ok());
+  EXPECT_TRUE(replay->ReadCheckpoint().ok());
+  EXPECT_TRUE(replay->ReadResolvedScene().ok());
+  EXPECT_TRUE(replay->ReadCommittedFrame(0).ok());
+  EXPECT_EQ(Publish(*replay, 1).code(), absl::StatusCode::kFailedPrecondition);
+  SetFrame(0);
+  EXPECT_EQ(replay->PublishCheckpoint(state, resume).code(), absl::StatusCode::kFailedPrecondition);
+  std::error_code error;
+  ASSERT_TRUE(fs::remove(root / ".writer.lock", error));
+  ASSERT_FALSE(error);
+  EXPECT_EQ(Publish(*replay, 1).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(replay->PublishCheckpoint(state, resume).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(replay->ReadCheckpoint().status().code(), absl::StatusCode::kNotFound);
+  EXPECT_EQ(
+      LiquidCache3D::OpenForReplay(root, resume.resolved_fingerprint).status().code(),
+      absl::StatusCode::kNotFound
+  );
+  EXPECT_FALSE(fs::exists(root / ".writer.lock"));
+  EXPECT_FALSE(fs::exists(FramePath(1)));
+}
 TEST_F(LiquidCacheStore3D, InspectionDoesNotCreateAMissingDirectoryOrLease) {
   EXPECT_EQ(LiquidCache3D::OpenForInspection(root / "absent").status().code(), absl::StatusCode::kNotFound);
   EXPECT_FALSE(fs::exists(root / "absent"));
