@@ -27,6 +27,11 @@ MODULE_TARGETS = {
                         'quadratic_shifted_basis', 'quadratic_tensor_moments',
                         'affine_reconstruction_of_moments', 'mac_deposit_conserves_row_moments'),
     'UniformTile': ('uniform_mac_tile_contains_stencil', 'uniform_mac_tile_product'),
+    'LiquidTransaction': ('liquid_reject_preserves_committed_state',
+                          'liquid_finite_rejects_preserve_committed_state',
+                          'liquid_accept_advances_clock_once',
+                          'liquid_same_state_key_replays_trial',
+                          'liquid_adaptation_preserves_input_snapshot'),
 }
 TARGETS = tuple('Fluidity.' + target for targets in MODULE_TARGETS.values() for target in targets)
 ALLOWED = {'propext', 'Classical.choice', 'Quot.sound'}
@@ -54,7 +59,10 @@ def validate_receipt(receipt, checker):
 
 def audit_axioms(output):
     found = {}
-    for name, axioms in re.findall(r"'([^']+)' depends on axioms: \[([^\]]*)\]", output):
+    # Lean emits a separate complete line for a theorem with an empty closure.
+    axiom_line = (r"^(?:info: [^\r\n]+:\d+:\d+: )?'([^'\r\n]+)' "
+                  r"(?:depends on axioms: \[([^\]\r\n]*)\]|does not depend on any axioms)\r?$")
+    for name, axioms in re.findall(axiom_line, output, re.MULTILINE):
         if name in TARGETS:
             if name in found:
                 raise ValueError(f'duplicate axiom target: {name}')

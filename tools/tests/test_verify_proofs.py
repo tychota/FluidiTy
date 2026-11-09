@@ -165,7 +165,6 @@ PRESSURE_CONTRACTS = {
 
 def test_pressure_topology_and_defect_inventory():
     assert PRESSURE_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 21
 
 
 @pytest.mark.parametrize('missing', sorted(PRESSURE_CONTRACTS))
@@ -176,3 +175,45 @@ def test_pressure_contract_missing_closure_fails_audit(missing):
     )
     with pytest.raises(ValueError, match='missing target'):
         verify.audit_axioms(output)
+
+
+TRANSACTION_CONTRACTS = {
+    'Fluidity.liquid_reject_preserves_committed_state',
+    'Fluidity.liquid_finite_rejects_preserve_committed_state',
+    'Fluidity.liquid_accept_advances_clock_once',
+    'Fluidity.liquid_same_state_key_replays_trial',
+    'Fluidity.liquid_adaptation_preserves_input_snapshot',
+}
+
+
+def test_liquid_transaction_contract_inventory():
+    assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
+    assert len(verify.TARGETS) == 26
+
+
+def test_axiom_free_closures_are_checked():
+    output = '\n'.join(f"'{name}' does not depend on any axioms" for name in verify.TARGETS)
+    assert verify.audit_axioms(output) == {name: [] for name in verify.TARGETS}
+
+
+@pytest.mark.parametrize('missing', sorted(TRANSACTION_CONTRACTS))
+def test_liquid_transaction_missing_closure_fails_audit(missing):
+    output = '\n'.join(
+        f"'{name}' does not depend on any axioms" for name in verify.TARGETS if name != missing
+    )
+    with pytest.raises(ValueError, match='missing target'):
+        verify.audit_axioms(output)
+
+
+def test_axiom_audit_rejects_malformed_and_mixed_duplicate_lines():
+    target = 'Fluidity.liquid_reject_preserves_committed_state'
+    output = '\n'.join(
+        f"info: Fluidity/Proof.lean:1:0: '{name}' does not depend on any axioms" for name in verify.TARGETS
+    )
+    assert verify.audit_axioms(output)[target] == []
+    malformed = output.replace(f"'{target}' does not depend on any axioms", f"'{target}' does not depend on any axioms?")
+    with pytest.raises(ValueError, match='missing target'):
+        verify.audit_axioms(malformed)
+    duplicate = output + f"\ninfo: Fluidity/Proof.lean:2:0: '{target}' depends on axioms: [propext]"
+    with pytest.raises(ValueError, match='duplicate axiom target'):
+        verify.audit_axioms(duplicate)

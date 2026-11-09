@@ -1,8 +1,8 @@
-# Exact pressure, transfer, integer and tile contracts
+# Exact pressure, transfer, integer, tile and transaction contracts
 
-This pinned Lean project checks the M0 F5/F8 pilots, integrated-pressure F5/F6, and the first uniform-transfer slice of
-[F1, F2, F8 and F10](../docs/references/formal-contracts.md). It does not discharge all ten contract
-families or the full M1 milestone. All theorem arithmetic is over mathematical reals and integers.
+This pinned Lean project checks the M0 F5/F8 pilots, integrated-pressure F5/F6, the uniform-transfer slice of
+[F1, F2, F8 and F10](../docs/references/formal-contracts.md), and the F9 committed-state transition.
+The proofs use exact reals and unbounded integer and natural-number counts.
 
 ## Build and independent verification
 
@@ -20,12 +20,14 @@ lake env lean Fluidity/PressureCorrection.lean
 lake env lean Fluidity/FixedPoint.lean
 lake env lean Fluidity/UniformTransfer.lean
 lake env lean Fluidity/UniformTile.lean
+lake env lean Fluidity/LiquidTransaction.lean
 ```
 
 The default build includes typed consumers in `Fluidity.lean`: concrete tensor reconstruction,
 nearest-rounding and count premises implying the inclusive integer budget, a signed negative tile
 with both quadratic shifts and cubic normal, and distinct-row angular moments with a swapped-D
-negative control. Build outputs and retained local evidence are ignored.
+negative control. The transaction consumers require the full state equality, clock, replay and
+adaptation signatures. Build outputs and retained local evidence are ignored.
 
 Independent verification uses `olean-export` **0.2.0** and experimental `nl-fast` from nano-lean
 commit `54ce971a5ac2513a1bac0ac9bca73f672196c0f2`, built with Rust **1.97.1**. Build the tools from
@@ -271,9 +273,9 @@ sum on the anchored component. An unsolved Dirichlet/compliance candidate has re
 physical integrated defect +3. Changing only correction's scale makes the defect 2 while the
 original minus-residual remains 3; the negative control proves these differ.
 
-The common `MODULE_TARGETS` audit/export inventory now has 21 targets: all 17 earlier targets,
-three in `PressureTopology`, and one in `PressureCorrection`. Missing any new closure fails the
-Python audit. Every target is independently exported and checked; only `propext`,
+The pressure slice added three targets in `PressureTopology` and one in `PressureCorrection`.
+Missing any required closure fails the audit. Every target is independently exported and checked.
+Only `propext`,
 `Classical.choice`, and `Quot.sound` are allowed. No IEEE arithmetic, numerical convergence rate,
 geometry accuracy, multigrid effectiveness, or GPU correctness is established by these theorems.
 
@@ -325,3 +327,36 @@ premises. The exact oracle includes a deliberately wrong affine-row control.
 These are separate gates: compiled exact proofs, independent kernel acceptance, Python exact
 fixtures, and native runtime tests. None proves IEEE arithmetic, memory safety, CUDA race freedom,
 arbitrary compatible ghosts, a full simulator, or overall simulation stability.
+
+## F9 committed state and attempt control
+
+`LiquidCommittedState` represents the coherent accepted value. Its clock corresponds to
+`LiquidClock3D`: accepted time in seconds, completed-frame ordinal, within-frame substep ordinal,
+accepted-step ordinal and epoch. The fields below mirror the valid ordered extents of
+`LiquidState3D` in `native/include/fluidity/host/liquid_state_3d.h`.
+
+| Lean fields | Runtime correspondence |
+|---|---|
+| `geometry` | World origin and cell width in `UniformMacGeometry3D`. |
+| `particles` | Every `LiquidParticleState3D` field, including stable ID/tag, position/velocity, APIC slopes and enable flag, mass, reference volume, volume ratio, side and PIC initialization. |
+| `blocks`, `cells`, `faces` | Owned signed coordinates, generation and hysteresis, occupancy and previous pressure, and face normal axis, slot, carrier velocity, validity, side and eligibility. |
+| `sources`, `randomSeed`, `nextParticleId` | Ordered source ordinals, child counters and fractional remainders, Philox seed and next particle ID. |
+| `particleMaterialHistory`, `bodyState`, `cellPhysicalInventories`, `componentLineage`, `gasScalarsAndEnthalpy`, `whitewaterEvents`, `whitewaterAccumulators` | Separately typed later-domain fields from the design's persistent inventory. Each can be a unit value for the M1 liquid-only model. |
+
+The model treats numeric fields as exact real, signed integer or natural-number values as
+appropriate. Fixed-width limits, validity checks, unused capacity, checkpoint envelope and resume
+reservations belong to the runtime. The trial carries physical fields and an accepted duration,
+with no proposed clock. Retry duration and diagnostic values are separate from committed state.
+The runtime supplies a validated positive duration and a correct frame-boundary decision.
+
+| Audited target | Result |
+|---|---|
+| `liquid_reject_preserves_committed_state` | One reject returns the entire committed value, including its clock. |
+| `liquid_finite_rejects_preserve_committed_state` | Folding any finite list of rejected attempts returns that value, regardless of retry durations or diagnostics. |
+| `liquid_accept_advances_clock_once` | One acceptance installs the trial fields, adds the accepted duration once, advances accepted-step ordinal and epoch once, and updates frame/substep at the same boundary. |
+| `liquid_same_state_key_replays_trial` | Evaluations of one pure trial function with equal state and accepted-step key have equal outcomes and committed results, even when diagnostics differ. The shared function fixes settings, execution artifact and requested duration. |
+| `liquid_adaptation_preserves_input_snapshot` | A separate pure adaptation proposes new fields and retains its original committed snapshot. The proposal has no clock or publication operation. |
+
+All five targets are included in the 26-target independent export and axiom audit. Runtime
+fault injection and serialized-state comparison are separate evidence for the C++ ownership
+discipline, allocation/retry rules, CUDA ordering, floating-point behavior and actual byte replay.
