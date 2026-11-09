@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from liquid_capillary_acceptance_metrics import (
+    _interpolated_extrema,
     compare_dam_break_energy_blends,
     evaluate_drop_frequency,
     evaluate_static_sphere,
@@ -102,7 +103,7 @@ def test_static_sphere_one_frame_spike(coarse_speed, spike_speed, refinement_pas
     assert result["fine"]["maximum_speed_m_per_s"] == spike_speed
 
 
-def drop_samples(omega, decay, *, offset=0, phase=0):
+def drop_samples(omega, decay, *, amplitude=0.001, offset=0, phase=0):
     centers = sphere_centers(5)
     volume = 4 * math.pi / 3 * 0.125**3 / len(centers)
     # Two symmetric sheets at +/-sqrt(C + q(t)) yield an exact analytic
@@ -112,7 +113,7 @@ def drop_samples(omega, decay, *, offset=0, phase=0):
     frames = []
     for ordinal in range(217):
         time = ordinal / 24
-        q = 0.001 * math.exp(-decay * time) * math.cos(omega * time + phase)
+        q = amplitude * math.exp(-decay * time) * math.cos(omega * time + phase)
         perturbation = 0.0015 * math.cos(3.3 * time)
         points = []
         for particle_id in range(1, n + 1):
@@ -151,6 +152,28 @@ def test_drop_rejects_excessive_damping_with_correct_frequency():
     assert not result["passed"]
     assert result["frequency_passed"]
     assert result["damping_ratio"] > 0.20
+
+
+def test_drop_rejects_amplitude_growth_with_correct_frequency():
+    result = evaluate_drop_frequency(drop_samples(2.024, -0.8, amplitude=1e-6))
+    assert result["frequency_passed"]
+    assert result["log_amplitude_decrement"] < 0
+    assert result["damping_ratio"] == pytest.approx(-0.8 / math.hypot(2.024, 0.8), rel=0.005)
+    assert not result["damping_passed"]
+    assert not result["passed"]
+
+
+@pytest.mark.parametrize("values", [
+    (1.50e308, 1.79e308, 1.78e308),  # The finite samples fit a vertex above the largest float.
+    (-1.79e308, 1.79e308, 1.78e308),  # The local slope and curvature overflow.
+])
+def test_drop_rejects_overflow_from_finite_extremum_samples(values):
+    samples = [
+        {"time_seconds": ordinal / 24, "quadrupole_m2": value}
+        for ordinal, value in enumerate(values, 24)
+    ]
+    with pytest.raises(ValueError, match="nonfinite interpolated drop extremum"):
+        _interpolated_extrema(samples)
 
 
 def test_drop_rejects_signal_without_complete_same_sign_periods():

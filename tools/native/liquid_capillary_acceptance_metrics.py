@@ -199,9 +199,13 @@ def _interpolated_extrema(samples):
                 continue
             slope = (after - before) / 2
             curvature = (before - peak) + (after - peak)
+            if not all(map(finite_number, (slope, curvature))):
+                raise ValueError("nonfinite interpolated drop extremum")
             offset = -slope / curvature
             time = middle["time_seconds"] + offset / FRAMES_PER_SECOND
             amplitude = peak + slope * offset / 2
+            if not all(map(finite_number, (time, amplitude))):
+                raise ValueError("nonfinite interpolated drop extremum")
             if DROP_FIT_WINDOW_SECONDS[0] <= time <= DROP_FIT_WINDOW_SECONDS[1] and amplitude > 0:
                 extrema[sign].append({"time_seconds": time, "amplitude_m2": amplitude})
     return extrema
@@ -225,7 +229,9 @@ def evaluate_drop_frequency(frame_samples):
     contribute to the fit. Each sign must contribute a complete period. The
     time residual is RMS around the median period with one phase per sign.
     The damping residual uses the same construction with log magnitudes.
-    Malformed observations raise ValueError. Physical misses return passed=False.
+    The measured damping ratio must be in [0, 0.20]. A growing mode keeps
+    its signed decrement and ratio in the report. Malformed observations
+    raise ValueError. Physical misses return passed=False.
     """
     radius_in_cells, last_frame = CAPILLARY_CASES[DROP_CASE]
     particle_count = len(_sphere_indices(radius_in_cells, radius_in_cells))
@@ -266,25 +272,35 @@ def evaluate_drop_frequency(frame_samples):
     times = [[peak["time_seconds"] for peak in peaks] for peaks in extrema.values()]
     log_amplitudes = [[math.log(peak["amplitude_m2"]) for peak in peaks] for peaks in extrema.values()]
     period = median(end - start for group in times for start, end in zip(group, group[1:]))
+    if not finite_number(period) or period <= 0:
+        raise ValueError("invalid fitted drop period")
     decrement = median(start - end for group in log_amplitudes for start, end in zip(group, group[1:]))
     angular_frequency = math.tau / period
     correction = math.hypot(math.tau, decrement)
+    corrected_frequency = correction / period
     damping_ratio = decrement / correction
     frequency_error = abs(angular_frequency - target) / target
-    frequency_passed = finite_number(angular_frequency) and angular_frequency > 0 and frequency_error <= frequency_limit
-    damping_passed = damping_ratio <= damping_limit
+    time_residual = _rms_fit_residual(times, period)
+    damping_residual = _rms_fit_residual(log_amplitudes, -decrement)
+    if not all(map(finite_number, (
+        angular_frequency, corrected_frequency, decrement, damping_ratio,
+        frequency_error, time_residual, damping_residual,
+    ))):
+        raise ValueError("nonfinite fitted drop metric")
+    frequency_passed = angular_frequency > 0 and frequency_error <= frequency_limit
+    damping_passed = 0 <= damping_ratio <= damping_limit
     result.update(
         passed=frequency_passed and damping_passed,
         frequency_passed=frequency_passed,
         damping_passed=damping_passed,
         angular_frequency_rad_per_s=angular_frequency,
-        damping_corrected_angular_frequency_rad_per_s=correction / period,
+        damping_corrected_angular_frequency_rad_per_s=corrected_frequency,
         relative_frequency_error=frequency_error,
         median_period_seconds=period,
-        fit_time_rms_residual_seconds=_rms_fit_residual(times, period),
+        fit_time_rms_residual_seconds=time_residual,
         log_amplitude_decrement=decrement,
         damping_ratio=damping_ratio,
-        damping_log_amplitude_rms_residual=_rms_fit_residual(log_amplitudes, -decrement),
+        damping_log_amplitude_rms_residual=damping_residual,
     )
     return result
 
