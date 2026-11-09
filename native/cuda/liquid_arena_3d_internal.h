@@ -5,6 +5,7 @@
 
 #include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "liquid_arena_3d_bridge.h"
+#include "liquid_geometry_stages_3d_bridge.h"
 #include "mac_pressure_3d_bridge.h"
 namespace fluidity::cuda_internal {
 // Thread-local dispatch for setup/submission and final drain. Defaults call the
@@ -17,6 +18,7 @@ struct LiquidArenaRuntimeCalls3D {
   decltype(&cudaEventRecord) event_record = cudaEventRecord;
   decltype(&cudaEventSynchronize) event_synchronize = cudaEventSynchronize;
   decltype(&LaunchMacPressure3D) launch_pressure = LaunchMacPressure3D;
+  decltype(&LaunchLiquidFieldSamples3D) launch_field_samples = LaunchLiquidFieldSamples3D;
   decltype(&SortLiquidBins3D) sort_bins = SortLiquidBins3D;
   decltype(&LaunchLiquidArenaArchitecture3D) launch_architecture = LaunchLiquidArenaArchitecture3D;
   decltype(&cudaStreamEndCapture) end_capture = cudaStreamEndCapture;

@@ -1,10 +1,125 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <functional>
 
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
 namespace {
+using liquid_step_internal::Error;
+using liquid_step_internal::Finite;
+
+bool Overlap(std::span<const std::byte> first, std::span<const std::byte> second) {
+  if (first.empty() || second.empty()) {
+    return false;
+  }
+  const std::less<const std::byte*> before;
+  return before(first.data(), second.data() + second.size()) && before(second.data(), first.data() + first.size());
+}
+
+template <typename Sample>
+absl::Status CheckBatch(std::span<const Sample> samples, std::span<double> distances) {
+  if (samples.size() != distances.size() || Overlap(std::as_bytes(samples), std::as_bytes(distances))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (samples.size() > kLiquidFieldBatchCapacity3D) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  return absl::OkStatus();
+}
+
+// Keep the entire output private until every sample has been checked.
+template <typename Sample, typename Evaluate>
+absl::Status PublishDistances(std::span<const Sample> samples, std::span<double> distances, Evaluate evaluate) {
+  std::array<double, kLiquidFieldBatchCapacity3D> staged_distances;
+  for (std::size_t index = 0; index < samples.size(); ++index) {
+    const auto distance = evaluate(samples[index]);
+    if (!distance.ok()) {
+      return distance.status();
+    }
+    staged_distances[index] = *distance;
+  }
+  std::ranges::copy_n(staged_distances.begin(), distances.size(), distances.begin());
+  return absl::OkStatus();
+}
+
+absl::Status SampleWorldBatch(
+    void*,
+    const LiquidSceneField3D& field,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const Vec3> positions,
+    std::span<double> distances
+) {
+  const auto extent = CheckBatch(positions, distances);
+  if (!extent.ok()) {
+    return extent;
+  }
+  if (Overlap(std::as_bytes(distances), std::as_bytes(particles))
+      || Overlap(std::as_bytes(distances), std::as_bytes(std::span(&field, 1)))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&field)) {
+    if (!Finite(sphere->world_center) || !std::isfinite(sphere->radius) || sphere->radius <= 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  } else if (const auto* particle_union = std::get_if<LiquidParticleSphereUnion3D>(&field)) {
+    if (!std::isfinite(particle_union->radius) || particle_union->radius <= 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  } else if (!std::isfinite(std::get<LiquidHorizontalPlaneSurface3D>(field).world_surface_height_y)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  for (const auto& particle : particles) {
+    if (!Finite(particle.world_position)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  }
+  if (!std::ranges::all_of(positions, Finite)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  return PublishDistances(positions, distances, [&](Vec3 position) -> absl::StatusOr<double> {
+    const double distance = liquid_step_internal::FieldDistance(field, particles, position);
+    if (!std::isfinite(distance)) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    return distance;
+  });
+}
+
+absl::Status SampleLatticePlaneBatch(
+    void*,
+    const LiquidHorizontalPlaneSurface3D& plane,
+    UniformMacGeometry3D geometry,
+    std::span<const double> lattice_ordinates_y,
+    std::span<double> distances
+) {
+  const auto extent = CheckBatch(lattice_ordinates_y, distances);
+  if (!extent.ok()) {
+    return extent;
+  }
+  if (Overlap(std::as_bytes(distances), std::as_bytes(std::span(&plane, 1)))
+      || !std::isfinite(plane.world_surface_height_y) || !std::isfinite(geometry.world_origin.y)
+      || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (!std::ranges::all_of(lattice_ordinates_y, [](double ordinate) {
+        return std::isfinite(ordinate);
+      })) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  return PublishDistances(lattice_ordinates_y, distances, [&](double lattice_y) -> absl::StatusOr<double> {
+    const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+        plane.world_surface_height_y,
+        {geometry.world_origin.y, lattice_y, geometry.cell_width}
+    );
+    if (!distance.ok()) {
+      return boundary_internal::ArithmeticStatus(distance.status(), true);
+    }
+    return *distance;
+  });
+}
+
 absl::Status ApplyForces(
     void*,
     SparseMacGridView3D grid,
@@ -219,18 +334,8 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
             return GatherLiquidBoundaryParticles3D(inputs, workspace);
           },
       .update_particles = UpdateParticles,
-      .sample_lattice_plane =
-          [](void*, const LiquidHorizontalPlaneSurface3D& plane, UniformMacGeometry3D geometry, double sample_lattice_y
-          ) -> absl::StatusOr<double> {
-        const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
-            plane.world_surface_height_y,
-            {geometry.world_origin.y, sample_lattice_y, geometry.cell_width}
-        );
-        if (!distance.ok()) {
-          return boundary_internal::ArithmeticStatus(distance.status(), true);
-        }
-        return *distance;
-      },
+      .sample_field_batch = SampleWorldBatch,
+      .sample_lattice_plane = SampleLatticePlaneBatch,
   };
 }
 }  // namespace fluidity

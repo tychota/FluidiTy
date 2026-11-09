@@ -10,6 +10,7 @@
 #endif
 #include <iomanip>
 #include <iostream>
+#include <limits>
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
@@ -747,6 +748,94 @@ void CheckNumericalRejection() {
   EXPECT_EQ(DeviceBytes(*lease), bytes);
 }
 
+// Count actual CUDA calls and forward them to the current real dispatch.
+class FieldRuntimeObservation {
+ public:
+  FieldRuntimeObservation() : saved_(cuda_internal::LiquidArenaRuntimeCalls()) {
+    launches = 0;
+    fences = 0;
+    auto& runtime = cuda_internal::LiquidArenaRuntimeCalls();
+    runtime.launch_field_samples = [](const cuda_internal::LiquidSampleQuery3D* query,
+                                      const Vec3* centers,
+                                      const Vec3* positions,
+                                      double* distances,
+                                      int* architecture,
+                                      std::size_t sample_count,
+                                      void* stream) {
+      ++launches;
+      return cuda_internal::LaunchLiquidFieldSamples3D(
+          query,
+          centers,
+          positions,
+          distances,
+          architecture,
+          sample_count,
+          stream
+      );
+    };
+    runtime.event_synchronize = [](cudaEvent_t event) {
+      ++fences;
+      return cudaEventSynchronize(event);
+    };
+  }
+  ~FieldRuntimeObservation() {
+    cuda_internal::LiquidArenaRuntimeCalls() = saved_;
+  }
+  static inline std::size_t launches = 0;
+  static inline std::size_t fences = 0;
+
+ private:
+  cuda_internal::LiquidArenaRuntimeCalls3D saved_;
+};
+
+void CheckRejectedFieldBatch() {
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 2.1};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto operations = backend->operations();
+  static const auto real_batch = operations.sample_field_batch;
+  static std::size_t batch_count;
+  batch_count = 0;
+  operations.sample_field_batch = [](void* context,
+                                     const LiquidSceneField3D& field,
+                                     std::span<const LiquidParticleState3D> particles,
+                                     std::span<const Vec3> positions,
+                                     std::span<double> distances) {
+    if (++batch_count != 2) {
+      return real_batch(context, field, particles, positions, distances);
+    }
+    std::array<Vec3, kLiquidFieldBatchCapacity3D> overflowed_positions;
+    std::ranges::copy(positions, overflowed_positions.begin());
+    constexpr double maximum = std::numeric_limits<double>::max();
+    overflowed_positions[positions.size() - 1] = {maximum, maximum, 0};
+    return real_batch(context, field, particles, std::span(overflowed_positions).first(positions.size()), distances);
+  };
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, operations);
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto lease = backend->AcquireCommitted();
+  ASSERT_TRUE(lease.ok()) << lease.status();
+  const auto bytes = DeviceBytes(*lease);
+  const auto identity = lease->identity();
+  ASSERT_TRUE(gpu->BeginFrame(0.01).ok());
+  {
+    const FieldRuntimeObservation calls;
+    MeasuredAttempt(*gpu, *backend, 0.01, LiquidAttemptDisposition3D::kFatal);
+    EXPECT_EQ(calls.launches, 2);
+    EXPECT_EQ(calls.fences, 2);
+  }
+  EXPECT_EQ(batch_count, 2);
+  EXPECT_EQ(gpu->diagnostics().failure_code, absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(gpu->diagnostics().failed_stage, LiquidPhysicalStage3D::kActivate);
+  EXPECT_EQ(gpu->committed(), initial);
+  const auto after = backend->AcquireCommitted();
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_EQ(after->identity(), identity);
+  EXPECT_EQ(DeviceBytes(*after), bytes);
+}
+
 TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   cudaDeviceProp properties{};
@@ -766,6 +855,20 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   const auto gpu_status = gpu->AdvanceFrame(0.01);
   ASSERT_TRUE(gpu_status.ok()) << gpu_status;
   Receipt("liquid_open_tank_substep_3d", backend->usage());
+  {
+    const FieldRuntimeObservation calls;
+    ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectMixedSignedFieldSupport(backend->operations(), 1e-12));
+    EXPECT_EQ(calls.launches, 2);
+    EXPECT_EQ(calls.fences, 2);
+  }
+  {
+    const FieldRuntimeObservation calls;
+    ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectFieldBatchContract(backend->operations()));
+    // Valid world, compensated plane, and the world arithmetic error reach
+    // the hardware. Empty, invalid, and oversized batches submit nothing.
+    EXPECT_EQ(calls.launches, 3);
+    EXPECT_EQ(calls.fences, 3);
+  }
   ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectWallSamples(backend->operations()));
   ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectTranslatedFaceUsesLatticeResidual(backend->operations()));
   ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectParticleUpdateUsesBothVelocityFields(backend->operations()));
@@ -784,6 +887,7 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
       tank_staging_test::ExpectTranslatedPlaneKeepsWetCell(translated_backend->operations(), options)
   );
   EXPECT_EQ(translated_backend->usage().compiled_architecture, 1200);
+  ASSERT_NO_FATAL_FAILURE(CheckRejectedFieldBatch());
 }
 
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {

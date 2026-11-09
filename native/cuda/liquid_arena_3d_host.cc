@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "fluidity/host/liquid_substep_backend_3d.h"
 #include "liquid_arena_3d_internal.h"
 #include "liquid_boundary_3d_bridge.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
@@ -198,9 +199,12 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
       && add(Range::kPressureRows, capacity.cells, 2 * sizeof(cuda_internal::PressureRow3D))
       && add(Range::kPressureOutput, *pressure_output_count, sizeof(double))
       && add(Range::kPressureState, 1, sizeof(cuda_internal::PressureState3D))
-      && add(Range::kSamplePositions, std::max({capacity.particles, capacity.faces, capacity.cells}), 8 * sizeof(Vec3))
-      && add(Range::kSampleDistances, std::max({capacity.particles, capacity.faces, capacity.cells}), 8 * sizeof(double)
-      )
+      && add(Range::kSamplePositions,
+             std::max({capacity.particles, capacity.faces, capacity.cells}),
+             kLiquidFieldSampleSlotsPerCapacity3D * sizeof(Vec3))
+      && add(Range::kSampleDistances,
+             std::max({capacity.particles, capacity.faces, capacity.cells}),
+             kLiquidFieldSampleSlotsPerCapacity3D * sizeof(double))
       && add(Range::kSampleParticles, capacity.particles, sizeof(LiquidParticleState3D));
   if (!fits) {
     return Error(absl::StatusCode::kResourceExhausted);

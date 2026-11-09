@@ -10,40 +10,42 @@ __global__ void LiquidFieldSamples3DKernel(
     double* distances,
     int* architecture
 ) {
-  if (threadIdx.x != 0) {
+  const std::size_t sample = blockIdx.x * blockDim.x + threadIdx.x;
+  if (sample >= query->sample_count) {
     return;
   }
 #if defined(__CUDA_ARCH__)
-  *architecture = __CUDA_ARCH__;
-#endif
-  // Preserve input particle order and strict-less tie behavior of std::min.
-  for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
-    const Vec3 position = positions[sample];
-    if (query->field_kind == LiquidSampleFieldKind3D::kLatticeHorizontalPlane) {
-      const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
-          query->world_surface_height_y,
-          {query->geometry.world_origin.y, position.y, query->geometry.cell_width}
-      );
-      distances[sample] = distance.ok() ? *distance : boundary_internal::numeric::numeric_limits<double>::quiet_NaN();
-      continue;
-    }
-    if (query->field_kind == LiquidSampleFieldKind3D::kHorizontalPlane) {
-      distances[sample] = position.y - query->world_surface_height_y;
-      continue;
-    }
-    double distance = boundary_internal::numeric::numeric_limits<double>::infinity();
-    const bool particle_union = query->field_kind == LiquidSampleFieldKind3D::kParticleUnion;
-    const std::size_t count = particle_union ? query->particle_count : 1;
-    for (std::size_t particle = 0; particle < count; ++particle) {
-      const Vec3 center = particle_union ? centers[particle] : query->sphere_center;
-      const double candidate =
-          hypot(hypot(position.x - center.x, position.y - center.y), position.z - center.z) - query->radius;
-      if (candidate < distance) {
-        distance = candidate;
-      }
-    }
-    distances[sample] = distance;
+  if (sample == 0) {
+    *architecture = __CUDA_ARCH__;
   }
+#endif
+  const Vec3 position = positions[sample];
+  if (query->field_kind == LiquidSampleFieldKind3D::kLatticeHorizontalPlane) {
+    const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+        query->world_surface_height_y,
+        {query->geometry.world_origin.y, position.y, query->geometry.cell_width}
+    );
+    distances[sample] = distance.ok() ? *distance : boundary_internal::numeric::numeric_limits<double>::quiet_NaN();
+    return;
+  }
+  if (query->field_kind == LiquidSampleFieldKind3D::kHorizontalPlane) {
+    distances[sample] = position.y - query->world_surface_height_y;
+    return;
+  }
+  double distance = boundary_internal::numeric::numeric_limits<double>::infinity();
+  const bool particle_union = query->field_kind == LiquidSampleFieldKind3D::kParticleUnion;
+  const std::size_t count = particle_union ? query->particle_count : 1;
+  // Samples are independent. Inside each sample, preserve particle order and
+  // the strict-less tie behavior of the scalar device path.
+  for (std::size_t particle = 0; particle < count; ++particle) {
+    const Vec3 center = particle_union ? centers[particle] : query->sphere_center;
+    const double candidate =
+        hypot(hypot(position.x - center.x, position.y - center.y), position.z - center.z) - query->radius;
+    if (candidate < distance) {
+      distance = candidate;
+    }
+  }
+  distances[sample] = distance;
 }
 __global__ void LiquidFaceSamples3DKernel(
     const LiquidSampleQuery3D* query,
@@ -104,9 +106,12 @@ int LaunchLiquidFieldSamples3D(
     const Vec3* positions,
     double* distances,
     int* architecture,
+    std::size_t sample_count,
     void* stream
 ) {
-  LiquidFieldSamples3DKernel<<<1, 1, 0, static_cast<cudaStream_t>(stream)>>>(
+  const unsigned threads = sample_count == 1 ? 1 : 128;
+  const auto blocks = static_cast<unsigned>((sample_count + threads - 1) / threads);
+  LiquidFieldSamples3DKernel<<<blocks, threads, 0, static_cast<cudaStream_t>(stream)>>>(
       query,
       centers,
       positions,

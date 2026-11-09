@@ -31,6 +31,6 @@ struct LiquidSampleFaceResult3D {
 // Tank face coordinates are in cell widths so the device preserves lattice
 // residuals. Lattice plane sampling uses the y coordinate in cell widths.
 // Other faces and field sample positions are in world meters.
-int LaunchLiquidFieldSamples3D(const LiquidSampleQuery3D*, const Vec3*, const Vec3*, double*, int*, void*);
+int LaunchLiquidFieldSamples3D(const LiquidSampleQuery3D*, const Vec3*, const Vec3*, double*, int*, std::size_t sample_count, void*);
 int LaunchLiquidFaceSamples3D(const LiquidSampleQuery3D*, const Vec3*, LiquidSampleFaceResult3D*, int*, void*);
 }  // namespace fluidity::cuda_internal
