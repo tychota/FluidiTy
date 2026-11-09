@@ -159,6 +159,303 @@ TEST(LiquidSubstep3D, WettedPistonRequiresSelectedOperationOnlyForMovingTank) {
   EXPECT_TRUE(absent->AdvanceFrame(wet::kDuration).ok());
 }
 
+struct RegularTransportSchedulerAudit {
+  std::vector<FrozenLiquidCell3D> cells;
+  std::vector<FrozenLiquidFace3D> faces;
+  std::vector<LiquidRegularCellTransport3D> transport;
+  std::size_t update_count = 0;
+};
+
+LiquidSubstepBackend3D ObserveRegularTransport(RegularTransportSchedulerAudit& audit) {
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &audit;
+  backend.freeze =
+      [](void* context, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+        auto& observed = *static_cast<RegularTransportSchedulerAudit*>(context);
+        const auto frozen = CpuLiquidSubstepBackend3D().freeze(nullptr, inputs, workspace);
+        if (frozen.ok()) {
+          observed.cells.assign(frozen->cells.begin(), frozen->cells.end());
+          observed.faces.assign(frozen->faces.begin(), frozen->faces.end());
+        }
+        return frozen;
+      };
+  backend.update_particles =
+      [](void* context, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+        auto& observed = *static_cast<RegularTransportSchedulerAudit*>(context);
+        ++observed.update_count;
+        observed.transport.assign(inputs.regular_cell_transport.begin(), inputs.regular_cell_transport.end());
+        return CpuLiquidSubstepBackend3D().update_particles(nullptr, inputs, particles);
+      };
+  return backend;
+}
+
+constexpr double kRegularTransportDuration = 0x1p-7;
+constexpr Vec3 kRegularTransportStart{-1.375, 0.375, 2.625};
+
+LiquidState3D RegularTransportInitial() {
+  auto initial = Initial();
+  initial.particles[0].world_position = kRegularTransportStart;
+  initial.particles[0].world_velocity = {0.5, -0.25, 0.125};
+  return initial;
+}
+
+LiquidSceneInputs3D RegularTransportScene() {
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{0.7};
+  scene.obstacle = AxisAlignedLiquidTank3D{
+      .start_low_x = -4,
+      .high_x = 12,
+      .floor_y = 0,
+      .low_z = 0,
+      .high_z = 5,
+      .piston_velocity_x = 0,
+  };
+  return scene;
+}
+
+TEST(LiquidSubstep3D, SchedulerRegularCellTransportUsesProjectedFacesAndStationaryFloor) {
+  const auto initial = RegularTransportInitial();
+  const auto scene = RegularTransportScene();
+  RegularTransportSchedulerAudit audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), ObserveRegularTransport(audit));
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(kRegularTransportDuration);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_EQ(audit.update_count, 1);
+  ASSERT_EQ(audit.cells.size(), 1);
+  const auto cell = audit.cells.front().cell_index;
+  EXPECT_EQ(cell.x, -2);
+  EXPECT_EQ(cell.y, 0);
+  EXPECT_EQ(cell.z, 2);
+  ASSERT_EQ(audit.faces.size(), 6);
+  std::array<double, 3> low{};
+  std::array<double, 3> high{};
+  std::size_t sealed_faces = 0;
+  for (const auto& face : audit.faces) {
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    const auto lattice = face.face_index.lattice_index;
+    const std::array face_coordinates{lattice.x, lattice.y, lattice.z};
+    const std::array cell_coordinates{cell.x, cell.y, cell.z};
+    if (face.open_area == 0) {
+      ++sealed_faces;
+      EXPECT_EQ(axis, 1);
+      EXPECT_EQ(lattice.y, 0);
+      EXPECT_DOUBLE_EQ(face.blocked_area, 1);
+      EXPECT_DOUBLE_EQ(face.wall_normal_velocity, 0);
+      EXPECT_NE(scheduler->committed().faces[face.face_slot].carrier_velocity, 0);
+      continue;
+    }
+    EXPECT_DOUBLE_EQ(face.open_area, 1);
+    const auto& projected = scheduler->committed().faces[face.face_slot];
+    EXPECT_TRUE(projected.structurally_eligible);
+    EXPECT_EQ(projected.side_tag, initial.particles[0].side_tag);
+    EXPECT_EQ(projected.validity, LiquidFaceValidity3D::kValid);
+    if (face_coordinates[axis] == cell_coordinates[axis]) {
+      low[axis] = projected.carrier_velocity;
+    } else {
+      EXPECT_EQ(face_coordinates[axis], cell_coordinates[axis] + 1);
+      high[axis] = projected.carrier_velocity;
+    }
+  }
+  ASSERT_EQ(sealed_faces, 1);
+  const std::array fraction{0.625, 0.375, 0.625};
+  EXPECT_DOUBLE_EQ(low[1], 0);
+  EXPECT_NE(high[1], low[1]);
+  const auto& particle = scheduler->committed().particles[0];
+  const std::array start{kRegularTransportStart.x, kRegularTransportStart.y, kRegularTransportStart.z};
+  const std::array end{particle.world_position.x, particle.world_position.y, particle.world_position.z};
+  double divergence = 0;
+  for (std::size_t axis = 0; axis < fraction.size(); ++axis) {
+    const double derivative = high[axis] - low[axis];
+    divergence += derivative;
+    const double velocity = low[axis] + fraction[axis] * derivative;
+    EXPECT_DOUBLE_EQ(end[axis], start[axis] + kRegularTransportDuration * velocity);
+  }
+  EXPECT_DOUBLE_EQ(particle.volume_ratio, std::exp(kRegularTransportDuration * divergence));
+  ASSERT_EQ(audit.transport.size(), 1);
+  const auto& sample = audit.transport.front();
+  EXPECT_TRUE(sample.active);
+  EXPECT_DOUBLE_EQ(sample.position_in_cell_widths.x, fraction[0]);
+  EXPECT_DOUBLE_EQ(sample.position_in_cell_widths.y, fraction[1]);
+  EXPECT_DOUBLE_EQ(sample.position_in_cell_widths.z, fraction[2]);
+  EXPECT_DOUBLE_EQ(sample.low_face_normal_velocity.x, low[0]);
+  EXPECT_DOUBLE_EQ(sample.low_face_normal_velocity.y, low[1]);
+  EXPECT_DOUBLE_EQ(sample.low_face_normal_velocity.z, low[2]);
+  EXPECT_DOUBLE_EQ(sample.high_face_normal_velocity.x, high[0]);
+  EXPECT_DOUBLE_EQ(sample.high_face_normal_velocity.y, high[1]);
+  EXPECT_DOUBLE_EQ(sample.high_face_normal_velocity.z, high[2]);
+}
+
+TEST(LiquidSubstep3D, SchedulerRegularCellTransportDeclinesFractionalFloorAndUnsupportedCell) {
+  auto initial = RegularTransportInitial();
+  auto scene = RegularTransportScene();
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(scene.obstacle);
+  tank.floor_y = 0.125;
+  RegularTransportSchedulerAudit partial_audit;
+  auto partial = LiquidSubstepScheduler3D::Create(initial, scene, Options(), ObserveRegularTransport(partial_audit));
+  ASSERT_TRUE(partial.ok()) << partial.status();
+  const auto partial_status = partial->AdvanceFrame(kRegularTransportDuration);
+  ASSERT_TRUE(partial_status.ok()) << partial_status;
+  EXPECT_EQ(partial_audit.update_count, 1);
+  ASSERT_EQ(partial_audit.cells.size(), 1);
+  EXPECT_TRUE(std::ranges::any_of(partial_audit.faces, [](const auto& face) {
+    return face.open_area > 0 && face.open_area < 1;
+  }));
+  ASSERT_EQ(partial_audit.transport.size(), 1);
+  EXPECT_FALSE(partial_audit.transport.front().active);
+
+  initial = Initial(2);
+  initial.particles[0] = RegularTransportInitial().particles[0];
+  initial.particles[1].world_position = {8.0625, 2.0625, 2.0625};
+  scene = RegularTransportScene();
+  RegularTransportSchedulerAudit mixed_audit;
+  auto mixed = LiquidSubstepScheduler3D::Create(initial, scene, Options(), ObserveRegularTransport(mixed_audit));
+  ASSERT_TRUE(mixed.ok()) << mixed.status();
+  const auto mixed_status = mixed->AdvanceFrame(kRegularTransportDuration);
+  ASSERT_TRUE(mixed_status.ok()) << mixed_status;
+  EXPECT_EQ(mixed_audit.update_count, 1);
+  ASSERT_EQ(mixed_audit.cells.size(), 1);
+  EXPECT_EQ(mixed_audit.cells.front().cell_index.x, -2);
+  ASSERT_EQ(mixed_audit.transport.size(), 2);
+  for (std::size_t index = 0; index < mixed_audit.transport.size(); ++index) {
+    EXPECT_EQ(mixed_audit.transport[index].active, mixed->committed().particles[index].id == 1);
+  }
+}
+
+TEST(LiquidSubstep3D, SchedulerRegularCellTransportKeepsOtherSceneClassesUnstaged) {
+  const auto initial = RegularTransportInitial();
+  const auto candidate_scene = RegularTransportScene();
+  const auto candidate = LiquidSubstepScheduler3D::Create(initial, candidate_scene, Options());
+  ASSERT_TRUE(candidate.ok()) << candidate.status();
+  const auto check = [&](const LiquidSceneInputs3D& scene) {
+    RegularTransportSchedulerAudit audit;
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), ObserveRegularTransport(audit));
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    const auto advanced = scheduler->AdvanceFrame(kRegularTransportDuration);
+    ASSERT_TRUE(advanced.ok()) << advanced;
+    EXPECT_EQ(audit.update_count, 1);
+    EXPECT_TRUE(audit.transport.empty());
+    EXPECT_FALSE(audit.cells.empty());
+    return;
+  };
+  auto analytic = candidate_scene;
+  analytic.field = LiquidAnalyticSphere3D{kRegularTransportStart, 0.7};
+  const auto noncandidate = LiquidSubstepScheduler3D::Create(initial, analytic, Options());
+  ASSERT_TRUE(noncandidate.ok()) << noncandidate.status();
+  EXPECT_EQ(
+      candidate->reserved_bytes(),
+      noncandidate->reserved_bytes() + Options().capacities.particles * sizeof(LiquidRegularCellTransport3D)
+  );
+  check(analytic);
+  auto moving = candidate_scene;
+  std::get<AxisAlignedLiquidTank3D>(moving.obstacle).piston_velocity_x = 0.125;
+  check(moving);
+  auto compliant = candidate_scene;
+  compliant.bulk_modulus = 1e6;
+  check(compliant);
+  auto divergence_source = candidate_scene;
+  divergence_source.target_divergence = 0.125;
+  check(divergence_source);
+  auto capillary = candidate_scene;
+  capillary.surface_tension = 1;
+  check(capillary);
+  auto open_domain = candidate_scene;
+  open_domain.obstacle = std::monostate{};
+  check(open_domain);
+}
+
+TEST(LiquidSubstep3D, SchedulerRegularCellTransportRollsBackAndReplaysAfterGrowth) {
+  const auto initial = RegularTransportInitial();
+  const auto scene = RegularTransportScene();
+  auto options = Options();
+  options.capacities.faces = 64;
+  options.capacity_replay_reservations = Options().capacities;
+  RegularTransportSchedulerAudit audit;
+  auto replay = LiquidSubstepScheduler3D::Create(initial, scene, options, ObserveRegularTransport(audit));
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  bool reject_once = true;
+  replay->SetStageFaultHookForTesting({
+      .context = &reject_once,
+      .before_stage =
+          [](void* context, LiquidPhysicalStage3D stage, double) {
+            if (stage == LiquidPhysicalStage3D::kAccept && *static_cast<bool*>(context)) {
+              *static_cast<bool*>(context) = false;
+              return absl::AbortedError("");
+            }
+            return absl::OkStatus();
+          },
+  });
+  // Grow before the first complete update, then reject its selected trial.
+  const auto advanced = replay->AdvanceFrame(kRegularTransportDuration);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  EXPECT_EQ(replay->diagnostics().capacity_replays, 1);
+  EXPECT_EQ(replay->diagnostics().dt_retries, 1);
+  EXPECT_EQ(audit.update_count, 3);
+  ASSERT_EQ(audit.transport.size(), 1);
+  EXPECT_TRUE(audit.transport.front().active);
+  auto direct_options = Options();
+  direct_options.maximum_step_duration = kRegularTransportDuration / 2;
+  auto direct = LiquidSubstepScheduler3D::Create(initial, scene, direct_options);
+  ASSERT_TRUE(direct.ok()) << direct.status();
+  const auto direct_status = direct->AdvanceFrame(kRegularTransportDuration);
+  ASSERT_TRUE(direct_status.ok()) << direct_status;
+  EXPECT_EQ(replay->reserved_bytes(), direct->reserved_bytes());
+  ExpectIdenticalSerializedState(direct->committed(), replay->committed());
+}
+TEST(LiquidSubstep3D, SchedulerRegularCellTransportPreservesDamMaterialThroughFrameSix) {
+  constexpr double cell_width = 0.0625;
+  constexpr double reference_volume = cell_width * cell_width * cell_width;
+  constexpr std::size_t particle_count = 256;
+  auto initial = Initial(particle_count);
+  initial.geometry.cell_width = cell_width;
+  std::size_t ordinal = 0;
+  for (int z = 0; z < 4; ++z) {
+    for (int y = 0; y < 8; ++y) {
+      for (int x = 0; x < 8; ++x) {
+        auto& particle = initial.particles[ordinal++];
+        particle.world_position = {(x + 0.5) * cell_width, (y + 0.5) * cell_width, (z + 0.5) * cell_width};
+        particle.reference_volume = reference_volume;
+        particle.mass = 1000 * reference_volume;
+        particle.pic_initialized = false;
+      }
+    }
+  }
+  // Match the public dam fixture and its frozen default blend through the first drifting frame.
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{0.9 * cell_width};
+  scene.obstacle = AxisAlignedLiquidTank3D{
+      .start_low_x = 0,
+      .high_x = 2,
+      .floor_y = 0,
+      .low_z = 0,
+      .high_z = 0.25,
+      .piston_velocity_x = 0,
+  };
+  LiquidStepOptions3D options;
+  options.particle_energy_blend = 0.6;
+  options.maximum_step_duration = 0.01;
+  options.capacities = {1024, 128, 4096, 24576, 256};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  for (int frame = 1; frame <= 6; ++frame) {
+    SCOPED_TRACE(frame);
+    const auto advanced = scheduler->AdvanceFrame(frame / 24.0);
+    ASSERT_TRUE(advanced.ok()) << advanced;
+    ASSERT_EQ(scheduler->committed().particles.size(), particle_count);
+    std::array<bool, particle_count> seen{};
+    double volume = 0;
+    for (const auto& particle : scheduler->committed().particles.values()) {
+      ASSERT_GE(particle.id, 1);
+      ASSERT_LE(particle.id, particle_count);
+      EXPECT_FALSE(seen[particle.id - 1]);
+      seen[particle.id - 1] = true;
+      EXPECT_DOUBLE_EQ(particle.reference_volume, reference_volume);
+      EXPECT_DOUBLE_EQ(particle.mass, 1000 * reference_volume);
+      volume += particle.reference_volume * particle.volume_ratio;
+    }
+    EXPECT_LE(std::abs(volume / (particle_count * reference_volume) - 1), 0.01);
+  }
+}
 TEST(LiquidSubstep3D, PressureSupportedGatherExcludesForceOnlyNewDonors) {
   namespace fixture = pressure_supported_gather_test;
   auto options = Options();

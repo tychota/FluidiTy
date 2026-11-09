@@ -141,7 +141,8 @@ absl::Status InsertUnique(LiquidRecords3D<T>& records, T value, KeyFunction key)
   return absl::OkStatus();
 }
 }  // namespace
-absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston) {
+absl::StatusOr<Staging>
+Staging::Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston, bool needs_regular_transport) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -162,6 +163,9 @@ absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities, bool
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));
+  if (needs_regular_transport) {
+    STEP_TRY(Reserve(staging.regular_transport.emplace(), capacities.particles, staging.reserved_bytes));
+  }
   if (needs_wetted_piston) {
     auto workspace = WettedPistonWorkspace3D::Create(capacities);
     if (!workspace.ok()) {
@@ -601,6 +605,9 @@ absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D gr
   STEP_TRY(staging.particles.Resize(trial.particles.size()));
   STEP_TRY(staging.gathered.Resize(trial.particles.size()));
   STEP_TRY(staging.particle_distances.Resize(trial.particles.size()));
+  if (staging.regular_transport) {
+    STEP_TRY(staging.regular_transport->Resize(trial.particles.size()));
+  }
   for (std::size_t index = 0; index < trial.particles.size(); ++index) {
     const auto& particle = trial.particles[index];
     staging.particles[index] = {

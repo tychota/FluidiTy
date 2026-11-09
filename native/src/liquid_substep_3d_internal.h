@@ -21,9 +21,12 @@ struct Staging {
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
+  // Only source-free, stationary transported tank scenes reserve these per-particle samples.
+  std::optional<LiquidRecords3D<LiquidRegularCellTransport3D>> regular_transport;
   std::optional<WettedPistonWorkspace3D> wetted_piston;
   std::size_t reserved_bytes = 0;
-  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston = false);
+  static absl::StatusOr<Staging>
+  Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston = false, bool needs_regular_transport = false);
 };
 bool Finite(Vec3 value);
 double Component(Vec3 value, FaceNormalAxis axis);
