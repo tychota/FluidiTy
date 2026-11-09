@@ -158,11 +158,19 @@ def measure_symmetric_union(centers, support_radius_m, moment_scale_m, volume_to
         or sum(errors) > octant_tolerance
     ):
         raise ValueError("sphere union quadrature did not meet the estimated error tolerance")
+    volume_m3 = 8 * float(integral[0])
+    second_moment_m5 = scale_squared * (8 * float(integral[1]))
+    estimated_volume_error_m3 = 8 * float(errors[0])
+    estimated_second_moment_error_m5 = scale_squared * (8 * float(errors[1]))
+    if not all(map(math.isfinite, (
+        volume_m3, second_moment_m5, estimated_volume_error_m3, estimated_second_moment_error_m5,
+    ))):
+        raise ValueError("sphere union measure exceeds binary64 range")
     return UnionAxisMeasure(
-        volume_m3=float(8 * integral[0]),
-        second_moment_m5=float(8 * scale_squared * integral[1]),
-        estimated_volume_error_m3=float(8 * errors[0]),
-        estimated_second_moment_error_m5=float(8 * scale_squared * errors[1]),
+        volume_m3=volume_m3,
+        second_moment_m5=second_moment_m5,
+        estimated_volume_error_m3=estimated_volume_error_m3,
+        estimated_second_moment_error_m5=estimated_second_moment_error_m5,
     )
 
 

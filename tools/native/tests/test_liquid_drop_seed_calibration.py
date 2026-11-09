@@ -22,6 +22,23 @@ def test_positive_octant_volume_and_moments_match_a_sphere():
     assert measured.second_moment_m5 == pytest.approx(volume * radius**2 / 5, rel=0.0003)
 
 
+def test_large_moment_scale_keeps_a_representable_physical_moment():
+    from liquid_drop_seed_calibration import measure_symmetric_union
+
+    radius = 0.2
+    volume = 4 * math.pi * radius**3 / 3
+    measured = measure_symmetric_union([(0, 0, 0)], radius, 1e154, 1e-5)
+    assert measured.second_moment_m5 == pytest.approx(volume * radius**2 / 5, rel=0.0003)
+    assert math.isfinite(measured.estimated_second_moment_error_m5)
+
+
+def test_measure_rejects_an_unrepresentable_physical_moment():
+    from liquid_drop_seed_calibration import measure_symmetric_union
+
+    with pytest.raises(ValueError, match="binary64 range"):
+        measure_symmetric_union([(0, 0, 0)], 1e62, 1e62, 1e183)
+
+
 def test_transposed_measure_recovers_displaced_sphere_moment():
     from liquid_drop_seed_calibration import measure_symmetric_union
 
