@@ -78,6 +78,9 @@ if(FLUIDITY_ENABLE_CUDA)
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
   add_library(fluidity_cuda_operators STATIC
+    native/cuda/liquid_arena_3d_packing.cc
+    native/cuda/liquid_arena_3d_host.cc
+    native/cuda/liquid_arena_3d.cu
     native/cuda/transfer_host.cc
     native/cuda/transfers.cu
     native/cuda/transfer_3d_host.cc
@@ -94,7 +97,11 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/pressure.cu)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
   if(MSVC)
-    set_source_files_properties(native/cuda/liquid_boundary_transfer_3d.cu native/cuda/liquid_boundary_geometry_3d.cu native/cuda/liquid_wall_contact_3d.cu
+    set_source_files_properties(
+      native/cuda/liquid_arena_3d.cu
+      native/cuda/liquid_boundary_transfer_3d.cu
+      native/cuda/liquid_boundary_geometry_3d.cu
+      native/cuda/liquid_wall_contact_3d.cu
       PROPERTIES COMPILE_OPTIONS "-Xcompiler=/Zc:preprocessor" )
   endif()
 
@@ -241,6 +248,12 @@ if(BUILD_TESTING)
     target_link_libraries(fluidity_cuda_graph_tests PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
     target_compile_options(fluidity_cuda_graph_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     gtest_discover_tests(fluidity_cuda_graph_tests PROPERTIES LABELS gpu)
+
+    # Focused Task 6B qualification; integrated mandatory inventory remains in 6C/6D.
+    add_executable(fluidity_cuda_arena_tests native/tests/test_cuda_liquid_arena_3d.cc)
+    target_link_libraries(fluidity_cuda_arena_tests
+      PRIVATE fluidity_cuda_operators fluidity_cuda_probe CUDA::cudart GTest::gtest_main)
+    target_compile_options(fluidity_cuda_arena_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
 
     # Link the same host wrapper to CUDA API doubles for deterministic failure-path tests.
     add_executable(fluidity_cuda_probe_error_tests
