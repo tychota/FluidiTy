@@ -1,4 +1,11 @@
+#include <algorithm>
 #include <filesystem>
+#include <map>
+
+#include "../src/liquid_cache_files_3d_internal.h"
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#endif
 #include <fstream>
 #include <string>
 #include <vector>
@@ -611,6 +618,248 @@ TEST_F(LiquidCacheStore3D, RelativeRootRemainsAnchoredAfterWorkingDirectoryChang
   EXPECT_TRUE(opened->ReadCheckpoint().ok());
   EXPECT_TRUE(inspected->ReadResolvedScene().ok());
   EXPECT_TRUE(Publish(*created, 1).ok());
+}
+
+namespace file_detail = liquid_cache_files_internal;
+class ScopedFileControl {
+ public:
+  explicit ScopedFileControl(file_detail::NativeFileControl3D control)
+      : prior_(file_detail::SetNativeFileControlForTesting(control)) {
+  }
+  ~ScopedFileControl() {
+    file_detail::SetNativeFileControlForTesting(prior_);
+  }
+
+ private:
+  file_detail::NativeFileControl3D prior_;
+};
+TEST_F(LiquidCacheStore3D, ReusedPublicationMustRepairAnInterruptedDirectoryBarrier) {
+  const auto destination = root / "record";
+  constexpr std::array<std::uint8_t, 3> bytes{1, 2, 3};
+  struct Failure {
+    file_detail::NativeFileStage3D stage;
+    static absl::Status Check(void* context, file_detail::NativeFileStage3D stage, const fs::path&) {
+      return stage == static_cast<Failure*>(context)->stage ? absl::UnavailableError("native failure")
+                                                            : absl::OkStatus();
+    }
+  } failure{file_detail::NativeFileStage3D::kAfterPromotion};
+  {
+    ScopedFileControl control({Failure::Check, &failure});
+    EXPECT_EQ(file_detail::PublishBytes(destination, bytes, {}, {}).code(), absl::StatusCode::kUnavailable);
+  }
+  ASSERT_TRUE(fs::exists(destination));
+  failure.stage = file_detail::NativeFileStage3D::kBeforeDirectoryFlush;
+  {
+    ScopedFileControl control({Failure::Check, &failure});
+    EXPECT_EQ(file_detail::PublishBytes(destination, bytes, {}, {}).code(), absl::StatusCode::kUnavailable);
+  }
+  EXPECT_TRUE(file_detail::PublishBytes(destination, bytes, {}, {}).ok());
+}
+TEST_F(LiquidCacheStore3D, PromotionConflictReuseMustFlushTheWinningDirectory) {
+  const auto destination = root / "record";
+  constexpr std::array<std::uint8_t, 3> bytes{1, 2, 3};
+  struct Race {
+    static absl::Status Check(void*, file_detail::NativeFileStage3D stage, const fs::path& path) {
+      if (stage == file_detail::NativeFileStage3D::kBeforePromotion) {
+        std::ofstream output(path, std::ios::binary);
+        const std::array<char, 3> winner{1, 2, 3};
+        output.write(winner.data(), winner.size());
+        output.close();
+      }
+      return stage == file_detail::NativeFileStage3D::kBeforeDirectoryFlush
+          ? absl::UnavailableError("native barrier failure")
+          : absl::OkStatus();
+    }
+  };
+  ScopedFileControl control({Race::Check, nullptr});
+  EXPECT_EQ(file_detail::PublishBytes(destination, bytes, {}, {}).code(), absl::StatusCode::kUnavailable);
+}
+TEST_F(LiquidCacheStore3D, RecursiveRootCreationFlushesEveryNewParentAndRetriesTheBarrier) {
+  const auto requested = root / "a/b/cache";
+  struct Failure {
+    fs::path first_parent;
+    std::vector<fs::path> barriers;
+    bool fail = true;
+    static absl::Status Check(void* context, file_detail::NativeFileStage3D stage, const fs::path& path) {
+      auto& self = *static_cast<Failure*>(context);
+      if (stage == file_detail::NativeFileStage3D::kBeforeDirectoryFlush) {
+        self.barriers.push_back(path);
+        if (path == self.first_parent && self.fail) {
+          return absl::UnavailableError("ancestor barrier failure");
+        }
+      }
+      return absl::OkStatus();
+    }
+  } failure{root, {}, true};
+  ScopedFileControl control({Failure::Check, &failure});
+  EXPECT_EQ(LiquidCache3D::Create(requested, scene).status().code(), absl::StatusCode::kUnavailable);
+  EXPECT_TRUE(fs::is_directory(root / "a"));
+  EXPECT_FALSE(fs::exists(root / "a/b"));
+  // The first link exists after failure but still needs a barrier on retry.
+  EXPECT_EQ(LiquidCache3D::Create(requested, scene).status().code(), absl::StatusCode::kUnavailable);
+  EXPECT_FALSE(fs::exists(root / "a/b"));
+  failure.fail = false;
+  failure.barriers.clear();
+  auto cache = LiquidCache3D::Create(requested, scene);
+  ASSERT_TRUE(cache.ok()) << cache.status();
+  const auto first = std::find(failure.barriers.begin(), failure.barriers.end(), root);
+  const auto second = std::find(failure.barriers.begin(), failure.barriers.end(), root / "a");
+  const auto third = std::find(failure.barriers.begin(), failure.barriers.end(), root / "a/b");
+  ASSERT_NE(first, failure.barriers.end());
+  ASSERT_NE(second, failure.barriers.end());
+  ASSERT_NE(third, failure.barriers.end());
+  EXPECT_LT(first, second);
+  EXPECT_LT(second, third);
+  EXPECT_TRUE(Publish(*cache, 0).ok());
+}
+using DirectoryInventory = std::map<fs::path, std::pair<std::string, fs::file_time_type>>;
+DirectoryInventory Inventory(const fs::path& root) {
+  DirectoryInventory result;
+  for (const auto& entry : fs::recursive_directory_iterator(root)) {
+    std::string content = "<directory>";
+    if (entry.is_regular_file()) {
+      std::ifstream input(entry.path(), std::ios::binary);
+      content.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    }
+    // Directory mtime can reflect a prior Windows deletion after enumeration
+    // handles close. Inventory identity includes names/types, file bytes and
+    // file mtimes; publication callbacks independently assert no write stages.
+    const auto modified = entry.is_regular_file() ? entry.last_write_time() : fs::file_time_type{};
+    result.emplace(entry.path().lexically_relative(root), std::pair{content, modified});
+  }
+  return result;
+}
+struct PublicationEvents {
+  std::size_t count = 0;
+  static absl::Status Check(void* context, LiquidCachePublishStage3D) {
+    ++static_cast<PublicationEvents*>(context)->count;
+    return absl::OkStatus();
+  }
+};
+TEST_F(LiquidCacheStore3D, ConflictingCheckpointLeavesRetainedAndPrunedInventoriesUnchanged) {
+  for (const bool pruned : {false, true}) {
+    const auto directory = root / (pruned ? "pruned" : "retained");
+    state.next_particle_id = 1;
+    auto cache = LiquidCache3D::Create(directory, scene);
+    ASSERT_TRUE(cache.ok());
+    ASSERT_TRUE(Publish(*cache, 0).ok());
+    if (pruned) {
+      ASSERT_TRUE(Publish(*cache, 10).ok());
+      ASSERT_TRUE(Publish(*cache, 20).ok());
+    }
+    SetFrame(0);
+    state.next_particle_id = 2;
+    const auto prior = Inventory(directory);
+    PublicationEvents events;
+    EXPECT_EQ(
+        cache->PublishCheckpoint(state, resume, {PublicationEvents::Check, &events}).code(),
+        absl::StatusCode::kAlreadyExists
+    );
+    EXPECT_EQ(events.count, 0);
+    const auto after = Inventory(directory);
+    ASSERT_EQ(after.size(), prior.size());
+    for (const auto& [path, record] : prior) {
+      SCOPED_TRACE(path.string());
+      ASSERT_TRUE(after.contains(path));
+      EXPECT_EQ(after.at(path).first, record.first);
+      EXPECT_EQ(after.at(path).second, record.second);
+    }
+    EXPECT_TRUE(cache->ReadCommittedFrame(0).ok());
+  }
+}
+TEST_F(LiquidCacheStore3D, ConflictingHiddenFrameStateLeavesRetainedAndPrunedInventoriesUnchanged) {
+  for (const bool pruned : {false, true}) {
+    const auto directory = root / (pruned ? "pruned" : "retained");
+    state.next_particle_id = 1;
+    auto cache = LiquidCache3D::Create(directory, scene);
+    ASSERT_TRUE(cache.ok());
+    ASSERT_TRUE(Publish(*cache, 0).ok());
+    if (pruned) {
+      ASSERT_TRUE(Publish(*cache, 10).ok());
+      ASSERT_TRUE(Publish(*cache, 20).ok());
+    }
+    SetFrame(0);
+    state.next_particle_id = 2;
+    const auto prior = Inventory(directory);
+    PublicationEvents events;
+    EXPECT_EQ(
+        cache->PublishFrame(points, &state, &resume, {PublicationEvents::Check, &events}).code(),
+        absl::StatusCode::kAlreadyExists
+    );
+    EXPECT_EQ(events.count, 0);
+    const auto after = Inventory(directory);
+    ASSERT_EQ(after.size(), prior.size());
+    for (const auto& [path, record] : prior) {
+      SCOPED_TRACE(path.string());
+      ASSERT_TRUE(after.contains(path));
+      EXPECT_EQ(after.at(path).first, record.first);
+      EXPECT_EQ(after.at(path).second, record.second);
+    }
+    EXPECT_TRUE(cache->ReadCommittedFrame(0).ok());
+  }
+}
+#if !defined(_WIN32)
+TEST_F(LiquidCacheStore3D, PosixFifoRecordAndLeaseOpenRejectWithinChildTimeout) {
+  const auto fifo = root / "fifo";
+  ASSERT_EQ(mkfifo(fifo.c_str(), 0600), 0);
+  for (int mode = 0; mode < 3; ++mode) {
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      alarm(2);
+      file_detail::NativeFile file;
+      const auto status = file.Open(fifo, false, mode != 0, mode == 2);
+      _exit(status.code() == absl::StatusCode::kDataLoss ? 0 : 1);
+    }
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status)) << "FIFO open exceeded the two-second child timeout; mode=" << mode;
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+  }
+}
+#endif
+
+TEST_F(LiquidCacheStore3D, FailedCheckpointReferenceBarrierPreventsPruningOnRetry) {
+  auto cache = LiquidCache3D::Create(root, scene);
+  ASSERT_TRUE(cache.ok());
+  ASSERT_TRUE(Publish(*cache, 0).ok());
+  ASSERT_TRUE(Publish(*cache, 10).ok());
+  struct Failure {
+    fs::path directory;
+    bool after_promotion = true;
+    static absl::Status Check(void* context, file_detail::NativeFileStage3D stage, const fs::path& path) {
+      const auto& self = *static_cast<Failure*>(context);
+      const bool interrupted_link = self.after_promotion && stage == file_detail::NativeFileStage3D::kAfterPromotion
+          && path.parent_path() == self.directory;
+      const bool failed_barrier = !self.after_promotion
+          && stage == file_detail::NativeFileStage3D::kBeforeDirectoryFlush && path == self.directory;
+      return interrupted_link || failed_barrier ? absl::UnavailableError("checkpoint barrier failure")
+                                                : absl::OkStatus();
+    }
+  } failure{root / "checkpoints", true};
+  {
+    ScopedFileControl control({Failure::Check, &failure});
+    EXPECT_EQ(Publish(*cache, 20).code(), absl::StatusCode::kUnavailable);
+    EXPECT_TRUE(fs::exists(root / "checkpoints/00000000000000000020.flcr"));
+    failure.after_promotion = false;
+    EXPECT_EQ(Publish(*cache, 20).code(), absl::StatusCode::kUnavailable);
+  }
+  std::size_t state_blobs = 0;
+  for (const auto& entry : fs::directory_iterator(root / "blobs")) {
+    if (entry.path().extension() == ".flst") {
+      ++state_blobs;
+    }
+  }
+  EXPECT_EQ(state_blobs, 3);
+  EXPECT_TRUE(cache->ReadCommittedFrame(0).ok());
+  ASSERT_TRUE(Publish(*cache, 20).ok());
+  state_blobs = 0;
+  for (const auto& entry : fs::directory_iterator(root / "blobs")) {
+    if (entry.path().extension() == ".flst") {
+      ++state_blobs;
+    }
+  }
+  EXPECT_EQ(state_blobs, 2);
 }
 }  // namespace
 }  // namespace fluidity

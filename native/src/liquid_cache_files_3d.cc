@@ -1,4 +1,5 @@
 #include <atomic>
+#include <utility>
 
 #include "liquid_cache_files_3d_internal.h"
 
@@ -11,6 +12,16 @@ namespace fluidity::liquid_cache_files_internal {
     } \
   } while (false)
 
+namespace {
+thread_local NativeFileControl3D native_file_control;
+absl::Status CheckNativeFile(NativeFileStage3D stage, const fs::path& path) {
+  return native_file_control.check == nullptr ? absl::OkStatus()
+                                              : native_file_control.check(native_file_control.context, stage, path);
+}
+}  // namespace
+NativeFileControl3D SetNativeFileControlForTesting(NativeFileControl3D control) {
+  return std::exchange(native_file_control, control);
+}
 absl::Status Failure(absl::StatusCode code) {
   return absl::Status(code, {});
 }
@@ -40,6 +51,7 @@ absl::Status Check(LiquidCachePublishControl3D control, LiquidCachePublishStage3
 // POSIX needs a directory fsync after link/unlink. Windows promotions explicitly
 // use MOVEFILE_WRITE_THROUGH after FlushFileBuffers on the complete temporary.
 absl::Status FlushDirectory(const fs::path& directory) {
+  STORE_TRY(CheckNativeFile(NativeFileStage3D::kBeforeDirectoryFlush, directory));
 #if defined(_WIN32)
   static_cast<void>(directory);
 #else
@@ -57,13 +69,40 @@ absl::Status FlushDirectory(const fs::path& directory) {
 #endif
   return absl::OkStatus();
 }
-absl::Status Directory(const fs::path& path, bool create) {
+// Creates one directory link at a time and persists its parent before creating
+// descendants. Existing links get the same barrier: an earlier interrupted call
+// may have created them without completing that barrier. Ancestors are trusted;
+// canonicalizing only the parent used for fsync permits stable ancestor symlinks.
+absl::Status CreateDirectoryTree(const fs::path& path) {
   std::error_code error;
-  if (create) {
-    fs::create_directories(path, error);
+  const auto absolute_path = fs::absolute(path, error);
+  if (error) {
+    return Failure(absl::StatusCode::kUnavailable);
+  }
+  auto directory = absolute_path.root_path();
+  for (const auto& component : absolute_path.relative_path()) {
+    const auto parent = directory;
+    directory /= component;
+    fs::create_directory(directory, error);
     if (error) {
       return Failure(absl::StatusCode::kUnavailable);
     }
+    const auto status = fs::status(directory, error);
+    if (error || !fs::is_directory(status)) {
+      return Failure(absl::StatusCode::kInvalidArgument);
+    }
+    const auto resolved_parent = fs::canonical(parent, error);
+    if (error) {
+      return Failure(absl::StatusCode::kUnavailable);
+    }
+    STORE_TRY(FlushDirectory(resolved_parent));
+  }
+  return absl::OkStatus();
+}
+absl::Status Directory(const fs::path& path, bool create) {
+  std::error_code error;
+  if (create) {
+    STORE_TRY(CreateDirectoryTree(path));
   }
   const auto status = fs::symlink_status(path, error);
   if (error) {
@@ -182,16 +221,19 @@ absl::Status Matches(
   return absl::OkStatus();
 }
 absl::Status Promote(const fs::path& temporary, const fs::path& destination) {
+  STORE_TRY(CheckNativeFile(NativeFileStage3D::kBeforePromotion, destination));
 #if defined(_WIN32)
   if (!MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
     return IoFailure();
   }
+  STORE_TRY(CheckNativeFile(NativeFileStage3D::kAfterPromotion, destination));
 #else
   // link is an atomic no-replace publication on the same filesystem. rename()
   // would overwrite an existing winner on POSIX.
   if (link(temporary.c_str(), destination.c_str()) != 0) {
     return IoFailure();
   }
+  STORE_TRY(CheckNativeFile(NativeFileStage3D::kAfterPromotion, destination));
   STORE_TRY(FlushDirectory(destination.parent_path()));
   if (unlink(temporary.c_str()) != 0) {
     return IoFailure();
@@ -207,6 +249,10 @@ absl::Status PublishBytes(
     absl::StatusCode conflict
 ) {
   auto existing = Matches(destination, bytes, limits, conflict);
+  if (existing.ok()) {
+    // A verified existing link may come from a publish interrupted before fsync.
+    return FlushDirectory(destination.parent_path());
+  }
   if (existing.code() != absl::StatusCode::kNotFound) {
     return existing;
   }
@@ -242,7 +288,8 @@ absl::Status PublishBytes(
     STORE_TRY(Matches(temporary, bytes, limits, absl::StatusCode::kDataLoss));
     const auto promoted = Promote(temporary, destination);
     if (promoted.code() == absl::StatusCode::kAlreadyExists) {
-      return Matches(destination, bytes, limits, conflict);
+      STORE_TRY(Matches(destination, bytes, limits, conflict));
+      return FlushDirectory(destination.parent_path());
     }
     return promoted;
   }

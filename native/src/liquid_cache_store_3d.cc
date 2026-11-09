@@ -434,6 +434,25 @@ absl::Status Prune(
     return FlushDirectory(root / "blobs");
   });
 }
+// Validate immutable checkpoint identity before publishing any candidate bytes,
+// including when retention has already removed the older state payload.
+absl::StatusOr<LiquidCacheBytes3D>
+PrepareCheckpointReference(const fs::path& root, const CheckpointReference& reference, LiquidCacheLimits3D limits) {
+  auto bytes = EncodeReference(reference, limits);
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  const auto existing = Matches(
+      root / "checkpoints" / OrdinalName(reference.clock.frame_ordinal, ".flcr"),
+      bytes->values(),
+      limits,
+      absl::StatusCode::kAlreadyExists
+  );
+  if (!existing.ok() && existing.code() != absl::StatusCode::kNotFound) {
+    return existing;
+  }
+  return std::move(*bytes);
+}
 absl::Status PublishCheckpointRecord(
     const fs::path& root,
     const LiquidState3D& state,
@@ -460,7 +479,7 @@ absl::Status PublishCheckpointRecord(
       Reference(LiquidContentKind3D::kState, encoded),
       Reference(LiquidContentKind3D::kManifest, manifest_bytes->values()),
   };
-  auto reference_bytes = EncodeReference(reference, limits);
+  auto reference_bytes = PrepareCheckpointReference(root, reference, limits);
   if (!reference_bytes.ok()) {
     return reference_bytes.status();
   }
@@ -502,8 +521,7 @@ absl::StatusOr<LiquidCache3D> LiquidCache3D::Create(
       PublishBytes(root_directory / "resolved.flrs", bytes->values(), limits, {}, absl::StatusCode::kFailedPrecondition)
   );
   STORE_TRY(FlushDirectory(root_directory));
-  const auto parent = root_directory.parent_path();
-  STORE_TRY(FlushDirectory(parent.empty() ? fs::path(".") : parent));
+  // Lease creation already persisted each ancestor before creating descendants.
   LiquidCache3D result;
   result.root_directory_ = root_directory;
   result.fingerprint_ = *fingerprint;
@@ -641,6 +659,19 @@ absl::Status LiquidCache3D::PublishFrame(
     }
   } else if (existing.code() != absl::StatusCode::kNotFound) {
     return existing;
+  }
+  if (needs_checkpoint) {
+    const CheckpointReference reference{
+        points.clock,
+        fingerprint_,
+        LiquidExecutionId3D(fingerprint_),
+        Reference(LiquidContentKind3D::kState, checkpoint_bytes.values()),
+        Reference(LiquidContentKind3D::kManifest, manifest_bytes->values()),
+    };
+    auto prepared = PrepareCheckpointReference(root_directory_, reference, limits_);
+    if (!prepared.ok()) {
+      return prepared.status();
+    }
   }
   STORE_TRY(PublishContent(root_directory_, manifest.points, point_bytes->values(), limits_, control));
   if (needs_checkpoint) {

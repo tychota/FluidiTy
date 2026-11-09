@@ -23,6 +23,20 @@
 namespace fluidity::liquid_cache_files_internal {
 namespace fs = std::filesystem;
 
+enum class NativeFileStage3D {
+  kBeforePromotion,
+  kAfterPromotion,
+  kBeforeDirectoryFlush,
+};
+// Thread-local fault/ordering seam for native filesystem regression tests. The
+// callback runs before the named operation (after link/move for AfterPromotion),
+// borrows path/context only for the call, and must not throw. Production is empty.
+struct NativeFileControl3D {
+  absl::Status (*check)(void*, NativeFileStage3D, const std::filesystem::path&) = nullptr;
+  void* context = nullptr;
+};
+NativeFileControl3D SetNativeFileControlForTesting(NativeFileControl3D control);
+
 absl::Status Failure(absl::StatusCode code);
 absl::Status IoFailure();
 absl::Status Check(LiquidCachePublishControl3D control, LiquidCachePublishStage3D stage);
@@ -66,7 +80,9 @@ class NativeFile {
       return Failure(absl::StatusCode::kDataLoss);
     }
 #else
-    int flags = O_CLOEXEC | O_NOFOLLOW;
+    // Nonblocking open lets fstat reject a FIFO/device before any read can
+    // wait for a peer. It does not change regular-file I/O semantics.
+    int flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
     flags |= lease ? (existing_lease ? O_RDONLY : O_RDWR | O_CREAT) : (write ? O_RDWR | O_CREAT | O_EXCL : O_RDONLY);
     handle_ = open(path.c_str(), flags, 0600);
     if (handle_ < 0) {
@@ -218,7 +234,8 @@ absl::Status Matches(
 // PublishBytes verifies existing bytes or exclusively writes, flushes, verifies
 // and atomically promotes a same-directory temporary without replacing anything.
 // A promotion may commit before a subsequent directory-flush error is returned.
-// Retry verifies committed bytes; abandoned temporaries are never read.
+// Retry verifies committed bytes and flushes their directory before success;
+// abandoned temporaries are never read.
 absl::Status PublishBytes(
     const std::filesystem::path& destination,
     std::span<const std::uint8_t> bytes,

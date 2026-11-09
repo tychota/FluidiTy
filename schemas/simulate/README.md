@@ -93,7 +93,14 @@ with MoveFileExW(MOVEFILE_WRITE_THROUGH), without replace-existing. POSIX uses f
 on data, atomic no-replace link publication, unlink of the temporary, and directory
 fsync. The binary `frames/<20-digit frame>.flmf` is the point-frame commit and is
 published last. Existing identical bytes are verified and retain their modification
-times. Unequal committed content is never overwritten. These guarantees assume a
+times. Reuse, including a concurrent promotion winner, completes a parent-directory
+barrier before success or retention. Root creation builds missing ancestors one at
+a time, synchronizing each parent before descendants; retries also synchronize
+existing links left by an interrupted creation. POSIX file/lease opens are
+nonblocking until fstat rejects nonregular objects, so a FIFO cannot wait for a
+peer. Unequal committed content is never overwritten. Both checkpoint publication
+paths compare existing immutable reference identity before any candidate writes,
+including when its old state payload has already been pruned. These guarantees assume a
 local filesystem honoring the native primitives, not a network share.
 
 Frame zero explicitly publishes the initial completed state at time/step/epoch
