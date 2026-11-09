@@ -11,7 +11,13 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
+
+# These process checks use assertions. This explicit guard survives -O/-OO and
+# rejects optimization before argument parsing, executable launches, or receipts.
+if not __debug__:
+    raise SystemExit("Python optimization is unsupported by Simulate CLI process checks")
 
 
 def records(text):
@@ -50,6 +56,21 @@ def snapshot(root):
 
 
 def case_arguments(executable, fixture, directory, cuda):
+    # An optimized child would erase the mismatching build assertion and print PASS.
+    # Exercise explicit flags and inherited optimization through real interpreters.
+    for options, inherited_optimization in ((["-O"], None), (["-OO"], None), ([], "1"), ([], "2")):
+        environment = os.environ.copy()
+        environment.pop("PYTHONOPTIMIZE", None)
+        if inherited_optimization is not None:
+            environment["PYTHONOPTIMIZE"] = inherited_optimization
+        child = subprocess.run(
+            [sys.executable, *options, str(Path(__file__).resolve()), "--executable", str(executable),
+             "--fixture", str(fixture), "--case", "cpu_device", *([] if cuda else ["--cuda"])],
+            env=environment, capture_output=True, encoding="utf-8", timeout=30,
+        )
+        assert child.returncode != 0, (options, inherited_optimization, child.stdout, child.stderr)
+        assert "PASS" not in child.stdout
+        assert "Python optimization is unsupported" in child.stderr
     invalid = [[], ["unknown"], ["schema", "--bogus"], ["schema", "--backend", "cpu"],
                ["device-info", "--backend", "metal"], ["device-info", "--device", "-1"],
                ["device-info", "--backend", "cpu", "--backend", "cpu"],

@@ -20,16 +20,18 @@ if(BUILD_TESTING)
   if(FLUIDITY_ENABLE_CUDA)
     set(simulate_cuda_option --cuda)
   endif()
+  # Ignore inherited PYTHONOPTIMIZE/PYTHONPATH while keeping Unicode paths and
+  # diagnostics in UTF-8 explicitly; the driver also rejects direct -O invocation.
   foreach(case IN ITEMS arguments schema identity inspection cpu_device)
     add_test(NAME SimulateCli.${case}
-      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
+      COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
         --case ${case} ${simulate_cuda_option})
     set_tests_properties(SimulateCli.${case} PROPERTIES LABELS cli)
   endforeach()
   if(FLUIDITY_ENABLE_CUDA)
     add_test(NAME SimulateCli.cuda_device
-      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
+      COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
         --case cuda_device --cuda)
     set_tests_properties(SimulateCli.cuda_device PROPERTIES LABELS cuda-cli)
