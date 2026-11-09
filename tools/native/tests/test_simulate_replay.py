@@ -286,6 +286,7 @@ def execution_case(executable, fixture, directory, backend):
     traces = [r for r in output if r["event"] == "trace"]
     assert [(r["frame"], r["substep"]) for r in traces] == [(0, 1), (1, 0), (1, 1), (2, 0)]
     before = snapshot(cache)
+    assert (".simulate-cuda-compatibility" in before) == (backend == "cuda")
     resumed = execute(executable, *args, "--resume", "--frame-end", 2)[-1]
     assert resumed["state_digest"] == result["state_digest"]
     assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before), "resume rewrote committed content"
@@ -325,6 +326,11 @@ def execution_case(executable, fixture, directory, backend):
     assert immutable_cache_files(snapshot(source_cache)) == immutable_cache_files(source_before)
     grown_cache = directory / "grown-cache"
     subprocess.run([str(fixture), "growth-cache", str(grown_cache), str(executable), backend, "source"], check=True)
+    if backend == "cuda":
+        # The fixture creates capacity metadata directly. Supply the actual
+        # CUDA profile from the same artifact, scene and device.
+        profile = ".simulate-cuda-compatibility"
+        shutil.copy2(source_cache / profile, grown_cache / profile)
     grown = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", grown_cache,
                     "--backend", backend, "--frame-end", 2, "--resume", "--trace")
     assert grown[-1]["state_digest"] == emitted["state_digest"]
@@ -388,7 +394,45 @@ def replay_case(executable, fixture, directory, backend):
     assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before)
     if backend == "cuda":
         assert selected["compiled_architecture"] == 1200 and selected["graph_replay_count"] > 0
+        verify_cuda_compatibility_refusals(executable, cache, directory)
         print(json.dumps(selected, sort_keys=True))
+
+
+
+def verify_cuda_compatibility_refusals(executable, cache, directory):
+    # A foreign but syntactically valid profile must block all numerical
+    # consumers, even replay of a retained checkpoint that needs no substeps.
+    for name, record, expected in (
+        ("foreign", b"FLCUDA1\n" + b"0" * 64 + b"\n", "FAILED_PRECONDITION"),
+        ("missing", None, "FAILED_PRECONDITION"),
+        ("malformed", b"FLCUDA1\n" + b"z" * 64 + b"\n", "DATA_LOSS"),
+    ):
+        candidate = directory / name
+        shutil.copytree(cache, candidate)
+        profile = candidate / ".simulate-cuda-compatibility"
+        if record is None:
+            profile.unlink()
+        else:
+            profile.write_bytes(record)
+        # A rejected writable resume must not even create its operational lease.
+        (candidate / ".simulate-job.lock").unlink()
+        before = snapshot(candidate)
+        before_directories = {path.relative_to(candidate) for path in candidate.rglob("*") if path.is_dir()}
+        scene = candidate / "resolved.flrs"
+        run = ["run", "--stage", "simulate", "--scene", scene, "--cache", candidate, "--resume", "--frame-end", 21]
+        for args in (
+            ["replay", "--cache", candidate, "--frame", 20, "--substep", 0],
+            ["step", "--scene", scene, "--cache", candidate],
+            [*run, "--preview"],
+            run,
+        ):
+            result = execute(executable, *args, success=False)[-1]
+            assert result["name"] == expected and result["field"] == "cuda-compatibility", result
+            assert snapshot(candidate) == before, (name, args, "rejection mutated cache")
+        checked = invoke(executable, "check", "--cache", candidate, "--frame", 20)
+        assert checked["inspection_only"] and not checked["resume_authorized"] and checked["frame"] == 20
+        assert snapshot(candidate) == before, (name, "inspection mutated cache")
+        assert {path.relative_to(candidate) for path in candidate.rglob("*") if path.is_dir()} == before_directories
 
 
 def case_cpu_execution(executable, fixture, directory, cuda):

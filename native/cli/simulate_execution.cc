@@ -12,6 +12,7 @@
 #if defined(FLUIDITY_SIMULATE_CUDA)
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "simulate_cuda_compatibility.h"
 #endif
 
 namespace fluidity::simulate {
@@ -325,26 +326,70 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   if (error) {
     return absl::UnavailableError("");
   }
+  const bool requires_cuda_compatibility = scene.backend == LiquidBackend3D::kCuda;
   diagnostic->field = "cache";
   diagnostic->cause = "cache compatibility or verified retained checkpoint failed";
   if (exists) {
     if (!read_only && !command.resume) {
       return absl::AlreadyExistsError("");
     }
-    auto opened = read_only ? LiquidCache3D::OpenForReplay(command.cache_directory, *fingerprint)
-                            : LiquidCache3D::Open(command.cache_directory, *fingerprint);
+    // Authenticate the cache path and fingerprint without creating lock files
+    // while CUDA compatibility admission is still pending.
+    auto opened = read_only || requires_cuda_compatibility
+        ? LiquidCache3D::OpenForReplay(command.cache_directory, *fingerprint)
+        : LiquidCache3D::Open(command.cache_directory, *fingerprint);
     if (!opened.ok()) {
       return opened.status();
     }
     cache = std::move(*opened);
-    if (!read_only) {
-      diagnostic->cause = "another process owns the cache job lease or the lease could not be acquired";
-      EXEC_TRY(job.AttachCache(command.cache_directory, false));
-      diagnostic->cause = "verified retained checkpoint could not be read";
-    }
   } else if (replay || command.resume) {
     return absl::NotFoundError("");
   }
+#if defined(FLUIDITY_SIMULATE_CUDA)
+  std::optional<std::string> cuda_compatibility;
+  if (requires_cuda_compatibility && (cache || !read_only)) {
+    diagnostic->field = "cuda-compatibility";
+    std::optional<std::string> recorded_compatibility;
+    if (cache) {
+      diagnostic->cause = "missing or malformed CUDA execution compatibility record";
+      auto record = ReadCudaCompatibilityRecord(command.cache_directory);
+      if (!record.ok()) {
+        return record.status();
+      }
+      recorded_compatibility = std::move(*record);
+    }
+    diagnostic->cause = "could not identify the selected CUDA device and exact driver/runtime";
+    auto actual_compatibility = CudaCompatibilityRecord(command.device_index, *fingerprint);
+    if (!actual_compatibility.ok()) {
+      return actual_compatibility.status();
+    }
+    if (recorded_compatibility && *actual_compatibility != *recorded_compatibility) {
+      diagnostic->cause = "selected CUDA device or driver/runtime differs from the recorded execution";
+      return absl::FailedPreconditionError("");
+    }
+    cuda_compatibility = std::move(*actual_compatibility);
+  }
+#endif
+  diagnostic->field = "cache";
+  if (cache && !read_only) {
+    if (requires_cuda_compatibility) {
+      diagnostic->cause = "could not open the verified cache for publication";
+      auto opened = LiquidCache3D::Open(command.cache_directory, *fingerprint);
+      if (!opened.ok()) {
+        return opened.status();
+      }
+      cache = std::move(*opened);
+    }
+    diagnostic->cause = "another process owns the cache job lease or the lease could not be acquired";
+    EXEC_TRY(job.AttachCache(command.cache_directory, false));
+    if (requires_cuda_compatibility) {
+      // A prior writer may have stopped after promotion but before the
+      // directory barrier. Finish that barrier before extending this cache.
+      diagnostic->cause = "could not flush the verified CUDA compatibility record directory";
+      EXEC_TRY(liquid_cache_files_internal::FlushDirectory(command.cache_directory));
+    }
+  }
+  diagnostic->cause = "verified retained checkpoint could not be read";
   LiquidResumeMetadata3D resume{
       .resolved_fingerprint = *fingerprint,
       .execution_id = LiquidExecutionId3D(*fingerprint),
@@ -450,6 +495,13 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
     }
     cache = std::move(*created);
     EXEC_TRY(job.AttachCache(command.cache_directory, true));
+#if defined(FLUIDITY_SIMULATE_CUDA)
+    if (cuda_compatibility) {
+      diagnostic->field = "cuda-compatibility";
+      diagnostic->cause = "could not durably publish the CUDA execution compatibility record";
+      EXEC_TRY(PublishCudaCompatibilityRecord(command.cache_directory, *cuda_compatibility));
+    }
+#endif
   }
   diagnostic->field = "job-status";
   diagnostic->cause = "could not persist the baking job status";

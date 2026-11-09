@@ -15,7 +15,8 @@ function(fluidity_add_simulate_executable target)
     flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(${target} PRIVATE FLUIDITY_SIMULATE_CUDA=1)
-    target_link_libraries(${target} PRIVATE fluidity_cuda_probe fluidity_cuda_operators)
+    target_sources(${target} PRIVATE native/cli/simulate_cuda_compatibility.cc)
+    target_link_libraries(${target} PRIVATE fluidity_cuda_probe fluidity_cuda_operators CUDA::cudart ${CMAKE_DL_LIBS})
   endif()
 endfunction()
 fluidity_add_simulate_executable(fluidity_simulate)
@@ -39,7 +40,6 @@ if(BUILD_TESTING)
     # Only this test-linked executable can arm typed runtime faults.
     fluidity_add_simulate_executable(fluidity_simulate_fault_fixture)
     target_sources(fluidity_simulate_fault_fixture PRIVATE native/tests/simulate_fault_fixture.cc)
-    target_link_libraries(fluidity_simulate_fault_fixture PRIVATE CUDA::cudart)
     target_compile_definitions(fluidity_simulate_fault_fixture PRIVATE FLUIDITY_SIMULATE_FAULT_FIXTURE=1)
     add_test(NAME SimulateReliability.InterruptionCampaign
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8

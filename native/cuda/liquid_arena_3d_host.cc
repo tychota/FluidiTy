@@ -12,6 +12,7 @@
 #include "liquid_arena_3d_internal.h"
 #include "liquid_boundary_3d_bridge.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
+#include "liquid_device_3d_internal.h"
 #include "liquid_geometry_stages_3d_bridge.h"
 #include "mac_pressure_3d_bridge.h"
 
@@ -602,28 +603,13 @@ CudaLiquidArena3D& CudaLiquidArena3D::operator=(CudaLiquidArena3D&&) noexcept = 
 CudaLiquidArena3D::~CudaLiquidArena3D() = default;
 absl::StatusOr<CudaLiquidArena3D>
 CudaLiquidArena3D::Create(LiquidStateCapacities3D capacities, int device_ordinal, std::size_t byte_limit) {
-  if (device_ordinal < 0) {
-    return Error(absl::StatusCode::kInvalidArgument);
+  const auto properties = cuda_internal::QueryLiquidCudaDevice3D(device_ordinal);
+  if (!properties.ok()) {
+    return properties.status();
   }
-  int count = 0;
-  auto status = CheckedCuda(cudaGetDeviceCount(&count));
+  auto status = cuda_internal::LiquidCudaDeviceSetupStatus3D(cudaSetDevice(device_ordinal));
   if (!status.ok()) {
     return status;
-  }
-  if (device_ordinal >= count) {
-    return Error(absl::StatusCode::kInvalidArgument);
-  }
-  status = CheckedCuda(cudaSetDevice(device_ordinal));
-  if (!status.ok()) {
-    return status;
-  }
-  cudaDeviceProp properties{};
-  status = CheckedCuda(cudaGetDeviceProperties(&properties, device_ordinal));
-  if (!status.ok()) {
-    return status;
-  }
-  if (properties.major != 12 || properties.minor != 0) {
-    return Error(absl::StatusCode::kFailedPrecondition);
   }
   CudaLiquidArena3D arena;
   arena.impl_.reset(new (std::nothrow) Impl{});

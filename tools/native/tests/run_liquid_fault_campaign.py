@@ -205,10 +205,12 @@ def verify_inventory(receipts):
             assert [frame["frame"] for frame in receipt[key]] == list(range(len(receipt[key])))
 
 
-def run_campaign(executable, fault_executable, fixture, directory, device_control_only):
+def run_campaign(executable, fault_executable, fixture, directory, device_control_only, expected_device_name=None):
     started_at = monotonic()
     device = invoke(fault_executable, "device-info", "--backend", "cuda")
-    assert device["device_name"] == "NVIDIA GeForce RTX 5060 Ti"
+    assert isinstance(device["device_name"], str) and device["device_name"].strip()
+    if expected_device_name is not None:
+        assert device["device_name"] == expected_device_name, device
     assert (device["compute_major"], device["compute_minor"], device["compiled_architecture"]) == (12, 0, 1200)
     assert device["cuda_available"] and device["backend"] == "cuda"
     production_rejects_fault = invoke(executable, "--fixture-device-error", success=False)
@@ -258,13 +260,14 @@ if __name__ == "__main__":
     parser.add_argument("--fault-executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--device-control-only", action="store_true")
+    parser.add_argument("--expected-device-name", help="Require the exact device name for a hardware qualification run")
     options = parser.parse_args()
     for executable_path in (options.executable, options.fault_executable, options.fixture):
         assert executable_path.is_file(), executable_path
     with tempfile.TemporaryDirectory(prefix="fluidity-f9-") as temporary_directory:
         receipt = run_campaign(
             options.executable.resolve(), options.fault_executable.resolve(), options.fixture.resolve(),
-            Path(temporary_directory), options.device_control_only,
+            Path(temporary_directory), options.device_control_only, options.expected_device_name,
         )
     print("CTEST_FULL_OUTPUT")
     print(json.dumps(receipt, allow_nan=False, sort_keys=True))
