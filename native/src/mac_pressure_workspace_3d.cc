@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -141,6 +142,49 @@ absl::StatusOr<PreparedMacPressureView3D> Prepare(const BorrowedInputs& inputs, 
   }
   system.gauges = gauges.first(*gauge_count);
   return system;
+}
+
+// Inspect only checked records. With zero compliance and no gauge, every
+// connected component has a Dirichlet anchor.
+std::optional<double> UniformDirichletRestPressure(const PreparedMacPressureView3D& system) {
+  if (system.cells().empty() || !system.gauge_cell_ordinals().empty()) {
+    return std::nullopt;
+  }
+  for (const auto& cell : system.cells()) {
+    if (cell.compliance != 0 || cell.previous_pressure != 0 || cell.integrated_target_flux != 0) {
+      return std::nullopt;
+    }
+  }
+
+  std::optional<double> exterior_pressure;
+  for (const auto& link : system.links()) {
+    if (link.predicted_normal_velocity != 0 || link.prescribed_wall_flux != 0) {
+      return std::nullopt;
+    }
+    const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link);
+    if (internal != nullptr && internal->pressure_jump != 0) {
+      return std::nullopt;
+    }
+    const auto* boundary = std::get_if<DirichletMacPressureLink3D>(&link.pressure_link);
+    if (boundary == nullptr) {
+      continue;
+    }
+    if (!exterior_pressure.has_value()) {
+      exterior_pressure = boundary->exterior_pressure;
+    } else if (boundary->exterior_pressure != *exterior_pressure) {
+      return std::nullopt;
+    }
+  }
+
+  // At the constant iterate, internal differences and physical flux vanish.
+  // The original operator has the same Dirichlet terms in the same order as
+  // the checked RHS, so the residual/defect identity adds their magnitudes twice.
+  for (const double rhs_absolute_terms : system.rhs_absolute_term_sums()) {
+    if (!std::isfinite(rhs_absolute_terms + rhs_absolute_terms)) {
+      return std::nullopt;
+    }
+  }
+  return exterior_pressure;
 }
 
 // Cast only finite values; a nonzero FP64 residual or coarse correction must
@@ -395,6 +439,7 @@ absl::Status Evaluate(
 }
 absl::StatusOr<MacPressureProjectionView3D> Solve(
     const BorrowedInputs& inputs,
+    bool seed_uniform_dirichlet_rest_pressure,
     MacPressureSolverOptions3D options,
     MacPressureScratch3D& scratch,
     std::span<double> pressures,
@@ -409,7 +454,8 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
       inputs.step_duration,
       inputs.pressure_cells,
       inputs.pressure_faces,
-      scratch
+      scratch,
+      seed_uniform_dirichlet_rest_pressure
   );
   if (!upload.ok()) {
     return upload.status();
@@ -713,6 +759,7 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectMacPressure3D(
   MacPressureScratch3D scratch(workspace.scratch_.values());
   const auto result = Solve(
       {grid, step_duration, problem.cells, problem.faces},
+      problem.seed_uniform_dirichlet_rest_pressure,
       options,
       scratch,
       bank.pressures.values(),
@@ -740,7 +787,8 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
     double step_duration,
     std::span<const MacPressureCell3D> cells,
     std::span<const MacPressureFace3D> faces,
-    MacPressureScratch3D& scratch
+    MacPressureScratch3D& scratch,
+    bool seed_uniform_dirichlet_rest_pressure
 ) {
   if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
@@ -784,6 +832,12 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
       if (!std::isfinite(base_pressure[cell])) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
+    }
+  }
+  if (seed_uniform_dirichlet_rest_pressure) {
+    const auto rest_pressure = UniformDirichletRestPressure(*system);
+    if (rest_pressure.has_value()) {
+      std::ranges::fill(base_pressure, *rest_pressure);
     }
   }
   arithmetic::CompensatedSum pressure_cell_volume;

@@ -14,6 +14,7 @@
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_rest_3d_cases.h"
 
 namespace fluidity {
 namespace {
@@ -90,6 +91,17 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   std::ranges::sort(problem.faces, [&](const auto& left, const auto& right) {
     return *grid.FaceSlot(left.face_index) < *grid.FaceSlot(right.face_index);
   });
+}
+
+TEST(MacPressureWorkspace3D, SeedsExactAnchoredUniformDirichletRestPressure) {
+  auto workspace = MacPressureWorkspace3D::Create(2, 12);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto project = [&](SparseMacGridView3D grid, const LiquidPressureProblemView3D& inputs) {
+    return ProjectMacPressure3D(grid, rest_pressure_test::kStepDuration, inputs, {}, *workspace);
+  };
+  EXPECT_NO_FATAL_FAILURE(rest_pressure_test::ExpectExactAnchoredRest(project));
+  EXPECT_NO_FATAL_FAILURE(rest_pressure_test::ExpectOrdinaryNonRest(project));
+  EXPECT_NO_FATAL_FAILURE(rest_pressure_test::ExpectUnrepresentableIdentityBoundDeclinesSeed());
 }
 
 TEST(MacPressureWorkspace3D, MatchesIndependentFrozenPressureFixtures) {

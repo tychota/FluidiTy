@@ -45,6 +45,9 @@ struct LiquidPressureProblemView3D {
   std::span<const MacPressureCell3D> cells;
   std::span<const MacPressureFace3D> faces;
   std::size_t lower_theta_regularization_count = 0;
+  // Use the common exterior pressure in Pa as the initial iterate only when
+  // the checked problem is anchored, uniform and at rest with zero history.
+  bool seed_uniform_dirichlet_rest_pressure = false;
 };
 // Same transfer units and complete-support preconditions as the owning inputs.
 struct LiquidBoundaryDepositViewInputs3D {

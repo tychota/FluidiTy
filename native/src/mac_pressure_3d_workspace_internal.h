@@ -132,7 +132,7 @@ struct MacPressureHierarchyView3D {
 // hierarchy spans expire on arena rewind/reuse or backing-owner destruction.
 absl::StatusOr<MacPressureHierarchyView3D>
 BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacPressureScratch3D& scratch);
-// Checked assembly/hierarchy/warm-start view for a persistent device upload.
+// Checked assembly, hierarchy and initial iterate for a bounded CPU or CUDA solve.
 // Requires 1..4096 unique signed-ordered cells, their exact incident face union
 // (1..24576 faces in owned-slot order), and positive finite seconds. Input units,
 // validation and status categories match ProjectMacPressure3D. Incompatible
@@ -149,11 +149,15 @@ struct PreparedMacPressureUploadView3D {
   MacPressureStoppingCriteria3D stopping;
   MacPressureFrozenMeasurement3D frozen_measurement;
 };
+// The opt-in uses the common Dirichlet pressure only for a checked uniform
+// anchored rest problem with zero history. The prepared physical system and
+// the ordinary gauge-adjusted warm start for other inputs are unchanged.
 absl::StatusOr<PreparedMacPressureUploadView3D> PrepareBoundedMacPressureUpload3D(
     SparseMacGridView3D grid,
     double step_duration,
     std::span<const MacPressureCell3D> cells,
     std::span<const MacPressureFace3D> faces,
-    MacPressureScratch3D& scratch
+    MacPressureScratch3D& scratch,
+    bool seed_uniform_dirichlet_rest_pressure = false
 );
 }  // namespace fluidity::pressure_internal

@@ -23,6 +23,7 @@
 #endif
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_rest_3d_cases.h"
 
 namespace fluidity {
 namespace {
@@ -120,6 +121,26 @@ MacPressureProjection3D CopyProjection(const MacPressureProjectionView3D& view) 
       view.diagnostics,
   };
 }
+TEST(CudaLiquidPressureStage3D, SeedsExactAnchoredUniformDirichletRestPressure) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create({1, 1, 2, 12, 0});
+  auto workspace = MacPressureWorkspace3D::Create(2, 12);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto project = [&](SparseMacGridView3D grid, const LiquidPressureProblemView3D& inputs) {
+    return cuda_internal::ProjectLiquidPressure3D(
+        *arena,
+        grid,
+        rest_pressure_test::kStepDuration,
+        inputs,
+        {},
+        *workspace
+    );
+  };
+  EXPECT_NO_FATAL_FAILURE(rest_pressure_test::ExpectExactAnchoredRest(project));
+  EXPECT_NO_FATAL_FAILURE(rest_pressure_test::ExpectOrdinaryNonRest(project));
+}
+
 TEST(CudaLiquidPressureStage3D, MatchesIndependentMixedLinkFixtures) {
   ASSERT_NO_FATAL_FAILURE(CheckHardware());
   std::vector<pressure_test::MacPressureFixtureCase3D> fixtures;

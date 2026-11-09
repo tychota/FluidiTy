@@ -304,11 +304,13 @@ struct LiquidSubstepScheduler3D::Impl {
     // stages still execute, including transfer/forces and backend particle update.
     const bool has_pressure = !links->cells.empty();
     if (has_pressure) {
+      auto pressure_problem = *links;
+      pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
       const auto projection = backend.project(
           backend.context,
           grid,
           step_duration,
-          *links,
+          pressure_problem,
           options.pressure_solver_options,
           workspace.pressure()
       );
