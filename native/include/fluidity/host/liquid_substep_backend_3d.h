@@ -21,18 +21,61 @@ struct LiquidMissingFacePredictionInputs3D {
   Vec3 world_acceleration;  // m/s^2, applied once to the continued old velocity.
   double step_duration;  // Seconds.
 };
-// Typed checked backend operations. Each output borrows its supplied workspace or
-// writes only the supplied trial spans. Inputs use the corresponding bounded CPU
-// contract; every operation must return code-only errors and allocate/free nothing.
-// Context may own device reservations but remains borrowed. A custom backend must
-// fill EVERY slot; Create never substitutes CPU numerics. Topology is authoritative:
-// a device stable-sort backend must publish its checked ordering through a checked
-// workspace import seam; the current CPU operation uses PrepareTrialTopology.
-// Task 6 must add that import seam rather than independently re-sort a device result.
-// Shared orchestration currently enumerates/samples finite scene fields on the host.
-// Device field evaluation needs a separate checked sampler seam in Task 6; this table
-// does not claim that host sampling qualifies as CUDA numerical work.
+// Typed checked backend operations. Numeric outputs borrow their supplied
+// workspace or write only trial spans. Attempt operations return code-only
+// errors and allocate/free nothing, including on failure. Initialize and growth
+// are setup operations outside attempts and may reserve/release resources.
+// Context is borrowed and must outlive a single scheduler; the backend and
+// scheduler are single-threaded and non-reentrant. EVERY slot is mandatory:
+// Create never substitutes CPU operations for missing custom callbacks.
+// Device sorting must publish through PrepareTrialTopologyFromOrder; host
+// orchestration enumerates source/topology/sample coordinates without replacing
+// the selected backend's distance, wall, transfer or projection numerics.
 struct LiquidSubstepBackend3D {
+  // Evaluate the frozen t^n field in world meters. Particle-union evaluation
+  // visits trial_particles in input order. Return only a finite signed distance
+  // (negative inside); invalid/range errors leave caller outputs untouched.
+  using SampleField = absl::StatusOr<double>(
+      void* context,
+      const LiquidSceneField3D& field,
+      std::span<const LiquidParticleState3D> trial_particles,
+      Vec3 sample_world_position
+  );
+  // At the supplied frozen obstacle pose, fill full owned-slot face tags and/or
+  // prescribed walls. Each output is either empty (not requested) or covers the
+  // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
+  // side from each face anchor. The two output spans must not overlap inputs or
+  // one another. Failed outputs remain trial-only and are discarded by scheduler.
+  using SampleFaces = absl::Status(
+      void* context,
+      SparseMacGridView3D grid,
+      const LiquidObstacle3D& obstacle_at_sample_time,
+      std::int64_t requested_side_tag,
+      std::span<LiquidBoundaryFaceTag3D> face_tags,
+      std::span<LiquidPrescribedWallSample3D> wall_samples
+  );
+  // Prepare an independent initial device version. Failure must retain any live
+  // prior backend state; all pending resources remain owned by the backend.
+  using Initialize = absl::Status(void* context, const LiquidState3D& initial);
+  // Stage every trial family with accepted_clock (trial.clock is still t^n).
+  // Called only after physical validation; may fail, preserving the committed
+  // device version. Host FinishAttempt can still reject. Commit must be an
+  // infallible metadata flip, with no device calls or resource destruction.
+  // Discard is also infallible and allocation-free; it discards candidate control
+  // only and is safe even if this attempt never called PreparePublication.
+  using PreparePublication = absl::Status(void* context, const LiquidState3D& trial, LiquidClock3D accepted_clock);
+  using CommitPublication = void(void* context) noexcept;
+  using DiscardPublication = void(void* context) noexcept;
+  // Reserve replacement storage and stage frame_start before the host replaces
+  // any live version. Enforce the device ceiling against peak old+new ownership.
+  // Failure and host growth failure both call DiscardGrowth; success calls
+  // CommitGrowth after the host replacement. These hooks execute outside an
+  // attempt. Retire old owners only after all source leases are fenced; commit
+  // must not fail. Neither path may invalidate a still-live source lease.
+  using PrepareGrowth =
+      absl::Status(void* context, LiquidStateCapacities3D capacities, const LiquidState3D& frame_start);
+  using CommitGrowth = void(void* context) noexcept;
+  using DiscardGrowth = void(void* context) noexcept;
   using PrepareTopology = absl::Status(
       void* context,
       std::span<const LiquidParticleState3D> particles,
@@ -95,6 +138,15 @@ struct LiquidSubstepBackend3D {
       std::span<LiquidParticleState3D> trial_particles
   );
   void* context = nullptr;
+  SampleField* sample_field = nullptr;
+  SampleFaces* sample_faces = nullptr;
+  Initialize* initialize = nullptr;
+  PreparePublication* prepare_publication = nullptr;
+  CommitPublication* commit_publication = nullptr;
+  DiscardPublication* discard_publication = nullptr;
+  PrepareGrowth* prepare_growth = nullptr;
+  CommitGrowth* commit_growth = nullptr;
+  DiscardGrowth* discard_growth = nullptr;
   PrepareTopology* topology = nullptr;
   Deposit* deposit = nullptr;
   Normalize* normalize = nullptr;

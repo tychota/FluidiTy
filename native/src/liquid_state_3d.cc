@@ -8,6 +8,37 @@
 
 namespace fluidity {
 namespace {
+// Keep device staging and host acceptance on the same clock arithmetic.
+absl::StatusOr<LiquidClock3D> ComputeAcceptedClock(LiquidClock3D clock, double target, double duration) {
+  if (!std::isfinite(duration) || duration <= 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const double remaining = target - clock.time;
+  double accepted_time = clock.time + duration;
+  if (duration > remaining || !std::isfinite(accepted_time) || accepted_time <= clock.time) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  if (duration == remaining && accepted_time != target) {
+    if (std::nextafter(accepted_time, target) != target) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    accepted_time = target;
+  }
+  if (accepted_time > target || clock.epoch == UINT64_MAX || clock.accepted_step_ordinal == UINT64_MAX
+      || clock.substep_ordinal == UINT64_MAX || (accepted_time == target && clock.frame_ordinal == UINT64_MAX)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  clock.time = accepted_time;
+  ++clock.epoch;
+  ++clock.accepted_step_ordinal;
+  if (accepted_time == target) {
+    ++clock.frame_ordinal;
+    clock.substep_ordinal = 0;
+  } else {
+    ++clock.substep_ordinal;
+  }
+  return clock;
+}
 auto Components(Vec3 value) {
   return std::tuple(value.x, value.y, value.z);
 }
@@ -312,6 +343,15 @@ absl::StatusOr<LiquidState3D*> LiquidFrameTransaction3D::ResetTrialFromCommitted
   trial_active_ = true;
   return &trial_;
 }
+absl::StatusOr<LiquidClock3D> LiquidFrameTransaction3D::PreviewAcceptedClock(double attempted_duration) const {
+  if (!trial_active_) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  if (retry_duration_ && attempted_duration != *retry_duration_) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  return ComputeAcceptedClock(committed_.clock, target_time_, attempted_duration);
+}
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, double attempted_duration) {
   if (!trial_active_) {
@@ -389,15 +429,11 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
-  trial_.clock.time = accepted_time;
-  ++trial_.clock.epoch;
-  ++trial_.clock.accepted_step_ordinal;
-  if (accepted_time == target_time_) {
-    ++trial_.clock.frame_ordinal;
-    trial_.clock.substep_ordinal = 0;
-  } else {
-    ++trial_.clock.substep_ordinal;
+  const auto accepted_clock = ComputeAcceptedClock(committed_.clock, target_time_, attempted_duration);
+  if (!accepted_clock.ok()) {
+    return accepted_clock.status();
   }
+  trial_.clock = *accepted_clock;
   std::swap(committed_, trial_);
   retry_count_ = 0;
   retry_duration_.reset();

@@ -61,10 +61,18 @@ class MacPressureScratchMark3D {
   MacPressureScratchMark3D(const MacPressureScratchMark3D&) = delete;
   MacPressureScratchMark3D& operator=(const MacPressureScratchMark3D&) = delete;
   ~MacPressureScratchMark3D() {
-    scratch_.Rewind(mark_);
+    if (!keep_allocations_) {
+      scratch_.Rewind(mark_);
+    }
+  }
+
+  // Transfer appended spans to the caller on successful checked preparation.
+  void KeepAllocations() {
+    keep_allocations_ = true;
   }
 
  private:
+  bool keep_allocations_ = false;
   MacPressureScratch3D& scratch_;
   std::size_t mark_;
 };
@@ -123,4 +131,25 @@ struct MacPressureHierarchyView3D {
 // hierarchy spans expire on arena rewind/reuse or backing-owner destruction.
 absl::StatusOr<MacPressureHierarchyView3D>
 BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacPressureScratch3D& scratch);
+// Checked assembly/hierarchy/warm-start view for a persistent device upload.
+// Requires 1..4096 unique signed-ordered cells, their exact incident face union
+// (1..24576 faces in owned-slot order), and positive finite seconds. Input units,
+// validation and status categories match ProjectMacPressure3D. Incompatible
+// sealed flux returns FailedPrecondition; capacity exhaustion is ResourceExhausted.
+// No solve or physical correction is performed. Appends to caller-owned scratch;
+// success borrows until rewind/reuse, failure restores its entry cursor. Existing
+// lower arena spans remain intact. Inputs must not alias the unused arena suffix.
+struct PreparedMacPressureUploadView3D {
+  PreparedMacPressureView3D system;
+  MacPressureHierarchyView3D hierarchy;
+  std::span<double> initial_pressure;
+  MacPressureStoppingCriteria3D stopping;
+};
+absl::StatusOr<PreparedMacPressureUploadView3D> PrepareBoundedMacPressureUpload3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+);
 }  // namespace fluidity::pressure_internal

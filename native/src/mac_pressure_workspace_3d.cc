@@ -404,38 +404,20 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
     std::span<double> defects,
     std::span<std::size_t> gauges
 ) {
-  const auto system = Prepare(inputs, scratch);
-  if (!system.ok()) {
-    return system.status();
+  const auto upload = pressure_internal::PrepareBoundedMacPressureUpload3D(
+      inputs.mac_grid,
+      inputs.step_duration,
+      inputs.pressure_cells,
+      inputs.pressure_faces,
+      scratch
+  );
+  if (!upload.ok()) {
+    return upload.status();
   }
-  const auto hierarchy = pressure_internal::BuildBoundedMacPressureHierarchy3D(*system, scratch);
-  if (!hierarchy.ok()) {
-    return hierarchy.status();
-  }
-  double rhs_norm = 0;
-  for (const double value : system->rhs) {
-    rhs_norm = std::hypot(rhs_norm, value);
-  }
-  const pressure_internal::MacPressureStoppingCriteria3D stopping{.integrated_residual_limit = 2e-6 + 2e-6 * rhs_norm};
-  if (!std::isfinite(rhs_norm) || !std::isfinite(stopping.integrated_residual_limit)) {
-    return absl::Status(absl::StatusCode::kOutOfRange, {});
-  }
-  const auto* criteria = &stopping;
-  FLUIDITY_PRESSURE_TAKE(base_pressure, double, system->cells().size());
-  {
-    MacPressureScratchMark3D temporary(scratch);
-    FLUIDITY_PRESSURE_TAKE(pin_previous_pressures, double, base_pressure.size());
-    for (const auto pin : system->gauges) {
-      pin_previous_pressures[system->components[pin]] = system->cell_records[pin].previous_pressure;
-    }
-    for (std::size_t cell = 0; cell < base_pressure.size(); ++cell) {
-      base_pressure[cell] =
-          system->cell_records[cell].previous_pressure - pin_previous_pressures[system->components[cell]];
-      if (!std::isfinite(base_pressure[cell])) {
-        return absl::Status(absl::StatusCode::kOutOfRange, {});
-      }
-    }
-  }
+  const auto* system = &upload->system;
+  const auto* hierarchy = &upload->hierarchy;
+  const auto* criteria = &upload->stopping;
+  auto base_pressure = upload->initial_pressure;
   std::ranges::copy(system->rhs, rhs.begin());
   std::ranges::copy(system->gauges, gauges.begin());
   MacPressureProjectionView3D result{
@@ -748,5 +730,64 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectMacPressure3D(
   }
   workspace.published_bank_ = candidate_bank;
   return result;
+}
+absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_internal::PrepareBoundedMacPressureUpload3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+) {
+  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratchMark3D publication(scratch);
+  const BorrowedInputs inputs{grid, step_duration, cells, faces};
+  const auto system = Prepare(inputs, scratch);
+  if (!system.ok()) {
+    return system.status();
+  }
+  const auto hierarchy = pressure_internal::BuildBoundedMacPressureHierarchy3D(*system, scratch);
+  if (!hierarchy.ok()) {
+    return hierarchy.status();
+  }
+  double rhs_norm = 0;
+  for (const double value : system->rhs) {
+    rhs_norm = std::hypot(rhs_norm, value);
+  }
+  const pressure_internal::MacPressureStoppingCriteria3D stopping{.integrated_residual_limit = 2e-6 + 2e-6 * rhs_norm};
+  if (!std::isfinite(rhs_norm) || !std::isfinite(stopping.integrated_residual_limit)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto base_result = scratch.Take<double>(system->cells().size());
+  if (!base_result.ok()) {
+    return base_result.status();
+  }
+  auto base_pressure = *base_result;
+  {
+    MacPressureScratchMark3D temporary(scratch);
+    const auto pin_result = scratch.Take<double>(base_pressure.size());
+    if (!pin_result.ok()) {
+      return pin_result.status();
+    }
+    auto pin_previous_pressures = *pin_result;
+    for (const auto pin : system->gauges) {
+      pin_previous_pressures[system->components[pin]] = system->cell_records[pin].previous_pressure;
+    }
+    for (std::size_t cell = 0; cell < base_pressure.size(); ++cell) {
+      base_pressure[cell] =
+          system->cell_records[cell].previous_pressure - pin_previous_pressures[system->components[cell]];
+      if (!std::isfinite(base_pressure[cell])) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+    }
+  }
+  publication.KeepAllocations();
+  return PreparedMacPressureUploadView3D{
+      .system = *system,
+      .hierarchy = *hierarchy,
+      .initial_pressure = base_pressure,
+      .stopping = stopping,
+  };
 }
 }  // namespace fluidity

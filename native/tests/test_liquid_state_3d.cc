@@ -797,4 +797,30 @@ TEST(LiquidFrameTransaction3D, EmptyStateCompletesFrameAndMoveTransfersIndepende
   EXPECT_EQ(transaction.frame_start().clock, LiquidClock3D{});
 }
 
+TEST(LiquidFrameTransaction3D, PreviewAcceptedClockIsExactReadOnlyAndChecksRetry) {
+  auto initial = InitialState();
+  auto transaction = LiquidFrameTransaction3D::Create(initial, kCapacity);
+  ASSERT_TRUE(transaction.ok());
+  EXPECT_EQ(transaction->PreviewAcceptedClock(1).status().code(), absl::StatusCode::kFailedPrecondition);
+  ASSERT_TRUE(transaction->BeginFrame(1).ok());
+  ASSERT_TRUE(transaction->ResetTrialFromCommitted().ok());
+  const auto first = transaction->PreviewAcceptedClock(1);
+  ASSERT_TRUE(first.ok());
+  EXPECT_EQ(*first, (LiquidClock3D{1, 1, 0, 1, 1}));
+  EXPECT_EQ(transaction->committed(), initial);
+  EXPECT_EQ(transaction->PreviewAcceptedClock(0).status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(transaction->PreviewAcceptedClock(2).status().code(), absl::StatusCode::kOutOfRange);
+  ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kRetryDt, 1).ok());
+  ASSERT_TRUE(transaction->ResetTrialFromCommitted().ok());
+  EXPECT_EQ(transaction->PreviewAcceptedClock(1).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto retry = transaction->PreviewAcceptedClock(0.5);
+  ASSERT_TRUE(retry.ok());
+  ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 0.5).ok());
+  EXPECT_EQ(*retry, transaction->committed().clock);
+  ASSERT_TRUE(transaction->ResetTrialFromCommitted().ok());
+  const auto final = transaction->PreviewAcceptedClock(0.5);
+  ASSERT_TRUE(final.ok());
+  ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 0.5).ok());
+  EXPECT_EQ(*final, transaction->committed().clock);
+}
 }  // namespace fluidity

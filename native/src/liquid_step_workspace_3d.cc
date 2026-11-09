@@ -149,11 +149,31 @@ LiquidStepWorkspace3D::Create(LiquidStateCapacities3D capacities, UniformMacGeom
   return workspace;
 }
 
+absl::Status LiquidStepWorkspace3D::PrepareTrialTopologyFromOrder(
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const CellIndex3D> pressure_cells,
+    std::span<const LiquidParticleSortEntry3D> particle_order,
+    const LiquidState3D* previous_state
+) {
+  return PrepareTopology(particles, pressure_cells, previous_state, particle_order, true);
+}
 absl::Status LiquidStepWorkspace3D::PrepareTrialTopology(
     std::span<const LiquidParticleState3D> particles,
     std::span<const CellIndex3D> pressure_cells,
     const LiquidState3D* previous_state
 ) {
+  return PrepareTopology(particles, pressure_cells, previous_state, {}, false);
+}
+absl::Status LiquidStepWorkspace3D::PrepareTopology(
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const CellIndex3D> pressure_cells,
+    const LiquidState3D* previous_state,
+    std::span<const LiquidParticleSortEntry3D> imported_order,
+    bool import_order
+) {
+  if (import_order && imported_order.size() != particles.size()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
   if (particles.size() > capacities_.particles || pressure_cells.size() > capacities_.cells) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -218,12 +238,30 @@ absl::Status LiquidStepWorkspace3D::PrepareTrialTopology(
       activation_keys_[key_count++] = MacOwnerBlock3D(high);
     }
   }
-  // The explicit ordinal makes an in-place bounded std::sort stable in physical
-  // order without std::stable_sort's optional heap buffer.
-  std::ranges::sort(candidate.particle_order.values(), [](const auto& left, const auto& right) {
+  const auto less = [](const auto& left, const auto& right) {
     return std::tuple(Key(left.bin_index), left.original_ordinal)
         < std::tuple(Key(right.bin_index), right.original_ordinal);
-  });
+  };
+  if (import_order) {
+    // Correct original bins plus strictly increasing (bin,ordinal) prove a
+    // complete permutation: duplicates cannot occur anywhere in sorted order.
+    for (std::size_t index = 0; index < imported_order.size(); ++index) {
+      const auto& entry = imported_order[index];
+      if (entry.original_ordinal >= particles.size()) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+      if (Key(entry.bin_index) != Key(candidate.particle_order[entry.original_ordinal].bin_index)) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+      if (index > 0 && !less(imported_order[index - 1], entry)) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+    }
+    std::ranges::copy(imported_order, candidate.particle_order.values().begin());
+  } else {
+    // The explicit ordinal makes the in-place sort stable without heap scratch.
+    std::ranges::sort(candidate.particle_order.values(), less);
+  }
   for (std::size_t index = 0; index < particles.size(); ++index) {
     candidate.particles[index] = particles[candidate.particle_order[index].original_ordinal];
   }

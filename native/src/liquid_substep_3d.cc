@@ -44,8 +44,11 @@ absl::StatusOr<std::size_t> ReservationBytes(
   return total;
 }
 bool Complete(const LiquidSubstepBackend3D& backend) {
-  return backend.topology && backend.deposit && backend.normalize && backend.predict_missing_face && backend.forces
-      && backend.freeze && backend.links && backend.project && backend.gather && backend.update_particles;
+  return backend.sample_field && backend.sample_faces && backend.initialize && backend.prepare_publication
+      && backend.commit_publication && backend.discard_publication && backend.prepare_growth && backend.commit_growth
+      && backend.discard_growth && backend.topology && backend.deposit && backend.normalize
+      && backend.predict_missing_face && backend.forces && backend.freeze && backend.links && backend.project
+      && backend.gather && backend.update_particles;
 }
 auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
@@ -94,7 +97,7 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kEmit, step_duration));
     STEP_TRY(liquid_step_internal::Emit(scene, step_duration, trial));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, step_duration));
-    STEP_TRY(liquid_step_internal::PrepareField(scene.field, trial, staging));
+    STEP_TRY(liquid_step_internal::PrepareField(scene.field, trial, staging, backend));
     STEP_TRY(backend.topology(
         backend.context,
         trial.particles.values(),
@@ -108,7 +111,8 @@ struct LiquidSubstepScheduler3D::Impl {
       return topology.status();
     }
     const auto grid = topology->grid;
-    STEP_TRY(liquid_step_internal::PrepareTransfers(trial, obstacle, grid, staging));
+    STEP_TRY(liquid_step_internal::PrepareTransfers(trial, grid, staging));
+    STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, 0, staging.tags.values(), {}));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, step_duration));
     const auto deposits = backend.deposit(
         backend.context,
@@ -195,9 +199,14 @@ struct LiquidSubstepScheduler3D::Impl {
       if (face.open_area > 0
           && (normalized->validity[slot] == LiquidFaceValidity3D::kMissing
               || normalized->validity[slot] == LiquidFaceValidity3D::kLowMass)) {
-        STEP_TRY(
-            liquid_step_internal::FillWalls(grid, obstacle, staging.tags[slot].side_tag, staging.old_walls.values())
-        );
+        STEP_TRY(backend.sample_faces(
+            backend.context,
+            grid,
+            obstacle,
+            staging.tags[slot].side_tag,
+            {},
+            staging.old_walls.values()
+        ));
         const LiquidMissingFacePredictionInputs3D prediction_inputs{
             .grid = grid,
             .old_history = old_history,
@@ -260,7 +269,7 @@ struct LiquidSubstepScheduler3D::Impl {
       }
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, step_duration));
-    STEP_TRY(liquid_step_internal::FillFaceTags(grid, new_obstacle, staging.new_tags.values()));
+    STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, 0, staging.new_tags.values(), {}));
     for (std::size_t index = 0; index < trial.faces.size(); ++index) {
       trial.faces[index].carrier_velocity = staging.new_velocities[index];
       trial.faces[index].validity = staging.validity[index];
@@ -282,8 +291,8 @@ struct LiquidSubstepScheduler3D::Impl {
     // particle groups. Copy each result before reusing the bounded gather bank.
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
       const auto side = trial.particles[index].side_tag;
-      STEP_TRY(liquid_step_internal::FillWalls(grid, obstacle, side, staging.old_walls.values()));
-      STEP_TRY(liquid_step_internal::FillWalls(grid, new_obstacle, side, staging.new_walls.values()));
+      STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
+      STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
       const auto gather = backend.gather(
           backend.context,
           {
@@ -302,11 +311,19 @@ struct LiquidSubstepScheduler3D::Impl {
       staging.gathered[index] = gather->particles[0];
       diagnostics.old_pic_fallback_count += gather->old_pic_fallback_particle_count;
       diagnostics.new_pic_fallback_count += gather->new_pic_fallback_particle_count;
-      staging.particle_distances[index] = liquid_step_internal::FieldDistance(
+      const auto distance = backend.sample_field(
+          backend.context,
           scene.field,
           trial.particles.values(),
           trial.particles[index].world_position
       );
+      if (!distance.ok()) {
+        return distance.status();
+      }
+      if (!std::isfinite(*distance)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      staging.particle_distances[index] = *distance;
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, step_duration));
     const LiquidParticleUpdateInputs3D particle_update_inputs{
@@ -449,6 +466,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   impl->scene = scene;
   impl->scene.sources = impl->sources.values();
   impl->options = options;
+  STEP_TRY(backend.initialize(backend.context, initial));
   impl->backend = backend;
   return LiquidSubstepScheduler3D(std::move(impl));
 }
@@ -488,9 +506,14 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
   diagnostics.pressure_diagnostics = {};
   diagnostics.old_pic_fallback_count = 0;
   diagnostics.new_pic_fallback_count = 0;
+  diagnostics.lower_theta_regularization_count = 0;
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
-  const auto status = impl.Execute(step_duration, **trial);
+  auto status = impl.Execute(step_duration, **trial);
+  if (status.ok()) {
+    const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
+    status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
+  }
   auto disposition = LiquidAttemptDisposition3D::kAccepted;
   if (!status.ok()) {
     diagnostics.failure_code = status.code();
@@ -507,12 +530,17 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
   }
   auto outcome = impl.transaction.FinishAttempt(disposition, step_duration);
   if (!outcome.ok()) {
+    impl.backend.discard_publication(impl.backend.context);
     diagnostics.failure_code = outcome.status().code();
     return outcome.status();
   }
   if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
+    impl.backend.commit_publication(impl.backend.context);
     ++diagnostics.accepted_attempts;
     diagnostics.stages[diagnostics.stage_count++] = LiquidPhysicalStage3D::kAdapt;
+  }
+  if (outcome->disposition != LiquidAttemptDisposition3D::kAccepted) {
+    impl.backend.discard_publication(impl.backend.context);
   }
   if (outcome->retry_duration) {
     ++diagnostics.dt_retries;
@@ -568,7 +596,18 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target) {
       if (!reservation_bytes.ok()) {
         return reservation_bytes.status();
       }
-      STEP_TRY(impl_->transaction.RestartFrameWithCapacity(growth));
+      const auto prepared_growth =
+          impl_->backend.prepare_growth(impl_->backend.context, growth, impl_->transaction.frame_start());
+      if (!prepared_growth.ok()) {
+        impl_->backend.discard_growth(impl_->backend.context);
+        return prepared_growth;
+      }
+      const auto restarted = impl_->transaction.RestartFrameWithCapacity(growth);
+      if (!restarted.ok()) {
+        impl_->backend.discard_growth(impl_->backend.context);
+        return restarted;
+      }
+      impl_->backend.commit_growth(impl_->backend.context);
       impl_->reservation_bytes = *reservation_bytes;
       impl_->workspace = std::move(*workspace);
       impl_->staging = std::move(*staging);

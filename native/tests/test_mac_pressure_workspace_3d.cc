@@ -215,21 +215,21 @@ TEST(MacPressureWorkspace3D, BoundedHierarchyMatchesAcceptedOwningHierarchyExact
   ASSERT_TRUE(storage.ok());
   ASSERT_TRUE(storage->Resize(storage->capacity()).ok());
   pressure_internal::MacPressureScratch3D scratch(storage->values());
-  // The builder reads only cells/links/gauges; duplicate scalar spans are not needed.
-  std::vector<double> rhs(prepared->integrated_rhs().begin(), prepared->integrated_rhs().end());
-  std::vector<double> terms(prepared->rhs_absolute_term_sums().begin(), prepared->rhs_absolute_term_sums().end());
-  std::vector<std::size_t> components(prepared->component_ordinals().begin(), prepared->component_ordinals().end());
-  std::vector<std::size_t> gauges(prepared->gauge_cell_ordinals().begin(), prepared->gauge_cell_ordinals().end());
-  const pressure_internal::PreparedMacPressureView3D system{
-      .cell_records = prepared->cells(),
-      .link_records = prepared->links(),
-      .rhs = rhs,
-      .rhs_absolute_terms = terms,
-      .components = components,
-      .gauges = gauges,
-  };
-  const auto actual = pressure_internal::BuildBoundedMacPressureHierarchy3D(system, scratch);
-  ASSERT_TRUE(actual.ok()) << actual.status();
+  const auto upload =
+      pressure_internal::PrepareBoundedMacPressureUpload3D(grid->view(), 1, problem.cells, problem.faces, scratch);
+  ASSERT_TRUE(upload.ok()) << upload.status();
+  EXPECT_TRUE(std::ranges::equal(upload->system.integrated_rhs(), prepared->integrated_rhs()));
+  EXPECT_TRUE(std::ranges::equal(upload->system.rhs_absolute_term_sums(), prepared->rhs_absolute_term_sums()));
+  EXPECT_TRUE(std::ranges::equal(upload->system.component_ordinals(), prepared->component_ordinals()));
+  EXPECT_TRUE(std::ranges::equal(upload->system.gauge_cell_ordinals(), prepared->gauge_cell_ordinals()));
+  const auto initial = pressure_internal::InitialMacPressure3D(*prepared);
+  ASSERT_TRUE(initial.ok());
+  EXPECT_TRUE(std::ranges::equal(upload->initial_pressure, *initial));
+  const auto criteria = pressure_internal::MacPressureStoppingCriteria(*prepared);
+  ASSERT_TRUE(criteria.ok());
+  EXPECT_EQ(upload->stopping.integrated_residual_limit, criteria->integrated_residual_limit);
+  EXPECT_EQ(upload->stopping.volume_scaled_limit, criteria->volume_scaled_limit);
+  const auto* actual = &upload->hierarchy;
   ASSERT_EQ(actual->levels.size(), expected->levels.size());
   EXPECT_TRUE(std::ranges::equal(actual->unknown_to_cell, expected->unknown_to_cell));
   EXPECT_TRUE(std::ranges::equal(actual->cell_to_unknown, expected->cell_to_unknown));
@@ -402,5 +402,42 @@ TEST(MacPressureWorkspace3D, ActualPartialReservationFailureReturnsInlineStatusA
   EXPECT_EQ(frees, 3);
 }
 #endif
+TEST(MacPressureWorkspace3D, PreparesCheckedDeviceUploadWithoutProjectionAndRewindsFailure) {
+  auto problem = MakeAffineProblem(-2, 4, true);
+  auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok());
+  SortFaces(problem, *grid);
+  const auto bytes = QueryMacPressureWorkspaceBytes3D(problem.cells.size(), problem.faces.size());
+  ASSERT_TRUE(bytes.ok());
+  auto storage = LiquidRecords3D<std::max_align_t>::Create(
+      (bytes->scratch_bytes + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t)
+  );
+  ASSERT_TRUE(storage.ok());
+  ASSERT_TRUE(storage->Resize(storage->capacity()).ok());
+  pressure_internal::MacPressureScratch3D scratch(storage->values());
+  auto guard = scratch.Take<double>(1);
+  ASSERT_TRUE(guard.ok());
+  (*guard)[0] = 123;
+  const auto entry = scratch.used();
+  auto malformed = problem.faces;
+  malformed.pop_back();
+  auto rejected =
+      pressure_internal::PrepareBoundedMacPressureUpload3D(grid->view(), 0.01, problem.cells, malformed, scratch);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(scratch.used(), entry);
+  EXPECT_EQ((*guard)[0], 123);
+  const auto upload =
+      pressure_internal::PrepareBoundedMacPressureUpload3D(grid->view(), 0.01, problem.cells, problem.faces, scratch);
+  ASSERT_TRUE(upload.ok()) << upload.status();
+  EXPECT_EQ(upload->system.cells().size(), problem.cells.size());
+  EXPECT_EQ(upload->system.links().size(), problem.faces.size());
+  EXPECT_GT(upload->hierarchy.levels.size(), 1);
+  EXPECT_EQ(upload->initial_pressure.size(), problem.cells.size());
+  EXPECT_GT(upload->stopping.integrated_residual_limit, 0);
+  for (const auto value : upload->initial_pressure) {
+    EXPECT_EQ(value, 0);
+  }
+  EXPECT_EQ((*guard)[0], 123);
+}
 }  // namespace
 }  // namespace fluidity

@@ -36,13 +36,13 @@ double FieldDistance(const LiquidSceneField3D& field, std::span<const LiquidPart
 absl::Status
 ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options);
 absl::Status Emit(const LiquidSceneInputs3D& scene, double duration, LiquidState3D& trial);
-absl::Status PrepareField(const LiquidSceneField3D& field, const LiquidState3D& trial, Staging& staging);
-absl::Status PrepareTransfers(
+absl::Status PrepareField(
+    const LiquidSceneField3D& field,
     const LiquidState3D& trial,
-    const LiquidObstacle3D& obstacle,
-    SparseMacGridView3D grid,
-    Staging& staging
+    Staging& staging,
+    const LiquidSubstepBackend3D& backend
 );
+absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging);
 absl::Status
 FillFaceTags(SparseMacGridView3D grid, const LiquidObstacle3D& obstacle, std::span<LiquidBoundaryFaceTag3D> tags);
 absl::Status FillWalls(

@@ -718,5 +718,240 @@ TEST(LiquidSubstep3D, ReportedReservationMatchesActualRequestedPayload) {
   RecordProperty("owner_object_bytes", std::to_string(owner_bytes));
 }
 #endif
+
+struct BackendLifecycleObservation {
+  int initialized = 0;
+  int prepared = 0;
+  int committed = 0;
+  int discarded = 0;
+  int growth_prepared = 0;
+  int growth_committed = 0;
+  int growth_discarded = 0;
+  int samples = 0;
+  int face_samples = 0;
+  bool fail_publication = false;
+  bool fail_growth = false;
+  LiquidClock3D staged_clock{};
+  LiquidClock3D growth_clock{};
+};
+LiquidSubstepBackend3D ObservedBackend(BackendLifecycleObservation& observed) {
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &observed;
+  backend.initialize = [](void* context, const LiquidState3D&) {
+    ++static_cast<BackendLifecycleObservation*>(context)->initialized;
+    return absl::OkStatus();
+  };
+  backend.prepare_publication = [](void* context, const LiquidState3D&, LiquidClock3D clock) {
+    auto& observation = *static_cast<BackendLifecycleObservation*>(context);
+    ++observation.prepared;
+    observation.staged_clock = clock;
+    return absl::Status(observation.fail_publication ? absl::StatusCode::kInternal : absl::StatusCode::kOk, {});
+  };
+  backend.commit_publication = [](void* context) noexcept {
+    ++static_cast<BackendLifecycleObservation*>(context)->committed;
+  };
+  backend.discard_publication = [](void* context) noexcept {
+    ++static_cast<BackendLifecycleObservation*>(context)->discarded;
+  };
+  backend.prepare_growth = [](void* context, LiquidStateCapacities3D, const LiquidState3D& start) {
+    auto& observation = *static_cast<BackendLifecycleObservation*>(context);
+    ++observation.growth_prepared;
+    observation.growth_clock = start.clock;
+    return absl::Status(observation.fail_growth ? absl::StatusCode::kResourceExhausted : absl::StatusCode::kOk, {});
+  };
+  backend.commit_growth = [](void* context) noexcept {
+    ++static_cast<BackendLifecycleObservation*>(context)->growth_committed;
+  };
+  backend.discard_growth = [](void* context) noexcept {
+    ++static_cast<BackendLifecycleObservation*>(context)->growth_discarded;
+  };
+  backend.sample_field =
+      [](void* context, const LiquidSceneField3D& field, std::span<const LiquidParticleState3D> particles, Vec3 position
+      ) {
+        ++static_cast<BackendLifecycleObservation*>(context)->samples;
+        return CpuLiquidSubstepBackend3D().sample_field(nullptr, field, particles, position);
+      };
+  backend.sample_faces = [](void* context,
+                            SparseMacGridView3D grid,
+                            const LiquidObstacle3D& obstacle,
+                            std::int64_t side,
+                            std::span<LiquidBoundaryFaceTag3D> tags,
+                            std::span<LiquidPrescribedWallSample3D> walls) {
+    ++static_cast<BackendLifecycleObservation*>(context)->face_samples;
+    return CpuLiquidSubstepBackend3D().sample_faces(nullptr, grid, obstacle, side, tags, walls);
+  };
+  return backend;
+}
+TEST(LiquidSubstep3D, BackendStagesExactAcceptedClockAndSamplesAllFields) {
+  auto initial = Initial();
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  BackendLifecycleObservation observed;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options, ObservedBackend(observed));
+  ASSERT_TRUE(scheduler.ok());
+  EXPECT_EQ(observed.initialized, 1);
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  for (int step = 0; step < 2; ++step) {
+    const auto result = scheduler->Attempt(0.005);
+    ASSERT_TRUE(result.ok());
+    EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kAccepted);
+    EXPECT_EQ(observed.staged_clock, scheduler->committed().clock);
+    EXPECT_EQ(observed.prepared, step + 1);
+    EXPECT_EQ(observed.committed, step + 1);
+  }
+  EXPECT_EQ(observed.discarded, 0);
+  EXPECT_GT(observed.samples, 1);
+  EXPECT_GT(observed.face_samples, 1);
+}
+TEST(LiquidSubstep3D, BackendPublicationFailurePreservesCompleteCommittedState) {
+  auto initial = Initial();
+  BackendLifecycleObservation observed;
+  observed.fail_publication = true;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options(), ObservedBackend(observed));
+  ASSERT_TRUE(scheduler.ok());
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto result = scheduler->Attempt(0.01);
+  ASSERT_TRUE(result.ok());
+  EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(observed.prepared, 1);
+  EXPECT_EQ(observed.committed, 0);
+  EXPECT_EQ(observed.discarded, 1);
+  EXPECT_TRUE(scheduler->committed() == initial);
+}
+TEST(LiquidSubstep3D, BackendGrowthPreparationFailureKeepsLastAcceptedVersion) {
+  auto initial = Initial();
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.particles = 32;
+  BackendLifecycleObservation observed;
+  observed.fail_growth = true;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options, ObservedBackend(observed));
+  ASSERT_TRUE(scheduler.ok());
+  int emits = 0;
+  scheduler->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kEmit
+                                                    && ++*static_cast<int*>(context) == 2
+                                                ? absl::Status(absl::StatusCode::kResourceExhausted, {})
+                                                : absl::OkStatus();
+                                          }});
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(scheduler->committed().clock.epoch, 1);
+  EXPECT_EQ(scheduler->committed().clock.time, 0.005);
+  EXPECT_EQ(observed.growth_prepared, 1);
+  EXPECT_EQ(observed.growth_committed, 0);
+  EXPECT_EQ(observed.growth_discarded, 1);
+  EXPECT_EQ(observed.growth_clock, initial.clock);
+}
+TEST(LiquidSubstep3D, BackendGrowthRestoresFrameStartBeforeReplay) {
+  auto initial = Initial();
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.particles = 32;
+  BackendLifecycleObservation observed;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options, ObservedBackend(observed));
+  ASSERT_TRUE(scheduler.ok());
+  int emits = 0;
+  scheduler->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kEmit
+                                                    && ++*static_cast<int*>(context) == 2
+                                                ? absl::Status(absl::StatusCode::kResourceExhausted, {})
+                                                : absl::OkStatus();
+                                          }});
+  ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
+  EXPECT_EQ(observed.growth_prepared, 1);
+  EXPECT_EQ(observed.growth_committed, 1);
+  EXPECT_EQ(observed.growth_discarded, 0);
+  EXPECT_EQ(observed.growth_clock, initial.clock);
+  EXPECT_EQ(observed.committed, 3);
+  EXPECT_EQ(observed.staged_clock, scheduler->committed().clock);
+}
+TEST(LiquidSubstep3D, BackendSamplerFailureAndMissingLifecycleNeverFallBack) {
+  auto initial = Initial();
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.sample_field = [](void*, const LiquidSceneField3D&, std::span<const LiquidParticleState3D>, Vec3
+                         ) -> absl::StatusOr<double> {
+    return absl::Status(absl::StatusCode::kInternal, {});
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options(), backend);
+  ASSERT_TRUE(scheduler.ok());
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kInternal);
+  EXPECT_TRUE(scheduler->committed() == initial);
+  backend = CpuLiquidSubstepBackend3D();
+  backend.commit_growth = nullptr;
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, Scene(), Options(), backend).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+#if defined(_WIN32) && defined(_DEBUG)
+TEST(LiquidSubstep3D, BackendGrowthDiscardRunsAfterActualHostReservationFailure) {
+  auto initial = Initial();
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.particles = 32;
+  BackendLifecycleObservation observed;
+  auto backend = ObservedBackend(observed);
+  backend.prepare_growth = [](void* context, LiquidStateCapacities3D, const LiquidState3D& start) {
+    auto& observation = *static_cast<BackendLifecycleObservation*>(context);
+    ++observation.growth_prepared;
+    observation.growth_clock = start.clock;
+    scheduler_allocations = 0;
+    scheduler_fail_allocation = 1;
+    scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+    return absl::OkStatus();
+  };
+  backend.discard_growth = [](void* context) noexcept {
+    _CrtSetAllocHook(scheduler_previous_hook);
+    scheduler_fail_allocation = 0;
+    ++static_cast<BackendLifecycleObservation*>(context)->growth_discarded;
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options, backend);
+  ASSERT_TRUE(scheduler.ok());
+  int emits = 0;
+  scheduler->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kEmit
+                                                    && ++*static_cast<int*>(context) == 2
+                                                ? absl::Status(absl::StatusCode::kResourceExhausted, {})
+                                                : absl::OkStatus();
+                                          }});
+  const auto result = scheduler->AdvanceFrame(0.01);
+  _CrtSetAllocHook(scheduler_previous_hook);
+  scheduler_fail_allocation = 0;
+  EXPECT_EQ(result.code(), absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(scheduler_allocations, 1);
+  EXPECT_EQ(observed.growth_prepared, 1);
+  EXPECT_EQ(observed.growth_committed, 0);
+  EXPECT_EQ(observed.growth_discarded, 1);
+  EXPECT_EQ(observed.growth_clock, initial.clock);
+  EXPECT_EQ(scheduler->committed().clock.time, 0.005);
+  EXPECT_EQ(scheduler->committed().clock.epoch, 1);
+}
+TEST(LiquidSubstep3D, BackendPublicationFailureAllocatesAndFreesNothing) {
+  auto initial = Initial();
+  BackendLifecycleObservation observed;
+  observed.fail_publication = true;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options(), ObservedBackend(observed));
+  ASSERT_TRUE(scheduler.ok());
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler_allocations = 0;
+  scheduler_frees = 0;
+  bool rejected = false;
+  scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+  {
+    const auto result = scheduler->Attempt(0.01);
+    rejected = result.ok() && result->disposition == LiquidAttemptDisposition3D::kFatal;
+  }
+  _CrtSetAllocHook(scheduler_previous_hook);
+  EXPECT_TRUE(rejected);
+  EXPECT_EQ(scheduler_allocations, 0);
+  EXPECT_EQ(scheduler_frees, 0);
+  EXPECT_EQ(observed.discarded, 1);
+  EXPECT_EQ(observed.committed, 0);
+  EXPECT_TRUE(scheduler->committed() == initial);
+}
+#endif
 }  // namespace
 }  // namespace fluidity

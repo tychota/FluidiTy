@@ -236,6 +236,12 @@ class LiquidFrameTransaction3D {
   // clock. Source child ordinals and next_particle_id may only advance on acceptance.
   // FailedPrecondition for invalid sequencing/storage; errors expose no trial.
   absl::StatusOr<LiquidState3D*> ResetTrialFromCommitted();
+  // Exact prospective accepted clock for the active trial, including final-frame
+  // snapping and checked counters. Does not validate or publish trial payload.
+  // FailedPrecondition without an active trial; InvalidArgument for malformed or
+  // unexpected retry duration; OutOfRange for nonadvancing time/counter overflow.
+  // Read-only: device publication can stage this clock before FinishAttempt.
+  absl::StatusOr<LiquidClock3D> PreviewAcceptedClock(double attempted_duration) const;
   // Consumes the borrow. Accepted finite positive dt must advance time without
   // overshoot; a final dt equal to remaining may snap by at most one ULP. Validates
   // before publish; clock changes once. The final accept also advances the frame

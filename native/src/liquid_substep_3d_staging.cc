@@ -273,7 +273,12 @@ absl::Status Emit(const LiquidSceneInputs3D& scene, double duration, LiquidState
   }
   return absl::OkStatus();
 }
-absl::Status PrepareField(const LiquidSceneField3D& field, const LiquidState3D& trial, Staging& staging) {
+absl::Status PrepareField(
+    const LiquidSceneField3D& field,
+    const LiquidState3D& trial,
+    Staging& staging,
+    const LiquidSubstepBackend3D& backend
+) {
   STEP_TRY(staging.candidates.Resize(0));
   STEP_TRY(staging.centers.Resize(0));
   STEP_TRY(staging.corners.Resize(0));
@@ -330,7 +335,11 @@ absl::Status PrepareField(const LiquidSceneField3D& field, const LiquidState3D& 
               geometry.world_origin.y + (static_cast<double>(index.y) + 0.5) * geometry.cell_width,
               geometry.world_origin.z + (static_cast<double>(index.z) + 0.5) * geometry.cell_width,
           };
-          const double distance = FieldDistance(field, trial.particles.values(), position);
+          const auto sampled = backend.sample_field(backend.context, field, trial.particles.values(), position);
+          if (!sampled.ok()) {
+            return sampled.status();
+          }
+          const double distance = *sampled;
           if (!std::isfinite(distance)) {
             return Error(absl::StatusCode::kOutOfRange);
           }
@@ -349,7 +358,11 @@ absl::Status PrepareField(const LiquidSceneField3D& field, const LiquidState3D& 
               geometry.world_origin.y + index.y * geometry.cell_width,
               geometry.world_origin.z + index.z * geometry.cell_width,
           };
-          const double distance = FieldDistance(field, trial.particles.values(), position);
+          const auto sampled = backend.sample_field(backend.context, field, trial.particles.values(), position);
+          if (!sampled.ok()) {
+            return sampled.status();
+          }
+          const double distance = *sampled;
           if (!std::isfinite(distance)) {
             return Error(absl::StatusCode::kOutOfRange);
           }
@@ -362,12 +375,7 @@ absl::Status PrepareField(const LiquidSceneField3D& field, const LiquidState3D& 
   }
   return absl::OkStatus();
 }
-absl::Status PrepareTransfers(
-    const LiquidState3D& trial,
-    const LiquidObstacle3D& obstacle,
-    SparseMacGridView3D grid,
-    Staging& staging
-) {
+absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging) {
   STEP_TRY(staging.particles.Resize(trial.particles.size()));
   STEP_TRY(staging.gathered.Resize(trial.particles.size()));
   STEP_TRY(staging.particle_distances.Resize(trial.particles.size()));
@@ -394,7 +402,7 @@ absl::Status PrepareTransfers(
   STEP_TRY(staging.new_velocities.Resize(count));
   STEP_TRY(staging.old_walls.Resize(count));
   STEP_TRY(staging.new_walls.Resize(count));
-  return FillFaceTags(grid, obstacle, staging.tags.values());
+  return absl::OkStatus();
 }
 absl::Status
 FillFaceTags(SparseMacGridView3D grid, const LiquidObstacle3D& obstacle, std::span<LiquidBoundaryFaceTag3D> tags) {

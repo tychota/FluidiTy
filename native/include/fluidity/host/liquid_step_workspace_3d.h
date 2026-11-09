@@ -88,6 +88,17 @@ class LiquidStepWorkspace3D {
       std::span<const CellIndex3D> pressure_cells,
       const LiquidState3D* previous_state = nullptr
   );
+  // Imports a backend's authoritative stable signed-bin order without re-sorting.
+  // Every original ordinal occurs exactly once, matches its checked bin, and is
+  // strictly ordered by (z,y,x,original ordinal). Invalid order returns
+  // InvalidArgument and preserves the published topology. Other preparation,
+  // support, history, capacity, lifetime and aliasing rules match the CPU method.
+  absl::Status PrepareTrialTopologyFromOrder(
+      std::span<const LiquidParticleState3D> particles,
+      std::span<const CellIndex3D> pressure_cells,
+      std::span<const LiquidParticleSortEntry3D> particle_order,
+      const LiquidState3D* previous_state = nullptr
+  );
   // View is valid until next successful PrepareTrialTopology, move or destruction.
   // A rejected preparation preserves both values and addresses. FailedPrecondition
   // before the first successful preparation. Task 3/4 numeric APIs borrow grid here.
@@ -120,6 +131,13 @@ class LiquidStepWorkspace3D {
     LiquidRecords3D<LiquidCellState3D> cells;
     LiquidRecords3D<LiquidFaceState3D> faces;
   };
+  absl::Status PrepareTopology(
+      std::span<const LiquidParticleState3D> particles,
+      std::span<const CellIndex3D> pressure_cells,
+      const LiquidState3D* previous_state,
+      std::span<const LiquidParticleSortEntry3D> imported_order,
+      bool import_order
+  );
   LiquidStepWorkspace3D() = default;
   LiquidBoundaryWorkspace3D boundary_;
   MacPressureWorkspace3D pressure_;

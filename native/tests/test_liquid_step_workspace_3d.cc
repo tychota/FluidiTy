@@ -550,5 +550,79 @@ TEST(LiquidStepWorkspace3D, ActualPartialAllocationFailureMakesNoSecondaryErrorA
   EXPECT_EQ(deallocation_count, 3);
 }
 #endif
+TEST(LiquidStepWorkspace3D, ImportsAuthoritativeStableSignedOrderAndRejectsMalformedPermutations) {
+  auto workspace = LiquidStepWorkspace3D::Create(kCapacity, kGeometry);
+  ASSERT_TRUE(workspace.ok());
+  const std::array particles{
+      Particle({2, 2, 2}, 8),
+      Particle({-2, 2, 2}, 7),
+      Particle({-2.1, 2, 2}, 6),
+  };
+  const std::array<LiquidParticleSortEntry3D, 3> order{{{{-1, 0, 0}, 1}, {{-1, 0, 0}, 2}, {{0, 0, 0}, 0}}};
+  ASSERT_TRUE(workspace->PrepareTrialTopologyFromOrder(particles, {}, order).ok());
+  const auto publication = workspace->prepared();
+  ASSERT_TRUE(publication.ok());
+  EXPECT_EQ(publication->particles[0].id, 7);
+  EXPECT_EQ(publication->particles[1].id, 6);
+  EXPECT_EQ(publication->particles[2].id, 8);
+  for (int defect = 0; defect < 5; ++defect) {
+    auto malformed = order;
+    auto count = malformed.size();
+    if (defect == 0) {
+      malformed[0].original_ordinal = 3;
+    }
+    if (defect == 1) {
+      malformed[1] = malformed[0];
+    }
+    if (defect == 2) {
+      std::swap(malformed[0], malformed[1]);
+    }
+    if (defect == 3) {
+      malformed[0].bin_index.x = -2;
+    }
+    if (defect == 4) {
+      --count;
+    }
+    const auto status = workspace->PrepareTrialTopologyFromOrder(particles, {}, std::span(malformed).first(count));
+    EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+    const auto retained = workspace->prepared();
+    ASSERT_TRUE(retained.ok());
+    EXPECT_EQ(retained->particles.data(), publication->particles.data());
+    EXPECT_EQ(retained->particles[0].id, 7);
+  }
+  ASSERT_TRUE(workspace->PrepareTrialTopologyFromOrder({}, {}, {}).ok());
+  EXPECT_TRUE(workspace->prepared()->particles.empty());
+}
+#if defined(_WIN32) && defined(_DEBUG)
+TEST(LiquidStepWorkspace3D, ImportedOrderSuccessAndRejectionHaveNoHeapActivity) {
+  auto workspace = LiquidStepWorkspace3D::Create(kCapacity, kGeometry);
+  ASSERT_TRUE(workspace.ok());
+  auto previous = EmptyState();
+  previous.next_particle_id = 3;
+  const std::array particles{Particle({2, 2, 2}, 2), Particle({-2, 2, 2}, 1)};
+  const std::array<LiquidParticleSortEntry3D, 2> order{{{{-1, 0, 0}, 1}, {{0, 0, 0}, 0}}};
+  ASSERT_TRUE(workspace->PrepareTrialTopology(particles, {}).ok());
+  ASSERT_TRUE(workspace->ApplyTrialTopology(previous).ok());
+  previous.faces[0].carrier_velocity = 7;
+  previous.faces[0].validity = LiquidFaceValidity3D::kValid;
+  bool prepared = false;
+  bool rejected = false;
+  allocation_count = 0;
+  deallocation_count = 0;
+  previous_hook = _CrtSetAllocHook(AllocationHook);
+  {
+    const auto success = workspace->PrepareTrialTopologyFromOrder(particles, {}, order, &previous);
+    prepared = success.ok();
+    const auto failure = workspace->PrepareTrialTopologyFromOrder(particles, {}, std::span(order).first(1), &previous);
+    rejected = failure.code() == absl::StatusCode::kInvalidArgument;
+  }
+  _CrtSetAllocHook(previous_hook);
+  EXPECT_TRUE(prepared);
+  EXPECT_TRUE(rejected);
+  EXPECT_EQ(allocation_count, 0);
+  EXPECT_EQ(deallocation_count, 0);
+  EXPECT_EQ(workspace->prepared()->faces[0].carrier_velocity, 7);
+}
+#endif
 }  // namespace
 }  // namespace fluidity

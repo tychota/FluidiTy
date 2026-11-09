@@ -89,6 +89,58 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
   return {
       .context = nullptr,
+      .sample_field =
+          [](void*, const LiquidSceneField3D& field, std::span<const LiquidParticleState3D> particles, Vec3 position
+          ) -> absl::StatusOr<double> {
+        const double distance = liquid_step_internal::FieldDistance(field, particles, position);
+        if (!std::isfinite(distance)) {
+          return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
+        }
+        return distance;
+      },
+      .sample_faces =
+          [](void*,
+             SparseMacGridView3D grid,
+             const LiquidObstacle3D& obstacle,
+             std::int64_t side,
+             std::span<LiquidBoundaryFaceTag3D> tags,
+             std::span<LiquidPrescribedWallSample3D> walls) {
+            const auto count = grid.face_count();
+            if ((!tags.empty() && tags.size() != count) || (!walls.empty() && walls.size() != count)) {
+              return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
+            }
+            if (!tags.empty()) {
+              const auto status = liquid_step_internal::FillFaceTags(grid, obstacle, tags);
+              if (!status.ok()) {
+                return status;
+              }
+            }
+            return liquid_step_internal::FillWalls(grid, obstacle, side, walls);
+          },
+      .initialize =
+          [](void*, const LiquidState3D&) {
+            return absl::OkStatus();
+          },
+      .prepare_publication =
+          [](void*, const LiquidState3D&, LiquidClock3D) {
+            return absl::OkStatus();
+          },
+      .commit_publication =
+          [](void*) noexcept {
+          },
+      .discard_publication =
+          [](void*) noexcept {
+          },
+      .prepare_growth =
+          [](void*, LiquidStateCapacities3D, const LiquidState3D&) {
+            return absl::OkStatus();
+          },
+      .commit_growth =
+          [](void*) noexcept {
+          },
+      .discard_growth =
+          [](void*) noexcept {
+          },
       .topology =
           [](void*,
              std::span<const LiquidParticleState3D> particles,
