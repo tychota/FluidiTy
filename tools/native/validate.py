@@ -27,7 +27,8 @@ PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
-        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "RejectIncompatibleField"
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 }
 FIXTURE_TESTS = {

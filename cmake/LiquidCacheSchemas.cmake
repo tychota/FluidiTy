@@ -10,7 +10,7 @@ endif()
 set(FLUIDITY_CACHE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/cache")
 set(cache_schema_dir "${PROJECT_SOURCE_DIR}/schemas/simulate")
 set(cache_generated_headers)
-foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_scene)
+foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_scene checkpoint_reference)
   set(header "${FLUIDITY_CACHE_GENERATED_DIR}/${schema}_generated.h")
   add_custom_command(OUTPUT "${header}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${FLUIDITY_CACHE_GENERATED_DIR}"
@@ -33,4 +33,11 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DFLUIDITY_FLATC_EXECUTABLE=${FLUIDITY_FLATC_EXECUTABLE}"
             "-DSCHEMA_DIR=${cache_schema_dir}" -P "${PROJECT_SOURCE_DIR}/cmake/RejectIncompatibleLiquidSchema.cmake")
   set_tests_properties(LiquidCacheSchema.RejectIncompatibleField PROPERTIES LABELS "native;schema")
+endif()
+
+if(BUILD_TESTING)
+  add_test(NAME LiquidCacheSchema.RejectIncompatibleCheckpointField
+    COMMAND "${CMAKE_COMMAND}" "-DFLUIDITY_FLATC_EXECUTABLE=${FLUIDITY_FLATC_EXECUTABLE}"
+            "-DSCHEMA_DIR=${cache_schema_dir}" -P "${PROJECT_SOURCE_DIR}/cmake/RejectIncompatibleCheckpointSchema.cmake")
+  set_tests_properties(LiquidCacheSchema.RejectIncompatibleCheckpointField PROPERTIES LABELS "native;schema")
 endif()

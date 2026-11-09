@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -171,4 +173,110 @@ ResolvedSceneFingerprint(LiquidResolvedSceneView3D scene, LiquidCacheLimits3D li
 // Deterministic same-artifact execution key: domain "fluidity/simulate/execution/v1"
 // plus NUL followed by the 32-byte resolved fingerprint. Never a process/job ID.
 LiquidDigest3D LiquidExecutionId3D(const LiquidDigest3D& resolved_fingerprint);
+
+// Cancellation/failure boundaries occur after real I/O, except BeforeManifest and
+// BeforePrune. The callback borrows context for the call; it must not throw.
+enum class LiquidCachePublishStage3D {
+  kTemporaryWritten,
+  kTemporaryFlushed,
+  kContentPublished,
+  kInspectionPublished,
+  kBeforeManifest,
+  kManifestPublished,
+  kCheckpointPublished,
+  kBeforePrune,
+};
+struct LiquidCachePublishControl3D {
+  absl::Status (*check)(void*, LiquidCachePublishStage3D) = nullptr;
+  void* context = nullptr;
+};
+struct LiquidCommittedFrame3D {
+  LiquidFrameManifest3D manifest;
+  LiquidPointFrame3D points;
+};
+
+// Host I/O boundary. root_directory is a trusted, exclusively cache-owned local
+// directory, captured as an absolute directory at open, never a parsed record path.
+// Its ancestors must not be renamed
+// or modified concurrently. Child symlinks/reparse points are rejected. All record
+// names are derived from checked integer ordinals or exact content references.
+// Readers and writers take a nonblocking native exclusive lease (Aborted if busy);
+// process exit releases the lease, even when its harmless lock file remains.
+//
+// Create/Open validate the resolved scene and expected job fingerprint. Invalid
+// caller data is InvalidArgument, incompatible job identity FailedPrecondition,
+// missing records NotFound, corrupt bytes/relationships DataLoss, conflicts
+// AlreadyExists, bounds/OOM ResourceExhausted, and native I/O failures Unavailable.
+// Owners and decoded records are returned only on success.
+class LiquidCache3D {
+ public:
+  static absl::StatusOr<LiquidCache3D> Create(
+      const std::filesystem::path& root_directory,
+      LiquidResolvedSceneView3D resolved_scene,
+      LiquidCacheLimits3D limits = {}
+  );
+  // Open is read-only apart from acquiring the persistent lock file. It verifies
+  // canonical resolved bytes against the supplied fingerprint before accepting.
+  static absl::StatusOr<LiquidCache3D> Open(
+      const std::filesystem::path& root_directory,
+      const LiquidDigest3D& expected_fingerprint,
+      LiquidCacheLimits3D limits = {}
+  );
+  // Verifies portable cache self-consistency without creating or writing files.
+  // Requires an existing lease file. Inspection instances reject PublishFrame,
+  // PublishCheckpoint and ReadCheckpoint with FailedPrecondition; only Open with
+  // an externally expected fingerprint enables compatible resume/publication.
+  static absl::StatusOr<LiquidCache3D>
+  OpenForInspection(const std::filesystem::path& root_directory, LiquidCacheLimits3D limits = {});
+  // Returns owning canonical resolved inputs after exact content/job verification.
+  absl::StatusOr<LiquidResolvedScene3D> ReadResolvedScene() const;
+  // points.clock must be completed (substep zero). Frame zero is the initial
+  // state, with time/step/epoch zero; its checkpoint metadata must commit before
+  // any later frame. Every
+  // tenth frame requires a checkpoint; other frames forbid one. Checkpoint clock,
+  // geometry, seed and the exported subset of particle fields must match points
+  // and resolved inputs. Resume metadata must identify this exact job.
+  //
+  // Data and deterministic JSON inspection mirror are flushed and published with
+  // no replacement, then the binary frame manifest commits last. Identical bytes
+  // are verified and reused without modification; conflicting bytes reject.
+  // Checkpoint reference publication/retention is a separate step AFTER commit.
+  // Failure/cancellation can therefore leave the new frame committed; reread it.
+  // Earlier frame bytes never change. Orphan blobs/temporaries are not commits
+  // and are never resumed. Inputs borrow only through this synchronous call.
+  absl::Status PublishFrame(
+      const LiquidPointFrame3D& points,
+      const LiquidState3D* checkpoint = nullptr,
+      const LiquidResumeMetadata3D* resume = nullptr,
+      LiquidCachePublishControl3D control = {}
+  ) const;
+  // Verifies the named commit, deterministic inspection mirror, and exact points
+  // reference before returning owning points with the identical completed clock.
+  absl::StatusOr<LiquidCommittedFrame3D> ReadCommittedFrame(std::uint64_t frame_ordinal) const;
+  // Repairs/completes optional checkpoint metadata after a frame has committed.
+  // Only frame zero and multiples of ten qualify. Must match the verified frame.
+  // Keeps the newest two full-state blobs; immutable reference history remains.
+  // Initial zero
+  // remains until both 10 and 20 (or two later checkpoints) are available.
+  // Older checkpoint payloads are pruned, but all point frames remain readable.
+  absl::Status PublishCheckpoint(
+      const LiquidState3D& checkpoint,
+      const LiquidResumeMetadata3D& resume,
+      LiquidCachePublishControl3D control = {}
+  ) const;
+  // Returns the newest retained, verified checkpoint at or before maximum_frame.
+  // Eligibility is the global newest two references, even if older blobs survive
+  // interrupted pruning. Every candidate must have a matching committed frame. A malformed eligible
+  // reference fails closed; unpublished future blobs are never candidates.
+  absl::StatusOr<LiquidCheckpoint3D> ReadCheckpoint(
+      std::uint64_t maximum_frame = std::numeric_limits<std::uint64_t>::max()
+  ) const;
+
+ private:
+  std::filesystem::path root_directory_;
+  LiquidDigest3D fingerprint_{};
+  LiquidContentReference3D resolved_reference_;
+  LiquidCacheLimits3D limits_;
+  bool inspection_only_ = false;
+};
 }  // namespace fluidity

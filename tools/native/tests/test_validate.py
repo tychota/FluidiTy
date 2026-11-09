@@ -116,7 +116,8 @@ PYTHON_CASES = (
 SCHEMA_CASES = tuple(
     f"LiquidCacheSchema.{name}"
     for name in (
-        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "RejectIncompatibleField"
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 )
 PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
@@ -1106,7 +1107,7 @@ def test_schema_gate_is_required_and_recorded(scenario):
     _, _, output, run, _ = scenario
     run()
     summary = json.loads((output / "summary.json").read_text())
-    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 6}
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 8}
     assert (output / "ctest-schema.xml").is_file()
 
 

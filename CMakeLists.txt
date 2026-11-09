@@ -49,6 +49,8 @@ add_library(fluidity_native STATIC
   native/src/liquid_substep_3d_staging.cc
   native/src/liquid_resolved_scene_3d.cc
   native/src/liquid_cache_3d.cc
+  native/src/liquid_cache_store_3d.cc
+  native/src/liquid_cache_files_3d.cc
   native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
@@ -194,6 +196,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_step_workspace_3d.cc
     native/tests/test_liquid_substep_3d.cc
     native/tests/test_liquid_cache_3d.cc
+    native/tests/test_liquid_cache_store_3d.cc
     native/tests/test_liquid_state_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
@@ -213,6 +216,7 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
   target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   target_compile_definitions(fluidity_native_tests PRIVATE
+    FLUIDITY_CACHE_SCRATCH_PATH="${CMAKE_CURRENT_BINARY_DIR}/cache-test-scratch"
     FLUIDITY_CACHE_GOLDEN_PATH="${PROJECT_SOURCE_DIR}/native/tests/fixtures/liquid_cache/resolved_defaults.hex")
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
