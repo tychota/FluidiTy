@@ -131,7 +131,8 @@ def test_native_dam_break_authenticates_one_seed_across_distinct_energy_blends(n
     seeds = set()
     fingerprints = set()
     execution_ids = set()
-    for suffix, blend in (("pic", 0), ("default", 0.6), ("retained", 1)):
+    blend_cases = (("pic", 0), ("default", 0.6), ("retained", 1))
+    for case_index, (suffix, blend) in enumerate(blend_cases):
         scene_path = tmp_path / f"{suffix}.flrs"
         authored, seed, seed_path = author_scene(native_tools, f"dam-break-{suffix}", scene_path)
         seeds.add(seed_path.read_bytes())
@@ -139,7 +140,8 @@ def test_native_dam_break_authenticates_one_seed_across_distinct_energy_blends(n
         execution_ids.add(authored["execution_id"])
         assert_initial_particles(seed, positions, h**3)
 
-        cache_path = tmp_path / f"{suffix}-cache"
+        # Leave room for digest-named blob files on Windows.
+        cache_path = tmp_path / f"c{case_index}"
         records = native_records(
             solver, "run", "--stage", "simulate", "--scene", scene_path, "--initial-state", seed_path,
             "--backend", "cpu", "--cache", cache_path, "--frame-end", 1,
