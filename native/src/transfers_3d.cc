@@ -46,12 +46,6 @@ double Dot(Vec3 lhs, Vec3 rhs) {
   return (lhs.x * rhs.x + lhs.y * rhs.y) + lhs.z * rhs.z;
 }
 
-void AddScaled(Vec3& sum, Vec3 vector, double scale) {
-  sum.x += vector.x * scale;
-  sum.y += vector.y * scale;
-  sum.z += vector.z * scale;
-}
-
 // The range guard has already bounded the magnitude by 2^62. Truncate the
 // magnitude first, then resolve the fraction and parity independently of the
 // ambient integer rounding direction.
