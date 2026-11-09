@@ -27,24 +27,25 @@ inline absl::Status ValidateExtent(std::size_t actual, std::size_t expected) {
   return absl::OkStatus();
 }
 
-// Checks two valid byte views without writing to storage. Empty views and adjacent ranges
-// are allowed. Returns kInvalidArgument if the ranges overlap. Use std::as_bytes to
-// convert typed views, including a single-element span for an entire workspace.
-inline absl::Status ValidateDisjoint(std::span<const std::byte> first_view, std::span<const std::byte> second_view) {
+// Returns whether two valid byte views share storage. Empty views and adjacent ranges
+// are disjoint. This check allocates nothing and leaves both views unchanged.
+inline bool ByteViewsOverlap(std::span<const std::byte> first_view, std::span<const std::byte> second_view) {
   if (first_view.empty() || second_view.empty()) {
-    return absl::OkStatus();
+    return false;
   }
-  // Compare byte addresses on the supported flat-address hosts. Subtract the earlier start
-  // from the later one to avoid constructing a potentially overflowing end address.
+  // Subtract the earlier byte address from the later one so no end address can overflow.
   const auto first_start = reinterpret_cast<std::uintptr_t>(first_view.data());
   const auto second_start = reinterpret_cast<std::uintptr_t>(second_view.data());
-  bool overlaps;
   if (first_start <= second_start) {
-    overlaps = second_start - first_start < first_view.size();
-  } else {
-    overlaps = first_start - second_start < second_view.size();
+    return second_start - first_start < first_view.size();
   }
-  if (overlaps) {
+  return first_start - second_start < second_view.size();
+}
+
+// Returns kInvalidArgument if the valid byte views share storage. Use std::as_bytes
+// to convert typed views, including a single-element span for an entire workspace.
+inline absl::Status ValidateDisjoint(std::span<const std::byte> first_view, std::span<const std::byte> second_view) {
+  if (ByteViewsOverlap(first_view, second_view)) {
     return absl::InvalidArgumentError("views overlap");
   }
   return absl::OkStatus();

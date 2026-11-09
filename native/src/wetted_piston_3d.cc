@@ -313,7 +313,7 @@ absl::StatusOr<std::size_t> AssignPatches(
         ++attached;
       }
       receiver->receiver_area = Add(receiver->receiver_area, patch.area);
-      receiver->receiver_flux = Add(receiver->receiver_flux, MultiplyBySignedSpeed(patch.area, velocity));
+      receiver->receiver_flux = Add(receiver->receiver_flux, WettedAreaToSignedWallFlux(patch.area, velocity));
       auto& receiver_flux = fluxes[*receiver->receiver_face_ordinal];
       *receiver_flux += measure.midpoint_flux;
       if (!Finite(receiver->receiver_area) || !Finite(receiver->receiver_flux) || !std::isfinite(*receiver_flux)) {
@@ -507,7 +507,7 @@ struct WorkspaceAccess {
       output.patches[index].area = measure.area;
       whole_area = Add(whole_area, measure.area);
     }
-    const auto whole_flux = MultiplyBySignedSpeed(whole_area, velocity);
+    const auto whole_flux = WettedAreaToSignedWallFlux(whole_area, velocity);
     if (!Finite(whole_area) || !Finite(whole_flux)) {
       return Status(absl::StatusCode::kOutOfRange);
     }

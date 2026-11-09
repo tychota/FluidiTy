@@ -53,6 +53,12 @@ WETTED_PISTON_CASES = (
     "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
     "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
     "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+    "CudaLiquidSubstep3D.WettedPistonUsesClippedAndAttachedAreaInProjection",
+    "CudaLiquidSubstep3D.WettedPistonRejectsWetEmptyPressureWithoutRetry",
+    "CudaLiquidSubstep3D.WettedPistonLateCopyAndFenceFailuresPreservePublishedEpoch",
+    "CudaLiquidSubstep3D.WettedPistonRejectsArithmeticOverflowAfterFreeze",
+    "CudaLiquidSubstep3D.WettedPistonReplaysAfterGrowth",
+    "CudaLiquidSubstep3D.WettedPistonRefusesUncertifiedUnownedBroadSphere",
 )
 SNAPSHOT_3D_CASES = (
     "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch",
@@ -768,13 +774,13 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "40", "failures": "0", "skipped": "0"}
+    assert gpu_report.attrib == {"name": "gpu", "tests": "46", "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 40,
+        "tests": 46,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -824,7 +830,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 38,
+            "tests": 44,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}

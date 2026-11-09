@@ -773,6 +773,16 @@ TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube)
     EXPECT_EQ(active_block->x, kActiveBlock.x);
     EXPECT_EQ(active_block->y, kActiveBlock.y);
     EXPECT_EQ(active_block->z, kActiveBlock.z);
+
+    using WettedFluxes = std::array<std::optional<double>, 6>;
+    ASSERT_GE(bytes.size(), sizeof(WettedFluxes));
+    auto* aliased_fluxes = std::construct_at(reinterpret_cast<WettedFluxes*>(bytes.data()));
+    EXPECT_EQ(
+        cuda_internal::BuildLiquidLinks3D(*arena, *clipped, {fields, velocities, 9, *aliased_fluxes}, *workspace)
+            .status()
+            .code(),
+        absl::StatusCode::kInvalidArgument
+    );
   }
 #if defined(_WIN32) && defined(_DEBUG)
   std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());

@@ -71,6 +71,12 @@ GPU_WETTED_PISTON_CASES = {
     "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
     "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
     "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+    "CudaLiquidSubstep3D.WettedPistonUsesClippedAndAttachedAreaInProjection",
+    "CudaLiquidSubstep3D.WettedPistonRejectsWetEmptyPressureWithoutRetry",
+    "CudaLiquidSubstep3D.WettedPistonLateCopyAndFenceFailuresPreservePublishedEpoch",
+    "CudaLiquidSubstep3D.WettedPistonRejectsArithmeticOverflowAfterFreeze",
+    "CudaLiquidSubstep3D.WettedPistonReplaysAfterGrowth",
+    "CudaLiquidSubstep3D.WettedPistonRefusesUncertifiedUnownedBroadSphere",
 }
 GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
 GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"

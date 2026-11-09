@@ -17,6 +17,7 @@
 #include "gtest/gtest.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
+#include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
 namespace {
 // Declared before implementation: retain FP64 particles and existing FP32 PCG.
@@ -241,6 +242,78 @@ void MeasuredAttempt(
   EXPECT_EQ(disposition, expected);
   ExpectNoOwnershipCalls(before, backend.usage().arena_metrics);
 }
+TEST(CudaLiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
+  for (const double height : {0.75, 1.125}) {
+    for (const double speed : {wet::kPistonSpeed, -wet::kPistonSpeed, 0.0}) {
+      SCOPED_TRACE(::testing::Message() << height << " " << speed);
+      const auto options = Options();
+      auto backend = CudaLiquidSubstepBackend3D::Create(
+          options.capacities,
+          0,
+          /*measure_job=*/false,
+          /*needs_wetted_piston=*/true
+      );
+      ASSERT_TRUE(backend.ok()) << backend.status();
+      wet::ProjectionAudit audit;
+      auto scheduler = LiquidSubstepScheduler3D::Create(
+          {},
+          wet::PlaneScene(height, speed),
+          options,
+          wet::Observe(audit, backend->operations())
+      );
+      ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+      ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+      MeasuredAttempt(*scheduler, *backend, wet::kDuration, LiquidAttemptDisposition3D::kAccepted);
+      wet::CheckPlaneProjection(*scheduler, audit, height, speed);
+      EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+      EXPECT_EQ(audit.wetted_compiled_architecture, speed == 0 ? 0 : 1200);
+      std::cout << "wet_patch_compiled_architecture=" << audit.wetted_compiled_architecture << '\n';
+    }
+  }
+}
+
+TEST(CudaLiquidSubstep3D, WettedPistonRejectsWetEmptyPressureWithoutRetry) {
+  namespace wet = wetted_piston_pressure_test;
+  const LiquidState3D initial;
+  const auto options = Options();
+  auto scene = wet::PlaneScene(0.25, wet::kPistonSpeed);
+  auto backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto lease = backend->AcquireCommitted();
+  ASSERT_TRUE(lease.ok()) << lease.status();
+  const auto identity = lease->identity();
+  const auto bytes = DeviceBytes(*lease);
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+  MeasuredAttempt(*scheduler, *backend, wet::kDuration, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+  EXPECT_EQ(lease->identity(), identity);
+  EXPECT_EQ(DeviceBytes(*lease), bytes);
+  lease = backend->AcquireCommitted();
+  ASSERT_TRUE(lease.ok()) << lease.status();
+  EXPECT_EQ(lease->identity(), identity);
+  EXPECT_EQ(DeviceBytes(*lease), bytes);
+
+  scene.field = LiquidParticleSphereUnion3D{0.25};
+  auto dry_backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(dry_backend.ok()) << dry_backend.status();
+  auto dry = LiquidSubstepScheduler3D::Create(initial, scene, options, dry_backend->operations());
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  ASSERT_TRUE(dry->BeginFrame(wet::kDuration).ok());
+  MeasuredAttempt(*dry, *dry_backend, wet::kDuration, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(dry->diagnostics().accepted_measurement.has_value());
+  EXPECT_DOUBLE_EQ(dry->diagnostics().accepted_measurement->step_start_inward_piston_flux_m3_per_s, 0);
+  EXPECT_EQ(dry->committed().clock.epoch, 1);
+}
+
 struct HistorySnapshot {
   explicit HistorySnapshot(std::size_t count) : velocities(count), validity(count), tags(count), walls(count) {
   }
@@ -489,6 +562,191 @@ struct RuntimeFault {
     cuda_internal::LiquidArenaRuntimeCalls() = previous;
   }
 };
+struct WettedPatchRuntimeFault {
+  static inline std::size_t patch_copies = 0;
+  static inline std::size_t patch_fences = 0;
+  static inline bool fail_fence = false;
+
+  static cudaError_t CUDARTAPI
+  Copy(void* destination, const void* source, std::size_t bytes, cudaMemcpyKind kind, cudaStream_t stream) {
+    const auto result = cudaMemcpyAsync(destination, source, bytes, kind, stream);
+    constexpr std::size_t patch_bytes = 2 * sizeof(wetted_piston_internal::PatchMeasure);
+    if (result == cudaSuccess && kind == cudaMemcpyDeviceToHost && bytes == patch_bytes) {
+      ++patch_copies;
+      return fail_fence ? cudaSuccess : cudaErrorUnknown;
+    }
+    return result;
+  }
+  static cudaError_t CUDARTAPI Fence(cudaEvent_t event) {
+    const auto result = cudaEventSynchronize(event);
+    if (result == cudaSuccess && patch_copies != 0) {
+      ++patch_fences;
+      return cudaErrorUnknown;
+    }
+    return result;
+  }
+};
+
+TEST(CudaLiquidSubstep3D, WettedPistonLateCopyAndFenceFailuresPreservePublishedEpoch) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
+  using Fault = WettedPatchRuntimeFault;
+  for (const bool fail_fence : {false, true}) {
+    SCOPED_TRACE(fail_fence);
+    const auto options = Options();
+    auto backend =
+        CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto operations = backend->operations();
+    const auto compute = operations.wetted_piston;
+    ASSERT_NE(compute, nullptr);
+    static thread_local LiquidSubstepBackend3D::WettedPiston* actual = nullptr;
+    actual = compute;
+    operations.wetted_piston = [](void* context, const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace
+                               ) {
+      if (inputs.tank.start_low_x == 0) {
+        return actual(context, inputs, workspace);
+      }
+      // Intercept only the new stage. The two measured patches are already
+      // queued by its real kernel before the failing D2H or completion fence.
+      RuntimeFault restore_calls;
+      auto& calls = cuda_internal::LiquidArenaRuntimeCalls();
+      calls.memcpy_async = Fault::Copy;
+      calls.event_synchronize = Fault::Fence;
+      return actual(context, inputs, workspace);
+    };
+    Fault::fail_fence = fail_fence;
+    Fault::patch_copies = 0;
+    Fault::patch_fences = 0;
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(1.125, wet::kPistonSpeed), options, operations);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->AdvanceFrame(wet::kDuration).ok());
+    const auto state = EncodeLiquidState3D(scheduler->committed());
+    ASSERT_TRUE(state.ok()) << state.status();
+    auto previous = backend->AcquireCommitted();
+    ASSERT_TRUE(previous.ok()) << previous.status();
+    const auto identity = previous->identity();
+    const auto bytes = DeviceBytes(*previous);
+
+    ASSERT_TRUE(scheduler->BeginFrame(2 * wet::kDuration).ok());
+    MeasuredAttempt(*scheduler, *backend, wet::kDuration, LiquidAttemptDisposition3D::kFatal);
+    EXPECT_EQ(Fault::patch_copies, 1);
+    EXPECT_EQ(Fault::patch_fences, fail_fence ? 1 : 0);
+    EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kInternal);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+    EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+    EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+    const auto retained_state = EncodeLiquidState3D(scheduler->committed());
+    ASSERT_TRUE(retained_state.ok()) << retained_state.status();
+    EXPECT_TRUE(std::ranges::equal(state->values(), retained_state->values()));
+    const auto retained = backend->AcquireCommitted();
+    ASSERT_TRUE(retained.ok()) << retained.status();
+    EXPECT_EQ(retained->identity(), identity);
+    EXPECT_EQ(DeviceBytes(*retained), bytes);
+    EXPECT_EQ(DeviceBytes(*previous), bytes);
+    std::cout << "wet_patch_failure=" << (fail_fence ? "fence" : "copy")
+              << " device_patch_copies=" << Fault::patch_copies << " completed_fences=" << Fault::patch_fences
+              << " retained_epoch=" << scheduler->committed().clock.epoch << '\n';
+  }
+}
+
+TEST(CudaLiquidSubstep3D, WettedPistonRefusesUncertifiedUnownedBroadSphere) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.surface_tension = 0;
+  scene.obstacle = wet::kBroadUncertifiedSphereTank;
+  const auto options = Options();
+  auto backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  wet::ProjectionAudit audit;
+  auto scheduler =
+      LiquidSubstepScheduler3D::Create(initial, scene, options, wet::Observe(audit, backend->operations()));
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto previous = backend->AcquireCommitted();
+  ASSERT_TRUE(previous.ok()) << previous.status();
+  const auto bytes = DeviceBytes(*previous);
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  MeasuredAttempt(*scheduler, *backend, 0.01, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+  wet::ExpectBroadSphereRefusal(audit);
+  const auto retained = backend->AcquireCommitted();
+  ASSERT_TRUE(retained.ok()) << retained.status();
+  EXPECT_EQ(retained->identity(), previous->identity());
+  EXPECT_EQ(DeviceBytes(*retained), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, WettedPistonRejectsArithmeticOverflowAfterFreeze) {
+  namespace wet = wetted_piston_pressure_test;
+  const LiquidState3D initial;
+  const auto options = Options();
+  auto backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  wet::ProjectionAudit audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      initial,
+      wet::PlaneScene(1.125, wet::kOverflowPistonSpeed),
+      options,
+      wet::Observe(audit, backend->operations())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto previous = backend->AcquireCommitted();
+  ASSERT_TRUE(previous.ok()) << previous.status();
+  const auto identity = previous->identity();
+  const auto bytes = DeviceBytes(*previous);
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kOverflowStepDuration).ok());
+  MeasuredAttempt(*scheduler, *backend, wet::kOverflowStepDuration, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_EQ(audit.wetted_stage_calls, 1);
+  EXPECT_EQ(audit.projection_count, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+  const auto retained = backend->AcquireCommitted();
+  ASSERT_TRUE(retained.ok()) << retained.status();
+  EXPECT_EQ(retained->identity(), identity);
+  EXPECT_EQ(DeviceBytes(*retained), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, WettedPistonReplaysAfterGrowth) {
+  namespace wet = wetted_piston_pressure_test;
+  const auto scene = wet::PlaneScene(1.125, wet::kPistonSpeed);
+  auto small = Options();
+  small.capacities.faces = 64;
+  small.capacity_replay_reservations = Options().capacities;
+  auto backend =
+      CudaLiquidSubstepBackend3D::Create(small.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto replay = LiquidSubstepScheduler3D::Create({}, scene, small, backend->operations());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  const auto advanced = replay->AdvanceFrame(wet::kDuration);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  EXPECT_EQ(replay->diagnostics().capacity_replays, 1);
+  auto direct_backend =
+      CudaLiquidSubstepBackend3D::Create(Options().capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(direct_backend.ok()) << direct_backend.status();
+  auto direct = LiquidSubstepScheduler3D::Create({}, scene, Options(), direct_backend->operations());
+  ASSERT_TRUE(direct.ok()) << direct.status();
+  ASSERT_TRUE(direct->AdvanceFrame(wet::kDuration).ok());
+  wet::ExpectCheckpointEqual(direct->committed(), replay->committed());
+  const auto replay_lease = backend->AcquireCommitted();
+  const auto direct_lease = direct_backend->AcquireCommitted();
+  ASSERT_TRUE(replay_lease.ok()) << replay_lease.status();
+  ASSERT_TRUE(direct_lease.ok()) << direct_lease.status();
+  EXPECT_EQ(replay_lease->identity().clock, direct_lease->identity().clock);
+  EXPECT_EQ(DeviceBytes(*replay_lease), DeviceBytes(*direct_lease));
+}
+
 void CheckRuntimeFailure() {
   for (const bool publication_failure : {false, true}) {
     auto initial = Initial();
@@ -851,18 +1109,23 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   ASSERT_EQ(properties.major, 12);
   ASSERT_EQ(properties.minor, 0);
   auto scene = Scene();
-  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.field = LiquidParticleSphereUnion3D{wetted_piston_pressure_test::kSphereRadius};
   scene.surface_tension = 0;
-  scene.obstacle = AxisAlignedLiquidTank3D{1.75, 3.5, 2, 1.5, 3.5, 0.125};
-  const auto initial = Initial();
+  scene.obstacle = wetted_piston_pressure_test::kNarrowSphereTank;
+  auto initial = Initial();
+  for (auto& particle : initial.particles.values()) {
+    particle.world_position.z = 2.75;
+  }
   const auto options = Options();
-  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  auto backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
   ASSERT_TRUE(backend.ok()) << backend.status();
   auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
   ASSERT_TRUE(gpu.ok()) << gpu.status();
   const auto gpu_status = gpu->AdvanceFrame(0.01);
-  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
   Receipt("liquid_open_tank_substep_3d", backend->usage());
+  wetted_piston_pressure_test::ExpectSphereWallFlux(*gpu);
   {
     const FieldRuntimeObservation calls;
     ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectMixedSignedFieldSupport(backend->operations(), 1e-12));
@@ -885,11 +1148,13 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   const auto cpu_status = cpu->AdvanceFrame(0.01);
   ASSERT_TRUE(cpu_status.ok()) << cpu_status;
   ExpectState(cpu->committed(), gpu->committed());
-  auto plane_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  auto plane_backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
   ASSERT_TRUE(plane_backend.ok()) << plane_backend.status();
   ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectPlaneSupport(plane_backend->operations(), options));
   EXPECT_EQ(plane_backend->usage().compiled_architecture, 1200);
-  auto translated_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  auto translated_backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
   ASSERT_TRUE(translated_backend.ok()) << translated_backend.status();
   ASSERT_NO_FATAL_FAILURE(
       tank_staging_test::ExpectTranslatedPlaneKeepsWetCell(translated_backend->operations(), options)

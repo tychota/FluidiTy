@@ -24,18 +24,19 @@ struct WettedPistonPatch3D {
 struct WettedPistonInputs3D {
   const LiquidSceneField3D& field;  // Actual liquid field at the freeze time.
   std::span<const LiquidParticleState3D> particles;  // Frozen world centers for the particle union.
-  const FrozenLiquidBoundaryGeometryView3D& frozen;
+  const FrozenLiquidBoundaryGeometryView3D& frozen;  // Selected pressure cells and incident faces at step start.
   AxisAlignedLiquidTank3D tank;  // Exact start-time tank used to freeze geometry.
 };
 
 struct WettedPistonView3D {
-  std::span<const WettedPistonPatch3D> patches;
-  // Positive Cartesian x flux in m³/s. Non-piston faces are absent. A
-  // represented dry face has explicit zero and retains its frozen incidence.
+  std::span<const WettedPistonPatch3D> patches;  // Clipped patches sorted by (z, y), including dry receivers.
+  // One entry per frozen face, in frozen face order. Flux in m³/s is signed
+  // along +x, positive into the tank. A dry receiver has explicit zero.
+  // Faces without a pressure receiver have no value.
   std::span<const std::optional<double>> face_fluxes;
   WettedPistonBounds3D whole_area;  // m².
   WettedPistonBounds3D whole_flux;  // m³/s.
-  std::size_t attached_patch_count = 0;
+  std::size_t attached_patch_count = 0;  // Wet patches assigned to the selected row directly below.
   int compiled_architecture = 0;  // 0 on CPU or no device dispatch.
 };
 
@@ -68,8 +69,8 @@ class WettedPistonWorkspace3D {
 // Compute bounded wet area and signed flux at the low-x wall, keeping the
 // selected pressure topology fixed. Extra support can use only the highest
 // selected row immediately below, with certified direct contact across the
-// shared y edge for each potentially wet source. Wall area must be certified
-// zero or have a positive lower bound with relative width at most 0.001.
+// lower-y edge for each potentially wet source. Wall area must be certified
+// zero or have a positive lower bound with upper minus lower at most 0.001 times lower.
 // Malformed inputs return InvalidArgument, range/uncertifiable arithmetic
 // OutOfRange, unsupported ownership/area width FailedPrecondition, and scratch
 // limits ResourceExhausted. Empty particle union is dry. The single-threaded

@@ -108,7 +108,7 @@ FLUIDITY_HD inline Bounds MultiplyNonnegative(Bounds a, Bounds b) {
   };
 }
 
-FLUIDITY_HD inline Bounds MultiplyBySignedSpeed(Bounds area, double velocity) {
+FLUIDITY_HD inline Bounds WettedAreaToSignedWallFlux(Bounds area, double velocity) {
   const auto magnitude = MultiplyNonnegative(area, Point(numeric::abs(velocity)));
   return velocity < 0 ? Negate(magnitude) : magnitude;
 }
@@ -396,6 +396,10 @@ FLUIDITY_HD inline PatchMeasure IntegratePatch(
   };
 }
 
+// Integrate the clipped patch, certify its lower-edge contact and multiply the
+// area midpoint by wall velocity. The integrator sorts both writable interval
+// banks in place. Each bank must hold disk_count records and be disjoint from the
+// other bank and the input disks.
 FLUIDITY_HD inline PatchMeasure MeasurePatch(
     const Field& field,
     PatchIndex patch,

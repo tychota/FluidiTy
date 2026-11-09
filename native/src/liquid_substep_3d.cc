@@ -349,7 +349,8 @@ struct LiquidSubstepScheduler3D::Impl {
     if (frozen->capillary_step_bound != std::numeric_limits<double>::infinity()) {
       accepted_measurement.step_start_capillary_bound_seconds = frozen->capillary_step_bound;
     }
-    if (const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+    const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
+    if (tank_at_step_start) {
       accepted_measurement.piston_pose = LiquidPistonStepPose3D{
           .step_start_low_x_m = tank_at_step_start->start_low_x,
           .step_end_low_x_m = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x,
@@ -400,10 +401,34 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       staging.incident_velocities[index] = staging.new_velocities[slot];
     }
+    // Evaluate the signed wall flux at the frozen pose. Pressure link assembly
+    // consumes the face-order borrow before the wetted-piston workspace is reused.
+    std::span<const std::optional<double>> wetted_piston_face_fluxes;
+    if (staging.wetted_piston.has_value()) {
+      const WettedPistonInputs3D wetted_piston_inputs{
+          .field = scene.field,
+          .particles = trial.particles.values(),
+          .frozen = *frozen,
+          .tank = *tank_at_step_start,
+      };
+      const auto wetted = backend.wetted_piston(backend.context, wetted_piston_inputs, *staging.wetted_piston);
+      if (!wetted.ok()) {
+        return wetted.status();
+      }
+      if (wetted->face_fluxes.size() != frozen->faces.size()) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+      wetted_piston_face_fluxes = wetted->face_fluxes;
+    }
     const auto links = backend.links(
         backend.context,
         *frozen,
-        {staging.pressure_fields.values(), staging.incident_velocities.values(), scene.ambient_pressure},
+        {
+            .cells = staging.pressure_fields.values(),
+            .predicted_face_velocities = staging.incident_velocities.values(),
+            .ambient_pressure = scene.ambient_pressure,
+            .wetted_piston_face_fluxes = wetted_piston_face_fluxes,
+        },
         boundary
     );
     if (!links.ok()) {
@@ -677,7 +702,10 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     const LiquidSubstepBackend3D& backend
 ) {
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
-  if (!Complete(backend) || (needs_lattice_plane ? !backend.sample_lattice_plane : !backend.sample_field_batch)) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
+  const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
+  if (!Complete(backend) || (needs_lattice_plane ? !backend.sample_lattice_plane : !backend.sample_field_batch)
+      || (needs_wetted_piston && !backend.wetted_piston)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));
@@ -687,7 +715,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   }
   auto staging = liquid_step_internal::Staging::Create(
       options.capacities,
-      CanStageRegularCellTransport(scene, std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle))
+      CanStageRegularCellTransport(scene, tank),
+      needs_wetted_piston
   );
   if (!staging.ok()) {
     return staging.status();
@@ -872,7 +901,11 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       if (growth == LiquidStateCapacities3D{} || growth == current) {
         return Error(absl::StatusCode::kResourceExhausted);
       }
-      auto staging = liquid_step_internal::Staging::Create(growth, impl_->staging.regular_transport.has_value());
+      auto staging = liquid_step_internal::Staging::Create(
+          growth,
+          impl_->staging.regular_transport.has_value(),
+          impl_->staging.wetted_piston.has_value()
+      );
       if (!staging.ok()) {
         return staging.status();
       }
