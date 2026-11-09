@@ -23,7 +23,13 @@ PLATFORMS = {
 }
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml")
+PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
+SCHEMA_REQUIRED = {
+    f"LiquidCacheSchema.{name}"
+    for name in (
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "RejectIncompatibleField"
+    )
+}
 FIXTURE_TESTS = {
     "affine_apic.json": "Transfer.LocalAffineFixture",
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
@@ -102,7 +108,7 @@ GPU_OPERATOR_RECEIPT_CASES = {
     "CudaPressure.ComplianceRetainsMeanPressure": "pressure_compliance",
 }
 # The floor prevents partially discovered suites from passing. New tests may increase the count.
-MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11}
+MINIMUM_TESTS = {"cpu": 123, "gpu": len(GPU_REQUIRED), "cuda-mock": 11, "schema": len(SCHEMA_REQUIRED)}
 GPU_PROBE_RECEIPT_RE = re.compile(
     r"^device=(?P<device>[\w ()+.-]+) capability=(?P<capability>\d+\.\d+) "
     r"compiled_architecture=(?P<compiled_architecture>\d+) driver_api=(?P<driver_api>\d+) "
@@ -244,6 +250,7 @@ def hash_sources(run):
         "-z",
         "--",
         "native",
+        "schemas/simulate",
         "cmake",
         "reference",
         "tools/native",
@@ -582,7 +589,9 @@ def run_ctest(run, label, required):
         require_success(f"ctest-{label}", result)
     cases, incomplete = junit_cases(junit)
     case_outputs = {
-        case.attrib["name"]: google_test_case_output(case, label) for case in cases if case.attrib["status"] == "run"
+        case.attrib["name"]: google_test_case_output(case, label)
+        for case in cases
+        if case.attrib["status"] == "run" and label != "schema"
     }
     if cases:
         publish_ctest(run, label, cases)
@@ -592,6 +601,8 @@ def run_ctest(run, label, required):
         raise ValueError(f"ctest {label} is missing expected tests or contains duplicate results")
     if label == "gpu" and names != required:
         raise ValueError("ctest gpu must contain exactly the required hardware probe, operator and graph replay tests")
+    if label == "schema" and names != required:
+        raise ValueError("ctest schema must contain exactly the required versioned schema conformance tests")
     if incomplete:
         raise ValueError(f"ctest {label} contains skipped or failed tests")
     return {"status": "passed", "tests": len(cases)}, case_outputs
@@ -906,6 +917,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     cpu, _ = run_ctest(run, "cpu", CPU_REQUIRED)
     evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "sanitizer", "proof")}
     evidence["native_cpu"] = cpu
+    evidence["schema"], _ = run_ctest(run, "schema", SCHEMA_REQUIRED)
     if run.mode == "cuda":
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)

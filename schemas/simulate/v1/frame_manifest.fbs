@@ -1,0 +1,16 @@
+include "common.fbs";
+namespace fluidity.cache.v1;
+enum FrameStatus:ubyte { Complete = 1 }
+// Checkpoints are indexed separately; retention cannot invalidate a point frame.
+table FrameManifest {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:Clock (required, id:2);
+  status:FrameStatus = Complete (id:3);
+  resolved_fingerprint:Digest (required, id:4);
+  execution_id:Digest (required, id:5);
+  points:ContentReference (required, id:6);
+}
+root_type FrameManifest;
+file_identifier "FLMF";
+file_extension "flmf";

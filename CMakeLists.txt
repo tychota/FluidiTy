@@ -38,12 +38,17 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 find_package(absl 20250814.2 EXACT CONFIG REQUIRED)
+find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
+find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
+include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
   native/src/liquid_substep_3d.cc
   native/src/liquid_substep_3d_cpu.cc
   native/src/liquid_substep_3d_staging.cc
+  native/src/liquid_resolved_scene_3d.cc
+  native/src/liquid_cache_3d.cc
   native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
@@ -63,9 +68,11 @@ add_library(fluidity_native STATIC
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
+add_dependencies(fluidity_native fluidity_cache_schemas)
+target_include_directories(fluidity_native PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
 target_link_libraries(fluidity_native
   PUBLIC absl::status absl::statusor
-  PRIVATE fluidity_native_options)
+  PRIVATE flatbuffers::flatbuffers BLAKE3::blake3 fluidity_native_options)
 
 if(FLUIDITY_ENABLE_CUDA)
   add_library(fluidity_cuda_probe_host OBJECT native/cuda/probe_host.cc)
@@ -186,6 +193,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc
     native/tests/test_liquid_substep_3d.cc
+    native/tests/test_liquid_cache_3d.cc
     native/tests/test_liquid_state_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
@@ -202,7 +210,10 @@ if(BUILD_TESTING)
     native/tests/test_mac_pressure_workspace_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_viscosity.cc)
-  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support)
+  target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
+  target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+  target_compile_definitions(fluidity_native_tests PRIVATE
+    FLUIDITY_CACHE_GOLDEN_PATH="${PROJECT_SOURCE_DIR}/native/tests/fixtures/liquid_cache/resolved_defaults.hex")
   add_dependencies(fluidity_native_tests fluidity_fixture_headers)
 
   # Use a separate test executable for the synthetic case so each executable owns one data set.

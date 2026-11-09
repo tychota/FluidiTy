@@ -113,7 +113,13 @@ PYTHON_CASES = (
     ("test_tools", "test_export[0]"),
     ("test_native.TestNative", "test_fixture[path::value]"),
 )
-PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml")
+SCHEMA_CASES = tuple(
+    f"LiquidCacheSchema.{name}"
+    for name in (
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "RejectIncompatibleField"
+    )
+)
+PUBLIC_REPORTS = ("summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
 
 
 @pytest.fixture
@@ -290,6 +296,7 @@ def scenario(invocation, monkeypatch):
                 **OPERATOR_RECEIPTS,
                 GRAPH_PRESSURE_CASE: GRAPH_RECEIPT,
             }
+            self.schema_cases = SCHEMA_CASES
             self.ctest_output_overrides = {}
             self.gpu_before_case = {}
             self.gpu_after_case = {}
@@ -388,6 +395,9 @@ def scenario(invocation, monkeypatch):
                 if label == "^gpu$":
                     cases = self.gpu_cases
                     skipped, disabled = int(self.skipped_gpu_case is not None), 0
+                elif label == "^schema$":
+                    cases = self.schema_cases
+                    skipped, disabled = 0, 0
                 elif label == "^cuda-mock$":
                     cases = tuple(f"CudaMock.Case{index}" for index in range(11))
                     skipped, disabled = 0, 0
@@ -414,6 +424,8 @@ def scenario(invocation, monkeypatch):
                         if reported
                         else "Running 0 tests from 0 test suites.\n[  PASSED  ] 0 tests."
                     )
+                    if label == "^schema$":
+                        console = "flatc conformance checked"
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
                     after_case = self.gpu_after_case.get(name, "")
@@ -1088,3 +1100,18 @@ def test_cuda_rejects_invalid_integrated_substep_timing(scenario, case_name, pro
         processes.sanitizer_receipts[case_name] = receipt
         preset = "windows-release-cuda"
     rejected(diagnostic, preset)
+
+
+def test_schema_gate_is_required_and_recorded(scenario):
+    _, _, output, run, _ = scenario
+    run()
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 6}
+    assert (output / "ctest-schema.xml").is_file()
+
+
+@pytest.mark.parametrize("missing", ["all", "negative"])
+def test_schema_gate_rejects_missing_inventory(scenario, missing):
+    processes, _, _, _, rejected = scenario
+    processes.schema_cases = () if missing == "all" else SCHEMA_CASES[:-1]
+    rejected("schema")
