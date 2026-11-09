@@ -627,3 +627,120 @@ def test_transport_inventory_tracks_split_and_both_material_loss_classes():
     ]
     assert result["frames"][2]["lost_below_threshold"][0]["particle_ids"] == [3]
     assert result["frames"][2]["lost_at_or_above_threshold"][0]["particle_ids"] == [1]
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+def test_piston_endpoint_retains_disjoint_thin_spherical_caps(tolerance):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    cap_height = 0.002
+    positions = [
+        (-0.4375 + 0.125 * x, 0.5 - radius + cap_height, -0.1875 + 0.125 * z)
+        for x in range(8) for z in range(4)
+    ]
+    expected = 32 * math.pi * cap_height ** 2 * (radius - cap_height / 3)
+    result = _piston_volume(positions, -0.5, 0.5, tolerance)
+    assert result["swept_above_m3"] == pytest.approx(expected, rel=0.003)
+    assert result["swept_above_estimated_error_m3"] <= tolerance
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7, 1e-10])
+@pytest.mark.parametrize("clip", ["reference", "side", "floor"])
+def test_piston_sweep_retains_rotated_off_center_cap_in_both_directions(tolerance, clip):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    cap_height = 0.002
+    half_cap = math.pi * cap_height ** 2 * (radius - cap_height / 3) / 2
+    # Reflect the cap across the plane through its center, or rotate the
+    # reference-plane cap into a side-wall cap bisected by the reference.
+    center_y, center_z, expected_below, expected_above = {
+        "reference": (0.5 - radius + cap_height, 0.25, None, half_cap),
+        "side": (0.5, 0.25 + radius - cap_height, half_cap, half_cap),
+        "floor": (cap_height - radius, 0.25, half_cap, 0),
+    }[clip]
+    positions = [(0.123456, center_y, center_z)]
+    inward = _piston_volume(positions, -0.4, 0.5, tolerance)
+    outward = _piston_volume(positions, 0.5, -0.4, tolerance)
+    if expected_below is not None:
+        assert inward["swept_below_m3"] == pytest.approx(expected_below, rel=0.003)
+    assert inward["swept_above_m3"] == pytest.approx(expected_above, rel=0.003)
+    for volume in ("swept_below_m3", "swept_above_m3"):
+        assert outward[volume] == -inward[volume]
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+def test_piston_endpoint_retains_volume_at_the_reference_and_side_wall_intersection(tolerance):
+    from scipy.integrate import quad
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    corner_distance = radius - 0.002
+    plane_distance = corner_distance / math.sqrt(2)
+    positions = [(-0.13456, 0.5 - plane_distance, 0.25 + plane_distance)]
+
+    # Along the rotated corner bisector u, each disk is clipped to the
+    # strip |v| <= u - corner_distance. Integrate its circular segment area.
+    def disk_strip_area(u):
+        disk_radius_sq = radius ** 2 - u ** 2
+        if disk_radius_sq <= 0:
+            return 0
+        half_width = min(u - corner_distance, math.sqrt(disk_radius_sq))
+        return 2 * (half_width * math.sqrt(max(0, disk_radius_sq - half_width ** 2))
+                    + disk_radius_sq * math.asin(half_width / math.sqrt(disk_radius_sq)))
+
+    full_disk_start = (corner_distance + math.sqrt(2 * radius ** 2 - corner_distance ** 2)) / 2
+    expected, _ = quad(disk_strip_area, corner_distance, radius, points=[full_disk_start], epsabs=1e-15)
+    result = _piston_volume(positions, -0.5, 0.5, tolerance)
+    assert result["swept_above_m3"] == pytest.approx(expected, rel=0.003)
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+@pytest.mark.parametrize("direction", [(0, 1, 0), (1, 0, 0), (1 / 3, 2 / 3, 2 / 3)])
+def test_piston_endpoint_resolves_near_tangent_pair_lenses(tolerance, direction):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    separation = 2 * radius - 0.004
+    # Neighboring pairs stay disjoint. The vertical version packs 32 lenses
+    # into the tank so the missed intersection exceeds the spatial budget.
+    vertical = direction[0] == 0
+    x_centers = [-0.4375 + 0.125 * x for x in range(8)] if vertical else [-0.3, 0, 0.3]
+    z_centers = [-0.1875 + 0.125 * z for z in range(4)] if vertical else [-0.125, 0.125]
+    centers = [
+        tuple(center + sign * separation * axis / 2 for center, axis in zip((x, 0.25, z), direction))
+        for x in x_centers for z in z_centers for sign in (-1, 1)
+    ]
+    pair_count = len(x_centers) * len(z_centers)
+    intersection = math.pi * (4 * radius + separation) * (2 * radius - separation) ** 2 / 12
+    union = pair_count * (8 * math.pi * radius ** 3 / 3 - intersection)
+    result = _piston_volume(centers, -0.5, 0.5, tolerance)
+    assert result["swept_below_m3"] == pytest.approx(union, abs=tolerance)
+    assert result["swept_above_m3"] == 0
+
+
+@pytest.mark.parametrize("tolerance", [4.8828125e-7, 1.220703125e-7])
+def test_piston_wall_section_resolves_thin_overlap_between_active_disks(tolerance):
+    from liquid_acceptance_metrics import SphereUnionSections
+
+    radius = 0.05625
+    separation = 2 * radius - 0.0004
+    centers = [(0, 0.25 + sign * separation / 2, 0) for sign in (-1, 1)]
+    intersection = (2 * radius ** 2 * math.acos(separation / (2 * radius))
+                    - separation * math.sqrt(4 * radius ** 2 - separation ** 2) / 2)
+    expected = 2 * math.pi * radius ** 2 - intersection
+    section = SphereUnionSections(centers, radius, (-0.25, 0.25), 0, 0.5)
+    (below, above), _ = section.section(0, tolerance)
+    assert below == pytest.approx(expected, abs=tolerance / 4)
+    assert above == 0
+
+
+def test_piston_endpoint_with_coincident_and_disjoint_spheres_is_deterministic():
+    from liquid_acceptance_metrics import _piston_volume
+
+    centers = [(-0.1, 0.25, 0), (-0.1, 0.25, 0), (0.1, 0.25, 0)]
+    result = _piston_volume(centers, -0.5, 0.5, 2.44140625e-7)
+    expected = 8 * math.pi * 0.05625 ** 3 / 3
+    assert result["swept_below_m3"] == pytest.approx(expected, abs=2.44140625e-7)
+    assert result == _piston_volume(list(reversed(centers)), -0.5, 0.5, 2.44140625e-7)
