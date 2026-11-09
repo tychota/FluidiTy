@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 
+#include "fluidity/base/liquid_wall_contact_math_3d.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
 namespace fluidity::cuda_internal {
 namespace {
@@ -364,6 +365,101 @@ __device__ Error Gather(
   }
   return Error::kNone;
 }
+// The same continuation used by gather predicts a missing pressure face. Acceleration
+// follows the old-history continuation exactly once and never changes old validity.
+__device__ Error
+Predict(const BoundaryTransferQuery3D& query, const BoundaryTransferFace3D* faces, BoundaryTransferReport3D& report) {
+  const auto axis = faces[query.target_face_slot].axis;
+  const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
+  const auto continued = FillVelocity(
+      {faces, BoundaryHistoryStage3D::kOld},
+      numeric::span<const BoundaryTransferFace3D>(faces, query.face_count),
+      query.target_face_slot,
+      component,
+      query.side_tag
+  );
+  if (!continued.ok()) {
+    return continued.status();
+  }
+  report.predicted_face_velocity =
+      continued->velocity + query.step_duration * query.world_acceleration.*VelocityComponent(component);
+  return numeric::isfinite(report.predicted_face_velocity) ? Error::kNone : Error::kRange;
+}
+__device__ Error Forces(
+    const BoundaryTransferQuery3D& query,
+    const BoundaryTransferFace3D* faces,
+    BoundaryTransferFaceResult3D* results
+) {
+  for (std::size_t slot = 0; slot < query.face_count; ++slot) {
+    const auto axis = faces[slot].axis;
+    const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
+    const double predicted = faces[slot].old_history.face_velocity
+        + query.step_duration * query.world_acceleration.*VelocityComponent(component);
+    if (!numeric::isfinite(predicted)) {
+      return Error::kRange;
+    }
+    results[slot].normalized_face_velocity = predicted;
+  }
+  return Error::kNone;
+}
+// J consumes the true original-basis gradient, while retained APIC slopes are the
+// separate fit. Contact constrains stored and advecting velocities independently.
+__device__ Error UpdateParticles(
+    const BoundaryTransferQuery3D& query,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferParticleResult3D* results,
+    BoundaryTransferReport3D& report
+) {
+  for (std::size_t index = 0; index < query.particle_count; ++index) {
+    const auto& particle = particles[index];
+    const auto& gathered = particle.gathered;
+    const Vec3 start = particle.particle.transfer.trial_world_position;
+    const double divergence =
+        gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
+    const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
+    const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
+    double solid_distance = numeric::numeric_limits<double>::infinity();
+    if (query.obstacle.kind != 0) {
+      const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
+      solid_distance =
+          query.obstacle.kind == 1 ? projected_distance : numeric::abs(projected_distance) - query.obstacle.half_width;
+      if (!numeric::isfinite(solid_distance)) {
+        return Error::kRange;
+      }
+    }
+    const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
+        && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
+    const double beta = surface_expansion ? query.particle_energy_blend : 0;
+    Vec3 stored = gathered.new_pic_velocity;
+    Vec3 advecting = gathered.new_pic_velocity;
+    AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
+    AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
+    const auto contact = boundary_internal::ResolveContact({
+        start,
+        stored,
+        advecting,
+        query.obstacle,
+        query.step_duration,
+        query.friction_coefficient,
+        query.penetration_tolerance,
+    });
+    if (!contact.ok()) {
+      return contact.status();
+    }
+    const Vec3 displacement = Difference(contact->world_position, start);
+    const double volume_ratio = particle.volume_ratio * exp(query.step_duration * divergence);
+    if (numeric::abs(displacement.x) > 0.5 * query.cell_width || numeric::abs(displacement.y) > 0.5 * query.cell_width
+        || numeric::abs(displacement.z) > 0.5 * query.cell_width || !numeric::isfinite(volume_ratio)
+        || volume_ratio <= 0) {
+      report.retry_step = true;
+      return Error::kNone;
+    }
+    results[index].updated_world_position = contact->world_position;
+    results[index].updated_stored_velocity = contact->stored_world_velocity;
+    results[index].updated_volume_ratio = volume_ratio;
+  }
+  return Error::kNone;
+}
 __global__ void LiquidBoundaryTransfer3DKernel(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
@@ -372,6 +468,7 @@ __global__ void LiquidBoundaryTransfer3DKernel(
     BoundaryTransferParticleResult3D* particle_results,
     BoundaryTransferReport3D* report
 ) {
+  *report = {};
 #if defined(__CUDA_ARCH__)
   report->compiled_architecture = __CUDA_ARCH__;
 #endif
@@ -390,6 +487,15 @@ __global__ void LiquidBoundaryTransfer3DKernel(
       break;
     case BoundaryTransferOperation3D::kGather:
       report->error = Gather(*query, faces, particles, particle_results);
+      break;
+    case BoundaryTransferOperation3D::kPredict:
+      report->error = Predict(*query, faces, *report);
+      break;
+    case BoundaryTransferOperation3D::kForces:
+      report->error = Forces(*query, faces, face_results);
+      break;
+    case BoundaryTransferOperation3D::kUpdateParticles:
+      report->error = UpdateParticles(*query, particles, particle_results, *report);
       break;
     case BoundaryTransferOperation3D::kFitGhost: {
       const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(query->fit_samples, query->fit_count));

@@ -11,6 +11,9 @@ namespace fluidity::cuda_internal {
 // Tests replace selected calls with real-call-then-error controls, outside attempts.
 struct LiquidArenaRuntimeCalls3D {
   decltype(&cudaMemsetAsync) memset_async = cudaMemsetAsync;
+  decltype(&cudaMemcpyAsync) memcpy_async = cudaMemcpyAsync;
+  decltype(&cudaEventRecord) event_record = cudaEventRecord;
+  decltype(&cudaEventSynchronize) event_synchronize = cudaEventSynchronize;
   decltype(&SortLiquidBins3D) sort_bins = SortLiquidBins3D;
   decltype(&LaunchLiquidArenaArchitecture3D) launch_architecture = LaunchLiquidArenaArchitecture3D;
   decltype(&cudaStreamEndCapture) end_capture = cudaStreamEndCapture;

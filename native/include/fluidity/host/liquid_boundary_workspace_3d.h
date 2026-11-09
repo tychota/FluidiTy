@@ -11,6 +11,7 @@ namespace fluidity {
 namespace boundary_internal {
 struct GeometryBackend;
 struct BoundedGeometryAccess;
+struct BoundedTransferAccess;
 }  // namespace boundary_internal
 // Same units, sample ordering and geometry contract as LiquidBoundaryGeometryInputs3D;
 // borrows the prepared topology grid rather than an owning grid.
@@ -161,6 +162,7 @@ class LiquidBoundaryWorkspace3D {
 
  private:
   friend struct boundary_internal::BoundedGeometryAccess;
+  friend struct boundary_internal::BoundedTransferAccess;
   absl::StatusOr<FrozenLiquidBoundaryGeometryView3D>
   FreezeWithBackend(const LiquidBoundaryGeometryViewInputs3D& inputs, boundary_internal::GeometryBackend backend);
   absl::StatusOr<LiquidPressureProblemView3D> BuildLinksWithBackend(

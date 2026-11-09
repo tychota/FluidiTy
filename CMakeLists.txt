@@ -78,6 +78,7 @@ if(FLUIDITY_ENABLE_CUDA)
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
   add_library(fluidity_cuda_operators STATIC
+    native/cuda/liquid_transfer_stages_3d_host.cc
     native/cuda/liquid_geometry_stages_3d_host.cc
     native/cuda/liquid_geometry_stages_3d.cu
     native/cuda/liquid_arena_3d_packing.cc
@@ -252,8 +253,9 @@ if(BUILD_TESTING)
     target_compile_options(fluidity_cuda_graph_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
     gtest_discover_tests(fluidity_cuda_graph_tests PROPERTIES LABELS gpu)
 
-    # Focused Task 6B/6C1 qualification. Retain in final mandatory 6D verification;
-    # the existing strict gpu-label inventory is unchanged.
+    # Focused Task 6B/6C1/6C2 qualification. Retain in final mandatory 6D verification;
+    # Debug: 34 cases (33 real-device, 1 host-only); Release: 31 cases.
+    # The existing strict 28-case gpu-label inventory is unchanged.
     add_executable(fluidity_cuda_arena_tests native/tests/test_cuda_liquid_arena_3d.cc)
     target_link_libraries(fluidity_cuda_arena_tests
       PRIVATE fluidity_cuda_operators fluidity_cuda_probe CUDA::cudart GTest::gtest_main)

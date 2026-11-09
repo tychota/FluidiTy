@@ -5,6 +5,7 @@
 #include <type_traits>
 
 #include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "liquid_arena_3d_internal.h"
 namespace fluidity::cuda_internal {
 template <typename Value>
 struct LiquidTypedRange3D {
@@ -42,7 +43,7 @@ absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3
   if (!ready.ok() || range.pinned.empty()) {
     return ready;
   }
-  return arena.RecordRuntimeResult(cudaMemcpyAsync(
+  return arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().memcpy_async(
       upload ? range.device : range.pinned.data(),
       upload ? range.pinned.data() : range.device,
       range.pinned.size_bytes(),
@@ -56,13 +57,16 @@ inline absl::Status FinishLiquidDispatch3D(CudaLiquidArena3D& arena) {
   if (!status.ok()) {
     return status;
   }
-  status = arena.RecordRuntimeResult(
-      cudaEventRecord(static_cast<cudaEvent_t>(arena.completion_event()), static_cast<cudaStream_t>(arena.stream()))
-  );
+  status = arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().event_record(
+      static_cast<cudaEvent_t>(arena.completion_event()),
+      static_cast<cudaStream_t>(arena.stream())
+  ));
   if (!status.ok()) {
     return status;
   }
-  return arena.RecordRuntimeResult(cudaEventSynchronize(static_cast<cudaEvent_t>(arena.completion_event())));
+  return arena.RecordRuntimeResult(
+      LiquidArenaRuntimeCalls().event_synchronize(static_cast<cudaEvent_t>(arena.completion_event()))
+  );
 }
 // External views cannot overlap each other or any reserved staging bytes.
 inline bool
