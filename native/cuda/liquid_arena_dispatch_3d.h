@@ -30,6 +30,7 @@ CheckedLiquidRange3D(CudaLiquidArena3D& arena, CudaLiquidRange3D name, std::size
       || reinterpret_cast<std::uintptr_t>(range.pinned.data()) % alignof(Value) != 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
+  arena.ObserveDeviceScratch(name, count * sizeof(Value));
   return LiquidTypedRange3D<Value>{
       reinterpret_cast<Value*>(range.device),
       {reinterpret_cast<Value*>(range.pinned.data()), count},
@@ -43,6 +44,10 @@ absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3
   if (!ready.ok() || range.pinned.empty()) {
     return ready;
   }
+  const auto measured = arena.BeginMeasuredDispatch();
+  if (!measured.ok()) {
+    return measured;
+  }
   return arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().memcpy_async(
       upload ? range.device : range.pinned.data(),
       upload ? range.pinned.data() : range.device,
@@ -53,20 +58,7 @@ absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3
 }
 // Event belongs to the arena and is reused only after successful completion.
 inline absl::Status FinishLiquidDispatch3D(CudaLiquidArena3D& arena) {
-  auto status = arena.RecordRuntimeResult(cudaSuccess);
-  if (!status.ok()) {
-    return status;
-  }
-  status = arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().event_record(
-      static_cast<cudaEvent_t>(arena.completion_event()),
-      static_cast<cudaStream_t>(arena.stream())
-  ));
-  if (!status.ok()) {
-    return status;
-  }
-  return arena.RecordRuntimeResult(
-      LiquidArenaRuntimeCalls().event_synchronize(static_cast<cudaEvent_t>(arena.completion_event()))
-  );
+  return arena.FinishDispatch();
 }
 // External views cannot overlap each other or any reserved staging bytes.
 inline bool

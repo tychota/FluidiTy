@@ -27,6 +27,8 @@ struct LiquidSnapshotSlot3D {
   std::array<cudaEvent_t, 2> events{};
   SnapshotSlotState3D state = SnapshotSlotState3D::kFree;
   bool canceled = false;
+  bool copy_end_recorded = false;
+  std::size_t logical_output_bytes = 0;
   float copy_milliseconds = 0;
 };
 struct LiquidSnapshotStorage3D {
@@ -71,6 +73,27 @@ bool CleanupSucceeded(LiquidSnapshotStorage3D& storage, cudaError_t result) {
   (void)RuntimeResult(storage, result);
   return result == cudaSuccess;
 }
+void ReleaseSlotOutput(LiquidSnapshotStorage3D& storage, LiquidSnapshotSlot3D& slot) {
+  storage.ledger->metrics.live_snapshot_output_bytes -= std::exchange(slot.logical_output_bytes, 0);
+  slot.state = SnapshotSlotState3D::kFree;
+}
+// The caller has observed the existing end event or drained this slot's stream.
+absl::Status RecordCompletedCopy(LiquidSnapshotStorage3D& storage, LiquidSnapshotSlot3D& slot) {
+  slot.copy_end_recorded = false;
+  auto status = RuntimeResult(storage, cudaEventElapsedTime(&slot.copy_milliseconds, slot.events[0], slot.events[1]));
+  if (!status.ok()) {
+    return status;
+  }
+  if (!std::isfinite(slot.copy_milliseconds) || slot.copy_milliseconds < 0) {
+    return RuntimeResult(storage, cudaErrorUnknown);
+  }
+  if (storage.ledger->measure_job) {
+    auto& events = storage.ledger->metrics.snapshot_d2h_events;
+    events.seconds += static_cast<double>(slot.copy_milliseconds) / 1000;
+    ++events.interval_count;
+  }
+  return absl::OkStatus();
+}
 // Drains every reservation before releasing any potentially referenced source.
 // A failed drain retains the entire owner, including both leases and pinned bytes.
 void Release(LiquidSnapshotStorage3D* storage) {
@@ -91,7 +114,11 @@ void Release(LiquidSnapshotStorage3D* storage) {
       }
     }
     for (auto& slot : storage->slots) {
+      if (storage->ledger->measure_job && slot.copy_end_recorded) {
+        (void)RecordCompletedCopy(*storage, slot);
+      }
       slot.source = {};
+      ReleaseSlotOutput(*storage, slot);
       for (auto& event : slot.events) {
         if (event) {
           ++storage->ledger->metrics.event_destructions;
@@ -114,6 +141,7 @@ void Release(LiquidSnapshotStorage3D* storage) {
           return false;
         }
         storage->ledger->metrics.live_pinned_bytes -= storage->layout.total_state_bytes;
+        storage->ledger->metrics.live_snapshot_pinned_bytes -= storage->layout.total_state_bytes;
         slot.pinned = nullptr;
       }
     }
@@ -219,7 +247,7 @@ LiquidSnapshotLease3D::LiquidSnapshotLease3D(LiquidSnapshotLease3D&& other) noex
 LiquidSnapshotLease3D& LiquidSnapshotLease3D::operator=(LiquidSnapshotLease3D&& other) noexcept {
   if (this != &other) {
     if (storage_) {
-      storage_->slots[slot_].state = SnapshotSlotState3D::kFree;
+      ReleaseSlotOutput(*storage_, storage_->slots[slot_]);
       Release(storage_);
     }
     storage_ = std::exchange(other.storage_, nullptr);
@@ -229,7 +257,7 @@ LiquidSnapshotLease3D& LiquidSnapshotLease3D::operator=(LiquidSnapshotLease3D&& 
 }
 LiquidSnapshotLease3D::~LiquidSnapshotLease3D() {
   if (storage_) {
-    storage_->slots[slot_].state = SnapshotSlotState3D::kFree;
+    ReleaseSlotOutput(*storage_, storage_->slots[slot_]);
     Release(storage_);
   }
 }
@@ -302,7 +330,11 @@ absl::StatusOr<CudaLiquidSnapshotQueue3D> CudaLiquidSnapshotQueue3D::Create(cons
     }
     new (slot.pinned) std::byte[bytes];
     ledger->metrics.live_pinned_bytes += bytes;
-    ledger->metrics.peak_pinned_bytes = std::max(ledger->metrics.peak_pinned_bytes, ledger->metrics.live_pinned_bytes);
+    auto& metrics = ledger->metrics;
+    metrics.peak_pinned_bytes = std::max(metrics.peak_pinned_bytes, metrics.live_pinned_bytes);
+    metrics.live_snapshot_pinned_bytes += bytes;
+    metrics.peak_snapshot_pinned_bytes =
+        std::max(metrics.peak_snapshot_pinned_bytes, metrics.live_snapshot_pinned_bytes);
     ++ledger->metrics.stream_creations;
     auto status = RuntimeResult(storage, cudaStreamCreateWithFlags(&slot.stream, cudaStreamNonBlocking));
     if (!status.ok()) {
@@ -352,10 +384,16 @@ CudaLiquidSnapshotQueue3D::BeginCopy(CudaLiquidEpochIdentity3D epoch, CudaLiquid
     }
     slot.ticket = {index, storage.ledger->next_snapshot_reservation++, epoch};
     slot.active = source.storage_->active[source.bank_];
+    slot.logical_output_bytes = cuda_internal::LiquidArenaPhysicalStateBytes3D(slot.active);
+    auto& metrics = storage.ledger->metrics;
+    metrics.live_snapshot_output_bytes += slot.logical_output_bytes;
+    metrics.peak_snapshot_output_bytes =
+        std::max(metrics.peak_snapshot_output_bytes, metrics.live_snapshot_output_bytes);
     slot.source = std::move(source);
     slot.state = SnapshotSlotState3D::kPending;
     slot.canceled = false;
     slot.copy_milliseconds = 0;
+    slot.copy_end_recorded = false;
     auto& calls = cuda_internal::LiquidArenaRuntimeCalls();
     auto status = RuntimeResult(storage, calls.event_record(slot.events[0], slot.stream));
     if (!status.ok()) {
@@ -378,6 +416,7 @@ CudaLiquidSnapshotQueue3D::BeginCopy(CudaLiquidEpochIdentity3D epoch, CudaLiquid
     if (!status.ok()) {
       return status;
     }
+    slot.copy_end_recorded = true;
     return slot.ticket;
   }
   return Error(absl::StatusCode::kUnavailable);
@@ -404,20 +443,16 @@ absl::StatusOr<LiquidSnapshotProgress3D> CudaLiquidSnapshotQueue3D::Poll(LiquidS
   if (!status.ok()) {
     return status;
   }
-  status = RuntimeResult(*storage_, cudaEventElapsedTime(&slot->copy_milliseconds, slot->events[0], slot->events[1]));
+  status = RecordCompletedCopy(*storage_, *slot);
   if (!status.ok()) {
     return status;
-  }
-  if (!std::isfinite(slot->copy_milliseconds) || slot->copy_milliseconds < 0) {
-    storage_->ledger->runtime_failed = true;
-    return Error(absl::StatusCode::kInternal);
   }
   slot->source = {};
   if (storage_->ledger->runtime_failed) {
     return Error(absl::StatusCode::kInternal);
   }
   if (slot->canceled) {
-    slot->state = SnapshotSlotState3D::kFree;
+    ReleaseSlotOutput(*storage_, *slot);
     return LiquidSnapshotProgress3D::kCanceled;
   }
   slot->state = SnapshotSlotState3D::kReady;
@@ -464,7 +499,7 @@ absl::Status CudaLiquidSnapshotQueue3D::Cancel(LiquidSnapshotTicket3D ticket) {
   }
   slot->canceled = true;
   if (slot->state == SnapshotSlotState3D::kReady) {
-    slot->state = SnapshotSlotState3D::kFree;
+    ReleaseSlotOutput(*storage_, *slot);
   }
   return absl::OkStatus();
 }

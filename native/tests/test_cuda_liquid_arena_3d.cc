@@ -17,6 +17,7 @@
 #include "../cuda/liquid_transfer_stages_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
 
@@ -218,12 +219,20 @@ TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   ASSERT_TRUE(leased.ok());
   const auto old_bytes = PackedBytes(*leased);
   const auto old_metrics = arena->metrics();
+  const std::size_t one_state_bytes = 2 * sizeof(CudaLiquidParticleBin3D) + sizeof(LiquidBlockState3D)
+      + sizeof(LiquidCellState3D) + sizeof(LiquidFaceState3D) + 2 * sizeof(LiquidSourceState3D)
+      + sizeof(cuda_internal::LiquidArenaControl3D);
+  EXPECT_EQ(old_metrics.live_physical_state_bytes, 2 * one_state_bytes);
+  auto old_queue = CudaLiquidSnapshotQueue3D::Create(*leased);
+  ASSERT_TRUE(old_queue.ok());
   constexpr LiquidStateCapacities3D grown{65, 2, 2, 384, 3};
   ASSERT_TRUE(arena->PrepareGrowth(grown, *frame_start).ok());
   EXPECT_GT(arena->metrics().live_device_bytes, old_metrics.live_device_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, 3 * one_state_bytes);
   arena->DiscardGrowth();
   EXPECT_EQ(arena->metrics().live_device_bytes, old_metrics.live_device_bytes);
   EXPECT_EQ(PackedBytes(*leased), old_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, 2 * one_state_bytes);
   const auto graph_before = arena->metrics().graph_creations;
   ASSERT_TRUE(arena->PrepareGrowth(grown, *frame_start).ok());
   arena->CommitGrowth();
@@ -240,16 +249,41 @@ TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   arena->CollectRetired();
   EXPECT_EQ(PackedBytes(*leased), old_bytes);
   const auto retained_bytes = arena->metrics().live_device_bytes;
+  {
+    auto replacement_queue = CudaLiquidSnapshotQueue3D::Create(*restored);
+    ASSERT_TRUE(replacement_queue.ok());
+    const auto overlap = arena->metrics();
+    const auto queue_pinned_bytes = 2 * (leased->layout().total_state_bytes + restored->layout().total_state_bytes);
+    EXPECT_EQ(overlap.live_snapshot_pinned_bytes, queue_pinned_bytes);
+    EXPECT_EQ(overlap.peak_snapshot_pinned_bytes, queue_pinned_bytes);
+    EXPECT_EQ(overlap.peak_device_bytes, retained_bytes);
+    EXPECT_EQ(overlap.peak_pinned_bytes, overlap.live_pinned_bytes);
+    EXPECT_EQ(overlap.live_physical_state_bytes, 3 * one_state_bytes);
+    EXPECT_EQ(overlap.peak_physical_state_bytes, 3 * one_state_bytes);
+    EXPECT_EQ(overlap.live_device_scratch_bytes, retained_bytes - queue_pinned_bytes);
+    std::cout << "growth_overlap_device_bytes=" << overlap.live_device_bytes
+              << " pinned_bytes=" << overlap.live_pinned_bytes << " snapshot_pinned_bytes=" << queue_pinned_bytes
+              << " physical_state_bytes=" << overlap.live_physical_state_bytes
+              << " device_scratch_bytes=" << overlap.live_device_scratch_bytes << '\n';
+  }
+  EXPECT_EQ(arena->metrics().live_snapshot_pinned_bytes, 2 * leased->layout().total_state_bytes);
   leased = CudaLiquidEpochLease3D{};
   arena->CollectRetired();
   EXPECT_EQ(arena->metrics().live_device_bytes, retained_bytes - old_metrics.live_device_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, one_state_bytes);
   // Exact old reservation ceiling allows initial allocation, but no old+new overlap.
   auto limited = CudaLiquidArena3D::Create(kSmall, 0, old_metrics.live_device_bytes);
   ASSERT_TRUE(limited.ok());
   ASSERT_TRUE(limited->Initialize(*frame_start).ok());
   const auto before = limited->metrics();
   EXPECT_EQ(limited->PrepareGrowth(grown, *frame_start).code(), absl::StatusCode::kResourceExhausted);
-  EXPECT_EQ(limited->metrics().live_device_bytes, before.live_device_bytes);
+  const auto refused = limited->metrics();
+  EXPECT_EQ(refused.live_device_bytes, before.live_device_bytes);
+  EXPECT_EQ(refused.peak_device_bytes, before.peak_device_bytes);
+  EXPECT_EQ(refused.budget_refusals, before.budget_refusals + 1);
+  ExpectNoReservationChange(before, refused);
+  std::cout << "growth_budget_bytes=" << refused.device_byte_limit
+            << " refused_allocation_attempts=" << refused.device_reservations - before.device_reservations << '\n';
   ASSERT_TRUE(limited->AcquireCommitted()->Readback(*output).ok());
   EXPECT_EQ(*output, *frame_start);
   EXPECT_EQ(CudaLiquidArena3D::Create(kSmall, 0, 1).status().code(), absl::StatusCode::kResourceExhausted);

@@ -32,6 +32,7 @@ struct LiquidArenaLedger3D {
   std::uint64_t next_snapshot_reservation = 1;  // Never reused across queue replacement in this job.
   std::size_t references = 1;
   int device_ordinal = 0;
+  bool measure_job = false;  // Fixed before any owner or queue is created.
   bool runtime_failed = false;  // Job-wide poison; only teardown may drain/release afterward.
 };
 struct LiquidArenaRange3D {
@@ -53,6 +54,7 @@ struct LiquidArenaStorage3D {
   std::array<std::size_t, 2> leases{};
   std::array<CudaLiquidEpochIdentity3D, 2> identities{};
   std::array<LiquidStateCapacities3D, 2> active{};
+  std::array<std::size_t, 2> physical_state_bytes{};
   LiquidStateCapacities3D capacities;
   CudaLiquidStateLayout3D state_layout;
   std::array<LiquidArenaRange3D, static_cast<std::size_t>(CudaLiquidRange3D::kCount)> ranges{};
@@ -65,6 +67,12 @@ struct LiquidArenaStorage3D {
   cudaEvent_t completion = nullptr;
   std::array<cudaEvent_t, 2> timeline_events{};
   bool timeline_started = false;
+  std::array<cudaEvent_t, 2> dispatch_events{};
+  bool dispatch_started = false;
+  bool dispatch_samples_field = false;
+  LiquidWorkPhase3D work_phase = LiquidWorkPhase3D::kCount;
+  std::array<std::size_t, static_cast<std::size_t>(CudaLiquidRange3D::kCount)> active_scratch_extents{};
+  std::size_t active_scratch_bytes = 0;
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t executable = nullptr;
   LiquidArenaStorage3D* retired_next = nullptr;
@@ -76,6 +84,9 @@ struct LiquidArenaStorage3D {
   friend void ReleaseLiquidArenaStorage3D(LiquidArenaStorage3D*) noexcept;
   ~LiquidArenaStorage3D();
 };
+// ABI payload represented by validated active extents. The last particle bin
+// may include unused lanes, but unoccupied bins/records and layout gaps do not count.
+std::size_t LiquidArenaPhysicalStateBytes3D(LiquidStateCapacities3D active);
 // Takes one never-reused ticket. Exhaustion returns OutOfRange and leaves the
 // sentinel unchanged; this helper also makes the integer boundary independently testable.
 absl::StatusOr<std::uint64_t> TakeLiquidArenaGeneration3D(LiquidArenaLedger3D& ledger);

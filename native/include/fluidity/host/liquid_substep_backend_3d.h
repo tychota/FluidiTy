@@ -193,6 +193,8 @@ struct LiquidSubstepBackend3D {
   UpdateParticles* update_particles = nullptr;
   SampleFieldBatch* sample_field_batch = nullptr;
   SampleLatticePlane* sample_lattice_plane = nullptr;  // Required for horizontal-plane scenes.
+  // Optional allocation-free diagnostic boundary, with kCount outside attempts.
+  void (*set_work_phase)(void*, LiquidWorkPhase3D) = nullptr;
 };
 // CPU operations share the accepted bounded operators and true-gradient J/contact.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();

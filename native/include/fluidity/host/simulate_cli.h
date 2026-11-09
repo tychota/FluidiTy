@@ -38,6 +38,7 @@ struct Command {
   bool resume = false;
   bool trace = false;
   bool trace_geometry = false;  // Run-only; implies accepted and attempt tracing.
+  bool measure_job = false;  // Terminal timing and resource receipt, independent of tracing.
   bool preview = false;
 };
 // Stable protocol fields identify the failing input independently of localized

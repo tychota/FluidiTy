@@ -78,6 +78,20 @@ enum class LiquidPhysicalStage3D {
   kCount
 };
 inline constexpr std::size_t kLiquidPhysicalStageCount3D = static_cast<std::size_t>(LiquidPhysicalStage3D::kCount);
+// Measurement boundaries shared by the host scheduler and CUDA dispatch.
+enum class LiquidWorkPhase3D {
+  kEmitActivationField,
+  kDepositNormalization,
+  kForcesGeometryPressure,
+  kGatherContactAcceptance,
+  kCount,
+};
+// Optional nonallocating observer. kCount ends a physical interval and returns
+// to scheduler work. The callback may not retain borrowed state or reenter.
+struct LiquidWorkPhaseObserver3D {
+  void* context = nullptr;
+  void (*enter)(void*, LiquidWorkPhase3D) = nullptr;
+};
 struct LiquidPistonStepPose3D {
   double step_start_low_x_m;  // Low-x wall used to freeze the pressure geometry.
   double step_end_low_x_m;  // Low-x wall used for end-of-step tags and contact.
@@ -153,6 +167,7 @@ struct LiquidProgressObserver3D {
   void* context = nullptr;
   absl::Status (*observe)(void*, const LiquidState3D&, const LiquidStepDiagnostics3D&, bool rollback) = nullptr;
   void (*observe_attempt)(void*, const LiquidAttemptMeasurement3D&) = nullptr;
+  LiquidWorkPhaseObserver3D work_phase{};
 };
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
 // All attempts, including rejection/status destruction, allocate and free nothing.
@@ -199,7 +214,7 @@ class LiquidSubstepScheduler3D {
   // Runs one explicit positive duration within the open frame; consumes its trial
   // even on failure. Returns disposition/retry duration; detailed code/stage are in
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
-  absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration);
+  absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;

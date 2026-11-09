@@ -357,7 +357,7 @@ void CheckSignedQuantaAndHistories(bool moving_wall) {
   ASSERT_TRUE(cpu.ok());
   ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
   EXPECT_TRUE(audit.signed_momentum);
-  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
   ASSERT_TRUE(backend.ok());
   audit.compare = true;
   audit.gather_count = 0;
@@ -366,6 +366,13 @@ void CheckSignedQuantaAndHistories(bool moving_wall) {
   ASSERT_TRUE(gpu->BeginFrame(0.01).ok());
   MeasuredAttempt(*gpu, *backend, 0.01, LiquidAttemptDisposition3D::kAccepted);
   ASSERT_TRUE(gpu->FinishFrame().ok());
+  const auto events = backend->usage().arena_metrics;
+  EXPECT_GT(events.pre_topology_field_events.interval_count, 0);
+  EXPECT_GT(events.pre_topology_field_events.seconds, 0);
+  for (const auto& phase : events.work_phase_events) {
+    EXPECT_GT(phase.interval_count, 0);
+    EXPECT_GT(phase.seconds, 0);
+  }
   EXPECT_EQ(audit.mismatches, 0);
   EXPECT_EQ(audit.gather_count, 2);
   EXPECT_TRUE(audit.histories_differ);
