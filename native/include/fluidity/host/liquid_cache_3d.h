@@ -136,8 +136,9 @@ absl::Status VerifyLiquidContent3D(
 // bound size and verify identifier/structure, then version/declared length, counts,
 // enums, finite/range/order/ownership relations before allocating decoded records.
 // Invalid arguments return InvalidArgument; corrupt wire bytes return DataLoss;
-// unsupported version/model returns FailedPrecondition; configured bounds or
-// allocation failure return ResourceExhausted. No partial output escapes on error.
+// unsupported version/model returns FailedPrecondition. Encoders propagate
+// OutOfRange for unrepresentable numerical state. Configured bounds or allocation
+// failure return ResourceExhausted. No partial output escapes on error.
 // A reader alone does not authenticate bytes: 7B must call VerifyLiquidContent3D
 // against a trusted manifest/index reference before decoding referenced content.
 absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& state, LiquidCacheLimits3D limits = {});

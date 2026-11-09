@@ -140,7 +140,7 @@ TEST(LiquidCache3D, PointAndManifestRoundTripKeepPortableContentReference) {
       frame.clock,
       Resume().resolved_fingerprint,
       Resume().execution_id,
-      {LiquidContentKind3D::kPoints, encoded->size(), LiquidContentDigest3D(encoded->values())}
+      {LiquidContentKind3D::kPoints, encoded->size(), LiquidContentDigest3D(encoded->values())},
   };
   auto manifest_bytes = EncodeLiquidFrameManifest3D(manifest);
   ASSERT_TRUE(manifest_bytes.ok()) << manifest_bytes.status();
@@ -516,7 +516,7 @@ TEST(LiquidCache3D, ConfiguredMaximumFamiliesFitTheBoundedEncoderArena) {
     const auto local = static_cast<std::int32_t>(slot % 64);
     state.faces[slot].face_index = {
         static_cast<FaceNormalAxis>((slot % 192) / 64),
-        {4 * block + local % 4, (local / 4) % 4, local / 16}
+        {4 * block + local % 4, (local / 4) % 4, local / 16},
     };
     state.faces[slot].face_slot = slot;
   }
@@ -552,7 +552,7 @@ TEST(LiquidCache3D, MalformedPointManifestAndResolvedRecordsRejectIdentifiersAnd
       {},
       {},
       LiquidExecutionId3D({}),
-      {LiquidContentKind3D::kPoints, point_bytes->size(), LiquidContentDigest3D(point_bytes->values())}
+      {LiquidContentKind3D::kPoints, point_bytes->size(), LiquidContentDigest3D(point_bytes->values())},
   };
   auto manifest_bytes = EncodeLiquidFrameManifest3D(manifest);
   auto scene_bytes = EncodeLiquidResolvedScene3D({});

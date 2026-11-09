@@ -531,6 +531,9 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
       if (last_iteration) {
         break;
       }
+      // The FP32 recursive residual can drift from the true FP64 residual.
+      // Accumulate the rounded correction in the FP64 base and restart the
+      // search from the recomputed residual within the original iteration budget.
       std::ranges::copy(projection->cell_pressures, base_pressure.begin());
       std::fill(correction.begin(), correction.end(), 0.0F);
       status = CopyTrueResidual(*projection, *hierarchy, residual);

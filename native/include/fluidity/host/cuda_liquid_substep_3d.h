@@ -32,9 +32,9 @@ class CudaLiquidSubstepBackend3D {
   ~CudaLiquidSubstepBackend3D();
   CudaLiquidSubstepBackend3D(const CudaLiquidSubstepBackend3D&) = delete;
   CudaLiquidSubstepBackend3D& operator=(const CudaLiquidSubstepBackend3D&) = delete;
-  // Requires the qualified CC12.0 device and checked configured extents. Invalid
-  // ordinal: InvalidArgument; unavailable hardware: FailedPrecondition; capacity
-  // or allocation failure: ResourceExhausted; runtime execution failure: Internal.
+  // Requires the qualified CC12.0 device and checked capacity extents.
+  // Propagates the device, image, capacity and runtime statuses from
+  // CudaLiquidArena3D::Create. Owner allocation failure returns ResourceExhausted.
   static absl::StatusOr<CudaLiquidSubstepBackend3D> Create(LiquidStateCapacities3D capacities, int device_ordinal);
   // Immutable committed device source, including its nonreused generation and
   // physical clock. FailedPrecondition before scheduler initialization; ownership

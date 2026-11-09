@@ -106,8 +106,9 @@ class LiquidStepWorkspace3D {
   // Copies sorted particles and remapped topology into existing trial reservations.
   // Geometry must match (InvalidArgument); insufficient capacity is ResourceExhausted;
   // no prepared view is FailedPrecondition. Preserves output on every failure.
-  // Does not change clock, source inventory, IDs or seed. Trial owners may not alias
-  // workspace storage. The transaction acceptance gate validates the complete trial.
+  // Particle IDs are copied with the sorted records. The caller retains ownership
+  // of next_particle_id, the clock, source inventory and seed. Trial owners may not
+  // alias workspace storage. The acceptance gate validates the complete trial.
   absl::Status ApplyTrialTopology(LiquidState3D& trial) const;
   // Active counts describe the published topology bank; valid-range byte/scratch counts also
   // include the candidate bank, including work left by a rejected preparation.

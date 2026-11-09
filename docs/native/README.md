@@ -403,6 +403,14 @@ failures caused by a missing lock. `OpenForReplay(expected_fingerprint)` permits
 verified checkpoints but denies every publication; unauthenticated inspection still
 cannot authorize resume.
 
+CUDA numerical reuse requires the same resolved execution and selected device,
+compute capability, exact NVIDIA driver release, and CUDA driver and runtime API
+versions. A new CUDA writer durably publishes a versioned digest of these values
+in `.simulate-cuda-compatibility` before frame zero. Resume, replay, step and
+cache-backed preview check that record before solver work. A CUDA cache with a
+missing, malformed or incompatible record still supports portable `check` of its
+committed frames. Create a fresh cache to run it under another CUDA environment.
+
 `--trace` emits accepted-state records (clock, exact state digest, inventories,
 source counters/remainders and attempt/retry counts) from the final schedule of each
 frame. `published:false` distinguishes these from `frame` publication records.
@@ -468,5 +476,10 @@ uv run --no-sync --project reference --locked --group native ctest --preset wind
 
 The test prints a JSON receipt with the producing device, each stopped and
 recovered frame inventory, the recovered state digests, and the CUDA event
-timing. Keep the verbose log under the ignored output directory. The device
-errors are injected by the test fixture after actual CUDA completions.
+timing. The registered campaign accepts a real CC12.0 device with a matching
+executed image. Qualification of the reference machine requires the receipt's
+device name to equal `NVIDIA GeForce RTX 5060 Ti`. Direct qualification runs can
+enforce this by passing `--expected-device-name "NVIDIA GeForce RTX 5060 Ti"` to
+`tools/native/tests/run_liquid_fault_campaign.py`. Keep the verbose log under the
+ignored output directory. The test fixture injects device errors after actual
+CUDA completions.

@@ -533,7 +533,7 @@ TEST(LiquidSubstep3D, ExponentialUsesTrueGradientAndSeparationUsesSurfaceExpansi
         *static_cast<Observation*>(c) = {
             value.velocity_gradient.x_row.x + value.velocity_gradient.y_row.y + value.velocity_gradient.z_row.z,
             value.new_pic_velocity.x,
-            value.particle_minus_old_pic_velocity.x
+            value.particle_minus_old_pic_velocity.x,
         };
         return CpuLiquidSubstepBackend3D().update_particles(nullptr, inputs, particles);
       };
@@ -557,7 +557,7 @@ TEST(LiquidSubstep3D, CompleteBackendIsRequiredAndRealPressureNonconvergenceRetr
     p.world_velocity = {
         0.1 * static_cast<double>(i),
         0.03 * static_cast<double>(i * i),
-        -0.07 * static_cast<double>(i)
+        -0.07 * static_cast<double>(i),
     };
   }
   auto scene = Scene();
@@ -809,7 +809,7 @@ TEST(LiquidSubstep3D, ActualPressureNonconvergenceAllocatesAndFreesNothing) {
     p.world_velocity = {
         0.1 * static_cast<double>(i),
         0.03 * static_cast<double>(i * i),
-        -0.07 * static_cast<double>(i)
+        -0.07 * static_cast<double>(i),
     };
   }
   auto scene = Scene();

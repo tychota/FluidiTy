@@ -175,8 +175,10 @@ class CudaLiquidArena3D {
   CudaLiquidArena3D& operator=(const CudaLiquidArena3D&) = delete;
   // Queries current device memory once per job and fixes min(70% total,80% free)
   // ceiling, optionally lowered by byte_limit. Accounts old+new and leased banks.
-  // Requires CC12.0 and compiled 1200. Overflow/OOM: ResourceExhausted; invalid
-  // device: InvalidArgument; unavailable/wrong hardware: FailedPrecondition.
+  // An invalid device ordinal returns InvalidArgument. An absent device or
+  // unavailable driver returns Unavailable. A device or image outside CC12.0
+  // returns FailedPrecondition. Size overflow or OOM returns ResourceExhausted.
+  // Unexpected CUDA runtime failures return Internal.
   static absl::StatusOr<CudaLiquidArena3D> Create(
       LiquidStateCapacities3D capacities,
       int device_ordinal = 0,
