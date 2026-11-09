@@ -24,15 +24,35 @@ constexpr Vec3 kFreeFallInitialPosition{2.5, 2.5, 2.5};
 constexpr Vec3 kTankLayoutInitialPosition{0.625, 0.625, 0.625};
 constexpr int kFixtureProtocolVersion = 1;
 constexpr std::string_view kDropCase = "oscillating-drop-l2";
-constexpr double kDropPhysicalRadius = 0.125;
-constexpr double kDropCellWidth = 0.025;
+constexpr std::string_view kDamPicCase = "dam-break-pic";
+constexpr std::string_view kDamDefaultCase = "dam-break-default";
+constexpr std::string_view kDamRetainedCase = "dam-break-retained";
+constexpr double kSpherePhysicalRadius = 0.125;
 constexpr double kDropStretchY = 1.03;
+
+struct SphereSeedLayout {
+  int cells_per_radius;
+  std::size_t particle_count;
+};
+
+constexpr SphereSeedLayout kFineSphereSeed{.cells_per_radius = 5, .particle_count = 552};
+constexpr double kDropCellWidth = kSpherePhysicalRadius / kFineSphereSeed.cells_per_radius;
 constexpr UniformMacGeometry3D kDropGeometry{{0, 0, 0}, kDropCellWidth};
-constexpr std::size_t kDropParticleCount = 552;
+
+std::optional<SphereSeedLayout> StaticSphereSeedLayout(const fs::path& case_name) {
+  if (case_name == "static-sphere-coarse") {
+    return SphereSeedLayout{.cells_per_radius = 3, .particle_count = 136};
+  }
+  if (case_name == "static-sphere-fine") {
+    return kFineSphereSeed;
+  }
+  return std::nullopt;
+}
 
 struct TankAcceptanceScene {
   AxisAlignedLiquidTank3D tank;
   double cell_size;
+  double seed_high_x;
   double reference_surface_y;
   double maximum_dt;
   bool transported;
@@ -51,6 +71,7 @@ std::optional<TankAcceptanceScene> TankAcceptance(const fs::path& case_name) {
                 .piston_velocity_x = 0,
             },
         .cell_size = 0.125,
+        .seed_high_x = 0.25,
         .reference_surface_y = 1,
         .maximum_dt = 0.01,
         .transported = false,
@@ -68,8 +89,27 @@ std::optional<TankAcceptanceScene> TankAcceptance(const fs::path& case_name) {
                 .piston_velocity_x = 0.015625,
             },
         .cell_size = 0.0625,
+        .seed_high_x = 0.5,
         .reference_surface_y = 0.5,
         .maximum_dt = case_name == "open-tank-piston" ? 0.01 : 0.005,
+        .transported = true,
+    };
+  }
+  if (case_name == kDamPicCase || case_name == kDamDefaultCase || case_name == kDamRetainedCase) {
+    return TankAcceptanceScene{
+        .tank =
+            {
+                .start_low_x = 0,
+                .high_x = 2,
+                .floor_y = 0,
+                .low_z = 0,
+                .high_z = 0.25,
+                .piston_velocity_x = 0,
+            },
+        .cell_size = 0.0625,
+        .seed_high_x = 0.5,
+        .reference_surface_y = 0.5,
+        .maximum_dt = 0.01,
         .transported = true,
     };
   }
@@ -77,15 +117,15 @@ std::optional<TankAcceptanceScene> TankAcceptance(const fs::path& case_name) {
 }
 
 absl::StatusOr<double> EnergyBlend(const fs::path& case_name) {
-  if (case_name == "free-fall-pic") {
+  if (case_name == "free-fall-pic" || case_name == kDamPicCase) {
     return 0.0;
   }
-  if (case_name == "free-fall-default" || case_name == "tank-layout" || case_name == kDropCase
-      || TankAcceptance(case_name).has_value()) {
-    return 0.6;
-  }
-  if (case_name == "free-fall-retained") {
+  if (case_name == "free-fall-retained" || case_name == kDamRetainedCase) {
     return 1.0;
+  }
+  if (case_name == "free-fall-default" || case_name == "tank-layout" || case_name == kDropCase
+      || TankAcceptance(case_name).has_value() || StaticSphereSeedLayout(case_name).has_value()) {
+    return 0.6;
   }
   return absl::InvalidArgumentError("unknown acceptance scene");
 }
@@ -232,30 +272,31 @@ EncodeSeed(UniformMacGeometry3D geometry, std::span<const Vec3> seed_positions, 
 }
 
 // Select on the unperturbed lattice before applying the determinant-one stretch.
-absl::StatusOr<LiquidCacheBytes3D> EncodeDropSeed() {
-  constexpr int kCellsPerRadius = 5;
-  const double stretch_xz = 1 / std::sqrt(kDropStretchY);
+absl::StatusOr<LiquidCacheBytes3D>
+EncodeSphereSeed(UniformMacGeometry3D geometry, SphereSeedLayout layout, double stretch_y) {
+  const double stretch_xz = 1 / std::sqrt(stretch_y);
+  const int cells_per_radius = layout.cells_per_radius;
   std::vector<Vec3> seed_positions;
-  seed_positions.reserve(kDropParticleCount);
-  for (int z = -kCellsPerRadius; z < kCellsPerRadius; ++z) {
-    for (int y = -kCellsPerRadius; y < kCellsPerRadius; ++y) {
-      for (int x = -kCellsPerRadius; x < kCellsPerRadius; ++x) {
-        const double world_x = (x + 0.5) * kDropCellWidth;
-        const double world_y = (y + 0.5) * kDropCellWidth;
-        const double world_z = (z + 0.5) * kDropCellWidth;
+  seed_positions.reserve(layout.particle_count);
+  for (int z = -cells_per_radius; z < cells_per_radius; ++z) {
+    for (int y = -cells_per_radius; y < cells_per_radius; ++y) {
+      for (int x = -cells_per_radius; x < cells_per_radius; ++x) {
+        const double world_x = (x + 0.5) * geometry.cell_width;
+        const double world_y = (y + 0.5) * geometry.cell_width;
+        const double world_z = (z + 0.5) * geometry.cell_width;
         const double squared_distance = world_x * world_x + world_y * world_y + world_z * world_z;
-        if (squared_distance < kDropPhysicalRadius * kDropPhysicalRadius) {
-          seed_positions.push_back({world_x * stretch_xz, world_y * kDropStretchY, world_z * stretch_xz});
+        if (squared_distance < kSpherePhysicalRadius * kSpherePhysicalRadius) {
+          seed_positions.push_back({world_x * stretch_xz, world_y * stretch_y, world_z * stretch_xz});
         }
       }
     }
   }
-  if (seed_positions.size() != kDropParticleCount) {
-    return absl::InternalError("unexpected oscillating-drop seed count");
+  if (seed_positions.size() != layout.particle_count) {
+    return absl::InternalError("unexpected sphere seed count");
   }
-  constexpr double kDropVolume =
-      4 * std::numbers::pi * kDropPhysicalRadius * kDropPhysicalRadius * kDropPhysicalRadius / 3;
-  return EncodeSeed(kDropGeometry, seed_positions, kDropVolume / kDropParticleCount);
+  constexpr double kSphereVolume =
+      4 * std::numbers::pi * kSpherePhysicalRadius * kSpherePhysicalRadius * kSpherePhysicalRadius / 3;
+  return EncodeSeed(geometry, seed_positions, kSphereVolume / layout.particle_count);
 }
 
 // Produce only the authenticated initial state so calibration precedes scene authoring.
@@ -264,7 +305,7 @@ absl::Status WriteDropSeed(const fs::path& path) {
   if (!fresh.ok()) {
     return fresh;
   }
-  const auto seed = EncodeDropSeed();
+  const auto seed = EncodeSphereSeed(kDropGeometry, kFineSphereSeed, kDropStretchY);
   if (!seed.ok()) {
     return seed.status();
   }
@@ -313,6 +354,7 @@ absl::Status WriteScene(
 
   const bool tank_layout = case_name == "tank-layout";
   const auto tank_acceptance = TankAcceptance(case_name);
+  const auto static_sphere = StaticSphereSeedLayout(case_name);
   const Vec3 initial_position = tank_layout ? kTankLayoutInitialPosition : kFreeFallInitialPosition;
   UniformMacGeometry3D geometry{{0, 0, 0}, 1};
   std::vector<Vec3> seed_positions;
@@ -324,7 +366,7 @@ absl::Status WriteScene(
     reference_volume = cell_size * cell_size * cell_size;
     // The frozen bounds are exact integer multiples of the world lattice.
     const int first_x = static_cast<int>(tank.start_low_x / cell_size);
-    const int end_x = static_cast<int>(tank.high_x / cell_size);
+    const int end_x = static_cast<int>(tank_acceptance->seed_high_x / cell_size);
     const int first_z = static_cast<int>(tank.low_z / cell_size);
     const int end_z = static_cast<int>(tank.high_z / cell_size);
     const int end_y = static_cast<int>(tank_acceptance->reference_surface_y / cell_size);
@@ -337,10 +379,14 @@ absl::Status WriteScene(
     }
   } else if (drop) {
     geometry = kDropGeometry;
+  } else if (static_sphere) {
+    geometry.cell_width = kSpherePhysicalRadius / static_sphere->cells_per_radius;
   } else {
     seed_positions.push_back(initial_position);
   }
-  const auto seed = drop ? EncodeDropSeed() : EncodeSeed(geometry, seed_positions, reference_volume);
+  const auto sphere_seed = drop ? std::optional{kFineSphereSeed} : static_sphere;
+  const auto seed = sphere_seed ? EncodeSphereSeed(geometry, *sphere_seed, drop ? kDropStretchY : 1)
+                                : EncodeSeed(geometry, seed_positions, reference_volume);
   if (!seed.ok()) {
     return seed.status();
   }
@@ -371,10 +417,14 @@ absl::Status WriteScene(
     }
   } else if (drop_support_radius) {
     scene.scene.field = LiquidParticleSphereUnion3D{*drop_support_radius};
-    scene.scene.world_acceleration = {};
-    scene.scene.surface_tension = 1;
+  } else if (static_sphere) {
+    scene.scene.field = LiquidAnalyticSphere3D{.world_center = {}, .radius = kSpherePhysicalRadius};
   } else {
     scene.scene.field = LiquidAnalyticSphere3D{initial_position, 1.1};
+  }
+  if (sphere_seed) {
+    scene.scene.world_acceleration = {};
+    scene.scene.surface_tension = 1;
   }
   scene.options.particle_energy_blend = *energy_blend;
   scene.options.maximum_step_duration = tank_acceptance ? tank_acceptance->maximum_dt : 0.01;
@@ -563,7 +613,8 @@ absl::Status PrintTankScene(const LiquidResolvedScene3D& resolved, const LiquidD
   return absl::OkStatus();
 }
 
-absl::Status ReadDropScene(const fs::path& path, const LiquidDigest3D& expected_fingerprint) {
+absl::Status
+ReadSphereScene(const fs::path& path, const LiquidDigest3D& expected_fingerprint, bool read_static_sphere) {
   const auto bytes = files::ReadBytes(path, {});
   if (!bytes.ok()) {
     return bytes.status();
@@ -577,17 +628,26 @@ absl::Status ReadDropScene(const fs::path& path, const LiquidDigest3D& expected_
     return fingerprint.status();
   }
   if (*fingerprint != expected_fingerprint) {
-    return absl::DataLossError("drop resolved scene differs from the expected fingerprint");
+    return absl::DataLossError(
+        read_static_sphere ? "static sphere resolved scene differs from the expected fingerprint"
+                           : "drop resolved scene differs from the expected fingerprint"
+    );
   }
-  const auto* spheres = std::get_if<LiquidParticleSphereUnion3D>(&resolved->scene.field);
-  if (spheres == nullptr || !std::holds_alternative<std::monostate>(resolved->scene.obstacle)) {
+  const bool open_domain = std::holds_alternative<std::monostate>(resolved->scene.obstacle);
+  const auto* analytic_sphere = std::get_if<LiquidAnalyticSphere3D>(&resolved->scene.field);
+  const auto* transported_spheres = std::get_if<LiquidParticleSphereUnion3D>(&resolved->scene.field);
+  if (read_static_sphere && (analytic_sphere == nullptr || !open_domain)) {
+    return absl::FailedPreconditionError("expected an analytic sphere without an obstacle");
+  }
+  if (!read_static_sphere && (transported_spheres == nullptr || !open_domain)) {
     return absl::FailedPreconditionError("expected a transported sphere union without an obstacle");
   }
   const auto upstream = resolved->upstream.values();
   if (upstream.size() != 1 || upstream[0].role != LiquidUpstreamRole3D::kInitialParticles || upstream[0].ordinal != 0) {
     return absl::FailedPreconditionError("expected one initial-particle input");
   }
-  std::cout << "{\"fixture_version\":" << kFixtureProtocolVersion << ",\"event\":\"resolved_drop\",";
+  const auto* event = read_static_sphere ? "resolved_static_sphere" : "resolved_drop";
+  std::cout << "{\"fixture_version\":" << kFixtureProtocolVersion << ",\"event\":\"" << event << "\",";
   PrintIdentity(std::cout, *fingerprint, LiquidExecutionId3D(*fingerprint), resolved->backend);
   std::cout << ",\"solver_digest\":\"" << LiquidDigestHex3D(resolved->build_digest).data() << "\",\"seed_digest\":\""
             << LiquidDigestHex3D(upstream[0].digest).data() << "\",\"seed_byte_length\":" << upstream[0].byte_length
@@ -609,8 +669,15 @@ absl::Status ReadDropScene(const fs::path& path, const LiquidDigest3D& expected_
             << ",\"pressure_iteration_limit\":" << resolved->options.pressure_solver_options.max_iterations
             << ",\"source_count\":" << resolved->sources.size()
             << ",\"energy_blend\":" << resolved->options.particle_energy_blend
-            << ",\"maximum_dt_seconds\":" << resolved->options.maximum_step_duration
-            << ",\"sphere_union_radius_m\":" << spheres->radius << "}\n";
+            << ",\"maximum_dt_seconds\":" << resolved->options.maximum_step_duration;
+  if (read_static_sphere) {
+    std::cout << ",\"sphere_center_m\":";
+    PrintVector(std::cout, analytic_sphere->world_center);
+    std::cout << ",\"sphere_radius_m\":" << analytic_sphere->radius;
+  } else {
+    std::cout << ",\"sphere_union_radius_m\":" << transported_spheres->radius;
+  }
+  std::cout << "}\n";
   return absl::OkStatus();
 }
 
@@ -629,12 +696,14 @@ absl::Status Run(const std::vector<fs::path>& args) {
     }
     return WriteScene(args[2], args[3], args[4], args[5], drop_support_radius);
   }
-  if (args.size() == 4 && args[1] == "read-drop-scene") {
+  const bool read_static_sphere = args.size() == 4 && args[1] == "read-static-sphere-scene";
+  const bool read_drop = args.size() == 4 && args[1] == "read-drop-scene";
+  if (read_static_sphere || read_drop) {
     const auto fingerprint = ParseFingerprint(args[3]);
     if (!fingerprint.ok()) {
       return fingerprint.status();
     }
-    return ReadDropScene(args[2], *fingerprint);
+    return ReadSphereScene(args[2], *fingerprint, read_static_sphere);
   }
   if (args.size() == 4 && args[1] == "read-seed") {
     const auto digest = ParseFingerprint(args[3]);
@@ -649,8 +718,8 @@ absl::Status Run(const std::vector<fs::path>& args) {
   if (!read_frames && !read_checkpoint && !read_tank_scene) {
     return absl::InvalidArgumentError(
         "expected write-scene CASE CPU_OR_CUDA SOLVER_EXECUTABLE SCENE [DROP_SUPPORT_RADIUS_M], "
-        "write-drop-seed FLST, read-drop-scene FLRS FINGERPRINT, read-frames CACHE FINGERPRINT FIRST LAST, "
-        "read-seed FLST CONTENT_DIGEST, read-tank-scene CACHE FINGERPRINT, "
+        "write-drop-seed FLST, read-drop-scene FLRS FINGERPRINT, read-static-sphere-scene FLRS FINGERPRINT, "
+        "read-frames CACHE FINGERPRINT FIRST LAST, read-seed FLST CONTENT_DIGEST, read-tank-scene CACHE FINGERPRINT, "
         "or read-checkpoint CACHE FINGERPRINT MAXIMUM_FRAME"
     );
   }
