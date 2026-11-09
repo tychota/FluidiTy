@@ -118,8 +118,9 @@ def verify_device(record, backend):
     require(record["cuda_compiled"] is True and record.get("cuda_available") is True, "real CUDA device unavailable")
     require(integer(record, "device_index") == 0, "wrong CUDA device index")
     require(isinstance(record.get("device_name"), str) and record["device_name"].strip(), "missing CUDA device name")
-    architecture = integer(record, "compute_major") * 100 + integer(record, "compute_minor") * 10
-    require(architecture == integer(record, "compiled_architecture") == CUDA_ARCHITECTURE, "wrong CUDA architecture")
+    compute_capability = (integer(record, "compute_major"), integer(record, "compute_minor"))
+    require(compute_capability == (12, 0), "wrong CUDA compute capability")
+    require(integer(record, "compiled_architecture") == CUDA_ARCHITECTURE, "wrong CUDA architecture")
     require(integer(record, "sample_count") == 17, "incomplete CUDA probe")
     for field in ("driver_version", "runtime_version"):
         integer(record, field, minimum=1)
@@ -145,11 +146,11 @@ def verify_extent(record):
     require(record.get("source_fractional_remainders") == [], "unexpected source remainder")
 
 
-def verify_solver(records, frames, author):
+def verify_solver(records, frames, authored_scene_identity):
     final = records[-1]
-    backend = author["backend"]
+    backend = authored_scene_identity["backend"]
     require(final.get("event") == "result" and final.get("command") == "run", "missing successful run result")
-    matches_identity(final, author)
+    matches_identity(final, authored_scene_identity)
     require(final.get("read_only") is False, "run did not publish")
     require(integer(final, "frames_per_second") == FRAMES_PER_SECOND, "wrong receipt frame rate")
     verify_extent(final)
@@ -158,9 +159,11 @@ def verify_solver(records, frames, author):
         integer(final, "graph_replay_count", minimum=1)
         integer(final, "device_reserved_bytes", minimum=1)
 
-    # Trace receipts cover every accepted step. A settled trace must precede its
-    # publication event and agree with the corresponding verified manifest.
+    # Each accepted step emits one trace. Attempt counters are cumulative within
+    # a frame and start again after publication.
     published_count = 0
+    accepted_trace_count = 0
+    previous_dt_retry_count = 0
     last_clock = None
     last_trace = None
     for record in records[:-1]:
@@ -181,13 +184,16 @@ def verify_solver(records, frames, author):
             continue
         if event == "frame":
             require(published_count < len(FRAME_ORDINALS), "extra publication receipt")
-            frame = FRAME_ORDINALS[published_count]
-            require(record.get("published") is True and integer(record, "frame") == frame, "wrong publication ordinal")
+            frame_ordinal = FRAME_ORDINALS[published_count]
+            require(record.get("published") is True and integer(record, "frame") == frame_ordinal,
+                    "wrong publication ordinal")
             verify_snapshot_receipt(record, backend)
-            manifest_clock = clock(frames[frame])
+            manifest_clock = clock(frames[frame_ordinal])
             require(manifest_clock == (last_clock or (0, 0, 0, 0, 0.0)), "publication and manifest clocks differ")
             last_clock = manifest_clock
             published_count += 1
+            accepted_trace_count = 0
+            previous_dt_retry_count = 0
             continue
         require(event == "trace" and record.get("published") is False, "unexpected run event")
         require(0 < published_count < len(FRAME_ORDINALS), "trace outside expected run frames")
@@ -203,10 +209,15 @@ def verify_solver(records, frames, author):
         else:
             require(frame == published_count - 1 and time < published_count / FRAMES_PER_SECOND, "wrong interior trace clock")
         verify_extent(record)
-        require(integer(record, "dt_retries") <= 2, "pressure retry bound exceeded")
+        accepted_trace_count += 1
+        dt_retry_count = integer(record, "dt_retries")
+        require(dt_retry_count <= 2, "pressure retry bound exceeded")
+        require(dt_retry_count >= previous_dt_retry_count, "pressure retry count regressed within the frame")
         require(integer(record, "capacity_replays") == 0, "unexpected capacity replay")
-        accepted = integer(record, "accepted_attempts", minimum=1)
-        require(integer(record, "attempts") == accepted + record["dt_retries"], "inconsistent attempt counts")
+        require(integer(record, "accepted_attempts") == accepted_trace_count,
+                "accepted attempt count differs from the accepted trace count")
+        require(integer(record, "attempts") == accepted_trace_count + dt_retry_count, "inconsistent attempt counts")
+        previous_dt_retry_count = dt_retry_count
         digest(record, "state_digest")
         last_clock = trace_clock
         last_trace = record
@@ -219,11 +230,11 @@ def verify_solver(records, frames, author):
     return final
 
 
-def verify_frames(records, author):
+def verify_frames(records, authored_scene_identity):
     require(len(records) == len(FRAME_ORDINALS), "missing or extra verified frame")
     for ordinal, record in zip(FRAME_ORDINALS, records):
         require(record["event"] == "frame", "unexpected frame reader event")
-        matches_identity(record, author)
+        matches_identity(record, authored_scene_identity)
         frame, substep, _, _, time = clock(record)
         require(frame == ordinal and substep == 0 and time == ordinal / FRAMES_PER_SECOND, "wrong manifest clock")
         digest(record, "points_digest")
@@ -234,10 +245,10 @@ def verify_frames(records, author):
                 require(finite_number(point.get(field)) and point[field] > 0, f"invalid point {field}")
 
 
-def verify_checkpoint(checkpoint, frame_zero, author):
-    matches_identity(checkpoint, author)
+def verify_checkpoint(checkpoint, frame_zero, authored_scene_identity):
+    matches_identity(checkpoint, authored_scene_identity)
     require(clock(checkpoint) == clock(frame_zero), "retained checkpoint must match frame zero")
-    require(digest(checkpoint, "state_digest") == author["seed_digest"], "retained state differs from seed")
+    require(digest(checkpoint, "state_digest") == authored_scene_identity["seed_digest"], "retained state differs from seed")
     require(integer(checkpoint, "random_seed") == 0 and integer(checkpoint, "next_particle_id") == 2, "wrong seed metadata")
     require(checkpoint.get("capacities") == [1024, 128, 4096, 24576, 256], "wrong capacity reservations")
     require(checkpoint.get("pressure_cells") == [], "initial checkpoint contains pressure cells")
@@ -260,31 +271,38 @@ def snapshot(root):
     }
 
 
-def run_acceptance(executable, fixture, backend, case, output):
+def run_acceptance(solver_executable_path, fixture, backend, case, output):
     # Refuse even an empty pre-existing directory. A deterministic execution ID
     # alone cannot distinguish a previous same-artifact run from the current one.
     output.mkdir(parents=True, exist_ok=False)
     scene = output / "scene.flrs"
     seed = scene.with_suffix(".flrs.flst")
     cache = output / "cache"
-    device = one_record(run_child(output, "device-probe", executable, "device-info", "--backend", backend), "result")
+    device_records = run_child(output, "device-probe", solver_executable_path, "device-info", "--backend", backend)
+    device = one_record(device_records, "result")
     verify_device(device, backend)
-    author = one_record(
-        run_child(output, "scene-author", fixture, "write-scene", case, backend, executable, scene, fixture=True), "scene"
+    authored_scene_records = run_child(
+        output, "scene-author", fixture, "write-scene", case, backend, solver_executable_path, scene, fixture=True,
     )
+    authored_scene_identity = one_record(authored_scene_records, "scene")
     for field in ("resolved_fingerprint", "execution_id", "solver_digest", "seed_digest"):
-        digest(author, field)
-    require(author.get("case") == case and author.get("backend") == backend, "wrong authored case or backend")
-    require(finite_number(author.get("energy_blend")) and author["energy_blend"] == FREE_FALL_CASES[case], "wrong blend")
+        digest(authored_scene_identity, field)
+    require(
+        authored_scene_identity.get("case") == case and authored_scene_identity.get("backend") == backend,
+        "wrong authored case or backend",
+    )
+    energy_blend = authored_scene_identity.get("energy_blend")
+    require(finite_number(energy_blend) and energy_blend == FREE_FALL_CASES[case], "wrong blend")
     require(scene.is_file() and scene.stat().st_size > 0, "missing resolved scene bytes")
-    require(seed.stat().st_size == integer(author, "seed_byte_length", minimum=1), "wrong seed byte length")
+    require(seed.stat().st_size == integer(authored_scene_identity, "seed_byte_length", minimum=1), "wrong seed byte length")
     require(not cache.exists() and not cache.is_symlink(), "cache path must be fresh")
     records = run_child(
-        output, "simulate-run", executable, "run", "--stage", "simulate", "--scene", scene, "--initial-state", seed,
+        output, "simulate-run", solver_executable_path, "run", "--stage", "simulate", "--scene", scene,
+        "--initial-state", seed,
         "--backend", backend, "--cache", cache, "--frame-end", FREE_FALL_LAST_FRAME, "--trace", timeout=180,
     )
     before = snapshot(cache)
-    fingerprint = author["resolved_fingerprint"]
+    fingerprint = authored_scene_identity["resolved_fingerprint"]
     frames = run_child(
         output, "verified-frames", fixture, "read-frames", cache, fingerprint, 0, FREE_FALL_LAST_FRAME, fixture=True,
     )
@@ -300,12 +318,12 @@ def run_acceptance(executable, fixture, backend, case, output):
             "unexpected on-disk committed-frame inventory")
     require((cache / "resolved.flrs").read_bytes() == scene.read_bytes(), "cache resolved scene differs from authored bytes")
     measurements = evaluate_free_fall(frames)
-    verify_frames(frames, author)
-    verify_checkpoint(checkpoint, frames[0], author)
-    final = verify_solver(records, frames, author)
+    verify_frames(frames, authored_scene_identity)
+    verify_checkpoint(checkpoint, frames[0], authored_scene_identity)
+    final = verify_solver(records, frames, authored_scene_identity)
     measurements.update({
-        "case": case, "backend": backend, "energy_blend": author["energy_blend"], "device_probe": device,
-        "scene_author": author, "final_receipt": final, "verified_frame_count": len(frames),
+        "case": case, "backend": backend, "energy_blend": energy_blend, "device_probe": device,
+        "scene_author": authored_scene_identity, "final_receipt": final, "verified_frame_count": len(frames),
         "verified_point_digests": [frame["points_digest"] for frame in frames],
         "verified_immutable_cache_file_count": len(before),
     })
