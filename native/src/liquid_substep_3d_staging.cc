@@ -141,7 +141,7 @@ absl::Status InsertUnique(LiquidRecords3D<T>& records, T value, KeyFunction key)
   return absl::OkStatus();
 }
 }  // namespace
-absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities) {
+absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -162,6 +162,17 @@ absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities) {
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));
+  if (needs_wetted_piston) {
+    auto workspace = WettedPistonWorkspace3D::Create(capacities);
+    if (!workspace.ok()) {
+      return workspace.status();
+    }
+    if (workspace->reserved_bytes() > static_cast<std::size_t>(PTRDIFF_MAX) - staging.reserved_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    staging.reserved_bytes += workspace->reserved_bytes();
+    staging.wetted_piston.emplace(std::move(*workspace));
+  }
   return staging;
 }
 absl::Status

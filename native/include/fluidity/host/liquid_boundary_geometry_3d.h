@@ -70,6 +70,8 @@ struct FrozenLiquidFace3D {
   // geometric flux on this pressure face, without liquid-area clipping. Other
   // obstacles use blocked_area * wall_normal_velocity.
   std::optional<double> prescribed_wall_flux = std::nullopt;
+  // Freeze identifies a closed low-x piston rectangle independently of its speed.
+  bool is_low_x_piston_face = false;
 };
 struct LiquidPressureCellFields3D {
   double target_divergence;  // s⁻¹; independent of geometric volume.
@@ -80,6 +82,10 @@ struct LiquidPressureFields3D {
   std::span<const LiquidPressureCellFields3D> cells;  // Frozen cell order.
   std::span<const double> predicted_face_velocities;  // Frozen face order, m/s.
   double ambient_pressure;  // Finite gauge pressure, Pa.
+  // Empty preserves frozen wall flux. Otherwise use exact frozen face order,
+  // with a finite signed flux in m³/s on each closed piston face with a single
+  // selected head. Zero is explicit. Other entries must be absent.
+  std::span<const std::optional<double>> wetted_piston_face_fluxes{};
 };
 struct LiquidPressureProblem3D {
   std::vector<MacPressureCell3D> cells;
@@ -159,7 +165,8 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 // Builds the exact incident face union with full frozen apertures and wall flux.
 // Air links use theta in [0.05,1] and ambient + sigma*curvature once; internal
 // jumps are zero. Curvature and capillary dt were checked during geometry freeze.
-// Errors carry no problem: InvalidArgument for invalid field extents/values,
+// Errors carry no problem: InvalidArgument for invalid field extents/values or
+// overrides inconsistent with the frozen piston incidence or speed,
 // FailedPrecondition for missing air samples or omitted negative-distance neighbors,
 // OutOfRange for unrepresentable arithmetic. No input storage is modified.
 absl::StatusOr<LiquidPressureProblem3D>

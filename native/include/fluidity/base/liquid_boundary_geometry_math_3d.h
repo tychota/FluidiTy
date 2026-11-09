@@ -105,6 +105,7 @@ struct GeometryOutput {
   double pressure_gradient_distance = 0;  // m, regularized theta*h.
   double exterior_pressure = 0;  // Pa, ambient plus exactly one lift.
   bool lower_theta_regularized = false;
+  bool is_low_x_piston_face = false;  // Closed x face with positive piston rectangle, even at zero speed.
 };
 using CartesianVector = numeric::array<double, 3>;
 FLUIDITY_HD inline CartesianVector Add(CartesianVector left, CartesianVector right) {
@@ -582,6 +583,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeTankFace(const GeometryInput& in
         }
       }
     } else if (transverse_area > 0) {
+      output.is_low_x_piston_face = true;
       output.piston_normal_velocity = tank.piston_velocity_x;
       output.piston_flux = transverse_area * output.piston_normal_velocity;
       if (!IsNormalOrZero(output.piston_flux) || (output.piston_normal_velocity != 0 && output.piston_flux == 0)) {

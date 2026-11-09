@@ -84,6 +84,7 @@ class GeometryCases {
   }
 
   void OpenTankClipsVolumeAndUsesPistonOnlyFlux() {
+    std::cout << "CTEST_FULL_OUTPUT\n";
     const auto grid = Grid();
     auto samples = Sample([](double, double, double) {
       return -1.0;
@@ -157,6 +158,69 @@ class GeometryCases {
                 << " tank_defect=" << projected->cell_constraint_defects[0] << '\n';
     };
     project_and_check(-kPistonFlux);
+    const std::array cell_fields{LiquidPressureCellFields3D{0, kInfinity, 0}};
+    const std::array<double, 6> velocities{};
+    std::array<std::optional<double>, 6> fluxes{};
+    const auto build_with_fluxes = [&](std::span<const std::optional<double>> fluxes_by_face) {
+      return links_(*frozen, {cell_fields, velocities, 0, fluxes_by_face});
+    };
+    EXPECT_EQ(build_with_fluxes(std::span(fluxes).first(5)).status().code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(build_with_fluxes(fluxes).status().code(), absl::StatusCode::kInvalidArgument);
+    for (const double invalid :
+         {-0.25, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+      fluxes[low_x] = invalid;
+      EXPECT_EQ(build_with_fluxes(fluxes).status().code(), absl::StatusCode::kInvalidArgument);
+    }
+    fluxes[low_x] = 0;
+    fluxes[high_x] = 0;
+    EXPECT_EQ(build_with_fluxes(fluxes).status().code(), absl::StatusCode::kInvalidArgument);
+    fluxes[high_x].reset();
+    for (const double explicit_flux : {0.0, 0.25}) {
+      fluxes[low_x] = explicit_flux;
+      const auto overridden = build_with_fluxes(fluxes);
+      ASSERT_TRUE(overridden.ok()) << overridden.status();
+      ASSERT_EQ(overridden->cells.size(), 1);
+      EXPECT_DOUBLE_EQ(overridden->cells[0].fluid_volume, problem.cells[0].fluid_volume);
+      ASSERT_EQ(overridden->faces.size(), problem.faces.size());
+      for (std::size_t ordinal = 0; ordinal < overridden->faces.size(); ++ordinal) {
+        const auto& before = problem.faces[ordinal];
+        const auto& after = overridden->faces[ordinal];
+        EXPECT_EQ(after.face_index.axis, before.face_index.axis);
+        EXPECT_EQ(after.face_index.lattice_index.x, before.face_index.lattice_index.x);
+        EXPECT_EQ(after.face_index.lattice_index.y, before.face_index.lattice_index.y);
+        EXPECT_EQ(after.face_index.lattice_index.z, before.face_index.lattice_index.z);
+        EXPECT_DOUBLE_EQ(after.open_area, before.open_area);
+        EXPECT_DOUBLE_EQ(after.inverse_density, before.inverse_density);
+        EXPECT_DOUBLE_EQ(after.pressure_gradient_distance, before.pressure_gradient_distance);
+        EXPECT_DOUBLE_EQ(after.wall_normal_velocity, before.wall_normal_velocity);
+        EXPECT_EQ(after.pressure_link.index(), before.pressure_link.index());
+        EXPECT_EQ(after.prescribed_wall_flux, ordinal == low_x ? fluxes[low_x] : before.prescribed_wall_flux);
+      }
+      const auto legacy = problem;
+      problem = *overridden;
+      project_and_check(-explicit_flux);
+      problem = legacy;
+
+      // Closing the two air links removes the anchor without changing the
+      // applied wall flux. An equal sink balances the inward flux.
+      auto sealed = *overridden;
+      for (auto& face : sealed.faces) {
+        face.open_area = 0;
+        face.pressure_link = SealedMacPressureLink3D{};
+      }
+      if (explicit_flux > 0) {
+        EXPECT_EQ(
+            project_({grid, .5, sealed.cells, sealed.faces}).status().code(),
+            absl::StatusCode::kFailedPrecondition
+        );
+      }
+      sealed.cells[0].target_divergence = -explicit_flux / sealed.cells[0].fluid_volume;
+      const auto compatible = project_({grid, .5, sealed.cells, sealed.faces});
+      ASSERT_TRUE(compatible.ok()) << compatible.status();
+      EXPECT_EQ(compatible->gauge_cell_ordinals, (std::vector<std::size_t>{0}));
+      EXPECT_NEAR(compatible->integrated_rhs[0], 0, 1e-15);
+      EXPECT_NEAR(compatible->cell_constraint_defects[0], 0, 1e-15);
+    }
     // Move the same signed physical datum to a face where this cell is the tail.
     problem.faces[low_x].prescribed_wall_flux = 0;
     problem.faces[high_x].prescribed_wall_flux = kPistonFlux;

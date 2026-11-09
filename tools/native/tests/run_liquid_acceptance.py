@@ -527,9 +527,9 @@ def verify_tank_layout(frames, solver_records):
     traces = [record for record in solver_records if record["event"] == "trace"]
     require(bool(traces), "missing tank-layout accepted trace")
     first = traces[0]["accepted_measurement"]
-    # Two unit y-z faces at the low-x piston move at +0.125 m/s.
+    # Two unit-width y-z patches are wet up to 0.75 m and move at +0.125 m/s.
     # Four selected unit-base cells start with liquid height 0.75 m.
-    require(first["step_start_inward_piston_flux_m3_per_s"] == 0.25, "wrong first inward piston flux")
+    require(first["step_start_inward_piston_flux_m3_per_s"] == 0.1875, "wrong first inward piston flux")
     require(first["step_start_pressure_cell_volume_m3"] == 3, "wrong first frozen pressure volume")
     require(first["step_start_piston_low_x_m"] == -1, "wrong first piston start pose")
     require(first["step_end_piston_low_x_m"] == -1 + 0.125 * first["accepted_dt_seconds"],

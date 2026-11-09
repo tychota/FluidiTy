@@ -21,8 +21,9 @@ struct Staging {
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
+  std::optional<WettedPistonWorkspace3D> wetted_piston;
   std::size_t reserved_bytes = 0;
-  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities);
+  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities, bool needs_wetted_piston = false);
 };
 bool Finite(Vec3 value);
 double Component(Vec3 value, FaceNormalAxis axis);

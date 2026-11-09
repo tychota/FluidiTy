@@ -313,6 +313,10 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
           [](void*, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return FreezeLiquidBoundaryGeometry3D(inputs, workspace);
           },
+      .wetted_piston =
+          [](void*, const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace) {
+            return ComputeWettedPiston3D(inputs, workspace);
+          },
       .links =
           [](void*,
              const FrozenLiquidBoundaryGeometryView3D& geometry,

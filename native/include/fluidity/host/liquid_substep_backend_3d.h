@@ -1,6 +1,6 @@
 #pragma once
 
-#include "fluidity/host/liquid_substep_3d.h"
+#include "fluidity/host/wetted_piston_3d.h"
 
 namespace fluidity {
 // Maximum queries in one substep field dispatch. Staging may use smaller
@@ -149,6 +149,13 @@ struct LiquidSubstepBackend3D {
       const LiquidBoundaryGeometryViewInputs3D& inputs,
       LiquidBoundaryWorkspace3D& workspace
   );
+  // Evaluate the actual frozen field at the moving low-x piston. The
+  // supplied workspace owns the successful borrow through link assembly.
+  using WettedPiston = absl::StatusOr<WettedPistonView3D>(
+      void* context,
+      const WettedPistonInputs3D& inputs,
+      WettedPistonWorkspace3D& workspace
+  );
   using BuildLinks = absl::StatusOr<LiquidPressureProblemView3D>(
       void* context,
       const FrozenLiquidBoundaryGeometryView3D& geometry,
@@ -189,6 +196,7 @@ struct LiquidSubstepBackend3D {
   PredictMissingFace* predict_missing_face = nullptr;
   ApplyForces* forces = nullptr;
   Freeze* freeze = nullptr;
+  WettedPiston* wetted_piston = nullptr;  // Required for a translating low-x piston.
   BuildLinks* links = nullptr;
   Project* project = nullptr;
   Gather* gather = nullptr;

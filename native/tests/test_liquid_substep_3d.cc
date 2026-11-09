@@ -16,6 +16,7 @@
 #include "liquid_pressure_supported_gather_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
+#include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
 namespace {
 LiquidState3D Initial(std::size_t count = 1) {
@@ -53,6 +54,107 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
   EXPECT_EQ(before_digest, after_digest);
   std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
+TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
+  for (const double height : {0.75, 1.125}) {
+    for (const double speed : {wet::kPistonSpeed, -wet::kPistonSpeed, 0.0}) {
+      SCOPED_TRACE(::testing::Message() << height << " " << speed);
+      wet::ProjectionAudit audit;
+      auto scheduler = LiquidSubstepScheduler3D::Create(
+          {},
+          wet::PlaneScene(height, speed),
+          Options(),
+          wet::Observe(audit, CpuLiquidSubstepBackend3D())
+      );
+      ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+      const auto status = scheduler->AdvanceFrame(wet::kDuration);
+      ASSERT_TRUE(status.ok()) << status;
+      wet::CheckPlaneProjection(*scheduler, audit, height, speed);
+    }
+  }
+}
+
+TEST(LiquidSubstep3D, WettedPistonRejectsWetEmptyPressureWithoutRetry) {
+  namespace wet = wetted_piston_pressure_test;
+  const LiquidState3D initial;
+  auto scene = wet::PlaneScene(0.25, wet::kPistonSpeed);
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->AdvanceFrame(wet::kDuration).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+  scene.field = LiquidParticleSphereUnion3D{0.25};
+  auto dry = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  ASSERT_TRUE(dry->AdvanceFrame(wet::kDuration).ok());
+  ASSERT_TRUE(dry->diagnostics().accepted_measurement.has_value());
+  EXPECT_DOUBLE_EQ(dry->diagnostics().accepted_measurement->step_start_inward_piston_flux_m3_per_s, 0);
+  EXPECT_EQ(dry->committed().clock.epoch, 1);
+}
+
+TEST(LiquidSubstep3D, WettedPistonRejectsArithmeticOverflowAfterFreeze) {
+  namespace wet = wetted_piston_pressure_test;
+  const LiquidState3D initial;
+  // The legacy 1 m² face flux is finite. The 1.125 m² wet wall
+  // overflows signed flux even though the piston advances less than half a cell.
+  wet::ProjectionAudit audit;
+  auto scheduler = LiquidSubstepScheduler3D::Create(
+      initial,
+      wet::PlaneScene(1.125, wet::kOverflowPistonSpeed),
+      Options(),
+      wet::Observe(audit, CpuLiquidSubstepBackend3D())
+  );
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kOverflowStepDuration).ok());
+  const auto result = scheduler->Attempt(wet::kOverflowStepDuration);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_EQ(audit.wetted_stage_calls, 1);
+  EXPECT_EQ(audit.projection_count, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+}
+
+TEST(LiquidSubstep3D, WettedPistonReplaysAfterGrowth) {
+  namespace wet = wetted_piston_pressure_test;
+  const auto scene = wet::PlaneScene(1.125, wet::kPistonSpeed);
+  auto small = Options();
+  small.capacities.faces = 64;
+  small.capacity_replay_reservations = Options().capacities;
+  auto replay = LiquidSubstepScheduler3D::Create({}, scene, small);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  const auto advanced = replay->AdvanceFrame(wet::kDuration);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  EXPECT_EQ(replay->diagnostics().capacity_replays, 1);
+  auto direct = LiquidSubstepScheduler3D::Create({}, scene, Options());
+  ASSERT_TRUE(direct.ok()) << direct.status();
+  ASSERT_TRUE(direct->AdvanceFrame(wet::kDuration).ok());
+  wet::ExpectCheckpointEqual(direct->committed(), replay->committed());
+}
+
+TEST(LiquidSubstep3D, WettedPistonRequiresSelectedOperationOnlyForMovingTank) {
+  namespace wet = wetted_piston_pressure_test;
+  auto operations = CpuLiquidSubstepBackend3D();
+  operations.wetted_piston = nullptr;
+  auto scene = wet::PlaneScene(0.75, wet::kPistonSpeed);
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create({}, scene, Options(), operations).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  scene.obstacle = wet::PlaneScene(0.75, 0).obstacle;
+  auto stationary = LiquidSubstepScheduler3D::Create({}, scene, Options(), operations);
+  ASSERT_TRUE(stationary.ok()) << stationary.status();
+  EXPECT_TRUE(stationary->AdvanceFrame(wet::kDuration).ok());
+  auto absent = LiquidSubstepScheduler3D::Create(Initial(), Scene(), Options(), operations);
+  ASSERT_TRUE(absent.ok()) << absent.status();
+  EXPECT_TRUE(absent->AdvanceFrame(wet::kDuration).ok());
 }
 
 TEST(LiquidSubstep3D, PressureSupportedGatherExcludesForceOnlyNewDonors) {
@@ -236,17 +338,39 @@ TEST(LiquidSubstep3D, TankPoseClosureLeavesCommittedStateIntact) {
   ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 
-TEST(LiquidSubstep3D, AdvancesOpenTankWithTransportedField) {
+TEST(LiquidSubstep3D, WettedPistonRefusesUncertifiedUnownedBroadSphere) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
   auto scene = Scene();
   scene.field = LiquidParticleSphereUnion3D{1.1};
-  scene.obstacle = AxisAlignedLiquidTank3D{1.75, 3.5, 2, 1.5, 3.5, 0.125};
-  auto scheduler = LiquidSubstepScheduler3D::Create(Initial(), scene, Options());
+  scene.obstacle = wet::kBroadUncertifiedSphereTank;
+  const auto initial = Initial();
+  wet::ProjectionAudit audit;
+  auto scheduler =
+      LiquidSubstepScheduler3D::Create(initial, scene, Options(), wet::Observe(audit, CpuLiquidSubstepBackend3D()));
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+  wet::ExpectCheckpointEqual(initial, scheduler->committed());
+  wet::ExpectBroadSphereRefusal(audit);
+}
+
+TEST(LiquidSubstep3D, AdvancesOpenTankWithTransportedField) {
+  auto scene = Scene();
+  scene.field = LiquidParticleSphereUnion3D{wetted_piston_pressure_test::kSphereRadius};
+  scene.obstacle = wetted_piston_pressure_test::kNarrowSphereTank;
+  auto initial = Initial();
+  initial.particles[0].world_position.z = 2.75;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   const auto status = scheduler->AdvanceFrame(0.01);
-  ASSERT_TRUE(status.ok()) << status;
+  ASSERT_TRUE(status.ok()) << status << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
   EXPECT_EQ(scheduler->committed().clock.epoch, 1);
   EXPECT_FALSE(scheduler->committed().cells.values().empty());
   EXPECT_EQ(scheduler->committed().particles[0].side_tag, 0);
+  wetted_piston_pressure_test::ExpectSphereWallFlux(*scheduler);
 }
 
 TEST(LiquidSubstep3D, PhiloxPublishedZeroKnownVector) {
@@ -952,6 +1076,34 @@ int SchedulerAllocationHook(
   return scheduler_previous_hook ? scheduler_previous_hook(operation, data, size, block_type, request, filename, line)
                                  : 1;
 }
+TEST(LiquidSubstep3D, WettedPistonAttemptsAllocateAndFreeNothing) {
+  namespace wet = wetted_piston_pressure_test;
+  for (const bool overflow : {false, true}) {
+    const double speed = overflow ? wet::kOverflowPistonSpeed : wet::kPistonSpeed;
+    const double duration = overflow ? wet::kOverflowStepDuration : wet::kDuration;
+    auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(1.125, speed), Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    scheduler_allocations = 0;
+    scheduler_frees = 0;
+    bool completed = false;
+    auto disposition = LiquidAttemptDisposition3D::kFatal;
+    scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+    {
+      const auto result = scheduler->Attempt(duration);
+      completed = result.ok();
+      if (completed) {
+        disposition = result->disposition;
+      }
+    }
+    _CrtSetAllocHook(scheduler_previous_hook);
+    ASSERT_TRUE(completed);
+    EXPECT_EQ(disposition, overflow ? LiquidAttemptDisposition3D::kFatal : LiquidAttemptDisposition3D::kAccepted);
+    EXPECT_EQ(scheduler_allocations, 0);
+    EXPECT_EQ(scheduler_frees, 0);
+  }
+}
+
 TEST(LiquidSubstep3D, ActualSuccessfulAndRejectedAttemptsAllocateAndFreeNothing) {
   for (const auto failure :
        {LiquidPhysicalStage3D::kCount, LiquidPhysicalStage3D::kPressure, LiquidPhysicalStage3D::kAccept}) {

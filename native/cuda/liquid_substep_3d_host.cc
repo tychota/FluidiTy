@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/cuda_wetted_piston_3d.h"
 #include "liquid_geometry_stages_3d.h"
 #include "liquid_pressure_stage_3d.h"
 #include "liquid_transfer_stages_3d.h"
@@ -157,6 +158,10 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
       .freeze =
           [](void* context, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return cuda_internal::FreezeLiquidGeometry3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
+      .wetted_piston =
+          [](void* context, const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace) {
+            return CudaComputeWettedPiston3D(static_cast<Impl*>(context)->arena, inputs, workspace);
           },
       .links =
           [](void* context,
