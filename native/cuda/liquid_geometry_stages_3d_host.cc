@@ -173,17 +173,21 @@ absl::Status SampleLiquidFaces3D(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const auto packed_obstacle = boundary_internal::PackObstacle(obstacle);
-  if (packed_obstacle.kind == 2 && !walls.empty() && side != -1 && side != 1) {
+  if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  if (packed_obstacle.kind == boundary_internal::ObstacleKind::kSlab && !walls.empty() && side != -1 && side != 1) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
-  if (packed_obstacle.kind != 0) {
+  if (packed_obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
     const auto normal = packed_obstacle.normal;
     const double length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
     if (!Finite(normal) || !Finite(packed_obstacle.velocity) || !std::isfinite(packed_obstacle.coordinate)
         || std::abs(length_squared - 1) > 1e-12) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
-    if (packed_obstacle.kind == 2 && (!std::isfinite(packed_obstacle.half_width) || packed_obstacle.half_width <= 0)) {
+    if (packed_obstacle.kind == boundary_internal::ObstacleKind::kSlab
+        && (!std::isfinite(packed_obstacle.half_width) || packed_obstacle.half_width <= 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }

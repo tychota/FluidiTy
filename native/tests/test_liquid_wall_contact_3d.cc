@@ -1,5 +1,13 @@
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity::boundary_test {
+TEST(LiquidWallContact3D, OpenTankSweepsAndConstrainsBothVelocities) {
+  ContactCases cases(ResolveLiquidWallContact3D);
+  cases.OpenTankSweepsAndConstrainsBothVelocities();
+}
+TEST(LiquidWallContact3D, OpenTankRejectsInvalidFrictionExtentsAndEndpointWidth) {
+  ContactCases cases(ResolveLiquidWallContact3D);
+  cases.OpenTankRejectsInvalidFrictionExtentsAndEndpointWidth();
+}
 TEST(LiquidWallContact3D, ThinSlabSweepMatchesFixtureOnAllAxesAndReversedNormals) {
   ContactCases cases(ResolveLiquidWallContact3D);
   cases.ThinSlabSweepMatchesFixtureOnAllAxesAndReversedNormals();

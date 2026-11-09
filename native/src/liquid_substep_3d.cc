@@ -427,6 +427,9 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (!Complete(backend)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
+  if (std::holds_alternative<AxisAlignedLiquidTank3D>(scene.obstacle)) {
+    return absl::FailedPreconditionError("Open tank staging is not supported");
+  }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));
   const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);
   if (!bytes.ok()) {

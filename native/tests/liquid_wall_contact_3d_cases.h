@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <string_view>
 
@@ -32,6 +33,113 @@ class ContactCases {
     EXPECT_NEAR(actual.x, expected.x, kTolerance);
     EXPECT_NEAR(actual.y, expected.y, kTolerance);
     EXPECT_NEAR(actual.z, expected.z, kTolerance);
+  }
+
+  void OpenTankSweepsAndConstrainsBothVelocities() {
+    AxisAlignedLiquidTank3D tank{.25, 2, .125, .125, .75, .25};
+    LiquidWallContactInputs3D inputs{
+        .start_world_position = {.5, .375, .375},
+        .stored_world_velocity = {-1, -2, .125},
+        .advecting_world_velocity = {-.25, -.5, .25},
+        .obstacle = tank,
+        .step_duration = 1,
+    };
+    const auto tied = resolve_(inputs);
+    ASSERT_TRUE(tied.ok()) << tied.status();
+    ASSERT_TRUE(tied->contact_fraction.has_value());
+    EXPECT_DOUBLE_EQ(*tied->contact_fraction, .5);
+    EXPECT_EQ(tied->diagnostic, LiquidWallContactDiagnostic3D::kSweptImpact);
+    ExpectVectorNear(tied->outward_normal, {1, 0, 0});
+    ExpectVectorNear(tied->world_position, {.5, .125, .625});
+    ExpectVectorNear(tied->stored_world_velocity, {.25, 0, .125});
+    ExpectVectorNear(tied->advecting_world_velocity, {.25, 0, .25});
+    EXPECT_DOUBLE_EQ(tied->incoming_stored_relative_normal_speed, -1.25);
+    EXPECT_DOUBLE_EQ(tied->incoming_advecting_relative_normal_speed, -.5);
+    std::cout << "tank_first_hit_fraction=" << *tied->contact_fraction << " tank_tied_position=("
+              << tied->world_position.x << "," << tied->world_position.y << "," << tied->world_position.z << ")\n";
+
+    // The fixed high-x endpoint and the high-z wall constrain only their axes.
+    inputs.start_world_position = {1, .375, .5};
+    inputs.stored_world_velocity = {2, .75, 1};
+    inputs.advecting_world_velocity = {1, .5, .125};
+    const auto endpoint = resolve_(inputs);
+    ASSERT_TRUE(endpoint.ok()) << endpoint.status();
+    ASSERT_TRUE(endpoint->contact_fraction.has_value());
+    EXPECT_DOUBLE_EQ(*endpoint->contact_fraction, 1);
+    ExpectVectorNear(endpoint->outward_normal, {-1, 0, 0});
+    ExpectVectorNear(endpoint->world_position, {2, .875, .625});
+    ExpectVectorNear(endpoint->stored_world_velocity, {0, .75, 1});
+    ExpectVectorNear(endpoint->advecting_world_velocity, {0, .5, .125});
+
+    inputs.advecting_world_velocity.z = 1;
+    const auto first_side_hit = resolve_(inputs);
+    ASSERT_TRUE(first_side_hit.ok()) << first_side_hit.status();
+    ASSERT_TRUE(first_side_hit->contact_fraction.has_value());
+    EXPECT_DOUBLE_EQ(*first_side_hit->contact_fraction, .25);
+    ExpectVectorNear(first_side_hit->outward_normal, {0, 0, -1});
+    ExpectVectorNear(first_side_hit->world_position, {2, .875, .75});
+    ExpectVectorNear(first_side_hit->stored_world_velocity, {0, .75, 0});
+    ExpectVectorNear(first_side_hit->advecting_world_velocity, {0, .5, 0});
+
+    inputs.start_world_position = {.5, .375, .375};
+    inputs.advecting_world_velocity = {0, 2, 0};
+    inputs.stored_world_velocity = {-1, -2, 1};
+    const auto piston_endpoint = resolve_(inputs);
+    ASSERT_TRUE(piston_endpoint.ok()) << piston_endpoint.status();
+    ASSERT_TRUE(piston_endpoint->contact_fraction.has_value());
+    EXPECT_DOUBLE_EQ(*piston_endpoint->contact_fraction, 1);
+    ExpectVectorNear(piston_endpoint->outward_normal, {1, 0, 0});
+    ExpectVectorNear(piston_endpoint->world_position, {.5, 2.375, .375});
+    ExpectVectorNear(piston_endpoint->stored_world_velocity, {.25, -2, 1});
+    ExpectVectorNear(piston_endpoint->advecting_world_velocity, {.25, 2, 0});
+
+    // Projection at the low-x wall and a later high-x impact both matter.
+    // The low-z wall is independent and remains fixed.
+    inputs.start_world_position = {.125, .5, .0625};
+    inputs.stored_world_velocity = {-1, 2, -.5};
+    inputs.advecting_world_velocity = {2, .25, -.25};
+    inputs.penetration_tolerance = .125;
+    const auto overlap = resolve_(inputs);
+    ASSERT_TRUE(overlap.ok()) << overlap.status();
+    ASSERT_EQ(overlap->contact_fraction, 0);
+    EXPECT_EQ(overlap->diagnostic, LiquidWallContactDiagnostic3D::kInitialPenetration);
+    ExpectVectorNear(overlap->outward_normal, {1, 0, 0});
+    ExpectVectorNear(overlap->world_position, {2, .75, .125});
+    ExpectVectorNear(overlap->stored_world_velocity, {0, 2, 0});
+    ExpectVectorNear(overlap->advecting_world_velocity, {0, .25, 0});
+    inputs.penetration_tolerance = .0625;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+  }
+
+  void OpenTankRejectsInvalidFrictionExtentsAndEndpointWidth() {
+    AxisAlignedLiquidTank3D tank{.25, 2, .125, .125, .75, .25};
+    LiquidWallContactInputs3D inputs{
+        .start_world_position = {.5, .375, .375},
+        .obstacle = tank,
+        .step_duration = 1,
+    };
+    inputs.friction_coefficient = .1;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kInvalidArgument);
+    inputs.friction_coefficient = 0;
+    tank.high_z = tank.low_z;
+    inputs.obstacle = tank;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kInvalidArgument);
+    tank.high_z = .75;
+    tank.piston_velocity_x = 1.75;
+    inputs.obstacle = tank;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+    tank.piston_velocity_x = 2;
+    inputs.obstacle = tank;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+    tank.piston_velocity_x = -kMax;
+    inputs.obstacle = tank;
+    inputs.step_duration = 2;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kOutOfRange);
+
+    tank = {-kMax, kMax, 0, -1, 1, 0};
+    inputs.obstacle = tank;
+    inputs.step_duration = 1;
+    EXPECT_EQ(resolve_(inputs).status().code(), absl::StatusCode::kOutOfRange);
   }
 
   void ThinSlabSweepMatchesFixtureOnAllAxesAndReversedNormals() {

@@ -29,7 +29,7 @@ struct FrozenMacPressureLink3D {
   double pressure_to_velocity_scale;  // dt times inverse density divided by distance, in (m/s)/Pa.
   double conductance;  // Open area times pressure-to-velocity scale, in (m³/s)/Pa.
   double predicted_normal_velocity;  // m/s.
-  double wall_normal_velocity;  // m/s.
+  double prescribed_wall_flux;  // Checked positive-normal wall flux, m³/s.
   std::variant<InternalMacPressureLink3D, DirichletMacPressureLink3D, SealedMacPressureLink3D> pressure_link;
 };
 

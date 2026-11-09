@@ -16,6 +16,19 @@
 #include <limits>
 #include <numeric>
 #endif
+namespace fluidity {
+// The open top has no y maximum. The low-x piston translates along world +x;
+// the opposite wall, floor, and two z walls are fixed.
+struct AxisAlignedLiquidTank3D {
+  double start_low_x;  // World x in meters at substep start.
+  double high_x;  // World x in meters.
+  double floor_y;  // World y in meters.
+  double low_z;  // World z in meters.
+  double high_z;  // World z in meters.
+  double piston_velocity_x;  // Signed world x velocity in m/s.
+};
+}  // namespace fluidity
+
 namespace fluidity::boundary_internal {
 #if defined(__CUDACC__)
 namespace numeric = cuda::std;
@@ -70,13 +83,66 @@ struct Value {
     return &value;
   }
 };
-// kind: 0 absent, 1 halfspace, 2 slab. Coordinate is world meters at start.
+struct RoundedSum {
+  double value;
+  double residual;
+};
+
+// FastTwoSum with the larger operand first. The residual retains offsets
+// that disappear from the rounded coordinate or velocity difference.
+FLUIDITY_HD inline RoundedSum AddWithResidual(double left, double right) {
+  if (numeric::abs(left) < numeric::abs(right)) {
+    numeric::swap(left, right);
+  }
+  const double sum = left + right;
+  if (!numeric::isfinite(sum)) {
+    return {sum, 0};
+  }
+  return {sum, right - (sum - left)};
+}
+
+// Geometry admission and contact supply a positive finite step duration.
+// Linear translation bounds the width throughout the step by its endpoint widths.
+FLUIDITY_HD inline Error CheckTankStep(const AxisAlignedLiquidTank3D& tank, double step_duration) {
+  if (!numeric::isfinite(tank.start_low_x) || !numeric::isfinite(tank.high_x) || !numeric::isfinite(tank.floor_y)
+      || !numeric::isfinite(tank.low_z) || !numeric::isfinite(tank.high_z)
+      || !numeric::isfinite(tank.piston_velocity_x)) {
+    return Error::kInvalid;
+  }
+  if (tank.start_low_x >= tank.high_x || tank.low_z >= tank.high_z) {
+    return Error::kInvalid;
+  }
+  const double piston_displacement = tank.piston_velocity_x * step_duration;
+  const double piston_end_x = numeric::fma(tank.piston_velocity_x, step_duration, tank.start_low_x);
+  const double start_width_x = tank.high_x - tank.start_low_x;
+  const double end_width_x = tank.high_x - piston_end_x;
+  const double width_z = tank.high_z - tank.low_z;
+  if (!numeric::isfinite(piston_displacement) || !numeric::isfinite(piston_end_x) || !numeric::isfinite(start_width_x)
+      || !numeric::isfinite(end_width_x) || !numeric::isfinite(width_z)) {
+    return Error::kRange;
+  }
+  // Requiring the rounded end pose to lie strictly inside also excludes an
+  // exact closure and an end clearance too small to resolve in world space.
+  if (piston_end_x >= tank.high_x) {
+    return Error::kPrecondition;
+  }
+  return Error::kNone;
+}
+
+enum class ObstacleKind {
+  kAbsent,
+  kHalfspace,
+  kSlab,
+  kOpenTank
+};
+// Planar coordinates are world meters at start. Only the active shape is read.
 struct Obstacle {
-  int kind = 0;
+  ObstacleKind kind = ObstacleKind::kAbsent;
   Vec3 normal{};
   double coordinate = 0;
   double half_width = 0;
   Vec3 velocity{};
+  AxisAlignedLiquidTank3D tank{};
 };
 struct ContactInput {
   Vec3 start_world_position{};

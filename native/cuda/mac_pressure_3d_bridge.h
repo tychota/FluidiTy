@@ -24,7 +24,7 @@ struct PressureLink3D {
   double pressure_to_velocity_scale;
   double conductance;  // Shared physical open-area coefficient, (m³/s)/Pa.
   double predicted_normal_velocity;
-  double wall_normal_velocity;
+  double prescribed_wall_flux;  // Checked positive-normal wall flux, m³/s.
   double jump;
   double exterior_pressure;
 };

@@ -199,22 +199,31 @@ FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_fac
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
   }
+  const double blocked_area = full_face_area - face.open_area;
+  double prescribed_wall_flux = 0;
+  if (face.prescribed_wall_flux.has_value()) {
+    prescribed_wall_flux = *face.prescribed_wall_flux;
+    if (!std::isfinite(prescribed_wall_flux) || (blocked_area == 0 && prescribed_wall_flux != 0)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  } else {
+    prescribed_wall_flux = blocked_area * face.wall_normal_velocity;
+    if (!IsRepresentablePressureProduct(blocked_area, face.wall_normal_velocity, prescribed_wall_flux)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+  }
   return FrozenMacPressureLink3D{
       .face_slot = face_slot,
       .tail_cell_ordinal = tail_cell_ordinal,
       .head_cell_ordinal = head_cell_ordinal,
       .open_area = face.open_area,
-      .blocked_area = full_face_area - face.open_area,
+      .blocked_area = blocked_area,
       .pressure_to_velocity_scale = pressure_to_velocity_scale,
       .conductance = conductance,
       .predicted_normal_velocity = face.predicted_normal_velocity,
-      .wall_normal_velocity = face.wall_normal_velocity,
+      .prescribed_wall_flux = prescribed_wall_flux,
       .pressure_link = face.pressure_link,
   };
-}
-
-inline double IntegratedWallFlux(const FrozenMacPressureLink3D& link) {
-  return link.blocked_area * link.wall_normal_velocity;
 }
 
 // The original RHS uses one signed flux per physical contribution. Track
@@ -243,13 +252,9 @@ inline absl::Status AssembleIntegratedRhsInto(
     if (!IsRepresentablePressureProduct(link.open_area, link.predicted_normal_velocity, predicted_fluid_flux)) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    const double wall_flux = IntegratedWallFlux(link);
-    if (!IsRepresentablePressureProduct(link.blocked_area, link.wall_normal_velocity, wall_flux)) {
-      return absl::Status(absl::StatusCode::kOutOfRange, {});
-    }
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       rows[cell].Add(-outward_sign * predicted_fluid_flux);
-      rows[cell].Add(-outward_sign * wall_flux);
+      rows[cell].Add(-outward_sign * link.prescribed_wall_flux);
     });
     if (const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link)) {
       const double jump_flux = link.conductance * internal->pressure_jump;
@@ -332,11 +337,10 @@ inline absl::StatusOr<std::size_t> SelectGaugesInto(
     if (stays_in_component) {
       continue;
     }
-    const double wall_flux = IntegratedWallFlux(link);
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       auto& balance = balances[component_ordinals[cell]];
       if (!balance.anchored) {
-        balance.physical_balance.Add(-outward_sign * wall_flux);
+        balance.physical_balance.Add(-outward_sign * link.prescribed_wall_flux);
       }
     });
   }
@@ -455,10 +459,9 @@ inline absl::Status CorrectFacesAndAccumulatePhysicalDefectInto(
     if (!IsRepresentablePressureProduct(link.open_area, corrected_normal_velocity, corrected_fluid_flux)) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    const double wall_flux = IntegratedWallFlux(link);
     ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       rows[cell].Add(outward_sign * corrected_fluid_flux);
-      rows[cell].Add(outward_sign * wall_flux);
+      rows[cell].Add(outward_sign * link.prescribed_wall_flux);
     });
   }
   return absl::OkStatus();

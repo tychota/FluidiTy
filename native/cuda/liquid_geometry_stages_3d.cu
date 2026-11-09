@@ -44,20 +44,25 @@ __global__ void LiquidFaceSamples3DKernel(
   const auto obstacle = query->obstacle;
   for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
     LiquidSampleFaceResult3D result{};
-    if (obstacle.kind != 0) {
+    if (obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
       const Vec3 position = positions[sample];
       const double coordinate =
           obstacle.normal.x * position.x + obstacle.normal.y * position.y + obstacle.normal.z * position.z;
       const double offset = coordinate - obstacle.coordinate;
-      const double distance = obstacle.kind == 2 ? fabs(offset) - obstacle.half_width : offset;
+      const double distance =
+          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? fabs(offset) - obstacle.half_width : offset;
       if (!isfinite(coordinate) || !isfinite(distance)) {
         result.error = boundary_internal::Error::kRange;
         results[sample] = result;
         continue;
       }
-      result.tag = {obstacle.kind == 2 ? (offset >= 0 ? 1 : -1) : 0, distance >= 0};
+      result.tag = {
+          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? (offset >= 0 ? 1 : -1) : 0,
+          distance >= 0
+      };
       if (fabs(distance) <= 2 * query->cell_width) {
-        const double sign = obstacle.kind == 2 ? static_cast<double>(query->requested_side) : 1;
+        const double sign =
+            obstacle.kind == boundary_internal::ObstacleKind::kSlab ? static_cast<double>(query->requested_side) : 1;
         result.wall = {
             true,
             query->requested_side,

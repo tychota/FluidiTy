@@ -213,6 +213,9 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
 }
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
+  if (std::holds_alternative<AxisAlignedLiquidTank3D>(input.scene.obstacle)) {
+    return absl::FailedPreconditionError("Open tank resolved encoding is not supported");
+  }
   SCENE_TRY(ValidateScene(input, limits));
   // Exactly two tables per source (template and source), one per upstream record.
   const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size();

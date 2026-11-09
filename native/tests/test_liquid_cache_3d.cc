@@ -244,6 +244,12 @@ TEST(LiquidCache3D, StateSemanticCorruptionRejectsEnumsOrderAndDomain) {
     EXPECT_EQ(DecodeLiquidState3D(changed).status().code(), absl::StatusCode::kDataLoss) << mutation;
   }
 }
+TEST(LiquidCache3D, RefusesOpenTankWithoutResolvedEncoding) {
+  LiquidResolvedSceneView3D scene;
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{0, 4, 0, 0, 4, 0};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kFailedPrecondition);
+}
+
 TEST(LiquidCache3D, ResolvedDefaultsMaterializeAndRoundTrip) {
   LiquidResolvedSceneView3D scene;
   auto encoded = EncodeLiquidResolvedScene3D(scene);

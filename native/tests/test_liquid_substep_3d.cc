@@ -50,6 +50,15 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
 }
 
+TEST(LiquidSubstep3D, RefusesOpenTankWithoutSchedulerSupport) {
+  auto scene = Scene();
+  scene.obstacle = AxisAlignedLiquidTank3D{0, 4, 0, 0, 4, 0};
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(Initial(), scene, Options()).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 TEST(LiquidSubstep3D, PhiloxPublishedZeroKnownVector) {
   EXPECT_EQ(
       LiquidPhilox4x32_10({0, 0, 0, 0}, {0, 0}),

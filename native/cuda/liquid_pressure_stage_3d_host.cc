@@ -283,7 +283,7 @@ absl::Status Execute(
         .pressure_to_velocity_scale = link.pressure_to_velocity_scale,
         .conductance = link.conductance,
         .predicted_normal_velocity = link.predicted_normal_velocity,
-        .wall_normal_velocity = link.wall_normal_velocity,
+        .prescribed_wall_flux = link.prescribed_wall_flux,
         .jump = jump,
         .exterior_pressure = exterior_pressure,
     };

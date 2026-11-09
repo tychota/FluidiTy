@@ -83,6 +83,158 @@ class GeometryCases {
     return result.ok() ? *result : LiquidPressureProblem3D{};
   }
 
+  void OpenTankClipsVolumeAndUsesPistonOnlyFlux() {
+    const auto grid = Grid();
+    auto samples = Sample([](double, double, double) {
+      return -1.0;
+    });
+    for (auto& center : samples.centers) {
+      if (center.cell_index.x != -2 || center.cell_index.y != -2 || center.cell_index.z != -2) {
+        center.signed_distance = 1;
+      }
+    }
+    AxisAlignedLiquidTank3D tank{.25, 2, .125, .125, .75, .125};
+    const auto frozen = Freeze(grid, samples, tank, 0, .5, 1);
+    ASSERT_TRUE(frozen.ok()) << frozen.status();
+    ASSERT_EQ(frozen->cells().size(), 1);
+    EXPECT_NEAR(frozen->cells()[0].fluid_volume, .41015625, 2e-14);
+    ASSERT_EQ(frozen->faces().size(), 6);
+
+    const auto head = [](const FrozenLiquidFace3D& face) {
+      const auto index = face.face_index.lattice_index;
+      return index.x == -2 && index.y == -2 && index.z == -2;
+    };
+    const auto aperture = [&](const FrozenLiquidFace3D& face) {
+      if (!head(face)) {
+        switch (face.face_index.axis) {
+          case FaceNormalAxis::kX:
+            return .546875;
+          case FaceNormalAxis::kY:
+            return .46875;
+          case FaceNormalAxis::kZ:
+            break;
+        }
+      }
+      return 0.0;
+    };
+    constexpr double kPistonFlux = .068359375;
+    std::size_t low_x = 0;
+    std::size_t high_x = 0;
+    for (std::size_t ordinal = 0; ordinal < frozen->faces().size(); ++ordinal) {
+      const auto& face = frozen->faces()[ordinal];
+      EXPECT_DOUBLE_EQ(face.open_area, aperture(face));
+      EXPECT_DOUBLE_EQ(face.blocked_area, 1 - aperture(face));
+      ASSERT_TRUE(face.prescribed_wall_flux.has_value());
+      const bool piston = head(face) && face.face_index.axis == FaceNormalAxis::kX;
+      EXPECT_DOUBLE_EQ(*face.prescribed_wall_flux, piston ? kPistonFlux : 0);
+      EXPECT_DOUBLE_EQ(face.wall_normal_velocity, piston ? .125 : 0);
+      if (face.face_index.axis == FaceNormalAxis::kX) {
+        (head(face) ? low_x : high_x) = ordinal;
+      }
+    }
+
+    auto problem = Links(*frozen);
+    ASSERT_EQ(problem.faces.size(), 6);
+    ASSERT_EQ(problem.cells.size(), 1);
+    ASSERT_EQ(problem.faces[low_x].prescribed_wall_flux, kPistonFlux);
+    const auto project_and_check = [&](double piston_outward_flux) {
+      const auto projected = project_({grid, .5, problem.cells, problem.faces});
+      ASSERT_TRUE(projected.ok()) << projected.status();
+      ASSERT_EQ(projected->integrated_rhs.size(), 1);
+      EXPECT_DOUBLE_EQ(projected->integrated_rhs[0], -piston_outward_flux);
+      // The two open high faces have theta=1/2 and dt/rho=1/2.
+      EXPECT_NEAR(projected->cell_pressures[0], -piston_outward_flux / 1.015625, 2e-8);
+      double corrected_outward_flux = piston_outward_flux;
+      for (std::size_t ordinal = 0; ordinal < frozen->faces().size(); ++ordinal) {
+        const auto& face = frozen->faces()[ordinal];
+        const double outward_sign = head(face) ? -1.0 : 1.0;
+        corrected_outward_flux += outward_sign * aperture(face) * projected->corrected_face_velocities[ordinal];
+      }
+      EXPECT_NEAR(projected->cell_constraint_defects[0], corrected_outward_flux / .41015625, 2e-14);
+      EXPECT_NEAR(corrected_outward_flux, 0.0, 2e-8);
+      std::cout << std::setprecision(17) << "tank_rhs=" << projected->integrated_rhs[0]
+                << " tank_pressure=" << projected->cell_pressures[0]
+                << " tank_defect=" << projected->cell_constraint_defects[0] << '\n';
+    };
+    project_and_check(-kPistonFlux);
+    // Move the same signed physical datum to a face where this cell is the tail.
+    problem.faces[low_x].prescribed_wall_flux = 0;
+    problem.faces[high_x].prescribed_wall_flux = kPistonFlux;
+    project_and_check(kPistonFlux);
+    problem.faces[high_x].prescribed_wall_flux = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(project_({grid, .5, problem.cells, problem.faces}).status().code(), absl::StatusCode::kInvalidArgument);
+    problem.faces[high_x].prescribed_wall_flux = kPistonFlux;
+    problem.faces[high_x].open_area = 1;
+    EXPECT_EQ(project_({grid, .5, problem.cells, problem.faces}).status().code(), absl::StatusCode::kInvalidArgument);
+
+    tank.piston_velocity_x = -.125;
+    const auto retreating_piston = Freeze(grid, samples, tank, 0, .5, 1);
+    ASSERT_TRUE(retreating_piston.ok()) << retreating_piston.status();
+    EXPECT_EQ(retreating_piston->faces()[low_x].prescribed_wall_flux, -kPistonFlux);
+
+    tank.high_x = 1;
+    const auto with_opposite_wall = Freeze(grid, samples, tank, 0, .5, 1);
+    ASSERT_TRUE(with_opposite_wall.ok()) << with_opposite_wall.status();
+    EXPECT_DOUBLE_EQ(with_opposite_wall->faces()[high_x].open_area, 0);
+    EXPECT_DOUBLE_EQ(with_opposite_wall->faces()[high_x].wall_normal_velocity, 0);
+    EXPECT_EQ(with_opposite_wall->faces()[high_x].prescribed_wall_flux, 0);
+  }
+
+  void OpenTankPreservesNarrowAndLiquidClippedMeasures() {
+    const auto grid = Grid();
+    const auto samples = Sample([](double, double y, double) {
+      return y - .75;
+    });
+    AxisAlignedLiquidTank3D tank{.25, 2, .125, .125, .75, .125};
+    const auto clipped = Freeze(grid, samples, tank);
+    ASSERT_TRUE(clipped.ok()) << clipped.status();
+    ASSERT_EQ(clipped->cells().size(), 1);
+    EXPECT_NEAR(clipped->cells()[0].fluid_volume, .29296875, 2e-14);
+
+    const auto thin_liquid = Sample([](double, double y, double) {
+      return y == .5 ? -1.0 : y - (.125 + 0x1p-30);
+    });
+    const auto near_empty = Freeze(grid, thin_liquid, tank);
+    ASSERT_TRUE(near_empty.ok()) << near_empty.status();
+    ASSERT_EQ(near_empty->cells().size(), 1);
+    EXPECT_NEAR(near_empty->cells()[0].fluid_volume, .46875 * 0x1p-30, 2e-17);
+    // Pressure apertures and piston flux use fixed-wall geometry on the
+    // selected cell face, even when the liquid tetrahedra are nearly dry.
+    const auto piston_face = std::ranges::find_if(near_empty->faces(), [](const auto& face) {
+      return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
+    });
+    ASSERT_NE(piston_face, near_empty->faces().end());
+    EXPECT_EQ(piston_face->prescribed_wall_flux, .068359375);
+
+    tank.piston_velocity_x = 0;
+    tank.start_low_x = 0;
+    tank.high_x = 0x1p-45;
+    const auto narrow = Freeze(grid, samples, tank);
+    ASSERT_TRUE(narrow.ok()) << narrow.status();
+    ASSERT_EQ(narrow->cells().size(), 1);
+    EXPECT_NEAR(narrow->cells()[0].fluid_volume, .390625 * 0x1p-45, 1e-27);
+
+    // The physical cut at the right end of [-1,0] is positive but the
+    // tank's low-x plane rounds to 1 in the unit cell frame.
+    auto collapsed_local_cut = samples;
+    collapsed_local_cut.candidates.front().x = -3;
+    const AxisAlignedLiquidTank3D below_local_resolution{-0x1p-60, 0, .125, .125, .75, 0};
+    EXPECT_EQ(Freeze(grid, collapsed_local_cut, below_local_resolution).status().code(), absl::StatusCode::kOutOfRange);
+
+    tank.high_x = 0;
+    EXPECT_EQ(Freeze(grid, samples, tank).status().code(), absl::StatusCode::kInvalidArgument);
+    tank.high_x = 1;
+    tank.high_z = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(Freeze(grid, samples, tank).status().code(), absl::StatusCode::kInvalidArgument);
+    tank.high_z = .75;
+    tank.piston_velocity_x = 1;
+    EXPECT_EQ(Freeze(grid, samples, tank, 0, 1).status().code(), absl::StatusCode::kFailedPrecondition);
+    tank.piston_velocity_x = kInfinity;
+    EXPECT_EQ(Freeze(grid, samples, tank).status().code(), absl::StatusCode::kInvalidArgument);
+    tank.piston_velocity_x = -std::numeric_limits<double>::max();
+    EXPECT_EQ(Freeze(grid, samples, tank, 0, 2).status().code(), absl::StatusCode::kOutOfRange);
+  }
+
   void AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOpening() {
     const auto all = fixtures::AllFixtures();
     const auto fixture = std::ranges::find(all, "uniform_mac_liquid_boundary_3d", &fixtures::FixtureRecord::name);
