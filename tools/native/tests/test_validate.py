@@ -273,7 +273,7 @@ def scenario(invocation, monkeypatch):
         gpu_cases = (*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES)
         skipped_gpu_case = None
         sanitizer_cases = MEMCHECK_OPERATOR_CASES
-        operator_memcheck_status_override = None
+        skipped_sanitizer_case = None
         probe_sanitizer_case_receipts = PROBE_RECEIPT
         probe_sanitizer_trailing_output = ""
         operator_sanitizer_error_summary = "========= ERROR SUMMARY: 0 errors"
@@ -369,11 +369,9 @@ def scenario(invocation, monkeypatch):
                             self.gtest_case_output(
                                 case_name,
                                 self.sanitizer_receipts.get(case_name, ""),
-                                self.operator_memcheck_status_override
-                                if index == 1 and self.operator_memcheck_status_override
-                                else "       OK",
+                                "  SKIPPED" if case_name == self.skipped_sanitizer_case else "       OK",
                             )
-                            for index, case_name in enumerate(self.sanitizer_cases)
+                            for case_name in self.sanitizer_cases
                         )
                         stdout += f"[  PASSED  ] {len(self.sanitizer_cases)} tests.\n"
                         stdout += self.operator_sanitizer_error_summary
@@ -679,7 +677,9 @@ def test_cpu_receipt_distinguishes_evidence_and_preserves_spaced_arguments(scena
 def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
-    gpu_names = {case.attrib["name"] for case in ET.parse(output / "ctest-gpu.xml").findall("testcase")}
+    gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
+    assert gpu_report.attrib == {"name": "gpu", "tests": "30", "failures": "0", "skipped": "0"}
+    gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
@@ -777,15 +777,13 @@ def test_gpu_rejects_an_operator_receipt_from_an_unmeasured_case(scenario):
     rejected(case_name, "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("problem", ["missing", "wrong-name", "skipped", "missing-receipt", "wrong-receipt", "errors"])
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "missing-receipt", "wrong-receipt", "errors"])
 def test_release_rejects_incomplete_operator_memcheck(scenario, problem):
     processes, _, _, _, rejected = scenario
     if problem == "missing":
         processes.sanitizer_cases = MEMCHECK_OPERATOR_CASES[:-1]
     elif problem == "wrong-name":
         processes.sanitizer_cases = (*MEMCHECK_OPERATOR_CASES[:-1], "CudaPressure.DifferentTest")
-    elif problem == "skipped":
-        processes.operator_memcheck_status_override = "  SKIPPED"
     elif problem == "missing-receipt":
         del processes.sanitizer_receipts["CudaPressure.ComplianceRetainsMeanPressure"]
     elif problem == "wrong-receipt":
@@ -968,14 +966,18 @@ def test_release_rejects_probe_and_operator_receipts_from_graph_memcheck(scenari
     rejected(diagnostic, "windows-release-cuda")
 
 
-@pytest.mark.parametrize("case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2] + BOUNDARY_3D_CASES)
+@pytest.mark.parametrize(
+    "case_name", MAC_TRANSFER_3D_CASES[:2] + MAC_PRESSURE_3D_CASES[:2] + BOUNDARY_3D_CASES + SUBSTEP_3D_CASES,
+)
 @pytest.mark.parametrize("problem", ["missing", "wrong-operator", "wrong-architecture", "duplicate", "outside-case"])
 @pytest.mark.parametrize("config", ["debug", "release"])
 def test_cuda_rejects_bad_3d_operator_evidence(scenario, case_name, problem, config):
     processes, _, _, _, rejected = scenario
     receipt = OPERATOR_RECEIPTS[case_name]
-    case_group = (BOUNDARY_3D_CASES if case_name in BOUNDARY_3D_CASES else
-                  MAC_PRESSURE_3D_CASES if case_name in MAC_PRESSURE_3D_CASES else MAC_TRANSFER_3D_CASES)
+    case_group = next(
+        group for group in (SUBSTEP_3D_CASES, BOUNDARY_3D_CASES, MAC_PRESSURE_3D_CASES, MAC_TRANSFER_3D_CASES)
+        if case_name in group
+    )
     wrong_operator = OPERATOR_RECEIPTS[next(case for case in case_group[:2] if case != case_name)]
     if config == "debug":
         receipts = processes.gpu_receipts
@@ -1019,3 +1021,70 @@ def test_gpu_requires_boundary_3d_cases(scenario, case_name, problem):
     if problem == "wrong-name":
         processes.gpu_cases += ("CudaLiquidBoundary3D.WrongCase",)
     rejected("missing expected tests", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize("problem", ["missing", "wrong-name", "duplicate", "skipped"])
+def test_cuda_requires_exact_integrated_substep_cases(scenario, case_name, producer, problem):
+    processes, _, _, _, rejected = scenario
+    case_attribute, skip_attribute, preset = (
+        ("gpu_cases", "skipped_gpu_case", "windows-debug-cuda")
+        if producer == "ctest"
+        else ("sanitizer_cases", "skipped_sanitizer_case", "windows-release-cuda")
+    )
+    cases = getattr(processes, case_attribute)
+    if problem == "skipped":
+        setattr(processes, skip_attribute, case_name)
+    elif problem == "missing":
+        setattr(processes, case_attribute, tuple(case for case in cases if case != case_name))
+    else:
+        if problem == "duplicate":
+            replaced_case = next(case for case in SUBSTEP_3D_CASES if case != case_name)
+            replacement = case_name
+        else:
+            replaced_case = case_name
+            replacement = "CudaLiquidSubstep3D.WrongCase"
+        setattr(processes, case_attribute, tuple(replacement if case == replaced_case else case for case in cases))
+
+    diagnostics = {
+        "ctest": {
+            "missing": "missing expected tests",
+            "wrong-name": "missing expected tests",
+            "duplicate": "duplicate results",
+            "skipped": "contains skipped or failed tests",
+        },
+        "memcheck": {
+            "missing": "did not pass all required hardware tests",
+            "wrong-name": "did not run the required hardware cases",
+            "duplicate": "mismatched or duplicate GoogleTest results",
+            "skipped": "did not pass all required hardware tests",
+        },
+    }
+    rejected(diagnostics[producer][problem], preset)
+
+
+@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES)
+@pytest.mark.parametrize("producer", ["ctest", "memcheck"])
+@pytest.mark.parametrize(
+    ("timing_fields", "diagnostic"),
+    [
+        ("substep_device_timeline_ms=1.0", "malformed operator receipt"),
+        ("substep_device_timeline_ms=1.0 timing_scope=kernel_only", "malformed operator receipt"),
+        ("kernel_ms=1.0", "malformed operator receipt"),
+        ("substep_device_timeline_ms=0.0 timing_scope=topology_through_publication", "nonpositive substep timeline"),
+        ("substep_device_timeline_ms=" + "9" * 310 + ".0 timing_scope=topology_through_publication",
+         "reported nonfinite"),
+    ],
+    ids=["missing-scope", "wrong-scope", "kernel-only-receipt", "zero-duration", "overflow-duration"],
+)
+def test_cuda_rejects_invalid_integrated_substep_timing(scenario, case_name, producer, timing_fields, diagnostic):
+    processes, _, _, _, rejected = scenario
+    receipt = OPERATOR_RECEIPTS[case_name].split(" substep_device_timeline_ms=")[0] + " " + timing_fields
+    if producer == "ctest":
+        processes.gpu_receipts[case_name] = receipt
+        preset = "windows-debug-cuda"
+    else:
+        processes.sanitizer_receipts[case_name] = receipt
+        preset = "windows-release-cuda"
+    rejected(diagnostic, preset)
