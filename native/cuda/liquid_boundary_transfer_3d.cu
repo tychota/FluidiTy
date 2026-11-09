@@ -419,7 +419,13 @@ __device__ Error UpdateParticles(
     const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
     const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
     double solid_distance = numeric::numeric_limits<double>::infinity();
-    if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+      const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
+      if (!wall.ok()) {
+        return wall.status();
+      }
+      solid_distance = wall->inward_distance;
+    } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
       const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
       solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
           ? projected_distance

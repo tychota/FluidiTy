@@ -443,6 +443,17 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
       return target_time.status();
     }
   }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.scene.obstacle)) {
+    diagnostic->field = "frame";
+    diagnostic->cause = "the requested time requires a finite open tank with positive width";
+    const auto pose = boundary_internal::CheckTankStep(*tank, *target_time);
+    if (pose == boundary_internal::Error::kRange) {
+      return absl::OutOfRangeError("");
+    }
+    if (pose != boundary_internal::Error::kNone) {
+      return absl::FailedPreconditionError("");
+    }
+  }
   auto options = scene.options;
   options.capacities = resume.capacities;
   options.capacity_replay_reservations = resume.capacity_replay_reservations;

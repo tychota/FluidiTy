@@ -4,6 +4,7 @@
 #include <numbers>
 #include <tuple>
 
+#include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
 std::array<std::uint32_t, 4>
@@ -55,6 +56,9 @@ Vec3 WallVelocity(const LiquidObstacle3D& obstacle) {
   if (const auto* wall = std::get_if<TranslatingSlab3D>(&obstacle)) {
     return wall->wall_velocity;
   }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+    return {tank->piston_velocity_x, 0, 0};
+  }
   return {};
 }
 LiquidObstacle3D ObstacleAtTime(const LiquidObstacle3D& obstacle, double time) {
@@ -65,6 +69,9 @@ LiquidObstacle3D ObstacleAtTime(const LiquidObstacle3D& obstacle, double time) {
   if (auto* wall = std::get_if<TranslatingSlab3D>(&result)) {
     wall->start_center_coordinate += time * Dot(wall->unit_normal, wall->wall_velocity);
   }
+  if (auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&result)) {
+    tank->start_low_x = std::fma(tank->piston_velocity_x, time, tank->start_low_x);
+  }
   return result;
 }
 double SolidDistance(const LiquidObstacle3D& obstacle, Vec3 position) {
@@ -73,6 +80,10 @@ double SolidDistance(const LiquidObstacle3D& obstacle, Vec3 position) {
   }
   if (const auto* wall = std::get_if<TranslatingSlab3D>(&obstacle)) {
     return std::abs(Dot(wall->unit_normal, position) - wall->start_center_coordinate) - wall->half_width;
+  }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+    const auto wall = boundary_internal::SampleTankWall(*tank, position);
+    return wall.ok() ? wall->inward_distance : std::numeric_limits<double>::quiet_NaN();
   }
   return std::numeric_limits<double>::infinity();
 }
@@ -83,9 +94,13 @@ double FieldDistance(const LiquidSceneField3D& field, std::span<const LiquidPart
   if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&field)) {
     return distance(sphere->world_center, sphere->radius);
   }
+  if (const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field)) {
+    return position.y - plane->world_surface_height_y;
+  }
+  const double radius = std::get<LiquidParticleSphereUnion3D>(field).radius;
   double result = std::numeric_limits<double>::infinity();
   for (const auto& particle : particles) {
-    result = std::min(result, distance(particle.world_position, std::get<LiquidParticleSphereUnion3D>(field).radius));
+    result = std::min(result, distance(particle.world_position, radius));
   }
   return result;
 }
@@ -184,10 +199,31 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }
-  const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
-  const double radius = sphere ? sphere->radius : std::get<LiquidParticleSphereUnion3D>(scene.field).radius;
-  if (!std::isfinite(radius) || radius <= 0 || (sphere && !Finite(sphere->world_center))) {
-    return Error(absl::StatusCode::kInvalidArgument);
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
+  if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field)) {
+    if (!std::isfinite(sphere->radius) || sphere->radius <= 0 || !Finite(sphere->world_center)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  } else if (const auto* spheres = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
+    if (!std::isfinite(spheres->radius) || spheres->radius <= 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  } else {
+    const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(scene.field);
+    if (!tank || !std::isfinite(plane.world_surface_height_y) || plane.world_surface_height_y <= tank->floor_y) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  }
+  if (tank) {
+    if (scene.friction_coefficient != 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    STEP_TRY(boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(*tank, initial.clock.time), true));
+    for (const auto& particle : initial.particles.values()) {
+      if (particle.side_tag != 0) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+    }
   }
   if (scene.sources.size() != initial.sources.size()) {
     return Error(absl::StatusCode::kInvalidArgument);
@@ -202,9 +238,12 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
         || !Finite(particle.velocity_slopes.x_row) || !Finite(particle.velocity_slopes.y_row)
         || !Finite(particle.velocity_slopes.z_row) || !std::isfinite(particle.mass) || particle.mass <= 0
         || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0
-        || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0) {
+        || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0 || (tank && particle.side_tag != 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
+  }
+  if (tank) {
+    return absl::OkStatus();
   }
   // The checked contact operator validates the same translated obstacle contract.
   const auto contact = ResolveLiquidWallContactBounded3D({
@@ -273,8 +312,82 @@ absl::Status Emit(const LiquidSceneInputs3D& scene, double duration, LiquidState
   }
   return absl::OkStatus();
 }
+namespace {
+// The division estimates the signed lattice index. Certify both bounding
+// integer planes with the same residual arithmetic used by tank clipping.
+absl::StatusOr<std::int32_t>
+TankCandidateBound(double world_coordinate, double world_origin, double cell_width, bool upper) {
+  const double estimate = std::floor((world_coordinate - world_origin) / cell_width);
+  if (!std::isfinite(estimate) || estimate < INT32_MIN || estimate > INT32_MAX) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  for (const double index : {estimate, estimate - 1, estimate + 1}) {
+    const auto low = boundary_internal::TankPlaneOffsetSign(world_coordinate, {world_origin, index, cell_width});
+    const auto high = boundary_internal::TankPlaneOffsetSign(world_coordinate, {world_origin, index + 1, cell_width});
+    if (!low.ok() || !high.ok()) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    if (*low >= 0 && *high < 0) {
+      const double bound = upper && *low == 0 ? index - 1 : index;
+      // Center differences need the signed one-cell halo at both ends.
+      if (bound < static_cast<double>(INT32_MIN) + 1 || bound > static_cast<double>(INT32_MAX) - 1) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      return static_cast<std::int32_t>(bound);
+    }
+  }
+  return Error(absl::StatusCode::kOutOfRange);
+}
+
+absl::Status PrepareTankCandidates(
+    const LiquidHorizontalPlaneSurface3D& plane,
+    const AxisAlignedLiquidTank3D& tank,
+    UniformMacGeometry3D geometry,
+    LiquidRecords3D<CellIndex3D>& candidates
+) {
+  const std::array low{tank.start_low_x, tank.floor_y, tank.low_z};
+  const std::array high{tank.high_x, plane.world_surface_height_y, tank.high_z};
+  const std::array origin{geometry.world_origin.x, geometry.world_origin.y, geometry.world_origin.z};
+  std::array<std::int32_t, 3> lower{}, upper{};
+  std::size_t box_count = 1;
+  for (std::size_t axis = 0; axis < low.size(); ++axis) {
+    const auto first = TankCandidateBound(low[axis], origin[axis], geometry.cell_width, false);
+    if (!first.ok()) {
+      return first.status();
+    }
+    const auto last = TankCandidateBound(high[axis], origin[axis], geometry.cell_width, true);
+    if (!last.ok()) {
+      return last.status();
+    }
+    if (*last < *first) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    lower[axis] = *first;
+    upper[axis] = *last;
+    const auto extent = static_cast<std::size_t>(static_cast<std::int64_t>(*last) - *first + 1);
+    if (extent > candidates.capacity() / box_count) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    box_count *= extent;
+  }
+  STEP_TRY(candidates.Resize(box_count));
+  // Topology activates each candidate's six face owners. The common sampling
+  // loop below supplies the 27 center distances and eight corners for each.
+  std::size_t ordinal = 0;
+  for (std::int32_t z = lower[2]; z <= upper[2]; ++z) {
+    for (std::int32_t y = lower[1]; y <= upper[1]; ++y) {
+      for (std::int32_t x = lower[0]; x <= upper[0]; ++x) {
+        candidates[ordinal++] = {x, y, z};
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+}  // namespace
+
 absl::Status PrepareField(
     const LiquidSceneField3D& field,
+    const LiquidObstacle3D& obstacle,
     const LiquidState3D& trial,
     Staging& staging,
     const LiquidSubstepBackend3D& backend
@@ -320,6 +433,8 @@ absl::Status PrepareField(
   };
   if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&field)) {
     STEP_TRY(add_sphere(sphere->world_center, sphere->radius));
+  } else if (const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field)) {
+    STEP_TRY(PrepareTankCandidates(*plane, std::get<AxisAlignedLiquidTank3D>(obstacle), geometry, staging.candidates));
   } else {
     for (const auto& particle : trial.particles.values()) {
       STEP_TRY(add_sphere(particle.world_position, std::get<LiquidParticleSphereUnion3D>(field).radius));
@@ -419,7 +534,19 @@ FillFaceTags(SparseMacGridView3D grid, const LiquidObstacle3D& obstacle, std::sp
     if (const auto* slab = std::get_if<TranslatingSlab3D>(&obstacle)) {
       side = Dot(slab->unit_normal, *anchor) >= slab->start_center_coordinate ? 1 : -1;
     }
-    tags[index] = {side, SolidDistance(obstacle, *anchor) >= 0};
+    if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+      const auto wall = boundary_internal::SampleTankFace(
+          *tank,
+          grid.geometry(),
+          boundary_internal::TankFaceAnchorInCellWidths(*face)
+      );
+      if (!wall.ok()) {
+        return boundary_internal::ArithmeticStatus(wall.status(), true);
+      }
+      tags[index] = {0, wall->inward_distance > 0};
+    } else {
+      tags[index] = {side, SolidDistance(obstacle, *anchor) >= 0};
+    }
   }
   return absl::OkStatus();
 }
@@ -441,6 +568,20 @@ absl::Status FillWalls(
     const auto anchor = grid.FaceWorldAnchor(*face);
     if (!anchor.ok()) {
       return anchor.status();
+    }
+    if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+      const auto wall = boundary_internal::SampleTankFace(
+          *tank,
+          grid.geometry(),
+          boundary_internal::TankFaceAnchorInCellWidths(*face)
+      );
+      if (!wall.ok()) {
+        return boundary_internal::ArithmeticStatus(wall.status(), true);
+      }
+      if (std::abs(wall->inward_distance) <= 2 * grid.geometry().cell_width) {
+        walls[index] = {true, 0, wall->inward_normal, wall->wall_velocity};
+      }
+      continue;
     }
     if (std::abs(SolidDistance(obstacle, *anchor)) > 2 * grid.geometry().cell_width) {
       continue;

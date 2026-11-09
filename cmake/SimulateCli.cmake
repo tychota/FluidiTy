@@ -28,7 +28,7 @@ if(BUILD_TESTING)
     list(APPEND liquid_acceptance_backends cuda)
   endif()
   foreach(backend IN LISTS liquid_acceptance_backends)
-    foreach(scene IN ITEMS free-fall-pic free-fall-default free-fall-retained)
+    foreach(scene IN ITEMS free-fall-pic free-fall-default free-fall-retained tank-layout)
       add_test(NAME LiquidAcceptance.${backend}.${scene}
         COMMAND "${Python3_EXECUTABLE}" -E -X utf8
           "${PROJECT_SOURCE_DIR}/tools/native/tests/run_liquid_acceptance.py"

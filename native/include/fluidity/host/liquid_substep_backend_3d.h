@@ -44,7 +44,9 @@ struct LiquidSubstepBackend3D {
   // At the supplied frozen obstacle pose, fill full owned-slot face tags and/or
   // prescribed walls. Each output is either empty (not requested) or covers the
   // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
-  // side from each face anchor. The two output spans must not overlap inputs or
+  // side from each face anchor. Tank faces use side zero, strict interior tags
+  // and the active constraint's normal and velocity at the staggered lattice anchor.
+  // The two output spans must not overlap inputs or
   // one another. Failed outputs remain trial-only and are discarded by scheduler.
   using SampleFaces = absl::Status(
       void* context,

@@ -62,8 +62,11 @@ absl::Status SampleLiquidField3D(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&field);
-  const double radius = sphere ? sphere->radius : std::get<LiquidParticleSphereUnion3D>(field).radius;
-  if (!std::isfinite(radius) || radius <= 0 || (sphere && !Finite(sphere->world_center))) {
+  const auto* particle_union = std::get_if<LiquidParticleSphereUnion3D>(&field);
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field);
+  const double radius = sphere ? sphere->radius : (particle_union ? particle_union->radius : 0);
+  if ((plane && !std::isfinite(plane->world_surface_height_y)) || (!plane && (!std::isfinite(radius) || radius <= 0))
+      || (sphere && !Finite(sphere->world_center))) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   if (particles.size() > arena.capacities().particles
@@ -114,7 +117,10 @@ absl::Status SampleLiquidField3D(
   query->pinned[0] = {
       .sphere_center = sphere ? sphere->world_center : Vec3{},
       .radius = radius,
-      .particle_union = sphere == nullptr,
+      .world_surface_height_y = plane ? plane->world_surface_height_y : 0,
+      .field_kind = plane
+          ? LiquidSampleFieldKind3D::kHorizontalPlane
+          : (particle_union ? LiquidSampleFieldKind3D::kParticleUnion : LiquidSampleFieldKind3D::kAnalyticSphere),
       .particle_count = particles.size(),
       .sample_count = positions.size(),
   };
@@ -174,12 +180,14 @@ absl::Status SampleLiquidFaces3D(
   }
   const auto packed_obstacle = boundary_internal::PackObstacle(obstacle);
   if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-    return Error(absl::StatusCode::kFailedPrecondition);
-  }
-  if (packed_obstacle.kind == boundary_internal::ObstacleKind::kSlab && !walls.empty() && side != -1 && side != 1) {
-    return Error(absl::StatusCode::kInvalidArgument);
-  }
-  if (packed_obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    if (side != 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    STAGE_TRY(boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(packed_obstacle.tank, 0), true));
+  } else if (packed_obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    if (packed_obstacle.kind == boundary_internal::ObstacleKind::kSlab && !walls.empty() && side != -1 && side != 1) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
     const auto normal = packed_obstacle.normal;
     const double length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
     if (!Finite(normal) || !Finite(packed_obstacle.velocity) || !std::isfinite(packed_obstacle.coordinate)
@@ -217,12 +225,14 @@ absl::Status SampleLiquidFaces3D(
     if (!anchor.ok()) {
       return anchor.status();
     }
-    positions->pinned[index] = *anchor;
+    positions->pinned[index] = packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank
+        ? boundary_internal::TankFaceAnchorInCellWidths(*face)
+        : *anchor;
   }
   query->pinned[0] = {
       .sample_count = grid.face_count(),
       .obstacle = packed_obstacle,
-      .cell_width = grid.geometry().cell_width,
+      .geometry = grid.geometry(),
       .requested_side = side,
   };
   STAGE_TRY(CopyLiquidRange3D(arena, *query, true));

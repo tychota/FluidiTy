@@ -38,6 +38,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
 absl::Status Emit(const LiquidSceneInputs3D& scene, double duration, LiquidState3D& trial);
 absl::Status PrepareField(
     const LiquidSceneField3D& field,
+    const LiquidObstacle3D& obstacle,
     const LiquidState3D& trial,
     Staging& staging,
     const LiquidSubstepBackend3D& backend

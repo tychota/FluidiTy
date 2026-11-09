@@ -247,7 +247,7 @@ class ProjectedSum {
   double upper_correction_ = 0;
 };
 
-// Geometry admission and contact supply a positive finite step duration.
+// Geometry and contact supply a positive finite duration. Zero checks a single pose.
 // Linear translation bounds the width throughout the step by its endpoint widths.
 FLUIDITY_HD inline Error CheckTankStep(const AxisAlignedLiquidTank3D& tank, double step_duration) {
   if (!numeric::isfinite(tank.start_low_x) || !numeric::isfinite(tank.high_x) || !numeric::isfinite(tank.floor_y)
@@ -273,6 +273,97 @@ FLUIDITY_HD inline Error CheckTankStep(const AxisAlignedLiquidTank3D& tank, doub
     return Error::kPrecondition;
   }
   return Error::kNone;
+}
+
+struct TankLatticeAxis {
+  double world_origin;
+  double lattice_index;
+  double cell_width;
+};
+
+// Subtract in the lattice frame. A rounded world anchor alone can coincide
+// with a tank plane even when the true lattice face is strictly inside.
+FLUIDITY_HD inline ProjectedSum TankPlaneOffset(double world_coordinate, const TankLatticeAxis& lattice) {
+  ProjectedSum offset;
+  offset.Add(world_coordinate);
+  offset.Add(-lattice.world_origin);
+  offset.AddProduct(-lattice.cell_width, lattice.lattice_index);
+  return offset;
+}
+
+struct TankWallSample {
+  double inward_distance;
+  Vec3 inward_normal;
+  Vec3 wall_velocity;
+};
+
+// The active constraint has the least inward clearance. Ties use x, y, z
+// order, then the low side first. An open top has no constraint.
+FLUIDITY_HD inline Value<TankWallSample>
+SelectTankWall(const AxisAlignedLiquidTank3D& tank, const numeric::array<double, 5>& inward_distances) {
+  const TankWallSample walls[]{
+      {inward_distances[0], {1, 0, 0}, {tank.piston_velocity_x, 0, 0}},
+      {inward_distances[1], {-1, 0, 0}, {}},
+      {inward_distances[2], {0, 1, 0}, {}},
+      {inward_distances[3], {0, 0, 1}, {}},
+      {inward_distances[4], {0, 0, -1}, {}},
+  };
+  TankWallSample active = walls[0];
+  for (const auto& wall : walls) {
+    if (!numeric::isfinite(wall.inward_distance)) {
+      return Error::kRange;
+    }
+    if (wall.inward_distance < active.inward_distance) {
+      active = wall;
+    }
+  }
+  return active;
+}
+
+FLUIDITY_HD inline Value<TankWallSample> SampleTankWall(const AxisAlignedLiquidTank3D& tank, Vec3 world_position) {
+  return SelectTankWall(
+      tank,
+      {
+          world_position.x - tank.start_low_x,
+          tank.high_x - world_position.x,
+          world_position.y - tank.floor_y,
+          world_position.z - tank.low_z,
+          tank.high_z - world_position.z,
+      }
+  );
+}
+
+FLUIDITY_HD inline Vec3 TankFaceAnchorInCellWidths(FaceIndex3D face) {
+  return {
+      face.lattice_index.x + (face.axis == FaceNormalAxis::kX ? 0.0 : 0.5),
+      face.lattice_index.y + (face.axis == FaceNormalAxis::kY ? 0.0 : 0.5),
+      face.lattice_index.z + (face.axis == FaceNormalAxis::kZ ? 0.0 : 0.5),
+  };
+}
+
+// Resolve all five inward clearances from the original staggered lattice.
+// An uncertified magnitude cannot choose the wall or classify its ghost band.
+FLUIDITY_HD inline Value<TankWallSample>
+SampleTankFace(const AxisAlignedLiquidTank3D& tank, UniformMacGeometry3D geometry, Vec3 anchor_in_cell_widths) {
+  const TankLatticeAxis x{geometry.world_origin.x, anchor_in_cell_widths.x, geometry.cell_width};
+  const TankLatticeAxis y{geometry.world_origin.y, anchor_in_cell_widths.y, geometry.cell_width};
+  const TankLatticeAxis z{geometry.world_origin.z, anchor_in_cell_widths.z, geometry.cell_width};
+  const ProjectionBounds offsets[]{
+      TankPlaneOffset(tank.start_low_x, x).Bounds(),
+      TankPlaneOffset(tank.high_x, x).Bounds(),
+      TankPlaneOffset(tank.floor_y, y).Bounds(),
+      TankPlaneOffset(tank.low_z, z).Bounds(),
+      TankPlaneOffset(tank.high_z, z).Bounds(),
+  };
+  for (const auto& offset : offsets) {
+    if (!offset.magnitude_is_resolved()) {
+      return Error::kRange;
+    }
+  }
+  return SelectTankWall(
+      tank,
+      {-offsets[0].estimate, offsets[1].estimate, -offsets[2].estimate, -offsets[3].estimate, offsets[4].estimate}
+  );
 }
 
 enum class ObstacleKind {

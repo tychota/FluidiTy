@@ -244,10 +244,91 @@ TEST(LiquidCache3D, StateSemanticCorruptionRejectsEnumsOrderAndDomain) {
     EXPECT_EQ(DecodeLiquidState3D(changed).status().code(), absl::StatusCode::kDataLoss) << mutation;
   }
 }
-TEST(LiquidCache3D, RefusesOpenTankWithoutResolvedEncoding) {
+TEST(LiquidCache3D, ResolvedOpenTankRoundTrips) {
   LiquidResolvedSceneView3D scene;
-  scene.scene.obstacle = AxisAlignedLiquidTank3D{0, 4, 0, 0, 4, 0};
-  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kFailedPrecondition);
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{-1.25, 1.5, 0, -0.5, 0.75, 0.125};
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&decoded->scene.obstacle);
+  ASSERT_NE(tank, nullptr);
+  EXPECT_EQ(tank->start_low_x, -1.25);
+  EXPECT_EQ(tank->high_x, 1.5);
+  EXPECT_EQ(tank->floor_y, 0);
+  EXPECT_EQ(tank->low_z, -0.5);
+  EXPECT_EQ(tank->high_z, 0.75);
+  EXPECT_EQ(tank->piston_velocity_x, 0.125);
+  const auto repeated = EncodeLiquidResolvedScene3D(decoded->View());
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*encoded), Copy(*repeated));
+}
+
+TEST(LiquidCache3D, ResolvedHorizontalPlaneRequiresTankAndMaterializedPayloads) {
+  LiquidResolvedSceneView3D scene;
+  scene.scene.field = LiquidHorizontalPlaneSurface3D{-0.0};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{-1, 1, -1, -1, 1, 0};
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&decoded->scene.field);
+  ASSERT_NE(plane, nullptr);
+  EXPECT_DOUBLE_EQ(plane->world_surface_height_y, 0);
+  EXPECT_FALSE(std::signbit(plane->world_surface_height_y));
+  const auto repeated = EncodeLiquidResolvedScene3D(decoded->View());
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*encoded), Copy(*repeated));
+
+  const auto omit_field = [](auto* record, flatbuffers::voffset_t field) {
+    auto* table = reinterpret_cast<std::uint8_t*>(record);
+    auto* vtable = table - flatbuffers::ReadScalar<flatbuffers::soffset_t>(table);
+    flatbuffers::WriteScalar<flatbuffers::voffset_t>(vtable + field, 0);
+  };
+  for (int mutation = 0; mutation < 10; ++mutation) {
+    auto changed = Copy(*encoded);
+    auto* root = wire::GetMutableResolvedScene(changed.data());
+    auto* field = root->mutable_field();
+    auto* obstacle = root->mutable_obstacle();
+    switch (mutation) {
+      case 0:
+        omit_field(field, wire::Field::VT_HORIZONTAL_PLANE);
+        break;
+      case 1:
+        omit_field(field->mutable_horizontal_plane(), wire::HorizontalPlane::VT_SURFACE_HEIGHT_Y);
+        break;
+      case 2:
+        ASSERT_TRUE(field->mutate_kind(wire::FieldKind::AnalyticSphere));
+        break;
+      case 3:
+        omit_field(obstacle, wire::Obstacle::VT_OPEN_TANK);
+        break;
+      case 4:
+        omit_field(obstacle->mutable_open_tank(), wire::OpenTank::VT_PISTON_VELOCITY_X);
+        break;
+      case 5:
+        ASSERT_TRUE(obstacle->mutate_kind(wire::ObstacleKind::None));
+        break;
+      case 6:
+        ASSERT_TRUE(field->mutable_horizontal_plane()->mutate_surface_height_y(std::numeric_limits<double>::infinity())
+        );
+        break;
+      case 7:
+        ASSERT_TRUE(obstacle->mutable_open_tank()->mutate_high_x(-1));
+        break;
+      case 8:
+        ASSERT_TRUE(root->mutable_material()->mutate_friction(0.125));
+        break;
+      case 9:
+        ASSERT_TRUE(field->mutate_radius(2));
+        break;
+    }
+    EXPECT_EQ(DecodeLiquidResolvedScene3D(changed).status().code(), absl::StatusCode::kDataLoss) << mutation;
+  }
+
+  scene.scene.friction_coefficient = 0.125;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(LiquidCache3D, ResolvedDefaultsMaterializeAndRoundTrip) {

@@ -17,14 +17,15 @@ namespace {
 namespace fs = std::filesystem;
 namespace files = liquid_cache_files_internal;
 
-constexpr Vec3 kInitialPosition{2.5, 2.5, 2.5};
+constexpr Vec3 kFreeFallInitialPosition{2.5, 2.5, 2.5};
+constexpr Vec3 kTankLayoutInitialPosition{0.625, 0.625, 0.625};
 constexpr int kFixtureProtocolVersion = 1;
 
 absl::StatusOr<double> EnergyBlend(const fs::path& case_name) {
   if (case_name == "free-fall-pic") {
     return 0.0;
   }
-  if (case_name == "free-fall-default") {
+  if (case_name == "free-fall-default" || case_name == "tank-layout") {
     return 0.6;
   }
   if (case_name == "free-fall-retained") {
@@ -128,7 +129,7 @@ void PrintVector(std::ostream& out, Vec3 vector) {
 absl::Status WriteScene(
     const fs::path& case_name,
     const fs::path& backend_argument,
-    const fs::path& solver,
+    const fs::path& solver_executable_path,
     const fs::path& scene_path
 ) {
   const auto energy_blend = EnergyBlend(case_name);
@@ -148,11 +149,13 @@ absl::Status WriteScene(
     }
   }
 
-  const auto executable = files::ReadBytes(solver, {.maximum_bytes = 1024 * 1024 * 1024});
-  if (!executable.ok()) {
-    return executable.status();
+  const auto solver_executable_bytes = files::ReadBytes(solver_executable_path, {.maximum_bytes = 1024 * 1024 * 1024});
+  if (!solver_executable_bytes.ok()) {
+    return solver_executable_bytes.status();
   }
 
+  const bool tank_layout = case_name == "tank-layout";
+  const Vec3 initial_position = tank_layout ? kTankLayoutInitialPosition : kFreeFallInitialPosition;
   LiquidState3D state;
   auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(1);
   if (!particles.ok()) {
@@ -164,7 +167,7 @@ absl::Status WriteScene(
   }
   (*particles)[0] = {
       .id = 1,
-      .world_position = kInitialPosition,
+      .world_position = initial_position,
       .world_velocity = {},
       .velocity_slopes = {},
       .affine_enabled = true,
@@ -188,14 +191,26 @@ absl::Status WriteScene(
   LiquidResolvedSceneView3D scene;
   scene.geometry = state.geometry;
   scene.random_seed = state.random_seed;
-  scene.scene.field = LiquidAnalyticSphere3D{kInitialPosition, 1.1};
+  if (tank_layout) {
+    scene.scene.field = LiquidHorizontalPlaneSurface3D{0.75};
+    scene.scene.obstacle = AxisAlignedLiquidTank3D{
+        .start_low_x = -1,
+        .high_x = 1,
+        .floor_y = 0,
+        .low_z = -1,
+        .high_z = 1,
+        .piston_velocity_x = 0.125,
+    };
+  } else {
+    scene.scene.field = LiquidAnalyticSphere3D{initial_position, 1.1};
+  }
   scene.scene.world_acceleration = {0, -9.81, 0};
   scene.scene.liquid_density = 1000;
   scene.scene.surface_tension = 0;
   scene.options.particle_energy_blend = *energy_blend;
   scene.options.maximum_step_duration = 0.01;
   scene.backend = *backend;
-  scene.build_digest = LiquidContentDigest3D(executable->values());
+  scene.build_digest = LiquidContentDigest3D(solver_executable_bytes->values());
   scene.upstream = std::span(&initial_particles, 1);
   const auto resolved = EncodeLiquidResolvedScene3D(scene);
   if (!resolved.ok()) {
@@ -315,7 +330,7 @@ absl::Status Run(const std::vector<fs::path>& args) {
   const bool read_checkpoint = args.size() == 5 && args[1] == "read-checkpoint";
   if (!read_frames && !read_checkpoint) {
     return absl::InvalidArgumentError(
-        "expected write-scene CASE CPU_OR_CUDA SOLVER SCENE, read-frames CACHE FINGERPRINT FIRST LAST, "
+        "expected write-scene CASE CPU_OR_CUDA SOLVER_EXECUTABLE SCENE, read-frames CACHE FINGERPRINT FIRST LAST, "
         "or read-checkpoint CACHE FINGERPRINT MAXIMUM_FRAME"
     );
   }

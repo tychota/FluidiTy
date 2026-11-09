@@ -14,6 +14,7 @@
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_tank_staging_3d_cases.h"
 namespace fluidity {
 namespace {
 // Declared before implementation: retain FP64 particles and existing FP32 PCG.
@@ -744,6 +745,39 @@ void CheckNumericalRejection() {
   EXPECT_EQ(gpu->diagnostics().failed_stage, LiquidPhysicalStage3D::kDeposit);
   EXPECT_EQ(gpu->committed(), initial);
   EXPECT_EQ(DeviceBytes(*lease), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  cudaDeviceProp properties{};
+  ASSERT_EQ(cudaGetDeviceProperties(&properties, 0), cudaSuccess);
+  ASSERT_EQ(properties.major, 12);
+  ASSERT_EQ(properties.minor, 0);
+  auto scene = Scene();
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.surface_tension = 0;
+  scene.obstacle = AxisAlignedLiquidTank3D{1.75, 3.5, 2, 1.5, 3.5, 0.125};
+  const auto initial = Initial();
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  Receipt("liquid_open_tank_substep_3d", backend->usage());
+  ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectWallSamples(backend->operations()));
+  ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectTranslatedFaceUsesLatticeResidual(backend->operations()));
+  ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectParticleUpdateUsesBothVelocityFields(backend->operations()));
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto cpu_status = cpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  ExpectState(cpu->committed(), gpu->committed());
+  auto plane_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(plane_backend.ok()) << plane_backend.status();
+  ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectPlaneSupport(plane_backend->operations(), options));
+  EXPECT_EQ(plane_backend->usage().compiled_architecture, 1200);
 }
 
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {

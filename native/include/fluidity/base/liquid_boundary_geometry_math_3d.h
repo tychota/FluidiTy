@@ -407,12 +407,6 @@ FLUIDITY_HD inline CartesianVector LatticeWorldAnchor(const GeometryInput& input
   };
 }
 
-struct TankLatticeAxis {
-  double world_origin;
-  double lattice_index;
-  double cell_width;
-};
-
 FLUIDITY_HD inline TankLatticeAxis TankAxis(const GeometryInput& input, int axis) {
   const auto world_origin = CartesianComponents(input.geometry.world_origin);
   const int lattice_indices[]{input.index.x, input.index.y, input.index.z};
@@ -447,16 +441,6 @@ struct TankClipBounds {
   CartesianVector low{};
   CartesianVector high{1, 1, 1};
 };
-
-// Subtract in the lattice frame. A rounded world anchor alone can coincide
-// with a tank plane even when the true lattice face is strictly inside.
-FLUIDITY_HD inline ProjectedSum TankPlaneOffset(double world_coordinate, const TankLatticeAxis& lattice) {
-  ProjectedSum offset;
-  offset.Add(world_coordinate);
-  offset.Add(-lattice.world_origin);
-  offset.AddProduct(-lattice.cell_width, lattice.lattice_index);
-  return offset;
-}
 
 FLUIDITY_HD inline Value<int> TankPlaneOffsetSign(double world_coordinate, const TankLatticeAxis& lattice) {
   const double translated_plane = world_coordinate - lattice.world_origin;

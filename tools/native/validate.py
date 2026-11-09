@@ -63,7 +63,8 @@ GPU_BOUNDARY_TRANSFER_3D_CASE = "CudaLiquidBoundary3D.CompatibleTransferAndGhost
 GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure"
 GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
 GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
-GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE}
+GPU_OPEN_TANK_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu"
+GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE, GPU_OPEN_TANK_SUBSTEP_3D_CASE}
 GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
 GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
 GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
@@ -107,6 +108,7 @@ GPU_OPERATOR_RECEIPT_CASES = {
     GPU_SNAPSHOT_FAILURE_3D_CASE: "liquid_snapshot_3d_failure",
     GPU_SUBSTEP_3D_CASE: "liquid_substep_3d",
     GPU_SUBSTEP_GROWTH_3D_CASE: "liquid_substep_3d_growth",
+    GPU_OPEN_TANK_SUBSTEP_3D_CASE: "liquid_open_tank_substep_3d",
     GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
     GPU_BOUNDARY_COUPLED_3D_CASE: "liquid_boundary_coupled_3d",
     GPU_BOUNDARY_GEOMETRY_3D_CASE: "liquid_boundary_geometry_3d",

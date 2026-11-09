@@ -1,4 +1,4 @@
-"""Run the public Simulate CLI and qualify one independently measured free fall."""
+"""Run the public Simulate CLI and verify a free-fall scene or tiny tank layout."""
 
 import argparse
 import hashlib
@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,8 @@ from liquid_acceptance_metrics import (
 )
 
 FRAME_ORDINALS = tuple(range(FREE_FALL_LAST_FRAME + 1))
+TANK_LAYOUT_CASE = "tank-layout"
+TANK_LAYOUT_INITIAL_POSITION = [0.625, 0.625, 0.625]
 CUDA_ARCHITECTURE = 1200
 CLOCK_FIELDS = ("frame", "substep", "epoch", "accepted_step", "time_seconds")
 IDENTITY_FIELDS = ("resolved_fingerprint", "execution_id", "backend")
@@ -146,7 +149,7 @@ def verify_extent(record):
     require(record.get("source_fractional_remainders") == [], "unexpected source remainder")
 
 
-def verify_solver(records, frames, authored_scene_identity):
+def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME_ORDINALS):
     final = records[-1]
     backend = authored_scene_identity["backend"]
     require(final.get("event") == "result" and final.get("command") == "run", "missing successful run result")
@@ -178,13 +181,13 @@ def verify_solver(records, frames, authored_scene_identity):
             settled = record["last_settled_clock"]
             if settled is not None:
                 frame = integer(settled, "frame")
-                require(frame <= min(published_count, FREE_FALL_LAST_FRAME), "invalid heartbeat frame")
+                require(frame <= min(published_count, frame_ordinals[-1]), "invalid heartbeat frame")
                 for field in CLOCK_FIELDS[:-1]:
                     require(integer(settled, field) == frames[frame][field], "heartbeat and manifest clocks differ")
             continue
         if event == "frame":
-            require(published_count < len(FRAME_ORDINALS), "extra publication receipt")
-            frame_ordinal = FRAME_ORDINALS[published_count]
+            require(published_count < len(frame_ordinals), "extra publication receipt")
+            frame_ordinal = frame_ordinals[published_count]
             require(record.get("published") is True and integer(record, "frame") == frame_ordinal,
                     "wrong publication ordinal")
             verify_snapshot_receipt(record, backend)
@@ -196,7 +199,7 @@ def verify_solver(records, frames, authored_scene_identity):
             previous_dt_retry_count = 0
             continue
         require(event == "trace" and record.get("published") is False, "unexpected run event")
-        require(0 < published_count < len(FRAME_ORDINALS), "trace outside expected run frames")
+        require(0 < published_count < len(frame_ordinals), "trace outside expected run frames")
         trace_clock = clock(record)
         frame, substep, _, accepted_step, time = trace_clock
         previous_frame, previous_substep, _, previous_step, previous_time = last_clock
@@ -222,7 +225,7 @@ def verify_solver(records, frames, authored_scene_identity):
         last_clock = trace_clock
         last_trace = record
 
-    require(published_count == len(FRAME_ORDINALS), "missing publication receipt")
+    require(published_count == len(frame_ordinals), "missing publication receipt")
     require(clock(final) == last_clock == clock(frames[-1]), "final clock and manifest differ")
     require(last_trace is not None and digest(final, "state_digest") == last_trace["state_digest"], "final state differs")
     for field in (*MAXIMUM_COUNTS, "attempts", "accepted_attempts", "dt_retries", "capacity_replays"):
@@ -230,9 +233,9 @@ def verify_solver(records, frames, authored_scene_identity):
     return final
 
 
-def verify_frames(records, authored_scene_identity):
-    require(len(records) == len(FRAME_ORDINALS), "missing or extra verified frame")
-    for ordinal, record in zip(FRAME_ORDINALS, records):
+def verify_frames(records, authored_scene_identity, frame_ordinals):
+    require(len(records) == len(frame_ordinals), "missing or extra verified frame")
+    for ordinal, record in zip(frame_ordinals, records):
         require(record["event"] == "frame", "unexpected frame reader event")
         matches_identity(record, authored_scene_identity)
         frame, substep, _, _, time = clock(record)
@@ -245,7 +248,7 @@ def verify_frames(records, authored_scene_identity):
                 require(finite_number(point.get(field)) and point[field] > 0, f"invalid point {field}")
 
 
-def verify_checkpoint(checkpoint, frame_zero, authored_scene_identity):
+def verify_checkpoint(checkpoint, frame_zero, authored_scene_identity, initial_position):
     matches_identity(checkpoint, authored_scene_identity)
     require(clock(checkpoint) == clock(frame_zero), "retained checkpoint must match frame zero")
     require(digest(checkpoint, "state_digest") == authored_scene_identity["seed_digest"], "retained state differs from seed")
@@ -253,7 +256,7 @@ def verify_checkpoint(checkpoint, frame_zero, authored_scene_identity):
     require(checkpoint.get("capacities") == [1024, 128, 4096, 24576, 256], "wrong capacity reservations")
     require(checkpoint.get("pressure_cells") == [], "initial checkpoint contains pressure cells")
     expected_particle = {
-        "id": 1, "tag": 0, "world_position": [2.5, 2.5, 2.5], "world_velocity": [0, 0, 0],
+        "id": 1, "tag": 0, "world_position": initial_position, "world_velocity": [0, 0, 0],
         "velocity_slopes": [[0, 0, 0], [0, 0, 0], [0, 0, 0]], "side_tag": 0,
         "mass": 1000, "reference_volume": 1, "volume_ratio": 1, "affine_enabled": True, "pic_initialized": False,
     }
@@ -271,10 +274,68 @@ def snapshot(root):
     }
 
 
+def verify_tank_layout(frames, solver_records):
+    # Four signed wet pressure cells at y=0. Each 4^3 block owns 192
+    # staggered slots. Four wet blocks plus three seed-support blocks are active.
+    expected = {"block_count": 7, "cell_count": 4, "face_count": 1344}
+    for record in solver_records:
+        if record["event"] in ("trace", "result"):
+            for field, count in expected.items():
+                require(integer(record, field) == count, f"unexpected tank-layout {field}")
+    for frame in frames:
+        points = frame["points"]
+        require(len(points) == 1 and integer(points[0], "id") == 1, "wrong tank-layout point inventory")
+        for field in ("world_position", "world_velocity"):
+            values = points[0][field]
+            require(len(values) == 3 and all(finite_number(value) for value in values), f"invalid point {field}")
+    require(frames[0]["points"][0]["world_position"] == TANK_LAYOUT_INITIAL_POSITION, "wrong tank-layout seed point")
+    return {"passed": True, "observed_layout": expected, "point_ids": [1]}
+
+
+def verify_tank_refusals(output, solver, backend, scene, seed):
+    # Keep the plane tag and omit its optional table (Field id 3).
+    malformed = bytearray(scene.read_bytes())
+    root = struct.unpack_from("<I", malformed)[0]
+    root_vtable = root - struct.unpack_from("<i", malformed, root)[0]
+    field_slot = root + struct.unpack_from("<H", malformed, root_vtable + 4 + 2 * 11)[0]
+    field = field_slot + struct.unpack_from("<I", malformed, field_slot)[0]
+    field_vtable = field - struct.unpack_from("<i", malformed, field)[0]
+    struct.pack_into("<H", malformed, field_vtable + 4 + 2 * 3, 0)
+    malformed_scene = output / "missing-plane.flrs"
+    malformed_scene.write_bytes(malformed)
+
+    # At frame 385 the positive piston stroke has exceeded the two-meter width.
+    controls = (
+        ("missing-plane", malformed_scene, 1, "scene", "DATA_LOSS"),
+        ("closed-tank", scene, 385, "frame", "FAILED_PRECONDITION"),
+    )
+    for control, scene_path, frame_end, field_name, status_name in controls:
+        cache = output / f"{control}-cache"
+        stdout_path = output / f"{control}.stdout.jsonl"
+        stderr_path = output / f"{control}.stderr.txt"
+        with stdout_path.open("xb") as stdout, stderr_path.open("xb") as stderr:
+            process = subprocess.run(
+                [str(solver), "run", "--stage", "simulate", "--scene", str(scene_path),
+                 "--initial-state", str(seed), "--backend", backend, "--cache", str(cache),
+                 "--frame-end", str(frame_end)],
+                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, timeout=60, check=False,
+            )
+        require(process.returncode == 1, f"{control} returned {process.returncode}")
+        diagnostic = one_record(read_records(stdout_path.read_text(encoding="utf-8"), "protocol_version"), "error")
+        require(read_records(stderr_path.read_text(encoding="utf-8"), "protocol_version") == [diagnostic],
+                f"{control} diagnostic streams differ")
+        require(diagnostic.get("field") == field_name and diagnostic.get("name") == status_name,
+                f"unexpected {control} diagnostic")
+        require(not cache.exists() and not cache.is_symlink(), f"{control} published a cache")
+
+
 def run_acceptance(solver_executable_path, fixture, backend, case, output):
     # Refuse even an empty pre-existing directory. A deterministic execution ID
     # alone cannot distinguish a previous same-artifact run from the current one.
     output.mkdir(parents=True, exist_ok=False)
+    tank_layout = case == TANK_LAYOUT_CASE
+    frame_ordinals = (0, 1) if tank_layout else FRAME_ORDINALS
+    last_frame = frame_ordinals[-1]
     scene = output / "scene.flrs"
     seed = scene.with_suffix(".flrs.flst")
     cache = output / "cache"
@@ -292,42 +353,48 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
         "wrong authored case or backend",
     )
     energy_blend = authored_scene_identity.get("energy_blend")
-    require(finite_number(energy_blend) and energy_blend == FREE_FALL_CASES[case], "wrong blend")
+    require(finite_number(energy_blend) and energy_blend == (0.6 if tank_layout else FREE_FALL_CASES[case]), "wrong blend")
     require(scene.is_file() and scene.stat().st_size > 0, "missing resolved scene bytes")
     require(seed.stat().st_size == integer(authored_scene_identity, "seed_byte_length", minimum=1), "wrong seed byte length")
     require(not cache.exists() and not cache.is_symlink(), "cache path must be fresh")
     records = run_child(
         output, "simulate-run", solver_executable_path, "run", "--stage", "simulate", "--scene", scene,
         "--initial-state", seed,
-        "--backend", backend, "--cache", cache, "--frame-end", FREE_FALL_LAST_FRAME, "--trace", timeout=180,
+        "--backend", backend, "--cache", cache, "--frame-end", last_frame, "--trace", timeout=180,
     )
     before = snapshot(cache)
     fingerprint = authored_scene_identity["resolved_fingerprint"]
     frames = run_child(
-        output, "verified-frames", fixture, "read-frames", cache, fingerprint, 0, FREE_FALL_LAST_FRAME, fixture=True,
+        output, "verified-frames", fixture, "read-frames", cache, fingerprint, 0, last_frame, fixture=True,
     )
     checkpoint = one_record(
         run_child(output, "verified-checkpoint", fixture, "read-checkpoint", cache, fingerprint,
-                  FREE_FALL_LAST_FRAME, fixture=True), "checkpoint"
+                  last_frame, fixture=True), "checkpoint"
     )
     require(snapshot(cache) == before, "verified readers changed cache files")
     expected_manifests = {
-        f"frames/{frame:020d}.{suffix}" for frame in FRAME_ORDINALS for suffix in ("flmf", "json")
+        f"frames/{frame:020d}.{suffix}" for frame in frame_ordinals for suffix in ("flmf", "json")
     }
     require({Path(name).as_posix() for name in before if Path(name).parts[0] == "frames"} == expected_manifests,
             "unexpected on-disk committed-frame inventory")
     require((cache / "resolved.flrs").read_bytes() == scene.read_bytes(), "cache resolved scene differs from authored bytes")
-    measurements = evaluate_free_fall(frames)
-    verify_frames(frames, authored_scene_identity)
-    verify_checkpoint(checkpoint, frames[0], authored_scene_identity)
-    final = verify_solver(records, frames, authored_scene_identity)
+    verify_frames(frames, authored_scene_identity, frame_ordinals)
+    final = verify_solver(records, frames, authored_scene_identity, frame_ordinals)
+    if tank_layout:
+        measurements = verify_tank_layout(frames, records)
+        verify_tank_refusals(output, solver_executable_path, backend, scene, seed)
+        initial_position = TANK_LAYOUT_INITIAL_POSITION
+    else:
+        measurements = evaluate_free_fall(frames)
+        initial_position = [2.5, 2.5, 2.5]
+    verify_checkpoint(checkpoint, frames[0], authored_scene_identity, initial_position)
     measurements.update({
         "case": case, "backend": backend, "energy_blend": energy_blend, "device_probe": device,
         "scene_author": authored_scene_identity, "final_receipt": final, "verified_frame_count": len(frames),
         "verified_point_digests": [frame["points_digest"] for frame in frames],
         "verified_immutable_cache_file_count": len(before),
     })
-    (output / "free-fall-measurements.json").write_text(
+    (output / ("tank-layout-measurements.json" if tank_layout else "free-fall-measurements.json")).write_text(
         json.dumps(measurements, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
     return measurements
@@ -338,7 +405,7 @@ def main():
     parser.add_argument("--executable", required=True, type=Path)
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--backend", required=True, choices=("cpu", "cuda"))
-    parser.add_argument("--case", required=True, choices=FREE_FALL_CASES)
+    parser.add_argument("--case", required=True, choices=(*FREE_FALL_CASES, TANK_LAYOUT_CASE))
     destination = parser.add_mutually_exclusive_group(required=True)
     destination.add_argument("--output", type=Path)
     destination.add_argument("--temporary-output-parent", type=Path)
@@ -347,11 +414,11 @@ def main():
     try:
         if output is None:
             args.temporary_output_parent.mkdir(parents=True, exist_ok=True)
-            output = Path(tempfile.mkdtemp(prefix="ctest-free-fall-", dir=args.temporary_output_parent)) / "evidence"
+            output = Path(tempfile.mkdtemp(prefix=f"ctest-{args.case}-", dir=args.temporary_output_parent)) / "evidence"
         output = output.absolute()
         measurements = run_acceptance(args.executable.resolve(strict=True), args.fixture.resolve(strict=True),
                                       args.backend, args.case, output)
-        print(f"{args.backend} {args.case}: {output / 'free-fall-measurements.json'}")
+        print(f"{args.backend} {args.case}: {output}")
         require(measurements["passed"], "free fall exceeds the frozen physical tolerance")
     except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
         print(f"liquid acceptance failed: {error}", file=sys.stderr)
