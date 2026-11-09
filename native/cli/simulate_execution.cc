@@ -8,7 +8,7 @@
 
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
-#include "fluidity/host/simulate_cli.h"
+#include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
@@ -207,14 +207,19 @@ absl::StatusOr<LiquidState3D> InitialState(const Command& command, LiquidResolve
 }
 struct Observations {
   const Command& command;
+  const SimulateJob& job;
   std::vector<std::string> trace;
   std::optional<std::string> selected;
   static absl::Status
   Observe(void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
     auto& self = *static_cast<Observations*>(context);
+    EXEC_TRY(self.job.CheckBoundary());
     if (rollback) {
       self.trace.clear();
       self.selected.reset();
+      return absl::OkStatus();
+    }
+    if (!self.command.trace && self.command.kind == CommandKind::kRun) {
       return absl::OkStatus();
     }
     auto members = StateMembers(state, diagnostics);
@@ -231,9 +236,9 @@ struct Observations {
     return self.command.kind == CommandKind::kStep ? absl::CancelledError("") : absl::OkStatus();
   }
 };
-}  // namespace
 
-absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
+absl::StatusOr<std::string>
+ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job, Diagnostic* diagnostic) {
   diagnostic->domain = "SIMULATE";
   diagnostic->field = "scene";
   diagnostic->cause = "resolved scene, executable digest or backend is incompatible";
@@ -332,6 +337,11 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
       return opened.status();
     }
     cache = std::move(*opened);
+    if (!read_only) {
+      diagnostic->cause = "another process owns the cache job lease or the lease could not be acquired";
+      EXEC_TRY(job.AttachCache(command.cache_directory, false));
+      diagnostic->cause = "verified retained checkpoint could not be read";
+    }
   } else if (replay || command.resume) {
     return absl::NotFoundError("");
   }
@@ -376,6 +386,8 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
   diagnostic->field = "clock";
   diagnostic->cause = "checkpoint clock does not match the model-v1 absolute frame ordinal divided by 24 seconds";
   EXEC_TRY(CompatibleClock(starting));
+  job.SetSettledClock(scene.backend, starting.clock, loaded);
+  EXEC_TRY(job.CheckBoundary());
   if (step) {
     if (starting.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
       return absl::OutOfRangeError("");
@@ -428,13 +440,20 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
     queue = std::move(*created);
   }
 #endif
+  EXEC_TRY(job.CheckBoundary());
   if (!cache && !read_only) {
+    diagnostic->field = "cache";
+    diagnostic->cause = "could not create the cache and acquire its whole-job lease";
     auto created = LiquidCache3D::Create(command.cache_directory, scene.View());
     if (!created.ok()) {
       return created.status();
     }
     cache = std::move(*created);
+    EXEC_TRY(job.AttachCache(command.cache_directory, true));
   }
+  diagnostic->field = "job-status";
+  diagnostic->cause = "could not persist the baking job status";
+  EXEC_TRY(job.MarkBaking());
   // Synchronous writer boundary over a real asynchronous D2H queue. Each call
   // drains its source before the next whole-frame AdvanceFrame; the host writer
   // lease remains alive through checked serialization and manifest publication.
@@ -507,14 +526,30 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
     if (resume.capacities == resume.capacity_replay_reservations) {
       resume.capacity_replay_reservations = {};
     }
+    // Once the cache is initialized, publish its frame-zero recovery point
+    // even if cancel arrives during the initial snapshot. Later copies can
+    // drain safely and leave the accepted frame unpublished on cancellation.
+    if (state->clock.frame_ordinal != 0) {
+      EXEC_TRY(job.CheckBoundary());
+    }
     EXEC_TRY(cache->PublishFrame(*points, checkpoint ? state : nullptr, checkpoint ? &resume : nullptr));
-    return writer.Emit("frame", "\"published\":true,\"frame\":" + std::to_string(state->clock.frame_ordinal));
+    std::string measurements;
+#if defined(FLUIDITY_SIMULATE_CUDA)
+    if (cuda_backend) {
+      const auto usage = cuda_backend->usage();
+      measurements = ",\"compiled_architecture\":" + std::to_string(usage.compiled_architecture)
+          + ",\"snapshot_copy_milliseconds\":" + Number(copy_milliseconds);
+    }
+#endif
+    return job.ReportPublishedFrame(state->clock.frame_ordinal, measurements);
   };
   diagnostic->field = "frame";
   diagnostic->cause = "completed state, point publication or deterministic replay verification failed";
   EXEC_TRY(complete_frame(!read_only && starting.clock.frame_ordinal == 0));
-  Observations observations{command, {}, {}};
+  EXEC_TRY(job.CheckBoundary());
+  Observations observations{command, job, {}, {}};
   for (std::uint64_t frame = starting.clock.frame_ordinal; frame < target_frame;) {
+    EXEC_TRY(job.CheckBoundary());
     ++frame;
     auto time = FrameTime(frame);
     if (!time.ok()) {
@@ -533,6 +568,9 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
     if (step) {
       break;
     }
+    // Capacity rollback can discard accepted substeps. Only a complete
+    // frame schedule advances the monotonic heartbeat clock.
+    job.SetSettledClock(scene.backend, scheduler->committed().clock);
     const bool publish = !read_only && (frame >= command.frame_start || frame % 10 == 0);
     EXEC_TRY(complete_frame(publish));
   }
@@ -566,7 +604,19 @@ absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic*
 #else
   static_cast<void>(copy_milliseconds);
 #endif
-  return writer.Emit("result", members);
+  EXEC_TRY(job.CheckBoundary());
+  return members;
+}
+}  // namespace
+
+absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
+  SimulateJob job(writer, command.kind == CommandKind::kRun);
+  auto result = ExecuteCommand(command, writer, job, diagnostic);
+  const auto final_status = job.Finish(result.status(), diagnostic);
+  if (!final_status.ok()) {
+    return final_status;
+  }
+  return writer.Emit("result", *result);
 }
 #undef EXEC_TRY
 }  // namespace fluidity::simulate

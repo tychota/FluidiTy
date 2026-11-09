@@ -51,24 +51,30 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   if (args[5] != "defaults") {
     scene.scene.world_acceleration = {};
   }
-  if (args[5] == "initial") {
+  const bool slow_frame = args[5] == "slow";
+  const bool initial_particle = args[5] == "initial" || slow_frame;
+  if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
   if (args[5] != "defaults") {
-    scene.options.maximum_step_duration = 0.03;
+    scene.options.maximum_step_duration = slow_frame ? 1e-6 : 0.03;
   }
   fluidity::LiquidState3D state;
   state.random_seed = scene.random_seed;
   fluidity::LiquidUpstreamContent3D upstream;
   fluidity::LiquidEmissionSource3D source;
-  if (args[5] == "source" || args[5] == "boundary") {
+  const bool exhaust_particle_capacity = args[5] == "capacity-failure";
+  if (args[5] == "source" || args[5] == "boundary" || exhaust_particle_capacity) {
     source.source_ordinal = 7;
     // Avoid an integer emission boundary at the rounded binary 1/24 time.
     source.particles_per_second = args[5] == "boundary" ? 24 : 25;
+    if (exhaust_particle_capacity) {
+      source.particles_per_second = 100000;
+    }
     source.world_position = {2.5, 2.5, 2.5};
     scene.scene.sources = std::span(&source, 1);
   }
-  if (args[5] == "initial") {
+  if (initial_particle) {
     state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
     if (!state.particles.Resize(1).ok()) {
       return 3;

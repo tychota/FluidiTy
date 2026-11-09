@@ -60,7 +60,7 @@ std::string JsonString(std::string_view text);
 absl::StatusOr<LiquidDigest3D> ExecutableDigest();
 // Borrowed streams must outlive the writer. Emit flushes one versioned JSON line;
 // members must be validated JSON object members without enclosing braces. The
-// mutex serializes complete records for the later independent heartbeat producer.
+// mutex serializes complete records for the independent heartbeat producer.
 // Error emits the same structured record to protocol stdout and diagnostic stderr.
 // Failure to write returns Unavailable; callers must return a nonzero exit status.
 class ProtocolWriter {
@@ -79,7 +79,8 @@ class ProtocolWriter {
 // S during N->N+1. Interior replay completes/verifies that final frame's schedule.
 // Preview and step never publish. A new run publishes frame zero, prerequisite
 // checkpoints and the inclusive selected range; resume verifies/reuses existing
-// content without replacement. No process lifecycle/heartbeat is owned here.
+// content without replacement. Run also owns a heartbeat and cooperative
+// cancellation and holds a separate whole-job writer lease when publishing.
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic);
 // Dispatch checked inspection or execution. Execution validates the actual module
 // digest, resolved backend and model-v1 24 fps schedule before cache mutation.

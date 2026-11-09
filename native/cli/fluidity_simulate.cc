@@ -15,6 +15,7 @@
 #include "liquid_state_generated.h"
 #include "point_frame_generated.h"
 #include "resolved_scene_generated.h"
+#include "simulate_job.h"
 #include "simulate_schema_text.h"
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -199,6 +200,13 @@ absl::Status CheckScene(const Command& command, ProtocolWriter& writer, Diagnost
           + ",\"execution_id\":" + JsonString(DigestHex(frame->manifest.execution_id)) + ",\"points_relative_name\":"
           + JsonString(name->data()) + ",\"point_count\":" + std::to_string(frame->points.points.size());
     }
+    diagnostic->field = "job-status";
+    diagnostic->cause = "could not inspect the cache process lease";
+    auto job_status = InspectJobStatus(command.cache_directory);
+    if (!job_status.ok()) {
+      return job_status.status();
+    }
+    members += ",\"job_status\":" + JsonString(*job_status);
   } else {
     members += ",\"resolved_fingerprint\":" + JsonString(DigestHex(*explicit_fingerprint));
   }

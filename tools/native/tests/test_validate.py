@@ -129,8 +129,8 @@ SCHEMA_CASES = tuple(
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 )
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation"))
-CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay")
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle")
 CUDA_EXECUTION_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
     "frame": 2, "substep": 0, "epoch": 4, "accepted_step": 4, "particle_count": 1,
@@ -139,6 +139,19 @@ CUDA_EXECUTION_RECEIPT = {
     "state_digest": "a" * 64, "resolved_fingerprint": "b" * 64, "execution_id": "c" * 64,
     "time_seconds": 2 / 24, "read_only": False,
 }
+
+
+def lifecycle_receipt(backend):
+    published_frame = {"protocol_version": 1, "event": "frame", "frame": 0, "published": True}
+    if backend == "cuda":
+        published_frame.update(compiled_architecture=1200, snapshot_copy_milliseconds=0.1)
+    return {
+        "backend": backend,
+        "heartbeat_interval_seconds": 0.5,
+        "cancel_exit_seconds": 0.1,
+        "frame_zero": published_frame,
+    }
+
 
 CUDA_CLI_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "device-info", "backend": "cuda",
@@ -462,7 +475,10 @@ def scenario(invocation, monkeypatch):
                         console = "flatc conformance checked"
                     if label in ("^cli$", "^cuda-cli$"):
                         console = f"PASS {name.removeprefix('SimulateCli.')}"
-                        if label == "^cuda-cli$":
+                        if name.endswith("_lifecycle"):
+                            backend = "cuda" if name == "SimulateCli.cuda_lifecycle" else "cpu"
+                            console = json.dumps(lifecycle_receipt(backend)) + "\n" + console
+                        elif label == "^cuda-cli$":
                             receipt = self.cuda_cli_receipt
                             if name != "SimulateCli.cuda_device":
                                 receipt = CUDA_EXECUTION_RECEIPT.copy()
@@ -1239,10 +1255,11 @@ def test_cli_gate_is_required_and_recorded(scenario, preset):
     _, _, output, run, _ = scenario
     run(preset)
     evidence = json.loads((output / "summary.json").read_text())["evidence"]
-    assert evidence.get("cli") == {"status": "passed", "tests": 8}
+    assert evidence["cli"] == {"status": "passed", "tests": 9, "lifecycle": lifecycle_receipt("cpu")}
     assert (output / "ctest-cli.xml").is_file()
     if preset.endswith("cuda"):
-        assert evidence["cuda_cli"]["tests"] == 3
+        assert evidence["cuda_cli"]["tests"] == 4
+        assert evidence["cuda_cli"]["lifecycle"] == lifecycle_receipt("cuda")
         assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
         assert evidence["cuda_cli"]["compiled_architecture"] == 1200
 
@@ -1291,9 +1308,48 @@ def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
     rejected("CLI", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case", ["cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay"])
+@pytest.mark.parametrize("case", [
+    "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay",
+    "cpu_lifecycle", "cuda_lifecycle",
+])
 def test_cli_each_execution_case_is_required(scenario, case):
     processes, _, _, _, rejected = scenario
     attribute = "cuda_cli_cases" if case.startswith("cuda") else "cli_cases"
     setattr(processes, attribute, tuple(name for name in getattr(processes, attribute) if name != "SimulateCli." + case))
     rejected("cli", "windows-debug-cuda")
+
+
+@pytest.mark.parametrize("backend", ["cpu", "cuda"])
+@pytest.mark.parametrize("field, value", [
+    ("backend", "other"),
+    ("heartbeat_interval_seconds", 1.01),
+    ("heartbeat_interval_seconds", True),
+    ("heartbeat_interval_seconds", float("nan")),
+    ("cancel_exit_seconds", 0),
+    ("cancel_exit_seconds", 10.01),
+    ("cancel_exit_seconds", float("inf")),
+    ("frame_zero", []),
+])
+def test_cli_requires_lifecycle_receipt(scenario, backend, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = lifecycle_receipt(backend)
+    receipt[field] = value
+    case = f"{backend}_lifecycle"
+    processes.ctest_output_overrides[f"SimulateCli.{case}"] = json.dumps(receipt) + f"\nPASS {case}"
+    rejected("CLI lifecycle", f"windows-debug-{backend}")
+
+
+@pytest.mark.parametrize("field, value", [
+    ("compiled_architecture", 1000),
+    ("compiled_architecture", 1200.0),
+    ("snapshot_copy_milliseconds", 0),
+    ("snapshot_copy_milliseconds", float("nan")),
+    ("published", 1),
+    ("frame", True),
+])
+def test_cuda_cli_lifecycle_requires_real_snapshot(scenario, field, value):
+    processes, _, _, _, rejected = scenario
+    receipt = lifecycle_receipt("cuda")
+    receipt["frame_zero"][field] = value
+    processes.ctest_output_overrides["SimulateCli.cuda_lifecycle"] = json.dumps(receipt) + "\nPASS cuda_lifecycle"
+    rejected("CLI lifecycle", "windows-debug-cuda")

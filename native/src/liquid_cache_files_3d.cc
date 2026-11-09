@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cstdio>
 #include <utility>
 
 #include "liquid_cache_files_3d_internal.h"
@@ -241,21 +242,26 @@ absl::Status Promote(const fs::path& temporary, const fs::path& destination) {
 #endif
   return FlushDirectory(destination.parent_path());
 }
-absl::Status PublishBytes(
+namespace {
+absl::Status ReplaceSidecar(const fs::path& temporary, const fs::path& destination) {
+#if defined(_WIN32)
+  if (!MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    return IoFailure();
+  }
+#else
+  if (rename(temporary.c_str(), destination.c_str()) != 0) {
+    return IoFailure();
+  }
+#endif
+  return FlushDirectory(destination.parent_path());
+}
+absl::Status WriteAndPromoteBytes(
     const fs::path& destination,
     std::span<const std::uint8_t> bytes,
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control,
-    absl::StatusCode conflict
+    absl::Status (*promote)(const fs::path&, const fs::path&)
 ) {
-  auto existing = Matches(destination, bytes, limits, conflict);
-  if (existing.ok()) {
-    // A verified existing link may come from a publish interrupted before fsync.
-    return FlushDirectory(destination.parent_path());
-  }
-  if (existing.code() != absl::StatusCode::kNotFound) {
-    return existing;
-  }
   static std::atomic<std::uint64_t> sequence{0};
 #if defined(_WIN32)
   const auto process = GetCurrentProcessId();
@@ -286,14 +292,35 @@ absl::Status PublishBytes(
     STORE_TRY(file.Flush());
     STORE_TRY(Check(control, LiquidCachePublishStage3D::kTemporaryFlushed));
     STORE_TRY(Matches(temporary, bytes, limits, absl::StatusCode::kDataLoss));
-    const auto promoted = Promote(temporary, destination);
-    if (promoted.code() == absl::StatusCode::kAlreadyExists) {
-      STORE_TRY(Matches(destination, bytes, limits, conflict));
-      return FlushDirectory(destination.parent_path());
-    }
-    return promoted;
+    return promote(temporary, destination);
   }
   return Failure(absl::StatusCode::kResourceExhausted);
+}
+}  // namespace
+absl::Status PublishBytes(
+    const fs::path& destination,
+    std::span<const std::uint8_t> bytes,
+    LiquidCacheLimits3D limits,
+    LiquidCachePublishControl3D control,
+    absl::StatusCode conflict
+) {
+  auto existing = Matches(destination, bytes, limits, conflict);
+  if (existing.ok()) {
+    // A verified existing link may come from a publish interrupted before fsync.
+    return FlushDirectory(destination.parent_path());
+  }
+  if (existing.code() != absl::StatusCode::kNotFound) {
+    return existing;
+  }
+  const auto promoted = WriteAndPromoteBytes(destination, bytes, limits, control, Promote);
+  if (promoted.code() == absl::StatusCode::kAlreadyExists) {
+    STORE_TRY(Matches(destination, bytes, limits, conflict));
+    return FlushDirectory(destination.parent_path());
+  }
+  return promoted;
+}
+absl::Status ReplaceOperationalBytes(const fs::path& destination, std::span<const std::uint8_t> bytes) {
+  return WriteAndPromoteBytes(destination, bytes, {}, {}, ReplaceSidecar);
 }
 absl::Status PublishContent(
     const fs::path& root,

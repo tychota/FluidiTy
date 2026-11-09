@@ -300,8 +300,9 @@ CUDA contact. Informational diagnostics use `boundary_device=` and
 ## Simulate command and inspection protocol
 
 `fluidity_simulate` emits protocol version 1 JSON Lines on stdout. Successful
-read-only commands emit one `result`; failures emit one `error` to stdout and the
-same structured record to stderr, with `E-<DOMAIN>-<NAME>`, domain, name, field,
+inspection, schema and device queries emit one `result`. Execution may emit
+progress before its terminal record. Failures emit a terminal `error` to stdout
+and the same structured record to stderr, with `E-<DOMAIN>-<NAME>`, domain, name, field,
 object and cause. Exit 0 means success, 2 means invalid arguments, and 1 means an
 operational failure or unavailable command. Successful defaults produce no stderr.
 Arguments and protocol strings are UTF-8; Windows uses the Unicode process entry
@@ -329,7 +330,12 @@ manifest, its deterministic inspection mirror, and its point content. It does no
 scan or claim verification of unspecified frames or retained checkpoints. Adding
 `--scene` compares the explicit canonical resolved fingerprint. Inspection creates
 no directory or lock, changes no cache content, and always reports
-`resume_authorized:false`. Corruption, missing records and bounds fail closed.
+`resume_authorized:false`. Missing or corrupt physical records and out-of-bounds
+data fail closed. Cache checks also report operational `job_status`. A held
+whole-job lease reports `baking`. A baking marker without a lease reports
+`crashed`. With no active writer, `complete`, `cancelled` and `failed` describe the
+last terminal run, `idle` means no marker, and `unknown` means unrecognized
+marker bytes. Frame inspection remains available independently of that status.
 Default decoding limits are those in `LiquidCacheLimits3D`.
 
 `device-info --backend cpu` reports CPU availability and whether CUDA was compiled;
@@ -404,15 +410,40 @@ reserved device bytes and D2H event milliseconds. Point radius is the spherical
 radius of accepted volume V0*J in meters. Snapshots use the real bounded asynchronous
 queue: all source copies drain before the next whole-frame advance, while the host
 writer lease remains live through manifest publication. `LiquidProgressObserver3D`
-runs outside attempts after acceptance/rollback and can stop safely; a future
-heartbeat/cancel owner must not retain device source leases through that callback.
-Heartbeat, stdin cancellation and process liveness leases remain the separate 9C unit.
+runs outside physical attempts after acceptance or rollback. It checks for
+cooperative cancellation without taking ownership of a device source lease.
 
-Eight mandatory CTest `cli` cases launch real executables for arguments, schema,
-identity, inspection, CPU selection, CPU execution, CPU replay and validation.
-Three separate `cuda-cli` cases require the real CUDA probe, execution and replay.
+During `run`, the independent worker targets a heartbeat every 500 ms. It
+reports monotonic `elapsed_milliseconds`, the known `backend`, the
+`last_settled_clock` (frame, substep, epoch and accepted step), and the last
+confirmed `last_published_frame`. Unknown fields are `null`. The settled clock
+advances only after a complete frame schedule because capacity replay can
+discard its provisional substeps. Published progress advances only after a
+verified checkpoint read or successful frame publication. A live reader can
+inspect committed frames while a job runs. The short publication lock can
+return `ABORTED` if the reader races with a publication.
+
+Send `cancel` followed by LF or CRLF over redirected stdin. EOF and unrelated
+lines leave the job running. The solver checks at safe boundaries outside
+physical attempts, drains any active snapshot before releasing its resources,
+and stops without waiting for stdin to close. Previously committed frames
+remain readable. After creating a fresh cache, the writer finishes publishing
+its frame-zero recovery point before honoring a pending cancellation.
+
+The exclusive OS lease in `.simulate-job.lock` prevents a second CLI writer for
+the same cache. It is separate from the short publication lock and releases
+on process exit. The atomically replaced `.simulate-job-status` marker records
+run status. Neither file contributes to fingerprints, immutable frame data,
+or replay identity. Preview has a heartbeat and cancellation without writing
+operational files.
+
+Nine mandatory CTest `cli` cases launch real executables for arguments, schema,
+identity, inspection, CPU selection, CPU execution, CPU replay, validation and
+process lifecycle. Four separate `cuda-cli` cases require the real CUDA probe,
+execution, replay and process lifecycle.
 The locked validator requires exact inventories, process receipts, qualified image
-identity, positive actual graph/device reservations and finite positive D2H intervals.
+identity, positive actual graph/device reservations, finite positive D2H
+intervals and measured heartbeat and cancellation bounds.
 These gates retain the existing 32 GPU / 30 sanitizer inventories. The Python driver
 is invoked with required binary paths, rejects optimized Python, and never silently
 skips an unavailable executable or device.

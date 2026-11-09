@@ -40,6 +40,11 @@ NativeFileControl3D SetNativeFileControlForTesting(NativeFileControl3D control);
 absl::Status Failure(absl::StatusCode code);
 absl::Status IoFailure();
 absl::Status Check(LiquidCachePublishControl3D control, LiquidCachePublishStage3D stage);
+enum class NativeFileLockMode {
+  kExclusive,
+  kShared
+};
+
 // Native handles never follow a final-component symlink/reparse point. Cache
 // directory components are separately checked while the writer lease is held.
 class NativeFile {
@@ -101,17 +106,22 @@ class NativeFile {
 #endif
     return absl::OkStatus();
   }
-  absl::Status Lock() {
+  // A shared probe can coexist with other inspectors. An exclusive owner
+  // conflicts with both modes. Contention returns Aborted without waiting.
+  absl::Status Lock(NativeFileLockMode mode = NativeFileLockMode::kExclusive) {
 #if defined(_WIN32)
+    const DWORD flags =
+        LOCKFILE_FAIL_IMMEDIATELY | (mode == NativeFileLockMode::kExclusive ? LOCKFILE_EXCLUSIVE_LOCK : 0);
     OVERLAPPED position{};
-    if (!LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &position)) {
+    if (!LockFileEx(handle_, flags, 0, 1, 0, &position)) {
       if (GetLastError() == ERROR_LOCK_VIOLATION) {
         return Failure(absl::StatusCode::kAborted);
       }
       return IoFailure();
     }
 #else
-    if (flock(handle_, LOCK_EX | LOCK_NB) != 0) {
+    const int flags = (mode == NativeFileLockMode::kExclusive ? LOCK_EX : LOCK_SH) | LOCK_NB;
+    if (flock(handle_, flags) != 0) {
       if (errno == EWOULDBLOCK || errno == EAGAIN) {
         return Failure(absl::StatusCode::kAborted);
       }
@@ -243,6 +253,9 @@ absl::Status PublishBytes(
     LiquidCachePublishControl3D control,
     absl::StatusCode conflict = absl::StatusCode::kDataLoss
 );
+// Flushes and atomically replaces a mutable operational sidecar in the same
+// directory. The caller holds its writer lease. Never use for immutable content.
+absl::Status ReplaceOperationalBytes(const std::filesystem::path& destination, std::span<const std::uint8_t> bytes);
 absl::Status PublishContent(
     const std::filesystem::path& root,
     const LiquidContentReference3D& reference,

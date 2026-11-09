@@ -9,11 +9,14 @@ import json
 import math
 import os
 from pathlib import Path
+from queue import Empty, Queue
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from threading import Thread
+from time import monotonic
 
 # These process checks use assertions. This explicit guard survives -O/-OO and
 # rejects optimization before argument parsing, executable launches, or receipts.
@@ -51,9 +54,16 @@ def invoke(executable, *args, success=True):
     return output[-1]
 
 
-def snapshot(root):
+def snapshot(root, live_job=False):
+    # Windows denies file reads through the writer's byte-range lock. Verify
+    # the status marker and immutable content while the owner holds that lock.
     return {str(p.relative_to(root)): (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
-            for p in root.rglob("*") if p.is_file()}
+            for p in root.rglob("*") if p.is_file() and not (live_job and p == root / ".simulate-job.lock")}
+
+
+def immutable_cache_files(files):
+    return {path: receipt for path, receipt in files.items()
+            if path not in (".simulate-job.lock", ".simulate-job-status")}
 
 
 def case_arguments(executable, fixture, directory, cuda):
@@ -134,6 +144,7 @@ def case_inspection(executable, fixture, directory, cuda):
     before = snapshot(directory)
     result = invoke(executable, "check", "--cache", cache, "--frame", "0")
     assert result["inspection_only"] and result["resume_authorized"] is False
+    assert result["job_status"] == "idle"
     assert result["frame"] == 0 and result["substep"] == result["epoch"] == 0
     assert result["points_relative_name"].startswith("blobs/")
     assert not Path(result["points_relative_name"]).is_absolute()
@@ -171,6 +182,11 @@ def case_inspection(executable, fixture, directory, cuda):
         invoke(executable, "check", "--scene", invalid, success=False)
         invalid.unlink()
     assert snapshot(directory) == before, "inspection changed cache bytes, mtimes, or inventory"
+    (cache / ".simulate-job-status").write_bytes(b"unknown operational record")
+    invalid_marker = snapshot(directory)
+    unknown = invoke(executable, "check", "--cache", cache, "--frame", "0")
+    assert unknown["job_status"] == "unknown" and unknown["frame"] == 0
+    assert snapshot(directory) == invalid_marker
     manifest = next((cache / "frames").glob("*.flmf"))
     manifest.write_bytes(b"corrupt")
     corrupt = snapshot(directory)
@@ -209,7 +225,7 @@ def execute(executable, *args, success=True):
     if success:
         assert process.stderr == "", process.stderr
         assert output[-1]["event"] == "result"
-        assert all(r["event"] in ("trace", "frame", "result") for r in output)
+        assert all(r["event"] in ("heartbeat", "trace", "frame", "result") for r in output)
     else:
         errors = records(process.stderr)
         assert errors == [output[-1]] and errors[0]["event"] == "error"
@@ -220,7 +236,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode == "initial" else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow") else []
     return scene, initial
 
 
@@ -240,7 +256,8 @@ def execution_case(executable, fixture, directory, backend):
     before = snapshot(cache)
     resumed = execute(executable, *args, "--resume", "--frame-end", 2)[-1]
     assert resumed["state_digest"] == result["state_digest"]
-    assert snapshot(cache) == before, "resume rewrote committed content"
+    assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before), "resume rewrote committed content"
+    before = snapshot(cache)
     preview = execute(executable, *args, "--resume", "--preview", "--frame-end", 3)[-1]
     assert preview["frame"] == 3 and preview["read_only"]
     assert snapshot(cache) == before
@@ -272,7 +289,8 @@ def execution_case(executable, fixture, directory, backend):
     source_before = snapshot(source_cache)
     repeated_source = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", source_cache,
                               "--backend", backend, "--frame-end", 2, "--resume")[-1]
-    assert repeated_source["state_digest"] == emitted["state_digest"] and snapshot(source_cache) == source_before
+    assert repeated_source["state_digest"] == emitted["state_digest"]
+    assert immutable_cache_files(snapshot(source_cache)) == immutable_cache_files(source_before)
     grown_cache = directory / "grown-cache"
     subprocess.run([str(fixture), "growth-cache", str(grown_cache), str(executable), backend, "source"], check=True)
     grown = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", grown_cache,
@@ -300,7 +318,7 @@ def execution_case(executable, fixture, directory, backend):
     assert boundary_result["source_fractional_remainders"] == [0.9999999999999999]
     boundary_before = snapshot(boundary_cache)
     assert execute(executable, *boundary_args, "--resume")[-1]["state_digest"] == boundary_result["state_digest"]
-    assert snapshot(boundary_cache) == boundary_before
+    assert immutable_cache_files(snapshot(boundary_cache)) == immutable_cache_files(boundary_before)
     defaults, _ = make_scene(executable, fixture, directory, backend, "defaults")
     default_result = execute(executable, "run", "--stage", "simulate", "--scene", defaults,
                              "--cache", directory / "defaults", "--backend", backend, "--frame-end", 1)[-1]
@@ -335,7 +353,7 @@ def replay_case(executable, fixture, directory, backend):
     assert snapshot(cache) == before, "replay changed files or modified times"
     # Resume at ten must verify/reuse eleven through twenty byte-for-byte.
     execute(executable, *run, "--resume", "--frame-start", 10, "--frame-end", 20)
-    assert snapshot(cache) == before
+    assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before)
     if backend == "cuda":
         assert selected["compiled_architecture"] == 1200 and selected["graph_replay_count"] > 0
         print(json.dumps(selected, sort_keys=True))
@@ -402,7 +420,7 @@ def case_execution_validation(executable, fixture, directory, cuda):
     scene.write_bytes(original)
     state = Path(initial[1]); state.write_bytes(state.read_bytes() + b"corrupt")
     execute(executable, *args, *initial, "--resume", success=False)
-    assert snapshot(cache) == before
+    assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before)
     missing_lock = directory / "missing-lock"
     shutil.copytree(cache, missing_lock)
     (missing_lock / ".writer.lock").unlink()
@@ -424,13 +442,142 @@ def case_execution_validation(executable, fixture, directory, cuda):
     corrupt = snapshot(cache)
     execute(executable, "replay", "--cache", cache, "--frame", 2, "--substep", 0, success=False)
     assert snapshot(cache) == corrupt
+    oversized_scene, _ = make_scene(executable, fixture, directory, "cpu", "capacity-failure")
+    failed_cache = directory / "failed-cache"
+    failed = execute(executable, "run", "--stage", "simulate", "--scene", oversized_scene, "--cache", failed_cache,
+                     "--backend", "cpu", "--frame-end", 1, success=False)
+    assert failed[-1]["name"] == "RESOURCE_EXHAUSTED"
+    assert invoke(executable, "check", "--cache", failed_cache, "--frame", 0)["job_status"] == "failed"
+    assert not (failed_cache / "frames" / "00000000000000000001.flmf").exists()
+
+
+class RunningSimulation:
+    def __init__(self, executable, args):
+        self.process = subprocess.Popen(
+            [str(executable), *map(str, args)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, encoding="utf-8",
+        )
+        self.process.stdin.reconfigure(newline="")
+        self.lines = Queue()
+        self.reader = Thread(target=self.read_lines)
+        self.reader.start()
+
+    def read_lines(self):
+        for line in self.process.stdout:
+            self.lines.put((monotonic(), line))
+        self.lines.put((monotonic(), ""))
+
+    def next_event(self, event):
+        deadline = monotonic() + 10
+        while monotonic() < deadline:
+            try:
+                received_at, line = self.lines.get(timeout=max(0, deadline - monotonic()))
+            except Empty:
+                break
+            assert line, f"child exited before {event}"
+            record, = records(line)
+            assert record["event"] != "error" or event == "error", record
+            if record["event"] == event:
+                return received_at, record
+        raise AssertionError(f"missing {event} from running simulation")
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait(timeout=10)
+        self.reader.join(timeout=10)
+        assert not self.reader.is_alive()
+        self.process.stdin.close()
+        self.process.stdout.close()
+        self.process.stderr.close()
+
+
+def lifecycle_case(executable, fixture, directory, backend):
+    # A 1 us maximum step makes the first frame long using real solver work.
+    # The committed frame zero remains available for inspection during the wait.
+    scene, initial = make_scene(executable, fixture, directory, backend, "slow")
+    cache = directory / "lifecycle"
+    run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
+    frame_zero = ["check", "--cache", cache, "--frame", 0]
+    running = RunningSimulation(executable, [*run, "--frame-end", 1])
+    try:
+        _, published = running.next_event("frame")
+        assert published["frame"] == 0
+        first_time, first = running.next_event("heartbeat")
+        # A first heartbeat may precede the initial snapshot. Once frame zero
+        # has appeared on stdout, every later heartbeat must know it is published.
+        assert first["last_published_frame"] == 0 and first["backend"] == backend
+        assert first["last_settled_clock"] == {"frame": 0, "substep": 0, "epoch": 0, "accepted_step": 0}
+        before = snapshot(cache, live_job=True)
+        active = invoke(executable, *frame_zero)
+        assert active["job_status"] == "baking"
+        assert active["epoch"] == 0 and active["point_count"] == 1
+        assert snapshot(cache, live_job=True) == before, "live inspection mutated the cache"
+        competing = execute(executable, *run, "--resume", "--frame-end", 0, success=False)[-1]
+        assert competing["name"] == "ABORTED", competing
+        # Discard an unrelated command and retain a command split across reads.
+        running.process.stdin.write("cancelled\ncan")
+        running.process.stdin.flush()
+        second_time, second = running.next_event("heartbeat")
+        assert second["last_published_frame"] == 0
+        assert second["last_settled_clock"] == first["last_settled_clock"]
+        assert 0 < second["elapsed_milliseconds"] - first["elapsed_milliseconds"] <= 1000
+        assert 0 < second_time - first_time <= 1.0, (first_time, second_time)
+        cancel_sent = monotonic()
+        running.process.stdin.write("cel\r\n")
+        running.process.stdin.flush()
+        _, cancelled = running.next_event("error")
+        assert cancelled["name"] == "CANCELLED", cancelled
+        assert running.process.wait(timeout=10) != 0
+        cancel_exit_seconds = monotonic() - cancel_sent
+        assert 0 < cancel_exit_seconds <= 10, cancel_exit_seconds
+        assert not running.process.stdin.closed, "cancellation should not require EOF"
+        assert records(running.process.stderr.read()) == [cancelled]
+        _, final_line = running.lines.get(timeout=10)
+        assert final_line == "", "unexpected stdout after the terminal record"
+    finally:
+        running.close()
+    assert invoke(executable, *frame_zero)["job_status"] == "cancelled"
+    assert invoke(executable, *frame_zero)["points_relative_name"] == active["points_relative_name"]
+    assert immutable_cache_files(snapshot(cache)) == immutable_cache_files(before)
+    assert not (cache / "frames" / "00000000000000000001.flmf").exists()
+    assert execute(executable, *run, "--resume", "--frame-end", 0)[-1]["frame"] == 0
+    assert invoke(executable, *frame_zero)["job_status"] == "complete"
+
+    killed = RunningSimulation(executable, [*run, "--resume", "--frame-end", 1])
+    try:
+        killed.next_event("frame")
+        assert invoke(executable, *frame_zero)["job_status"] == "baking"
+        killed.process.kill()
+        assert killed.process.wait(timeout=10) != 0
+    finally:
+        killed.close()
+    abandoned = snapshot(cache)
+    assert invoke(executable, *frame_zero)["job_status"] == "crashed"
+    assert snapshot(cache) == abandoned, "crash classification must be read-only"
+    assert execute(executable, *run, "--resume", "--frame-end", 0)[-1]["frame"] == 0
+    assert invoke(executable, *frame_zero)["job_status"] == "complete"
+    if backend == "cuda":
+        assert published["compiled_architecture"] == 1200 and published["snapshot_copy_milliseconds"] > 0
+    print(json.dumps({
+        "backend": backend, "heartbeat_interval_seconds": second_time - first_time,
+        "cancel_exit_seconds": cancel_exit_seconds, "frame_zero": published,
+    }, sort_keys=True))
+
+
+def case_cpu_lifecycle(executable, fixture, directory, cuda):
+    lifecycle_case(executable, fixture, directory, "cpu")
+
+
+def case_cuda_lifecycle(executable, fixture, directory, cuda):
+    lifecycle_case(executable, fixture, directory, "cuda")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

@@ -24,8 +24,8 @@ PLATFORMS = {
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
 PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
-CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation")}
-CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay"}
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle")}
+CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle"}
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
@@ -624,7 +624,7 @@ def run_ctest(run, label, required):
             raise ValueError(f"ctest {label} must contain exactly the required process checks")
         for name, output in case_outputs.items():
             lines = output.splitlines()
-            expected_lines = 1 if label == "cli" else 2
+            expected_lines = 2 if label == "cuda-cli" or name == "SimulateCli.cpu_lifecycle" else 1
             if len(lines) != expected_lines or lines[-1] != f"PASS {name.removeprefix('SimulateCli.')}":
                 raise ValueError(f"ctest {label} is missing successful process evidence")
     if incomplete:
@@ -652,6 +652,40 @@ def verify_cuda_cli_receipt(output, qualification, config):
         raise ValueError("CUDA CLI did not report the qualified device and executed image")
     return {"device": device["device"], "compiled_architecture": architecture * 10,
             "driver_api": device["driver_api_version"], "runtime_api": device["runtime_version"]}
+
+
+
+def verify_cli_lifecycle_receipt(output, backend, compiled_architecture=None):
+    try:
+        receipt = json.loads(output.splitlines()[0])
+    except (ValueError, IndexError) as error:
+        raise ValueError("CLI lifecycle receipt is malformed") from error
+    if not isinstance(receipt, dict) or receipt.get("backend") != backend:
+        raise ValueError("CLI lifecycle receipt does not identify the requested backend")
+    durations = {}
+    for name, limit_seconds in (("heartbeat_interval_seconds", 1), ("cancel_exit_seconds", 10)):
+        duration = receipt.get(name)
+        if type(duration) not in (int, float) or not 0 < duration <= limit_seconds:
+            raise ValueError(f"CLI lifecycle receipt violates its {name} bound")
+        durations[name] = duration
+    expected_frame = {"protocol_version": 1, "event": "frame", "frame": 0, "published": True}
+    if compiled_architecture is not None:
+        expected_frame["compiled_architecture"] = compiled_architecture
+    frame_zero = receipt.get("frame_zero")
+    if not isinstance(frame_zero, dict) or any(
+        frame_zero.get(name) != value or type(frame_zero.get(name)) is not type(value)
+        for name, value in expected_frame.items()
+    ):
+        raise ValueError("CLI lifecycle receipt does not identify the published initial frame")
+    if compiled_architecture is not None:
+        copy_milliseconds = frame_zero.get("snapshot_copy_milliseconds")
+        if (
+            type(copy_milliseconds) not in (int, float) or copy_milliseconds <= 0
+            or not math.isfinite(copy_milliseconds)
+        ):
+            raise ValueError("CLI lifecycle receipt has no finite positive D2H event interval")
+        expected_frame["snapshot_copy_milliseconds"] = copy_milliseconds
+    return {"backend": backend, **durations, "frame_zero": expected_frame}
 
 
 def verify_cuda_execution_receipt(output, qualification, case):
@@ -1006,7 +1040,8 @@ def validate(run, args, system, compiler, compiler_id, architecture):
     evidence = {gate: {"status": "not_run"} for gate in ("gpu", "cuda_mock", "cuda_cli", "sanitizer", "proof")}
     evidence["native_cpu"] = cpu
     evidence["schema"], _ = run_ctest(run, "schema", SCHEMA_REQUIRED)
-    evidence["cli"], _ = run_ctest(run, "cli", CLI_REQUIRED)
+    evidence["cli"], portable_cli_outputs = run_ctest(run, "cli", CLI_REQUIRED)
+    evidence["cli"]["lifecycle"] = verify_cli_lifecycle_receipt(portable_cli_outputs["SimulateCli.cpu_lifecycle"], "cpu")
     if run.mode == "cuda":
         evidence["cuda_cli"], cli_outputs = run_ctest(run, "cuda-cli", CUDA_CLI_REQUIRED)
         evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
@@ -1014,6 +1049,9 @@ def validate(run, args, system, compiler, compiler_id, architecture):
             case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
             for case in ("cuda_execution", "cuda_replay")
         }
+        evidence["cuda_cli"]["lifecycle"] = verify_cli_lifecycle_receipt(
+            cli_outputs["SimulateCli.cuda_lifecycle"], "cuda", qualification["cuda"]["architecture"] * 10
+        )
         evidence["cuda_mock"], _ = run_ctest(run, "cuda-mock", set())
         evidence["gpu"], gpu_case_outputs = run_ctest(run, "gpu", GPU_REQUIRED)
         probe_evidence = verify_gpu_probe_receipt(gpu_case_outputs[GPU_PROBE_RECEIPT_CASE], qualification, run.config)
