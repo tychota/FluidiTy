@@ -78,8 +78,10 @@ struct LiquidSubstepBackend3D {
   // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
   // side from each face anchor. Tank faces use side zero, strict interior tags
   // and the active constraint's normal and velocity at the staggered lattice anchor.
-  // The two output spans must not overlap inputs or
-  // one another. Failed outputs remain trial-only and are discarded by scheduler.
+  // Wall values depend only on the supplied grid, obstacle pose and side. The
+  // caller owns both output spans, which must not overlap inputs or one another.
+  // Gather and scalar field sampling leave wall samples intact until the caller
+  // overwrites them. Failed outputs remain trial-only and are discarded by the scheduler.
   using SampleFaces = absl::Status(
       void* context,
       SparseMacGridView3D grid,
