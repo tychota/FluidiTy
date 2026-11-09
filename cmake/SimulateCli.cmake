@@ -1,6 +1,4 @@
 find_package(Threads REQUIRED)
-add_executable(fluidity_simulate
-  native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc)
 # Embed the exact runtime schema at configure time; reconfigure when it changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs")
@@ -9,12 +7,18 @@ file(READ "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs" simulate_r
 string(REPLACE "include \"common.fbs\";" "" simulate_resolved_schema "${simulate_resolved_schema}")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/simulate_schema_text.h.in"
   "${FLUIDITY_CACHE_GENERATED_DIR}/simulate_schema_text.h" @ONLY)
-target_include_directories(fluidity_simulate PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
-target_link_libraries(fluidity_simulate PRIVATE fluidity_native fluidity_native_options flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
-if(FLUIDITY_ENABLE_CUDA)
-  target_compile_definitions(fluidity_simulate PRIVATE FLUIDITY_SIMULATE_CUDA=1)
-  target_link_libraries(fluidity_simulate PRIVATE fluidity_cuda_probe fluidity_cuda_operators)
-endif()
+function(fluidity_add_simulate_executable target)
+  add_executable(${target}
+    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc)
+  target_include_directories(${target} PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+  target_link_libraries(${target} PRIVATE fluidity_native fluidity_native_options
+    flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
+  if(FLUIDITY_ENABLE_CUDA)
+    target_compile_definitions(${target} PRIVATE FLUIDITY_SIMULATE_CUDA=1)
+    target_link_libraries(${target} PRIVATE fluidity_cuda_probe fluidity_cuda_operators)
+  endif()
+endfunction()
+fluidity_add_simulate_executable(fluidity_simulate)
 if(BUILD_TESTING)
   add_executable(fluidity_simulate_fixture native/tests/simulate_fixture.cc)
   target_link_libraries(fluidity_simulate_fixture PRIVATE fluidity_native fluidity_native_options)
@@ -32,6 +36,17 @@ if(BUILD_TESTING)
     set_tests_properties(SimulateCli.${case} PROPERTIES LABELS cli)
   endforeach()
   if(FLUIDITY_ENABLE_CUDA)
+    # Only this test-linked executable can arm typed runtime faults.
+    fluidity_add_simulate_executable(fluidity_simulate_fault_fixture)
+    target_sources(fluidity_simulate_fault_fixture PRIVATE native/tests/simulate_fault_fixture.cc)
+    target_link_libraries(fluidity_simulate_fault_fixture PRIVATE CUDA::cudart)
+    target_compile_definitions(fluidity_simulate_fault_fixture PRIVATE FLUIDITY_SIMULATE_FAULT_FIXTURE=1)
+    add_test(NAME SimulateReliability.InterruptionCampaign
+      COMMAND "${Python3_EXECUTABLE}" -E -X utf8
+        "${PROJECT_SOURCE_DIR}/tools/native/tests/run_liquid_fault_campaign.py"
+        --executable $<TARGET_FILE:fluidity_simulate> --fault-executable $<TARGET_FILE:fluidity_simulate_fault_fixture>
+        --fixture $<TARGET_FILE:fluidity_simulate_fixture>)
+    set_tests_properties(SimulateReliability.InterruptionCampaign PROPERTIES LABELS cuda-reliability TIMEOUT 300)
     foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_lifecycle)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"

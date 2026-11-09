@@ -525,8 +525,19 @@ absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic
 }
 }  // namespace fluidity::simulate
 
+#if defined(FLUIDITY_SIMULATE_FAULT_FIXTURE)
+namespace fluidity::simulate {
+// The test-linked driver consumes its optional fault selector before normal
+// command parsing. The production target never links the fault implementation.
+void ConfigureSimulateFaultFixture(std::vector<std::string>& arguments);
+}  // namespace fluidity::simulate
+#endif
+
 namespace {
 int Main(std::vector<std::string> arguments) {
+#if defined(FLUIDITY_SIMULATE_FAULT_FIXTURE)
+  fluidity::simulate::ConfigureSimulateFaultFixture(arguments);
+#endif
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
   auto command = fluidity::simulate::ParseCommand(arguments, &diagnostic);

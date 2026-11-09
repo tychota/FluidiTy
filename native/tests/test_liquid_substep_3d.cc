@@ -1,10 +1,13 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <vector>
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
@@ -32,6 +35,21 @@ LiquidSceneInputs3D Scene() {
   scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   return scene;
 }
+// Serialize through the production checkpoint codec so storage omitted by a
+// hand-picked field comparison cannot pass the F9 bridge.
+void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidState3D& after) {
+  const auto before_bytes = EncodeLiquidState3D(before);
+  const auto after_bytes = EncodeLiquidState3D(after);
+  ASSERT_TRUE(before_bytes.ok()) << before_bytes.status();
+  ASSERT_TRUE(after_bytes.ok()) << after_bytes.status();
+  const auto before_digest = LiquidContentDigest3D(before_bytes->values());
+  const auto after_digest = LiquidContentDigest3D(after_bytes->values());
+  EXPECT_TRUE(std::ranges::equal(before_bytes->values(), after_bytes->values()));
+  EXPECT_EQ(before_digest, after_digest);
+  std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
+            << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
 TEST(LiquidSubstep3D, PhiloxPublishedZeroKnownVector) {
   EXPECT_EQ(
       LiquidPhilox4x32_10({0, 0, 0, 0}, {0, 0}),
@@ -107,11 +125,34 @@ TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {
 class LiquidStageFailure3D : public testing::TestWithParam<int> {};
 TEST_P(LiquidStageFailure3D, CommittedInventoryUnchanged) {
   auto initial = Initial();
-  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options());
+  initial.random_seed = 0xfedcba9876543210ULL;
+  initial.sources = *LiquidRecords3D<LiquidSourceState3D>::Create(1);
+  ASSERT_TRUE(initial.sources.Resize(1).ok());
+  initial.sources[0] = {0, 8, 0.25};
+  LiquidEmissionSource3D source;
+  source.particles_per_second = 130;
+  source.world_position = {2.5, 2.5, 2.5};
+  source.world_position_jitter = {0.1, 0.1, 0.1};
+  auto scene = Scene();
+  scene.sources = std::span(&source, 1);
+  scene.ambient_pressure = 3;
+  scene.surface_tension = 0.1;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
   auto snapshot = CloneLiquidState3D(scheduler->committed(), Options().capacities);
   ASSERT_TRUE(snapshot.ok());
+  ASSERT_EQ(snapshot->random_seed, initial.random_seed);
+  ASSERT_GT(snapshot->next_particle_id, initial.next_particle_id);
+  ASSERT_GT(snapshot->sources[0].next_child_ordinal, initial.sources[0].next_child_ordinal);
+  ASSERT_GT(snapshot->sources[0].fractional_remainder, 0);
+  ASSERT_FALSE(snapshot->blocks.values().empty());
+  ASSERT_TRUE(std::ranges::any_of(snapshot->cells.values(), [](const LiquidCellState3D& cell) {
+    return cell.previous_pressure != 0;
+  }));
+  ASSERT_TRUE(std::ranges::any_of(snapshot->faces.values(), [](const LiquidFaceState3D& face) {
+    return face.carrier_velocity != 0 && face.validity != LiquidFaceValidity3D::kMissing;
+  }));
   auto stage = static_cast<LiquidPhysicalStage3D>(GetParam());
   scheduler->SetStageFaultHookForTesting({&stage, [](void* context, LiquidPhysicalStage3D current, double) {
                                             return current == *static_cast<LiquidPhysicalStage3D*>(context)
@@ -123,9 +164,14 @@ TEST_P(LiquidStageFailure3D, CommittedInventoryUnchanged) {
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kFatal);
   EXPECT_TRUE(scheduler->committed() == *snapshot);
+  ExpectIdenticalSerializedState(*snapshot, scheduler->committed());
   EXPECT_EQ(scheduler->diagnostics().failed_stage, stage);
 }
-INSTANTIATE_TEST_SUITE_P(LiquidSubstep3D, LiquidStageFailure3D, testing::Range(0, 16));
+INSTANTIATE_TEST_SUITE_P(
+    LiquidSubstep3D,
+    LiquidStageFailure3D,
+    testing::Range(0, static_cast<int>(LiquidPhysicalStage3D::kAdapt))
+);
 TEST(LiquidSubstep3D, RetryHalvesTwiceButIncompatibilityIsFatal) {
   for (const auto code : {absl::StatusCode::kAborted, absl::StatusCode::kFailedPrecondition}) {
     auto initial = Initial();
@@ -333,48 +379,100 @@ TEST(LiquidSubstep3D, EmptyUnionAndMalformedSignedExtentAreDistinguished) {
   EXPECT_TRUE(invalid->committed() == empty);
 }
 TEST(LiquidSubstep3D, SourceRetryAndWholeFrameReplayProduceIdenticalBirths) {
-  auto initial = Initial(0);
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  auto initial = Initial();
   initial.random_seed = 123456789;
   initial.sources = *LiquidRecords3D<LiquidSourceState3D>::Create(1);
   ASSERT_TRUE(initial.sources.Resize(1).ok());
+  initial.sources[0] = {0, 3, 0.25};
   LiquidEmissionSource3D source;
   source.particles_per_second = 400;
   source.world_position = {2.5, 2.5, 2.5};
   source.world_position_jitter = {0.2, 0.2, 0.2};
   auto scene = Scene();
   scene.sources = std::span(&source, 1);
+  scene.ambient_pressure = 3;
+  scene.surface_tension = 0.1;
   auto options = Options();
-  options.maximum_step_duration = 0.005;
-  auto reference = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  // Dyadic times keep the retried and uninterrupted schedules bit-identical.
+  options.maximum_step_duration = 0.0078125;
+  auto bootstrap = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(bootstrap.ok());
+  ASSERT_TRUE(bootstrap->AdvanceFrame(0.0078125).ok());
+  const auto& warm_start = bootstrap->committed();
+  ASSERT_TRUE(std::ranges::any_of(warm_start.cells.values(), [](const LiquidCellState3D& cell) {
+    return cell.previous_pressure != 0;
+  }));
+  auto reference = LiquidSubstepScheduler3D::Create(warm_start, scene, options);
   ASSERT_TRUE(reference.ok());
-  ASSERT_TRUE(reference->AdvanceFrame(0.01).ok());
-  options.maximum_step_duration = 0.01;
-  auto retry = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(reference->AdvanceFrame(0.0234375).ok());
+  options.maximum_step_duration = 0.015625;
+  auto retry = LiquidSubstepScheduler3D::Create(warm_start, scene, options);
   ASSERT_TRUE(retry.ok());
-  int rejected = 0;
-  retry->SetStageFaultHookForTesting({&rejected, [](void* c, LiquidPhysicalStage3D stage, double) {
-                                        if (stage == LiquidPhysicalStage3D::kAccept && ++*static_cast<int*>(c) == 1) {
+  int acceptance_stage_count = 0;
+  retry->SetStageFaultHookForTesting({&acceptance_stage_count, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                        if (stage == LiquidPhysicalStage3D::kAccept
+                                            && ++*static_cast<int*>(context) == 1) {
                                           return absl::Status(absl::StatusCode::kAborted, {});
                                         }
                                         return absl::OkStatus();
                                       }});
-  ASSERT_TRUE(retry->AdvanceFrame(0.01).ok());
+  ASSERT_TRUE(retry->AdvanceFrame(0.0234375).ok());
+  ASSERT_EQ(retry->diagnostics().dt_retries, 1);
   EXPECT_TRUE(retry->committed() == reference->committed());
-  options.maximum_step_duration = 0.005;
+  ExpectIdenticalSerializedState(reference->committed(), retry->committed());
+  // Dyadic times keep the retried and uninterrupted schedules bit-identical.
+  options.maximum_step_duration = 0.0078125;
   options.capacity_replay_reservations = options.capacities;
   options.capacity_replay_reservations.particles = 32;
-  auto replay = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  auto replay = LiquidSubstepScheduler3D::Create(warm_start, scene, options);
   ASSERT_TRUE(replay.ok());
-  rejected = 0;
-  replay->SetStageFaultHookForTesting({&rejected, [](void* c, LiquidPhysicalStage3D stage, double) {
-                                         if (stage == LiquidPhysicalStage3D::kAccept && ++*static_cast<int*>(c) == 2) {
+  acceptance_stage_count = 0;
+  replay->SetStageFaultHookForTesting({&acceptance_stage_count, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                         if (stage == LiquidPhysicalStage3D::kAccept
+                                             && ++*static_cast<int*>(context) == 2) {
                                            return absl::Status(absl::StatusCode::kResourceExhausted, {});
                                          }
                                          return absl::OkStatus();
                                        }});
-  ASSERT_TRUE(replay->AdvanceFrame(0.01).ok());
+  ASSERT_TRUE(replay->AdvanceFrame(0.0234375).ok());
+  ASSERT_EQ(replay->diagnostics().capacity_replays, 1);
   EXPECT_TRUE(replay->committed() == reference->committed());
+  ExpectIdenticalSerializedState(reference->committed(), replay->committed());
+  std::cout << "f9_retry_attempts=" << retry->diagnostics().attempts
+            << " f9_replay_attempts=" << replay->diagnostics().attempts
+            << " f9_pressure_iterations=" << replay->diagnostics().pressure_diagnostics.iteration_count
+            << " f9_reserved_bytes=" << replay->reserved_bytes() << '\n';
 }
+TEST(LiquidSubstep3D, RepeatedCapacityFailureRetainsSerializedFrameStart) {
+  auto options = Options();
+  options.maximum_step_duration = 0.005;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.particles = 32;
+  auto initial = Initial();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  ASSERT_TRUE(scheduler.ok());
+  ASSERT_TRUE(scheduler->AdvanceFrame(0.005).ok());
+  auto frame_start = CloneLiquidState3D(scheduler->committed(), options.capacities);
+  ASSERT_TRUE(frame_start.ok());
+
+  int acceptance_stage_count = 0;
+  scheduler->SetStageFaultHookForTesting({
+      &acceptance_stage_count,
+      [](void* context, LiquidPhysicalStage3D stage, double) {
+        if (stage == LiquidPhysicalStage3D::kAccept && ++*static_cast<int*>(context) >= 2) {
+          return absl::ResourceExhaustedError("");
+        }
+        return absl::OkStatus();
+      },
+  });
+  EXPECT_EQ(scheduler->AdvanceFrame(0.015).code(), absl::StatusCode::kResourceExhausted);
+  EXPECT_EQ(acceptance_stage_count, 3);
+  EXPECT_EQ(scheduler->diagnostics().accepted_attempts, 1);
+  EXPECT_EQ(scheduler->diagnostics().capacity_replays, 1);
+  ExpectIdenticalSerializedState(*frame_start, scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, RetainedAgesAdvanceOnlyOnAcceptanceAndFinishDoesNotMutateEpoch) {
   auto initial = Initial();
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options());
@@ -393,7 +491,12 @@ TEST(LiquidSubstep3D, RetainedAgesAdvanceOnlyOnAcceptanceAndFinishDoesNotMutateE
   auto snapshot = CloneLiquidState3D(scheduler->committed(), Options().capacities);
   ASSERT_TRUE(snapshot.ok());
   ASSERT_TRUE(scheduler->FinishFrame().ok());
+  // M1 adaptation is an identity stage recorded after publication. Closing
+  // the schedule cannot install another committed version.
+  ASSERT_GT(scheduler->diagnostics().stage_count, 0);
+  EXPECT_EQ(scheduler->diagnostics().stages[scheduler->diagnostics().stage_count - 1], LiquidPhysicalStage3D::kAdapt);
   EXPECT_TRUE(scheduler->committed() == *snapshot);
+  ExpectIdenticalSerializedState(*snapshot, scheduler->committed());
 }
 TEST(LiquidSubstep3D, ExponentialUsesTrueGradientAndSeparationUsesSurfaceExpansion) {
   auto initial = Initial(2);
@@ -612,6 +715,7 @@ TEST(LiquidSubstep3D, ActualSealedIncompatiblePressureIsFatalWithoutRetry) {
   EXPECT_EQ(scheduler->diagnostics().attempts, 1);
   EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
   EXPECT_TRUE(scheduler->committed() == initial);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 TEST(LiquidSubstep3D, CandidateValidationRejectsPoisonAfterActualNumericalUpdate) {
   auto initial = Initial();
@@ -628,6 +732,7 @@ TEST(LiquidSubstep3D, CandidateValidationRejectsPoisonAfterActualNumericalUpdate
   ASSERT_TRUE(scheduler.ok());
   EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kInvalidArgument);
   EXPECT_TRUE(scheduler->committed() == initial);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 TEST(LiquidSubstep3D, StableSignedBinsAndZeroWeightOwnersSurviveIntegratedStep) {
   auto initial = Initial(3);

@@ -46,6 +46,14 @@ LiquidSceneInputs3D Scene() {
   scene.obstacle = TranslatingHalfspace3D{{1, 0, 0}, 0, {0.1, 0, 0}};
   return scene;
 }
+double MaximumComponentError(Vec3 reference, Vec3 measured) {
+  return std::max({
+      std::abs(reference.x - measured.x),
+      std::abs(reference.y - measured.y),
+      std::abs(reference.z - measured.z),
+  });
+}
+
 void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
   EXPECT_EQ(cpu.clock, gpu.clock);
   EXPECT_EQ(cpu.next_particle_id, gpu.next_particle_id);
@@ -59,30 +67,50 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
   ASSERT_EQ(cpu.blocks.size(), gpu.blocks.size());
   ASSERT_EQ(cpu.cells.size(), gpu.cells.size());
   ASSERT_EQ(cpu.faces.size(), gpu.faces.size());
+  double max_world_position_error = 0;
+  double max_world_velocity_error = 0;
+  double max_pressure_error = 0;
+  double max_carrier_velocity_error = 0;
   for (std::size_t index = 0; index < cpu.particles.size(); ++index) {
-    const auto& a = cpu.particles[index];
-    const auto& b = gpu.particles[index];
-    EXPECT_EQ(a.id, b.id);
-    EXPECT_EQ(a.tag, b.tag);
-    const std::array cpu_rows{a.velocity_slopes.x_row, a.velocity_slopes.y_row, a.velocity_slopes.z_row};
-    const std::array gpu_rows{b.velocity_slopes.x_row, b.velocity_slopes.y_row, b.velocity_slopes.z_row};
-    for (std::size_t row = 0; row < cpu_rows.size(); ++row) {
-      EXPECT_NEAR(cpu_rows[row].x, gpu_rows[row].x, kVelocityTolerance);
-      EXPECT_NEAR(cpu_rows[row].y, gpu_rows[row].y, kVelocityTolerance);
-      EXPECT_NEAR(cpu_rows[row].z, gpu_rows[row].z, kVelocityTolerance);
+    const auto& cpu_particle = cpu.particles[index];
+    const auto& cuda_particle = gpu.particles[index];
+    EXPECT_EQ(cpu_particle.id, cuda_particle.id);
+    EXPECT_EQ(cpu_particle.tag, cuda_particle.tag);
+    const std::array cpu_velocity_slopes{
+        cpu_particle.velocity_slopes.x_row,
+        cpu_particle.velocity_slopes.y_row,
+        cpu_particle.velocity_slopes.z_row
+    };
+    const std::array cuda_velocity_slopes{
+        cuda_particle.velocity_slopes.x_row,
+        cuda_particle.velocity_slopes.y_row,
+        cuda_particle.velocity_slopes.z_row
+    };
+    for (std::size_t axis = 0; axis < cpu_velocity_slopes.size(); ++axis) {
+      EXPECT_NEAR(cpu_velocity_slopes[axis].x, cuda_velocity_slopes[axis].x, kVelocityTolerance);
+      EXPECT_NEAR(cpu_velocity_slopes[axis].y, cuda_velocity_slopes[axis].y, kVelocityTolerance);
+      EXPECT_NEAR(cpu_velocity_slopes[axis].z, cuda_velocity_slopes[axis].z, kVelocityTolerance);
     }
-    EXPECT_EQ(a.mass, b.mass);
-    EXPECT_EQ(a.reference_volume, b.reference_volume);
-    EXPECT_EQ(a.side_tag, b.side_tag);
-    EXPECT_EQ(a.affine_enabled, b.affine_enabled);
-    EXPECT_EQ(a.pic_initialized, b.pic_initialized);
-    EXPECT_NEAR(a.world_position.x, b.world_position.x, kPositionTolerance);
-    EXPECT_NEAR(a.world_position.y, b.world_position.y, kPositionTolerance);
-    EXPECT_NEAR(a.world_position.z, b.world_position.z, kPositionTolerance);
-    EXPECT_NEAR(a.world_velocity.x, b.world_velocity.x, kVelocityTolerance);
-    EXPECT_NEAR(a.world_velocity.y, b.world_velocity.y, kVelocityTolerance);
-    EXPECT_NEAR(a.world_velocity.z, b.world_velocity.z, kVelocityTolerance);
-    EXPECT_NEAR(a.volume_ratio, b.volume_ratio, kPositionTolerance);
+    EXPECT_EQ(cpu_particle.mass, cuda_particle.mass);
+    EXPECT_EQ(cpu_particle.reference_volume, cuda_particle.reference_volume);
+    EXPECT_EQ(cpu_particle.side_tag, cuda_particle.side_tag);
+    EXPECT_EQ(cpu_particle.affine_enabled, cuda_particle.affine_enabled);
+    EXPECT_EQ(cpu_particle.pic_initialized, cuda_particle.pic_initialized);
+    EXPECT_NEAR(cpu_particle.world_position.x, cuda_particle.world_position.x, kPositionTolerance);
+    EXPECT_NEAR(cpu_particle.world_position.y, cuda_particle.world_position.y, kPositionTolerance);
+    EXPECT_NEAR(cpu_particle.world_position.z, cuda_particle.world_position.z, kPositionTolerance);
+    EXPECT_NEAR(cpu_particle.world_velocity.x, cuda_particle.world_velocity.x, kVelocityTolerance);
+    EXPECT_NEAR(cpu_particle.world_velocity.y, cuda_particle.world_velocity.y, kVelocityTolerance);
+    EXPECT_NEAR(cpu_particle.world_velocity.z, cuda_particle.world_velocity.z, kVelocityTolerance);
+    EXPECT_NEAR(cpu_particle.volume_ratio, cuda_particle.volume_ratio, kPositionTolerance);
+    max_world_position_error = std::max(
+        max_world_position_error,
+        MaximumComponentError(cpu_particle.world_position, cuda_particle.world_position)
+    );
+    max_world_velocity_error = std::max(
+        max_world_velocity_error,
+        MaximumComponentError(cpu_particle.world_velocity, cuda_particle.world_velocity)
+    );
   }
   for (std::size_t index = 0; index < cpu.blocks.size(); ++index) {
     EXPECT_EQ(cpu.blocks[index], gpu.blocks[index]);
@@ -93,6 +121,8 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
     EXPECT_EQ(cpu.cells[index].cell_index.z, gpu.cells[index].cell_index.z);
     EXPECT_EQ(cpu.cells[index].occupancy, gpu.cells[index].occupancy);
     EXPECT_NEAR(cpu.cells[index].previous_pressure, gpu.cells[index].previous_pressure, kPressureTolerance);
+    max_pressure_error =
+        std::max(max_pressure_error, std::abs(cpu.cells[index].previous_pressure - gpu.cells[index].previous_pressure));
   }
   for (std::size_t index = 0; index < cpu.faces.size(); ++index) {
     EXPECT_EQ(cpu.faces[index].face_index.axis, gpu.faces[index].face_index.axis);
@@ -104,7 +134,15 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
     EXPECT_EQ(cpu.faces[index].structurally_eligible, gpu.faces[index].structurally_eligible);
     EXPECT_EQ(cpu.faces[index].validity, gpu.faces[index].validity);
     EXPECT_NEAR(cpu.faces[index].carrier_velocity, gpu.faces[index].carrier_velocity, kVelocityTolerance);
+    max_carrier_velocity_error = std::max(
+        max_carrier_velocity_error,
+        std::abs(cpu.faces[index].carrier_velocity - gpu.faces[index].carrier_velocity)
+    );
   }
+  std::cout << std::scientific << std::setprecision(9) << "f9_max_world_position_error_m=" << max_world_position_error
+            << " f9_max_world_velocity_error_m_s=" << max_world_velocity_error
+            << " f9_max_pressure_error_pa=" << max_pressure_error
+            << " f9_max_carrier_velocity_error_m_s=" << max_carrier_velocity_error << '\n';
 }
 void Receipt(const char* name, CudaLiquidSubstepUsage3D usage) {
   cudaDeviceProp properties{};
@@ -709,6 +747,7 @@ void CheckNumericalRejection() {
 }
 
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   auto initial = Initial();
   auto options = Options();
   auto cpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
@@ -728,7 +767,13 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   ExpectState(cpu->committed(), gpu->committed());
   EXPECT_EQ(before.device_allocation_count, backend->usage().device_allocation_count);
   EXPECT_EQ(before.device_free_count, backend->usage().device_free_count);
-  Receipt("liquid_substep_3d", backend->usage());
+  const auto final_usage = backend->usage();
+  std::cout << "f9_cpu_pressure_iterations=" << cpu->diagnostics().pressure_diagnostics.iteration_count
+            << " f9_cuda_pressure_iterations=" << gpu->diagnostics().pressure_diagnostics.iteration_count
+            << " f9_cuda_host_reserved_bytes=" << gpu->reserved_bytes()
+            << " f9_cuda_live_device_bytes=" << final_usage.arena_metrics.live_device_bytes
+            << " f9_cuda_live_pinned_bytes=" << final_usage.arena_metrics.live_pinned_bytes << '\n';
+  Receipt("liquid_substep_3d", final_usage);
   ASSERT_NO_FATAL_FAILURE(CheckSignedQuantaAndHistories(false));
   ASSERT_NO_FATAL_FAILURE(CheckSignedQuantaAndHistories(true));
   ASSERT_NO_FATAL_FAILURE(CheckReplayMoveAndEmpty());
@@ -739,6 +784,7 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   ASSERT_NO_FATAL_FAILURE(CheckRuntimeFailure());
 }
 TEST(CudaLiquidSubstep3D, ReplaysAfterCapacityGrowth) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   auto initial = Initial();
   auto options = Options();
   options.maximum_step_duration = 0.005;

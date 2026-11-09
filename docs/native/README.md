@@ -450,3 +450,23 @@ intervals and measured heartbeat and cancellation bounds.
 These gates retain the existing 32 GPU / 30 sanitizer inventories. The Python driver
 is invoked with required binary paths, rejects optimized Python, and never silently
 skips an unavailable executable or device.
+
+### Committed-state reliability campaign
+
+After building either locked Windows CUDA preset, run the longer F9 campaign
+separately from the quick CLI and operator suites. It uses the production CLI
+for 17 cooperative cancellations and 17 process kills. A test-only executable
+reports 16 injected failures after a successful real CUDA snapshot event.
+The campaign verifies every surviving manifest and point payload, then resumes
+each cache through frame 10 and compares the checkpoint and frame bytes against
+an uninterrupted execution of the same artifact. It also delays the initial
+CUDA snapshot and checks that heartbeat output continues during the wait.
+
+```powershell
+uv run --no-sync --project reference --locked --group native ctest --preset windows-release-cuda -L '^cuda-reliability$' --no-tests=error -V
+```
+
+The test prints a JSON receipt with the producing device, each stopped and
+recovered frame inventory, the recovered state digests, and the CUDA event
+timing. Keep the verbose log under the ignored output directory. The device
+errors are injected by the test fixture after actual CUDA completions.
