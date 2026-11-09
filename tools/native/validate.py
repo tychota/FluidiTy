@@ -60,7 +60,11 @@ GPU_BOUNDARY_COUPLED_3D_CASE = "CudaLiquidBoundary3D.CoupledBoundaryOperatorsPre
 GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
 GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
 GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE}
+GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
+GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
+GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
+    *GPU_SNAPSHOT_CASES,
     *GPU_SUBSTEP_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
@@ -93,6 +97,8 @@ GPU_GRAPH_CASES = {
 }
 GPU_REQUIRED = GPU_PROBE_CASES | GPU_OPERATOR_MEMCHECK_CASES | {GPU_OPERATOR_ERROR_CASE} | GPU_GRAPH_CASES
 GPU_OPERATOR_RECEIPT_CASES = {
+    GPU_SNAPSHOT_3D_CASE: "liquid_snapshot_3d",
+    GPU_SNAPSHOT_FAILURE_3D_CASE: "liquid_snapshot_3d_failure",
     GPU_SUBSTEP_3D_CASE: "liquid_substep_3d",
     GPU_SUBSTEP_GROWTH_3D_CASE: "liquid_substep_3d_growth",
     GPU_BOUNDARY_TRANSFER_3D_CASE: "liquid_boundary_transfer_3d",
@@ -124,6 +130,11 @@ SUBSTEP_RECEIPT_RE = re.compile(
     r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
     r"substep_device_timeline_ms=(?P<substep_device_timeline_ms>[0-9]+\.[0-9]+) "
     r"timing_scope=topology_through_publication"
+)
+SNAPSHOT_RECEIPT_RE = re.compile(
+    r"operator=(?P<operator>[a-z_0-9]+) compiled_architecture=(?P<compiled_architecture>[0-9]+) "
+    r"snapshot_copy_ms=(?P<snapshot_copy_ms>[0-9]+\.[0-9]+) "
+    r"timing_scope=d2h_stream_events"
 )
 GRAPH_REPLAY_ITERATIONS = 64
 GRAPH_RECEIPT_RE = re.compile(
@@ -650,13 +661,21 @@ def verify_operator_receipts(case_outputs, expected_compiled_architecture, evide
         if len(observed_receipt_lines) != 1:
             raise ValueError(f"{evidence_label}: {case_name} must report exactly one operator receipt")
         substep = case_name in GPU_SUBSTEP_CASES
-        receipt_pattern = SUBSTEP_RECEIPT_RE if substep else OPERATOR_RECEIPT_RE
+        snapshot = case_name in GPU_SNAPSHOT_CASES
+        if snapshot:
+            receipt_pattern = SNAPSHOT_RECEIPT_RE
+            duration_field = "snapshot_copy_ms"
+        elif substep:
+            receipt_pattern = SUBSTEP_RECEIPT_RE
+            duration_field = "substep_device_timeline_ms"
+        else:
+            receipt_pattern = OPERATOR_RECEIPT_RE
+            duration_field = "kernel_ms"
         receipt_match = receipt_pattern.fullmatch(observed_receipt_lines[0])
         if receipt_match is None:
             raise ValueError(f"{evidence_label}: malformed operator receipt in {case_name}")
         observed_operator = receipt_match["operator"]
         compiled_architecture_text = receipt_match["compiled_architecture"]
-        duration_field = "substep_device_timeline_ms" if substep else "kernel_ms"
         observed_duration_ms = float(receipt_match[duration_field])
         if observed_operator != expected_operator:
             raise ValueError(f"{evidence_label}: {case_name} must report operator {expected_operator}")
@@ -668,6 +687,10 @@ def verify_operator_receipts(case_outputs, expected_compiled_architecture, evide
             "compiled_architecture": expected_compiled_architecture,
             duration_field: observed_duration_ms,
         }
+        if snapshot:
+            if observed_duration_ms <= 0:
+                raise ValueError(f"{evidence_label}: {case_name} reported nonpositive snapshot timeline")
+            measurements[observed_operator]["timing_scope"] = "d2h_stream_events"
         if substep:
             if observed_duration_ms <= 0:
                 raise ValueError(f"{evidence_label}: {case_name} reported nonpositive substep timeline")

@@ -157,6 +157,7 @@ class CudaLiquidEpochLease3D {
 
  private:
   friend class CudaLiquidArena3D;
+  friend class CudaLiquidSnapshotQueue3D;
   cuda_internal::LiquidArenaStorage3D* storage_ = nullptr;
   std::size_t bank_ = 0;
   CudaLiquidEpochIdentity3D identity_;
@@ -202,6 +203,12 @@ class CudaLiquidArena3D {
   // Returns a nonallocating source lease after Initialize. FailedPrecondition
   // before initialization; OutOfRange if an ownership reference counter is full.
   absl::StatusOr<CudaLiquidEpochLease3D> AcquireCommitted();
+  // Query outside a physical attempt, immediately before starting one. False is
+  // ordinary snapshot backpressure: the next trial bank still has source leases.
+  // Never turn false into capacity growth or a physical rejection. Internal means
+  // job poison; FailedPrecondition means no initialized, idle publication owner.
+  // Single-threaded ownership makes true stable until the next owner operation.
+  absl::StatusOr<bool> PublicationReady() const;
   // Checked bins are staged in incoming order with INT32_MAX neutral padding.
   // The fixed-capacity CCCL 3.4.2 graph is authoritative; only its exact checked
   // permutation enters PrepareTrialTopologyFromOrder. Empty input still replays.

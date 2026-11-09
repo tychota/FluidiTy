@@ -41,6 +41,11 @@ class CudaLiquidSubstepBackend3D {
   // counter exhaustion is OutOfRange. Acquire allocates nothing; keep the lease until the consumer's
   // D2H completion fence. Release outside attempts. See CudaLiquidEpochLease3D.
   absl::StatusOr<CudaLiquidEpochLease3D> AcquireCommitted();
+  // Outside-attempt scheduler gate. False is bounded snapshot backpressure;
+  // poll copies/release completed source leases before starting the next attempt.
+  // It is neither a physical rejection nor capacity demand. Propagates arena
+  // Internal poison / FailedPrecondition sequencing. See arena PublicationReady.
+  absl::StatusOr<bool> PublicationReady() const;
   // Collect only unleased retired owners outside physical attempts. A failed
   // drain poisons the job and quarantines storage; no subsequent reuse is allowed.
   void CollectRetired() noexcept;

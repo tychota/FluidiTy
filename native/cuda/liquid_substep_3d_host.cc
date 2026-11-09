@@ -189,6 +189,9 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
           },
   };
 }
+absl::StatusOr<bool> CudaLiquidSubstepBackend3D::PublicationReady() const {
+  return impl_->arena.PublicationReady();
+}
 CudaLiquidSubstepUsage3D CudaLiquidSubstepBackend3D::usage() const {
   const auto metrics = impl_->arena.metrics();
   return {

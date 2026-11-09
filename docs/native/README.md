@@ -73,9 +73,9 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets require exactly 30 `gpu` cases across two probe cases, 24 operator
+separate. Both presets require exactly 32 `gpu` cases across two probe cases, 26 operator
 cases and four graph replay cases. The operator group includes the two integrated 3D liquid
-scheduler cases. Both presets also run the separate `cuda-mock` API-double suite.
+scheduler cases and two asynchronous snapshot cases. Both presets also run the separate `cuda-mock` API-double suite.
 
 ```powershell
 uv @uvArgs python tools/native/qualify_toolchain.py --mode cuda --output out/qualification/windows.json
@@ -109,6 +109,8 @@ Standalone operator receipts use finite nonnegative CUDA event times in `kernel_
 | `CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure` | `liquid_boundary_coupled_3d` |
 | `CudaLiquidSubstep3D.PersistentSubstepMatchesCpu` | `liquid_substep_3d` |
 | `CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth` | `liquid_substep_3d_growth` |
+| `CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch` | `liquid_snapshot_3d` |
+| `CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot` | `liquid_snapshot_3d_failure` |
 
 The two scheduler receipts require a finite, strictly positive `substep_device_timeline_ms`
 and `timing_scope=topology_through_publication`. The CUDA events bracket the latest successful
@@ -117,6 +119,18 @@ preparation and dispatch gaps and starts after the initial field staging. For th
 it describes the latest successful replayed substep. The separate `scheduler_frame_wall_us`
 diagnostic measures the full host `AdvanceFrame` call, including growth and replay in the
 growth fixture. These fixture measurements do not establish production throughput.
+
+The snapshot receipts require finite, strictly positive `snapshot_copy_ms` and
+`timing_scope=d2h_stream_events`. They measure two real CUDA events around the D2H
+submission, including stream dependencies and host submission gaps. The delayed fixture
+records its gate event after a queued host-controlled latch, then makes both copy streams
+wait for that recorded event. Both source epochs are prepared before closing the gate;
+this avoids requiring a synchronous arena upload to progress behind a blocked WDDM host
+callback. The cases verify distinct source/writer lifetimes, two live epochs, rejected
+reuse, canceled and stale completion, complete checked host decode, shared fatal poison
+and last-valid host diagnostics. Error controls return a simulated failure after actual
+copy/fence/drain work; they do not claim recovery from a genuinely lost device. There is
+no snapshot kernel: the architecture receipt comes from the actual producing arena image.
 
 The liquid boundary cases exercise the shared CPU analytic fixtures on the device,
 including scaled tiny cuts, interface-local capillarity, the CUDA static pressure bridge,
@@ -138,11 +152,11 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-23 operator cases (including both scheduler cases), and all four graph replay cases for
-28 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
-trigger CUDA API errors and run only in the 30-case CTest inventory. Each memcheck invocation
+25 operator cases (including both scheduler and both snapshot cases), and all four graph replay cases for
+30 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
+trigger CUDA API errors and run only in the 32-case CTest inventory. Each memcheck invocation
 must exit successfully and report one zero-error summary. The validator checks the exact
-GoogleTest start and completion names, the probe launch receipt, 14 operator timing receipts
+GoogleTest start and completion names, the probe launch receipt, 16 operator timing receipts
 and one graph timing receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
@@ -175,7 +189,7 @@ try {
 
 Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
 arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
-Its inventory is separate from the 30 mandatory CTest cases and 28 mandatory memcheck cases.
+Its inventory is separate from the 32 mandatory CTest cases and 30 mandatory memcheck cases.
 Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
 runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
 
@@ -186,6 +200,7 @@ foreach ($configuration in @('debug', 'release')) {
     if ($LASTEXITCODE) { throw "CUDA arena $configuration tests failed." }
 }
 
+$sanitizer = Join-Path $env:CUDA_PATH 'compute-sanitizer/compute-sanitizer.exe'
 $previousConnection = $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE
 try {
     $env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'

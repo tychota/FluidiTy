@@ -664,6 +664,15 @@ absl::Status CudaLiquidArena3D::Initialize(const LiquidState3D& initial) {
   }
   return status;
 }
+absl::StatusOr<bool> CudaLiquidArena3D::PublicationReady() const {
+  if (impl_->ledger->runtime_failed) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  if (!impl_->initialized || impl_->prepared || impl_->growth) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  return impl_->current->leases[1 - impl_->committed_bank] == 0;
+}
 absl::Status CudaLiquidArena3D::PreparePublication(const LiquidState3D& trial, LiquidClock3D accepted_clock) {
   if (impl_->ledger->runtime_failed) {
     return Error(absl::StatusCode::kInternal);

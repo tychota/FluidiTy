@@ -13,6 +13,7 @@ namespace fluidity::cuda_internal {
 struct LiquidArenaRuntimeCalls3D {
   decltype(&cudaMemsetAsync) memset_async = cudaMemsetAsync;
   decltype(&cudaMemcpyAsync) memcpy_async = cudaMemcpyAsync;
+  decltype(&cudaEventQuery) event_query = cudaEventQuery;
   decltype(&cudaEventRecord) event_record = cudaEventRecord;
   decltype(&cudaEventSynchronize) event_synchronize = cudaEventSynchronize;
   decltype(&LaunchMacPressure3D) launch_pressure = LaunchMacPressure3D;
@@ -26,6 +27,7 @@ LiquidArenaRuntimeCalls3D& LiquidArenaRuntimeCalls();
 struct LiquidArenaLedger3D {
   CudaLiquidArenaMetrics3D metrics;
   std::uint64_t next_generation = 1;
+  std::uint64_t next_snapshot_reservation = 1;  // Never reused across queue replacement in this job.
   std::size_t references = 1;
   int device_ordinal = 0;
   bool runtime_failed = false;  // Job-wide poison; only teardown may drain/release afterward.

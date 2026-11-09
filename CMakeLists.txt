@@ -92,6 +92,7 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/liquid_geometry_stages_3d_host.cc
     native/cuda/liquid_geometry_stages_3d.cu
     native/cuda/liquid_arena_3d_packing.cc
+    native/cuda/liquid_snapshot_3d_host.cc
     native/cuda/liquid_substep_3d_host.cc
     native/cuda/liquid_arena_3d_host.cc
     native/cuda/liquid_arena_3d.cu
@@ -247,6 +248,7 @@ if(BUILD_TESTING)
       native/tests/test_cuda_transfers.cc
       native/tests/test_cuda_transfers_3d.cc
       native/tests/test_cuda_pressure.cc
+      native/tests/test_cuda_liquid_snapshot_3d.cc
       native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
       native/tests/test_cuda_mac_pressure_3d.cc)
