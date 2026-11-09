@@ -45,20 +45,26 @@ struct LiquidBoundaryGeometryInputs3D {
   // Candidate cells, distinct and sorted (z,y,x), separate from the sample halo.
   std::span<const CellIndex3D> cell_indices;
   // Distinct (z,y,x) ordered samples. Include corners of all candidates and centers
-  // of every air neighbor; positive-sigma open air links need the centered gradient/Hessian halo
-  // at their adjacent liquid centers (axis neighbors and mixed-derivative diagonals).
+  // of every air neighbor. Without exact curvature, positive-sigma open air links
+  // also need the gradient/Hessian halo at their adjacent liquid centers (axis
+  // neighbors and mixed-derivative diagonals).
   std::span<const LiquidCenterDistance3D> center_distances;  // Candidate centers plus the documented neighbor halo.
   std::span<const LiquidCornerDistance3D> corner_distances;  // All eight corners of each candidate.
   LiquidObstacle3D obstacle;
   double step_duration;  // Positive finite seconds; geometry freezes at start.
   double liquid_density;  // Positive finite kg/m³.
   double surface_tension;  // Finite nonnegative N/m.
+  // Finite signed outward curvature in inverse meters, including zero. Applies
+  // only at cells incident to open air links with positive surface tension.
+  std::optional<double> exact_outward_interface_curvature = std::nullopt;
 };
 struct FrozenLiquidCell3D {
   CellIndex3D cell_index;
   double fluid_volume;  // Liquid intersect nonsolid, m³.
   double center_distance;  // Physical signed distance, m.
-  double curvature;  // Centered outward curvature, 1/m; zero unless an open air link needs positive-sigma curvature.
+  // Outward curvature in inverse meters. Exact if supplied, centered otherwise,
+  // and zero unless an incident open air link has positive surface tension.
+  double curvature;
 };
 struct FrozenLiquidFace3D {
   FaceIndex3D face_index;
@@ -156,7 +162,8 @@ class FrozenLiquidBoundaryGeometry3D {
 // for missing samples/owners, disconnected slab liquid, degenerate interface
 // gradient (|g| < 1e-8), excessive capillary dt, or a tank closing within the step,
 // ResourceExhausted above 4096 candidates/24576 faces, OutOfRange for arithmetic
-// or lattice overflow and tank cells whose world corners cannot resolve the cell width.
+// including a nonnormal lift from nonzero surface tension and exact curvature on
+// an active air link, lattice overflow, or unresolved tank cell corners.
 // Errors carry no partial geometry; inputs are unmodified.
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs
@@ -164,7 +171,8 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 
 // Builds the exact incident face union with full frozen apertures and wall flux.
 // Air links use theta in [0.05,1] and ambient + sigma*curvature once; internal
-// jumps are zero. Curvature and capillary dt were checked during geometry freeze.
+// jumps are zero. Freeze checks curvature, the capillary dt, and active exact
+// lifts. Link assembly checks the lift and its sum with ambient pressure.
 // Errors carry no problem: InvalidArgument for invalid field extents/values or
 // overrides inconsistent with the frozen piston incidence or speed,
 // FailedPrecondition for missing air samples or omitted negative-distance neighbors,

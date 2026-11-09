@@ -10,6 +10,7 @@
 #endif
 #include "gtest/gtest.h"
 #include "liquid_boundary_transfer_3d_cases.h"
+#include "liquid_exact_curvature_3d_cases.h"
 #include "liquid_open_tank_lattice_3d_cases.h"
 namespace fluidity {
 namespace {
@@ -599,6 +600,19 @@ TEST(LiquidBoundaryWorkspace3D, MovingWallAndThinSlabGeometryParityAndRejectedLi
   EXPECT_EQ(FreezeLiquidBoundaryGeometry3D(inputs, *workspace).status().code(), absl::StatusCode::kFailedPrecondition);
   EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 0.75);
 }
+
+TEST(LiquidBoundaryWorkspace3D, ExactCurvatureRequiresCheckedActiveLiftAndPreservesPriorView) {
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  exact_curvature_test::ExpectCheckedFreeze(
+      [&](const auto& inputs) {
+        return workspace->Freeze(inputs);
+      },
+      [&](const auto& geometry, const auto& fields) {
+        return workspace->BuildLinks(geometry, fields);
+      }
+  );
+}
 TEST(LiquidBoundaryWorkspace3D, PositiveSigmaCurvatureAndCapillaryBoundMatchOwning) {
   Fixture f;
   auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
@@ -618,6 +632,19 @@ TEST(LiquidBoundaryWorkspace3D, PositiveSigmaCurvatureAndCapillaryBoundMatchOwni
   ASSERT_TRUE(owned.ok());
   EXPECT_DOUBLE_EQ(frozen->cells[0].curvature, owned->cells()[0].curvature);
   EXPECT_DOUBLE_EQ(frozen->capillary_step_bound, owned->capillary_step_bound());
+  const auto owned_exact = FreezeLiquidBoundaryGeometry3D({
+      .mac_grid = f.grid,
+      .cell_indices = f.cells,
+      .center_distances = f.centers,
+      .corner_distances = f.corners,
+      .step_duration = 0.01,
+      .liquid_density = 1000,
+      .surface_tension = 0.5,
+      .exact_outward_interface_curvature = -16,
+  });
+  ASSERT_TRUE(owned_exact.ok()) << owned_exact.status();
+  EXPECT_DOUBLE_EQ(owned_exact->cells()[0].curvature, -16);
+  EXPECT_DOUBLE_EQ(owned_exact->capillary_step_bound(), owned->capillary_step_bound());
   inputs.step_duration = frozen->capillary_step_bound * 2;
   EXPECT_EQ(FreezeLiquidBoundaryGeometry3D(inputs, *workspace).status().code(), absl::StatusCode::kFailedPrecondition);
 }

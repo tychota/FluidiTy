@@ -18,8 +18,10 @@
 #include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
+#include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
+#include "liquid_exact_curvature_3d_cases.h"
 
 namespace fluidity {
 namespace {
@@ -569,6 +571,29 @@ TEST(CudaLiquidGeometryStages3D, CrossingWallAnchorUsesTimeAndBothRequestedSlabS
     EXPECT_DOUBLE_EQ(old_history->wall_samples[*anchor].unit_normal.x, static_cast<double>(side));
     EXPECT_DOUBLE_EQ(new_history->wall_samples[*anchor].unit_normal.x, static_cast<double>(side));
   }
+}
+
+TEST(CudaLiquidSubstep3D, AnalyticSphereSuppliesExactExteriorPressureAtBothResolutions) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto backend = CudaLiquidSubstepBackend3D::Create(exact_curvature_test::kStaticSphereCapacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  exact_curvature_test::ExpectAnalyticSphereExteriorPressure(backend->operations());
+}
+
+TEST(CudaLiquidGeometryStages3D, ExactCurvatureRequiresCheckedActiveLiftAndPreservesPriorView) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  auto arena = CudaLiquidArena3D::Create(kSmall);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kSmall);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  exact_curvature_test::ExpectCheckedFreeze(
+      [&](const auto& inputs) {
+        return cuda_internal::FreezeLiquidGeometry3D(*arena, inputs, *workspace);
+      },
+      [&](const auto& geometry, const auto& fields) {
+        return cuda_internal::BuildLiquidLinks3D(*arena, geometry, fields, *workspace);
+      }
+  );
 }
 TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube) {
   ASSERT_NO_FATAL_FAILURE(CheckHardware());

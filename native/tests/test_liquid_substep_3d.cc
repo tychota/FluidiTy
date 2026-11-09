@@ -13,6 +13,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_exact_curvature_3d_cases.h"
 #include "liquid_pressure_supported_gather_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
@@ -433,6 +434,10 @@ TEST(LiquidSubstep3D, FiniteExponentialVolumePreservesMassAndReferenceVolume) {
   EXPECT_GT(scheduler->committed().particles[0].volume_ratio, 1);
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].mass, 1);
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].reference_volume, 1);
+}
+
+TEST(LiquidSubstep3D, AnalyticSphereSuppliesExactExteriorPressureAtBothResolutions) {
+  exact_curvature_test::ExpectAnalyticSphereExteriorPressure(CpuLiquidSubstepBackend3D());
 }
 TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {
   auto initial = Initial();

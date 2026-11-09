@@ -174,6 +174,15 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kBodyContact, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kInterface, step_duration));
+    std::optional<double> exact_curvature;
+    const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
+    if (scene.surface_tension > 0 && sphere != nullptr) {
+      const double outward_curvature = 2 / sphere->radius;
+      if (!std::isfinite(outward_curvature)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      exact_curvature = outward_curvature;
+    }
     const LiquidBoundaryGeometryViewInputs3D geometry_inputs{
         .mac_grid = grid,
         .cell_indices = staging.candidates.values(),
@@ -183,6 +192,7 @@ struct LiquidSubstepScheduler3D::Impl {
         .step_duration = step_duration,
         .liquid_density = scene.liquid_density,
         .surface_tension = scene.surface_tension,
+        .exact_outward_interface_curvature = exact_curvature,
     };
     const auto frozen = backend.freeze(backend.context, geometry_inputs, boundary);
     if (!frozen.ok()) {

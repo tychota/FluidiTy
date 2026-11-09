@@ -230,6 +230,10 @@ absl::Status FreezeCore(
       || !std::isfinite(inputs.surface_tension) || inputs.surface_tension < 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid liquid material or step");
   }
+  const auto exact_curvature = inputs.exact_outward_interface_curvature;
+  if (exact_curvature.has_value() && !std::isfinite(*exact_curvature)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid exact interface curvature");
+  }
   if (inputs.cell_indices.size() > 4096) {
     return absl::Status(absl::StatusCode::kResourceExhausted, bounded ? "" : "Boundary cell capacity exceeded");
   }
@@ -399,6 +403,10 @@ absl::Status FreezeCore(
       continue;
     }
     auto& cell = result.cells_[ordinal];
+    if (exact_curvature.has_value()) {
+      cell.curvature = *exact_curvature;
+      continue;
+    }
     const auto curvature = ComputeCenteredCurvature(center_distance_samples, cell.cell_index, h, backend, bounded);
     if (!curvature.ok()) {
       return curvature.status();
@@ -408,6 +416,12 @@ absl::Status FreezeCore(
   if (std::ranges::any_of(needs_curvature, [](bool needed) {
         return needed;
       })) {
+    if (exact_curvature.has_value() && *exact_curvature != 0) {
+      const double capillary_pressure_lift = inputs.surface_tension * *exact_curvature;
+      if (!std::isnormal(capillary_pressure_lift)) {
+        return UnrepresentableGeometry(bounded);
+      }
+    }
     GeometryInput query{};
     query.mode = GeometryMode::kCapillary;
     query.geometry = grid_geometry;
@@ -662,6 +676,7 @@ boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, 
       .step_duration = inputs.step_duration,
       .liquid_density = inputs.liquid_density,
       .surface_tension = inputs.surface_tension,
+      .exact_outward_interface_curvature = inputs.exact_outward_interface_curvature,
   };
   const auto status = FreezeCore(borrowed_inputs, backend, storage, needs_curvature->values(), false);
   if (!status.ok()) {
