@@ -1,9 +1,11 @@
 #include <charconv>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,11 +23,57 @@ constexpr Vec3 kFreeFallInitialPosition{2.5, 2.5, 2.5};
 constexpr Vec3 kTankLayoutInitialPosition{0.625, 0.625, 0.625};
 constexpr int kFixtureProtocolVersion = 1;
 
+struct TankAcceptanceScene {
+  AxisAlignedLiquidTank3D tank;
+  double cell_size;
+  double reference_surface_y;
+  double maximum_dt;
+  bool transported;
+};
+
+std::optional<TankAcceptanceScene> TankAcceptance(const fs::path& case_name) {
+  if (case_name == "hydrostatic-column") {
+    return TankAcceptanceScene{
+        .tank =
+            {
+                .start_low_x = -0.25,
+                .high_x = 0.25,
+                .floor_y = 0,
+                .low_z = -0.25,
+                .high_z = 0.25,
+                .piston_velocity_x = 0,
+            },
+        .cell_size = 0.125,
+        .reference_surface_y = 1,
+        .maximum_dt = 0.01,
+        .transported = false,
+    };
+  }
+  if (case_name == "open-tank-piston" || case_name == "open-tank-piston-refined") {
+    return TankAcceptanceScene{
+        .tank =
+            {
+                .start_low_x = -0.5,
+                .high_x = 0.5,
+                .floor_y = 0,
+                .low_z = -0.25,
+                .high_z = 0.25,
+                .piston_velocity_x = 0.015625,
+            },
+        .cell_size = 0.0625,
+        .reference_surface_y = 0.5,
+        .maximum_dt = case_name == "open-tank-piston" ? 0.01 : 0.005,
+        .transported = true,
+    };
+  }
+  return std::nullopt;
+}
+
 absl::StatusOr<double> EnergyBlend(const fs::path& case_name) {
   if (case_name == "free-fall-pic") {
     return 0.0;
   }
-  if (case_name == "free-fall-default" || case_name == "tank-layout") {
+  if (case_name == "free-fall-default" || case_name == "tank-layout" || TankAcceptance(case_name).has_value()) {
     return 0.6;
   }
   if (case_name == "free-fall-retained") {
@@ -155,29 +203,55 @@ absl::Status WriteScene(
   }
 
   const bool tank_layout = case_name == "tank-layout";
+  const auto tank_acceptance = TankAcceptance(case_name);
   const Vec3 initial_position = tank_layout ? kTankLayoutInitialPosition : kFreeFallInitialPosition;
   LiquidState3D state;
-  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(1);
+  std::vector<Vec3> seed_positions;
+  double reference_volume = 1;
+  if (tank_acceptance) {
+    const auto& tank = tank_acceptance->tank;
+    const double cell_size = tank_acceptance->cell_size;
+    state.geometry = {{0, 0, 0}, cell_size};
+    reference_volume = cell_size * cell_size * cell_size;
+    // The frozen bounds are exact integer multiples of the world lattice.
+    const int first_x = static_cast<int>(tank.start_low_x / cell_size);
+    const int end_x = static_cast<int>(tank.high_x / cell_size);
+    const int first_z = static_cast<int>(tank.low_z / cell_size);
+    const int end_z = static_cast<int>(tank.high_z / cell_size);
+    const int end_y = static_cast<int>(tank_acceptance->reference_surface_y / cell_size);
+    for (int z = first_z; z < end_z; ++z) {
+      for (int y = 0; y < end_y; ++y) {
+        for (int x = first_x; x < end_x; ++x) {
+          seed_positions.push_back({(x + 0.5) * cell_size, (y + 0.5) * cell_size, (z + 0.5) * cell_size});
+        }
+      }
+    }
+  } else {
+    seed_positions.push_back(initial_position);
+  }
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(seed_positions.size());
   if (!particles.ok()) {
     return particles.status();
   }
-  const auto resized = particles->Resize(1);
+  const auto resized = particles->Resize(seed_positions.size());
   if (!resized.ok()) {
     return resized;
   }
-  (*particles)[0] = {
-      .id = 1,
-      .world_position = initial_position,
-      .world_velocity = {},
-      .velocity_slopes = {},
-      .affine_enabled = true,
-      .mass = 1000,
-      .reference_volume = 1,
-      .volume_ratio = 1,
-      .pic_initialized = false,
-  };
+  for (std::size_t index = 0; index < seed_positions.size(); ++index) {
+    (*particles)[index] = {
+        .id = index + 1,
+        .world_position = seed_positions[index],
+        .world_velocity = {},
+        .velocity_slopes = {},
+        .affine_enabled = true,
+        .mass = 1000 * reference_volume,
+        .reference_volume = reference_volume,
+        .volume_ratio = 1,
+        .pic_initialized = false,
+    };
+  }
   state.particles = std::move(*particles);
-  state.next_particle_id = 2;
+  state.next_particle_id = seed_positions.size() + 1;
   const auto seed = EncodeLiquidState3D(state);
   if (!seed.ok()) {
     return seed.status();
@@ -201,6 +275,13 @@ absl::Status WriteScene(
         .high_z = 1,
         .piston_velocity_x = 0.125,
     };
+  } else if (tank_acceptance) {
+    scene.scene.obstacle = tank_acceptance->tank;
+    if (tank_acceptance->transported) {
+      scene.scene.field = LiquidParticleSphereUnion3D{0.9 * tank_acceptance->cell_size};
+    } else {
+      scene.scene.field = LiquidHorizontalPlaneSurface3D{tank_acceptance->reference_surface_y};
+    }
   } else {
     scene.scene.field = LiquidAnalyticSphere3D{initial_position, 1.1};
   }
@@ -208,7 +289,7 @@ absl::Status WriteScene(
   scene.scene.liquid_density = 1000;
   scene.scene.surface_tension = 0;
   scene.options.particle_energy_blend = *energy_blend;
-  scene.options.maximum_step_duration = 0.01;
+  scene.options.maximum_step_duration = tank_acceptance ? tank_acceptance->maximum_dt : 0.01;
   scene.backend = *backend;
   scene.build_digest = LiquidContentDigest3D(solver_executable_bytes->values());
   scene.upstream = std::span(&initial_particles, 1);
@@ -271,6 +352,49 @@ ReadFrames(const LiquidCache3D& cache, LiquidBackend3D backend, std::uint64_t fi
   }
 }
 
+void PrintParticles(const LiquidState3D& state) {
+  const char* separator = "";
+  for (const auto& particle : state.particles.values()) {
+    std::cout << separator << "{\"id\":" << particle.id << ",\"tag\":" << particle.tag << ",\"world_position\":";
+    PrintVector(std::cout, particle.world_position);
+    std::cout << ",\"world_velocity\":";
+    PrintVector(std::cout, particle.world_velocity);
+    std::cout << ",\"velocity_slopes\":[";
+    PrintVector(std::cout, particle.velocity_slopes.x_row);
+    std::cout << ',';
+    PrintVector(std::cout, particle.velocity_slopes.y_row);
+    std::cout << ',';
+    PrintVector(std::cout, particle.velocity_slopes.z_row);
+    std::cout << "],\"side_tag\":" << particle.side_tag << ",\"mass\":" << particle.mass
+              << ",\"reference_volume\":" << particle.reference_volume << ",\"volume_ratio\":" << particle.volume_ratio
+              << ",\"affine_enabled\":" << (particle.affine_enabled ? "true" : "false")
+              << ",\"pic_initialized\":" << (particle.pic_initialized ? "true" : "false") << '}';
+    separator = ",";
+  }
+}
+
+absl::Status ReadSeed(const fs::path& path, const LiquidDigest3D& expected_digest) {
+  const auto bytes = files::ReadBytes(path, {});
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  const auto digest = LiquidContentDigest3D(bytes->values());
+  if (digest != expected_digest) {
+    return absl::DataLossError("initial state bytes differ from the resolved upstream identity");
+  }
+  const auto state = DecodeLiquidState3D(bytes->values());
+  if (!state.ok()) {
+    return state.status();
+  }
+  std::cout << "{\"fixture_version\":" << kFixtureProtocolVersion << ",\"event\":\"seed\",";
+  PrintClock(std::cout, state->clock);
+  std::cout << ",\"state_digest\":\"" << LiquidDigestHex3D(digest).data() << "\",\"random_seed\":" << state->random_seed
+            << ",\"next_particle_id\":" << state->next_particle_id << ",\"particles\":[";
+  PrintParticles(*state);
+  std::cout << "]}\n";
+  return absl::OkStatus();
+}
+
 absl::Status ReadCheckpoint(const LiquidCache3D& cache, LiquidBackend3D backend, std::uint64_t maximum_frame) {
   const auto checkpoint = cache.ReadCheckpoint(maximum_frame);
   if (!checkpoint.ok()) {
@@ -291,26 +415,9 @@ absl::Status ReadCheckpoint(const LiquidCache3D& cache, LiquidBackend3D backend,
             << "\",\"random_seed\":" << state.random_seed << ",\"next_particle_id\":" << state.next_particle_id
             << ",\"capacities\":[" << capacities.particles << ',' << capacities.blocks << ',' << capacities.cells << ','
             << capacities.faces << ',' << capacities.sources << "],\"particles\":[";
-  const char* separator = "";
-  for (const auto& particle : state.particles.values()) {
-    std::cout << separator << "{\"id\":" << particle.id << ",\"tag\":" << particle.tag << ",\"world_position\":";
-    PrintVector(std::cout, particle.world_position);
-    std::cout << ",\"world_velocity\":";
-    PrintVector(std::cout, particle.world_velocity);
-    std::cout << ",\"velocity_slopes\":[";
-    PrintVector(std::cout, particle.velocity_slopes.x_row);
-    std::cout << ',';
-    PrintVector(std::cout, particle.velocity_slopes.y_row);
-    std::cout << ',';
-    PrintVector(std::cout, particle.velocity_slopes.z_row);
-    std::cout << "],\"side_tag\":" << particle.side_tag << ",\"mass\":" << particle.mass
-              << ",\"reference_volume\":" << particle.reference_volume << ",\"volume_ratio\":" << particle.volume_ratio
-              << ",\"affine_enabled\":" << (particle.affine_enabled ? "true" : "false")
-              << ",\"pic_initialized\":" << (particle.pic_initialized ? "true" : "false") << '}';
-    separator = ",";
-  }
+  PrintParticles(state);
   std::cout << "],\"pressure_cells\":[";
-  separator = "";
+  const char* separator = "";
   for (const auto& cell : state.cells.values()) {
     const auto index = cell.cell_index;
     std::cout << separator << "{\"cell_index\":[" << index.x << ',' << index.y << ',' << index.z
@@ -322,25 +429,76 @@ absl::Status ReadCheckpoint(const LiquidCache3D& cache, LiquidBackend3D backend,
   return absl::OkStatus();
 }
 
+absl::Status PrintTankScene(const LiquidResolvedScene3D& resolved, const LiquidDigest3D& fingerprint) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&resolved.scene.obstacle);
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&resolved.scene.field);
+  const auto* spheres = std::get_if<LiquidParticleSphereUnion3D>(&resolved.scene.field);
+  if (tank == nullptr || (plane == nullptr && spheres == nullptr)) {
+    return absl::FailedPreconditionError("expected a bounded acceptance tank");
+  }
+  const auto upstream = resolved.upstream.values();
+  if (upstream.size() != 1 || upstream[0].role != LiquidUpstreamRole3D::kInitialParticles || upstream[0].ordinal != 0) {
+    return absl::FailedPreconditionError("expected one initial-particle input");
+  }
+  std::cout << "{\"fixture_version\":" << kFixtureProtocolVersion << ",\"event\":\"resolved_tank\",";
+  PrintIdentity(std::cout, fingerprint, LiquidExecutionId3D(fingerprint), resolved.backend);
+  std::cout << ",\"solver_digest\":\"" << LiquidDigestHex3D(resolved.build_digest).data() << "\",\"seed_digest\":\""
+            << LiquidDigestHex3D(upstream[0].digest).data() << "\",\"seed_byte_length\":" << upstream[0].byte_length
+            << ",\"random_seed\":" << resolved.random_seed << ",\"cell_size_m\":" << resolved.geometry.cell_width
+            << ",\"world_origin_m\":";
+  PrintVector(std::cout, resolved.geometry.world_origin);
+  std::cout << ",\"gravity_m_per_s2\":";
+  PrintVector(std::cout, resolved.scene.world_acceleration);
+  std::cout << ",\"density_kg_per_m3\":" << resolved.scene.liquid_density
+            << ",\"surface_tension_n_per_m\":" << resolved.scene.surface_tension
+            << ",\"ambient_gauge_pa\":" << resolved.scene.ambient_pressure
+            << ",\"incompressible\":" << (std::isinf(resolved.scene.bulk_modulus) ? "true" : "false")
+            << ",\"target_divergence_per_s\":" << resolved.scene.target_divergence
+            << ",\"friction_coefficient\":" << resolved.scene.friction_coefficient
+            << ",\"penetration_tolerance_m\":" << resolved.scene.penetration_tolerance
+            << ",\"minimum_face_mass_kg\":" << resolved.options.minimum_face_mass
+            << ",\"mass_kg_per_quantum\":" << resolved.options.mass_per_quantum
+            << ",\"momentum_kg_m_per_s_per_quantum\":" << resolved.options.momentum_per_quantum
+            << ",\"pressure_iteration_limit\":" << resolved.options.pressure_solver_options.max_iterations
+            << ",\"source_count\":" << resolved.sources.size()
+            << ",\"energy_blend\":" << resolved.options.particle_energy_blend
+            << ",\"maximum_dt_seconds\":" << resolved.options.maximum_step_duration
+            << ",\"tank_low_x_m\":" << tank->start_low_x << ",\"tank_high_x_m\":" << tank->high_x
+            << ",\"tank_floor_y_m\":" << tank->floor_y << ",\"tank_low_z_m\":" << tank->low_z
+            << ",\"tank_high_z_m\":" << tank->high_z << ",\"piston_velocity_x_m_per_s\":" << tank->piston_velocity_x;
+  if (plane != nullptr) {
+    std::cout << ",\"surface_height_y_m\":" << plane->world_surface_height_y;
+  } else {
+    std::cout << ",\"sphere_union_radius_m\":" << spheres->radius;
+  }
+  std::cout << "}\n";
+  return absl::OkStatus();
+}
+
 absl::Status Run(const std::vector<fs::path>& args) {
   if (args.size() == 6 && args[1] == "write-scene") {
     return WriteScene(args[2], args[3], args[4], args[5]);
   }
+  if (args.size() == 4 && args[1] == "read-seed") {
+    const auto digest = ParseFingerprint(args[3]);
+    if (!digest.ok()) {
+      return digest.status();
+    }
+    return ReadSeed(args[2], *digest);
+  }
   const bool read_frames = args.size() == 6 && args[1] == "read-frames";
   const bool read_checkpoint = args.size() == 5 && args[1] == "read-checkpoint";
-  if (!read_frames && !read_checkpoint) {
+  const bool read_tank_scene = args.size() == 4 && args[1] == "read-tank-scene";
+  if (!read_frames && !read_checkpoint && !read_tank_scene) {
     return absl::InvalidArgumentError(
         "expected write-scene CASE CPU_OR_CUDA SOLVER_EXECUTABLE SCENE, read-frames CACHE FINGERPRINT FIRST LAST, "
+        "read-seed FLST CONTENT_DIGEST, read-tank-scene CACHE FINGERPRINT, "
         "or read-checkpoint CACHE FINGERPRINT MAXIMUM_FRAME"
     );
   }
   const auto fingerprint = ParseFingerprint(args[3]);
   if (!fingerprint.ok()) {
     return fingerprint.status();
-  }
-  const auto first_or_maximum = ParseFrameOrdinal(args[4]);
-  if (!first_or_maximum.ok()) {
-    return first_or_maximum.status();
   }
   const auto cache = LiquidCache3D::OpenForReplay(args[2], *fingerprint);
   if (!cache.ok()) {
@@ -349,6 +507,13 @@ absl::Status Run(const std::vector<fs::path>& args) {
   const auto scene = cache->ReadResolvedScene();
   if (!scene.ok()) {
     return scene.status();
+  }
+  if (read_tank_scene) {
+    return PrintTankScene(*scene, *fingerprint);
+  }
+  const auto first_or_maximum = ParseFrameOrdinal(args[4]);
+  if (!first_or_maximum.ok()) {
+    return first_or_maximum.status();
   }
   if (read_checkpoint) {
     return ReadCheckpoint(*cache, scene->backend, *first_or_maximum);
