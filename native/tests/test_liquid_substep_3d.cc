@@ -153,19 +153,30 @@ TEST_P(LiquidStageFailure3D, CommittedInventoryUnchanged) {
   ASSERT_TRUE(std::ranges::any_of(snapshot->faces.values(), [](const LiquidFaceState3D& face) {
     return face.carrier_velocity != 0 && face.validity != LiquidFaceValidity3D::kMissing;
   }));
-  auto stage = static_cast<LiquidPhysicalStage3D>(GetParam());
-  scheduler->SetStageFaultHookForTesting({&stage, [](void* context, LiquidPhysicalStage3D current, double) {
-                                            return current == *static_cast<LiquidPhysicalStage3D*>(context)
-                                                ? absl::Status(absl::StatusCode::kInternal, {})
-                                                : absl::OkStatus();
-                                          }});
+  struct RejectionProbe {
+    LiquidPhysicalStage3D selected_stage;
+    std::size_t injection_count = 0;
+  } rejection_probe{.selected_stage = static_cast<LiquidPhysicalStage3D>(GetParam())};
+  scheduler->SetStageFaultHookForTesting({
+      &rejection_probe,
+      [](void* context, LiquidPhysicalStage3D current_stage, double) {
+        auto& probe = *static_cast<RejectionProbe*>(context);
+        if (current_stage == probe.selected_stage) {
+          ++probe.injection_count;
+          return absl::InternalError("");
+        }
+        return absl::OkStatus();
+      },
+  });
   ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
   auto result = scheduler->Attempt(0.01);
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kFatal);
   EXPECT_TRUE(scheduler->committed() == *snapshot);
   ExpectIdenticalSerializedState(*snapshot, scheduler->committed());
-  EXPECT_EQ(scheduler->diagnostics().failed_stage, stage);
+  EXPECT_EQ(rejection_probe.injection_count, 1);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, rejection_probe.selected_stage);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kInternal);
 }
 INSTANTIATE_TEST_SUITE_P(
     LiquidSubstep3D,
@@ -719,18 +730,23 @@ TEST(LiquidSubstep3D, ActualSealedIncompatiblePressureIsFatalWithoutRetry) {
 }
 TEST(LiquidSubstep3D, CandidateValidationRejectsPoisonAfterActualNumericalUpdate) {
   auto initial = Initial();
+  std::size_t poison_injection_count = 0;
   auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &poison_injection_count;
   backend.update_particles =
-      [](void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+      [](void* context, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
         const auto status = CpuLiquidSubstepBackend3D().update_particles(nullptr, inputs, particles);
         if (status.ok()) {
           particles[0].volume_ratio = std::numeric_limits<double>::quiet_NaN();
+          ++*static_cast<std::size_t*>(context);
         }
         return status;
       };
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), Options(), backend);
   ASSERT_TRUE(scheduler.ok());
   EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(poison_injection_count, 1);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kValidate);
   EXPECT_TRUE(scheduler->committed() == initial);
   ExpectIdenticalSerializedState(initial, scheduler->committed());
 }

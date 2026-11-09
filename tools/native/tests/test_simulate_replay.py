@@ -491,13 +491,30 @@ class RunningSimulation:
         )
         self.process.stdin.reconfigure(newline="")
         self.lines = Queue()
+        self.stdout_lines = []
         self.reader = Thread(target=self.read_lines)
         self.reader.start()
 
     def read_lines(self):
-        for line in self.process.stdout:
+        # Keep bytes until a full JSONL record is available. A hard process
+        # kill can truncate even the final UTF-8 code point.
+        for line in self.process.stdout.buffer:
+            self.stdout_lines.append(line)
             self.lines.put((monotonic(), line))
-        self.lines.put((monotonic(), ""))
+        self.lines.put((monotonic(), b""))
+
+    def stdout_records_after_exit(self, allow_trailing_partial=False):
+        """Read every complete record, including those consumed by next_event."""
+        assert self.process.poll() is not None
+        self.reader.join(timeout=10)
+        assert not self.reader.is_alive()
+        stdout_lines = self.stdout_lines
+        discarded_trailing_bytes = 0
+        if stdout_lines and not stdout_lines[-1].endswith(b"\n"):
+            assert allow_trailing_partial, "partial stdout record after normal exit"
+            discarded_trailing_bytes = len(stdout_lines[-1])
+            stdout_lines = stdout_lines[:-1]
+        return records(b"".join(stdout_lines).decode("utf-8")), discarded_trailing_bytes
 
     def next_event(self, event):
         deadline = monotonic() + 10
@@ -507,7 +524,7 @@ class RunningSimulation:
             except Empty:
                 break
             assert line, f"child exited before {event}"
-            record, = records(line)
+            record, = records(line.decode("utf-8"))
             assert record["event"] != "error" or event == "error", record
             if record["event"] == event:
                 return received_at, record
@@ -567,7 +584,7 @@ def lifecycle_case(executable, fixture, directory, backend):
         assert not cancellable_simulation.process.stdin.closed, "cancellation should not require EOF"
         assert records(cancellable_simulation.process.stderr.read()) == [cancelled]
         _, final_line = cancellable_simulation.lines.get(timeout=10)
-        assert final_line == "", "unexpected stdout after the terminal record"
+        assert final_line == b"", "unexpected stdout after the terminal record"
     finally:
         cancellable_simulation.close()
     assert invoke(executable, *frame_zero)["job_status"] == "cancelled"

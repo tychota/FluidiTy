@@ -14,6 +14,7 @@ from time import monotonic
 from test_simulate_replay import RunningSimulation, execute, invoke, make_scene, records, snapshot
 
 
+SEED_FRAME_COUNT = 2
 FINAL_FRAME_ORDINAL = 10
 TRIAL_COUNTS = {"cancel": 17, "kill": 17, "device_error": 16}
 STATUS_AFTER_STOP = {"cancel": "cancelled", "kill": "crashed", "device_error": "failed"}
@@ -29,7 +30,7 @@ def immutable_frame_inventory(cache_directory, minimum_frame_count, maximum_fram
     return manifest_paths
 
 
-def verify_published_frames(executable, cache, reference, job_status, minimum_frame_count=2):
+def verify_published_frames(executable, cache, reference, job_status, minimum_frame_count=SEED_FRAME_COUNT):
     reference_count = len(list((reference / "frames").glob("*.flmf")))
     frame_receipts = []
     for frame_ordinal, manifest_path in enumerate(
@@ -63,11 +64,23 @@ def run_arguments(scene, initial_state_args, backend, cache_directory):
     ]
 
 
+def announced_frame_ordinals(stdout_records):
+    frame_records = [record for record in stdout_records if record["event"] == "frame"]
+    assert all(record["published"] is True and type(record["frame"]) is int for record in frame_records)
+    ordinals = [record["frame"] for record in frame_records]
+    assert ordinals == sorted(set(ordinals))
+    return ordinals
+
+
 def interrupt_process(executable, arguments, fault):
     process = RunningSimulation(executable, [*arguments, "--resume", "--frame-end", 100])
     try:
         _, initial_frame = process.next_event("frame")
         assert initial_frame["frame"] == 0 and initial_frame["published"] is True
+        interruption_frame = initial_frame
+        while interruption_frame["frame"] < SEED_FRAME_COUNT:
+            _, interruption_frame = process.next_event("frame")
+        assert interruption_frame["published"] is True
         fault_sent_at = monotonic()
         if fault == "cancel":
             process.process.stdin.write("cancel\n")
@@ -80,7 +93,16 @@ def interrupt_process(executable, arguments, fault):
         assert return_code != 0 and not process.process.stdin.closed
         if fault == "cancel":
             assert records(process.process.stderr.read()) == [error]
-        return {"exit_code": return_code, "fault_to_exit_seconds": monotonic() - fault_sent_at}
+        fault_to_exit_seconds = monotonic() - fault_sent_at
+        stdout, discarded_trailing_bytes = process.stdout_records_after_exit(allow_trailing_partial=fault == "kill")
+        published_ordinals = announced_frame_ordinals(stdout)
+        assert interruption_frame["frame"] in published_ordinals
+        return {
+            "exit_code": return_code, "fault_to_exit_seconds": fault_to_exit_seconds,
+            "interruption_frame_ordinal": interruption_frame["frame"],
+            "announced_frame_ordinals": published_ordinals,
+            "discarded_trailing_stdout_bytes": discarded_trailing_bytes,
+        }
     finally:
         process.close()
 
@@ -103,13 +125,15 @@ def interrupt_after_device_copy(fault_executable, arguments):
         "injected_cuda_error": "cudaErrorLaunchFailure",
     }, injected
     published_frames = [entry for entry in stdout if entry["event"] == "frame"]
-    assert [entry["frame"] for entry in published_frames] == [0, 1], published_frames
+    published_ordinals = announced_frame_ordinals(stdout)
+    assert published_ordinals == list(range(SEED_FRAME_COUNT)), published_frames
     for entry in published_frames:
         assert entry["compiled_architecture"] == 1200
         assert math.isfinite(entry["snapshot_copy_milliseconds"]) and entry["snapshot_copy_milliseconds"] > 0
     return {
         "exit_code": child.returncode, "child_elapsed_seconds": monotonic() - fault_started_at,
         "producing_frames": published_frames, "injected_fault": injected,
+        "announced_frame_ordinals": published_ordinals,
     }
 
 
@@ -135,8 +159,11 @@ def trial(executable, fixture, arguments, seed_cache, reference_cache, baseline_
     else:
         fault_receipt = interrupt_process(executable, arguments, fault)
     surviving_frames = verify_published_frames(executable, trial_cache, reference_cache, STATUS_AFTER_STOP[fault])
+    surviving_ordinals = {frame["frame"] for frame in surviving_frames}
+    for ordinal in fault_receipt["announced_frame_ordinals"]:
+        assert ordinal in surviving_ordinals, f"announced frame {ordinal} missing before resume"
     if fault == "device_error":
-        assert len(surviving_frames) == 2, surviving_frames
+        assert len(surviving_frames) == SEED_FRAME_COUNT, surviving_frames
     pre_resume_files = physical_files(trial_cache)
     resumed = execute(executable, *arguments, "--resume", "--frame-end", FINAL_FRAME_ORDINAL)[-1]
     assert resumed["state_digest"] == baseline_result["state_digest"], resumed
@@ -164,7 +191,14 @@ def verify_inventory(receipts):
         (receipt["fault"], receipt["trial_ordinal"]) for receipt in receipts
     } == {(fault, ordinal) for fault, count in TRIAL_COUNTS.items() for ordinal in range(1, count + 1)}
     for receipt in receipts:
-        assert len(receipt["surviving_frames"]) >= 2 and len(receipt["recovered_frames"]) == FINAL_FRAME_ORDINAL + 1
+        assert len(receipt["surviving_frames"]) >= SEED_FRAME_COUNT
+        assert len(receipt["recovered_frames"]) == FINAL_FRAME_ORDINAL + 1
+        stop = receipt["stop"]
+        surviving_ordinals = {frame["frame"] for frame in receipt["surviving_frames"]}
+        assert set(stop["announced_frame_ordinals"]) <= surviving_ordinals
+        if receipt["fault"] != "device_error":
+            assert stop["interruption_frame_ordinal"] >= SEED_FRAME_COUNT
+            assert stop["interruption_frame_ordinal"] in stop["announced_frame_ordinals"]
         assert re.fullmatch(r"[0-9a-f]{64}", receipt["recovered_state_digest"])
         assert receipt["accepted_steps"] > 0
         for key in ("surviving_frames", "recovered_frames"):
@@ -193,8 +227,9 @@ def run_campaign(executable, fault_executable, fixture, directory, device_contro
             solver, *run_arguments(scene, initial_state_args, backend, baseline_cache), "--frame-end", FINAL_FRAME_ORDINAL
         )[-1]
         seed_cache = backend_directory / "initial-published-frames"
-        execute(solver, *run_arguments(scene, initial_state_args, backend, seed_cache), "--frame-end", 1)
-        verify_published_frames(solver, seed_cache, baseline_cache, "complete")
+        execute(solver, *run_arguments(scene, initial_state_args, backend, seed_cache), "--frame-end", SEED_FRAME_COUNT - 1)
+        seed_frames = verify_published_frames(solver, seed_cache, baseline_cache, "complete")
+        assert len(seed_frames) == SEED_FRAME_COUNT
         for fault in faults:
             count = 1 if device_control_only else TRIAL_COUNTS[fault]
             for trial_ordinal in range(1, count + 1):

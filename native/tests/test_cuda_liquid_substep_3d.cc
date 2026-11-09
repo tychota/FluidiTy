@@ -79,12 +79,12 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
     const std::array cpu_velocity_slopes{
         cpu_particle.velocity_slopes.x_row,
         cpu_particle.velocity_slopes.y_row,
-        cpu_particle.velocity_slopes.z_row
+        cpu_particle.velocity_slopes.z_row,
     };
     const std::array cuda_velocity_slopes{
         cuda_particle.velocity_slopes.x_row,
         cuda_particle.velocity_slopes.y_row,
-        cuda_particle.velocity_slopes.z_row
+        cuda_particle.velocity_slopes.z_row,
     };
     for (std::size_t axis = 0; axis < cpu_velocity_slopes.size(); ++axis) {
       EXPECT_NEAR(cpu_velocity_slopes[axis].x, cuda_velocity_slopes[axis].x, kVelocityTolerance);
