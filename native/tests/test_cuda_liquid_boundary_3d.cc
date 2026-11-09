@@ -10,12 +10,14 @@
 #include <vector>
 
 #include "../cuda/liquid_boundary_transfer_3d_internal.h"
+#include "../cuda/liquid_geometry_stages_3d.h"
 #include "fixture_data.h"
 #include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_boundary_geometry_3d_cases.h"
 #include "liquid_boundary_transfer_3d_cases.h"
+#include "liquid_open_tank_lattice_3d_cases.h"
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity {
 namespace {
@@ -93,6 +95,13 @@ TEST(CudaLiquidBoundary3D, OpenTankGeometryAndPressureMatchOracle) {
   );
   cases.OpenTankClipsVolumeAndUsesPistonOnlyFlux();
   cases.OpenTankPreservesNarrowAndLiquidClippedMeasures();
+  auto arena = CudaLiquidArena3D::Create(boundary_test::kTranslatedTankCapacities);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  const auto freeze = [&](const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+    return cuda_internal::FreezeLiquidGeometry3D(*arena, inputs, workspace);
+  };
+  boundary_test::ExpectOpenTankRejectsUnresolvedTranslatedLattice(freeze);
+  boundary_test::ExpectOpenTankPreservesLatticeResiduals(freeze);
   Receipt("liquid_open_tank_geometry_3d", measurement);
 }
 

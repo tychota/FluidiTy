@@ -150,7 +150,8 @@ class FrozenLiquidBoundaryGeometry3D {
 // for missing samples/owners, disconnected slab liquid, degenerate interface
 // gradient (|g| < 1e-8), excessive capillary dt, or a tank closing within the step,
 // ResourceExhausted above 4096 candidates/24576 faces, OutOfRange for arithmetic
-// or lattice overflow. Errors carry no partial geometry; inputs are unmodified.
+// or lattice overflow and tank cells whose world corners cannot resolve the cell width.
+// Errors carry no partial geometry; inputs are unmodified.
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs
 );

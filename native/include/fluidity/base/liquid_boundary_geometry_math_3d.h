@@ -407,6 +407,40 @@ FLUIDITY_HD inline CartesianVector LatticeWorldAnchor(const GeometryInput& input
   };
 }
 
+struct TankLatticeAxis {
+  double world_origin;
+  double lattice_index;
+  double cell_width;
+};
+
+FLUIDITY_HD inline TankLatticeAxis TankAxis(const GeometryInput& input, int axis) {
+  const auto world_origin = CartesianComponents(input.geometry.world_origin);
+  const int lattice_indices[]{input.index.x, input.index.y, input.index.z};
+  return {world_origin[axis], static_cast<double>(lattice_indices[axis]), input.geometry.cell_width};
+}
+
+// The published geometry must also be representable on the grid's world
+// lattice. An interval can round wider and still be too coarse to resolve h.
+FLUIDITY_HD inline bool TankCellHasResolvedWorldExtent(const GeometryInput& input) {
+  const auto low_world_corner = LatticeWorldAnchor(input);
+  for (int axis = 0; axis < 3; ++axis) {
+    const auto lattice = TankAxis(input, axis);
+    const double low = low_world_corner[axis];
+    const double high = lattice.world_origin + lattice.cell_width * (lattice.lattice_index + 1);
+    if (!numeric::isfinite(low) || !numeric::isfinite(high) || low >= high) {
+      return false;
+    }
+    // Use the spacing toward the cell interior at both ends so a face on
+    // a binade boundary need only resolve the cells incident to it.
+    const double low_interior_spacing = numeric::nextafter(low, high) - low;
+    const double high_interior_spacing = high - numeric::nextafter(high, low);
+    if (low_interior_spacing > lattice.cell_width || high_interior_spacing > lattice.cell_width) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Bounds in the unit cell's frame. Strict face-normal ownership is tested
 // separately in world coordinates, so a grid face on a wall is closed.
 struct TankClipBounds {
@@ -414,27 +448,61 @@ struct TankClipBounds {
   CartesianVector high{1, 1, 1};
 };
 
-FLUIDITY_HD inline Value<double> TankClipCoordinate(double world_coordinate, double world_anchor, double cell_width) {
-  const auto [world_offset, offset_residual] = AddWithResidual(world_coordinate, -world_anchor);
-  if (world_offset <= 0) {
+// Subtract in the lattice frame. A rounded world anchor alone can coincide
+// with a tank plane even when the true lattice face is strictly inside.
+FLUIDITY_HD inline ProjectedSum TankPlaneOffset(double world_coordinate, const TankLatticeAxis& lattice) {
+  ProjectedSum offset;
+  offset.Add(world_coordinate);
+  offset.Add(-lattice.world_origin);
+  offset.AddProduct(-lattice.cell_width, lattice.lattice_index);
+  return offset;
+}
+
+FLUIDITY_HD inline Value<int> TankPlaneOffsetSign(double world_coordinate, const TankLatticeAxis& lattice) {
+  const double translated_plane = world_coordinate - lattice.world_origin;
+  if (numeric::isinf(translated_plane)) {
+    // h cubed is representable and the lattice index is signed 32 bit.
+    // Its scaled offset is far too small to reverse an overflowing separation.
+    return translated_plane > 0 ? 1 : -1;
+  }
+  const auto sign = TankPlaneOffset(world_coordinate, lattice).Bounds().sign();
+  if (!sign.has_value()) {
+    return Error::kRange;
+  }
+  return *sign;
+}
+
+FLUIDITY_HD inline Value<double> TankClipCoordinate(double world_coordinate, const TankLatticeAxis& lattice) {
+  const double translated_plane = world_coordinate - lattice.world_origin;
+  if (numeric::isinf(translated_plane)) {
+    return translated_plane > 0 ? 1.0 : 0.0;
+  }
+  auto offset = TankPlaneOffset(world_coordinate, lattice);
+  const auto low_corner_offset = offset.Bounds();
+  const auto low_corner_side = low_corner_offset.sign();
+  if (!low_corner_side.has_value()) {
+    return Error::kRange;
+  }
+  if (*low_corner_side <= 0) {
     return 0.0;
   }
-  if (world_offset > cell_width || (world_offset == cell_width && offset_residual >= 0)) {
+  offset.Add(-lattice.cell_width);
+  const auto high_corner_side = offset.Bounds().sign();
+  if (!high_corner_side.has_value()) {
+    return Error::kRange;
+  }
+  if (*high_corner_side >= 0) {
     return 1.0;
   }
-  // If the exact offset is interior, a rounded endpoint cannot certify an
-  // empty cut or a full aperture.
-  const double cell_coordinate = world_offset / cell_width + offset_residual / cell_width;
+  // An interior cut that rounds to an endpoint has no certifiable local extent.
+  const double cell_coordinate = low_corner_offset.estimate / lattice.cell_width;
   if (cell_coordinate <= 0 || cell_coordinate >= 1) {
     return Error::kRange;
   }
   return cell_coordinate;
 }
 
-FLUIDITY_HD inline Value<TankClipBounds> LocalTankBounds(const GeometryInput& input, CartesianVector world_anchor) {
-  if (!HasFiniteComponents(world_anchor)) {
-    return Error::kRange;
-  }
+FLUIDITY_HD inline Value<TankClipBounds> LocalTankBounds(const GeometryInput& input) {
   const auto& tank = input.obstacle.tank;
   const CartesianVector low_world{tank.start_low_x, tank.floor_y, tank.low_z};
   const CartesianVector high_world{tank.high_x, numeric::numeric_limits<double>::infinity(), tank.high_z};
@@ -443,8 +511,9 @@ FLUIDITY_HD inline Value<TankClipBounds> LocalTankBounds(const GeometryInput& in
     if (input.mode == GeometryMode::kFace && axis == input.axis) {
       continue;
     }
-    const auto low = TankClipCoordinate(low_world[axis], world_anchor[axis], input.geometry.cell_width);
-    const auto high = TankClipCoordinate(high_world[axis], world_anchor[axis], input.geometry.cell_width);
+    const auto lattice = TankAxis(input, axis);
+    const auto low = TankClipCoordinate(low_world[axis], lattice);
+    const auto high = TankClipCoordinate(high_world[axis], lattice);
     if (!low.ok() || !high.ok()) {
       return Error::kRange;
     }
@@ -496,16 +565,20 @@ FLUIDITY_HD inline ClippingPolyhedron ClipLiquidToTank(ClippingPolyhedron liquid
   return liquid;
 }
 
-FLUIDITY_HD inline Value<GeometryOutput>
-ComputeTankFace(const GeometryInput& input, const TankClipBounds& bounds, CartesianVector world_anchor) {
+FLUIDITY_HD inline Value<GeometryOutput> ComputeTankFace(const GeometryInput& input, const TankClipBounds& bounds) {
   const auto& tank = input.obstacle.tank;
   const double h = input.geometry.cell_width;
   const double full_area = h * h;
   const CartesianVector low_world{tank.start_low_x, tank.floor_y, tank.low_z};
   const CartesianVector high_world{tank.high_x, numeric::numeric_limits<double>::infinity(), tank.high_z};
-  const double normal_coordinate = world_anchor[input.axis];
-  const bool piston_side = input.axis == 0 && normal_coordinate <= tank.start_low_x;
-  const bool open = normal_coordinate > low_world[input.axis] && normal_coordinate < high_world[input.axis];
+  const auto normal_lattice = TankAxis(input, input.axis);
+  const auto low_plane_offset_sign = TankPlaneOffsetSign(low_world[input.axis], normal_lattice);
+  const auto high_plane_offset_sign = TankPlaneOffsetSign(high_world[input.axis], normal_lattice);
+  if (!low_plane_offset_sign.ok() || !high_plane_offset_sign.ok()) {
+    return Error::kRange;
+  }
+  const bool piston_side = input.axis == 0 && *low_plane_offset_sign >= 0;
+  const bool open = *low_plane_offset_sign < 0 && *high_plane_offset_sign > 0;
 
   GeometryOutput output;
   if (open || piston_side) {
@@ -640,13 +713,17 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
   const bool open_tank = input.obstacle.kind == ObstacleKind::kOpenTank;
   TankClipBounds tank_bounds;
   if (open_tank) {
-    const auto world_anchor = LatticeWorldAnchor(input);
-    const auto bounds = LocalTankBounds(input, world_anchor);
+    // Face queries are incident to cells whose world extents have already
+    // been checked, including the high corner of each cell.
+    if (input.mode == GeometryMode::kCell && !TankCellHasResolvedWorldExtent(input)) {
+      return Error::kRange;
+    }
+    const auto bounds = LocalTankBounds(input);
     if (!bounds.ok()) {
       return bounds.status();
     }
     if (input.mode == GeometryMode::kFace) {
-      return ComputeTankFace(input, *bounds, world_anchor);
+      return ComputeTankFace(input, *bounds);
     }
     tank_bounds = *bounds;
     const double tank_cell_volume = TankBoxMeasure(tank_bounds, h, -1);
