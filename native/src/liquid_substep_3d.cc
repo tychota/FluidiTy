@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <numbers>
+#include <optional>
 #include <tuple>
 
 #include "absl/cleanup/cleanup.h"
@@ -325,14 +326,17 @@ struct LiquidSubstepScheduler3D::Impl {
         .wall_samples = staging.new_walls.values(),
     };
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, step_duration));
-    // A thin slab can share original stencil nodes across sides. Each gather
-    // receives distinct old/new prescribed wall views for THIS particle's side.
-    // Numerical donor order remains canonical owned-slot order, independent of
-    // particle groups. Copy each result before reusing the bounded gather bank.
+    // Thin-slab stencil nodes can be shared by opposite incident walls. Reuse
+    // the two frozen wall histories only within a consecutive run on one side.
+    // Copy each result before reusing the bounded gather bank.
+    std::optional<std::int64_t> sampled_wall_side;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
       const auto side = trial.particles[index].side_tag;
-      STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
-      STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
+      if (sampled_wall_side != side) {
+        STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
+        STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
+        sampled_wall_side = side;
+      }
       const auto gather = backend.gather(
           backend.context,
           {
