@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
+#include "absl/strings/charconv.h"
 #include "fluidity/host/liquid_cache_3d.h"
 
 namespace fluidity {
@@ -188,8 +189,11 @@ absl::StatusOr<double> ParseDropSupportRadius(const fs::path& argument) {
     decimal += static_cast<char>(character);
   }
   double radius = 0;
-  const auto parsed = std::from_chars(decimal.data(), decimal.data() + decimal.size(), radius);
-  if (parsed.ec != std::errc{} || parsed.ptr != decimal.data() + decimal.size() || !std::isfinite(radius)) {
+  const auto parsed = absl::from_chars(decimal.data(), decimal.data() + decimal.size(), radius);
+  // Abseil also recognizes hexadecimal floats in general mode.
+  const bool has_hexadecimal_marker = decimal.find_first_of("xX") != std::string::npos;
+  if (has_hexadecimal_marker || parsed.ec != std::errc{} || parsed.ptr != decimal.data() + decimal.size()
+      || !std::isfinite(radius)) {
     return absl::InvalidArgumentError("drop support radius must be a finite decimal in meters");
   }
   if (radius < 0.5 * kDropCellWidth || radius > 0.9 * kDropCellWidth) {

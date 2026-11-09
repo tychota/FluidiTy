@@ -136,10 +136,20 @@ def test_native_drop_seed_roundtrips_calibrated_binary64_radius(native_tools, tm
     assert authored["seed_digest"] == digest
     assert scene.with_suffix(".flrs.flst").read_bytes() == preview.read_bytes()
 
+    exponent_scene = tmp_path / "drop-exponent.flrs"
+    exponent_authored = native_command(
+        fixture, "write-scene", "oscillating-drop-l2", "cpu", solver, exponent_scene,
+        format(calibration.support_radius_m, ".16e"),
+    )
+    assert exponent_authored["resolved_fingerprint"] == authored["resolved_fingerprint"]
+
     assert "fingerprint" in native_command(fixture, "read-drop-scene", scene, "0" * 64, success=False)
 
 
-@pytest.mark.parametrize("radius", [(), ("nan",), ("0.024",), ("0.016junk",)])
+@pytest.mark.parametrize(
+    "radius",
+    [(), ("nan",), ("0.024",), ("0.016junk",), ("+0.016",), (" 0.016",), ("0.016 ",), ("0x1p-6",)],
+)
 def test_native_drop_rejects_missing_or_invalid_support_radius(native_tools, tmp_path, radius):
     fixture, solver = native_tools
     scene = tmp_path / "drop.flrs"
