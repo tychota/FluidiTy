@@ -234,8 +234,9 @@ class LiquidCache3D {
   );
   // Verifies portable cache self-consistency without creating or writing files.
   // Requires an existing lease file. Inspection instances reject PublishFrame,
-  // PublishCheckpoint and ReadCheckpoint with FailedPrecondition; only Open with
-  // an externally expected fingerprint enables compatible resume/publication.
+  // PublishCheckpoint and ReadCheckpoint with FailedPrecondition. Open and
+  // OpenForReplay authenticate a fingerprint for checkpoint reads. Only Open
+  // authorizes publication.
   static absl::StatusOr<LiquidCache3D>
   OpenForInspection(const std::filesystem::path& root_directory, LiquidCacheLimits3D limits = {});
   // Returns owning canonical resolved inputs after exact content/job verification.
