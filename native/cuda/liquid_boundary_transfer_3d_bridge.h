@@ -2,6 +2,7 @@
 #include <type_traits>
 
 #include "fluidity/base/liquid_boundary_transfer_math_3d.h"
+#include "fluidity/base/liquid_regular_cell_transport_3d.h"
 namespace fluidity::cuda_internal {
 enum class BoundaryTransferOperation3D {
   kDeposit,
@@ -37,6 +38,7 @@ struct BoundaryTransferParticle3D {
   double liquid_distance{};  // Frozen start-time signed distance, meters.
   double volume_ratio{};  // Dimensionless start-time J.
   bool pic_initialized{};  // False suppresses retained particle velocity.
+  LiquidRegularCellTransport3D regular_cell_transport{};  // Optional projected samples for the update.
   MacFaceStencilSample3D stencils[3][27]{};  // X/Y/Z, then original (z,y,x) node order.
 };
 struct BoundaryTransferFaceResult3D {
@@ -50,7 +52,7 @@ struct BoundaryTransferParticleResult3D {
   LiquidBoundaryParticleGather3D gathered{};
   Vec3 updated_world_position{};  // Continuous-contact position, meters.
   Vec3 updated_stored_velocity{};  // Retained/contact-corrected m/s, not advection velocity.
-  double updated_volume_ratio{};  // exp(dt tr L) times start-time J.
+  double updated_volume_ratio{};  // Start-time J times exp(dt times the transport divergence).
 };
 struct BoundaryTransferQuery3D {
   BoundaryTransferOperation3D operation = BoundaryTransferOperation3D::kDeposit;

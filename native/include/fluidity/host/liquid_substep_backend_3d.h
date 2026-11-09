@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fluidity/base/liquid_regular_cell_transport_3d.h"
 #include "fluidity/host/wetted_piston_3d.h"
 
 namespace fluidity {
@@ -19,6 +20,9 @@ struct LiquidParticleUpdateInputs3D {
   double particle_energy_blend;  // e in [0,1], alpha=0.99e and surface beta=e.
   double friction_coefficient;  // Nonnegative dimensionless Coulomb coefficient.
   double penetration_tolerance;  // Meters.
+  // Empty or in particle order, with one record per particle. Must not overlap
+  // trial particles or device scratch. Active records supply advection and J.
+  std::span<const LiquidRegularCellTransport3D> regular_cell_transport{};
 };
 struct LiquidMissingFacePredictionInputs3D {
   SparseMacGridView3D grid;
@@ -175,6 +179,12 @@ struct LiquidSubstepBackend3D {
       const LiquidBoundaryGatherViewInputs3D& inputs,
       LiquidBoundaryWorkspace3D& workspace
   );
+  // Apply swept contact and advance trial position, stored velocity, J and APIC
+  // history. Malformed transport spans or active samples and nonfinite
+  // transport evaluation return code-only InvalidArgument or OutOfRange. An
+  // unrepresentable J or excessive displacement requests a shorter step with
+  // Aborted. The scheduler discards any failed CPU trial; CUDA publishes only
+  // after the entire update succeeds.
   using UpdateParticles = absl::Status(
       void* context,
       const LiquidParticleUpdateInputs3D& inputs,
@@ -206,6 +216,6 @@ struct LiquidSubstepBackend3D {
   // Optional allocation-free diagnostic boundary, with kCount outside attempts.
   void (*set_work_phase)(void*, LiquidWorkPhase3D) = nullptr;
 };
-// CPU operations share the accepted bounded operators and true-gradient J/contact.
+// CPU operations share the accepted bounded operators and the swept contact update.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

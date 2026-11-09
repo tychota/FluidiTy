@@ -144,33 +144,81 @@ absl::Status ApplyForces(
   }
   return absl::OkStatus();
 }
+// Check every active record and its volume update before touching the first
+// trial particle. The mutation pass recomputes the checked field without scratch.
+absl::Status PrevalidateRegularCellTransport(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<const LiquidParticleState3D> particles
+) {
+  const auto transport = inputs.regular_cell_transport;
+  if (transport.empty()) {
+    return absl::OkStatus();
+  }
+  if (transport.size() != particles.size() || Overlap(std::as_bytes(transport), std::as_bytes(particles))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  for (std::size_t index = 0; index < transport.size(); ++index) {
+    const auto& sample = transport[index];
+    if (!sample.active) {
+      continue;
+    }
+    const double start_volume_ratio = particles[index].volume_ratio;
+    if (!std::isfinite(inputs.step_duration) || inputs.step_duration <= 0 || !std::isfinite(start_volume_ratio)
+        || start_volume_ratio <= 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto field = internal::EvaluateRegularCellTransport3D(sample, inputs.cell_width);
+    if (!field.ok()) {
+      return boundary_internal::ArithmeticStatus(field.status(), true);
+    }
+    const double volume_ratio = start_volume_ratio * std::exp(inputs.step_duration * field->divergence);
+    if (!std::isfinite(volume_ratio) || volume_ratio <= 0) {
+      return Error(absl::StatusCode::kAborted);
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status
 UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
   if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()) {
-    return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto transport_status = PrevalidateRegularCellTransport(inputs, particles);
+  if (!transport_status.ok()) {
+    return transport_status;
   }
   for (std::size_t index = 0; index < particles.size(); ++index) {
     auto& particle = particles[index];
     const auto& gather = inputs.gathered[index];
-    const double divergence =
-        gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
     const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
     const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
-    const double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
-    if (std::isnan(solid_distance)) {
-      return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
-    }
-    const bool surface_expansion = divergence > 0 && inputs.liquid_distances[index] <= 0
-        && inputs.liquid_distances[index] >= -inputs.cell_width && solid_distance > inputs.cell_width;
-    const double beta = surface_expansion ? inputs.particle_energy_blend : 0;
     const auto stored = liquid_step_internal::Add(
         gather.new_pic_velocity,
         liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, alpha)
     );
-    const auto advecting = liquid_step_internal::Add(
-        gather.new_pic_velocity,
-        liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, beta * alpha)
-    );
+    Vec3 advecting;
+    double divergence;
+    if (!inputs.regular_cell_transport.empty() && inputs.regular_cell_transport[index].active) {
+      const auto field =
+          internal::EvaluateRegularCellTransport3D(inputs.regular_cell_transport[index], inputs.cell_width);
+      advecting = field->advecting_world_velocity;
+      divergence = field->divergence;
+    } else {
+      divergence =
+          gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
+      const double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
+      if (std::isnan(solid_distance)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      const bool surface_expansion = divergence > 0 && inputs.liquid_distances[index] <= 0
+          && inputs.liquid_distances[index] >= -inputs.cell_width && solid_distance > inputs.cell_width;
+      const double beta = surface_expansion ? inputs.particle_energy_blend : 0;
+      advecting = liquid_step_internal::Add(
+          gather.new_pic_velocity,
+          liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, beta * alpha)
+      );
+    }
     const auto contact = ResolveLiquidWallContactBounded3D({
         .start_world_position = particle.world_position,
         .stored_world_velocity = stored,

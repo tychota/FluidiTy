@@ -402,8 +402,8 @@ __device__ Error Forces(
   }
   return Error::kNone;
 }
-// J consumes the true original-basis gradient, while retained APIC slopes are the
-// separate fit. Contact constrains stored and advecting velocities independently.
+// J uses the gradient of the selected transport field. Contact constrains the
+// advecting and retained velocities independently.
 __device__ Error UpdateParticles(
     const BoundaryTransferQuery3D& query,
     const BoundaryTransferParticle3D* particles,
@@ -414,33 +414,44 @@ __device__ Error UpdateParticles(
     const auto& particle = particles[index];
     const auto& gathered = particle.gathered;
     const Vec3 start = particle.particle.transfer.trial_world_position;
-    const double divergence =
-        gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
     const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
     const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
-    double solid_distance = numeric::numeric_limits<double>::infinity();
-    if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-      const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
-      if (!wall.ok()) {
-        return wall.status();
-      }
-      solid_distance = wall->inward_distance;
-    } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
-      const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
-      solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
-          ? projected_distance
-          : numeric::abs(projected_distance) - query.obstacle.half_width;
-      if (!numeric::isfinite(solid_distance)) {
-        return Error::kRange;
-      }
-    }
-    const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
-        && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
-    const double beta = surface_expansion ? query.particle_energy_blend : 0;
     Vec3 stored = gathered.new_pic_velocity;
-    Vec3 advecting = gathered.new_pic_velocity;
     AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
-    AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
+    Vec3 advecting;
+    double divergence;
+    if (particle.regular_cell_transport.active) {
+      const auto field = internal::EvaluateRegularCellTransport3D(particle.regular_cell_transport, query.cell_width);
+      if (!field.ok()) {
+        return field.status();
+      }
+      advecting = field->advecting_world_velocity;
+      divergence = field->divergence;
+    } else {
+      divergence =
+          gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
+      double solid_distance = numeric::numeric_limits<double>::infinity();
+      if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+        const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
+        if (!wall.ok()) {
+          return wall.status();
+        }
+        solid_distance = wall->inward_distance;
+      } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+        const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
+        solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
+            ? projected_distance
+            : numeric::abs(projected_distance) - query.obstacle.half_width;
+        if (!numeric::isfinite(solid_distance)) {
+          return Error::kRange;
+        }
+      }
+      const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
+          && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
+      const double beta = surface_expansion ? query.particle_energy_blend : 0;
+      advecting = gathered.new_pic_velocity;
+      AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
+    }
     const auto contact = boundary_internal::ResolveContact({
         start,
         stored,

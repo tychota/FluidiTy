@@ -15,6 +15,7 @@
 #include "gtest/gtest.h"
 #include "liquid_exact_curvature_3d_cases.h"
 #include "liquid_pressure_supported_gather_3d_cases.h"
+#include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
@@ -939,6 +940,26 @@ TEST(LiquidSubstep3D, RetainedAgesAdvanceOnlyOnAcceptanceAndFinishDoesNotMutateE
   EXPECT_EQ(scheduler->diagnostics().stages[scheduler->diagnostics().stage_count - 1], LiquidPhysicalStage3D::kAdapt);
   EXPECT_TRUE(scheduler->committed() == *snapshot);
   ExpectIdenticalSerializedState(*snapshot, scheduler->committed());
+}
+absl::Status
+UpdateCpuParticles(const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+  return CpuLiquidSubstepBackend3D().update_particles(nullptr, inputs, particles);
+}
+
+TEST(LiquidSubstep3D, RegularCellTransportPairsAdvectionWithVolume) {
+  test_internal::CheckRegularCellTransport(UpdateCpuParticles);
+}
+
+TEST(LiquidSubstep3D, RegularCellTransportUsesSweptContact) {
+  test_internal::CheckRegularCellTransportContact(UpdateCpuParticles);
+}
+
+TEST(LiquidSubstep3D, RejectsMalformedRegularCellTransportBeforeMutation) {
+  test_internal::CheckMalformedRegularCellTransport(UpdateCpuParticles);
+}
+
+TEST(LiquidSubstep3D, RejectsRegularCellTransportAliasingTrialParticles) {
+  test_internal::CheckAliasedRegularCellTransport(UpdateCpuParticles);
 }
 TEST(LiquidSubstep3D, ExponentialUsesTrueGradientAndSeparationUsesSurfaceExpansion) {
   auto initial = Initial(2);
