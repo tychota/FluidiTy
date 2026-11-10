@@ -36,9 +36,9 @@ bool ValidSource(const LiquidEmissionSource3D& source) {
       && detail::Finite(jitter) && jitter.x >= 0 && jitter.y >= 0 && jitter.z >= 0
       && detail::ValidParticle(source.emitted_particle_template);
 }
-absl::Status BoundScene(std::size_t sources, std::size_t upstream, LiquidCacheLimits3D limits) {
-  if (sources > limits.maximum_records.sources || upstream > limits.maximum_upstream_records || sources > (1 << 20)
-      || upstream > (1 << 20)) {
+absl::Status BoundScene(std::size_t source_count, std::size_t upstream_content_count, LiquidCacheLimits3D limits) {
+  if (source_count > limits.maximum_records.sources || upstream_content_count > limits.maximum_upstream_records
+      || source_count > (1 << 20) || upstream_content_count > (1 << 20)) {
     return detail::Error(absl::StatusCode::kResourceExhausted);
   }
   return absl::OkStatus();
@@ -124,8 +124,8 @@ absl::Status ValidateScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D 
 // Resolved v1 requires every scalar field, including defaults. Later schema
 // defaults therefore cannot reinterpret an old artifact's omitted setting.
 template <typename Table>
-bool AllFieldsPresent(const Table* table, flatbuffers::voffset_t last) {
-  for (flatbuffers::voffset_t field = 4; field <= last; field += 2) {
+bool AllFieldsPresent(const Table* table, flatbuffers::voffset_t last_vtable_field_offset) {
+  for (flatbuffers::voffset_t field = 4; field <= last_vtable_field_offset; field += 2) {
     if (!flatbuffers::IsFieldPresent(table, static_cast<typename Table::FlatBuffersVTableOffset>(field))) {
       return false;
     }

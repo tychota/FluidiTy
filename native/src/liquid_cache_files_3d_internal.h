@@ -63,14 +63,20 @@ class NativeFile {
     }
 #endif
   }
-  absl::Status Open(const fs::path& path, bool write = false, bool lease = false, bool existing_lease = false) {
+  absl::Status Open(
+      const fs::path& path,
+      bool create_new_file = false,
+      bool open_lease_file = false,
+      bool require_existing_lease = false
+  ) {
 #if defined(_WIN32)
     handle_ = CreateFileW(
         path.c_str(),
-        write || (lease && !existing_lease) ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
+        create_new_file || (open_lease_file && !require_existing_lease) ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
-        lease ? (existing_lease ? OPEN_EXISTING : OPEN_ALWAYS) : (write ? CREATE_NEW : OPEN_EXISTING),
+        open_lease_file ? (require_existing_lease ? OPEN_EXISTING : OPEN_ALWAYS)
+                        : (create_new_file ? CREATE_NEW : OPEN_EXISTING),
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr
     );
@@ -88,7 +94,8 @@ class NativeFile {
     // Nonblocking open lets fstat reject a FIFO/device before any read can
     // wait for a peer. It does not change regular-file I/O semantics.
     int flags = O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
-    flags |= lease ? (existing_lease ? O_RDONLY : O_RDWR | O_CREAT) : (write ? O_RDWR | O_CREAT | O_EXCL : O_RDONLY);
+    flags |= open_lease_file ? (require_existing_lease ? O_RDONLY : O_RDWR | O_CREAT)
+                             : (create_new_file ? O_RDWR | O_CREAT | O_EXCL : O_RDONLY);
     handle_ = open(path.c_str(), flags, 0600);
     if (handle_ < 0) {
       if (errno == ELOOP) {
@@ -218,8 +225,12 @@ class NativeFile {
 // derived by the store or supplied as trusted root_directory. The caller holds
 // the lease across these operations; a failed acquisition returns Aborted.
 absl::Status FlushDirectory(const std::filesystem::path& directory);
-absl::Status
-Lease(const std::filesystem::path& root, NativeFile& lease, bool create = false, bool existing_lease = false);
+absl::Status Lease(
+    const std::filesystem::path& root,
+    NativeFile& lease,
+    bool create_directories = false,
+    bool require_existing_lease = false
+);
 // Reads an owning copy of the file, bounded by limits.maximum_bytes.
 // A zero expected_byte_length skips the initial length check. Returns
 // DataLoss for a length mismatch or a length change during the read.
