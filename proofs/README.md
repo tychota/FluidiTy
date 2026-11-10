@@ -110,8 +110,13 @@ inverse hypotheses hold. The bridge separately checks `h=1` and `h=2`.
 
 This slice does not prove cubic or transition reconstruction, masked affine completeness,
 conditioning/fallback, compatible-ghost generation, or that arbitrary ghost values are the same
-physical affine continuation. Equal old/new grid samples imply zero grid increment; they say
-nothing about a retained particle history residual. No history update is modeled here.
+physical affine continuation.
+
+`equal_samples_grid_increment_and_residual` uses one scalar component and the
+same weights for both histories. Pointwise equal old and new face samples give a zero grid FLIP
+increment (new weighted gather minus old weighted gather). The retained residual (old particle
+velocity minus old weighted gather) is zero exactly when those two velocities agree. The root
+consumer has equal histories with gather 5 and old particle velocity 7, so the residual is nonzero.
 
 ## Finite signed MAC trace reindexing
 
@@ -379,6 +384,6 @@ The runtime supplies a validated positive duration and a correct frame-boundary 
 | `liquid_same_state_key_replays_trial` | Evaluations of one pure trial function with equal state and accepted-step key have equal outcomes and committed results, even when diagnostics differ. The shared function fixes settings, execution artifact and requested duration. |
 | `liquid_adaptation_preserves_input_snapshot` | A separate pure adaptation proposes new fields and retains its original committed snapshot. The proposal has no clock or publication operation. |
 
-All five targets are included in the 27-target independent export and axiom audit. Runtime
+All five targets are included in the 28-target independent export and axiom audit. Runtime
 fault injection and serialized-state comparison are separate evidence for the C++ ownership
 discipline, allocation/retry rules, CUDA ordering, floating-point behavior and actual byte replay.

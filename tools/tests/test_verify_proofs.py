@@ -124,6 +124,7 @@ ROOT_SCRIPT = Path(__file__).parents[1] / 'verify_proofs.py'
 def test_uniform_transfer_contract_inventory():
     required = {
         'Fluidity.affine_reconstruction_of_moments',
+        'Fluidity.equal_samples_grid_increment_and_residual',
         'Fluidity.mac_deposit_conserves_row_moments',
         'Fluidity.finite_face_sum_eq_weighted_forward_difference',
         'Fluidity.quantized_sum_error_bound',
@@ -144,6 +145,7 @@ def test_uniform_basis_and_cap_lemmas_are_independently_exported():
 
 @pytest.mark.parametrize('missing', [
     'Fluidity.affine_reconstruction_of_moments',
+    'Fluidity.equal_samples_grid_increment_and_residual',
     'Fluidity.mac_deposit_conserves_row_moments',
     'Fluidity.finite_face_sum_eq_weighted_forward_difference',
     'Fluidity.quantized_sum_error_bound',
@@ -190,7 +192,7 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 27
+    assert len(verify.TARGETS) == 28
 
 
 def test_axiom_free_closures_are_checked():

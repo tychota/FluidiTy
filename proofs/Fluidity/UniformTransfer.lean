@@ -240,6 +240,19 @@ theorem affine_reconstruction_of_moments {ι : Type} [Fintype ι] {d : ℕ}
         simp_rw [mixed]
         simp
 
+/-- With the same weights and equal old and new face samples, new PIC minus old PIC is zero.
+The retained residual is the old particle velocity minus old PIC and vanishes exactly when
+the particle velocity equals old PIC. -/
+theorem equal_samples_grid_increment_and_residual {ι : Type} [Fintype ι]
+    (weight oldSample newSample : ι → ℝ) (oldParticleVelocity : ℝ)
+    (samplesEqual : ∀ i, newSample i = oldSample i) :
+    ((∑ i, weight i * newSample i) - (∑ i, weight i * oldSample i) = 0) ∧
+    (oldParticleVelocity - (∑ i, weight i * oldSample i) = 0 ↔
+      oldParticleVelocity = ∑ i, weight i * oldSample i) := by
+  constructor
+  · simp [samplesEqual]
+  · exact sub_eq_zero
+
 #print axioms quadratic_boundary_matching
 #print axioms tensor_gradient_polynomials
 #print axioms quadratic_centered_local
@@ -247,6 +260,7 @@ theorem affine_reconstruction_of_moments {ι : Type} [Fintype ι] {d : ℕ}
 #print axioms quadratic_shifted_basis
 #print axioms quadratic_tensor_moments
 #print axioms affine_reconstruction_of_moments
+#print axioms equal_samples_grid_increment_and_residual
 
 
 /-- Unrounded, force-free per-component mass and pure momentum deposited by a
