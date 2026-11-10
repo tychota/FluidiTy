@@ -262,7 +262,7 @@ def test_single_face_flux_with_zero_discrete_divergence(h, normal_axis):
         velocity, _ = sample_mac_transport(point, h, face_value, reconstruction="rt0")
         rt0_lower_normal_speeds.append(velocity[normal_axis])
 
-    trace_max_abs = max(map(abs, mixed_traces))
+    trace_max_abs = np.max(np.abs(mixed_traces))
     assert trace_max_abs <= GRADIENT_ATOL
     rt0_lower_flux = face_area * np.mean(rt0_lower_normal_speeds)
     rt0_upper_flux = face_area * np.mean(rt0_upper_normal_speeds)
