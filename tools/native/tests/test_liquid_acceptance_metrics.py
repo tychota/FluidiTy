@@ -1,6 +1,7 @@
 """Independent controls for the real free-fall acceptance measurements."""
 
 import copy
+import math
 import sys
 from pathlib import Path
 
@@ -143,6 +144,19 @@ def solver_receipts():
                 "source_next_child_ordinals": [], "source_fractional_remainders": [],
                 "attempts": accepted_in_frame, "accepted_attempts": accepted_in_frame,
                 "dt_retries": 0, "capacity_replays": 0,
+                "accepted_measurement": {
+                    "accepted_dt_seconds": step_ordinal / 120 - (step_ordinal - 1) / 120,
+                    "step_start_capillary_bound_seconds": None,
+                    "pressure_iterations": 2,
+                    "pressure_true_residual_l2_m3_per_s": 1e-6,
+                    "pressure_rhs_l2_m3_per_s": 1,
+                    "pressure_max_volume_scaled_residual_per_s": 1e-6,
+                    "pressure_max_constraint_defect_per_s": 1e-6,
+                    "step_start_pressure_cell_volume_m3": 4,
+                    "step_start_inward_piston_flux_m3_per_s": 0,
+                    "step_start_piston_low_x_m": None,
+                    "step_end_piston_low_x_m": None,
+                },
             }
             receipts.append(trace)
         manifest_clocks.append(trace_clock)
@@ -154,18 +168,58 @@ def solver_receipts():
     return receipts, manifest_clocks, authored_scene_identity
 
 
+def with_attempt_ledger(receipts):
+    output = []
+    frame_attempts = []
+    frame_traces = []
+    prior_clock = {"frame": 0, "substep": 0, "epoch": 0, "accepted_step": 0, "time_seconds": 0}
+    prior_retries = 0
+    for receipt in receipts:
+        if receipt["event"] == "frame":
+            output.extend(frame_attempts)
+            output.extend(frame_traces)
+            frame_attempts.clear()
+            frame_traces.clear()
+            prior_retries = 0
+        if receipt["event"] == "trace":
+            target_frame = prior_clock["frame"] + 1
+            attempt = {
+                "event": "attempt", "target_frame": target_frame,
+                "attempt_in_frame": receipt["attempts"], "capacity_pass": 0,
+                "start_clock": prior_clock, "work_wall_seconds": 0.001,
+                "attempted_dt_seconds": receipt["accepted_measurement"]["accepted_dt_seconds"],
+                "outcome": "accepted", "failure_code": "OK", "retry_dt_seconds": None,
+                "retained": True, "restarted_frame": False,
+            }
+            if receipt["dt_retries"] > prior_retries:
+                frame_attempts.append({
+                    **attempt, "attempt_in_frame": receipt["attempts"] - 1,
+                    "outcome": "retry_dt", "failure_code": "ABORTED", "retained": False,
+                    "attempted_dt_seconds": 2 * attempt["attempted_dt_seconds"],
+                    "retry_dt_seconds": attempt["attempted_dt_seconds"],
+                })
+            frame_attempts.append(attempt)
+            prior_retries = receipt["dt_retries"]
+            prior_clock = {key: receipt[key] for key in prior_clock}
+            frame_traces.append(receipt)
+        else:
+            output.append(receipt)
+    return output
+
+
 def test_valid_trace_counts_reset_at_publication_and_include_retries():
     receipts, manifest_clocks, authored_scene_identity = solver_receipts()
     for receipt in receipts:
         if receipt["event"] == "trace" and 2 <= receipt["accepted_step"] <= 5:
             receipt["dt_retries"] = 1
             receipt["attempts"] += 1
-    assert verify_solver(receipts, manifest_clocks, authored_scene_identity) == receipts[-1]
+    assert verify_solver(with_attempt_ledger(receipts), manifest_clocks, authored_scene_identity) == receipts[-1]
 
 
 @pytest.mark.parametrize("accepted_step", [1, 5, 30])
 def test_trace_counts_must_match_actual_accepted_records(accepted_step):
     receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    receipts = with_attempt_ledger(receipts)
     for receipt in receipts:
         if receipt.get("accepted_step") == accepted_step:
             # Corrupt the early trace, a frame-completion trace, or both copies
@@ -184,8 +238,64 @@ def test_retry_count_cannot_regress_before_publication():
 
 def test_final_summary_counts_must_match_the_final_trace():
     receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    receipts = with_attempt_ledger(receipts)
     receipts[-1].update(attempts=6, dt_retries=1)
     with pytest.raises(ValueError, match="final and trace attempts differ"):
+        verify_solver(receipts, manifest_clocks, authored_scene_identity)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("pressure_rhs_l2_m3_per_s", None),
+        ("pressure_true_residual_l2_m3_per_s", math.inf),
+        ("pressure_true_residual_l2_m3_per_s", 1e-2),
+        ("pressure_max_volume_scaled_residual_per_s", 1e-2),
+        ("pressure_max_constraint_defect_per_s", 1e-2),
+        ("step_start_capillary_bound_seconds", 0.001),
+        ("accepted_dt_seconds", 0.001),
+        ("step_start_pressure_cell_volume_m3", -1),
+        ("step_start_inward_piston_flux_m3_per_s", -0.125),
+    ],
+)
+def test_rejects_bad_accepted_measurements(field, value):
+    receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    receipt = next(record for record in receipts if record["event"] == "trace")
+    receipt["accepted_measurement"][field] = value
+    with pytest.raises(ValueError, match=field):
+        verify_solver(receipts, manifest_clocks, authored_scene_identity)
+
+
+def test_rejects_missing_accepted_measurement():
+    receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    del receipts[1]["accepted_measurement"]
+    with pytest.raises(ValueError, match="accepted_measurement"):
+        verify_solver(receipts, manifest_clocks, authored_scene_identity)
+
+
+def test_rejects_incomplete_attempt_ledger():
+    receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    with pytest.raises(ValueError, match="attempt ledger"):
+        verify_solver(receipts, manifest_clocks, authored_scene_identity)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("attempt_in_frame", 2),
+        ("capacity_pass", 1),
+        ("retained", False),
+        ("restarted_frame", True),
+        ("work_wall_seconds", -1),
+        ("attempted_dt_seconds", 0.001),
+        ("failure_code", "ABORTED"),
+    ],
+)
+def test_rejects_inconsistent_attempt_ledger(field, value):
+    receipts, manifest_clocks, authored_scene_identity = solver_receipts()
+    receipts = with_attempt_ledger(receipts)
+    next(record for record in receipts if record["event"] == "attempt")[field] = value
+    with pytest.raises(ValueError, match="attempt ledger"):
         verify_solver(receipts, manifest_clocks, authored_scene_identity)
 
 

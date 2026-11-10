@@ -320,7 +320,7 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
         || (flag == "--backend" && (execution || device)) || (flag == "--device" && (execution || device))
         || (flag == "--frame" && (replay || check)) || (flag == "--substep" && replay)
         || ((flag == "--frame-start" || flag == "--frame-end" || flag == "--resume" || flag == "--preview") && run)
-        || (flag == "--trace" && execution);
+        || (flag == "--trace" && execution) || (flag == "--trace-geometry" && run);
     if (!allowed) {
       return invalid("arguments", flag, "unknown or misplaced option");
     }
@@ -335,8 +335,9 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
       command.preview = true;
       continue;
     }
-    if (flag == "--trace") {
+    if (flag == "--trace" || flag == "--trace-geometry") {
       command.trace = true;
+      command.trace_geometry = command.trace_geometry || flag == "--trace-geometry";
       continue;
     }
     if (++i == arguments.size() || arguments[i].empty() || arguments[i].starts_with("--")) {

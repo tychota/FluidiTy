@@ -37,6 +37,7 @@ struct Command {
   bool frame_start_explicit = false;
   bool resume = false;
   bool trace = false;
+  bool trace_geometry = false;  // Run-only; implies accepted and attempt tracing.
   bool preview = false;
 };
 // Stable protocol fields identify the failing input independently of localized
@@ -93,8 +94,8 @@ class ProtocolWriter {
 /// and cooperative cancellation. A publishing run holds the whole-job writer lease. A new publishing run writes frame
 /// zero, prerequisite checkpoints, and the inclusive selected range. Resume verifies and reuses existing content.
 ///
-/// Heartbeat, trace, and frame publication records can precede the terminal outcome. A publishing run can leave
-/// committed frames in the cache even when it returns an error.
+/// Heartbeat, attempt, trace, and frame publication records can precede the terminal outcome. A publishing run can
+/// leave committed frames in the cache even when it returns an error.
 ///
 /// @return An execution or job finalization error with diagnostic context, or the status of writing the terminal
 /// `result` record after both succeed. A failure to write that record is returned to the caller.
