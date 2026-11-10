@@ -382,7 +382,8 @@ absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> FreezeLiquidGeometry3D(
     LiquidBoundaryWorkspace3D& workspace
 ) {
   STAGE_TRY(arena.RecordRuntimeResult(cudaSuccess));
-  if (AliasesLiquidScratch3D(arena, inputs.cell_indices) || AliasesLiquidScratch3D(arena, inputs.center_distances)
+  if (AliasesLiquidScratch3D(arena, inputs.mac_grid.active_block_indices())
+      || AliasesLiquidScratch3D(arena, inputs.cell_indices) || AliasesLiquidScratch3D(arena, inputs.center_distances)
       || AliasesLiquidScratch3D(arena, inputs.corner_distances)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
@@ -399,7 +400,8 @@ absl::StatusOr<LiquidPressureProblemView3D> BuildLiquidLinks3D(
     LiquidBoundaryWorkspace3D& workspace
 ) {
   STAGE_TRY(arena.RecordRuntimeResult(cudaSuccess));
-  if (AliasesLiquidScratch3D(arena, geometry.cells) || AliasesLiquidScratch3D(arena, geometry.faces)
+  if (AliasesLiquidScratch3D(arena, geometry.mac_grid.active_block_indices())
+      || AliasesLiquidScratch3D(arena, geometry.cells) || AliasesLiquidScratch3D(arena, geometry.faces)
       || AliasesLiquidScratch3D(arena, geometry.center_distances) || AliasesLiquidScratch3D(arena, fields.cells)
       || AliasesLiquidScratch3D(arena, fields.predicted_face_velocities)) {
     return Error(absl::StatusCode::kInvalidArgument);

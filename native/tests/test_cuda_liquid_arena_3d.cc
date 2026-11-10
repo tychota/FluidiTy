@@ -10,6 +10,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include "../cuda/liquid_arena_3d_internal.h"
@@ -711,6 +712,35 @@ TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube)
     if (face.face_index.axis != FaceNormalAxis::kX) {
       EXPECT_NEAR(face.open_area, 0.75, 2e-14);
     }
+  }
+  for (const auto scratch_range : {CudaLiquidRange3D::kGeometryInput, CudaLiquidRange3D::kGeometryBatchResults}) {
+    const auto bytes = arena->range(scratch_range).pinned;
+    ASSERT_GE(bytes.size(), sizeof(BlockIndex3D));
+    constexpr BlockIndex3D kActiveBlock{0, 0, 0};
+    auto* active_block = std::construct_at(reinterpret_cast<BlockIndex3D*>(bytes.data()), kActiveBlock);
+    const auto aliased_grid = SparseMacGridView3D::Create(grid->geometry(), {active_block, 1});
+    ASSERT_TRUE(aliased_grid.ok()) << aliased_grid.status();
+
+    auto aliased_frozen = *clipped;
+    aliased_frozen.mac_grid = *aliased_grid;
+    EXPECT_EQ(
+        cuda_internal::BuildLiquidLinks3D(*arena, aliased_frozen, {fields, velocities, 9}, *workspace).status().code(),
+        absl::StatusCode::kInvalidArgument
+    );
+    EXPECT_EQ(active_block->x, kActiveBlock.x);
+    EXPECT_EQ(active_block->y, kActiveBlock.y);
+    EXPECT_EQ(active_block->z, kActiveBlock.z);
+
+    std::construct_at(active_block, kActiveBlock);
+    auto aliased_inputs = inputs;
+    aliased_inputs.mac_grid = *aliased_grid;
+    EXPECT_EQ(
+        cuda_internal::FreezeLiquidGeometry3D(*arena, aliased_inputs, *workspace).status().code(),
+        absl::StatusCode::kInvalidArgument
+    );
+    EXPECT_EQ(active_block->x, kActiveBlock.x);
+    EXPECT_EQ(active_block->y, kActiveBlock.y);
+    EXPECT_EQ(active_block->z, kActiveBlock.z);
   }
 #if defined(_WIN32) && defined(_DEBUG)
   std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());
