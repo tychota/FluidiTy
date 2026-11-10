@@ -150,9 +150,9 @@ SCHEMA_CASES = tuple(
         "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
-)
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle"))
-CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle")
+) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame"))
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects")
 CUDA_EXECUTION_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
     "frame": 2, "substep": 0, "epoch": 4, "accepted_step": 4, "particle_count": 1,
@@ -507,6 +507,8 @@ def scenario(invocation, monkeypatch):
                                 if name == "SimulateCli.cuda_replay":
                                     receipt.update(command="replay", frame=10, substep=1, epoch=21,
                                                    accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+                                elif name == "SimulateCli.cuda_effects":
+                                    receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
                             console = json.dumps(receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
@@ -1265,7 +1267,7 @@ def test_schema_gate_is_required_and_recorded(scenario):
     _, _, output, run, _ = scenario
     run()
     summary = json.loads((output / "summary.json").read_text())
-    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 8}
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 11}
     assert (output / "ctest-schema.xml").is_file()
 
 
@@ -1281,10 +1283,10 @@ def test_cli_gate_is_required_and_recorded(scenario, preset):
     _, _, output, run, _ = scenario
     run(preset)
     evidence = json.loads((output / "summary.json").read_text())["evidence"]
-    assert evidence["cli"] == {"status": "passed", "tests": 9, "lifecycle": lifecycle_receipt("cpu")}
+    assert evidence["cli"] == {"status": "passed", "tests": 10, "lifecycle": lifecycle_receipt("cpu")}
     assert (output / "ctest-cli.xml").is_file()
     if preset.endswith("cuda"):
-        assert evidence["cuda_cli"]["tests"] == 4
+        assert evidence["cuda_cli"]["tests"] == 5
         assert evidence["cuda_cli"]["lifecycle"] == lifecycle_receipt("cuda")
         assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
         assert evidence["cuda_cli"]["compiled_architecture"] == 1200
@@ -1315,7 +1317,7 @@ def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
     rejected("CLI", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay"])
+@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay", "cuda_effects"])
 @pytest.mark.parametrize("field,value", [
     ("backend", "cpu"), ("compiled_architecture", 1000), ("graph_replay_count", 0),
     ("graph_replay_count", True), ("device_reserved_bytes", 0),
@@ -1329,6 +1331,8 @@ def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
     if case == "cuda_replay":
         receipt.update(command="replay", frame=10, substep=1, epoch=21,
                        accepted_step=21, time_seconds=10.5 / 24, read_only=True)
+    elif case == "cuda_effects":
+        receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
     receipt[field] = value
     processes.ctest_output_overrides["SimulateCli." + case] = json.dumps(receipt) + "\nPASS " + case
     rejected("CLI", "windows-debug-cuda")
@@ -1336,7 +1340,7 @@ def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
 
 @pytest.mark.parametrize("case", [
     "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay",
-    "cpu_lifecycle", "cuda_lifecycle",
+    "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects",
 ])
 def test_cli_each_execution_case_is_required(scenario, case):
     processes, _, _, _, rejected = scenario

@@ -51,6 +51,8 @@ struct SurfaceMetrics3D {
 // 1e-8*spacing of zero are assigned to air with that positive tie offset.
 // Crossings within 1e-7 of an edge endpoint share the lattice node's vertex ID;
 // resulting repeated-index triangles are omitted and topology remains checked.
+// Vertex normals interpolate centred lattice-node gradients when they agree
+// with the outward winding, otherwise use area-weighted geometry normals.
 // Invalid input returns
 // InvalidArgument, an unclosed lattice FailedPrecondition, excessive vertices
 // ResourceExhausted and nonfinite geometry OutOfRange. No input is modified.
@@ -62,12 +64,25 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
 absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh);
 
 // Adjusts mobile vertices along area-weighted normals with a step capped at
-// ±0.25 cell_width_m, excluding contact and unresolved-sheet vertices. Remeasures
+// ±0.25 cell_width_m in total from the input, excluding contact and unresolved-sheet vertices. Remeasures
 // actual volume, topology and intersections and backtracks unsafe steps. Publishes
 // vertices/normals only after the relative volume tolerance is met. Invalid
 // controls return InvalidArgument and infeasible constraints FailedPrecondition.
 // All failures leave mesh unchanged.
 absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
+    SurfaceMesh3D& mesh,
+    double target_volume_m3,
+    double cell_width_m,
+    double relative_tolerance,
+    std::size_t maximum_iterations
+);
+
+// Uses frozen unit outward normals already stored on the mesh (for example the
+// interpolated field normals produced by ExtractSurfaceMesh3D). This avoids
+// unrelated area-normal offsets at near-coincident crossing vertices. The same
+// total displacement, backtracking, topology, volume and failure-atomicity rules
+// as CorrectSurfaceVolume3D apply. Nonunit or inward normals return InvalidArgument.
+absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolumeWithNormals3D(
     SurfaceMesh3D& mesh,
     double target_volume_m3,
     double cell_width_m,

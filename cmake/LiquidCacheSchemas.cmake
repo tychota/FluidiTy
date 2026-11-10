@@ -38,6 +38,13 @@ foreach(schema IN ITEMS stage_manifest motion_frame surface_frame)
     DEPENDS "${effects_schema_dir}/${schema}.fbs" "${cache_schema_dir}/common.fbs"
     VERBATIM)
   target_sources(fluidity_cache_schemas PRIVATE "${header}")
+  if(BUILD_TESTING)
+    add_test(NAME EffectsCacheSchema.${schema}
+      COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --conform "${effects_schema_dir}/v1/${schema}.fbs"
+              --conform-includes "${cache_schema_dir}/v1" -I "${cache_schema_dir}" -I "${effects_schema_dir}"
+              "${effects_schema_dir}/${schema}.fbs")
+    set_tests_properties(EffectsCacheSchema.${schema} PROPERTIES LABELS "native;schema")
+  endif()
 endforeach()
 if(BUILD_TESTING)
   add_test(NAME LiquidCacheSchema.RejectIncompatibleField

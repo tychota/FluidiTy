@@ -751,7 +751,7 @@ def effects_case(executable, fixture, directory, backend):
     scene, initial = make_scene(executable, fixture, directory, backend, "effects")
     cache = directory / "effects-cache"
     run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
-    execute(executable, *run, "--frame-end", 3)
+    result = execute(executable, *run, "--frame-end", 3)[-1]
     products = cache / "effects" / "source"
     assert len(list((products / "frames").glob("*.flem"))) == 4
     before = snapshot(products)
@@ -764,6 +764,10 @@ def effects_case(executable, fixture, directory, backend):
     source_blob.write_bytes(b"corrupt")
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 3, "--substep", 0,
            success=False)
+    if backend == "cuda":
+        assert result["compiled_architecture"] == 1200 and result["graph_replay_count"] > 0
+        assert result["snapshot_copy_milliseconds"] > 0 and result["device_reserved_bytes"] > 0
+        print(json.dumps(result, sort_keys=True))
 
 
 def case_cpu_effects(executable, fixture, directory, cuda):

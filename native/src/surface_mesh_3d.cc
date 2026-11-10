@@ -177,6 +177,7 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
       {0, 5, 1, 7},
   }};
   SurfaceMesh3D mesh;
+  std::vector<Vec3> field_normals;
   std::map<std::pair<std::size_t, std::size_t>, std::uint32_t> edges;
   for (std::size_t x = 0; x + 1 < dimensions[0]; ++x) {
     for (std::size_t y = 0; y + 1 < dimensions[1]; ++y) {
@@ -228,6 +229,29 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
           const auto index = static_cast<std::uint32_t>(mesh.vertices.size());
           edges[key] = index;
           mesh.vertices.push_back({.id = mesh.next_id++, .position = position});
+          const auto gradient_at = [&](int corner) {
+            const std::array node{x + corners[corner][0], y + corners[corner][1], z + corners[corner][2]};
+            std::array<double, 3> gradient{};
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+              auto lower = node;
+              auto upper = node;
+              lower[axis] -= lower[axis] > 0;
+              upper[axis] += upper[axis] + 1 < dimensions[axis];
+              gradient[axis] = (lattice.values[node_id(upper[0], upper[1], upper[2])]
+                                - lattice.values[node_id(lower[0], lower[1], lower[2])])
+                  / ((upper[axis] - lower[axis]) * lattice.spacing);
+            }
+            return Vec3{gradient[0], gradient[1], gradient[2]};
+          };
+          const auto first_gradient = gradient_at(a);
+          const auto last_gradient = gradient_at(b);
+          const auto gradient = snapped_node >= 0
+              ? gradient_at(snapped_node)
+              : Add(first_gradient, Scale(Sub(last_gradient, first_gradient), fraction));
+          const double gradient_length = Norm(gradient);
+          field_normals.push_back(
+              gradient_length > 0 && std::isfinite(gradient_length) ? Scale(gradient, 1 / gradient_length) : Vec3{}
+          );
           return index;
         };
         for (const auto& tetrahedron : tetrahedra) {
@@ -289,6 +313,11 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
     }
   }
   UpdateNormals(mesh);
+  for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+    if (Dot(mesh.vertices[index].normal, field_normals[index]) > 0) {
+      mesh.vertices[index].normal = field_normals[index];
+    }
+  }
   return mesh;
 }
 
@@ -405,12 +434,14 @@ absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh)
   return metrics;
 }
 
-absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
+namespace {
+absl::StatusOr<SurfaceMetrics3D> CorrectVolume(
     SurfaceMesh3D& mesh,
     double target,
     double width,
     double tolerance,
-    std::size_t maximum_iterations
+    std::size_t maximum_iterations,
+    bool use_stored_normals
 ) {
   if (!std::isfinite(target) || target <= 0 || !std::isfinite(width) || width <= 0 || !std::isfinite(tolerance)
       || tolerance <= 0 || tolerance > 0.005 || maximum_iterations == 0) {
@@ -424,6 +455,16 @@ absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
   if (!Safe(*measured)) {
     return absl::FailedPreconditionError("volume correction requires a safe closed surface");
   }
+  if (use_stored_normals) {
+    auto geometric = mesh;
+    UpdateNormals(geometric);
+    for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+      const auto normal = mesh.vertices[index].normal;
+      if (!Finite(normal) || std::abs(Norm(normal) - 1) > 1e-8 || Dot(normal, geometric.vertices[index].normal) <= 0) {
+        return absl::InvalidArgumentError("volume correction needs unit outward stored normals");
+      }
+    }
+  }
   for (std::size_t iteration = 0; iteration <= maximum_iterations; ++iteration) {
     if (std::abs(measured->signed_volume - target) <= tolerance * target) {
       UpdateNormals(corrected);
@@ -433,7 +474,9 @@ absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
     if (iteration == maximum_iterations) {
       break;
     }
-    UpdateNormals(corrected);
+    if (!use_stored_normals) {
+      UpdateNormals(corrected);
+    }
     double mobile_area = 0;
     for (const auto triangle : corrected.triangles) {
       const auto area = 0.5
@@ -454,10 +497,17 @@ absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
     bool accepted = false;
     for (int backtrack = 0; backtrack < 16; ++backtrack) {
       auto candidate = corrected;
-      for (auto& vertex : candidate.vertices) {
+      bool inside_bound = true;
+      for (std::size_t index = 0; index < candidate.vertices.size(); ++index) {
+        auto& vertex = candidate.vertices[index];
         if (!vertex.contact && !vertex.unresolved_sheet) {
           vertex.position = Add(vertex.position, Scale(vertex.normal, offset));
+          inside_bound = inside_bound && Norm(Sub(vertex.position, mesh.vertices[index].position)) <= 0.25 * width;
         }
+      }
+      if (!inside_bound) {
+        offset *= 0.5;
+        continue;
       }
       auto metrics = MeasureSurfaceMesh3D(candidate);
       if (metrics.ok() && Safe(*metrics)
@@ -474,5 +524,26 @@ absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
     }
   }
   return absl::FailedPreconditionError("surface volume constraint is infeasible within the correction budget");
+}
+}  // namespace
+
+absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
+    SurfaceMesh3D& mesh,
+    double target,
+    double width,
+    double tolerance,
+    std::size_t maximum_iterations
+) {
+  return CorrectVolume(mesh, target, width, tolerance, maximum_iterations, false);
+}
+
+absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolumeWithNormals3D(
+    SurfaceMesh3D& mesh,
+    double target,
+    double width,
+    double tolerance,
+    std::size_t maximum_iterations
+) {
+  return CorrectVolume(mesh, target, width, tolerance, maximum_iterations, true);
 }
 }  // namespace fluidity

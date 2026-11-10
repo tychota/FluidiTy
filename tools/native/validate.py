@@ -24,15 +24,15 @@ PLATFORMS = {
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
 PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
-CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle")}
-CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle"}
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects")}
+CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects"}
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
         "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
-}
+} | {f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame")}
 FIXTURE_TESTS = {
     "affine_apic.json": "Transfer.LocalAffineFixture",
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",
@@ -288,6 +288,7 @@ def hash_sources(run):
         "--",
         "native",
         "schemas/simulate",
+        "schemas/effects",
         "cmake",
         "reference",
         "tools/native",
@@ -717,10 +718,11 @@ def verify_cuda_execution_receipt(output, qualification, case):
     except (ValueError, IndexError) as error:
         raise ValueError("CUDA CLI execution receipt is malformed") from error
     replay = case == "cuda_replay"
+    effects = case == "cuda_effects"
     expected = {
         "protocol_version": 1, "event": "result", "command": "replay" if replay else "run",
-        "backend": "cuda", "frame": 10 if replay else 2, "substep": 1 if replay else 0,
-        "epoch": 21 if replay else 4, "accepted_step": 21 if replay else 4,
+        "backend": "cuda", "frame": 10 if replay else (3 if effects else 2), "substep": 1 if replay else 0,
+        "epoch": 21 if replay else (6 if effects else 4), "accepted_step": 21 if replay else (6 if effects else 4),
         "particle_count": 1, "next_particle_id": 2, "frames_per_second": 24,
         "compiled_architecture": qualification["cuda"]["architecture"] * 10, "read_only": replay,
     }
@@ -1070,7 +1072,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
         evidence["cuda_cli"]["execution"] = {
             case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
-            for case in ("cuda_execution", "cuda_replay")
+            for case in ("cuda_execution", "cuda_replay", "cuda_effects")
         }
         evidence["cuda_cli"]["lifecycle"] = verify_cli_lifecycle_receipt(
             cli_outputs["SimulateCli.cuda_lifecycle"], "cuda", qualification["cuda"]["architecture"] * 10

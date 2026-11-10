@@ -115,5 +115,30 @@ TEST(SurfaceMesh3D, DetectsOverlapBeyondASharedVertexOrEdge) {
   mesh.vertices[5].position.y = -0.3;
   EXPECT_EQ(MeasureSurfaceMesh3D(mesh)->self_intersections, 0);
 }
+
+TEST(SurfaceMesh3D, VolumeOffsetCapBoundsTotalDisplacementAcrossIterations) {
+  SurfaceMesh3D mesh;
+  for (const auto p : {Vec3{0, 0, 0}, Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}}) {
+    mesh.vertices.push_back({.id = mesh.vertices.size() + 1, .position = p});
+  }
+  mesh.triangles = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+  const auto original = mesh.vertices;
+  EXPECT_EQ(
+      CorrectSurfaceVolume3D(mesh, 1.01 / 6, 0.0001, 1e-8, 128).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(mesh.vertices[0].position.x, original[0].position.x);
+  EXPECT_EQ(mesh.vertices[1].position.x, original[1].position.x);
+}
+
+TEST(SurfaceMesh3D, StoredNormalCorrectionValidatesIndicesBeforeNormalAccess) {
+  SurfaceMesh3D mesh;
+  mesh.vertices.push_back({.id = 1, .position = {}, .normal = {1, 0, 0}});
+  mesh.triangles.push_back({0, 0, UINT32_MAX});
+  EXPECT_EQ(
+      CorrectSurfaceVolumeWithNormals3D(mesh, 1, 0.1, 0.005, 4).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
 }  // namespace
 }  // namespace fluidity
