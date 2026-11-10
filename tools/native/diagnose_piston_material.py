@@ -202,13 +202,13 @@ def _mesh_budget(frames, steps, fixed):
         "saturation_contribution_over_mesh_step_start_wall": saturation / max(volumes["step_start"]["full"], 1e-15),
         "frozen_saturation_limit": SATURATION_LIMIT,
         "frozen_wall_relative_mismatch_of_above_gain_plus_strip": abs(receiving - wall) / wall,
-        "frozen_receiving_relative_difference_of_above_gain_plus_strip": abs(receiving - fixed["receiving_m3"]) / wall,
+        "frozen_receiving_difference_of_above_gain_plus_strip_over_frozen_wall": abs(receiving - fixed["receiving_m3"]) / wall,
         "native_signed_solver_integral_m3": solver,
     }
 
 
-def diagnose(run, manifest_sha256):
-    """Measure one verified frozen piston evaluation directory without changing its gate."""
+def diagnose(run, manifest_sha256, measurements_sha256):
+    """Compare a pinned capture and pinned frozen measurements without changing their gate."""
     case = run.name
     _require(case in CASES, "expected a primary or refined piston evaluation directory")
     steps_per_frame = CASES[case]
@@ -218,7 +218,10 @@ def diagnose(run, manifest_sha256):
         "frames": run / "verified-frames.stdout.jsonl",
         "measurements": run / f"{case}-measurements.json",
     }
-    official = _json(files["measurements"])
+    measurement_bytes = files["measurements"].read_bytes()
+    measurement_digest = hashlib.sha256(measurement_bytes).hexdigest()
+    _require(measurement_digest == measurements_sha256, "frozen measurements differ from the trusted SHA-256")
+    official = json.loads(measurement_bytes)
     manifest, read_capture = _capture_reader(run / "capture", manifest_sha256, official)
     seed, = _records(files["seed"])
     tank, = _records(files["tank"])
@@ -247,7 +250,10 @@ def diagnose(run, manifest_sha256):
     return {
         "case": case,
         "capture_identity": official["capture_provenance"],
-        "source_sha256": {label: _sha256(path) for label, path in (files | {"trace": trace_path}).items()},
+        "source_sha256": {
+            label: measurement_digest if label == "measurements" else _sha256(path)
+            for label, path in (files | {"trace": trace_path}).items()
+        },
         "accepted_step_count": len(steps),
         "official_gate_passed": official["passed"],
         "official_saturation_passed": official["saturation_passed"],
@@ -263,9 +269,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run", type=Path, help="verified primary or refined piston evaluation directory")
     parser.add_argument("--manifest-sha256", required=True, help="trusted SHA-256 of the capture manifest")
+    parser.add_argument("--measurements-sha256", required=True, help="trusted SHA-256 of the frozen measurements")
     args = parser.parse_args()
     try:
-        result = diagnose(args.run, args.manifest_sha256)
+        result = diagnose(args.run, args.manifest_sha256, args.measurements_sha256)
     except (ValueError, KeyError, OSError) as error:
         parser.exit(1, f"piston material diagnostic: {error}\n")
     print(json.dumps(result, indent=2, allow_nan=False))

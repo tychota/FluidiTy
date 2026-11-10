@@ -3,11 +3,13 @@
 import itertools
 import math
 import sys
+import tempfile
 from pathlib import Path
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import piston_material_mesh as mesh
+from diagnose_piston_material import diagnose
 from piston_material_mesh import clipped_signed_volumes, measure, reconstruct, signed_volume
 
 H = 0.0625
@@ -27,6 +29,15 @@ def mapped(positions, transform):
 
 
 class MaterialMeshControls(unittest.TestCase):
+    def test_diagnostic_rejects_unpinned_frozen_measurements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary) / "open-tank-piston"
+            run.mkdir()
+            (run / "open-tank-piston-measurements.json").write_text('{"passed": true}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "frozen measurements differ from the trusted SHA-256"):
+                diagnose(run, "0" * 64, "1" * 64)
+
+
     def test_identity(self):
         centers = lattice(0.5, 0)
         self.assertEqual(reconstruct(centers), lattice(0.0, 1))
