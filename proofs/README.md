@@ -113,6 +113,28 @@ conditioning/fallback, compatible-ghost generation, or that arbitrary ghost valu
 physical affine continuation. Equal old/new grid samples imply zero grid increment; they say
 nothing about a retained particle history residual. No history update is modeled here.
 
+## Finite signed MAC trace reindexing
+
+`finite_face_sum_eq_weighted_forward_difference` takes a signed origin `lo : ℤ`, cell count
+`n : ℕ`, and exact real face velocities `u` and cell weights `w` indexed by `ℤ`. With exterior
+weights `w(lo-1) = w(lo+n) = 0`, it proves
+
+```text
+Σ(j=0…n)   u(lo+j) [w(lo+j-1) - w(lo+j)]
+  = Σ(i=0…n-1) w(lo+i) [u(lo+i+1) - u(lo+i)]
+```
+
+The cell range can be empty. In that case the face range contains one term, which vanishes by
+the same two endpoint hypotheses. Typed consumers in `Fluidity/UniformTransfer.lean` check the
+full signature, the empty case and asymmetric signed data. Changing either exterior weight alone
+gives a counterexample to equality.
+
+The theorem covers the one-dimensional finite reindexing step in the mixed MAC trace. The
+cubic derivative identity, transverse tensor factors and physical `1/h` scaling are separate
+steps. The [M1 numerical bridge](../docs/references/m1-transport-evidence.md) tests the assembled
+trace on complete uniform support. Cut stencils, topology and floating-point behavior are
+outside the finite identity.
+
 ## F2: finite unmasked MAC deposition
 
 `mac_deposit_conserves_row_moments` quantifies over `P` particles, `I` faces per component, and `d`
@@ -357,6 +379,6 @@ The runtime supplies a validated positive duration and a correct frame-boundary 
 | `liquid_same_state_key_replays_trial` | Evaluations of one pure trial function with equal state and accepted-step key have equal outcomes and committed results, even when diagnostics differ. The shared function fixes settings, execution artifact and requested duration. |
 | `liquid_adaptation_preserves_input_snapshot` | A separate pure adaptation proposes new fields and retains its original committed snapshot. The proposal has no clock or publication operation. |
 
-All five targets are included in the 26-target independent export and axiom audit. Runtime
+All five targets are included in the 27-target independent export and axiom audit. Runtime
 fault injection and serialized-state comparison are separate evidence for the C++ ownership
 discipline, allocation/retry rules, CUDA ordering, floating-point behavior and actual byte replay.
