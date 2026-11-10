@@ -12,9 +12,11 @@ struct LiquidTypedRange3D {
   Value* device;
   std::span<Value> pinned;
 };
-// Validate byte extent and both pointer alignments before typed access. Borrow
-// ends on growth or poison; callers check readiness before every staging phase.
-// A host staging borrow can defer device scratch accounting until dispatch.
+// Borrows count active typed records from the paired device and pinned ranges.
+// Checks readiness, reservation size and both pointer alignments. Host-only
+// ranges are rejected. The borrow ends on growth commit, owner move or
+// destruction, or runtime poison. Host staging can defer device scratch
+// accounting until dispatch.
 template <typename Value>
 absl::StatusOr<LiquidTypedRange3D<Value>> CheckedLiquidRange3D(
     CudaLiquidArena3D& arena,
@@ -43,8 +45,10 @@ absl::StatusOr<LiquidTypedRange3D<Value>> CheckedLiquidRange3D(
       {reinterpret_cast<Value*>(range.pinned.data()), count},
   };
 }
-// Exact active bytes only. Submission failures poison before returning; no new
-// staging may start until prior transfers/launches pass FinishLiquidDispatch3D.
+// Enqueues the active bytes on the arena stream. Upload copies pinned to
+// device. Empty ranges only check readiness. Keep both endpoints live and wait
+// for a successful fence before reading downloaded bytes or reusing in-flight
+// pinned storage. Submission failures poison the arena.
 template <typename Value>
 absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3D<Value>& range, bool upload) {
   const auto ready = arena.RecordRuntimeResult(cudaSuccess);
@@ -63,11 +67,12 @@ absl::Status CopyLiquidRange3D(CudaLiquidArena3D& arena, const LiquidTypedRange3
       static_cast<cudaStream_t>(arena.stream())
   ));
 }
-// Event belongs to the arena and is reused only after successful completion.
+// Fences prior work on the arena stream and collects enabled dispatch timing.
+// Independent snapshot copies require their own completion fence.
 inline absl::Status FinishLiquidDispatch3D(CudaLiquidArena3D& arena) {
   return arena.FinishDispatch();
 }
-// External views cannot overlap each other or any reserved staging bytes.
+// Tests whether two byte ranges overlap. An empty range never overlaps.
 inline bool
 LiquidByteRangesOverlap3D(const void* first, std::size_t first_bytes, const void* second, std::size_t second_bytes) {
   if (first_bytes == 0 || second_bytes == 0) {
@@ -77,6 +82,8 @@ LiquidByteRangesOverlap3D(const void* first, std::size_t first_bytes, const void
   const auto right = reinterpret_cast<std::uintptr_t>(second);
   return left <= right ? right - left < first_bytes : left - right < second_bytes;
 }
+// Tests a host span against every reserved pinned scratch range. Check
+// overlap between external spans separately.
 template <typename Value>
 bool AliasesLiquidScratch3D(CudaLiquidArena3D& arena, std::span<Value> values) {
   for (std::size_t index = 0; index < static_cast<std::size_t>(CudaLiquidRange3D::kCount); ++index) {

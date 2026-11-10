@@ -9,7 +9,7 @@ enum class LiquidSampleFieldKind3D {
   kLatticeHorizontalPlane
 };
 
-// Device-only POD execution descriptor; no variant or host container crosses ABI.
+// POD execution descriptor packed by the host and copied to device scratch.
 struct LiquidSampleQuery3D {
   Vec3 sphere_center{};
   double radius = 0;
@@ -26,12 +26,13 @@ struct LiquidSampleFaceResult3D {
   LiquidPrescribedWallSample3D wall;
   boundary_internal::Error error = boundary_internal::Error::kNone;
 };
-// All pointers refer to checked persistent ranges and remain live through fence.
-// Particle centers use Vec3 records packed by the host, never host-computed SDFs.
-// Tank face coordinates are in cell widths so the device preserves lattice
-// residuals. Lattice plane sampling uses the y coordinate in cell widths.
-// Other faces and field sample positions are in world meters.
-// The host launch count must match sample_count in the checked device query.
+// Enqueues one signed distance in meters per query position in input order.
+// The launch count matches device_query->sample_count and is positive. The
+// input and output ranges cover that count. The union center range covers
+// device_query->particle_count world centers. Lattice plane y is in cell
+// widths. Other field positions are in world meters. Returns the CUDA launch
+// error. Keep all ranges, the architecture slot and stream live through the
+// caller's completion fence.
 int LaunchLiquidFieldSamples3D(
     const LiquidSampleQuery3D* device_query,
     const Vec3* device_particle_centers,
@@ -41,6 +42,11 @@ int LaunchLiquidFieldSamples3D(
     std::size_t sample_count,
     void* stream
 );
+// Enqueues one face result per anchor in input order. Both arrays cover
+// sample_count, matching the device query. Tank anchors are in cell widths
+// and other anchors are in world meters. A zero count still writes the
+// architecture slot. Returns the CUDA launch error. Keep the ranges,
+// architecture slot and stream live through the caller's completion fence.
 int LaunchLiquidFaceSamples3D(
     const LiquidSampleQuery3D* device_query,
     const Vec3* device_face_positions,
