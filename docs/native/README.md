@@ -72,6 +72,8 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 
 ## CUDA hardware and sanitizer gates
 
+For a production performance campaign, use the [CUDA optimization method](cuda-optimization.md). It records the matched M1 profiles and the checks to carry into M2–M4.
+
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
 separate. Both presets require exactly 35 `gpu` cases across two probe cases, 29 operator
 cases and four graph replay cases. The operator group includes three integrated 3D liquid

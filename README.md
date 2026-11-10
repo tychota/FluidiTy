@@ -23,7 +23,9 @@ uv run --project reference --locked pytest reference/tests tools/tests -q
 See the [reference instructions](reference/README.md) and [proof tooling](proofs/README.md).
 The native build uses CMake presets, Ninja and locked Conan dependencies. The
 [native validation guide](docs/native/README.md) covers CPU builds, the Windows CUDA
-hardware gate and the evidence each run produces. Python tooling uses uv and Lean
+hardware gate and the evidence each run produces.
+The [CUDA optimization method](docs/native/cuda-optimization.md) covers production profiling for M2–M4.
+Python tooling uses uv and Lean
 dependencies use Lake.
 
 ## Build the paper
