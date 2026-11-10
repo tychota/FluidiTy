@@ -74,17 +74,34 @@ class ProtocolWriter {
   std::FILE* diagnostics_;
   std::mutex mutex_;
 };
-// Executes run, one accepted-substep step, or read-only replay. Frame ordinals in
-// replay name the physical clock: N/0 is completed frame N, N/S is accepted step
-// S during N->N+1. Interior replay completes/verifies that final frame's schedule.
-// Preview and step never publish. A new run publishes frame zero, prerequisite
-// checkpoints and the inclusive selected range; resume verifies/reuses existing
-// content without replacement. Run also owns a heartbeat and cooperative
-// cancellation and holds a separate whole-job writer lease when publishing.
+/// Executes a run, advances one accepted substep, or replays a requested clock.
+/// @pre command is a run, step, or replay returned by ParseCommand. diagnostic is non-null.
+///
+/// Execution matches the running module digest to the resolved scene and checks any requested backend against the
+/// resolved backend. Model-v1 execution uses a 24 fps schedule. CUDA execution using an existing cache also verifies
+/// the selected device and exact driver/runtime against the recorded compatibility data.
+///
+/// Replay reads the newest eligible checkpoint at or before frame N. A `NotFound` from `LiquidCache3D::ReadCheckpoint`
+/// allows reconstruction from an explicitly supplied and verified frame-zero initial state. Other checkpoint errors
+/// propagate.
+///
+/// N/0 selects completed frame N. N/S with S > 0 selects accepted substep S during the advance from N to N+1.
+/// Replay verifies intermediate committed point frames when present and requires the committed point frame for the
+/// completed target (N for N/0, N+1 for N/S). It returns `NotFound` if substep S is absent after target verification.
+///
+/// Replay, step, and preview are read-only and operate without the whole-job writer lease. Run provides heartbeat
+/// and cooperative cancellation. A publishing run holds the whole-job writer lease. A new publishing run writes frame
+/// zero, prerequisite checkpoints, and the inclusive selected range. Resume verifies and reuses existing content.
+///
+/// Heartbeat, trace, and frame publication records can precede the terminal outcome. A publishing run can leave
+/// committed frames in the cache even when it returns an error.
+///
+/// @return An execution or job finalization error with diagnostic context, or the status of writing the terminal
+/// `result` record after both succeed. A failure to write that record is returned to the caller.
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic);
-// Dispatch checked inspection or execution. Execution validates the actual module
-// digest, resolved backend and model-v1 24 fps schedule before cache mutation.
-// All result publication occurs after successful verification; errors are returned
-// with diagnostic context for the entry point to emit exactly once.
+/// Dispatches a command returned by ParseCommand to the check, schema, device-info, or execution handler.
+/// @param diagnostic Receives diagnostic context for errors. A null pointer returns `InvalidArgument`.
+/// @return The status of the selected handler, including any failure to write its terminal `result` record.
+/// On failure, the entry point uses the returned status and diagnostic context to attempt one structured error report.
 absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic);
 }  // namespace fluidity::simulate
