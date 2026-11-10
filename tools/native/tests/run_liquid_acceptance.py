@@ -695,7 +695,10 @@ def prepare_tank_steps(traces, frames, initial_state, particle_count, *, piston)
             "accepted_step": trace["accepted_step"],
             "time_seconds": trace["time_seconds"],
             "start_positions": start_positions,
-            **measurement,
+            "accepted_dt_seconds": measurement["accepted_dt_seconds"],
+            "step_start_piston_low_x_m": measurement["step_start_piston_low_x_m"],
+            "step_end_piston_low_x_m": measurement["step_end_piston_low_x_m"],
+            "step_start_inward_piston_flux_m3_per_s": measurement["step_start_inward_piston_flux_m3_per_s"],
         })
         start_positions = end_positions
     return steps
