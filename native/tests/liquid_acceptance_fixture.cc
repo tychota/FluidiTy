@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,13 @@ namespace files = liquid_cache_files_internal;
 constexpr Vec3 kFreeFallInitialPosition{2.5, 2.5, 2.5};
 constexpr Vec3 kTankLayoutInitialPosition{0.625, 0.625, 0.625};
 constexpr int kFixtureProtocolVersion = 1;
+constexpr char kDropCase[] = "oscillating-drop-l2";
+constexpr double kDropPhysicalRadius = 0.125;
+constexpr int kDropCellsPerRadius = 5;
+constexpr double kDropCellWidth = kDropPhysicalRadius / kDropCellsPerRadius;
+constexpr std::size_t kDropParticleCount = 552;
+constexpr double kDropCovarianceScale =
+    kDropPhysicalRadius * kDropPhysicalRadius / (5.177536231884058 * kDropCellWidth * kDropCellWidth);
 
 struct TankAcceptanceScene {
   AxisAlignedLiquidTank3D tank;
@@ -73,7 +81,8 @@ absl::StatusOr<double> EnergyBlend(const fs::path& case_name) {
   if (case_name == "free-fall-pic") {
     return 0.0;
   }
-  if (case_name == "free-fall-default" || case_name == "tank-layout" || TankAcceptance(case_name).has_value()) {
+  if (case_name == "free-fall-default" || case_name == "tank-layout" || case_name == kDropCase
+      || TankAcceptance(case_name).has_value()) {
     return 0.6;
   }
   if (case_name == "free-fall-retained") {
@@ -203,6 +212,7 @@ absl::Status WriteScene(
   }
 
   const bool tank_layout = case_name == "tank-layout";
+  const bool drop = case_name == kDropCase;
   const auto tank_acceptance = TankAcceptance(case_name);
   const Vec3 initial_position = tank_layout ? kTankLayoutInitialPosition : kFreeFallInitialPosition;
   LiquidState3D state;
@@ -225,6 +235,31 @@ absl::Status WriteScene(
           seed_positions.push_back({(x + 0.5) * cell_size, (y + 0.5) * cell_size, (z + 0.5) * cell_size});
         }
       }
+    }
+  } else if (drop) {
+    state.geometry = {{0, 0, 0}, kDropCellWidth};
+    constexpr double stretch_y = 1.03;
+    const double stretch_xz = 1 / std::sqrt(stretch_y);
+    constexpr double kDropVolume =
+        4 * std::numbers::pi * kDropPhysicalRadius * kDropPhysicalRadius * kDropPhysicalRadius / 3;
+    reference_volume = kDropVolume / kDropParticleCount;
+    seed_positions.reserve(kDropParticleCount);
+    // Select the unperturbed lattice sites before applying the determinant-one stretch.
+    for (int z = -kDropCellsPerRadius; z < kDropCellsPerRadius; ++z) {
+      for (int y = -kDropCellsPerRadius; y < kDropCellsPerRadius; ++y) {
+        for (int x = -kDropCellsPerRadius; x < kDropCellsPerRadius; ++x) {
+          const double world_x = (x + 0.5) * kDropCellWidth;
+          const double world_y = (y + 0.5) * kDropCellWidth;
+          const double world_z = (z + 0.5) * kDropCellWidth;
+          const double squared_distance = world_x * world_x + world_y * world_y + world_z * world_z;
+          if (squared_distance < kDropPhysicalRadius * kDropPhysicalRadius) {
+            seed_positions.push_back({world_x * stretch_xz, world_y * stretch_y, world_z * stretch_xz});
+          }
+        }
+      }
+    }
+    if (seed_positions.size() != kDropParticleCount) {
+      return absl::InternalError("unexpected oscillating drop seed count");
     }
   } else {
     seed_positions.push_back(initial_position);
@@ -282,12 +317,14 @@ absl::Status WriteScene(
     } else {
       scene.scene.field = LiquidHorizontalPlaneSurface3D{tank_acceptance->reference_surface_y};
     }
+  } else if (drop) {
+    scene.scene.field = LiquidIsolatedCovarianceDrop3D{kDropPhysicalRadius, kDropCovarianceScale};
   } else {
     scene.scene.field = LiquidAnalyticSphere3D{initial_position, 1.1};
   }
-  scene.scene.world_acceleration = {0, -9.81, 0};
+  scene.scene.world_acceleration = drop ? Vec3{} : Vec3{0, -9.81, 0};
   scene.scene.liquid_density = 1000;
-  scene.scene.surface_tension = 0;
+  scene.scene.surface_tension = drop ? 1 : 0;
   scene.options.particle_energy_blend = *energy_blend;
   scene.options.maximum_step_duration = tank_acceptance ? tank_acceptance->maximum_dt : 0.01;
   scene.backend = *backend;
