@@ -44,13 +44,20 @@ class MotionCapture3D {
   absl::Status Observe(const LiquidState3D& accepted, bool rollback);
   std::size_t sample_count() const;
   // Requires the completed next frame to match the last observed time and epoch.
-  // Replaces its provisional end clock with the completed clock and encodes
-  // the interval. No record is published by the collector.
+  // Requires exact state bytes matching the observed completed endpoint and
+  // encodes the interval. No record is published by the collector.
   absl::StatusOr<LiquidCacheBytes3D> Finish(const LiquidState3D& completed) const;
 
  private:
-  MotionCapture3D(LiquidClock3D start, double end_time, std::size_t intervals, LiquidCacheLimits3D limits);
+  MotionCapture3D(
+      LiquidClock3D start,
+      UniformMacGeometry3D geometry,
+      double end_time,
+      std::size_t intervals,
+      LiquidCacheLimits3D limits
+  );
   LiquidClock3D start_;
+  UniformMacGeometry3D geometry_;
   LiquidClock3D last_observed_;
   double end_time_;
   std::size_t intervals_;

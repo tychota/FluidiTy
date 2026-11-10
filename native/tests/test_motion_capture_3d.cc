@@ -57,5 +57,19 @@ TEST(MotionCapture3D, ValidatesEndpointsAndFailsWithoutACompleteInterval) {
   EXPECT_EQ(decoded->samples[0], start);
 }
 
+TEST(MotionCapture3D, RejectsGeometryChangesAndSubstitutedCompletedState) {
+  auto start = State(0, 0);
+  auto capture = MotionCapture3D::Create(start, 1.0 / 24, 1);
+  ASSERT_TRUE(capture.ok());
+  auto moved = State(1.0 / 96, 1);
+  moved.geometry.world_origin.x = 1;
+  EXPECT_EQ(capture->Observe(moved, false).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(capture->sample_count(), 1);
+  auto completed = State(1.0 / 24, 2, true);
+  ASSERT_TRUE(capture->Observe(completed, false).ok());
+  completed.geometry.world_origin.y = 1;
+  EXPECT_EQ(capture->Finish(completed).status().code(), absl::StatusCode::kFailedPrecondition);
+}
+
 }  // namespace
 }  // namespace fluidity

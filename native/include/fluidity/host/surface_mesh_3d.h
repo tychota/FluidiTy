@@ -1,0 +1,77 @@
+#pragma once
+
+#include <array>
+#include <vector>
+
+#include "fluidity/host/motion_interval_3d.h"
+
+namespace fluidity {
+
+struct SurfaceVertex3D {
+  std::uint64_t id = 0;  // Nonzero persistent identity, unique and below next_id.
+  Vec3 position{};  // World metres.
+  Vec3 geometric_velocity{};  // World m/s from actual geometry displacement.
+  Vec3 fluid_velocity{};  // Independently sampled carrier velocity, world m/s.
+  Vec3 normal{};  // Unit liquid-to-air world normal.
+  double age_seconds = 0;
+  double wetness = 0;  // Dimensionless fraction in [0,1].
+  double thickness_m = 0;
+  std::uint64_t component = 0;  // Stable nonzero material/sheet identity at publication.
+  std::uint64_t parent_id = 0;  // Repair lineage, zero if no parent.
+  bool contact = false;  // Excluded from unconstrained volume offsets.
+  bool unresolved_sheet = false;  // Excluded from volume offsets until sheet resolution.
+};
+struct SurfaceMesh3D {
+  std::vector<SurfaceVertex3D> vertices;
+  std::vector<std::array<std::uint32_t, 3>> triangles;  // Outward winding from liquid to air.
+  std::uint64_t next_id = 1;
+};
+struct SurfaceLattice3D {
+  Vec3 origin;
+  double spacing;
+  std::array<std::size_t, 3> extent;
+  std::vector<double> values;  // Negative liquid, x-major then y then z.
+};
+struct SurfaceMetrics3D {
+  double signed_volume = 0;  // m³, local-origin tetrahedron sum.
+  double area = 0;  // m².
+  std::size_t components = 0;
+  std::int64_t euler_characteristic = 0;
+  std::size_t boundary_edges = 0;
+  std::size_t nonmanifold_edges = 0;
+  std::size_t nonmanifold_vertices = 0;
+  std::size_t orientation_defects = 0;
+  std::size_t degenerate_triangles = 0;
+  std::size_t self_intersections = 0;  // Triangle intersections beyond their shared indexed boundary.
+};
+
+// Extracts the PL zero set with one globally consistent six-tetrahedron cube
+// subdivision and shared lattice-edge IDs. Requires finite samples, positive
+// spacing, matching extents and a positive boundary shell. Nodes within
+// 1e-8*spacing of zero are assigned to air with that positive tie offset.
+// Crossings within 1e-7 of an edge endpoint share the lattice node's vertex ID;
+// resulting repeated-index triangles are omitted and topology remains checked.
+// Invalid input returns
+// InvalidArgument, an unclosed lattice FailedPrecondition, excessive vertices
+// ResourceExhausted and nonfinite geometry OutOfRange. No input is modified.
+absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& lattice, std::size_t maximum_vertices);
+
+// Measures indexed geometry and performs an AABB-sweep triangle intersection
+// check and closed vertex-link check. Invalid indices/coordinates return
+// InvalidArgument. Topology defects are measurements, not suppressed failures.
+absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh);
+
+// Adjusts mobile vertices along area-weighted normals with a step capped at
+// ±0.25 cell_width_m, excluding contact and unresolved-sheet vertices. Remeasures
+// actual volume, topology and intersections and backtracks unsafe steps. Publishes
+// vertices/normals only after the relative volume tolerance is met. Invalid
+// controls return InvalidArgument and infeasible constraints FailedPrecondition.
+// All failures leave mesh unchanged.
+absl::StatusOr<SurfaceMetrics3D> CorrectSurfaceVolume3D(
+    SurfaceMesh3D& mesh,
+    double target_volume_m3,
+    double cell_width_m,
+    double relative_tolerance,
+    std::size_t maximum_iterations
+);
+}  // namespace fluidity

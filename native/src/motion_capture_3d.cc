@@ -11,6 +11,10 @@ namespace fluidity {
 namespace {
 namespace detail = liquid_cache_internal;
 namespace wire = effects::v1;
+bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
+  return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
+      && a.world_origin.z == b.world_origin.z;
+}
 
 absl::StatusOr<LiquidCacheBytes3D> Encode(
     LiquidClock3D first,
@@ -79,9 +83,17 @@ absl::StatusOr<MotionFrame3D> DecodeMotionFrame3D(std::span<const std::uint8_t> 
       return state.status();
     }
     stamps.push_back({state->clock.time, state->clock.epoch});
-    if (state->geometry.cell_width
-        != (result.samples.empty() ? state->geometry.cell_width : result.samples.front().geometry.cell_width)) {
-      return absl::DataLossError("motion sample geometry changed");
+    if (!result.samples.empty()) {
+      const auto& initial = result.samples.front();
+      const auto& previous = result.samples.back();
+      const bool endpoint = result.samples.size() + 1 == frame->snapshots()->size();
+      const bool valid_clock = endpoint
+          ? state->clock == last
+          : state->clock.frame_ordinal == first.frame_ordinal && state->clock.substep_ordinal > 0;
+      if (!SameGeometry(state->geometry, initial.geometry) || state->random_seed != initial.random_seed
+          || state->clock.accepted_step_ordinal <= previous.clock.accepted_step_ordinal || !valid_clock) {
+        return absl::DataLossError("motion sample geometry, seed or clock changed inconsistently");
+      }
     }
     result.samples.push_back(std::move(*state));
   }
@@ -103,11 +115,17 @@ absl::StatusOr<MotionFrame3D> DecodeMotionFrame3D(std::span<const std::uint8_t> 
 
 MotionCapture3D::MotionCapture3D(
     LiquidClock3D start,
+    UniformMacGeometry3D geometry,
     double end_time,
     std::size_t intervals,
     LiquidCacheLimits3D limits
 )
-    : start_(start), last_observed_(start), end_time_(end_time), intervals_(intervals), limits_(limits) {
+    : start_(start),
+      geometry_(geometry),
+      last_observed_(start),
+      end_time_(end_time),
+      intervals_(intervals),
+      limits_(limits) {
 }
 
 absl::StatusOr<MotionCapture3D> MotionCapture3D::Create(
@@ -124,7 +142,7 @@ absl::StatusOr<MotionCapture3D> MotionCapture3D::Create(
   if (!initial.ok()) {
     return initial.status();
   }
-  MotionCapture3D result(frame_start.clock, frame_end_time, intervals, limits);
+  MotionCapture3D result(frame_start.clock, frame_start.geometry, frame_end_time, intervals, limits);
   result.payload_bytes_ = initial->size();
   result.samples_.push_back(std::move(*initial));
   return result;
@@ -149,6 +167,9 @@ absl::Status MotionCapture3D::Observe(const LiquidState3D& accepted, bool rollba
     return absl::OkStatus();
   }
   const auto clock = accepted.clock;
+  if (!SameGeometry(accepted.geometry, geometry_)) {
+    return absl::InvalidArgumentError("motion sample changes grid geometry");
+  }
   const bool completed_endpoint = clock.time == end_time_ && clock.frame_ordinal > start_.frame_ordinal
       && clock.frame_ordinal - start_.frame_ordinal == 1 && clock.substep_ordinal == 0;
   const bool intermediate = clock.time < end_time_ && clock.frame_ordinal == start_.frame_ordinal;
@@ -191,6 +212,9 @@ absl::StatusOr<LiquidCacheBytes3D> MotionCapture3D::Finish(const LiquidState3D& 
   auto final = EncodeLiquidState3D(completed, limits_);
   if (!final.ok()) {
     return final.status();
+  }
+  if (!std::ranges::equal(final->values(), samples_.back().values())) {
+    return absl::FailedPreconditionError("completed state differs from the accepted endpoint");
   }
   std::vector<LiquidCacheBytes3D> snapshots;
   for (std::size_t index = 0; index + 1 < samples_.size(); ++index) {
