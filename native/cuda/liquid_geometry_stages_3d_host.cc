@@ -63,9 +63,13 @@ absl::Status ComputeGeometryBatch(void* context, std::size_t count) {
     return results.status();
   }
   STAGE_TRY(CopyLiquidRange3D(arena, *queries, true));
-  STAGE_TRY(arena.RecordRuntimeResult(
-      LaunchLiquidBoundaryGeometryBatch3D(queries->device, results->device, count, arena.stream())
-  ));
+  STAGE_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryGeometryBatch3D(
+      queries->device,
+      results->device,
+      count,
+      queries->pinned.front().mode,
+      arena.stream()
+  )));
   STAGE_TRY(CopyLiquidRange3D(arena, *results, false));
   STAGE_TRY(FinishLiquidDispatch3D(arena));
   return results->pinned.front().compiled_architecture == 1200 ? absl::OkStatus()

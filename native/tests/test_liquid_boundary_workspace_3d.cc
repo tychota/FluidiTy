@@ -182,6 +182,53 @@ TEST(LiquidBoundaryWorkspace3D, BoundedGeometryBatchesPreserveBitsAndFirstFailur
   EXPECT_EQ(context.submitted_sizes, (std::vector<std::size_t>{1}));
   EXPECT_EQ(std::bit_cast<std::uint64_t>(batched->faces.front().open_area), published_aperture);
 }
+TEST(LiquidBoundaryWorkspace3D, StaticGeometryModesMatchScalarArithmetic) {
+  using boundary_internal::ComputeGeometry;
+  using boundary_internal::ComputeGeometryForMode;
+  using boundary_internal::GeometryInput;
+  using boundary_internal::GeometryMode;
+  GeometryInput query{
+      .mode = GeometryMode::kCell,
+      .geometry = {{0, 0, 0}, 1},
+      .corner_distances = {-1, 0.25, -1, 0.25, -1, 0.25, -1, 0.25},
+  };
+  const auto scalar_cell = ComputeGeometry(query);
+  const auto static_cell = ComputeGeometryForMode<GeometryMode::kCell>(query);
+  ASSERT_TRUE(scalar_cell.ok());
+  ASSERT_TRUE(static_cell.ok());
+  EXPECT_EQ(
+      std::bit_cast<std::uint64_t>(scalar_cell->high_side_liquid_volume),
+      std::bit_cast<std::uint64_t>(static_cell->high_side_liquid_volume)
+  );
+
+  query.mode = GeometryMode::kFace;
+  query.axis = 1;
+  const auto scalar_face = ComputeGeometry(query);
+  const auto static_face = ComputeGeometryForMode<GeometryMode::kFace>(query);
+  ASSERT_TRUE(scalar_face.ok());
+  ASSERT_TRUE(static_face.ok());
+  EXPECT_EQ(
+      std::bit_cast<std::uint64_t>(scalar_face->open_face_area),
+      std::bit_cast<std::uint64_t>(static_face->open_face_area)
+  );
+
+  query.mode = GeometryMode::kCurvature;
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        query.derivative_distances[(z + 1) * 9 + (y + 1) * 3 + x + 1] = x + 0.25 * (y * y + z * z);
+      }
+    }
+  }
+  const auto scalar_curvature = ComputeGeometry(query);
+  const auto static_curvature = ComputeGeometryForMode<GeometryMode::kCurvature>(query);
+  ASSERT_TRUE(scalar_curvature.ok());
+  ASSERT_TRUE(static_curvature.ok());
+  EXPECT_EQ(
+      std::bit_cast<std::uint64_t>(scalar_curvature->interface_curvature),
+      std::bit_cast<std::uint64_t>(static_curvature->interface_curvature)
+  );
+}
 TEST(LiquidBoundaryWorkspace3D, MaskedIntegerDepositsAndNormalizationMatchOwningExactly) {
   Fixture f;
   f.tags[0].structurally_eligible = false;

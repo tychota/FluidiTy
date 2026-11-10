@@ -77,6 +77,7 @@ enum class GeometryMode {
   kCurvature,
   kCapillary,
   kLink,
+  kRuntime,  // Template selector only. A staged query always names a concrete mode.
 };
 struct GeometryInput {
   GeometryMode mode{};
@@ -629,15 +630,19 @@ FLUIDITY_HD inline Value<ObstaclePlanes> LocalObstacle(const GeometryInput& inpu
   }
   return result;
 }
-FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& input) {
+// A homogeneous CUDA batch uses a concrete mode so its threads only reserve
+// scratch for that arithmetic. The scalar dispatcher uses the query's mode.
+template <GeometryMode kMode>
+FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometryForMode(const GeometryInput& input) {
+  const GeometryMode mode = kMode == GeometryMode::kRuntime ? input.mode : kMode;
   const double h = input.geometry.cell_width;
   const double full_area = h * h;
   const double full_volume = full_area * h;
   GeometryOutput output;
-  if (input.mode == GeometryMode::kMarker) {
+  if (mode == GeometryMode::kMarker) {
     return output;
   }
-  if (input.mode == GeometryMode::kCapillary) {
+  if (mode == GeometryMode::kCapillary) {
     constexpr double kPi = 3.141592653589793238462643383279502884;
     const double square = input.liquid_density * full_volume / (4 * kPi * input.surface_tension);
     if (!numeric::isnormal(square)) {
@@ -646,7 +651,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
     output.capillary_step_bound = numeric::sqrt(square);
     return output;
   }
-  if (input.mode == GeometryMode::kLink) {
+  if (mode == GeometryMode::kLink) {
     const double magnitude = numeric::max(-input.liquid_center_distance, input.air_center_distance);
     const double liquid_scaled = -input.liquid_center_distance / magnitude;
     const double theta = liquid_scaled / (liquid_scaled + input.air_center_distance / magnitude);
@@ -660,7 +665,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
     }
     return output;
   }
-  if (input.mode == GeometryMode::kCurvature) {
+  if (mode == GeometryMode::kCurvature) {
     CartesianVector gradient{};
     numeric::array<CartesianVector, 3> hessian{};
     constexpr int strides[3]{1, 3, 9};
@@ -700,7 +705,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
     }
     return output;
   }
-  if (input.mode == GeometryMode::kFace && (input.axis < 0 || input.axis >= 3)) {
+  if (mode == GeometryMode::kFace && (input.axis < 0 || input.axis >= 3)) {
     return Error::kInvalid;
   }
   const bool open_tank = input.obstacle.kind == ObstacleKind::kOpenTank;
@@ -708,14 +713,14 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
   if (open_tank) {
     // Face queries are incident to cells whose world extents have already
     // been checked, including the high corner of each cell.
-    if (input.mode == GeometryMode::kCell && !TankCellHasResolvedWorldExtent(input)) {
+    if (mode == GeometryMode::kCell && !TankCellHasResolvedWorldExtent(input)) {
       return Error::kRange;
     }
     const auto bounds = LocalTankBounds(input);
     if (!bounds.ok()) {
       return bounds.status();
     }
-    if (input.mode == GeometryMode::kFace) {
+    if (mode == GeometryMode::kFace) {
       return ComputeTankFace(input, *bounds);
     }
     tank_bounds = *bounds;
@@ -737,7 +742,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
   if (!local.ok()) {
     return local.status();
   }
-  if (input.mode == GeometryMode::kCell) {
+  if (mode == GeometryMode::kCell) {
     ClippingVertex vertices[8]{};
     for (int corner = 0; corner < 8; ++corner) {
       for (int axis = 0; axis < 3; ++axis) {
@@ -815,5 +820,8 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& in
     return Error::kRange;
   }
   return output;
+}
+FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometry(const GeometryInput& input) {
+  return ComputeGeometryForMode<GeometryMode::kRuntime>(input);
 }
 }  // namespace fluidity::boundary_internal
