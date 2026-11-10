@@ -257,7 +257,11 @@ def execute(executable, *args, success=True):
     if success:
         assert process.stderr == "", process.stderr
         assert output[-1]["event"] == "result"
-        assert all(r["event"] in ("heartbeat", "attempt", "trace", "frame", "result") for r in output)
+        events = {"heartbeat", "attempt", "trace", "frame", "result"}
+        if "--measure-job" in args:
+            events.add("job_measurement")
+            assert output[-2]["event"] == "job_measurement" and output[-2]["status"] == "OK"
+        assert all(r["event"] in events for r in output)
     else:
         errors = records(process.stderr)
         assert errors == [output[-1]] and errors[0]["event"] == "error"
@@ -283,6 +287,7 @@ def execution_case(executable, fixture, directory, backend):
     assert result["time_seconds"] == 2 / 24 and result["frames_per_second"] == 24
     assert result["particle_count"] == 1 and result["next_particle_id"] == 2
     assert result["backend"] == backend
+    assert "cuda_execution_device_digest" not in result and "cuda_execution_device_index" not in result
     traces = [r for r in output if r["event"] == "trace"]
     assert [(r["frame"], r["substep"]) for r in traces] == [(0, 1), (1, 0), (1, 1), (2, 0)]
     assert all("geometry" not in trace for trace in traces)
@@ -300,8 +305,18 @@ def execution_case(executable, fixture, directory, backend):
     assert step["frame"] == 0 and step["substep"] == 1 and step["accepted_step"] == 1
     assert step["read_only"] and snapshot(cache) == before
     fresh = directory / "fresh"
-    rerun = execute(executable, *[fresh if x == cache else x for x in args], "--frame-end", 2)
+    rerun = execute(executable, *[fresh if x == cache else x for x in args], "--frame-end", 2, "--measure-job")
     assert not any(record["event"] in ("attempt", "trace") for record in rerun)
+    measured_result = rerun[-1]
+    if backend == "cuda":
+        digest = measured_result["cuda_execution_device_digest"]
+        assert len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+        device_index = measured_result["cuda_execution_device_index"]
+        assert type(device_index) is int and device_index == 0
+        assert measured_result["compiled_architecture"] == result["compiled_architecture"] == 1200
+    else:
+        assert "cuda_execution_device_digest" not in measured_result
+        assert "cuda_execution_device_index" not in measured_result
     geometry_cache = directory / "geometry"
     geometry = execute(executable, *[geometry_cache if x == cache else x for x in args],
                        "--frame-end", 2, "--trace-geometry")

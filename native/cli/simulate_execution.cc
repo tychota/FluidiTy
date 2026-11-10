@@ -590,7 +590,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     return absl::NotFoundError("");
   }
 #if defined(FLUIDITY_SIMULATE_CUDA)
-  std::optional<std::string> cuda_compatibility;
+  std::optional<CudaExecutionIdentity> cuda_identity;
   if (requires_cuda_compatibility && (cache || !read_only)) {
     diagnostic->field = "cuda-compatibility";
     std::optional<std::string> recorded_compatibility;
@@ -603,15 +603,15 @@ absl::StatusOr<std::string> ExecuteCommand(
       recorded_compatibility = std::move(*record);
     }
     diagnostic->cause = "could not identify the selected CUDA device and exact driver/runtime";
-    auto actual_compatibility = CudaCompatibilityRecord(command.device_index, *fingerprint);
-    if (!actual_compatibility.ok()) {
-      return actual_compatibility.status();
+    auto actual_identity = QueryCudaExecutionIdentity(command.device_index, *fingerprint);
+    if (!actual_identity.ok()) {
+      return actual_identity.status();
     }
-    if (recorded_compatibility && *actual_compatibility != *recorded_compatibility) {
+    if (recorded_compatibility && actual_identity->compatibility_record != *recorded_compatibility) {
       diagnostic->cause = "selected CUDA device or driver/runtime differs from the recorded execution";
       return absl::FailedPreconditionError("");
     }
-    cuda_compatibility = std::move(*actual_compatibility);
+    cuda_identity = std::move(*actual_identity);
   }
 #endif
   diagnostic->field = "cache";
@@ -765,10 +765,10 @@ absl::StatusOr<std::string> ExecuteCommand(
     cache = std::move(*created);
     EXEC_TRY(job.AttachCache(command.cache_directory, true));
 #if defined(FLUIDITY_SIMULATE_CUDA)
-    if (cuda_compatibility) {
+    if (cuda_identity) {
       diagnostic->field = "cuda-compatibility";
       diagnostic->cause = "could not durably publish the CUDA execution compatibility record";
-      EXEC_TRY(PublishCudaCompatibilityRecord(command.cache_directory, *cuda_compatibility));
+      EXEC_TRY(PublishCudaCompatibilityRecord(command.cache_directory, cuda_identity->compatibility_record));
     }
 #endif
   }
@@ -959,6 +959,10 @@ absl::StatusOr<std::string> ExecuteCommand(
     members += ",\"compiled_architecture\":" + std::to_string(usage.compiled_architecture)
         + ",\"graph_replay_count\":" + std::to_string(usage.graph_replay_count) + ",\"device_reserved_bytes\":"
         + std::to_string(usage.device_reserved_bytes) + ",\"snapshot_copy_milliseconds\":" + Number(copy_milliseconds);
+    if (measurement && !read_only && cuda_identity) {
+      members += ",\"cuda_execution_device_digest\":" + JsonString(cuda_identity->device_digest)
+          + ",\"cuda_execution_device_index\":" + std::to_string(command.device_index);
+    }
   }
 #else
   static_cast<void>(copy_milliseconds);
