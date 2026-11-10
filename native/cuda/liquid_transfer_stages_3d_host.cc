@@ -214,10 +214,15 @@ absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_
 // Never touch pinned storage after a failed asynchronous submission/fence. Every
 // CUDA result poisons the arena first; arithmetic rejection is separately reusable.
 absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
+  const auto& query = staged.query_range.pinned[0];
+  const bool single_particle_gather =
+      query.operation == BoundaryTransferOperation3D::kGather && query.particle_count == 1;
+  const auto launch =
+      single_particle_gather ? LaunchLiquidBoundarySingleParticleGather3D : LaunchLiquidBoundaryTransfer3D;
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.query_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.particle_range, true));
-  TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryTransfer3D(
+  TRANSFER_TRY(arena.RecordRuntimeResult(launch(
       staged.query_range.device,
       staged.face_range.device,
       staged.particle_range.device,
