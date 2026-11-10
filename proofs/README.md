@@ -125,6 +125,22 @@ increment (new weighted gather minus old weighted gather). The retained residual
 velocity minus old weighted gather) is zero exactly when those two velocities agree. The root
 consumer has equal histories with gather 5 and old particle velocity 7, so the residual is nonzero.
 
+## Centered cubic normal derivative
+
+`centeredCubicPolynomial x` selects the centered cardinal cubic piece at a normalized
+coordinate `x : ℝ`. The pieces are zero outside `[-2,2]` and use left pieces at the
+knots. The audited theorem `cubic_centered_derivative_polynomials` states that
+
+```text
+(centeredCubicPolynomial x).derivative.eval x
+  = centeredQuadratic (x + 1/2) - centeredQuadratic (x - 1/2)
+```
+
+It aligns the shifted quadratic knots with the cubic knots and checks the formal
+polynomial derivative on every branch, including the two exterior intervals.
+Typed consumers pin the signature and the signed derivative values at the knots
+and at `x = ±1/2`.
+
 ## Finite signed MAC trace reindexing
 
 `finite_face_sum_eq_weighted_forward_difference` takes a signed origin `lo : ℤ`, cell count
@@ -141,11 +157,11 @@ the same two endpoint hypotheses. Typed consumers in `Fluidity/UniformTransfer.l
 full signature, the empty case and asymmetric signed data. Changing either exterior weight alone
 gives a counterexample to equality.
 
-The theorem covers the one-dimensional finite reindexing step in the mixed MAC trace. The
-cubic derivative identity, transverse tensor factors and physical `1/h` scaling are separate
-steps. The [M1 numerical bridge](../docs/references/m1-transport-evidence.md) tests the assembled
-trace on complete uniform support. Cut stencils, topology and floating-point behavior are
-outside the finite identity.
+The theorem covers the one-dimensional finite reindexing step in the mixed MAC trace.
+The centered cubic derivative is checked separately above. The numerical bridge assembles
+both identities with the transverse tensor factors and physical `1/h` scaling and tests
+the trace on complete uniform support. Cut stencils, topology and floating-point behavior
+are outside the finite identity. [M1 numerical bridge](../docs/references/m1-transport-evidence.md)
 
 ## F2: finite unmasked MAC deposition
 
@@ -391,6 +407,6 @@ The runtime supplies a validated positive duration and a correct frame-boundary 
 | `liquid_same_state_key_replays_trial` | Evaluations of one pure trial function with equal state and accepted-step key have equal outcomes and committed results, even when diagnostics differ. The shared function fixes settings, execution artifact and requested duration. |
 | `liquid_adaptation_preserves_input_snapshot` | A separate pure adaptation proposes new fields and retains its original committed snapshot. The proposal has no clock or publication operation. |
 
-All five targets are included in the 28-target independent export and axiom audit. Runtime
+All five targets are included in the 29-target independent export and axiom audit. Runtime
 fault injection and serialized-state comparison are separate evidence for the C++ ownership
 discipline, allocation/retry rules, CUDA ordering, floating-point behavior and actual byte replay.
