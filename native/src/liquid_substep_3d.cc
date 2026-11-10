@@ -431,7 +431,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     const LiquidSubstepBackend3D& backend
 ) {
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
-  if (!Complete(backend) || (needs_lattice_plane && !backend.sample_lattice_plane)) {
+  if (!Complete(backend) || (needs_lattice_plane ? !backend.sample_lattice_plane : !backend.sample_field_batch)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));

@@ -3,6 +3,13 @@
 #include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity {
+// Maximum queries in one substep field dispatch. Staging may use smaller
+// chunks when the selected arena has fewer reserved sample slots.
+inline constexpr std::size_t kLiquidFieldBatchCapacity3D = 256;
+// The device arena reserves this many sample slots per unit of its largest
+// particle, face, or cell capacity.
+inline constexpr std::size_t kLiquidFieldSampleSlotsPerCapacity3D = 8;
+
 struct LiquidParticleUpdateInputs3D {
   std::span<const LiquidBoundaryParticleGather3D> gathered;  // Frozen old/new gather, particle order.
   std::span<const double> liquid_distances;  // Frozen x^n field, meters, particle order.
@@ -32,7 +39,8 @@ struct LiquidMissingFacePredictionInputs3D {
 // orchestration enumerates source/topology/sample coordinates without replacing
 // the selected backend's distance, wall, transfer or projection numerics.
 struct LiquidSubstepBackend3D {
-  // Evaluate the frozen t^n field in world meters. Particle-union evaluation
+  // Evaluate the frozen t^n field at one particle world position in meters.
+  // Particle-union evaluation
   // visits trial_particles in input order. Return only a finite signed distance
   // (negative inside); invalid/range errors leave caller outputs untouched.
   using SampleField = absl::StatusOr<double>(
@@ -41,15 +49,29 @@ struct LiquidSubstepBackend3D {
       std::span<const LiquidParticleState3D> trial_particles,
       Vec3 sample_world_position
   );
-  // Sample an analytic plane at the original grid y coordinate in cell widths.
-  // Centers use half-integer coordinates and corners use integers. Return the
-  // signed distance in meters. Invalid input returns InvalidArgument and an
-  // uncertifiable distance returns OutOfRange.
-  using SampleLatticePlane = absl::StatusOr<double>(
+  // Evaluate a bounded batch of the frozen field, in world meters. Preserve
+  // query and particle order. Output spans must match the query extent and
+  // must not alias inputs or backend scratch. Empty batches perform no sampling.
+  // Bad input returns InvalidArgument, insufficient storage ResourceExhausted,
+  // nonfinite distances OutOfRange and device runtime failures Internal. Outputs
+  // remain untouched on failure.
+  using SampleFieldBatch = absl::Status(
+      void* context,
+      const LiquidSceneField3D& field,
+      std::span<const LiquidParticleState3D> trial_particles,
+      std::span<const Vec3> world_sample_positions,
+      std::span<double> signed_distances
+  );
+  // Apply the same batch contract to a plane using original signed lattice y
+  // in cell widths. Centers use half-integers and corners use integers. The
+  // compensated distances are in world meters; an uncertifiable distance
+  // returns OutOfRange.
+  using SampleLatticePlane = absl::Status(
       void* context,
       const LiquidHorizontalPlaneSurface3D& plane,
       UniformMacGeometry3D geometry,
-      double sample_lattice_y
+      std::span<const double> sample_lattice_ordinates_y,
+      std::span<double> signed_distances
   );
   // At the supplied frozen obstacle pose, fill full owned-slot face tags and/or
   // prescribed walls. Each output is either empty (not requested) or covers the
@@ -169,6 +191,7 @@ struct LiquidSubstepBackend3D {
   Project* project = nullptr;
   Gather* gather = nullptr;
   UpdateParticles* update_particles = nullptr;
+  SampleFieldBatch* sample_field_batch = nullptr;
   SampleLatticePlane* sample_lattice_plane = nullptr;  // Required for horizontal-plane scenes.
 };
 // CPU operations share the accepted bounded operators and true-gradient J/contact.

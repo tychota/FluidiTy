@@ -50,13 +50,21 @@ ComputeGeometry(void* context, const boundary_internal::GeometryInput& input) {
   return report->pinned[0].geometry;
 }
 
+Vec3 PackedFieldSample(Vec3 world_position) {
+  return world_position;
+}
+Vec3 PackedFieldSample(double lattice_y) {
+  return {0, lattice_y, 0};
+}
+
 // World and lattice queries share the checked arena ranges and one fence. The
 // lattice form packs y in cell widths and resolves its distance only on device.
+template <typename Sample>
 absl::Status SampleFieldOnDevice(
     CudaLiquidArena3D& arena,
     const LiquidSceneField3D& field,
     std::span<const LiquidParticleState3D> particles,
-    std::span<const Vec3> positions,
+    std::span<const Sample> positions,
     std::span<double> distances,
     const UniformMacGeometry3D* lattice_geometry
 ) {
@@ -82,6 +90,7 @@ absl::Status SampleFieldOnDevice(
     return Error(absl::StatusCode::kResourceExhausted);
   }
   if (AliasesLiquidScratch3D(arena, particles) || AliasesLiquidScratch3D(arena, positions)
+      || LiquidByteRangesOverlap3D(distances.data(), distances.size_bytes(), &field, sizeof(field))
       || AliasesLiquidScratch3D(arena, distances)
       || LiquidByteRangesOverlap3D(distances.data(), distances.size_bytes(), positions.data(), positions.size_bytes())
       || LiquidByteRangesOverlap3D(
@@ -93,7 +102,7 @@ absl::Status SampleFieldOnDevice(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   for (const auto position : positions) {
-    if (!Finite(position)) {
+    if (!Finite(PackedFieldSample(position))) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }
@@ -101,6 +110,9 @@ absl::Status SampleFieldOnDevice(
     if (!Finite(particle.world_position)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
+  }
+  if (positions.empty()) {
+    return absl::OkStatus();
   }
   const auto query = CheckedLiquidRange3D<LiquidSampleQuery3D>(arena, Range::kSampleQuery, 1);
   const auto samples = CheckedLiquidRange3D<Vec3>(arena, Range::kSamplePositions, positions.size());
@@ -138,19 +150,22 @@ absl::Status SampleFieldOnDevice(
       .sample_count = positions.size(),
       .geometry = lattice_geometry ? *lattice_geometry : UniformMacGeometry3D{},
   };
-  std::ranges::copy(positions, samples->pinned.begin());
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    samples->pinned[index] = PackedFieldSample(positions[index]);
+  }
   for (std::size_t index = 0; index < particles.size(); ++index) {
     centers->pinned[index] = particles[index].world_position;
   }
   STAGE_TRY(CopyLiquidRange3D(arena, *query, true));
   STAGE_TRY(CopyLiquidRange3D(arena, *samples, true));
   STAGE_TRY(CopyLiquidRange3D(arena, *centers, true));
-  STAGE_TRY(arena.RecordRuntimeResult(LaunchLiquidFieldSamples3D(
+  STAGE_TRY(arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().launch_field_samples(
       query->device,
       centers->device,
       samples->device,
       output->device,
       architecture->device,
+      positions.size(),
       arena.stream()
   )));
   STAGE_TRY(CopyLiquidRange3D(arena, *output, false));
@@ -184,16 +199,22 @@ absl::StatusOr<double> SampleLiquidField3D(
   STAGE_TRY(SampleLiquidField3D(arena, field, particles, {&position, 1}, {&distance, 1}));
   return distance;
 }
-absl::StatusOr<double> SampleLiquidLatticePlane3D(
+absl::Status SampleLiquidLatticePlane3D(
     CudaLiquidArena3D& arena,
     const LiquidHorizontalPlaneSurface3D& plane,
     UniformMacGeometry3D geometry,
-    double sample_lattice_y
+    std::span<const double> sample_lattice_ordinates_y,
+    std::span<double> distances
 ) {
-  const Vec3 lattice_position{0, sample_lattice_y, 0};
-  double distance = 0;
-  STAGE_TRY(SampleFieldOnDevice(arena, plane, {}, {&lattice_position, 1}, {&distance, 1}, &geometry));
-  return distance;
+  STAGE_TRY(arena.RecordRuntimeResult(cudaSuccess));
+  if (sample_lattice_ordinates_y.size() != distances.size()
+      || LiquidByteRangesOverlap3D(distances.data(), distances.size_bytes(), &plane, sizeof(plane))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (sample_lattice_ordinates_y.size() > kLiquidFieldBatchCapacity3D) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  return SampleFieldOnDevice(arena, plane, {}, sample_lattice_ordinates_y, distances, &geometry);
 }
 absl::Status SampleLiquidFaces3D(
     CudaLiquidArena3D& arena,

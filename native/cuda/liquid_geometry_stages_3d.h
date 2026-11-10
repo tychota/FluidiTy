@@ -3,12 +3,12 @@
 #include "fluidity/host/liquid_substep_backend_3d.h"
 namespace fluidity::cuda_internal {
 // Bounded device sampling at frozen world positions (meters). Counts must fit the
-// arena. Inputs/output must not alias arena scratch or each other. No allocation;
+// arena. Spans must not alias arena scratch, and output must not alias inputs. No allocation;
 // outputs publish only after successful device arithmetic and fence. Invalid
 // field/position/alias returns InvalidArgument; capacity returns ResourceExhausted;
 // empty union or nonfinite device distance returns OutOfRange. Runtime errors are
 // fatal Internal and permanently poison the arena; all external outputs survive.
-// Ordered FP64 sphere union preserves strict-less ties. Empty positions still launch.
+// Ordered FP64 sphere union preserves strict-less ties. Empty positions do not launch.
 absl::Status SampleLiquidField3D(
     CudaLiquidArena3D& arena,
     const LiquidSceneField3D& field,
@@ -16,20 +16,22 @@ absl::Status SampleLiquidField3D(
     std::span<const Vec3> positions,
     std::span<double> distances
 );
-// Scalar adapter for the scheduler; same contract as the batched overload.
+// World-position particle query with the same contract as the batched overload.
 absl::StatusOr<double> SampleLiquidField3D(
     CudaLiquidArena3D& arena,
     const LiquidSceneField3D& field,
     std::span<const LiquidParticleState3D> particles,
     Vec3 position
 );
-// Checked device plane sample at an original signed lattice y in cell widths.
-// Shares the world sampler's arena, arithmetic and publication guarantees.
-absl::StatusOr<double> SampleLiquidLatticePlane3D(
+// Checked device plane batch at original signed lattice y ordinates in cell
+// widths. Shares the world sampler's arena and publication guarantees, with the
+// substep batch capacity and compensated plane arithmetic.
+absl::Status SampleLiquidLatticePlane3D(
     CudaLiquidArena3D& arena,
     const LiquidHorizontalPlaneSurface3D& plane,
     UniformMacGeometry3D geometry,
-    double sample_lattice_y
+    std::span<const double> sample_lattice_ordinates_y,
+    std::span<double> distances
 );
 // Full owned-slot outputs, each empty or grid.face_count(). Obstacle is already
 // at the requested time; slab walls require side +/-1, independently of anchor side.

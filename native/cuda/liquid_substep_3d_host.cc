@@ -1,3 +1,5 @@
+#include <cuda_runtime_api.h>
+
 #include <new>
 #include <utility>
 
@@ -187,16 +189,34 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
           ) {
             return cuda_internal::UpdateLiquidParticles3D(static_cast<Impl*>(context)->arena, inputs, trial_particles);
           },
+      .sample_field_batch =
+          [](void* context,
+             const LiquidSceneField3D& field,
+             std::span<const LiquidParticleState3D> particles,
+             std::span<const Vec3> positions,
+             std::span<double> distances) {
+            auto& arena = static_cast<Impl*>(context)->arena;
+            const auto ready = arena.RecordRuntimeResult(cudaSuccess);
+            if (!ready.ok()) {
+              return ready;
+            }
+            if (positions.size() == distances.size() && positions.size() > kLiquidFieldBatchCapacity3D) {
+              return absl::Status(absl::StatusCode::kResourceExhausted, {});
+            }
+            return cuda_internal::SampleLiquidField3D(arena, field, particles, positions, distances);
+          },
       .sample_lattice_plane =
           [](void* context,
              const LiquidHorizontalPlaneSurface3D& plane,
              UniformMacGeometry3D geometry,
-             double sample_lattice_y) {
+             std::span<const double> sample_lattice_ordinates_y,
+             std::span<double> distances) {
             return cuda_internal::SampleLiquidLatticePlane3D(
                 static_cast<Impl*>(context)->arena,
                 plane,
                 geometry,
-                sample_lattice_y
+                sample_lattice_ordinates_y,
+                distances
             );
           },
   };

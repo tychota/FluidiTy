@@ -51,6 +51,56 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
 }
 
+TEST(LiquidSubstep3D, DeduplicatesSignedFieldKeysBeforeSampling) {
+  auto operations = CpuLiquidSubstepBackend3D();
+  std::size_t evaluations = 0;
+  operations.context = &evaluations;
+  operations.sample_field_batch = [](void* context,
+                                     const LiquidSceneField3D& field,
+                                     std::span<const LiquidParticleState3D> particles,
+                                     std::span<const Vec3> positions,
+                                     std::span<double> distances) {
+    *static_cast<std::size_t*>(context) += positions.size();
+    return CpuLiquidSubstepBackend3D().sample_field_batch(nullptr, field, particles, positions, distances);
+  };
+  ASSERT_NO_FATAL_FAILURE(tank_staging_test::ExpectMixedSignedFieldSupport(operations, 0));
+  EXPECT_EQ(evaluations, 262);
+}
+
+TEST(LiquidSubstep3D, CheckedFieldBatchesPreserveOutputs) {
+  tank_staging_test::ExpectFieldBatchContract(CpuLiquidSubstepBackend3D());
+}
+
+TEST(LiquidSubstep3D, LateMalformedFieldBatchPreservesCommittedBytes) {
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 2.1};
+  auto operations = CpuLiquidSubstepBackend3D();
+  std::size_t batches = 0;
+  operations.context = &batches;
+  operations.sample_field_batch = [](void* context,
+                                     const LiquidSceneField3D& field,
+                                     std::span<const LiquidParticleState3D> particles,
+                                     std::span<const Vec3> positions,
+                                     std::span<double> distances) {
+    if (++*static_cast<std::size_t*>(context) == 2) {
+      distances = distances.first(distances.size() - 1);
+    }
+    return CpuLiquidSubstepBackend3D().sample_field_batch(nullptr, field, particles, positions, distances);
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), operations);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(batches, 2);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+
+  operations.sample_field_batch = nullptr;
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, Options(), operations).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(LiquidSubstep3D, HorizontalPlaneActivatesSignedPressureAndFaceOwnersWithoutParticles) {
   tank_staging_test::ExpectPlaneSupport(CpuLiquidSubstepBackend3D(), Options());
 }
