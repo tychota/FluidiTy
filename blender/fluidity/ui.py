@@ -14,8 +14,10 @@ def message(layout, text, icon="NONE"):
     region = bpy.context.region
     scale = bpy.context.preferences.system.ui_scale
     width = max(20, min(80, int(((region.width if region else 360) - 68 * scale) / (7 * scale))))
+    column = layout.column(align=True)
+    column.scale_y = 0.85
     for index, line in enumerate(wrap(translated, width=width)):
-        layout.label(text=line, icon=icon if index == 0 else "NONE", translate=False)
+        column.label(text=line, icon=icon if index == 0 else "NONE", translate=False)
 
 
 class PhysicsPanel:
@@ -32,8 +34,7 @@ class FLUIDITY_PT_main(PhysicsPanel, bpy.types.Panel):
         settings = context.scene.fluidity
         layout = self.layout
         if not bpy.data.filepath:
-            message(layout, "Save the project before previewing or baking.", "FILE_BLEND")
-            layout.operator("wm.save_as_mainfile", text="Save Project...", icon="FILE_TICK")
+            layout.operator("wm.save_as_mainfile", text="Save Project Before Baking...", icon="FILE_TICK")
         if jobs.is_running(context.scene):
             layout.label(text="Simulation Running", icon="TIME")
             if settings.target_frame >= 0:
@@ -54,31 +55,102 @@ class FLUIDITY_PT_main(PhysicsPanel, bpy.types.Panel):
                 )
         if settings.message:
             message(layout, settings.message, "INFO")
-        else:
-            message(layout, "Assign the three inputs, check the scene, then preview.", "INFO")
+        if not settings.domain and not settings.liquid:
+            layout.operator("fluidity.create_setup", icon="ADD")
+        if context.object and context.object.type == "MESH":
+            row = layout.row(align=True)
+            row.enabled = not jobs.is_running(context.scene)
+            row.label(text="Assign Selected")
+            for role, label in (("domain", "Domain"), ("liquid", "Liquid")):
+                row.operator("fluidity.assign_role", text=label).role = role
 
 
 class ChildPanel(PhysicsPanel):
     bl_parent_id = "FLUIDITY_PT_main"
+    help_topic = ""
+
+    def draw_header_preset(self, _context):
+        if self.help_topic:
+            self.layout.operator("fluidity.help", text="", icon="QUESTION", emboss=False).topic = self.help_topic
+
+
+def input_object(layout, settings, name, label):
+    row = layout.row(align=True)
+    row.alert = settings.issue_field in {name, "roles"}
+    row.prop(settings, name, text=label)
+    if getattr(settings, name):
+        row.operator("fluidity.select_role", text="", icon="RESTRICT_SELECT_OFF").role = name
+    elif name != "paddle":
+        row.operator("fluidity.add_input", text="", icon="ADD").role = name
+
+
+def controls(layout, scene):
+    layout.use_property_split = True
+    layout.use_property_decorate = False
+    column = layout.column(align=True)
+    column.enabled = not jobs.is_running(scene)
+    return column
 
 
 class FLUIDITY_PT_inputs(ChildPanel, bpy.types.Panel):
-    bl_label = "Inputs"
+    bl_label = "Domain"
+    help_topic = "DOMAIN"
 
     def draw(self, context):
         scene = context.scene
-        layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
-        column = layout.column()
-        column.enabled = not jobs.is_running(scene)
-        for name in ("domain", "liquid", "paddle"):
-            row = column.row(align=True)
-            row.alert = scene.fluidity.issue_field in {name, "roles"}
-            row.prop(scene.fluidity, name)
-            row.operator("fluidity.select_role", text="", icon="RESTRICT_SELECT_OFF").role = name
-        message(column, "M1 inputs must be closed, axis-aligned boxes. Paddle translates on world X.")
+        column = controls(self.layout, scene)
+        settings = scene.fluidity
+        input_object(column, settings, "domain", "Domain")
+        column.prop(settings, "boundary_mode")
+        if settings.boundary_mode == "TANK":
+            column.label(text="Open Top · Five Solid Walls", icon="MESH_CUBE")
+        elif settings.boundary_mode == "FREE":
+            column.label(text="No Solid Boundaries", icon="INFO")
+        column.prop(settings, "cell_width")
         column.operator("fluidity.initialize_scene", text="Set Timing & Units", icon="SCENE_DATA")
+
+
+class FLUIDITY_PT_fluid(ChildPanel, bpy.types.Panel):
+    bl_label = "Fluid"
+    help_topic = "FLUID"
+
+    def draw(self, context):
+        scene = context.scene
+        settings = scene.fluidity
+        column = controls(self.layout, scene)
+        input_object(column, settings, "liquid", "Initial Liquid")
+        material = column.column(align=True)
+        material.enabled = settings.boundary_mode != "LEGACY_PADDLE"
+        row = material.row(align=True)
+        row.prop(settings, "material_preset")
+        row.operator("fluidity.apply_preset", text="", icon="CHECKMARK").preset = settings.material_preset
+        material.prop(settings, "density", text="Density (kg/m³)")
+        material.prop(settings, "surface_tension", text="Surface Tension (N/m)")
+        for index, label in enumerate(("Velocity X (m/s)", "Velocity Y (m/s)", "Velocity Z (m/s)")):
+            material.prop(settings, "initial_velocity", index=index, text=label)
+
+
+class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
+    bl_label = "Collision"
+    help_topic = "COLLIDER"
+
+    def draw(self, context):
+        scene = context.scene
+        settings = scene.fluidity
+        column = controls(self.layout, scene)
+        if settings.boundary_mode == "LEGACY_PADDLE":
+            input_object(column, settings, "paddle", "Animated Paddle")
+        elif settings.boundary_mode in {"PLANE", "SLAB"}:
+            input_object(column, settings, "collider", "Collider")
+            if context.object and context.object.type == "MESH":
+                column.operator("fluidity.assign_role", text="Use Selected as Collider").role = "collider"
+            column.prop(settings, "friction")
+            column.label(text="Infinite Plane" if settings.boundary_mode == "PLANE" else "Infinite X Slab", icon="INFO")
+        elif settings.boundary_mode == "TANK":
+            column.label(text="Uses Domain Walls", icon="MESH_CUBE")
+            column.prop(settings, "friction")
+        else:
+            column.label(text="Free Space", icon="INFO")
 
 
 class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):
@@ -91,15 +163,19 @@ class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):
         layout.use_property_decorate = False
         column = layout.column()
         column.enabled = not jobs.is_running(scene)
-        column.prop(scene.fluidity, "cell_width")
         column.prop(scene.fluidity, "backend")
         column.prop(scene, "frame_end", text="End Frame")
-        message(column, "Frame 0 is time zero. Use 24 fps and one Blender unit per meter.")
+        advanced = column.column(align=True)
+        advanced.enabled = scene.fluidity.boundary_mode != "LEGACY_PADDLE"
+        advanced.prop(scene.fluidity, "maximum_step", text="Max Step (s)")
+        advanced.prop(scene.fluidity, "energy_blend")
+        advanced.prop(scene.fluidity, "pressure_iterations")
         column.operator("fluidity.check_scene", icon="CHECKMARK")
 
 
 class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
     bl_label = "Cache & Bake"
+    help_topic = "CACHE"
 
     def draw(self, context):
         scene = context.scene
@@ -119,11 +195,11 @@ class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
         row = column.row(align=True)
         row.operator("fluidity.attach", icon="POINTCLOUD_DATA")
         row.operator("fluidity.relink", text="Relink Cache...", icon="FILE_FOLDER")
-        message(column, "Preview and Bake use separate caches. Resume preserves committed frames.")
 
 
 class FLUIDITY_PT_display(ChildPanel, bpy.types.Panel):
     bl_label = "Display & Geometry Nodes"
+    help_topic = "NODES"
     bl_options: ClassVar[set[str]] = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -141,12 +217,11 @@ class FLUIDITY_PT_display(ChildPanel, bpy.types.Panel):
                 if identifier and hasattr(modifier.properties.inputs, identifier):
                     layout.prop(getattr(modifier.properties.inputs, identifier), "value", text=label)
         layout.operator("fluidity.select_playback", icon="NODETREE")
-        message(layout, "Connect Points to your own nodes. Velocity is in m/s; Radius is in meters.")
-        message(layout, "Display edits do not change the simulation cache.")
 
 
 class FLUIDITY_PT_interchange(ChildPanel, bpy.types.Panel):
     bl_label = "Import & Export"
+    help_topic = "EXPORT"
     bl_options: ClassVar[set[str]] = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
@@ -156,9 +231,6 @@ class FLUIDITY_PT_interchange(ChildPanel, bpy.types.Panel):
         column.operator("fluidity.import_cache", text="Import Cache...", icon="IMPORT")
         column.operator("fluidity.export_alembic", text="Export Alembic...", icon="EXPORT")
         column.operator("fluidity.export_usd", text="Export USD...", icon="EXPORT")
-        message(column, "Alembic exports verified committed points, including empty frames.")
-        message(column, "USD export requires nonempty samples in Blender 5.2.3. Use Alembic for empty frames.")
-        message(column, "USD and VDB import use native Blender readers. M1 does not generate volume grids.")
 
 
 class FLUIDITY_PT_diagnostics(ChildPanel, bpy.types.Panel):
@@ -188,6 +260,8 @@ class FLUIDITY_PT_diagnostics(ChildPanel, bpy.types.Panel):
 CLASSES = (
     FLUIDITY_PT_main,
     FLUIDITY_PT_inputs,
+    FLUIDITY_PT_fluid,
+    FLUIDITY_PT_colliders,
     FLUIDITY_PT_simulation,
     FLUIDITY_PT_cache,
     FLUIDITY_PT_display,

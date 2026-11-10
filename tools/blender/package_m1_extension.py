@@ -44,13 +44,27 @@ def main():
             [*common, "--python-exit-code", "23", "--python", root / "tools/blender/make_m1_example.py", "--", example],
             check=True,
         )
+        domain_example = examples / "Water Tank.blend"
+        subprocess.run(
+            [
+                *common,
+                "--python-exit-code",
+                "23",
+                "--python",
+                root / "tools/blender/make_domain_example.py",
+                "--",
+                domain_example,
+            ],
+            check=True,
+        )
         subprocess.run(
             [*common, "--command", "extension", "build", "--source-dir", stage, "--output-filepath", package],
             check=True,
         )
         subprocess.run([*common, "--command", "extension", "validate", package], check=True)
         shutil.copyfile(example, output / example.name)
-    artifacts = [package, output / "First Bake.blend", args.solver, args.bridge]
+        shutil.copyfile(domain_example, output / domain_example.name)
+    artifacts = [package, output / "First Bake.blend", output / "Water Tank.blend", args.solver, args.bridge]
     digests = {item.name: hashlib.file_digest(item.open("rb"), "sha256").hexdigest() for item in artifacts}
     (output / "sha256.json").write_text(json.dumps(digests, indent=2) + "\n", encoding="utf-8")
     print(package)

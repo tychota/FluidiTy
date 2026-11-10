@@ -15,6 +15,8 @@ assert len(panels) >= 6
 assert all(cls.bl_space_type == "PROPERTIES" and cls.bl_context == "physics" for cls in panels)
 assert fluidity.FLUIDITY_Preferences.bl_rna.properties["preview_frames"].default == 3
 assert fluidity.FluidiTySettings.bl_rna.properties["cell_width"].description
+assert fluidity.FluidiTySettings.bl_rna.properties["preview_cache"].is_path_supports_blend_relative
+assert fluidity.FluidiTySettings.bl_rna.properties["bake_cache"].is_path_supports_blend_relative
 tree = fluidity.playback.create_points_asset()
 outputs = {item.name for item in tree.interface.items_tree if item.in_out == "OUTPUT"}
 assert {"Geometry", "Points", "Velocity", "Speed", "Radius"} <= outputs, outputs

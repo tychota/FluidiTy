@@ -10,13 +10,14 @@ from bpy.app.handlers import persistent
 from bpy.props import (
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
 )
 from bpy.types import Object, Operator, PropertyGroup
 
-from . import interchange, jobs, playback, ui
+from . import authoring, interchange, jobs, playback, ui
 from .preferences import FLUIDITY_Preferences, preview_end
 from .scene_inputs import SceneError, require_cadence, scene_inputs
 from .translations import TRANSLATIONS
@@ -32,7 +33,88 @@ def invalidate_guidance(settings, _context):
     settings.diagnostic = ""
 
 
+def custom_material(settings, context):
+    settings.material_preset = "CUSTOM"
+    invalidate_guidance(settings, context)
+
+
 class FluidiTySettings(PropertyGroup):
+    boundary_mode: EnumProperty(
+        name="Boundaries",
+        description="Choose the actual collision model used by the solver",
+        items=(
+            ("TANK", "Open Tank", "Domain floor and four walls; open top"),
+            ("FREE", "Free Space", "No solid boundaries; domain is initial containment only"),
+            ("PLANE", "Plane Collider", "Infinite floor at the top of the collider box"),
+            ("SLAB", "Slab Collider", "Infinite X slab using the collider box thickness"),
+            ("LEGACY_PADDLE", "Legacy Paddle", "Original first-bake packet for existing scenes"),
+        ),
+        default="LEGACY_PADDLE",
+        update=invalidate_guidance,
+    )
+    collider: PointerProperty(
+        name="Collider", type=Object, description="Box defining the analytic plane or slab", update=invalidate_guidance
+    )
+    material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
+    density: FloatProperty(
+        name="Density",
+        description="Liquid mass per volume in kg/m³",
+        default=1000,
+        min=1,
+        max=50000,
+        update=custom_material,
+    )
+    surface_tension: FloatProperty(
+        name="Surface Tension",
+        description="Interface tension in N/m; zero disables capillary forces",
+        default=0,
+        min=0,
+        max=10,
+        precision=4,
+        update=custom_material,
+    )
+    friction: FloatProperty(
+        name="Wall Friction",
+        description="Dimensionless Coulomb friction coefficient at solid contact",
+        default=0,
+        min=0,
+        max=2,
+        update=invalidate_guidance,
+    )
+    initial_velocity: FloatVectorProperty(
+        name="Initial Velocity",
+        description="World-space initial liquid velocity in m/s",
+        size=3,
+        default=(0, 0, 0),
+        min=-100,
+        max=100,
+        update=invalidate_guidance,
+    )
+    energy_blend: FloatProperty(
+        name="Velocity Retention",
+        description="Particle energy blend in [0,1]; lower values damp the motion more",
+        default=0.6,
+        min=0,
+        max=1,
+        update=invalidate_guidance,
+    )
+    maximum_step: FloatProperty(
+        name="Maximum Time Step",
+        description="Maximum attempted solver step in seconds; stability can require smaller steps",
+        default=0.01,
+        min=0.00001,
+        max=0.04,
+        precision=5,
+        update=invalidate_guidance,
+    )
+    pressure_iterations: IntProperty(
+        name="Pressure Iterations",
+        description="Pressure solve iteration budget; a failed convergence gate never publishes a frame",
+        default=256,
+        min=1,
+        max=256,
+        update=invalidate_guidance,
+    )
     domain: PointerProperty(
         name="Domain",
         type=Object,
@@ -72,6 +154,7 @@ class FluidiTySettings(PropertyGroup):
         name="Preview Cache",
         default="//FluidiTy Preview",
         subtype="DIR_PATH",
+        options={"PATH_SUPPORTS_BLEND_RELATIVE"},
         description="Separate directory for the shortened preview; existing committed data is never overwritten",
         update=invalidate_guidance,
     )
@@ -79,6 +162,7 @@ class FluidiTySettings(PropertyGroup):
         name="Bake Cache",
         default="//FluidiTy Bake",
         subtype="DIR_PATH",
+        options={"PATH_SUPPORTS_BLEND_RELATIVE"},
         description="Committed simulation cache; choose a new directory for changed inputs",
         update=invalidate_guidance,
     )
@@ -298,6 +382,7 @@ _CLASSES = (
     FLUIDITY_OT_attach,
     FLUIDITY_OT_relink,
     FLUIDITY_Preferences,
+    *authoring.CLASSES,
     *interchange.CLASSES,
     *ui.CLASSES,
 )

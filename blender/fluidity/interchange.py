@@ -43,7 +43,7 @@ class FLUIDITY_OT_select_role(bpy.types.Operator):
     bl_idname = "fluidity.select_role"
     bl_label = "Select Input"
     bl_description = "Select the assigned input object in the current view layer"
-    role: EnumProperty(items=tuple((name, name.title(), "") for name in ("domain", "liquid", "paddle")))
+    role: EnumProperty(items=tuple((name, name.title(), "") for name in ("domain", "liquid", "paddle", "collider")))
 
     def execute(self, context):
         if not select_object(context, getattr(context.scene.fluidity, self.role)):
