@@ -10,7 +10,9 @@
 
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "absl/cleanup/cleanup.h"
+#include "fluidity/host/effects_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "fluidity/host/motion_capture_3d.h"
 #include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
@@ -430,6 +432,7 @@ struct Observations {
   std::vector<std::string> trace;
   std::optional<std::string> selected;
   std::vector<LiquidAttemptMeasurement3D> attempts;
+  MotionCapture3D* motion_capture = nullptr;
   static void ObserveAttempt(void* context, const LiquidAttemptMeasurement3D& attempt) {
     auto& self = *static_cast<Observations*>(context);
     if (self.measurement) {
@@ -443,6 +446,9 @@ struct Observations {
   Observe(void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
     auto& self = *static_cast<Observations*>(context);
     EXEC_TRY(self.job.CheckForJobStopRequest());
+    if (self.motion_capture) {
+      EXEC_TRY(self.motion_capture->Observe(state, rollback));
+    }
     if (rollback) {
       self.trace.clear();
       self.selected.reset();
@@ -703,6 +709,9 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
   }
   auto options = scene.options;
+  if (options.motion_sample_intervals != 0 && command.frame_start > 1) {
+    return absl::InvalidArgumentError("effects capture requires a contiguous point-frame range");
+  }
   options.capacities = resume.capacities;
   options.capacity_replay_reservations = resume.capacity_replay_reservations;
   // The backend must outlive scheduler callbacks; the queue must outlive writer
@@ -785,6 +794,26 @@ absl::StatusOr<std::string> ExecuteCommand(
   diagnostic->field = "job-status";
   diagnostic->cause = "could not persist the baking job status";
   EXEC_TRY(job.MarkBaking());
+  std::optional<MotionCapture3D> motion_capture;
+  std::optional<EffectsCache3D> source_cache;
+  if (options.motion_sample_intervals != 0) {
+    const auto source_root = command.cache_directory / "effects" / "source";
+    const EffectsIdentity3D identity{
+        .stage = EffectsStage3D::kSource,
+        .upstream_execution = LiquidExecutionId3D(*fingerprint),
+        .settings = *fingerprint,
+        .build = scene.build_digest,
+    };
+    auto opened =
+        read_only ? EffectsCache3D::OpenForInspection(source_root) : EffectsCache3D::Create(source_root, identity);
+    if (!opened.ok()) {
+      return opened.status();
+    }
+    if (opened->identity() != identity) {
+      return absl::FailedPreconditionError("source capture identity differs");
+    }
+    source_cache = std::move(*opened);
+  }
   // Synchronous writer boundary over a real asynchronous D2H queue. Each call
   // drains its source before the next whole-frame AdvanceFrame; the host writer
   // lease remains alive through checked serialization and manifest publication.
@@ -847,11 +876,59 @@ absl::StatusOr<std::string> ExecuteCommand(
       return absl::OkStatus();
     }
     if (!publish) {
-      return VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame);
+      EXEC_TRY(VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame));
     }
     auto points = BuildPointFrame(*state);
     if (!points.ok()) {
       return points.status();
+    }
+    if (source_cache) {
+      const auto point_bytes = EncodeLiquidPointFrame3D(*points);
+      if (!point_bytes.ok()) {
+        return point_bytes.status();
+      }
+      const auto upstream_content = LiquidContentDigest3D(point_bytes->values());
+      if (state->clock.frame_ordinal == 0 || motion_capture) {
+        auto payload = state->clock.frame_ordinal == 0 ? EncodeMotionSeed3D(*state) : motion_capture->Finish(*state);
+        if (!payload.ok()) {
+          return payload.status();
+        }
+        if (publish) {
+          LiquidDigest3D previous{};
+          if (state->clock.frame_ordinal > 0) {
+            const auto predecessor = source_cache->ReadFrame(state->clock.frame_ordinal - 1);
+            if (!predecessor.ok()) {
+              return predecessor.status();
+            }
+            previous = predecessor->payload_digest;
+          }
+          EXEC_TRY(source_cache->Publish(state->clock, upstream_content, previous, payload->values()));
+        } else {
+          const auto existing = source_cache->ReadFrame(state->clock.frame_ordinal);
+          if (!existing.ok()) {
+            return existing.status();
+          }
+          if (existing->upstream_content != upstream_content
+              || !std::ranges::equal(existing->payload.values(), payload->values())) {
+            return absl::DataLossError("source replay differs from committed interval");
+          }
+        }
+      } else {
+        const auto existing = source_cache->ReadFrame(state->clock.frame_ordinal);
+        if (!existing.ok()) {
+          return existing.status();
+        }
+        auto decoded = DecodeMotionFrame3D(existing->payload.values());
+        if (!decoded.ok()) {
+          return decoded.status();
+        }
+        if (existing->upstream_content != upstream_content || decoded->samples.back() != *state) {
+          return absl::DataLossError("source checkpoint endpoint differs");
+        }
+      }
+    }
+    if (!publish) {
+      return absl::OkStatus();
     }
     const bool checkpoint = state->clock.frame_ordinal % 10 == 0;
     // Record the actual current host reservation plan after any configured replay.
@@ -915,6 +992,14 @@ absl::StatusOr<std::string> ExecuteCommand(
     observations.trace.clear();
     observations.selected.reset();
     observations.attempts.clear();
+    if (options.motion_sample_intervals != 0) {
+      auto capture = MotionCapture3D::Create(scheduler->committed(), *time, options.motion_sample_intervals);
+      if (!capture.ok()) {
+        return capture.status();
+      }
+      motion_capture = std::move(*capture);
+      observations.motion_capture = &*motion_capture;
+    }
     const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
     const auto advanced = scheduler->AdvanceFrame(*time, observer);
     if (measurement && advanced.ok()) {

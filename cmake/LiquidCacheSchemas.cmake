@@ -28,6 +28,17 @@ foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_
   endif()
 endforeach()
 add_custom_target(fluidity_cache_schemas DEPENDS ${cache_generated_headers})
+set(effects_schema_dir "${PROJECT_SOURCE_DIR}/schemas/effects")
+foreach(schema IN ITEMS stage_manifest motion_frame)
+  set(header "${FLUIDITY_CACHE_GENERATED_DIR}/${schema}_generated.h")
+  add_custom_command(OUTPUT "${header}"
+    COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --cpp --scoped-enums --gen-mutable --reflect-names
+            -I "${cache_schema_dir}" -I "${effects_schema_dir}"
+            -o "${FLUIDITY_CACHE_GENERATED_DIR}" "${effects_schema_dir}/${schema}.fbs"
+    DEPENDS "${effects_schema_dir}/${schema}.fbs" "${cache_schema_dir}/common.fbs"
+    VERBATIM)
+  target_sources(fluidity_cache_schemas PRIVATE "${header}")
+endforeach()
 if(BUILD_TESTING)
   add_test(NAME LiquidCacheSchema.RejectIncompatibleField
     COMMAND "${CMAKE_COMMAND}" "-DFLUIDITY_FLATC_EXECUTABLE=${FLUIDITY_FLATC_EXECUTABLE}"

@@ -42,6 +42,8 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+  native/src/motion_capture_3d.cc
+  native/src/effects_cache_3d.cc
   native/src/motion_interval_3d.cc
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
@@ -199,6 +201,8 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_motion_capture_3d.cc
+    native/tests/test_effects_cache_3d.cc
     native/tests/test_motion_interval_3d.cc
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc

@@ -66,6 +66,7 @@ struct LiquidStepOptions3D {
   // All zero disables replay growth. Otherwise every family is nondecreasing and
   // at least one grows; preparation/copy/growth happen only between attempts.
   LiquidStateCapacities3D capacity_replay_reservations;
+  std::uint32_t motion_sample_intervals = 0;  // Zero disables effects capture; otherwise 1..64 accepted-time slots.
 };
 enum class LiquidPhysicalStage3D {
   kEmit,

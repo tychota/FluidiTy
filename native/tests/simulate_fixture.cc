@@ -52,7 +52,8 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.world_acceleration = {};
   }
   const bool slow_frame = args[5] == "slow";
-  const bool initial_particle = args[5] == "initial" || slow_frame;
+  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame;
+  scene.options.motion_sample_intervals = args[5] == "effects" ? 16 : 0;
   if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }

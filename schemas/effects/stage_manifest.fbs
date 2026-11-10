@@ -1,0 +1,24 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+enum Stage:ubyte { Source = 0, Mesh = 1, Whitewater = 2, Volumes = 3 }
+table StageIdentity {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  stage:Stage (id:2);
+  upstream_execution:fluidity.cache.v1.Digest (required, id:3);
+  settings:fluidity.cache.v1.Digest (required, id:4);
+  build:fluidity.cache.v1.Digest (required, id:5);
+}
+table StageManifest {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  identity:StageIdentity (required, id:2);
+  clock:fluidity.cache.v1.Clock (required, id:3);
+  upstream_content:fluidity.cache.v1.Digest (required, id:4);
+  previous_payload:fluidity.cache.v1.Digest (required, id:5);
+  payload_digest:fluidity.cache.v1.Digest (required, id:6);
+  payload_byte_length:ulong (id:7);
+}
+root_type StageManifest;
+file_identifier "FLEM";
+file_extension "flem";
