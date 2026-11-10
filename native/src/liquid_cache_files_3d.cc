@@ -208,16 +208,16 @@ fs::path FramePath(const fs::path& root, std::uint64_t frame_ordinal, std::strin
 }
 absl::Status Matches(
     const fs::path& path,
-    std::span<const std::uint8_t> expected,
+    std::span<const std::uint8_t> expected_bytes,
     LiquidCacheLimits3D limits,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 ) {
   auto existing = ReadBytes(path, limits);
   if (!existing.ok()) {
     return existing.status();
   }
-  if (!std::ranges::equal(existing->values(), expected)) {
-    return Failure(conflict);
+  if (!std::ranges::equal(existing->values(), expected_bytes)) {
+    return Failure(mismatch_status_code);
   }
   return absl::OkStatus();
 }
@@ -262,17 +262,17 @@ absl::Status WriteAndPromoteBytes(
     LiquidCachePublishControl3D control,
     absl::Status (*promote)(const fs::path&, const fs::path&)
 ) {
-  static std::atomic<std::uint64_t> sequence{0};
+  static std::atomic<std::uint64_t> temporary_file_sequence{0};
 #if defined(_WIN32)
-  const auto process = GetCurrentProcessId();
+  const auto process_id = GetCurrentProcessId();
 #else
-  const auto process = getpid();
+  const auto process_id = getpid();
 #endif
   // Exclusive creation and a per-process sequence tolerate abandoned temporaries
   // and PID reuse. A temporary has no semantic role and is never read on restart.
   for (int attempt = 0; attempt < 128; ++attempt) {
-    const auto temporary =
-        destination.parent_path() / (".tmp-" + std::to_string(process) + "-" + std::to_string(sequence.fetch_add(1)));
+    const auto temporary = destination.parent_path()
+        / (".tmp-" + std::to_string(process_id) + "-" + std::to_string(temporary_file_sequence.fetch_add(1)));
     struct RemoveTemporary {
       fs::path path;
       ~RemoveTemporary() {
@@ -281,11 +281,11 @@ absl::Status WriteAndPromoteBytes(
       }
     };
     NativeFile file;
-    auto opened = file.Open(temporary, true);
-    if (opened.code() == absl::StatusCode::kAlreadyExists) {
+    auto open_status = file.Open(temporary, true);
+    if (open_status.code() == absl::StatusCode::kAlreadyExists) {
       continue;
     }
-    STORE_TRY(opened);
+    STORE_TRY(open_status);
     RemoveTemporary cleanup{temporary};
     STORE_TRY(file.Write(bytes));
     STORE_TRY(Check(control, LiquidCachePublishStage3D::kTemporaryWritten));
@@ -302,22 +302,22 @@ absl::Status PublishBytes(
     std::span<const std::uint8_t> bytes,
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 ) {
-  auto existing = Matches(destination, bytes, limits, conflict);
-  if (existing.ok()) {
+  auto existing_match_status = Matches(destination, bytes, limits, mismatch_status_code);
+  if (existing_match_status.ok()) {
     // A verified existing link may come from a publish interrupted before fsync.
     return FlushDirectory(destination.parent_path());
   }
-  if (existing.code() != absl::StatusCode::kNotFound) {
-    return existing;
+  if (existing_match_status.code() != absl::StatusCode::kNotFound) {
+    return existing_match_status;
   }
-  const auto promoted = WriteAndPromoteBytes(destination, bytes, limits, control, Promote);
-  if (promoted.code() == absl::StatusCode::kAlreadyExists) {
-    STORE_TRY(Matches(destination, bytes, limits, conflict));
+  const auto promotion_status = WriteAndPromoteBytes(destination, bytes, limits, control, Promote);
+  if (promotion_status.code() == absl::StatusCode::kAlreadyExists) {
+    STORE_TRY(Matches(destination, bytes, limits, mismatch_status_code));
     return FlushDirectory(destination.parent_path());
   }
-  return promoted;
+  return promotion_status;
 }
 absl::Status ReplaceOperationalBytes(const fs::path& destination, std::span<const std::uint8_t> bytes) {
   return WriteAndPromoteBytes(destination, bytes, {}, {}, ReplaceSidecar);

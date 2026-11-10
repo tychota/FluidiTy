@@ -240,9 +240,9 @@ std::filesystem::path
 FramePath(const std::filesystem::path& root, std::uint64_t frame_ordinal, std::string_view suffix = ".flmf");
 absl::Status Matches(
     const std::filesystem::path& path,
-    std::span<const std::uint8_t> expected,
+    std::span<const std::uint8_t> expected_bytes,
     LiquidCacheLimits3D limits,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 );
 // PublishBytes verifies existing bytes or exclusively writes, flushes, verifies
 // and atomically promotes a same-directory temporary without replacing anything.
@@ -254,7 +254,7 @@ absl::Status PublishBytes(
     std::span<const std::uint8_t> bytes,
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control,
-    absl::StatusCode conflict = absl::StatusCode::kDataLoss
+    absl::StatusCode mismatch_status_code = absl::StatusCode::kDataLoss
 );
 // Flushes and atomically replaces a mutable operational sidecar in the same
 // directory. The caller holds its writer lease. Never use for immutable content.
