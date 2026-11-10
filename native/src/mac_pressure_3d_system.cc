@@ -230,45 +230,49 @@ EvaluateMacPressure3D(const PreparedMacPressureSystem3D& system, std::span<const
     }
   }
 
-  const auto operator_rows = ApplyOriginalPressureOperator(system, candidate_cell_pressures);
-  if (!operator_rows.ok()) {
-    return operator_rows.status();
+  const auto original_operator_rows = ApplyOriginalPressureOperator(system, candidate_cell_pressures);
+  if (!original_operator_rows.ok()) {
+    return original_operator_rows.status();
   }
   MacPressureProjection3D projection;
   projection.corrected_face_velocities.resize(system.links().size());
-  const auto physical_rows =
+  const auto physical_defect_rows =
       CorrectFacesAndAccumulatePhysicalDefect(system, candidate_cell_pressures, projection.corrected_face_velocities);
-  if (!physical_rows.ok()) {
-    return physical_rows.status();
+  if (!physical_defect_rows.ok()) {
+    return physical_defect_rows.status();
   }
 
   const auto integrated_rhs = system.integrated_rhs();
   const auto rhs_absolute_term_sums = system.rhs_absolute_term_sums();
   projection.true_residuals.reserve(cells.size());
   projection.cell_constraint_defects.reserve(cells.size());
-  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
-    const double residual = integrated_rhs[cell] - (*operator_rows)[cell].flux.Total();
-    const double fluid_volume = cells[cell].fluid_volume;
-    const double volume_scaled_residual = std::abs(residual) / fluid_volume;
-    const double defect = (*physical_rows)[cell].flux.Total() / fluid_volume;
-    const double identity_error = fluid_volume * defect + residual;
-    const double absolute_row_terms = rhs_absolute_term_sums[cell] + (*operator_rows)[cell].absolute_terms.Total()
-        + (*physical_rows)[cell].absolute_terms.Total();
-    if (!std::isfinite(volume_scaled_residual) || !std::isfinite(defect) || !std::isfinite(identity_error)
-        || !std::isfinite(absolute_row_terms)) {
+  for (std::size_t pressure_cell_ordinal = 0; pressure_cell_ordinal < cells.size(); ++pressure_cell_ordinal) {
+    const double integrated_residual =
+        integrated_rhs[pressure_cell_ordinal] - (*original_operator_rows)[pressure_cell_ordinal].flux.Total();
+    const double fluid_volume = cells[pressure_cell_ordinal].fluid_volume;
+    const double volume_scaled_residual = std::abs(integrated_residual) / fluid_volume;
+    const double volume_scaled_physical_defect =
+        (*physical_defect_rows)[pressure_cell_ordinal].flux.Total() / fluid_volume;
+    const double integrated_identity_error = fluid_volume * volume_scaled_physical_defect + integrated_residual;
+    const double absolute_row_term_sum = rhs_absolute_term_sums[pressure_cell_ordinal]
+        + (*original_operator_rows)[pressure_cell_ordinal].absolute_terms.Total()
+        + (*physical_defect_rows)[pressure_cell_ordinal].absolute_terms.Total();
+    if (!std::isfinite(volume_scaled_residual) || !std::isfinite(volume_scaled_physical_defect)
+        || !std::isfinite(integrated_identity_error) || !std::isfinite(absolute_row_term_sum)) {
       return absl::OutOfRangeError("pressure residual, defect or identity arithmetic is unrepresentable");
     }
-    if (std::abs(identity_error) > kIdentityRoundoff * absolute_row_terms) {
+    if (std::abs(integrated_identity_error) > kIdentityRoundoff * absolute_row_term_sum) {
       return absl::InternalError("pressure residual disagrees with the independently corrected flux defect");
     }
 
-    projection.true_residuals.push_back(residual);
-    projection.cell_constraint_defects.push_back(defect);
+    projection.true_residuals.push_back(integrated_residual);
+    projection.cell_constraint_defects.push_back(volume_scaled_physical_defect);
     auto& diagnostics = projection.diagnostics;
     // hypot avoids squaring tiny or very large integrated residuals.
-    diagnostics.true_residual_l2 = std::hypot(diagnostics.true_residual_l2, residual);
+    diagnostics.true_residual_l2 = std::hypot(diagnostics.true_residual_l2, integrated_residual);
     diagnostics.max_volume_scaled_residual = std::max(diagnostics.max_volume_scaled_residual, volume_scaled_residual);
-    diagnostics.max_cell_constraint_defect = std::max(diagnostics.max_cell_constraint_defect, std::abs(defect));
+    diagnostics.max_cell_constraint_defect =
+        std::max(diagnostics.max_cell_constraint_defect, std::abs(volume_scaled_physical_defect));
   }
   if (!std::isfinite(projection.diagnostics.true_residual_l2)) {
     return absl::OutOfRangeError("pressure residual norm is unrepresentable");
