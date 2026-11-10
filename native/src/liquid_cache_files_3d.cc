@@ -138,30 +138,30 @@ absl::Status Lease(const fs::path& root, NativeFile& lease, bool create, bool ex
   return absl::OkStatus();
 }
 absl::StatusOr<LiquidCacheBytes3D>
-ReadBytes(const fs::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_length) {
+ReadBytes(const fs::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_byte_length) {
   NativeFile file;
   STORE_TRY(file.Open(path));
-  auto size = file.Size();
-  if (!size.ok()) {
-    return size.status();
+  auto initial_byte_length = file.Size();
+  if (!initial_byte_length.ok()) {
+    return initial_byte_length.status();
   }
-  if (expected_length != 0 && *size != expected_length) {
+  if (expected_byte_length != 0 && *initial_byte_length != expected_byte_length) {
     return Failure(absl::StatusCode::kDataLoss);
   }
-  if (*size > limits.maximum_bytes) {
+  if (*initial_byte_length > limits.maximum_bytes) {
     return Failure(absl::StatusCode::kResourceExhausted);
   }
-  auto bytes = LiquidCacheBytes3D::Create(static_cast<std::size_t>(*size));
+  auto bytes = LiquidCacheBytes3D::Create(static_cast<std::size_t>(*initial_byte_length));
   if (!bytes.ok()) {
     return bytes.status();
   }
-  STORE_TRY(bytes->Resize(static_cast<std::size_t>(*size)));
+  STORE_TRY(bytes->Resize(static_cast<std::size_t>(*initial_byte_length)));
   STORE_TRY(file.Read(bytes->values()));
-  auto final_size = file.Size();
-  if (!final_size.ok()) {
-    return final_size.status();
+  auto final_byte_length = file.Size();
+  if (!final_byte_length.ok()) {
+    return final_byte_length.status();
   }
-  if (*final_size != *size) {
+  if (*final_byte_length != *initial_byte_length) {
     return Failure(absl::StatusCode::kDataLoss);
   }
   return std::move(*bytes);
@@ -182,10 +182,10 @@ absl::StatusOr<fs::path> ContentPath(const fs::path& root, const LiquidContentRe
 absl::StatusOr<LiquidCacheBytes3D> ReadContent(
     const fs::path& root,
     const LiquidContentReference3D& reference,
-    LiquidContentKind3D kind,
+    LiquidContentKind3D expected_kind,
     LiquidCacheLimits3D limits
 ) {
-  if (reference.kind != kind || reference.byte_length == 0) {
+  if (reference.kind != expected_kind || reference.byte_length == 0) {
     return Failure(absl::StatusCode::kDataLoss);
   }
   auto path = ContentPath(root, reference);
@@ -196,15 +196,15 @@ absl::StatusOr<LiquidCacheBytes3D> ReadContent(
   if (!bytes.ok()) {
     return bytes.status();
   }
-  STORE_TRY(VerifyLiquidContent3D(bytes->values(), reference, kind, limits));
+  STORE_TRY(VerifyLiquidContent3D(bytes->values(), reference, expected_kind, limits));
   return std::move(*bytes);
 }
 std::string OrdinalName(std::uint64_t ordinal, std::string_view suffix) {
   auto digits = std::to_string(ordinal);
   return std::string(20 - digits.size(), '0') + digits + std::string(suffix);
 }
-fs::path FramePath(const fs::path& root, std::uint64_t frame, std::string_view suffix) {
-  return root / "frames" / OrdinalName(frame, suffix);
+fs::path FramePath(const fs::path& root, std::uint64_t frame_ordinal, std::string_view suffix) {
+  return root / "frames" / OrdinalName(frame_ordinal, suffix);
 }
 absl::Status Matches(
     const fs::path& path,
