@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <numbers>
 #include <vector>
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -732,6 +733,83 @@ TEST(LiquidSubstep3D, FiniteExponentialVolumePreservesMassAndReferenceVolume) {
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].mass, 1);
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].reference_volume, 1);
 }
+TEST(LiquidSubstep3D, AnalyticSpherePreservesExactRestPressureAtBothResolutions) {
+  constexpr double kRadius = 0.125;
+  constexpr double kDensity = 1000;
+  struct AirPressureAudit {
+    std::size_t air_links = 0;
+    std::size_t incorrect_pressures = 0;
+    std::size_t pressure_iterations = 0;
+    double maximum_corrected_speed = 0;
+  };
+  for (const int cells_per_radius : {3, 5}) {
+    SCOPED_TRACE(cells_per_radius);
+    const double cell_width = kRadius / cells_per_radius;
+    auto initial = Initial(cells_per_radius == 3 ? 136 : 552);
+    initial.geometry.cell_width = cell_width;
+    const double reference_volume = (4 * std::numbers::pi * kRadius * kRadius * kRadius / 3) / initial.particles.size();
+    std::size_t ordinal = 0;
+    for (int z = -cells_per_radius; z < cells_per_radius; ++z) {
+      for (int y = -cells_per_radius; y < cells_per_radius; ++y) {
+        for (int x = -cells_per_radius; x < cells_per_radius; ++x) {
+          const Vec3 position{(x + 0.5) * cell_width, (y + 0.5) * cell_width, (z + 0.5) * cell_width};
+          if (std::hypot(position.x, position.y, position.z) < kRadius) {
+            ASSERT_LT(ordinal, initial.particles.size());
+            auto& particle = initial.particles[ordinal++];
+            particle.world_position = position;
+            particle.reference_volume = reference_volume;
+            particle.mass = kDensity * reference_volume;
+            particle.pic_initialized = false;
+          }
+        }
+      }
+    }
+    ASSERT_EQ(ordinal, initial.particles.size());
+    LiquidSceneInputs3D scene;
+    scene.field = LiquidAnalyticSphere3D{{}, kRadius};
+    scene.world_acceleration = {};
+    scene.liquid_density = kDensity;
+    scene.surface_tension = 1;
+    scene.ambient_pressure = 3;
+    LiquidStepOptions3D options;
+    options.capacities = {1024, 128, 4096, 24576, 256};
+    AirPressureAudit audit;
+    auto backend = CpuLiquidSubstepBackend3D();
+    backend.context = &audit;
+    backend.project = [](void* context,
+                         SparseMacGridView3D grid,
+                         double duration,
+                         const LiquidPressureProblemView3D& problem,
+                         MacPressureSolverOptions3D solver_options,
+                         MacPressureWorkspace3D& workspace) {
+      auto& observed = *static_cast<AirPressureAudit*>(context);
+      for (const auto& face : problem.faces) {
+        if (const auto* air = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link)) {
+          ++observed.air_links;
+          observed.incorrect_pressures += air->exterior_pressure != 3 + 2 / kRadius;
+        }
+      }
+      const auto projection =
+          CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, solver_options, workspace);
+      if (projection.ok()) {
+        observed.pressure_iterations += projection->diagnostics.iteration_count;
+        for (const double velocity : projection->corrected_face_velocities) {
+          observed.maximum_corrected_speed = std::max(observed.maximum_corrected_speed, std::abs(velocity));
+        }
+      }
+      return projection;
+    };
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    const auto status = scheduler->AdvanceFrame(1.0 / 120);
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_EQ(audit.air_links, cells_per_radius == 3 ? 192 : 480);
+    EXPECT_EQ(audit.incorrect_pressures, 0);
+    EXPECT_EQ(audit.pressure_iterations, 0);
+    EXPECT_DOUBLE_EQ(audit.maximum_corrected_speed, 0);
+  }
+}
+
 TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {
   auto initial = Initial();
   auto scene = Scene();

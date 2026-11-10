@@ -384,8 +384,14 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
   pressure_internal::MacPressureScratch3D scratch(
       {reinterpret_cast<std::max_align_t*>(preparation.data()), preparation.size() / sizeof(std::max_align_t)}
   );
-  const auto prepared =
-      pressure_internal::PrepareBoundedMacPressureUpload3D(grid, step_duration, problem.cells, problem.faces, scratch);
+  const auto prepared = pressure_internal::PrepareBoundedMacPressureUpload3D(
+      grid,
+      step_duration,
+      problem.cells,
+      problem.faces,
+      scratch,
+      problem.seed_uniform_dirichlet_rest_pressure
+  );
   if (!prepared.ok()) {
     return prepared.status();
   }

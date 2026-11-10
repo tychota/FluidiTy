@@ -330,6 +330,15 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kBodyContact, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kInterface, step_duration));
+    std::optional<double> exact_curvature;
+    const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
+    if (sphere && scene.surface_tension > 0) {
+      const double outward_curvature = 2 / sphere->radius;
+      if (!std::isfinite(outward_curvature)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      exact_curvature = outward_curvature;
+    }
     const LiquidBoundaryGeometryViewInputs3D geometry_inputs{
         .mac_grid = grid,
         .cell_indices = staging.candidates.values(),
@@ -339,6 +348,7 @@ struct LiquidSubstepScheduler3D::Impl {
         .step_duration = step_duration,
         .liquid_density = scene.liquid_density,
         .surface_tension = scene.surface_tension,
+        .exact_outward_interface_curvature = exact_curvature,
     };
     const auto frozen = backend.freeze(backend.context, geometry_inputs, boundary);
     if (!frozen.ok()) {
@@ -455,11 +465,13 @@ struct LiquidSubstepScheduler3D::Impl {
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
     if (!links->cells.empty()) {
+      auto pressure_problem = *links;
+      pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
       const auto projection = backend.project(
           backend.context,
           grid,
           step_duration,
-          *links,
+          pressure_problem,
           options.pressure_solver_options,
           workspace.pressure()
       );
