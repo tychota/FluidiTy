@@ -6,17 +6,19 @@ import hashlib
 from itertools import product
 import math
 from pathlib import Path
-import re
 import subprocess
 import sys
 
 from run_liquid_acceptance import (
+    CUDA_COMPATIBILITY_FILE,
     MAXIMUM_COUNTS,
     clock,
     digest,
+    file_sha256,
     integer,
     matches_identity,
     one_record,
+    read_cuda_compatibility_record,
     read_records,
     require,
     snapshot,
@@ -60,17 +62,10 @@ PARTICLE_COUNTS = {STATIC_COARSE_CASE: 136, STATIC_FINE_CASE: 552, DROP_CASE: 55
 CAPACITIES = [1024, 128, 4096, 24576, 256]
 DAM_SUPPORT_RADIUS_M = 0.9 * DAM_CELL_WIDTH_M
 ZERO_CLOCK = (0, 0, 0, 0, 0)
-CUDA_COMPATIBILITY_FILE = ".simulate-cuda-compatibility"
-CUDA_COMPATIBILITY_RECORD_SIZE = len(b"FLCUDA1\n") + 64 + 1
 CUDA_PROBE_IDENTITY_FIELDS = (
     "device_index", "device_name", "compute_major", "compute_minor", "compiled_architecture",
     "driver_version", "runtime_version",
 )
-
-
-def file_sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def record_child(output, name, executable, *arguments, fixture=False, timeout=180):
@@ -258,17 +253,6 @@ def cuda_probe_identity(device):
     verify_device(device, "cuda")
     require("RTX" in device["device_name"], "expected actual RTX device")
     return {field: device[field] for field in CUDA_PROBE_IDENTITY_FIELDS}
-
-
-def read_cuda_compatibility_record(cache):
-    # Match the pinned CLI's exact byte format, including LF and lowercase hex.
-    try:
-        with (cache / CUDA_COMPATIBILITY_FILE).open("rb") as stream:
-            record = stream.read(CUDA_COMPATIBILITY_RECORD_SIZE + 1)
-    except FileNotFoundError as error:
-        raise ValueError("missing CUDA compatibility record") from error
-    require(re.fullmatch(rb"FLCUDA1\n[0-9a-f]{64}\n", record) is not None, "malformed CUDA compatibility record")
-    return record
 
 
 def verify_group_identity(group, backend, members):

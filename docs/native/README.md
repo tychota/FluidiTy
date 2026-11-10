@@ -565,3 +565,33 @@ enforce this by passing `--expected-device-name "NVIDIA GeForce RTX 5060 Ti"` to
 `tools/native/tests/run_liquid_fault_campaign.py`. Keep the verbose log under the
 ignored output directory. The test fixture injects device errors after actual
 CUDA completions.
+
+## Frozen tank capture provenance
+
+Supply the SHA-256 digests of the solver and fixture from the trusted build
+channel. The frozen tank cases are `hydrostatic-column`, `open-tank-piston` and
+`open-tank-piston-refined`. Use a fresh output directory.
+
+```powershell
+python tools/native/tests/run_liquid_acceptance.py --backend cuda --case open-tank-piston --executable SOLVER --solver-sha256 SOLVER_SHA256 --fixture FIXTURE --fixture-sha256 FIXTURE_SHA256 --output OUT
+```
+
+The launcher writes the raw inputs, receipts, cache and manifest under `OUT/capture`.
+It prints the manifest SHA-256 when it publishes that file. Record this digest
+through the trusted launch channel. The measurement and reader receipts go in
+`OUT`.
+
+To verify offline, pass the same case, backend, executable, fixture and binary
+pins. Replace `--output OUT` with
+`--verify-capture OUT/capture --capture-manifest-sha256 MANIFEST_SHA256 --verification-output FRESH_DIR`.
+Use a fresh directory outside the capture. Offline verification invokes the
+solver's schema command and fixture readers. Older captures without a trusted
+manifest remain diagnostic.
+
+To compare the refined piston against the primary, supply
+`--temporal-reference PRIMARY_MEASUREMENTS --temporal-reference-sha256 PRIMARY_SHA256`
+with the refined case. Obtain the measurements digest through the trusted
+verification channel for the primary. A digest copied from the evidence being
+verified cannot establish independent trust. The comparison checks the
+qualified scene and execution identities and uses the frozen physical and
+temporal limits.

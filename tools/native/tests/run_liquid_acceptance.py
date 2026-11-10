@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -39,6 +40,10 @@ CLOCK_FIELDS = ("frame", "substep", "epoch", "accepted_step", "time_seconds")
 IDENTITY_FIELDS = ("resolved_fingerprint", "execution_id", "backend")
 MAXIMUM_COUNTS = {"block_count": 128, "cell_count": 4096, "face_count": 24576}
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+CAPTURE_MANIFEST = "capture-manifest.json"
+CAPTURE_MANIFEST_VERSION = 1
+CUDA_COMPATIBILITY_FILE = ".simulate-cuda-compatibility"
+CUDA_COMPATIBILITY_RECORD_SIZE = len(b"FLCUDA1\n") + 64 + 1
 
 
 def require(condition, message):
@@ -508,6 +513,22 @@ def verify_checkpoint(checkpoint, frame_zero, authored_scene_identity, initial_p
     require(abs(point_volume - 1) <= 1e-14 and point["volume_ratio"] == 1, "initial point volume differs from seed")
 
 
+def file_sha256(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def read_cuda_compatibility_record(cache):
+    # Match the pinned CLI's exact byte format, including LF and lowercase hex.
+    try:
+        with (cache / CUDA_COMPATIBILITY_FILE).open("rb") as stream:
+            record = stream.read(CUDA_COMPATIBILITY_RECORD_SIZE + 1)
+    except FileNotFoundError as error:
+        raise ValueError("missing CUDA compatibility record") from error
+    require(re.fullmatch(rb"FLCUDA1\n[0-9a-f]{64}\n", record) is not None, "malformed CUDA compatibility record")
+    return record
+
+
 def snapshot(root):
     """Record content and modification time to detect reader writes."""
     return {
@@ -704,36 +725,26 @@ def prepare_tank_steps(traces, frames, initial_state, particle_count, *, piston)
     return steps
 
 
-def verify_frozen_tank(output, fixture, backend, case, device, authored, records, *, capture=None):
+def verify_frozen_tank(output, fixture, backend, case, device, authored, records, *,
+                       capture, resolved, verify_inputs, cache_files):
     last_frame, particle_count, maximum_dt, retained_frames = TANK_CASES[case]
     frame_ordinals = tuple(range(last_frame + 1))
-    capture = output if capture is None else capture
-    scene = capture / "scene.flrs"
-    seed = scene.with_suffix(".flrs.flst")
+    seed = capture / "scene.flrs.flst"
     cache = capture / "cache"
-    verify_device(device, backend)
-    require(authored.get("backend") == backend and authored.get("case") == case, "wrong authored tank case or backend")
-    fingerprint = digest(authored, "resolved_fingerprint")
-    seed_digest = digest(authored, "seed_digest")
+    fingerprint = authored["resolved_fingerprint"]
+    seed_digest = authored["seed_digest"]
     require(seed.stat().st_size == integer(authored, "seed_byte_length", minimum=1), "wrong seed byte length")
-    before = snapshot(cache)
     expected_manifests = {
         f"frames/{frame:020d}.{suffix}" for frame in frame_ordinals for suffix in ("flmf", "json")
     }
     # Immutable references remain for historical replay. Only the two
     # eligible checkpoint payloads are retained as .flst blobs.
     expected_checkpoints = {f"checkpoints/{frame:020d}.flcr" for frame in range(0, last_frame + 1, 10)}
-    checkpoint_payloads = [name for name in before if Path(name).parts[0] == "blobs" and name.endswith(".flst")]
+    checkpoint_payloads = [name for name in cache_files if Path(name).parts[0] == "blobs" and name.endswith(".flst")]
     require(len(checkpoint_payloads) == len(retained_frames), "wrong retained checkpoint payload count")
     for directory, expected in (("frames", expected_manifests), ("checkpoints", expected_checkpoints)):
-        actual = {Path(name).as_posix() for name in before if Path(name).parts[0] == directory}
+        actual = {name for name in cache_files if Path(name).parts[0] == directory}
         require(actual == expected, f"unexpected committed {directory} inventory")
-    require((cache / "resolved.flrs").read_bytes() == scene.read_bytes(), "cache and authored resolved tank differ")
-    resolved = one_record(
-        run_child(output, "verified-resolved-tank", fixture, "read-tank-scene", cache, fingerprint, fixture=True),
-        "resolved_tank",
-    )
-    verify_resolved_tank(resolved, authored, case, maximum_dt)
     initial_state = one_record(
         run_child(output, "verified-initial-state", fixture, "read-seed", seed, seed_digest, fixture=True), "seed",
     )
@@ -764,7 +775,7 @@ def verify_frozen_tank(output, fixture, backend, case, device, authored, records
                 "retained checkpoint differs from the settled trace")
         material_checks.append(verify_tank_state(checkpoint, frames[ordinal], particle_count, h))
         checkpoints.append(checkpoint)
-    require(snapshot(cache) == before, "verified readers changed cache files")
+    verify_inputs()
 
     piston = case != HYDROSTATIC_CASE
     steps = prepare_tank_steps(traces, frames, initial_state, particle_count, piston=piston)
@@ -789,12 +800,11 @@ def verify_frozen_tank(output, fixture, backend, case, device, authored, records
         "retained_checkpoint_frames": list(retained_frames),
         "verified_frame_count": len(frames),
         "verified_point_digests": [frame["points_digest"] for frame in frames],
-        "verified_immutable_cache_file_count": len(before),
+        "verified_immutable_cache_file_count": len(cache_files),
         "observed_maximum_extents": {field: max(trace[field] for trace in traces) for field in MAXIMUM_COUNTS},
         "step_start_pressure_cell_volume_m3": [trace["accepted_measurement"]["step_start_pressure_cell_volume_m3"]
                                                for trace in traces],
     })
-    write_measurements(output / f"{case}-measurements.json", measurements)
     return measurements
 
 
@@ -804,50 +814,295 @@ def write_measurements(path, measurements):
         stream.write("\n")
 
 
-def verify_captured_tank(capture, output, fixture, backend, case):
-    """Verify a separately captured expensive job in its original evidence directory."""
-    require((capture / "status.txt").read_text(encoding="utf-8").strip() == "exit=0", "captured run did not complete")
-    results = []
-    for name, version in (("device", "protocol_version"), ("author", "fixture_version"),
-                          ("simulate", "protocol_version")):
-        require((capture / f"{name}.err").stat().st_size == 0, f"captured {name} produced diagnostics")
-        results.append(read_records((capture / f"{name}.jsonl").read_text(encoding="utf-8"), version))
-    device, authored, records = results
+def is_link(info):
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def regular_file(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError(f"missing file {path}") from error
+    require(not is_link(info), f"symlink or reparse point in evidence: {path}")
+    require(stat.S_ISREG(info.st_mode), f"not a regular file: {path}")
+    return path
+
+
+def capture_inventory(capture):
+    """Hash regular files in path order, retaining mtimes for reader checks."""
+    files = {}
+
+    def visit(directory):
+        info = directory.lstat()
+        require(not is_link(info), f"symlink or reparse point in capture: {directory}")
+        require(stat.S_ISDIR(info.st_mode), f"not a capture directory: {directory}")
+        for path in sorted(directory.iterdir()):
+            if path == capture / CAPTURE_MANIFEST:
+                continue
+            info = path.lstat()
+            require(not is_link(info), f"symlink or reparse point in capture: {path}")
+            if stat.S_ISDIR(info.st_mode):
+                visit(path)
+            else:
+                require(stat.S_ISREG(info.st_mode), f"not a regular capture file: {path}")
+                files[path.relative_to(capture).as_posix()] = (info.st_mtime_ns, file_sha256(path))
+
+    visit(capture)
+    return files
+
+
+def inventory_hashes(inventory):
+    return [[name, inventory[name][1]] for name in sorted(inventory)]
+
+
+def verify_binary_pins(solver, fixture, pins):
+    require(isinstance(pins, dict), "frozen tank requires solver and fixture SHA-256 pins")
+    for kind, path in (("solver", solver), ("fixture", fixture)):
+        expected = digest(pins, kind)
+        require(file_sha256(regular_file(path)) == expected, f"{kind} SHA-256 differs from the expected binary")
+
+
+def pinned_json(path, expected_sha256, description):
+    require(isinstance(expected_sha256, str) and DIGEST_PATTERN.fullmatch(expected_sha256),
+            f"invalid trusted {description} SHA-256")
+    raw = regular_file(path).read_bytes()
+    require(hashlib.sha256(raw).hexdigest() == expected_sha256,
+            f"{description} SHA-256 differs from the trusted digest")
+    record = json.loads(raw, object_pairs_hook=unique_object, parse_float=finite_float, parse_constant=reject_constant)
+    require(isinstance(record, dict), f"{description} must be a JSON object")
+    return record
+
+
+def schema_build_digest(records):
+    result = one_record(records, "result")
+    require(result.get("command") == "schema" and result.get("execution_available") is True,
+            "missing solver schema result")
+    return digest(result, "build_digest")
+
+
+def verify_authored_tank(authored, case, backend, solver_digest):
+    require(authored.get("case") == case and authored.get("backend") == backend, "wrong authored tank case or backend")
+    require(digest(authored, "solver_digest") == solver_digest, "authored solver_digest differs from pinned solver schema")
+    for field in ("resolved_fingerprint", "execution_id", "seed_digest"):
+        digest(authored, field)
+
+
+def measured_execution(final, backend):
+    require(final.get("event") == "result" and final.get("command") == "run" and final.get("read_only") is False,
+            "missing successful writable run result")
+    if backend == "cpu":
+        require(not any(field.startswith("cuda_execution_device_") or field == "compiled_architecture" for field in final),
+                "unexpected CUDA execution identity on CPU result")
+        return {}
+    verify_snapshot_receipt(final, backend)
+    return {
+        "cuda_execution_device_digest": digest(final, "cuda_execution_device_digest"),
+        "cuda_execution_device_index": integer(final, "cuda_execution_device_index"),
+        "compiled_architecture": final["compiled_architecture"],
+    }
+
+
+def inspect_capture(capture, inventory, pins, backend, case, solver_digest):
+    receipts = []
+    for name, version in (("solver-schema", "protocol_version"), ("device-probe", "protocol_version"),
+                          ("scene-author", "fixture_version"), ("simulate-run", "protocol_version")):
+        stdout_name, stderr_name = f"{name}.stdout.jsonl", f"{name}.stderr.txt"
+        require(stdout_name in inventory and stderr_name in inventory, f"missing {name} capture receipts")
+        require((capture / stderr_name).stat().st_size == 0, f"captured {name} produced diagnostics")
+        receipts.append(read_records((capture / stdout_name).read_text(encoding="utf-8"), version))
+    schema, device, authored, records = receipts
+    require(schema_build_digest(schema) == solver_digest, "captured solver_digest differs from pinned solver schema")
+    device = one_record(device, "result")
+    authored = one_record(authored, "scene")
+    verify_device(device, backend)
+    verify_authored_tank(authored, case, backend, solver_digest)
+    measurement = records[-2] if len(records) >= 2 else {}
+    require(measurement.get("event") == "job_measurement" and measurement.get("backend") == backend
+            and measurement.get("command") == "run" and measurement.get("status") == "OK",
+            "missing captured successful job measurement")
+    final = records[-1]
+    matches_identity(final, authored)
+    require(integer(final, "frame") == TANK_CASES[case][0], "captured run did not complete the frozen frames")
+    execution = measured_execution(final, backend)
+    compatibility_path = f"cache/{CUDA_COMPATIBILITY_FILE}"
+    if backend == "cuda":
+        require(execution["cuda_execution_device_index"] == device["device_index"], "actual CUDA device index differs from probe")
+        require(compatibility_path in inventory, "missing CUDA compatibility record")
+        execution["cuda_compatibility_record"] = read_cuda_compatibility_record(capture / "cache").decode("ascii")
+    else:
+        require(compatibility_path not in inventory, "unexpected CUDA compatibility record on CPU capture")
+    for name in ("scene.flrs", "scene.flrs.flst", "cache/resolved.flrs"):
+        require(name in inventory, f"missing captured {name}")
+    require(inventory["scene.flrs"][1] == inventory["cache/resolved.flrs"][1],
+            "cached and authored resolved tank differ")
+    provenance = {
+        "manifest_version": CAPTURE_MANIFEST_VERSION,
+        "case": case,
+        "backend": backend,
+        "solver_sha256": pins["solver"],
+        "fixture_sha256": pins["fixture"],
+        **{field: authored[field] for field in ("solver_digest", "seed_digest", "resolved_fingerprint", "execution_id")},
+        **execution,
+    }
+    return provenance, device, authored, records
+
+
+def check_manifest_inventory(manifest, inventory):
+    require(type(manifest.get("manifest_version")) is int and manifest["manifest_version"] == CAPTURE_MANIFEST_VERSION,
+            "wrong capture manifest version")
+    require(manifest.get("files") == inventory_hashes(inventory), "capture file inventory differs from the manifest")
+
+
+def evaluate_frozen_capture(capture, output, solver, fixture, pins, backend, case, solver_digest, inventory,
+                            *, manifest=None, manifest_sha256=None):
+    provenance, device, authored, records = inspect_capture(capture, inventory, pins, backend, case, solver_digest)
+    expected_manifest = provenance | {"files": inventory_hashes(inventory)}
+    if manifest is not None:
+        # Serializing distinguishes JSON booleans from integers and rejects unexpected fields.
+        require(json.dumps(manifest, sort_keys=True) == json.dumps(expected_manifest, sort_keys=True),
+                "capture manifest identity differs from the pinned run and scene")
+    resolved = one_record(
+        run_child(output, "verified-resolved-tank", fixture, "read-tank-scene", capture / "cache",
+                  authored["resolved_fingerprint"], fixture=True),
+        "resolved_tank",
+    )
+    require(digest(resolved, "solver_digest") == solver_digest, "decoded solver_digest differs from pinned solver schema")
+    verify_resolved_tank(resolved, authored, case, TANK_CASES[case][2])
+
+    def verify_inputs():
+        require(capture_inventory(capture) == inventory, "verified readers changed capture files")
+        verify_binary_pins(solver, fixture, pins)
+        if manifest_sha256 is not None:
+            require(file_sha256(regular_file(capture / CAPTURE_MANIFEST)) == manifest_sha256,
+                    "verified readers changed capture manifest")
+
+    verify_inputs()
+    if manifest is None:
+        manifest_path = capture / CAPTURE_MANIFEST
+        require(not manifest_path.exists() and not manifest_path.is_symlink(), "capture manifest path must be fresh")
+        with tempfile.TemporaryDirectory(dir=output) as temporary:
+            pending = Path(temporary) / CAPTURE_MANIFEST
+            write_measurements(pending, expected_manifest)
+            manifest_sha256 = file_sha256(pending)
+            pending.replace(manifest_path)
+        print(f"capture manifest SHA-256 {manifest_sha256}", flush=True)
+    cache_files = [name.removeprefix("cache/") for name in inventory if name.startswith("cache/")]
+    measurements = verify_frozen_tank(output, fixture, backend, case, device, authored, records, capture=capture,
+                                      resolved=resolved, verify_inputs=verify_inputs, cache_files=cache_files)
+    verify_binary_pins(solver, fixture, pins)
+    measurements["capture_provenance"] = provenance | {"manifest_sha256": manifest_sha256}
+    write_measurements(output / f"{case}-measurements.json", measurements)
+    return measurements
+
+
+def verify_captured_tank(capture, output, solver, fixture, backend, case, *, pins, manifest_sha256):
+    """Verify a capture under an external digest and write receipts to a fresh directory."""
+    require(not output.resolve().is_relative_to(capture.resolve()), "verification output must be outside the capture")
+    require(not is_link(capture.lstat()), "symlink or reparse point in capture root")
+    manifest = pinned_json(capture / CAPTURE_MANIFEST, manifest_sha256, "capture manifest")
+    inventory = capture_inventory(capture)
+    check_manifest_inventory(manifest, inventory)
+    verify_binary_pins(solver, fixture, pins)
     output.mkdir(parents=True, exist_ok=False)
-    return verify_frozen_tank(output, fixture, backend, case, one_record(device, "result"),
-                              one_record(authored, "scene"), records, capture=capture)
+    solver_digest = schema_build_digest(run_child(output, "verified-solver-schema", solver, "schema"))
+    return evaluate_frozen_capture(capture, output, solver, fixture, pins, backend, case, solver_digest, inventory,
+                                   manifest=manifest, manifest_sha256=manifest_sha256)
 
 
-def run_frozen_tank(solver, fixture, backend, case, output):
+def run_frozen_tank(solver, fixture, backend, case, output, pins):
+    verify_binary_pins(solver, fixture, pins)
     last_frame, particle_count, _, _ = TANK_CASES[case]
-    scene = output / "scene.flrs"
+    capture = output / "capture"
+    capture.mkdir()
+    scene = capture / "scene.flrs"
     seed = scene.with_suffix(".flrs.flst")
-    device = one_record(run_child(output, "device-probe", solver, "device-info", "--backend", backend), "result")
+    solver_digest = schema_build_digest(run_child(capture, "solver-schema", solver, "schema"))
+    device = one_record(run_child(capture, "device-probe", solver, "device-info", "--backend", backend), "result")
     verify_device(device, backend)
     authored = one_record(
-        run_child(output, "scene-author", fixture, "write-scene", case, backend, solver, scene, fixture=True), "scene",
+        run_child(capture, "scene-author", fixture, "write-scene", case, backend, solver, scene, fixture=True), "scene",
     )
+    verify_authored_tank(authored, case, backend, solver_digest)
+    launch_inputs = capture_inventory(capture)
+    require(scene.name in launch_inputs and seed.name in launch_inputs, "missing authored scene or seed")
     arguments = ("run", "--stage", "simulate", "--scene", scene, "--initial-state", seed, "--backend", backend,
                  "--trace" if case == HYDROSTATIC_CASE else "--trace-geometry", "--measure-job")
     preflight = run_child(output, "capacity-preflight", solver, *arguments, "--cache", output / "preflight-cache",
                           "--frame-end", 1, timeout=None)
-    require(preflight[-1].get("event") == "result" and preflight[-1].get("frame") == 1, "missing tank preflight result")
+    require(preflight and preflight[-1].get("event") == "result" and preflight[-1].get("frame") == 1,
+            "missing tank preflight result")
     matches_identity(preflight[-1], authored)
     for record in preflight:
         if record["event"] in ("trace", "result"):
             verify_extent(record, particle_count)
     verify_snapshot_receipt(preflight[-1], backend)
-    records = run_child(output, "simulate-run", solver, *arguments, "--cache", output / "cache",
-                        "--frame-end", last_frame, timeout=None)
-    return verify_frozen_tank(output, fixture, backend, case, device, authored, records)
+    require(capture_inventory(capture) == launch_inputs, "preflight changed launch inputs")
+    verify_binary_pins(solver, fixture, pins)
+    run_child(capture, "simulate-run", solver, *arguments, "--cache", capture / "cache",
+              "--frame-end", last_frame, timeout=None)
+    inventory = capture_inventory(capture)
+    require(all(inventory.get(name) == file for name, file in launch_inputs.items()), "run changed launch inputs")
+    verify_binary_pins(solver, fixture, pins)
+    return evaluate_frozen_capture(capture, output, solver, fixture, pins, backend, case, solver_digest, inventory)
 
 
-def run_acceptance(solver_executable_path, fixture, backend, case, output):
+def verify_temporal_reference(path, expected_sha256, refined):
+    primary = pinned_json(path, expected_sha256, "temporal reference")
+    backend = refined["backend"]
+    provenances = []
+    for measurements, case in ((primary, PISTON_CASE), (refined, PISTON_REFINED_CASE)):
+        require(measurements.get("case") == case and measurements.get("backend") == backend,
+                "wrong temporal reference case or backend")
+        fields = ("capture_provenance", "scene_author", "resolved_tank", "final_receipt")
+        for field in fields:
+            require(isinstance(measurements.get(field), dict), f"invalid temporal reference {field}")
+        provenance, authored, resolved, final = (measurements[field] for field in fields)
+        require(type(provenance.get("manifest_version")) is int and provenance["manifest_version"] == CAPTURE_MANIFEST_VERSION
+                and provenance.get("case") == case and provenance.get("backend") == backend,
+                "invalid temporal reference capture provenance")
+        for field in ("manifest_sha256", "solver_sha256", "fixture_sha256"):
+            digest(provenance, field)
+        for field in ("solver_digest", "seed_digest", "resolved_fingerprint", "execution_id"):
+            require(digest(provenance, field) == digest(authored, field) == digest(resolved, field),
+                    f"temporal reference capture and scene disagree on {field}")
+        verify_authored_tank(authored, case, backend, provenance["solver_digest"])
+        matches_identity(resolved, authored)
+        matches_identity(final, authored)
+        execution = measured_execution(final, backend)
+        if backend == "cuda":
+            for field, value in execution.items():
+                require(type(provenance.get(field)) is type(value) and provenance[field] == value,
+                        f"temporal reference capture and execution disagree on {field}")
+            record = provenance.get("cuda_compatibility_record")
+            require(isinstance(record, str) and re.fullmatch(r"FLCUDA1\n[0-9a-f]{64}\n", record),
+                    "invalid temporal reference CUDA compatibility record")
+        else:
+            require(not any(field.startswith("cuda_") or field == "compiled_architecture" for field in provenance),
+                    "unexpected CUDA identity on CPU temporal reference")
+        provenances.append(provenance)
+    base, fine = provenances
+    same_fields = ("solver_sha256", "fixture_sha256", "solver_digest", "seed_digest")
+    if backend == "cuda":
+        same_fields += ("cuda_execution_device_digest",)
+    for field in same_fields:
+        require(base[field] == fine[field], f"temporal refinement has a different {field}")
+    for field in ("manifest_sha256", "resolved_fingerprint", "execution_id"):
+        require(base[field] != fine[field], f"temporal refinement reused {field}")
+    try:
+        return compare_piston_time_refinement(primary, refined)
+    except KeyError as error:
+        raise ValueError(f"missing temporal reference measurement {error}") from error
+
+
+
+def run_acceptance(solver_executable_path, fixture, backend, case, output, *, pins=None):
     # Refuse even an empty pre-existing directory. A deterministic execution ID
     # alone cannot distinguish a previous same-artifact run from the current one.
     output.mkdir(parents=True, exist_ok=False)
     if case in TANK_CASES:
-        return run_frozen_tank(solver_executable_path, fixture, backend, case, output)
+        return run_frozen_tank(solver_executable_path, fixture, backend, case, output, pins)
     tank_layout = case == TANK_LAYOUT_CASE
     frame_ordinals = (0, 1) if tank_layout else FRAME_ORDINALS
     last_frame = frame_ordinals[-1]
@@ -928,42 +1183,51 @@ def main():
     destination.add_argument("--output", type=Path)
     destination.add_argument("--temporary-output-parent", type=Path)
     destination.add_argument("--verify-capture", type=Path)
-    parser.add_argument("--verification-output", type=Path, help="fresh directory for capture verification receipts")
-    parser.add_argument("--temporal-reference", type=Path, help="primary piston measurements for this refined run")
+    parser.add_argument("--solver-sha256", help="trusted solver binary SHA-256 for frozen cases")
+    parser.add_argument("--fixture-sha256", help="trusted fixture binary SHA-256 for frozen cases")
+    parser.add_argument("--capture-manifest-sha256", help="trusted launch manifest SHA-256 for offline verification")
+    parser.add_argument("--verification-output", type=Path, help="fresh directory outside the capture")
+    parser.add_argument("--temporal-reference", type=Path, help="qualified primary piston measurements")
+    parser.add_argument("--temporal-reference-sha256", help="trusted SHA-256 of the qualified primary measurements")
     args = parser.parse_args()
-    if args.verify_capture is not None and args.case not in TANK_CASES:
+    if args.executable is None:
+        parser.error("--executable is required")
+    frozen = args.case in TANK_CASES
+    offline = args.verify_capture is not None
+    if offline and not frozen:
         parser.error("--verify-capture requires a frozen tank case")
-    if (args.verify_capture is None) == (args.executable is None):
-        parser.error("--executable is required only when launching a job")
-    if args.verification_output is not None and args.verify_capture is None:
-        parser.error("--verification-output requires --verify-capture")
+    if offline and (args.verification_output is None or args.capture_manifest_sha256 is None):
+        parser.error("--verify-capture requires --verification-output and --capture-manifest-sha256")
+    if not offline and (args.verification_output is not None or args.capture_manifest_sha256 is not None):
+        parser.error("--verification-output and --capture-manifest-sha256 require --verify-capture")
+    if frozen and (args.solver_sha256 is None or args.fixture_sha256 is None):
+        parser.error("frozen tank cases require --solver-sha256 and --fixture-sha256")
+    if (args.temporal_reference is None) != (args.temporal_reference_sha256 is None):
+        parser.error("--temporal-reference and --temporal-reference-sha256 are required together")
     if args.temporal_reference is not None and args.case != PISTON_REFINED_CASE:
         parser.error("--temporal-reference requires the refined piston case")
-    output = args.output
-    if args.verify_capture is not None:
-        output = args.verification_output or args.verify_capture / "evaluation"
+    output = args.verification_output if offline else args.output
     try:
         if output is None:
             args.temporary_output_parent.mkdir(parents=True, exist_ok=True)
             output = Path(tempfile.mkdtemp(prefix=f"ctest-{args.case}-", dir=args.temporary_output_parent)) / "evidence"
         output = output.absolute()
-        fixture = args.fixture.resolve(strict=True)
-        if args.verify_capture is None:
-            measurements = run_acceptance(args.executable.resolve(strict=True), fixture, args.backend, args.case, output)
+        # Preserve the supplied frozen paths so pin checks can reject symlinks.
+        solver = args.executable.absolute() if frozen else args.executable.resolve(strict=True)
+        fixture = args.fixture.absolute() if frozen else args.fixture.resolve(strict=True)
+        pins = {"solver": args.solver_sha256, "fixture": args.fixture_sha256} if frozen else None
+        if offline:
+            measurements = verify_captured_tank(args.verify_capture.absolute(), output, solver, fixture,
+                                                args.backend, args.case, pins=pins,
+                                                manifest_sha256=args.capture_manifest_sha256)
         else:
-            measurements = verify_captured_tank(args.verify_capture, output, fixture, args.backend, args.case)
+            measurements = run_acceptance(solver, fixture, args.backend, args.case, output, pins=pins)
         print(f"{args.backend} {args.case}: {output}")
         if args.temporal_reference is not None:
-            primary = json.loads(args.temporal_reference.read_text(encoding="utf-8"), object_pairs_hook=unique_object,
-                                 parse_float=finite_float, parse_constant=reject_constant)
-            require(primary.get("case") == PISTON_CASE and primary.get("backend") == args.backend,
-                    "wrong temporal reference case or backend")
-            for field in ("solver_digest", "seed_digest"):
-                require(digest(primary["scene_author"], field) == digest(measurements["scene_author"], field),
-                        f"temporal refinement has a different {field}")
-            comparison = compare_piston_time_refinement(primary, measurements)
+            comparison = verify_temporal_reference(args.temporal_reference, args.temporal_reference_sha256, measurements)
             write_measurements(output / "piston-temporal-refinement.json", comparison)
             require(comparison["passed"], "piston exceeds the frozen physical or temporal tolerance")
+
         require(measurements["passed"], f"{args.case} exceeds the frozen physical tolerance")
     except (OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as error:
         print(f"liquid acceptance failed: {error}", file=sys.stderr)
