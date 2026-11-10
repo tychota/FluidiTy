@@ -48,9 +48,10 @@ LiquidStateCapacities3D Counts(const wire::LiquidState* state) {
       state->sources()->size(),
   };
 }
-absl::Status BoundCounts(LiquidStateCapacities3D used, LiquidCacheLimits3D limits) {
-  constexpr LiquidStateCapacities3D hard_limit{1 << 20, 1 << 20, 1 << 20, 1 << 20, 1 << 20};
-  if (!cache_detail::Fits(used, limits.maximum_records) || !cache_detail::Fits(used, hard_limit)) {
+absl::Status BoundCounts(LiquidStateCapacities3D record_counts, LiquidCacheLimits3D limits) {
+  constexpr LiquidStateCapacities3D hard_record_limits{1 << 20, 1 << 20, 1 << 20, 1 << 20, 1 << 20};
+  if (!cache_detail::Fits(record_counts, limits.maximum_records)
+      || !cache_detail::Fits(record_counts, hard_record_limits)) {
     return cache_detail::Error(absl::StatusCode::kResourceExhausted);
   }
   return absl::OkStatus();
@@ -73,36 +74,38 @@ absl::StatusOr<LiquidStateCapacities3D> ReadCapacity(const wire::Capacities* cap
       static_cast<std::size_t>(capacity->sources()),
   };
 }
-bool ValidResume(const LiquidResumeMetadata3D& resume, LiquidStateCapacities3D used) {
-  const auto initial = resume.capacities;
-  const auto growth = resume.capacity_replay_reservations;
-  const bool growth_valid =
-      growth == LiquidStateCapacities3D{} || (cache_detail::Fits(initial, growth) && initial != growth);
+bool ValidResume(const LiquidResumeMetadata3D& resume, LiquidStateCapacities3D record_counts) {
+  const auto reserved_capacities = resume.capacities;
+  const auto replay_reservations = resume.capacity_replay_reservations;
+  const bool replay_reservations_valid = replay_reservations == LiquidStateCapacities3D{}
+      || (cache_detail::Fits(reserved_capacities, replay_reservations) && reserved_capacities != replay_reservations);
   constexpr std::size_t maximum = static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(LiquidParticleState3D) / 5;
-  const LiquidStateCapacities3D width_limit{maximum, maximum, maximum, maximum, maximum};
-  const bool execution_matches = resume.execution_id == LiquidExecutionId3D(resume.resolved_fingerprint);
-  return cache_detail::Fits(used, initial) && growth_valid && cache_detail::Fits(initial, width_limit)
-      && cache_detail::Fits(growth, width_limit) && execution_matches;
+  const LiquidStateCapacities3D reservation_count_limits{maximum, maximum, maximum, maximum, maximum};
+  const bool execution_id_matches = resume.execution_id == LiquidExecutionId3D(resume.resolved_fingerprint);
+  return cache_detail::Fits(record_counts, reserved_capacities) && replay_reservations_valid
+      && cache_detail::Fits(reserved_capacities, reservation_count_limits)
+      && cache_detail::Fits(replay_reservations, reservation_count_limits) && execution_id_matches;
 }
-absl::StatusOr<LiquidResumeMetadata3D> ReadResume(const wire::ResumeMetadata* resume, LiquidStateCapacities3D used) {
-  if (!resume) {
+absl::StatusOr<LiquidResumeMetadata3D>
+ReadResume(const wire::ResumeMetadata* wire_resume, LiquidStateCapacities3D record_counts) {
+  if (!wire_resume) {
     return cache_detail::Corrupt();
   }
-  auto initial = ReadCapacity(resume->capacities());
-  auto growth = ReadCapacity(resume->replay_capacities());
-  if (!initial.ok() || !growth.ok()) {
+  auto reserved_capacities = ReadCapacity(wire_resume->capacities());
+  auto replay_reservations = ReadCapacity(wire_resume->replay_capacities());
+  if (!reserved_capacities.ok() || !replay_reservations.ok()) {
     return cache_detail::Corrupt();
   }
-  LiquidResumeMetadata3D result{
-      cache_detail::Unpack(resume->resolved_fingerprint()),
-      cache_detail::Unpack(resume->execution_id()),
-      *initial,
-      *growth,
+  LiquidResumeMetadata3D resume_metadata{
+      cache_detail::Unpack(wire_resume->resolved_fingerprint()),
+      cache_detail::Unpack(wire_resume->execution_id()),
+      *reserved_capacities,
+      *replay_reservations,
   };
-  if (!ValidResume(result, used)) {
+  if (!ValidResume(resume_metadata, record_counts)) {
     return cache_detail::Corrupt();
   }
-  return result;
+  return resume_metadata;
 }
 auto Key(const wire::Index3* index) {
   return std::tuple(index->z(), index->y(), index->x());
@@ -256,10 +259,10 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
   if (resume && (state.clock.substep_ordinal != 0 || !ValidResume(*resume, Counts(state)))) {
     return Invalid();
   }
-  const auto count =
+  const auto table_count =
       state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size() + state.sources.size() + 1;
   return cache_detail::Build<wire::LiquidState>(
-      count,
+      table_count,
       limits,
       wire::LiquidStateIdentifier(),
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::LiquidState>> {
@@ -322,13 +325,19 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
         if (!sources.ok()) {
           return sources.status();
         }
-        flatbuffers::Offset<wire::ResumeMetadata> metadata;
+        flatbuffers::Offset<wire::ResumeMetadata> resume_metadata_offset;
         if (resume) {
-          const auto fingerprint = cache_detail::Pack(resume->resolved_fingerprint);
-          const auto execution = cache_detail::Pack(resume->execution_id);
-          const auto capacity = PackCapacity(resume->capacities);
-          const auto growth = PackCapacity(resume->capacity_replay_reservations);
-          metadata = wire::CreateResumeMetadata(builder, &fingerprint, &execution, &capacity, &growth);
+          const auto packed_resolved_fingerprint = cache_detail::Pack(resume->resolved_fingerprint);
+          const auto packed_execution_id = cache_detail::Pack(resume->execution_id);
+          const auto packed_reserved_capacities = PackCapacity(resume->capacities);
+          const auto packed_replay_reservations = PackCapacity(resume->capacity_replay_reservations);
+          resume_metadata_offset = wire::CreateResumeMetadata(
+              builder,
+              &packed_resolved_fingerprint,
+              &packed_execution_id,
+              &packed_reserved_capacities,
+              &packed_replay_reservations
+          );
         }
         const auto origin = cache_detail::Pack(state.geometry.world_origin);
         const auto clock = cache_detail::Pack(state.clock);
@@ -346,7 +355,7 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
             *cells,
             *faces,
             *sources,
-            metadata
+            resume_metadata_offset
         );
       }
   );
