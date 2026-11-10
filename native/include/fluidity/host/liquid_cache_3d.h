@@ -223,11 +223,12 @@ class LiquidCache3D {
       const LiquidDigest3D& expected_fingerprint,
       LiquidCacheLimits3D limits = {}
   );
-  // Authenticated read-only replay: verifies an externally expected fingerprint,
-  // requires an existing lease file and permits verified retained checkpoint reads.
-  // Never creates/writes files; PublishFrame/PublishCheckpoint always return
-  // FailedPrecondition before touching content, including after lease removal.
-  // Unlike inspection, this requires the caller to establish build/backend identity.
+  /// Opens an existing cache for read-only replay. The caller establishes build and backend identity.
+  /// Performs portable inspection using the existing `.writer.lock` file, then verifies the cache fingerprint
+  /// against expected_fingerprint. Propagates inspection failures and returns `FailedPrecondition` on mismatch.
+  /// @return On success, a cache that permits verified retained checkpoint reads and creates or writes no files.
+  /// PublishFrame and PublishCheckpoint return `FailedPrecondition` before accessing the cache, even if the
+  /// lock file has since been removed.
   static absl::StatusOr<LiquidCache3D> OpenForReplay(
       const std::filesystem::path& root_directory,
       const LiquidDigest3D& expected_fingerprint,
@@ -276,10 +277,14 @@ class LiquidCache3D {
       const LiquidResumeMetadata3D& resume,
       LiquidCachePublishControl3D control = {}
   ) const;
-  // Returns the newest retained, verified checkpoint at or before maximum_frame.
-  // Eligibility is the global newest two references, even if older blobs survive
-  // interrupted pruning. Every candidate must have a matching committed frame. A malformed eligible
-  // reference fails closed; unpublished future blobs are never candidates.
+  /// Reads the newest eligible checkpoint at or before the inclusive maximum_frame ordinal.
+  /// Validates checkpoint references against their committed manifests and determines the globally newest two
+  /// reference ordinals before applying the cutoff. Older references and unreferenced blobs are ineligible.
+  /// @return On success, verified owning state and resume metadata matching the committed frame and resolved scene.
+  /// Returns `FailedPrecondition` on an inspection-only cache and `NotFound` if no retained reference meets the
+  /// cutoff. Missing required files can also return `NotFound`. A content digest mismatch or a checkpoint
+  /// consistency mismatch returns `DataLoss`. A failure after reference selection ends the read without trying
+  /// an older checkpoint.
   absl::StatusOr<LiquidCheckpoint3D> ReadCheckpoint(
       std::uint64_t maximum_frame = std::numeric_limits<std::uint64_t>::max()
   ) const;
