@@ -55,6 +55,13 @@ as an additional trust input; use the exact manifest revisions. The checker is e
 build receipt is a trusted external assertion, not a reproducible-build proof. A Lean build alone
 is not independent acceptance. Keep local evidence private if its paths disclose local information.
 
+The [Lean proofs workflow](../.github/workflows/lean-proofs.yml) checks the official Linux Lean
+release archive against its pinned SHA-256 and fetches the Mathlib cache. It builds both
+independent tools with the pinned Rust version and locked dependencies, then runs the same
+verifier. The job log retains the axiom reports and checker output. The job summary records
+the checked commit, elapsed verifier time, tool and export hashes, checker build receipt and
+each theorem's axiom closure.
+
 ## F1: actual uniform quadratic basis and reconstruction
 
 All 1D basis coordinates here are normalized by cell width. For particle coordinate `X`, lattice
