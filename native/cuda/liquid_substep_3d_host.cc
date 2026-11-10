@@ -187,6 +187,18 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
           ) {
             return cuda_internal::UpdateLiquidParticles3D(static_cast<Impl*>(context)->arena, inputs, trial_particles);
           },
+      .sample_lattice_plane =
+          [](void* context,
+             const LiquidHorizontalPlaneSurface3D& plane,
+             UniformMacGeometry3D geometry,
+             double sample_lattice_y) {
+            return cuda_internal::SampleLiquidLatticePlane3D(
+                static_cast<Impl*>(context)->arena,
+                plane,
+                geometry,
+                sample_lattice_y
+            );
+          },
   };
 }
 absl::StatusOr<bool> CudaLiquidSubstepBackend3D::PublicationReady() const {

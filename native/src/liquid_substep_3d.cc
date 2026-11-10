@@ -5,6 +5,7 @@
 #include <numbers>
 #include <tuple>
 
+#include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
 namespace {
@@ -88,16 +89,21 @@ struct LiquidSubstepScheduler3D::Impl {
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
     const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
-    const auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
+    auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const MacDepositQuantization3D quantization{
         options.mass_per_quantum,
         options.momentum_per_quantum,
         options.capacities.particles,
     };
     STEP_TRY(Enter(LiquidPhysicalStage3D::kEmit, step_duration));
+    if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+      STEP_TRY(boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(*tank, step_duration), true));
+      // Contact and frozen geometry use the start pose and this exact duration.
+      new_obstacle = liquid_step_internal::ObstacleAtTime(obstacle, step_duration);
+    }
     STEP_TRY(liquid_step_internal::Emit(scene, step_duration, trial));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, step_duration));
-    STEP_TRY(liquid_step_internal::PrepareField(scene.field, trial, staging, backend));
+    STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend));
     STEP_TRY(backend.topology(
         backend.context,
         trial.particles.values(),
@@ -424,7 +430,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     LiquidStepOptions3D options,
     const LiquidSubstepBackend3D& backend
 ) {
-  if (!Complete(backend)) {
+  const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
+  if (!Complete(backend) || (needs_lattice_plane && !backend.sample_lattice_plane)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));

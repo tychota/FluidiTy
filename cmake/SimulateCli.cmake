@@ -21,6 +21,24 @@ function(fluidity_add_simulate_executable target)
 endfunction()
 fluidity_add_simulate_executable(fluidity_simulate)
 if(BUILD_TESTING)
+  add_executable(fluidity_liquid_acceptance_fixture native/tests/liquid_acceptance_fixture.cc)
+  target_link_libraries(fluidity_liquid_acceptance_fixture PRIVATE fluidity_native fluidity_native_options)
+  set(liquid_acceptance_backends cpu)
+  if(FLUIDITY_ENABLE_CUDA)
+    list(APPEND liquid_acceptance_backends cuda)
+  endif()
+  foreach(backend IN LISTS liquid_acceptance_backends)
+    foreach(scene IN ITEMS free-fall-pic free-fall-default free-fall-retained tank-layout)
+      add_test(NAME LiquidAcceptance.${backend}.${scene}
+        COMMAND "${Python3_EXECUTABLE}" -E -X utf8
+          "${PROJECT_SOURCE_DIR}/tools/native/tests/run_liquid_acceptance.py"
+          --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_liquid_acceptance_fixture>
+          --backend ${backend} --case ${scene}
+          --temporary-output-parent "${PROJECT_SOURCE_DIR}/out/m1/acceptance")
+      set_tests_properties(LiquidAcceptance.${backend}.${scene}
+        PROPERTIES LABELS liquid-acceptance TIMEOUT 420)
+    endforeach()
+  endforeach()
   add_executable(fluidity_simulate_fixture native/tests/simulate_fixture.cc)
   target_link_libraries(fluidity_simulate_fixture PRIVATE fluidity_native fluidity_native_options)
   set(simulate_cuda_option)

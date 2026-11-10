@@ -1,6 +1,7 @@
 #include <cmath>
 #include <tuple>
 
+#include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "liquid_cache_3d_internal.h"
 #include "resolved_scene_generated.h"
@@ -71,8 +72,22 @@ absl::Status ValidateScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D 
     if (!detail::Finite(sphere->world_center) || !detail::Positive(sphere->radius)) {
       return Invalid();
     }
-  } else if (!detail::Positive(std::get<LiquidParticleSphereUnion3D>(scene.field).radius)) {
-    return Invalid();
+  } else if (const auto* particles = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
+    if (!detail::Positive(particles->radius)) {
+      return Invalid();
+    }
+  } else {
+    const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(scene.field);
+    const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
+    if (!tank || !std::isfinite(plane.world_surface_height_y) || plane.world_surface_height_y <= tank->floor_y) {
+      return Invalid();
+    }
+  }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle)) {
+    if (scene.friction_coefficient != 0
+        || boundary_internal::CheckTankStep(*tank, 0) != boundary_internal::Error::kNone) {
+      return Invalid();
+    }
   }
   if (const auto* wall = std::get_if<TranslatingHalfspace3D>(&scene.obstacle)) {
     if (!UnitNormal(wall->unit_normal) || !std::isfinite(wall->start_plane_coordinate)
@@ -138,8 +153,8 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   if (root->model_version() != 1) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
-  if (root->backend() > wire::Backend::Cuda || root->field()->kind() > wire::FieldKind::AnalyticSphere
-      || root->obstacle()->kind() > wire::ObstacleKind::Slab) {
+  if (root->backend() > wire::Backend::Cuda || root->field()->kind() > wire::FieldKind::HorizontalPlane
+      || root->obstacle()->kind() > wire::ObstacleKind::OpenTank) {
     return detail::Corrupt();
   }
   if (!AllFieldsPresent(root, wire::ResolvedScene::VT_UPSTREAM)
@@ -172,7 +187,17 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   result.options.momentum_per_quantum = options->momentum_per_quantum();
   result.options.pressure_solver_options.max_iterations = options->pressure_iterations();
   const auto* field = root->field();
-  if (field->kind() == wire::FieldKind::AnalyticSphere) {
+  const auto* plane = field->horizontal_plane();
+  if ((plane != nullptr) != (field->kind() == wire::FieldKind::HorizontalPlane)) {
+    return detail::Corrupt();
+  }
+  if (plane) {
+    if (!AllFieldsPresent(plane, wire::HorizontalPlane::VT_SURFACE_HEIGHT_Y) || field->radius() != 1
+        || !Zero(detail::Unpack(field->center()))) {
+      return detail::Corrupt();
+    }
+    result.scene.field = LiquidHorizontalPlaneSurface3D{plane->surface_height_y()};
+  } else if (field->kind() == wire::FieldKind::AnalyticSphere) {
     result.scene.field = LiquidAnalyticSphere3D{detail::Unpack(field->center()), field->radius()};
   } else {
     if (!Zero(detail::Unpack(field->center()))) {
@@ -183,7 +208,24 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   const auto* obstacle = root->obstacle();
   const auto normal = detail::Unpack(obstacle->normal());
   const auto velocity = detail::Unpack(obstacle->velocity());
-  if (obstacle->kind() == wire::ObstacleKind::Slab) {
+  const auto* tank = obstacle->open_tank();
+  if ((tank != nullptr) != (obstacle->kind() == wire::ObstacleKind::OpenTank)) {
+    return detail::Corrupt();
+  }
+  if (tank) {
+    if (!AllFieldsPresent(tank, wire::OpenTank::VT_PISTON_VELOCITY_X) || !Zero(normal) || !Zero(velocity)
+        || obstacle->start_coordinate() != 0 || obstacle->half_width() != 0) {
+      return detail::Corrupt();
+    }
+    result.scene.obstacle = AxisAlignedLiquidTank3D{
+        .start_low_x = tank->start_low_x(),
+        .high_x = tank->high_x(),
+        .floor_y = tank->floor_y(),
+        .low_z = tank->low_z(),
+        .high_z = tank->high_z(),
+        .piston_velocity_x = tank->piston_velocity_x(),
+    };
+  } else if (obstacle->kind() == wire::ObstacleKind::Slab) {
     result.scene.obstacle = TranslatingSlab3D{normal, obstacle->start_coordinate(), obstacle->half_width(), velocity};
   } else if (obstacle->kind() == wire::ObstacleKind::Halfspace) {
     if (obstacle->half_width() != 0) {
@@ -214,8 +256,11 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
   SCENE_TRY(ValidateScene(input, limits));
-  // Exactly two tables per source (template and source), one per upstream record.
-  const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size();
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&input.scene.field);
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
+  // Include the optional tables only for the active variants.
+  const auto tables =
+      4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr) + (tank != nullptr);
   return detail::Build<wire::ResolvedScene>(
       tables,
       limits,
@@ -245,16 +290,20 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
         wire::FieldKind field_kind = wire::FieldKind::ParticleUnion;
         Vec3 field_center{};
         double radius = 1;
+        flatbuffers::Offset<wire::HorizontalPlane> plane_record;
         if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field)) {
           field_kind = wire::FieldKind::AnalyticSphere;
           field_center = sphere->world_center;
           radius = sphere->radius;
+        } else if (plane) {
+          field_kind = wire::FieldKind::HorizontalPlane;
+          plane_record = wire::CreateHorizontalPlane(builder, detail::Canonical(plane->world_surface_height_y));
         } else {
           radius = std::get<LiquidParticleSphereUnion3D>(scene.field).radius;
         }
         const auto center = detail::PackCanonical(field_center);
         builder.Align(8);
-        const auto field = wire::CreateField(builder, field_kind, &center, radius);
+        const auto field = wire::CreateField(builder, field_kind, &center, radius, plane_record);
         wire::ObstacleKind obstacle_kind = wire::ObstacleKind::None;
         Vec3 normal{};
         Vec3 wall_velocity{};
@@ -273,6 +322,19 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           half_width = wall->half_width;
           wall_velocity = wall->wall_velocity;
         }
+        flatbuffers::Offset<wire::OpenTank> tank_record;
+        if (tank) {
+          obstacle_kind = wire::ObstacleKind::OpenTank;
+          tank_record = wire::CreateOpenTank(
+              builder,
+              detail::Canonical(tank->start_low_x),
+              detail::Canonical(tank->high_x),
+              detail::Canonical(tank->floor_y),
+              detail::Canonical(tank->low_z),
+              detail::Canonical(tank->high_z),
+              detail::Canonical(tank->piston_velocity_x)
+          );
+        }
         const auto packed_normal = detail::PackCanonical(normal);
         const auto packed_velocity = detail::PackCanonical(wall_velocity);
         // flatc parses inline structs before starting their containing table. Keep
@@ -284,7 +346,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             &packed_normal,
             detail::Canonical(coordinate),
             half_width,
-            &packed_velocity
+            &packed_velocity,
+            tank_record
         );
         auto sources = detail::BuildVector<wire::EmissionSource>(builder, scene.sources.size(), [&](std::size_t index) {
           const auto& source = scene.sources[index];

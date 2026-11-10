@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
@@ -40,6 +41,10 @@ struct MacPressureFace3D {
   // Dirichlet faces have one pressure endpoint and positive area. Sealed
   // faces have zero area. At zero area, mobility and distance need only be finite.
   std::variant<InternalMacPressureLink3D, DirichletMacPressureLink3D, SealedMacPressureLink3D> pressure_link;
+  // Optional integrated wall flux in m³/s along the positive face normal.
+  // If absent, the entire blocked area moves at wall_normal_velocity. An
+  // explicit flux must be finite and must be zero on a fully open face.
+  std::optional<double> prescribed_wall_flux = std::nullopt;
 };
 
 // Borrowed read-only inputs. Supply 1–4096 distinct pressure cells in (z,y,x)

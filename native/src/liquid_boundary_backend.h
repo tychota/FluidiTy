@@ -33,10 +33,25 @@ absl::StatusOr<LiquidPressureProblem3D>
 BuildLinks(const FrozenLiquidBoundaryGeometry3D&, const LiquidPressureFields3D&, GeometryBackend);
 inline Obstacle PackObstacle(const LiquidObstacle3D& obstacle) {
   if (const auto* halfspace = std::get_if<TranslatingHalfspace3D>(&obstacle)) {
-    return {1, halfspace->unit_normal, halfspace->start_plane_coordinate, 0, halfspace->wall_velocity};
+    return {
+        ObstacleKind::kHalfspace,
+        halfspace->unit_normal,
+        halfspace->start_plane_coordinate,
+        0,
+        halfspace->wall_velocity
+    };
   }
   if (const auto* slab = std::get_if<TranslatingSlab3D>(&obstacle)) {
-    return {2, slab->unit_normal, slab->start_center_coordinate, slab->half_width, slab->wall_velocity};
+    return {
+        ObstacleKind::kSlab,
+        slab->unit_normal,
+        slab->start_center_coordinate,
+        slab->half_width,
+        slab->wall_velocity
+    };
+  }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+    return {.kind = ObstacleKind::kOpenTank, .tank = *tank};
   }
   return {};
 }

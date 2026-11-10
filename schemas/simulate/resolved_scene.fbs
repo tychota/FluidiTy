@@ -1,7 +1,7 @@
 include "common.fbs";
 namespace fluidity.cache.v1;
-enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1 }
-enum ObstacleKind:ubyte { None = 0, Halfspace = 1, Slab = 2 }
+enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1, HorizontalPlane = 2 }
+enum ObstacleKind:ubyte { None = 0, Halfspace = 1, Slab = 2, OpenTank = 3 }
 enum UpstreamRole:ubyte { InitialParticles = 0, Source = 1, Obstacle = 2 }
 table Material {
   density:double = 1000 (id:0);
@@ -20,10 +20,22 @@ table StepOptions {
   momentum_per_quantum:double = 9.094947017729282e-13 (id:4);
   pressure_iterations:uint = 256 (id:5);
 }
+table HorizontalPlane {
+  surface_height_y:double (id:0);
+}
+table OpenTank {
+  start_low_x:double (id:0);
+  high_x:double (id:1);
+  floor_y:double (id:2);
+  low_z:double (id:3);
+  high_z:double (id:4);
+  piston_velocity_x:double (id:5);
+}
 table Field {
   kind:FieldKind (id:0);
   center:Vector3 (required, id:1);
   radius:double = 1 (id:2);
+  horizontal_plane:HorizontalPlane (id:3);
 }
 table Obstacle {
   kind:ObstacleKind (id:0);
@@ -31,6 +43,7 @@ table Obstacle {
   start_coordinate:double (id:2);
   half_width:double (id:3);
   velocity:Vector3 (required, id:4);
+  open_tank:OpenTank (id:5);
 }
 table EmissionSource {
   ordinal:ulong (id:0);

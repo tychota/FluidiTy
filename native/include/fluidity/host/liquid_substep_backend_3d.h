@@ -26,8 +26,8 @@ struct LiquidMissingFacePredictionInputs3D {
 // errors and allocate/free nothing, including on failure. Initialize and growth
 // are setup operations outside attempts and may reserve/release resources.
 // Context is borrowed and must outlive a single scheduler; the backend and
-// scheduler are single-threaded and non-reentrant. EVERY slot is mandatory:
-// Create never substitutes CPU operations for missing custom callbacks.
+// scheduler are single-threaded and non-reentrant. Create requires every
+// operation used by the scene and never substitutes CPU callbacks.
 // Device sorting must publish through PrepareTrialTopologyFromOrder; host
 // orchestration enumerates source/topology/sample coordinates without replacing
 // the selected backend's distance, wall, transfer or projection numerics.
@@ -41,10 +41,22 @@ struct LiquidSubstepBackend3D {
       std::span<const LiquidParticleState3D> trial_particles,
       Vec3 sample_world_position
   );
+  // Sample an analytic plane at the original grid y coordinate in cell widths.
+  // Centers use half-integer coordinates and corners use integers. Return the
+  // signed distance in meters. Invalid input returns InvalidArgument and an
+  // uncertifiable distance returns OutOfRange.
+  using SampleLatticePlane = absl::StatusOr<double>(
+      void* context,
+      const LiquidHorizontalPlaneSurface3D& plane,
+      UniformMacGeometry3D geometry,
+      double sample_lattice_y
+  );
   // At the supplied frozen obstacle pose, fill full owned-slot face tags and/or
   // prescribed walls. Each output is either empty (not requested) or covers the
   // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
-  // side from each face anchor. The two output spans must not overlap inputs or
+  // side from each face anchor. Tank faces use side zero, strict interior tags
+  // and the active constraint's normal and velocity at the staggered lattice anchor.
+  // The two output spans must not overlap inputs or
   // one another. Failed outputs remain trial-only and are discarded by scheduler.
   using SampleFaces = absl::Status(
       void* context,
@@ -157,6 +169,7 @@ struct LiquidSubstepBackend3D {
   Project* project = nullptr;
   Gather* gather = nullptr;
   UpdateParticles* update_particles = nullptr;
+  SampleLatticePlane* sample_lattice_plane = nullptr;  // Required for horizontal-plane scenes.
 };
 // CPU operations share the accepted bounded operators and true-gradient J/contact.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();

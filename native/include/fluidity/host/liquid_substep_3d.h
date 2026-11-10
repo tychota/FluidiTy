@@ -17,7 +17,13 @@ struct LiquidAnalyticSphere3D {
 struct LiquidParticleSphereUnion3D {
   double radius = 1;  // Positive world meters; min in stable trial particle order.
 };
-using LiquidSceneField3D = std::variant<LiquidAnalyticSphere3D, LiquidParticleSphereUnion3D>;
+// World signed distance is y minus this fixed height in meters. The scheduler
+// requires an open tank with a strictly lower floor to bound pressure support.
+struct LiquidHorizontalPlaneSurface3D {
+  double world_surface_height_y = 0;
+};
+using LiquidSceneField3D =
+    std::variant<LiquidAnalyticSphere3D, LiquidParticleSphereUnion3D, LiquidHorizontalPlaneSurface3D>;
 struct LiquidEmissionSource3D {
   std::uint64_t source_ordinal = 0;
   double particles_per_second = 0;
@@ -131,7 +137,7 @@ class LiquidSubstepScheduler3D {
   // staging owners with checked nothrow allocation. No borrowed scene data survives.
   static absl::StatusOr<LiquidSubstepScheduler3D>
   Create(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, LiquidStepOptions3D options);
-  // Explicit backend: every typed operation must be supplied; no CPU fallback.
+  // Explicit backend: every operation required by the scene must be supplied.
   // Backend context is borrowed through scheduler destruction and all frame attempts.
   static absl::StatusOr<LiquidSubstepScheduler3D> Create(
       const LiquidState3D& initial,

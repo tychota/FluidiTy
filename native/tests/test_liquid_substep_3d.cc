@@ -11,6 +11,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_tank_staging_3d_cases.h"
 namespace fluidity {
 namespace {
 LiquidState3D Initial(std::size_t count = 1) {
@@ -48,6 +49,55 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
   EXPECT_EQ(before_digest, after_digest);
   std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
+TEST(LiquidSubstep3D, HorizontalPlaneActivatesSignedPressureAndFaceOwnersWithoutParticles) {
+  tank_staging_test::ExpectPlaneSupport(CpuLiquidSubstepBackend3D(), Options());
+}
+
+TEST(LiquidSubstep3D, TranslatedHorizontalPlaneRetainsWetPressureCell) {
+  tank_staging_test::ExpectTranslatedPlaneKeepsWetCell(CpuLiquidSubstepBackend3D(), Options());
+}
+
+TEST(LiquidSubstep3D, OpenTankSamplesPistonAndFixedWallsSeparately) {
+  tank_staging_test::ExpectWallSamples(CpuLiquidSubstepBackend3D());
+}
+
+TEST(LiquidSubstep3D, OpenTankGhostTagPreservesTranslatedFaceResidual) {
+  tank_staging_test::ExpectTranslatedFaceUsesLatticeResidual(CpuLiquidSubstepBackend3D());
+}
+
+TEST(LiquidSubstep3D, OpenTankConstrainedUpdateKeepsIndependentVelocityFields) {
+  tank_staging_test::ExpectParticleUpdateUsesBothVelocityFields(CpuLiquidSubstepBackend3D());
+}
+
+TEST(LiquidSubstep3D, TankPoseClosureLeavesCommittedStateIntact) {
+  auto scene = Scene();
+  scene.field = LiquidHorizontalPlaneSurface3D{3};
+  scene.obstacle = AxisAlignedLiquidTank3D{1.75, 3.5, 2, 1.5, 3.5, 2};
+  const auto initial = Initial();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(1).ok());
+  const auto result = scheduler->Attempt(1);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 0);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+}
+
+TEST(LiquidSubstep3D, AdvancesOpenTankWithTransportedField) {
+  auto scene = Scene();
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.obstacle = AxisAlignedLiquidTank3D{1.75, 3.5, 2, 1.5, 3.5, 0.125};
+  auto scheduler = LiquidSubstepScheduler3D::Create(Initial(), scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(scheduler->committed().clock.epoch, 1);
+  EXPECT_FALSE(scheduler->committed().cells.values().empty());
+  EXPECT_EQ(scheduler->committed().particles[0].side_tag, 0);
 }
 
 TEST(LiquidSubstep3D, PhiloxPublishedZeroKnownVector) {

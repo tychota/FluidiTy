@@ -518,13 +518,21 @@ absl::Status UpdateLiquidParticles3D(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const auto obstacle = boundary_internal::PackObstacle(inputs.obstacle);
-  if (obstacle.kind != 0) {
+  if (obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+    if (inputs.friction_coefficient != 0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    TRANSFER_TRY(
+        boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(obstacle.tank, inputs.step_duration), true)
+    );
+  } else if (obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
     const double normal_length_squared = Dot(obstacle.normal, obstacle.normal);
     if (!IsFinite(obstacle.normal) || !IsFinite(obstacle.velocity) || !std::isfinite(obstacle.coordinate)
         || std::abs(normal_length_squared - 1) > 1e-12) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
-    if (obstacle.kind == 2 && (!std::isfinite(obstacle.half_width) || obstacle.half_width <= 0)) {
+    if (obstacle.kind == boundary_internal::ObstacleKind::kSlab
+        && (!std::isfinite(obstacle.half_width) || obstacle.half_width <= 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }

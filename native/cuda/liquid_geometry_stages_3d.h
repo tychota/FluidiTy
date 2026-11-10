@@ -23,6 +23,14 @@ absl::StatusOr<double> SampleLiquidField3D(
     std::span<const LiquidParticleState3D> particles,
     Vec3 position
 );
+// Checked device plane sample at an original signed lattice y in cell widths.
+// Shares the world sampler's arena, arithmetic and publication guarantees.
+absl::StatusOr<double> SampleLiquidLatticePlane3D(
+    CudaLiquidArena3D& arena,
+    const LiquidHorizontalPlaneSurface3D& plane,
+    UniformMacGeometry3D geometry,
+    double sample_lattice_y
+);
 // Full owned-slot outputs, each empty or grid.face_count(). Obstacle is already
 // at the requested time; slab walls require side +/-1, independently of anchor side.
 // Tags depend only on structural distance and anchor side, never mass/validity.

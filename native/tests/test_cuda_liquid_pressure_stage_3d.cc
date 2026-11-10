@@ -559,7 +559,7 @@ TEST(CudaLiquidPressureStage3D, MaximumHierarchyPackingAndPhysicalCorrectionMatc
     EXPECT_EQ(actual.pressure_to_velocity_scale, expected.pressure_to_velocity_scale);
     EXPECT_EQ(actual.conductance, expected.conductance);
     EXPECT_EQ(actual.predicted_normal_velocity, expected.predicted_normal_velocity);
-    EXPECT_EQ(actual.wall_normal_velocity, expected.wall_normal_velocity);
+    EXPECT_EQ(actual.prescribed_wall_flux, expected.prescribed_wall_flux);
     const auto* internal = std::get_if<InternalMacPressureLink3D>(&expected.pressure_link);
     const auto* boundary = std::get_if<DirichletMacPressureLink3D>(&expected.pressure_link);
     EXPECT_EQ(actual.jump, internal ? internal->pressure_jump : 0);

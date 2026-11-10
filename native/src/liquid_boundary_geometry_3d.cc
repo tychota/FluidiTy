@@ -126,7 +126,7 @@ std::size_t FindCell(std::span<const FrozenLiquidCell3D> cells, CellIndex3D inde
   return found != cells.end() && CellKey(found->cell_index) == key ? static_cast<std::size_t>(found - cells.begin())
                                                                    : cells.size();
 }
-absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle, bool bounded) {
+absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle, double step_duration, bool bounded) {
   ObstaclePlanes result;
   if (const auto* halfspace = std::get_if<TranslatingHalfspace3D>(&obstacle)) {
     result = {
@@ -154,6 +154,13 @@ absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle
     }
     if (!std::isfinite(result.low) || !std::isfinite(result.high) || result.low >= result.high) {
       return UnrepresentableGeometry(bounded);
+    }
+  }
+  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+    const auto status =
+        boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(*tank, step_duration), bounded);
+    if (!status.ok()) {
+      return status;
     }
   }
   if (result.present
@@ -226,10 +233,11 @@ absl::Status FreezeCore(
   if (inputs.cell_indices.size() > 4096) {
     return absl::Status(absl::StatusCode::kResourceExhausted, bounded ? "" : "Boundary cell capacity exceeded");
   }
-  const auto obstacle = ValidateObstacle(inputs.obstacle, bounded);
+  const auto obstacle = ValidateObstacle(inputs.obstacle, inputs.step_duration, bounded);
   if (!obstacle.ok()) {
     return obstacle.status();
   }
+  const auto packed_obstacle = PackObstacle(inputs.obstacle);
   const auto grid_geometry = inputs.mac_grid.geometry();
   const double h = grid_geometry.cell_width;
   const double full_area = h * h;
@@ -282,7 +290,7 @@ absl::Status FreezeCore(
     query.mode = GeometryMode::kCell;
     query.geometry = grid_geometry;
     query.index = index;
-    query.obstacle = PackObstacle(inputs.obstacle);
+    query.obstacle = packed_obstacle;
     for (int corner = 0; corner < 8; ++corner) {
       query.corner_distances[corner] = vertices[corner].liquid_distance;
     }
@@ -339,7 +347,7 @@ absl::Status FreezeCore(
     query.mode = GeometryMode::kFace;
     query.geometry = grid_geometry;
     query.index = {face_lattice_index.x, face_lattice_index.y, face_lattice_index.z};
-    query.obstacle = PackObstacle(inputs.obstacle);
+    query.obstacle = packed_obstacle;
     query.axis = static_cast<int>(face.axis);
     const auto areas = backend.compute(backend.context, query);
     if (!areas.ok()) {
@@ -349,7 +357,12 @@ absl::Status FreezeCore(
     const double blocked_area = areas->blocked_face_area;
     frozen_face.open_area = open_area;
     frozen_face.blocked_area = blocked_area;
-    frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(face.axis)];
+    if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+      frozen_face.wall_normal_velocity = areas->piston_normal_velocity;
+      frozen_face.prescribed_wall_flux = areas->piston_flux;
+    } else {
+      frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(face.axis)];
+    }
   }
   // Curvature and the capillary bound are interface-local. Interior or closed
   // cells neither consume a derivative halo nor impose a capillary restriction.
@@ -456,6 +469,7 @@ absl::Status LinksCore(
         fields.predicted_face_velocities[i],
         face.wall_normal_velocity,
         SealedMacPressureLink3D{},
+        face.prescribed_wall_flux,
     };
     const auto index = face.face_index.lattice_index;
     const CellIndex3D head{index.x, index.y, index.z};
@@ -552,6 +566,11 @@ absl::Status ValidateFrozenView(const FrozenLiquidBoundaryGeometryView3D& geomet
     }
     if (!std::isfinite(face.open_area) || face.open_area < 0 || face.open_area > full_face_area
         || face.blocked_area != full_face_area - face.open_area || !std::isfinite(face.wall_normal_velocity)) {
+      return invalid();
+    }
+    if (face.prescribed_wall_flux.has_value()
+        && (!std::isfinite(*face.prescribed_wall_flux) || (face.blocked_area == 0 && *face.prescribed_wall_flux != 0)
+        )) {
       return invalid();
     }
     const auto index = face.face_index.lattice_index;

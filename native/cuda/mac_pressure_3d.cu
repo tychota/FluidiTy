@@ -136,21 +136,17 @@ __device__ bool Evaluate(PressureDevice3D device) {
     }
     velocity[face] = corrected;
     double fluid_flux = 0.0;
-    double wall_flux = 0.0;
     if (!Product(device, link.open_area, corrected, fluid_flux)) {
-      return false;
-    }
-    if (!Product(device, link.blocked_area, link.wall_normal_velocity, wall_flux)) {
       return false;
     }
     // Preserve each row's prepared face order and fluid-before-wall incidence.
     if (link.tail_cell_ordinal < count) {
       Add(physical_rows[link.tail_cell_ordinal], fluid_flux);
-      Add(physical_rows[link.tail_cell_ordinal], wall_flux);
+      Add(physical_rows[link.tail_cell_ordinal], link.prescribed_wall_flux);
     }
     if (link.head_cell_ordinal < count) {
       Add(physical_rows[link.head_cell_ordinal], -fluid_flux);
-      Add(physical_rows[link.head_cell_ordinal], -wall_flux);
+      Add(physical_rows[link.head_cell_ordinal], -link.prescribed_wall_flux);
     }
   }
   auto& state = *device.state;

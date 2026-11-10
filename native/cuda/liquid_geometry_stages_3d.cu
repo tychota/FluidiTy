@@ -19,10 +19,23 @@ __global__ void LiquidFieldSamples3DKernel(
   // Preserve input particle order and strict-less tie behavior of std::min.
   for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
     const Vec3 position = positions[sample];
+    if (query->field_kind == LiquidSampleFieldKind3D::kLatticeHorizontalPlane) {
+      const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+          query->world_surface_height_y,
+          {query->geometry.world_origin.y, position.y, query->geometry.cell_width}
+      );
+      distances[sample] = distance.ok() ? *distance : boundary_internal::numeric::numeric_limits<double>::quiet_NaN();
+      continue;
+    }
+    if (query->field_kind == LiquidSampleFieldKind3D::kHorizontalPlane) {
+      distances[sample] = position.y - query->world_surface_height_y;
+      continue;
+    }
     double distance = boundary_internal::numeric::numeric_limits<double>::infinity();
-    const std::size_t count = query->particle_union ? query->particle_count : 1;
+    const bool particle_union = query->field_kind == LiquidSampleFieldKind3D::kParticleUnion;
+    const std::size_t count = particle_union ? query->particle_count : 1;
     for (std::size_t particle = 0; particle < count; ++particle) {
-      const Vec3 center = query->particle_union ? centers[particle] : query->sphere_center;
+      const Vec3 center = particle_union ? centers[particle] : query->sphere_center;
       const double candidate =
           hypot(hypot(position.x - center.x, position.y - center.y), position.z - center.z) - query->radius;
       if (candidate < distance) {
@@ -44,20 +57,35 @@ __global__ void LiquidFaceSamples3DKernel(
   const auto obstacle = query->obstacle;
   for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
     LiquidSampleFaceResult3D result{};
-    if (obstacle.kind != 0) {
-      const Vec3 position = positions[sample];
+    const Vec3 position = positions[sample];
+    if (obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+      const auto wall = boundary_internal::SampleTankFace(obstacle.tank, query->geometry, position);
+      if (!wall.ok()) {
+        result.error = wall.status();
+      } else {
+        result.tag = {0, wall->inward_distance > 0};
+        if (fabs(wall->inward_distance) <= 2 * query->geometry.cell_width) {
+          result.wall = {true, 0, wall->inward_normal, wall->wall_velocity};
+        }
+      }
+    } else if (obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
       const double coordinate =
           obstacle.normal.x * position.x + obstacle.normal.y * position.y + obstacle.normal.z * position.z;
       const double offset = coordinate - obstacle.coordinate;
-      const double distance = obstacle.kind == 2 ? fabs(offset) - obstacle.half_width : offset;
+      const double distance =
+          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? fabs(offset) - obstacle.half_width : offset;
       if (!isfinite(coordinate) || !isfinite(distance)) {
         result.error = boundary_internal::Error::kRange;
         results[sample] = result;
         continue;
       }
-      result.tag = {obstacle.kind == 2 ? (offset >= 0 ? 1 : -1) : 0, distance >= 0};
-      if (fabs(distance) <= 2 * query->cell_width) {
-        const double sign = obstacle.kind == 2 ? static_cast<double>(query->requested_side) : 1;
+      result.tag = {
+          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? (offset >= 0 ? 1 : -1) : 0,
+          distance >= 0
+      };
+      if (fabs(distance) <= 2 * query->geometry.cell_width) {
+        const double sign =
+            obstacle.kind == boundary_internal::ObstacleKind::kSlab ? static_cast<double>(query->requested_side) : 1;
         result.wall = {
             true,
             query->requested_side,

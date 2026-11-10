@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
 
+#include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/mac_pressure_3d.h"
 
 namespace fluidity {
@@ -35,7 +37,8 @@ struct TranslatingSlab3D {
   double half_width;  // Positive finite thickness / 2 in meters.
   Vec3 wall_velocity;  // Constant world velocity in m/s.
 };
-using LiquidObstacle3D = std::variant<std::monostate, TranslatingHalfspace3D, TranslatingSlab3D>;
+using LiquidObstacle3D =
+    std::variant<std::monostate, TranslatingHalfspace3D, TranslatingSlab3D, AxisAlignedLiquidTank3D>;
 
 struct LiquidBoundaryGeometryInputs3D {
   const SparseMacGrid3D& mac_grid;  // Borrowed only during freeze; result owns a copy.
@@ -63,6 +66,10 @@ struct FrozenLiquidFace3D {
   double open_area;  // Full face minus solid, m²; not clipped by liquid.
   double blocked_area;  // Exactly h² - open_area, m².
   double wall_normal_velocity;  // Positive Cartesian face axis, m/s, on both low and high faces.
+  // Positive Cartesian orientation, m³/s. For tanks this is the piston-only
+  // geometric flux on this pressure face, without liquid-area clipping. Other
+  // obstacles use blocked_area * wall_normal_velocity.
+  std::optional<double> prescribed_wall_flux = std::nullopt;
 };
 struct LiquidPressureCellFields3D {
   double target_divergence;  // s⁻¹; independent of geometric volume.
@@ -141,9 +148,10 @@ class FrozenLiquidBoundaryGeometry3D {
 // start pose. Selects strictly negative centers with positive fluid volume.
 // Returns InvalidArgument for malformed fields/order/obstacle, FailedPrecondition
 // for missing samples/owners, disconnected slab liquid, degenerate interface
-// gradient (|g| < 1e-8), or excessive capillary dt,
+// gradient (|g| < 1e-8), excessive capillary dt, or a tank closing within the step,
 // ResourceExhausted above 4096 candidates/24576 faces, OutOfRange for arithmetic
-// or lattice overflow. Errors carry no partial geometry; inputs are unmodified.
+// or lattice overflow and tank cells whose world corners cannot resolve the cell width.
+// Errors carry no partial geometry; inputs are unmodified.
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs
 );

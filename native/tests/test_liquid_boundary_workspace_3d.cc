@@ -10,6 +10,7 @@
 #endif
 #include "gtest/gtest.h"
 #include "liquid_boundary_transfer_3d_cases.h"
+#include "liquid_open_tank_lattice_3d_cases.h"
 namespace fluidity {
 namespace {
 constexpr LiquidStateCapacities3D kCap{4, 8, 8, 1536, 0};
@@ -62,6 +63,13 @@ struct Fixture {
     return {grid.view(), particles, 0, 0.01, old_history(), new_history()};
   }
 };
+TEST(LiquidBoundaryWorkspace3D, OpenTankRejectsUnresolvedTranslatedLatticeWithoutPublishing) {
+  const auto freeze = [](const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+    return FreezeLiquidBoundaryGeometry3D(inputs, workspace);
+  };
+  boundary_test::ExpectOpenTankRejectsUnresolvedTranslatedLattice(freeze);
+  boundary_test::ExpectOpenTankPreservesLatticeResiduals(freeze);
+}
 TEST(LiquidBoundaryWorkspace3D, FrozenGeometryAndTypedLinksMatchOwningAndUnitCube) {
   Fixture f;
   auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);

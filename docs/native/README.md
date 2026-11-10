@@ -73,7 +73,7 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets require exactly 32 `gpu` cases across two probe cases, 26 operator
+separate. Both presets require exactly 34 `gpu` cases across two probe cases, 28 operator
 cases and four graph replay cases. The operator group includes the two integrated 3D liquid
 scheduler cases and two asynchronous snapshot cases. Both presets also run the separate `cuda-mock` API-double suite.
 
@@ -105,6 +105,8 @@ Standalone operator receipts use finite nonnegative CUDA event times in `kernel_
 | `CudaMacPressure3D.MultilevelProjectionMatchesCpu` | `pressure_3d_multilevel` |
 | `CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle` | `liquid_boundary_geometry_3d` |
 | `CudaLiquidBoundary3D.SweptContactMatchesOracle` | `liquid_wall_contact_3d` |
+| `CudaLiquidBoundary3D.OpenTankGeometryAndPressureMatchOracle` | `liquid_open_tank_geometry_3d` |
+| `CudaLiquidBoundary3D.OpenTankSweptContactMatchesOracle` | `liquid_open_tank_contact_3d` |
 | `CudaLiquidBoundary3D.CompatibleTransferAndGhostHistoryMatchCpu` | `liquid_boundary_transfer_3d` |
 | `CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure` | `liquid_boundary_coupled_3d` |
 | `CudaLiquidSubstep3D.PersistentSubstepMatchesCpu` | `liquid_substep_3d` |
@@ -152,11 +154,11 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-25 operator cases (including both scheduler and both snapshot cases), and all four graph replay cases for
-30 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
-trigger CUDA API errors and run only in the 32-case CTest inventory. Each memcheck invocation
+27 operator cases (including both scheduler, both snapshot and both open-tank cases), and all four graph replay cases for
+32 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
+trigger CUDA API errors and run only in the 34-case CTest inventory. Each memcheck invocation
 must exit successfully and report one zero-error summary. The validator checks the exact
-GoogleTest start and completion names, the probe launch receipt, 16 operator timing receipts
+GoogleTest start and completion names, the probe launch receipt, 18 operator timing receipts
 and one graph timing receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
@@ -189,7 +191,7 @@ try {
 
 Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
 arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
-Its inventory is separate from the 32 mandatory CTest cases and 30 mandatory memcheck cases.
+Its inventory is separate from the 34 mandatory CTest cases and 32 mandatory memcheck cases.
 Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
 runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
 
@@ -455,7 +457,7 @@ execution, replay and process lifecycle.
 The locked validator requires exact inventories, process receipts, qualified image
 identity, positive actual graph/device reservations, finite positive D2H
 intervals and measured heartbeat and cancellation bounds.
-These gates retain the existing 32 GPU / 30 sanitizer inventories. The Python driver
+The GPU and sanitizer inventories contain 34 and 32 cases, respectively. The Python driver
 is invoked with required binary paths, rejects optimized Python, and never silently
 skips an unavailable executable or device.
 

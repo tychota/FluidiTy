@@ -10,12 +10,14 @@
 #include <vector>
 
 #include "../cuda/liquid_boundary_transfer_3d_internal.h"
+#include "../cuda/liquid_geometry_stages_3d.h"
 #include "fixture_data.h"
 #include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_boundary_geometry_3d_cases.h"
 #include "liquid_boundary_transfer_3d_cases.h"
+#include "liquid_open_tank_lattice_3d_cases.h"
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity {
 namespace {
@@ -36,6 +38,103 @@ void Receipt(const char* name, CudaOperatorMeasurement measurement) {
   std::cout << "operator=" << name << " compiled_architecture=" << measurement.compiled_architecture
             << " kernel_ms=" << std::fixed << std::setprecision(9) << measurement.kernel_ms << '\n';
 }
+TEST(CudaLiquidBoundary3D, OpenTankGeometryAndPressureMatchOracle) {
+  Hardware();
+  CudaOperatorMeasurement measurement{};
+  const auto record = [&](CudaOperatorMeasurement sample) {
+    EXPECT_EQ(sample.compiled_architecture, 1200);
+    EXPECT_TRUE(std::isfinite(sample.kernel_ms));
+    EXPECT_GE(sample.kernel_ms, 0);
+    measurement.compiled_architecture = sample.compiled_architecture;
+    measurement.kernel_ms += sample.kernel_ms;
+  };
+  boundary_test::GeometryCases cases(
+      [&](const LiquidBoundaryGeometryInputs3D& inputs) -> absl::StatusOr<FrozenLiquidBoundaryGeometry3D> {
+        const auto cpu = FreezeLiquidBoundaryGeometry3D(inputs);
+        auto gpu = CudaFreezeLiquidBoundaryGeometry3D(inputs);
+        EXPECT_EQ(cpu.status().code(), gpu.status().code());
+        if (!gpu.ok()) {
+          return gpu.status();
+        }
+        record(gpu->measurement);
+        if (cpu.ok() && cpu->cells().size() == gpu->geometry.cells().size()) {
+          for (std::size_t cell = 0; cell < cpu->cells().size(); ++cell) {
+            EXPECT_NEAR(
+                cpu->cells()[cell].fluid_volume,
+                gpu->geometry.cells()[cell].fluid_volume,
+                2e-13 * cpu->cells()[cell].fluid_volume
+            );
+          }
+        }
+        if (cpu.ok() && cpu->faces().size() == gpu->geometry.faces().size()) {
+          for (std::size_t face = 0; face < cpu->faces().size(); ++face) {
+            EXPECT_EQ(cpu->faces()[face].face_slot, gpu->geometry.faces()[face].face_slot);
+            EXPECT_EQ(cpu->faces()[face].prescribed_wall_flux, gpu->geometry.faces()[face].prescribed_wall_flux);
+            EXPECT_DOUBLE_EQ(cpu->faces()[face].open_area, gpu->geometry.faces()[face].open_area);
+          }
+        }
+        return std::move(gpu->geometry);
+      },
+      [&](const FrozenLiquidBoundaryGeometry3D& geometry,
+          const LiquidPressureFields3D& fields) -> absl::StatusOr<LiquidPressureProblem3D> {
+        auto gpu = CudaBuildLiquidPressureLinks3D(geometry, fields);
+        if (!gpu.ok()) {
+          return gpu.status();
+        }
+        record(gpu->measurement);
+        return std::move(gpu->problem);
+      },
+      [&](const MacPressureInputs3D& inputs) -> absl::StatusOr<MacPressureProjection3D> {
+        auto gpu = CudaProjectMacPressure3D(inputs);
+        if (!gpu.ok()) {
+          return gpu.status();
+        }
+        record(gpu->measurement);
+        return std::move(gpu->projection);
+      }
+  );
+  cases.OpenTankClipsVolumeAndUsesPistonOnlyFlux();
+  cases.OpenTankPreservesNarrowAndLiquidClippedMeasures();
+  auto arena = CudaLiquidArena3D::Create(boundary_test::kTranslatedTankCapacities);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  const auto freeze = [&](const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+    return cuda_internal::FreezeLiquidGeometry3D(*arena, inputs, workspace);
+  };
+  boundary_test::ExpectOpenTankRejectsUnresolvedTranslatedLattice(freeze);
+  boundary_test::ExpectOpenTankPreservesLatticeResiduals(freeze);
+  Receipt("liquid_open_tank_geometry_3d", measurement);
+}
+
+TEST(CudaLiquidBoundary3D, OpenTankSweptContactMatchesOracle) {
+  Hardware();
+  CudaOperatorMeasurement measurement{};
+  boundary_test::ContactCases cases(
+      [&](const LiquidWallContactInputs3D& inputs) -> absl::StatusOr<LiquidWallContactResult3D> {
+        const auto cpu = ResolveLiquidWallContact3D(inputs);
+        const auto gpu = CudaResolveLiquidWallContact3D(inputs);
+        EXPECT_EQ(cpu.status().code(), gpu.status().code());
+        if (!gpu.ok()) {
+          return gpu.status();
+        }
+        EXPECT_EQ(gpu->measurement.compiled_architecture, 1200);
+        EXPECT_TRUE(std::isfinite(gpu->measurement.kernel_ms));
+        EXPECT_GE(gpu->measurement.kernel_ms, 0);
+        measurement.compiled_architecture = gpu->measurement.compiled_architecture;
+        measurement.kernel_ms += gpu->measurement.kernel_ms;
+        if (cpu.ok()) {
+          boundary_transfer_test::ExpectVec(gpu->contact.world_position, cpu->world_position, 0);
+          boundary_transfer_test::ExpectVec(gpu->contact.stored_world_velocity, cpu->stored_world_velocity, 0);
+          boundary_transfer_test::ExpectVec(gpu->contact.advecting_world_velocity, cpu->advecting_world_velocity, 0);
+          EXPECT_EQ(gpu->contact.contact_fraction, cpu->contact_fraction);
+        }
+        return gpu->contact;
+      }
+  );
+  cases.OpenTankSweepsAndConstrainsBothVelocities();
+  cases.OpenTankRejectsInvalidFrictionExtentsAndEndpointWidth();
+  Receipt("liquid_open_tank_contact_3d", measurement);
+}
+
 TEST(CudaLiquidBoundary3D, GeometryAndCapillaryMatchOracle) {
   Hardware();
   const std::array<BlockIndex3D, 1> blocks{{{0, 0, 0}}};

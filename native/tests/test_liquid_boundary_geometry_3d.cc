@@ -1,5 +1,13 @@
 #include "liquid_boundary_geometry_3d_cases.h"
 namespace fluidity::boundary_test {
+TEST(LiquidBoundaryGeometry3D, OpenTankClipsVolumeAndUsesPistonOnlyFlux) {
+  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  cases.OpenTankClipsVolumeAndUsesPistonOnlyFlux();
+}
+TEST(LiquidBoundaryGeometry3D, OpenTankPreservesNarrowAndLiquidClippedMeasures) {
+  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  cases.OpenTankPreservesNarrowAndLiquidClippedMeasures();
+}
 TEST(LiquidBoundaryGeometry3D, AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOpening) {
   GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
   cases.AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOpening();

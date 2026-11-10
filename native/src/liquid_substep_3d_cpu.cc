@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
 namespace {
@@ -40,9 +41,12 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
         gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
     const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
     const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
+    const double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
+    if (std::isnan(solid_distance)) {
+      return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
+    }
     const bool surface_expansion = divergence > 0 && inputs.liquid_distances[index] <= 0
-        && inputs.liquid_distances[index] >= -inputs.cell_width
-        && liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position) > inputs.cell_width;
+        && inputs.liquid_distances[index] >= -inputs.cell_width && solid_distance > inputs.cell_width;
     const double beta = surface_expansion ? inputs.particle_energy_blend : 0;
     const auto stored = liquid_step_internal::Add(
         gather.new_pic_velocity,
@@ -108,6 +112,15 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
             const auto count = grid.face_count();
             if ((!tags.empty() && tags.size() != count) || (!walls.empty() && walls.size() != count)) {
               return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
+            }
+            if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+              if (side != 0) {
+                return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
+              }
+              const auto pose = boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(*tank, 0), true);
+              if (!pose.ok()) {
+                return pose;
+              }
             }
             if (!tags.empty()) {
               const auto status = liquid_step_internal::FillFaceTags(grid, obstacle, tags);
@@ -206,6 +219,18 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
             return GatherLiquidBoundaryParticles3D(inputs, workspace);
           },
       .update_particles = UpdateParticles,
+      .sample_lattice_plane =
+          [](void*, const LiquidHorizontalPlaneSurface3D& plane, UniformMacGeometry3D geometry, double sample_lattice_y
+          ) -> absl::StatusOr<double> {
+        const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+            plane.world_surface_height_y,
+            {geometry.world_origin.y, sample_lattice_y, geometry.cell_width}
+        );
+        if (!distance.ok()) {
+          return boundary_internal::ArithmeticStatus(distance.status(), true);
+        }
+        return *distance;
+      },
   };
 }
 }  // namespace fluidity
