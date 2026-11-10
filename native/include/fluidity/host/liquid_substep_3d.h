@@ -3,6 +3,7 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <variant>
 
@@ -77,6 +78,36 @@ enum class LiquidPhysicalStage3D {
   kCount
 };
 inline constexpr std::size_t kLiquidPhysicalStageCount3D = static_cast<std::size_t>(LiquidPhysicalStage3D::kCount);
+struct LiquidPistonStepPose3D {
+  double step_start_low_x_m;  // Low-x wall used to freeze the pressure geometry.
+  double step_end_low_x_m;  // Low-x wall used for end-of-step tags and contact.
+};
+// Observations of a single accepted attempt, copied before workspace reuse.
+// Pressure uses the original FP64 residual and defect over the step-start
+// pressure cells, including gauges. Empty pressure domains have zero metrics.
+struct LiquidAcceptedStepMeasurement3D {
+  LiquidClock3D accepted_clock;
+  double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
+  std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
+  MacPressureDiagnostics3D pressure;
+  double pressure_rhs_l2_m3_per_s = 0;  // Original integrated RHS in solver row order.
+  double step_start_pressure_cell_volume_m3 = 0;  // Frozen liquid volume in center-selected pressure cells.
+  double step_start_inward_piston_flux_m3_per_s = 0;  // Signed blocked-face contribution to the original RHS.
+  std::optional<LiquidPistonStepPose3D> piston_pose;  // Present for an open tank, including a stationary piston.
+};
+// Actual work from one AdvanceFrame attempt, including unsuccessful work.
+// Frame-local counters reset at BeginFrame. The capacity pass starts at zero
+// and advances only on a successful restart. Start clock may repeat on replay.
+struct LiquidAttemptMeasurement3D {
+  LiquidClock3D start_clock;
+  std::size_t attempt_in_frame;
+  std::size_t capacity_pass;
+  double attempted_dt_seconds;  // Simulated duration supplied to Attempt.
+  double work_wall_seconds;  // Monotonic host elapsed time inside Attempt, including its fences.
+  LiquidAttemptDisposition3D disposition;
+  std::optional<double> retry_dt_seconds;  // Exact next duration requested by a successful dt retry decision.
+  absl::StatusCode failure_code;
+};
 struct LiquidStepDiagnostics3D {
   std::array<LiquidPhysicalStage3D, kLiquidPhysicalStageCount3D> stages{};
   std::size_t stage_count = 0;
@@ -91,6 +122,9 @@ struct LiquidStepDiagnostics3D {
   std::size_t lower_theta_regularization_count = 0;
   LiquidPhysicalStage3D failed_stage = LiquidPhysicalStage3D::kCount;
   absl::StatusCode failure_code = absl::StatusCode::kOk;
+  // Present only after successful publication of the latest attempt. A
+  // restarted frame invalidates prior accepted measurements from its old pass.
+  std::optional<LiquidAcceptedStepMeasurement3D> accepted_measurement;
 };
 // Hook is diagnostics-only, invoked before each stage through acceptance.
 // Disabled postaccept adaptation is recorded as an identity and cannot be faulted. Return code-only errors;
@@ -111,9 +145,14 @@ LiquidPhilox4x32_10(std::array<std::uint32_t, 4> counter, std::array<std::uint32
 // callback must not reenter the scheduler or retain device source leases. Drain
 // pending snapshot sources before AdvanceFrame; this callback is not a device
 // reuse gate. Default-empty observers preserve the numerical schedule exactly.
+// observe_attempt runs after every physical attempt and before the matching
+// acceptance or rollback notification, even when scheduling will fail. It
+// borrows a scalar receipt only for the call, cannot stop scheduling, and must
+// not reenter the scheduler. Use observe to detect successful capacity rollback.
 struct LiquidProgressObserver3D {
   void* context = nullptr;
   absl::Status (*observe)(void*, const LiquidState3D&, const LiquidStepDiagnostics3D&, bool rollback) = nullptr;
+  void (*observe_attempt)(void*, const LiquidAttemptMeasurement3D&) = nullptr;
 };
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
 // All attempts, including rejection/status destruction, allocate and free nothing.
@@ -148,7 +187,8 @@ class LiquidSubstepScheduler3D {
   // Read-only version; reacquire record spans after every attempt or capacity replay.
   const LiquidState3D& committed() const;
   // Latest attempt trace/pressure fields and frame-cumulative attempt/replay counts.
-  // Accepted count includes work discarded by a capacity replay; it is not an epoch.
+  // The accepted-attempt count includes work discarded by capacity replay.
+  // Use the accepted measurement's clock for the physical step ordinal.
   const LiquidStepDiagnostics3D& diagnostics() const;
   // Complete dynamic payload of transaction versions, copied sources, numeric and
   // staging owners; excludes object/allocator overhead and backend-owned storage.

@@ -1,6 +1,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <numbers>
 #include <tuple>
@@ -84,7 +85,8 @@ struct LiquidSubstepScheduler3D::Impl {
     }
     return absl::OkStatus();
   }
-  absl::Status Execute(double step_duration, LiquidState3D& trial) {
+  absl::Status
+  Execute(double step_duration, LiquidState3D& trial, LiquidAcceptedStepMeasurement3D& accepted_measurement) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
@@ -186,6 +188,15 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       return frozen.status();
     }
+    if (frozen->capillary_step_bound != std::numeric_limits<double>::infinity()) {
+      accepted_measurement.step_start_capillary_bound_seconds = frozen->capillary_step_bound;
+    }
+    if (const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+      accepted_measurement.piston_pose = LiquidPistonStepPose3D{
+          .step_start_low_x_m = tank_at_step_start->start_low_x,
+          .step_end_low_x_m = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x,
+      };
+    }
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
     for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
@@ -259,6 +270,13 @@ struct LiquidSubstepScheduler3D::Impl {
         return projection.status();
       }
       diagnostics.pressure_diagnostics = projection->diagnostics;
+      accepted_measurement.pressure = projection->diagnostics;
+      accepted_measurement.pressure_rhs_l2_m3_per_s = projection->frozen_measurement.integrated_rhs_l2_m3_per_s;
+      accepted_measurement.step_start_pressure_cell_volume_m3 = projection->frozen_measurement.pressure_cell_volume_m3;
+      if (accepted_measurement.piston_pose.has_value()) {
+        accepted_measurement.step_start_inward_piston_flux_m3_per_s =
+            projection->frozen_measurement.inward_prescribed_wall_flux_m3_per_s;
+      }
       for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
         trial.cells[index] = {
             frozen->cells[index].cell_index,
@@ -508,6 +526,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
     return trial.status();
   }
   ++diagnostics.attempts;
+  diagnostics.accepted_measurement.reset();
   diagnostics.stage_count = 0;
   diagnostics.attempted_duration = step_duration;
   diagnostics.pressure_diagnostics = {};
@@ -516,7 +535,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
   diagnostics.lower_theta_regularization_count = 0;
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
-  auto status = impl.Execute(step_duration, **trial);
+  LiquidAcceptedStepMeasurement3D accepted_measurement;
+  auto status = impl.Execute(step_duration, **trial, accepted_measurement);
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -544,6 +564,9 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
   if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
     impl.backend.commit_publication(impl.backend.context);
     ++diagnostics.accepted_attempts;
+    accepted_measurement.accepted_clock = committed().clock;
+    accepted_measurement.accepted_dt_seconds = step_duration;
+    diagnostics.accepted_measurement = accepted_measurement;
     diagnostics.stages[diagnostics.stage_count++] = LiquidPhysicalStage3D::kAdapt;
   }
   if (outcome->disposition != LiquidAttemptDisposition3D::kAccepted) {
@@ -570,7 +593,27 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
     if (retry) {
       duration = *retry;
     }
+    const auto start_clock = committed().clock;
+    const auto previous_attempt_count = diagnostics().attempts;
+    const auto work_start =
+        observer.observe_attempt ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto outcome = Attempt(*duration);
+    if (observer.observe_attempt && diagnostics().attempts != previous_attempt_count) {
+      const std::chrono::duration<double> work_elapsed = std::chrono::steady_clock::now() - work_start;
+      observer.observe_attempt(
+          observer.context,
+          {
+              .start_clock = start_clock,
+              .attempt_in_frame = diagnostics().attempts,
+              .capacity_pass = diagnostics().capacity_replays,
+              .attempted_dt_seconds = *duration,
+              .work_wall_seconds = work_elapsed.count(),
+              .disposition = outcome.ok() ? outcome->disposition : LiquidAttemptDisposition3D::kFatal,
+              .retry_dt_seconds = outcome.ok() ? outcome->retry_duration : std::nullopt,
+              .failure_code = outcome.ok() ? diagnostics().failure_code : outcome.status().code(),
+          }
+      );
+    }
     if (!outcome.ok()) {
       return outcome.status();
     }

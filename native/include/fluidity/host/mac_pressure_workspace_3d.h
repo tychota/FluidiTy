@@ -11,6 +11,13 @@ namespace fluidity {
 namespace pressure_internal {
 struct BoundedCudaPressureAccess3D;
 }
+// Scalar observations of the original checked pressure system. These
+// observations do not participate in the solve or its stopping decisions.
+struct MacPressureFrozenMeasurement3D {
+  double integrated_rhs_l2_m3_per_s = 0;  // Original integrated RHS, including gauge rows, in input cell order.
+  double pressure_cell_volume_m3 = 0;  // Sum of the supplied fluid volumes.
+  double inward_prescribed_wall_flux_m3_per_s = 0;  // Only explicitly supplied flux, oriented into selected cells.
+};
 // Read-only projection in input cell/face order. Units and diagnostics match
 // MacPressureProjection3D, including original residual and physical defect at
 // every gauge row. Borrows survive all rejected attempts; the next successful
@@ -23,6 +30,7 @@ struct MacPressureProjectionView3D {
   std::span<const double> cell_constraint_defects;
   std::span<const std::size_t> gauge_cell_ordinals;
   MacPressureDiagnostics3D diagnostics;
+  MacPressureFrozenMeasurement3D frozen_measurement;
 };
 // Exact reserved dynamic payload, excluding owner objects, allocator metadata
 // and automatic storage (including the 32-double terminal solve array).

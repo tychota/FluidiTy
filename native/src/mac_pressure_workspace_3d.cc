@@ -428,6 +428,7 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
       .cell_constraint_defects = defects,
       .gauge_cell_ordinals = gauges.first(system->gauges.size()),
       .diagnostics = {},
+      .frozen_measurement = upload->frozen_measurement,
   };
   const auto evaluate_correction = [&](std::span<const float> correction,
                                        std::size_t iterations) -> absl::StatusOr<MacPressureProjectionView3D> {
@@ -785,12 +786,35 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
       }
     }
   }
+  arithmetic::CompensatedSum pressure_cell_volume;
+  for (const auto& cell : system->cells()) {
+    pressure_cell_volume.Add(cell.fluid_volume);
+  }
+  arithmetic::CompensatedSum inward_prescribed_wall_flux;
+  for (std::size_t face_ordinal = 0; face_ordinal < faces.size(); ++face_ordinal) {
+    const auto& link = system->links()[face_ordinal];
+    if (!faces[face_ordinal].prescribed_wall_flux.has_value()
+        || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
+      continue;
+    }
+    // Sum in owned face order using the checked RHS incidence. An internal
+    // face has equal and opposite contributions to the two selected cells.
+    arithmetic::ForEachIncidentCell(link, [&](std::size_t, double outward_sign) {
+      inward_prescribed_wall_flux.Add(-outward_sign * link.prescribed_wall_flux);
+    });
+  }
   publication.KeepAllocations();
   return PreparedMacPressureUploadView3D{
       .system = *system,
       .hierarchy = *hierarchy,
       .initial_pressure = base_pressure,
       .stopping = stopping,
+      .frozen_measurement =
+          {
+              .integrated_rhs_l2_m3_per_s = rhs_norm,
+              .pressure_cell_volume_m3 = pressure_cell_volume.Total(),
+              .inward_prescribed_wall_flux_m3_per_s = inward_prescribed_wall_flux.Total(),
+          },
   };
 }
 }  // namespace fluidity

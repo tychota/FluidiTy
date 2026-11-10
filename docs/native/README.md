@@ -418,6 +418,38 @@ committed frames. Create a fresh cache to run it under another CUDA environment.
 `--trace` emits accepted-state records (clock, exact state digest, inventories,
 source counters/remainders and attempt/retry counts) from the final schedule of each
 frame. `published:false` distinguishes these from `frame` publication records.
+The `accepted_measurement` object gives the exact accepted duration and the
+step-start capillary bound in seconds, with JSON null when no bound applies.
+It reports the pressure iteration count and the original integrated RHS and true
+residual L2 norms in m³/s, including gauge rows. The maximum volume-scaled residual
+and physical constraint defect use s⁻¹. An empty pressure domain reports zero
+for those pressure measurements and for its frozen center-selected liquid volume
+in m³. The signed step-start piston flux uses the original pressure RHS incidence
+and blocked-face data in m³/s, positive inward. Non-tank scenes report zero piston
+flux and null poses. Tank poses are the low-x wall coordinates in world meters
+used by the start-of-step geometry and end-of-step contact.
+
+A traced `run` emits an independent `attempt` record for each actual physical
+attempt before the corresponding frame's accepted traces. The ledger reports the
+target frame, one-based frame-local attempt number, zero-based capacity pass,
+start clock, attempted duration and optional retry duration in seconds, monotonic
+host work time in seconds, disposition and failure code. The work interval includes
+physical attempt fences and excludes observation, replay growth and cache
+publication. A capacity record identifies whether a restart occurred. An
+accepted attempt is marked `retained` only if it survives in the settled frame
+schedule. Retry, fatal and capacity work remains in the ledger. Fatal or cancelled
+scheduling emits completed attempt records before its error. Accepted traces
+require a settled schedule. Successful rollback keeps the prior pass in the
+ledger and discards its accepted witnesses. The cumulative physical
+`accepted_step` clock can repeat across passes in attempt start clocks and is
+separate from frame-local `accepted_attempts`, which includes discarded work.
+
+The run-only `--trace-geometry` option implies `--trace` and adds each accepted
+particle ID and world position in meters, in committed particle storage order.
+Use the previous settled trace or the verified initial FLST to recover step-start
+particle geometry. Both trace options produce the same execution identity and
+cache bytes as an untraced run.
+
 Result records include `frames_per_second`, resolved/execution identity and backend;
 CUDA results additionally carry actual compiled architecture, graph replay count,
 reserved device bytes and D2H event milliseconds. Point radius is the spherical

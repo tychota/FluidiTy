@@ -257,7 +257,7 @@ def execute(executable, *args, success=True):
     if success:
         assert process.stderr == "", process.stderr
         assert output[-1]["event"] == "result"
-        assert all(r["event"] in ("heartbeat", "trace", "frame", "result") for r in output)
+        assert all(r["event"] in ("heartbeat", "attempt", "trace", "frame", "result") for r in output)
     else:
         errors = records(process.stderr)
         assert errors == [output[-1]] and errors[0]["event"] == "error"
@@ -285,6 +285,8 @@ def execution_case(executable, fixture, directory, backend):
     assert result["backend"] == backend
     traces = [r for r in output if r["event"] == "trace"]
     assert [(r["frame"], r["substep"]) for r in traces] == [(0, 1), (1, 0), (1, 1), (2, 0)]
+    assert all("geometry" not in trace for trace in traces)
+    assert all("accepted_measurement" in trace for trace in traces), "missing accepted physical measurements"
     before = snapshot(cache)
     assert (".simulate-cuda-compatibility" in before) == (backend == "cuda")
     resumed = execute(executable, *args, "--resume", "--frame-end", 2)[-1]
@@ -298,9 +300,25 @@ def execution_case(executable, fixture, directory, backend):
     assert step["frame"] == 0 and step["substep"] == 1 and step["accepted_step"] == 1
     assert step["read_only"] and snapshot(cache) == before
     fresh = directory / "fresh"
-    rerun = execute(executable, *[fresh if x == cache else x for x in args], "--frame-end", 2)[-1]
-    assert rerun["state_digest"] == result["state_digest"]
-    assert {p: v[1] for p, v in snapshot(fresh).items()} == {p: v[1] for p, v in before.items()}
+    rerun = execute(executable, *[fresh if x == cache else x for x in args], "--frame-end", 2)
+    assert not any(record["event"] in ("attempt", "trace") for record in rerun)
+    geometry_cache = directory / "geometry"
+    geometry = execute(executable, *[geometry_cache if x == cache else x for x in args],
+                       "--frame-end", 2, "--trace-geometry")
+    geometry_traces = [record for record in geometry if record["event"] == "trace"]
+    assert len(geometry_traces) == len(traces)
+    for expected, observed in zip(traces, geometry_traces):
+        particles = observed["geometry"]["particles"]
+        assert [particle["id"] for particle in particles] == [1]
+        assert all(math.isfinite(value) for value in particles[0]["world_position_m"])
+        assert {key: value for key, value in observed.items() if key != "geometry"} == expected
+    physical_bytes = {p: v[1] for p, v in immutable_cache_files(before).items()}
+    for output_cache, records in ((fresh, rerun), (geometry_cache, geometry)):
+        assert records[-1]["state_digest"] == result["state_digest"]
+        assert records[-1]["execution_id"] == result["execution_id"]
+        assert {p: v[1] for p, v in immutable_cache_files(snapshot(output_cache)).items()} == physical_bytes
+        replay = execute(executable, "replay", "--cache", output_cache, "--frame", 2, "--substep", 0)[-1]
+        assert replay["state_digest"] == result["state_digest"] and replay["read_only"]
     empty, _ = make_scene(executable, fixture, directory, backend, "empty")
     assert execute(executable, "run", "--stage", "simulate", "--scene", empty, "--cache", directory / "empty",
                    "--backend", backend, "--frame-end", 1)[-1]["particle_count"] == 0
@@ -332,10 +350,23 @@ def execution_case(executable, fixture, directory, backend):
         profile = ".simulate-cuda-compatibility"
         shutil.copy2(source_cache / profile, grown_cache / profile)
     grown = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", grown_cache,
-                    "--backend", backend, "--frame-end", 2, "--resume", "--trace")
+                    "--backend", backend, "--frame-end", 2, "--resume", "--trace-geometry")
     assert grown[-1]["state_digest"] == emitted["state_digest"]
     assert grown[-1]["capacity_replays"] == 1
-    assert [(r["frame"], r["substep"]) for r in grown if r["event"] == "trace"] == [(0, 1), (1, 0), (1, 1), (2, 0)]
+    grown_traces = [record for record in grown if record["event"] == "trace"]
+    assert [(r["frame"], r["substep"]) for r in grown_traces] == [(0, 1), (1, 0), (1, 1), (2, 0)]
+    assert [record["accepted_step"] for record in grown_traces] == [1, 2, 3, 4]
+    assert [record["accepted_attempts"] for record in grown_traces] == [1, 2, 2, 3]
+    assert [[p["id"] for p in record["geometry"]["particles"]] for record in grown_traces] == [[], [1], [1], [1, 2]]
+    attempts = [record for record in grown if record["event"] == "attempt" and record["target_frame"] == 2]
+    assert [record["attempt_in_frame"] for record in attempts] == [1, 2, 3, 4]
+    assert [record["capacity_pass"] for record in attempts] == [0, 0, 1, 1]
+    assert [record["outcome"] for record in attempts] == ["accepted", "capacity", "accepted", "accepted"]
+    assert [record["retained"] for record in attempts] == [False, False, True, True]
+    assert [record["restarted_frame"] for record in attempts] == [False, True, False, False]
+    assert [record["start_clock"]["accepted_step"] for record in attempts] == [2, 3, 2, 3]
+    assert all(math.isfinite(record["work_wall_seconds"]) and record["work_wall_seconds"] >= 0
+               for record in attempts)
     grown_ten = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", grown_cache,
                         "--backend", backend, "--frame-end", 10, "--resume")[-1]
     source_ten = execute(executable, "run", "--stage", "simulate", "--scene", source, "--cache", source_cache,
@@ -467,6 +498,19 @@ def case_execution_validation(executable, fixture, directory, cuda):
     reconstructed = execute(executable, "replay", "--scene", scene, "--cache", cache, "--frame", 2, "--substep", 0)[-1]
     assert reconstructed["state_digest"] == completed["state_digest"]
     before = snapshot(cache)
+    invalid_geometry = (
+        ("check", "--cache", cache, "--trace-geometry"),
+        ("replay", "--cache", cache, "--frame", 2, "--substep", 0, "--trace-geometry"),
+        (*args, *initial, "--resume", "--trace-geometry", "--trace-geometry"),
+    )
+    for invalid_args in invalid_geometry:
+        result = invoke(executable, *invalid_args, success=False)
+        assert result["code"] == "E-CLI-INVALID_ARGUMENT"
+        if invalid_args == invalid_geometry[-1]:
+            assert result["field"] == "--trace-geometry"
+        else:
+            assert result["object"] == "--trace-geometry"
+        assert snapshot(cache) == before
     execute(executable, *args, *initial, success=False)  # Existing cache requires resume.
     moved = directory / ("copied" + executable.suffix)
     shutil.copy2(executable, moved)
@@ -521,8 +565,14 @@ def case_execution_validation(executable, fixture, directory, cuda):
     oversized_scene, _ = make_scene(executable, fixture, directory, "cpu", "capacity-failure")
     failed_cache = directory / "failed-cache"
     failed = execute(executable, "run", "--stage", "simulate", "--scene", oversized_scene, "--cache", failed_cache,
-                     "--backend", "cpu", "--frame-end", 1, success=False)
+                     "--backend", "cpu", "--frame-end", 1, "--trace-geometry", success=False)
     assert failed[-1]["name"] == "RESOURCE_EXHAUSTED"
+    assert not any(record["event"] == "trace" for record in failed)
+    rejected, = [record for record in failed if record["event"] == "attempt"]
+    assert rejected["outcome"] == "capacity" and rejected["failure_code"] == "RESOURCE_EXHAUSTED"
+    assert rejected["attempt_in_frame"] == 1 and rejected["start_clock"]["accepted_step"] == 0
+    assert not rejected["retained"] and not rejected["restarted_frame"]
+    assert math.isfinite(rejected["work_wall_seconds"]) and rejected["work_wall_seconds"] >= 0
     assert invoke(executable, "check", "--cache", failed_cache, "--frame", 0)["job_status"] == "failed"
     assert not (failed_cache / "frames" / "00000000000000000001.flmf").exists()
 
@@ -592,7 +642,7 @@ def lifecycle_case(executable, fixture, directory, backend):
     cache = directory / "lifecycle"
     run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
     frame_zero = ["check", "--cache", cache, "--frame", 0]
-    cancellable_simulation = RunningSimulation(executable, [*run, "--frame-end", 1])
+    cancellable_simulation = RunningSimulation(executable, [*run, "--frame-end", 1, "--trace"])
     try:
         _, published = cancellable_simulation.next_event("frame")
         assert published["frame"] == 0
@@ -627,6 +677,14 @@ def lifecycle_case(executable, fixture, directory, backend):
         assert 0 < cancel_exit_seconds <= 10, cancel_exit_seconds
         assert not cancellable_simulation.process.stdin.closed, "cancellation should not require EOF"
         assert records(cancellable_simulation.process.stderr.read()) == [cancelled]
+        complete_records, _ = cancellable_simulation.stdout_records_after_exit()
+        assert not any(record["event"] == "trace" for record in complete_records)
+        attempts = [record for record in complete_records if record["event"] == "attempt"]
+        assert attempts, "cancelled frame lost actual attempt work"
+        for index, attempt in enumerate(attempts, start=1):
+            assert attempt["target_frame"] == 1 and attempt["attempt_in_frame"] == index
+            assert attempt["outcome"] == "accepted" and not attempt["retained"]
+            assert attempt["start_clock"]["accepted_step"] == index - 1
         _, final_line = cancellable_simulation.lines.get(timeout=10)
         assert final_line == b"", "unexpected stdout after the terminal record"
     finally:

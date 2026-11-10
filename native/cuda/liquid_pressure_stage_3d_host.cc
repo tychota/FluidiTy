@@ -74,6 +74,7 @@ struct BoundedCudaPressureAccess3D {
                 .max_volume_scaled_residual = state.maximum_scaled_residual,
                 .max_cell_constraint_defect = state.maximum_defect,
             },
+        .frozen_measurement = prepared.frozen_measurement,
     };
   }
 };

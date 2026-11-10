@@ -221,6 +221,15 @@ TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {
   ASSERT_GT(scheduler->committed().cells.size(), 0);
   EXPECT_GT(scheduler->committed().cells[0].previous_pressure, 3);
   EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
+  const auto& measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_EQ(measurement->accepted_clock, scheduler->committed().clock);
+  EXPECT_DOUBLE_EQ(measurement->accepted_dt_seconds, 0.01);
+  ASSERT_TRUE(measurement->step_start_capillary_bound_seconds.has_value());
+  EXPECT_NEAR(*measurement->step_start_capillary_bound_seconds, 28.209479177387813, 1e-12);
+  EXPECT_GT(measurement->pressure_rhs_l2_m3_per_s, 0);
+  EXPECT_FALSE(measurement->piston_pose.has_value());
+  EXPECT_DOUBLE_EQ(measurement->step_start_inward_piston_flux_m3_per_s, 0);
 }
 class LiquidStageFailure3D : public testing::TestWithParam<int> {};
 TEST_P(LiquidStageFailure3D, CommittedInventoryUnchanged) {
@@ -672,10 +681,39 @@ TEST(LiquidSubstep3D, CompleteBackendIsRequiredAndRealPressureNonconvergenceRetr
   );
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(scheduler.ok());
-  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kAborted);
+  std::vector<LiquidAttemptMeasurement3D> attempts;
+  const LiquidProgressObserver3D observer{
+      .context = &attempts,
+      .observe_attempt =
+          [](void* context, const LiquidAttemptMeasurement3D& attempt) {
+            static_cast<decltype(attempts)*>(context)->push_back(attempt);
+          },
+  };
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01, observer).code(), absl::StatusCode::kAborted);
   EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
   EXPECT_EQ(scheduler->diagnostics().attempts, 3);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
   EXPECT_TRUE(scheduler->committed() == initial);
+  ASSERT_EQ(attempts.size(), 3);
+  constexpr std::array attempted_durations{0.01, 0.005, 0.0025};
+  for (std::size_t index = 0; index < attempts.size(); ++index) {
+    const auto& attempt = attempts[index];
+    EXPECT_EQ(attempt.start_clock, initial.clock);
+    EXPECT_EQ(attempt.attempt_in_frame, index + 1);
+    EXPECT_EQ(attempt.capacity_pass, 0);
+    EXPECT_DOUBLE_EQ(attempt.attempted_dt_seconds, attempted_durations[index]);
+    EXPECT_TRUE(std::isfinite(attempt.work_wall_seconds));
+    EXPECT_GE(attempt.work_wall_seconds, 0);
+    EXPECT_EQ(attempt.failure_code, absl::StatusCode::kAborted);
+    if (index + 1 == attempts.size()) {
+      EXPECT_EQ(attempt.disposition, LiquidAttemptDisposition3D::kFatal);
+      EXPECT_FALSE(attempt.retry_dt_seconds.has_value());
+    } else {
+      EXPECT_EQ(attempt.disposition, LiquidAttemptDisposition3D::kRetryDt);
+      ASSERT_TRUE(attempt.retry_dt_seconds.has_value());
+      EXPECT_DOUBLE_EQ(*attempt.retry_dt_seconds, attempted_durations[index + 1]);
+    }
+  }
 }
 #if defined(_WIN32) && defined(_DEBUG)
 std::size_t scheduler_allocations = 0;
