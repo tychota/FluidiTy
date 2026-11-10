@@ -29,6 +29,8 @@ struct Staging {
   std::optional<LiquidRecords3D<LiquidFaceValidity3D>> projected_gather_validity;
   // Rebuilt from the current attempt's particles and used through gather.
   std::optional<PreparedIsolatedDrop3D> isolated_drop;
+  // Keep the restricted old run across workspace reuse for the full and projected gathers.
+  std::optional<LiquidRecords3D<LiquidBoundaryParticleGather3D>> isolated_drop_restricted_gathers;
   // Separate owned link copy used by pressure and velocity correction.
   std::optional<LiquidRecords3D<MacPressureFace3D>> isolated_drop_pressure_faces;
   std::size_t reserved_bytes = 0;

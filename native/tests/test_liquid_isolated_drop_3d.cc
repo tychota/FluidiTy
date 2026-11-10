@@ -297,6 +297,85 @@ TEST(IsolatedDrop3D, ProjectedChangeRetainsArchivedDropAtFrameThree) {
   EXPECT_NEAR(quadrupole / volume, 0.00028263630776289309, 3e-12);
 }
 
+TEST(IsolatedDrop3D, GroupedProjectedChangeMatchesScalarAndReplaysRejectedRun) {
+  const auto seed = DropState();
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
+  scene.surface_tension = 1;
+  scene.world_acceleration = {};
+  LiquidStepOptions3D options;
+  options.capacities = {1024, 128, 4096, 24576, 0};
+  auto scalar = LiquidSubstepScheduler3D::Create(*seed, scene, options);
+  ASSERT_TRUE(scalar.ok()) << scalar.status();
+  ASSERT_TRUE(scalar->AdvanceFrame(1.0 / 120).ok());
+  const auto scalar_bytes = EncodeLiquidState3D(scalar->committed());
+  ASSERT_TRUE(scalar_bytes.ok()) << scalar_bytes.status();
+
+  enum class GatherHistory {
+    kRestrictedOld,
+    kFullOld,
+    kProjected,
+    kOrdinary
+  };
+  struct Audit {
+    std::vector<GatherHistory> histories;
+    std::vector<std::size_t> run_sizes;
+    std::size_t scalar_calls = 0;
+    bool reject_projected = false;
+    bool rejected = false;
+  };
+  for (const bool reject_projected : {false, true}) {
+    SCOPED_TRACE(reject_projected);
+    Audit audit{.reject_projected = reject_projected};
+    auto backend = CpuLiquidSubstepBackend3D();
+    backend.context = &audit;
+    backend.gather =
+        [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+          ++static_cast<Audit*>(context)->scalar_calls;
+          return GatherLiquidBoundaryParticles3D(inputs, workspace);
+        };
+    backend.gather_run = [](void* context,
+                            const LiquidBoundaryGatherViewInputs3D& inputs,
+                            LiquidBoundaryWorkspace3D& workspace) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+      auto& audit = *static_cast<Audit*>(context);
+      const bool reads_old = inputs.new_history.face_velocities.data() == inputs.old_history.face_velocities.data();
+      const bool full_old = inputs.new_history.validity.data() == inputs.old_history.validity.data();
+      const bool continues_change = !audit.histories.empty() && audit.histories.back() == GatherHistory::kFullOld;
+      const auto history = reads_old ? (full_old ? GatherHistory::kFullOld : GatherHistory::kRestrictedOld)
+                                     : (continues_change ? GatherHistory::kProjected : GatherHistory::kOrdinary);
+      audit.histories.push_back(history);
+      audit.run_sizes.push_back(inputs.particles.size());
+      if (history == GatherHistory::kProjected && audit.reject_projected && !audit.rejected) {
+        audit.rejected = true;
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      return GatherLiquidBoundaryParticles3D(inputs, workspace);
+    };
+    auto grouped = LiquidSubstepScheduler3D::Create(*seed, scene, options, backend);
+    ASSERT_TRUE(grouped.ok()) << grouped.status();
+    const auto status = grouped->AdvanceFrame(1.0 / 120);
+    ASSERT_TRUE(status.ok()) << status;
+    const auto restricted = std::ranges::find(audit.histories, GatherHistory::kRestrictedOld);
+    ASSERT_NE(restricted, audit.histories.end());
+    ASSERT_GE(audit.histories.end() - restricted, 3);
+    EXPECT_EQ(restricted[1], GatherHistory::kFullOld);
+    EXPECT_EQ(restricted[2], GatherHistory::kProjected);
+    const auto offset = static_cast<std::size_t>(restricted - audit.histories.begin());
+    EXPECT_GE(audit.run_sizes[offset], 2);
+    EXPECT_EQ(audit.run_sizes[offset], audit.run_sizes[offset + 1]);
+    EXPECT_EQ(audit.run_sizes[offset], audit.run_sizes[offset + 2]);
+    EXPECT_EQ(audit.rejected, reject_projected);
+    if (reject_projected) {
+      EXPECT_GT(audit.scalar_calls, 0);
+    } else {
+      EXPECT_LT(audit.scalar_calls, seed->particles.size());
+    }
+    const auto grouped_bytes = EncodeLiquidState3D(grouped->committed());
+    ASSERT_TRUE(grouped_bytes.ok()) << grouped_bytes.status();
+    EXPECT_TRUE(std::ranges::equal(scalar_bytes->values(), grouped_bytes->values()));
+  }
+}
 TEST(IsolatedDrop3D, PressureLiftsUseTheSignedLatticeAndRejectSubnormalProducts) {
   // This cube's exact, scaled covariance fits a sphere of radius 1/8 m.
   std::array<LiquidParticleState3D, 8> particles{};

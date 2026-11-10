@@ -187,6 +187,7 @@ absl::StatusOr<Staging> Staging::Create(
     staging.wetted_piston.emplace(std::move(*workspace));
   }
   if (needs_isolated_drop) {
+    STEP_TRY(Reserve(staging.isolated_drop_restricted_gathers.emplace(), capacities.particles, staging.reserved_bytes));
     STEP_TRY(Reserve(staging.isolated_drop_pressure_faces.emplace(), capacities.faces, staging.reserved_bytes));
   }
   return staging;
@@ -701,6 +702,9 @@ absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D gr
   STEP_TRY(staging.particles.Resize(trial.particles.size()));
   STEP_TRY(staging.gathered.Resize(trial.particles.size()));
   STEP_TRY(staging.particle_distances.Resize(trial.particles.size()));
+  if (staging.isolated_drop_restricted_gathers) {
+    STEP_TRY(staging.isolated_drop_restricted_gathers->Resize(trial.particles.size()));
+  }
   if (staging.regular_transport) {
     STEP_TRY(staging.regular_transport->Resize(trial.particles.size()));
   }
