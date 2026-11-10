@@ -723,14 +723,17 @@ __global__ void LiquidBoundaryFaceMap3DKernel(
   ReportParallelTransferError(*report, slot, error);
 }
 
-__global__ void LiquidBoundarySingleParticleGather3DKernel(
+template <bool kGatherRun, typename ParticleResult>
+__global__ void LiquidBoundaryParticleGather3DKernel(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     const BoundaryTransferParticle3D* particles,
     BoundaryTransferFaceResult3D* face_results,
-    BoundaryTransferParticleResult3D* particle_results,
+    ParticleResult* particle_results,
     BoundaryTransferReport3D* report
 ) {
+  const std::size_t particle_index = kGatherRun ? blockIdx.x : 0;
+  const auto& particle = particles[particle_index];
   const HistoryView old_history{faces, BoundaryHistoryStage3D::kOld};
   const HistoryView new_history{faces, BoundaryHistoryStage3D::kNew};
   const numeric::span<const BoundaryTransferFace3D> anchors(faces, query->face_count);
@@ -741,28 +744,28 @@ __global__ void LiquidBoundarySingleParticleGather3DKernel(
   if (sample_lane < kGatherSampleCount) {
     const std::size_t component = sample_lane / kGatherSamplesPerComponent;
     const std::size_t sample_index = sample_lane % kGatherSamplesPerComponent;
-    const auto& sample = particles[0].stencils[component][sample_index];
-    prepared_samples[component][sample_index] = PrepareGatherSample(
-        old_history,
-        new_history,
-        anchors,
-        sample.face_slot,
-        component,
-        particles[0].particle.side_tag
-    );
+    const auto& sample = particle.stencils[component][sample_index];
+    prepared_samples[component][sample_index] =
+        PrepareGatherSample(old_history, new_history, anchors, sample.face_slot, component, particle.particle.side_tag);
   }
   __syncthreads();
   if (sample_lane == 0) {
-    InitializeTransferOutputs(*query, face_results, particle_results, *report);
-    report->error = GatherParticle<true>(
-        *query,
-        old_history,
-        new_history,
-        anchors,
-        particles[0],
-        &prepared_samples,
-        particle_results[0].gathered
-    );
+    auto& result = particle_results[particle_index];
+    if constexpr (kGatherRun) {
+      result = {};
+#if defined(__CUDA_ARCH__)
+      result.compiled_architecture = __CUDA_ARCH__;
+#endif
+    } else {
+      InitializeTransferOutputs(*query, face_results, particle_results, *report);
+    }
+    const auto error =
+        GatherParticle<true>(*query, old_history, new_history, anchors, particle, &prepared_samples, result.gathered);
+    if constexpr (kGatherRun) {
+      result.error = error;
+    } else {
+      report->error = error;
+    }
   }
 }
 }  // namespace
@@ -868,14 +871,35 @@ int LaunchLiquidBoundarySingleParticleGather3D(
     void* stream
 ) {
   cudaGetLastError();
-  LiquidBoundarySingleParticleGather3DKernel<<<1, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
-      query,
-      faces,
-      particles,
-      face_results,
-      particle_results,
-      report
-  );
+  LiquidBoundaryParticleGather3DKernel<false>
+      <<<1, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+          query,
+          faces,
+          particles,
+          face_results,
+          particle_results,
+          report
+      );
+  return static_cast<int>(cudaGetLastError());
+}
+int LaunchLiquidBoundaryGatherRun3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryGatherRunResult3D* results,
+    unsigned particle_count,
+    void* stream
+) {
+  cudaGetLastError();
+  LiquidBoundaryParticleGather3DKernel<true>
+      <<<particle_count, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+          query,
+          faces,
+          particles,
+          nullptr,
+          results,
+          nullptr
+      );
   return static_cast<int>(cudaGetLastError());
 }
 }  // namespace fluidity::cuda_internal

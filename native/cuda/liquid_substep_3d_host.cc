@@ -39,7 +39,8 @@ absl::StatusOr<CudaLiquidEpochLease3D> CudaLiquidSubstepBackend3D::AcquireCommit
 void CudaLiquidSubstepBackend3D::CollectRetired() noexcept {
   impl_->arena.CollectRetired();
 }
-LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
+LiquidSubstepBackend3D
+CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gathered_field_batches) {
   LiquidSubstepBackend3D operations{
       .context = impl_.get(),
       .sample_field =
@@ -221,6 +222,15 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
             );
           },
   };
+  if (enable_gather_runs) {
+    operations.gather_run =
+        [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+          return cuda_internal::GatherLiquidRun3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+        };
+    if (enable_gathered_field_batches) {
+      operations.sample_gathered_fields = operations.sample_field_batch;
+    }
+  }
   if (impl_->measure_job) {
     operations.set_work_phase = [](void* context, LiquidWorkPhase3D phase) {
       static_cast<Impl*>(context)->arena.SetWorkPhase(phase);

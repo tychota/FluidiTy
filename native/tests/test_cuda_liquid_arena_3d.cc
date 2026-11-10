@@ -1399,7 +1399,7 @@ TEST_F(CudaLiquidTransferStages3D, GatherUsesIndependentOldNewSidesWallsAndLowMa
     EXPECT_DOUBLE_EQ(previous[0].new_pic_velocity.x, saved);
   }
 }
-TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailureOrder) {
+TEST_F(CudaLiquidTransferStages3D, SingleAndGroupedGatherMatchSerialBitsAndFailureOrder) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
   auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
@@ -1420,7 +1420,9 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     next[slot] = -1 + face_slot * face_slot * face_slot / 65536;
   }
   const auto particle = TransferParticle({2, 2, 2}, {1, 2, 3});
-  const std::array particles{particle, particle};
+  auto second_particle = particle;
+  second_particle.transfer.trial_world_position.y += 0.25;
+  const std::array particles{particle, second_particle};
   LiquidBoundaryGatherViewInputs3D inputs{
       grid->view(),
       std::span(particles).first(1),
@@ -1443,7 +1445,7 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
       EXPECT_EQ(std::bit_cast<std::uint64_t>(actual.*component), std::bit_cast<std::uint64_t>(expected.*component));
     }
   };
-  for (const auto& expected : serial->particles) {
+  const auto expect_gather_bits = [&](const auto& gathered, const auto& expected) {
     expect_vector_bits(gathered.new_pic_velocity, expected.new_pic_velocity);
     expect_vector_bits(gathered.grid_velocity_increment, expected.grid_velocity_increment);
     expect_vector_bits(gathered.particle_minus_old_pic_velocity, expected.particle_minus_old_pic_velocity);
@@ -1455,7 +1457,17 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     EXPECT_EQ(gathered.old_pic_fallback, expected.old_pic_fallback);
     EXPECT_EQ(gathered.new_pic_fallback, expected.new_pic_fallback);
     EXPECT_EQ(gathered.low_mass_fallback, expected.low_mass_fallback);
+  };
+  expect_gather_bits(gathered, serial->particles[0]);
+  auto grouped = cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(grouped.ok()) << grouped.status();
+  ASSERT_EQ(grouped->particles.size(), 2);
+  EXPECT_EQ(grouped->old_pic_fallback_particle_count, serial->old_pic_fallback_particle_count);
+  EXPECT_EQ(grouped->new_pic_fallback_particle_count, serial->new_pic_fallback_particle_count);
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    expect_gather_bits(grouped->particles[index], serial->particles[index]);
   }
+  const auto saved_second_gather = grouped->particles[1];
 
   // Finite X samples overflow the X increment. Later Y samples have no donor or wall.
   old.fill(-0x1p1023);
@@ -1473,6 +1485,11 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     inputs.particles = std::span(particles).first(particle_count);
     EXPECT_EQ(cuda_internal::GatherLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
   }
+  EXPECT_EQ(
+      cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  expect_gather_bits(grouped->particles[1], saved_second_gather);
   old = next;
   for (const std::size_t particle_count : {1, 2}) {
     inputs.particles = std::span(particles).first(particle_count);
@@ -1481,6 +1498,11 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
         absl::StatusCode::kFailedPrecondition
     );
   }
+  EXPECT_EQ(
+      cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  expect_gather_bits(grouped->particles[1], saved_second_gather);
 }
 TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
   auto arena = CudaLiquidArena3D::Create(capacities);

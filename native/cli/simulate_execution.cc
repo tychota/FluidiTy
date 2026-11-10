@@ -728,7 +728,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       return backend.status();
     }
     cuda_backend = std::move(*backend);
-    operations = cuda_backend->operations();
+    operations = cuda_backend->operations(/*enable_gather_runs=*/true, /*enable_gathered_field_batches=*/true);
   }
 #endif
   auto scheduler = LiquidSubstepScheduler3D::Create(starting, scene.View().scene, options, operations);

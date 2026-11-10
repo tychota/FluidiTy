@@ -197,6 +197,15 @@ struct LiquidSubstepBackend3D {
   SampleLatticePlane* sample_lattice_plane = nullptr;  // Required for horizontal-plane scenes.
   // Optional allocation-free diagnostic boundary, with kCount outside attempts.
   void (*set_work_phase)(void*, LiquidWorkPhase3D) = nullptr;
+  // Optional speculative gather for two or more consecutive particles sharing
+  // wall side and both velocity histories. Return one record per input in order
+  // with a borrow valid across scalar and batched field samples. Failed runs leave
+  // the bank intact. Internal is fatal; other failures allow ordered scalar replay.
+  Gather* gather_run = nullptr;
+  // Optional field batches for successfully grouped particles, in their
+  // original order and bounded by kLiquidFieldBatchCapacity3D. Internal is
+  // fatal; other failures allow scalar replay without publishing partial data.
+  SampleFieldBatch* sample_gathered_fields = nullptr;
 };
 // CPU operations share the accepted bounded operators and true-gradient J/contact.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();

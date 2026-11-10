@@ -1,6 +1,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <numbers>
@@ -328,39 +329,96 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, step_duration));
     // Thin-slab stencil nodes can be shared by opposite incident walls. Reuse
     // the two frozen wall histories only within a consecutive run on one side.
-    // Copy each result before reusing the bounded gather bank.
     std::optional<std::int64_t> sampled_wall_side;
+    std::span<const LiquidBoundaryParticleGather3D> pending_gathers;
+    std::size_t attempted_run_end = 0;
+    std::size_t field_chunk_end = 0;
+    bool field_chunk_ready = false;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
-      const auto side = trial.particles[index].side_tag;
+      const auto& particle = trial.particles[index];
+      const auto side = particle.side_tag;
       if (sampled_wall_side != side) {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
         sampled_wall_side = side;
       }
-      const auto gather = backend.gather(
-          backend.context,
-          {
-              .mac_grid = grid,
-              .particles = staging.particles.values().subspan(index, 1),
-              .old_time = old_time,
-              .new_time = new_time,
-              .old_history = old_history,
-              .new_history = new_history,
-          },
-          boundary
-      );
-      if (!gather.ok()) {
-        return gather.status();
+      LiquidBoundaryGatherViewInputs3D gather_inputs{
+          .mac_grid = grid,
+          .particles = staging.particles.values().subspan(index, 1),
+          .old_time = old_time,
+          .new_time = new_time,
+          .old_history = old_history,
+          .new_history = new_history,
+      };
+      if (backend.gather_run && index >= attempted_run_end) {
+        attempted_run_end = index + 1;
+        while (attempted_run_end < trial.particles.size() && trial.particles[attempted_run_end].side_tag == side) {
+          ++attempted_run_end;
+        }
+        const auto run_count = attempted_run_end - index;
+        if (run_count > 1) {
+          auto run_inputs = gather_inputs;
+          run_inputs.particles = staging.particles.values().subspan(index, run_count);
+          const auto run = backend.gather_run(backend.context, run_inputs, boundary);
+          if (run.ok()) {
+            if (run->particles.size() != run_count) {
+              return Error(absl::StatusCode::kInternal);
+            }
+            pending_gathers = run->particles;
+          } else if (run.status().code() == absl::StatusCode::kInternal) {
+            return run.status();
+          }
+          // Replay a reusable rejection so an earlier scalar field error wins.
+        }
       }
-      staging.gathered[index] = gather->particles[0];
-      diagnostics.old_pic_fallback_count += gather->old_pic_fallback_particle_count;
-      diagnostics.new_pic_fallback_count += gather->new_pic_fallback_particle_count;
-      const auto distance = backend.sample_field(
-          backend.context,
-          scene.field,
-          trial.particles.values(),
-          trial.particles[index].world_position
-      );
+      const bool used_grouped_gather = !pending_gathers.empty();
+      if (used_grouped_gather) {
+        const auto& gathered = pending_gathers.front();
+        staging.gathered[index] = gathered;
+        diagnostics.old_pic_fallback_count += gathered.old_pic_fallback;
+        diagnostics.new_pic_fallback_count += gathered.new_pic_fallback;
+        pending_gathers = pending_gathers.subspan(1);
+      } else {
+        const auto gather = backend.gather(backend.context, gather_inputs, boundary);
+        if (!gather.ok()) {
+          return gather.status();
+        }
+        staging.gathered[index] = gather->particles[0];
+        diagnostics.old_pic_fallback_count += gather->old_pic_fallback_particle_count;
+        diagnostics.new_pic_fallback_count += gather->new_pic_fallback_particle_count;
+      }
+      if (used_grouped_gather && backend.sample_gathered_fields && index >= field_chunk_end) {
+        const auto field_count = std::min(kLiquidFieldBatchCapacity3D, attempted_run_end - index);
+        field_chunk_end = index + field_count;
+        field_chunk_ready = false;
+        if (field_count > 1) {
+          std::array<Vec3, kLiquidFieldBatchCapacity3D> field_positions;
+          for (std::size_t offset = 0; offset < field_count; ++offset) {
+            field_positions[offset] = trial.particles[index + offset].world_position;
+          }
+          const auto distances = staging.particle_distances.values().subspan(index, field_count);
+          const auto status = backend.sample_gathered_fields(
+              backend.context,
+              scene.field,
+              trial.particles.values(),
+              std::span(field_positions).first(field_count),
+              distances
+          );
+          if (status.code() == absl::StatusCode::kInternal) {
+            return status;
+          }
+          // Batch validation can see a later query failure before evaluating
+          // an earlier query. Replay this chunk in scalar order on rejection.
+          field_chunk_ready = status.ok() && std::ranges::all_of(distances, [](double distance) {
+                                return std::isfinite(distance);
+                              });
+        }
+      }
+      if (field_chunk_ready && index < field_chunk_end) {
+        continue;
+      }
+      const auto distance =
+          backend.sample_field(backend.context, scene.field, trial.particles.values(), particle.world_position);
       if (!distance.ok()) {
         return distance.status();
       }

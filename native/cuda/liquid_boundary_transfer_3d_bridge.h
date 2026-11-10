@@ -43,6 +43,15 @@ struct BoundaryTransferParticleResult3D {
   CompatibleMacFaceSample3D stencils[3][27]{};
   LiquidBoundaryParticleGather3D gathered{};
 };
+// A gather run reuses particle result scratch, with only the fields it copies back.
+struct BoundaryGatherRunResult3D {
+  LiquidBoundaryParticleGather3D gathered{};
+  boundary_internal::Error error{};
+  int compiled_architecture{};
+};
+static_assert(sizeof(BoundaryGatherRunResult3D) <= sizeof(BoundaryTransferParticleResult3D));
+static_assert(alignof(BoundaryGatherRunResult3D) <= alignof(BoundaryTransferParticleResult3D));
+
 // Update records reuse the checked transfer particle ranges. Identity, mass and
 // reference volume stay with the host particle.
 struct BoundaryUpdateParticle3D {
@@ -153,6 +162,15 @@ int LaunchLiquidBoundarySingleParticleGather3D(
     BoundaryTransferFaceResult3D* face_results,
     BoundaryTransferParticleResult3D* particle_results,
     BoundaryTransferReport3D* report,
+    void* stream
+);
+// One block per particle, with one compact result and error in input order.
+int LaunchLiquidBoundaryGatherRun3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryGatherRunResult3D* results,
+    unsigned particle_count,
     void* stream
 );
 }  // namespace fluidity::cuda_internal

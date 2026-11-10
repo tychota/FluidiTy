@@ -53,10 +53,8 @@ struct BoundedTransferAccess {
     workspace.RecordHighWater();
     return {bank.masses.values(), bank.velocities.values(), bank.validity.values()};
   }
-  static LiquidBoundaryGatherView3D Gather(
-      LiquidBoundaryWorkspace3D& workspace,
-      std::span<const cuda_internal::BoundaryTransferParticleResult3D> particles
-  ) {
+  template <typename ParticleResult>
+  static LiquidBoundaryGatherView3D Gather(LiquidBoundaryWorkspace3D& workspace, std::span<ParticleResult> particles) {
     auto& bank = workspace.gathered_[1 - workspace.gather_bank_];
     (void)bank.Resize(particles.size());
     LiquidBoundaryGatherView3D result{bank.values()};
@@ -163,7 +161,8 @@ struct StagedTransfer {
   std::span<BoundaryTransferFace3D> faces;
   std::span<BoundaryTransferParticle3D> particles;
 };
-absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_count, std::size_t particle_count) {
+absl::StatusOr<StagedTransfer>
+Stage(CudaLiquidArena3D& arena, std::size_t face_count, std::size_t particle_count, bool gather_run = false) {
   TRANSFER_TRY(ValidateCapacity(face_count, particle_count));
   if (face_count > arena.capacities().faces || particle_count > arena.capacities().particles) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -172,11 +171,17 @@ absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_
   const auto faces = CheckedLiquidRange3D<BoundaryTransferFace3D>(arena, Range::kTransferFaces, face_count);
   const auto particles =
       CheckedLiquidRange3D<BoundaryTransferParticle3D>(arena, Range::kTransferParticles, particle_count);
-  const auto face_results =
-      CheckedLiquidRange3D<BoundaryTransferFaceResult3D>(arena, Range::kTransferFaceResults, face_count);
-  const auto particle_results =
-      CheckedLiquidRange3D<BoundaryTransferParticleResult3D>(arena, Range::kTransferParticleResults, particle_count);
-  const auto report = CheckedLiquidRange3D<BoundaryTransferReport3D>(arena, Range::kTransferReport, 1);
+  const auto face_results = CheckedLiquidRange3D<BoundaryTransferFaceResult3D>(
+      arena,
+      Range::kTransferFaceResults,
+      gather_run ? 0 : face_count
+  );
+  const auto particle_results = CheckedLiquidRange3D<BoundaryTransferParticleResult3D>(
+      arena,
+      Range::kTransferParticleResults,
+      gather_run ? 0 : particle_count
+  );
+  const auto report = CheckedLiquidRange3D<BoundaryTransferReport3D>(arena, Range::kTransferReport, gather_run ? 0 : 1);
   if (!query.ok()) {
     return query.status();
   }
@@ -211,6 +216,12 @@ absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_
       particles->pinned,
   };
 }
+absl::Status UploadTransfer(CudaLiquidArena3D& arena, const StagedTransfer& staged) {
+  TRANSFER_TRY(CopyLiquidRange3D(arena, staged.query_range, true));
+  TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_range, true));
+  return CopyLiquidRange3D(arena, staged.particle_range, true);
+}
+
 // Never touch pinned storage after a failed asynchronous submission/fence. Every
 // CUDA result poisons the arena first; arithmetic rejection is separately reusable.
 absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
@@ -223,9 +234,7 @@ absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
   if (parallel) {
     staged.report_range.pinned[0] = {};
   }
-  TRANSFER_TRY(CopyLiquidRange3D(arena, staged.query_range, true));
-  TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_range, true));
-  TRANSFER_TRY(CopyLiquidRange3D(arena, staged.particle_range, true));
+  TRANSFER_TRY(UploadTransfer(arena, staged));
   if (parallel) {
     TRANSFER_TRY(CopyLiquidRange3D(arena, staged.report_range, true));
   }
@@ -419,10 +428,12 @@ absl::StatusOr<NormalizedLiquidMacFacesView3D> NormalizeLiquid3D(
   TRANSFER_TRY(Execute(arena, *staged));
   return Access::Normalize(workspace, staged->face_result_range.pinned);
 }
-absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid3D(
+namespace {
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid(
     CudaLiquidArena3D& arena,
     const LiquidBoundaryGatherViewInputs3D& inputs,
-    LiquidBoundaryWorkspace3D& workspace
+    LiquidBoundaryWorkspace3D& workspace,
+    bool gather_run
 ) {
   TRANSFER_TRY(arena.RecordRuntimeResult(cudaSuccess));
   TRANSFER_TRY(Access::Check(workspace, inputs.mac_grid.face_count(), inputs.particles.size()));
@@ -435,7 +446,7 @@ absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid3D(
   }
   TRANSFER_TRY(CheckHistory(arena, inputs.old_history, inputs.mac_grid.face_count(), inputs.old_time));
   TRANSFER_TRY(CheckHistory(arena, inputs.new_history, inputs.mac_grid.face_count(), inputs.new_time));
-  auto staged = Stage(arena, inputs.mac_grid.face_count(), inputs.particles.size());
+  auto staged = Stage(arena, inputs.mac_grid.face_count(), inputs.particles.size(), gather_run);
   if (!staged.ok()) {
     return staged.status();
   }
@@ -446,8 +457,53 @@ absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid3D(
   StageHistory(*staged, inputs.old_history, true);
   StageHistory(*staged, inputs.new_history, false);
   TRANSFER_TRY(StageParticles(inputs.mac_grid, inputs.particles, *staged, false));
-  TRANSFER_TRY(Execute(arena, *staged));
-  return Access::Gather(workspace, staged->particle_result_range.pinned);
+  if (!gather_run) {
+    TRANSFER_TRY(Execute(arena, *staged));
+    return Access::Gather(workspace, staged->particle_result_range.pinned);
+  }
+  const auto results =
+      CheckedLiquidRange3D<BoundaryGatherRunResult3D>(arena, Range::kTransferParticleResults, inputs.particles.size());
+  if (!results.ok()) {
+    return results.status();
+  }
+  TRANSFER_TRY(UploadTransfer(arena, *staged));
+  TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryGatherRun3D(
+      staged->query_range.device,
+      staged->face_range.device,
+      staged->particle_range.device,
+      results->device,
+      static_cast<unsigned>(inputs.particles.size()),
+      arena.stream()
+  )));
+  TRANSFER_TRY(CopyLiquidRange3D(arena, *results, false));
+  TRANSFER_TRY(FinishLiquidDispatch3D(arena));
+  // Inspect the completed reports in particle order before publishing the bank.
+  for (const auto& result : results->pinned) {
+    if (result.compiled_architecture != 1200) {
+      return Error(absl::StatusCode::kFailedPrecondition);
+    }
+    TRANSFER_TRY(boundary_internal::ArithmeticStatus(result.error, true));
+  }
+  return Access::Gather(workspace, results->pinned);
+}
+}  // namespace
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid3D(
+    CudaLiquidArena3D& arena,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace
+) {
+  return GatherLiquid(arena, inputs, workspace, false);
+}
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquidRun3D(
+    CudaLiquidArena3D& arena,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace
+) {
+  TRANSFER_TRY(arena.RecordRuntimeResult(cudaSuccess));
+  if (inputs.particles.size() < 2) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  return GatherLiquid(arena, inputs, workspace, true);
 }
 absl::StatusOr<double> PredictMissingLiquidFace3D(
     CudaLiquidArena3D& arena,
