@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "../src/liquid_boundary_backend.h"
+#include "../src/liquid_substep_3d_internal.h"
 #include "liquid_arena_dispatch_3d.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
 #include "liquid_transfer_stages_3d.h"
@@ -648,20 +649,7 @@ absl::Status UpdateLiquidParticles3D(
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }
-  for (std::size_t index = 0; index < particles.size(); ++index) {
-    const auto& particle = particles[index];
-    const auto& gather = inputs.gathered[index];
-    if (!IsFinite(particle.world_position) || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
-        || !std::isfinite(inputs.liquid_distances[index]) || !IsFinite(gather.new_pic_velocity)
-        || !IsFinite(gather.particle_minus_old_pic_velocity)) {
-      return Error(absl::StatusCode::kInvalidArgument);
-    }
-    for (auto row : kRows) {
-      if (!IsFinite(gather.velocity_gradient.*row) || !IsFinite(gather.fitted_velocity_slopes.*row)) {
-        return Error(absl::StatusCode::kInvalidArgument);
-      }
-    }
-  }
+  TRANSFER_TRY(liquid_step_internal::ValidateParticleUpdateRecords(inputs, particles));
   TRANSFER_TRY(ValidateCapacity(0, particles.size()));
   if (particles.size() > arena.capacities().particles) {
     return Error(absl::StatusCode::kResourceExhausted);

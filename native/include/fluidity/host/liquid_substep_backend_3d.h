@@ -215,6 +215,6 @@ struct LiquidSubstepBackend3D {
   // fatal; other failures allow scalar replay without publishing partial data.
   SampleFieldBatch* sample_gathered_fields = nullptr;
 };
-// CPU operations share the accepted bounded operators and true-gradient J/contact.
+// CPU operations share the bounded operators and the swept-contact particle update.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

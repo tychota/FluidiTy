@@ -157,6 +157,43 @@ void CheckRegularCellTransportErrorOrder(Update update) {
 }
 
 template <typename Update>
+void CheckRegularCellTransportRejectsInvalidParticleInputs(Update update) {
+  const double invalid_value = std::numeric_limits<double>::infinity();
+  const auto reject = [&](auto invalidate) {
+    RegularCellUpdateFixture3D fixture;
+    fixture.transport[0].low_face_normal_velocity.x = 10;
+    fixture.transport[0].high_face_normal_velocity.x = 10;
+    // The second particle is inactive. Its invalid carrier data must still be
+    // found before the first particle can request a shorter step.
+    invalidate(fixture);
+    const auto before = fixture.particles;
+    EXPECT_EQ(update(fixture.inputs, fixture.particles).code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(fixture.particles, before);
+  };
+  reject([](auto& fixture) {
+    fixture.particles[1].volume_ratio = 0;
+  });
+  reject([&](auto& fixture) {
+    fixture.particles[1].world_position.z = invalid_value;
+  });
+  reject([&](auto& fixture) {
+    fixture.distances[1] = invalid_value;
+  });
+  reject([&](auto& fixture) {
+    fixture.gathered[1].new_pic_velocity.z = invalid_value;
+  });
+  reject([&](auto& fixture) {
+    fixture.gathered[1].particle_minus_old_pic_velocity.x = invalid_value;
+  });
+  reject([&](auto& fixture) {
+    fixture.gathered[1].velocity_gradient.y_row.z = invalid_value;
+  });
+  reject([&](auto& fixture) {
+    fixture.gathered[1].fitted_velocity_slopes.z_row.y = invalid_value;
+  });
+}
+
+template <typename Update>
 void CheckAliasedRegularCellTransport(Update update) {
   RegularCellUpdateFixture3D fixture;
   union {

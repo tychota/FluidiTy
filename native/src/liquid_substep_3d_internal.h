@@ -26,6 +26,12 @@ struct Staging {
   static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false);
 };
 bool Finite(Vec3 value);
+// Check finite carrier data and positive start-time J in the checked particle
+// order. Inputs must have one gathered value and distance per particle.
+absl::Status ValidateParticleUpdateRecords(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<const LiquidParticleState3D> particles
+);
 double Component(Vec3 value, FaceNormalAxis axis);
 double MaximumComponentMagnitude(Vec3 value);
 double Dot(Vec3 a, Vec3 b);

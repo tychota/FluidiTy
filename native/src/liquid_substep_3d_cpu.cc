@@ -6,6 +6,29 @@
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
+namespace liquid_step_internal {
+absl::Status ValidateParticleUpdateRecords(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<const LiquidParticleState3D> particles
+) {
+  constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& particle = particles[index];
+    const auto& gather = inputs.gathered[index];
+    if (!Finite(particle.world_position) || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
+        || !std::isfinite(inputs.liquid_distances[index]) || !Finite(gather.new_pic_velocity)
+        || !Finite(gather.particle_minus_old_pic_velocity)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    for (const auto row : rows) {
+      if (!Finite(gather.velocity_gradient.*row) || !Finite(gather.fitted_velocity_slopes.*row)) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+}  // namespace liquid_step_internal
 namespace {
 using liquid_step_internal::Error;
 using liquid_step_internal::Finite;
@@ -156,9 +179,6 @@ UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, Li
   Vec3 advecting;
   double divergence;
   if (!inputs.regular_cell_transport.empty() && inputs.regular_cell_transport[index].active) {
-    if (!std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0) {
-      return Error(absl::StatusCode::kInvalidArgument);
-    }
     const auto field =
         internal::EvaluateRegularCellTransport3D(inputs.regular_cell_transport[index], inputs.cell_width);
     if (!field.ok()) {
@@ -225,6 +245,10 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
         || Overlap(particle_bytes, std::as_bytes(inputs.gathered))
         || Overlap(particle_bytes, std::as_bytes(inputs.liquid_distances))) {
       return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto record_status = liquid_step_internal::ValidateParticleUpdateRecords(inputs, particles);
+    if (!record_status.ok()) {
+      return record_status;
     }
     // Check the same arithmetic in particle order before publishing a sampled
     // update. A late malformed sample must not preempt an earlier retry.

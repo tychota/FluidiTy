@@ -532,7 +532,7 @@ __device__ Error Forces(
   }
   return Error::kNone;
 }
-// J uses the original-basis velocity gradient. Contact constrains the
+// J uses the divergence of the selected advection field. Contact constrains the
 // advecting and retained velocities independently.
 __global__ void LiquidParticleUpdate3DKernel(
     const BoundaryTransferQuery3D* device_query,

@@ -1622,6 +1622,15 @@ TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPreservesParticleErrorOrd
   });
 }
 
+TEST_F(CudaLiquidTransferStages3D, RegularCellTransportRejectsInvalidParticleInputsBeforeRetry) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  test_internal::CheckRegularCellTransportRejectsInvalidParticleInputs([&](const auto& inputs,
+                                                                           std::span<LiquidParticleState3D> particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+}
+
 TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEveryRecord) {
   auto arena = CudaLiquidArena3D::Create(capacities, 0, std::numeric_limits<std::size_t>::max(), true);
   ASSERT_TRUE(arena.ok());

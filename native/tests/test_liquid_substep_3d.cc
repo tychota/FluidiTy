@@ -77,6 +77,10 @@ TEST(LiquidSubstep3D, RegularCellTransportPreservesParticleErrorOrder) {
   test_internal::CheckRegularCellTransportErrorOrder(UpdateCpuParticles);
 }
 
+TEST(LiquidSubstep3D, RegularCellTransportRejectsInvalidParticleInputsBeforeRetry) {
+  test_internal::CheckRegularCellTransportRejectsInvalidParticleInputs(UpdateCpuParticles);
+}
+
 struct RegularTransportSchedulerAudit {
   std::vector<FrozenLiquidCell3D> cells;
   std::vector<FrozenLiquidFace3D> faces;
