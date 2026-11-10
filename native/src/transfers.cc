@@ -35,7 +35,7 @@ double Dot(Vec2 lhs, Vec2 rhs) {
 
 struct FaceStencil {
   Stencil2D basis;
-  std::array<std::size_t, kTransferStencilSlotCount> face_indices;
+  std::array<std::size_t, kTransferStencilSlotCount> face_slots;
   std::array<Vec2, kTransferStencilSlotCount> face_positions;
 };
 
@@ -63,21 +63,21 @@ BuildFaceStencil(const Grid2D& mac_grid, Vec2 particle_world_position, std::size
       is_x_normal ? 0 : (static_cast<std::size_t>(mac_grid.nx) + 1) * mac_grid.ny;
   FaceStencil stencil;
   stencil.basis = *basis;
-  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_indices.size(); ++stencil_slot_index) {
+  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_slots.size(); ++stencil_slot_index) {
     const Node2D lattice_node = basis->nodes[stencil_slot_index];
     const bool node_on_face_lattice = lattice_node.x >= 0 && lattice_node.y >= 0 && lattice_node.x < face_column_count
         && lattice_node.y < face_row_count;
     if (!node_on_face_lattice) {
       return absl::InvalidArgumentError("particle does not have complete MAC support");
     }
-    const std::size_t face_index = orientation_face_offset
+    const std::size_t face_slot = orientation_face_offset
         + static_cast<std::size_t>(lattice_node.y) * static_cast<std::size_t>(face_column_count)
         + static_cast<std::size_t>(lattice_node.x);
-    const auto face_geometry = FaceGeometry(mac_grid, face_index);
+    const auto face_geometry = FaceGeometry(mac_grid, face_slot);
     if (!face_geometry.ok()) {
       return face_geometry.status();
     }
-    stencil.face_indices[stencil_slot_index] = face_index;
+    stencil.face_slots[stencil_slot_index] = face_slot;
     stencil.face_positions[stencil_slot_index] = face_geometry->world_position;
   }
   return stencil;
@@ -117,15 +117,15 @@ absl::Status DepositComponent(
   if (!weighted_face_offset_mean.ok()) {
     return weighted_face_offset_mean.status();
   }
-  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_indices.size(); ++stencil_slot_index) {
-    const std::size_t face_index = stencil.face_indices[stencil_slot_index];
+  for (std::size_t stencil_slot_index = 0; stencil_slot_index < stencil.face_slots.size(); ++stencil_slot_index) {
+    const std::size_t face_slot = stencil.face_slots[stencil_slot_index];
     const Vec2 centered_face_offset =
         (stencil.face_positions[stencil_slot_index] - particle_world_position) - *weighted_face_offset_mean;
     const double deposited_velocity = particle_velocity_component + Dot(velocity_fit_slope_row, centered_face_offset);
     const double mass_contribution = stencil.basis.weights[stencil_slot_index] * particle_mass;
-    staged_face_masses[face_index] += mass_contribution;
-    staged_face_pure_momenta[face_index] += mass_contribution * deposited_velocity;
-    if (!std::isfinite(staged_face_masses[face_index]) || !std::isfinite(staged_face_pure_momenta[face_index])) {
+    staged_face_masses[face_slot] += mass_contribution;
+    staged_face_pure_momenta[face_slot] += mass_contribution * deposited_velocity;
+    if (!std::isfinite(staged_face_masses[face_slot]) || !std::isfinite(staged_face_pure_momenta[face_slot])) {
       return absl::OutOfRangeError("deposited mass or momentum is nonfinite");
     }
   }
@@ -230,9 +230,9 @@ absl::StatusOr<GatherComponentResult> GatherComponent(
   double old_pic_velocity = 0.0;
   for (std::size_t stencil_slot_index = 0; stencil_slot_index < new_face_velocity_samples.size();
        ++stencil_slot_index) {
-    const std::size_t face_index = stencil.face_indices[stencil_slot_index];
-    new_face_velocity_samples[stencil_slot_index] = new_face_velocities[face_index];
-    old_pic_velocity += stencil.basis.weights[stencil_slot_index] * old_face_velocities[face_index];
+    const std::size_t face_slot = stencil.face_slots[stencil_slot_index];
+    new_face_velocity_samples[stencil_slot_index] = new_face_velocities[face_slot];
+    old_pic_velocity += stencil.basis.weights[stencil_slot_index] * old_face_velocities[face_slot];
   }
   const auto affine_fit =
       FitAffine2D(particle_world_position, stencil.face_positions, stencil.basis.weights, new_face_velocity_samples);
