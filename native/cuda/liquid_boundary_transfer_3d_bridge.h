@@ -95,4 +95,16 @@ int LaunchLiquidBoundaryTransfer3D(
     BoundaryTransferReport3D*,
     void* stream
 );
+
+// Prepares the original stencil samples for one staged kGather particle.
+// Uses the same bounded buffers and synchronization contract as the sequential launch.
+int LaunchLiquidBoundarySingleParticleGather3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report,
+    void* stream
+);
 }  // namespace fluidity::cuda_internal
