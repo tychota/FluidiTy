@@ -4,9 +4,26 @@ Retain the production quadratic transport baseline. Carry mixed cubic-normal/qua
 
 ## Exact arithmetic and float64 reference
 
-For complete uniform support, the centered cubic derivative is the difference of two half-shifted centered quadratics. Reindexing each normal derivative in the tensor sum gives the cell-centered quadratic convolution of the outward face difference divided by `h`. Thus the mixed trace inherits the local bound from its contributing cell divergences. RT0 gives the containing cell's divergence and its constant normal trace agrees with the shared face datum. Its transverse components can jump at faces. Individual face integrals of a mixed field require a separate condition. The mixed finite reindexing, one-dimensional derivative identity and physical scale remain outside the checked Lean results in this slice. [Schroeder et al., Eqs. 6 and 9–16](https://www.cs.ucr.edu/~craigs/papers/2021-div-free/paper.pdf) · [Roy-Chowdhury et al., §2](https://www.cs.ucr.edu/~craigs/papers/2022-interp-variants/paper.pdf) · [Formal contracts](formal-contracts.md)
+For complete uniform support, the centered cubic derivative is the difference of two half-shifted centered quadratics. Reindexing each normal derivative in the tensor sum gives the cell-centered quadratic convolution of the outward face difference divided by `h`. Thus the mixed trace inherits the local bound from its contributing cell divergences. RT0 gives the containing cell's divergence and its constant normal trace agrees with the shared face datum. Its transverse components can jump at faces. Individual face integrals of a mixed field require a separate condition. Lean checks the [finite signed reindexing](../../proofs/README.md#finite-signed-mac-trace-reindexing) with zero exterior weights. The centered cubic derivative identity, transverse tensor factors and physical scaling by the inverse cell width remain separate numerical premises. [Schroeder et al., Eqs. 6 and 9–16](https://www.cs.ucr.edu/~craigs/papers/2021-div-free/paper.pdf) · [Roy-Chowdhury et al., §2](https://www.cs.ucr.edu/~craigs/papers/2022-interp-variants/paper.pdf) · [Formal contracts](formal-contracts.md)
 
 The float64 patches at four spacings met `2e-13 m/s` in value and `2e-11 s⁻¹` in gradient for both splines on signed affine data and for RT0 on normal-only affine data. The mixed trace matched the independent cell convolution, and the RT0 trace matched the containing-cell target, within `2e-11 s⁻¹` on the curl and varying nonzero-divergence cases. The all-quadratic curl control had maximum absolute traces `2.61316, 5.22632, 10.45264, 20.90527 s⁻¹` from coarse to fine. That control holds discrete face amplitudes fixed, so its gradient scale grows as `1/h`. RT0's transverse affine shear control missed `2 s⁻¹` at every spacing and its velocity error was `h × 1 s⁻¹` at the sampled face.
+
+### Regular shared-face flux
+
+At each spacing and normal axis, take one whole face with signed MAC index `(-2,1,-1)` and orient it toward the positive normal. Use local physical coordinates `(n,s,t)` in metres about its center. The prescribed normal velocity is `−3/4 + n − s + t/2 + n² + 2s² − t²/2` in m/s, with coefficients in the corresponding SI units. The first tangential velocity is `−(1+2n)s` and the second is zero. The face samples come from the analytic field at MAC anchors. The neighbors in each direction have unequal normal speeds and the outward MAC differences cancel exactly on all 27 supporting cells. The mixed trace is checked at the quadrature points in the maximum absolute norm with a tolerance of `2e-11 s⁻¹`.
+
+The tensor Gauss rule splits each tangent at the transverse quadratic spline knots. They are the two face edges, so each tangent has one interval of length `h`. Two interior Gauss points per interval integrate the piecewise quadratic normal trace exactly in exact arithmetic. The RT0 rule samples the positive-side trace at the face and the negative-side trace one float64 step into that cell. It compares each integral with the signed stored target `−3h²/4`. The analytic continuum face integral adds the tangential second moments `h²/12` to the point sample, giving a flux excess of `h⁴/8` in SI units. Mixed reconstruction also adds `h²/3` from its normal cubic second moment and `(2−1/2)h²/4` from its transverse quadratic second moments to the normal speed. Thus the signed mixed excess is `17h⁴/24` relative to the continuum integral and `5h⁴/6` relative to the stored target. Each flux comparison uses absolute error in m³/s with tolerance `1e-15`.
+
+| `h` (m) | Mixed minus stored flux (m³/s) |
+| ---: | ---: |
+| 1/8 | 2.0345052e-4 |
+| 1/16 | 1.2715658e-5 |
+| 1/32 | 7.9472860e-7 |
+| 1/64 | 4.9670537e-8 |
+
+RT0 matches the stored flux on both sides. Mixed matches the analytic excess at all three orientations with a maximum absolute trace of `6.33e-15 s⁻¹`. This gives a signed counterexample to individual face-flux preservation under trace commutation. The face flux, spatial value and gradient errors below, and coupled work are separate observables.
+
+Run `uv run --offline --project reference --locked pytest reference/tests/test_mac_transport_3d.py -q -s -k single_face_flux` for the signed flux and trace records.
 
 ### Manufactured spatial field
 

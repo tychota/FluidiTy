@@ -3,7 +3,7 @@
 import json
 from functools import cache
 from itertools import product
-from math import cos, exp, inf, log2, nextafter, pi, sin
+from math import cos, exp, inf, log2, nextafter, pi, sin, sqrt
 
 import numpy as np
 import pytest
@@ -14,6 +14,7 @@ from fluidity_reference.mac_transport_3d import sample_mac_transport
 SPACINGS = (1 / 8, 1 / 16, 1 / 32, 1 / 64)
 VALUE_ATOL = 2e-13
 GRADIENT_ATOL = 2e-11
+FLUX_ATOL = 1e-15
 RECONSTRUCTIONS = ("quadratic", "rt0", "mixed")
 SUBCELL_PHASES = (0.0, 0.25, 0.5, 0.75)
 LATTICE_POSITIONS = np.array(
@@ -203,6 +204,86 @@ def test_trace_matches_varying_nonzero_cell_divergence(h, reconstruction):
             h * lattice_position, h, lambda axis, index: faces[axis, index], reconstruction=reconstruction
         )
         assert np.trace(gradient) == pytest.approx(expected_trace, abs=GRADIENT_ATOL, rel=0.0)
+
+
+@pytest.mark.parametrize("h", SPACINGS)
+@pytest.mark.parametrize("normal_axis", range(3))
+def test_single_face_flux_with_zero_discrete_divergence(h, normal_axis):
+    face = (-2, 1, -1)
+    first_axis, second_axis = (normal_axis + 1) % 3, (normal_axis + 2) % 3
+    local_axes = [normal_axis, first_axis, second_axis]
+    face_center = h * np.array([i if axis == normal_axis else i + 0.5 for axis, i in enumerate(face)])
+    face_area = h**2
+
+    def face_value(axis, index):
+        anchor = h * np.array([i if d == axis else i + 0.5 for d, i in enumerate(index)])
+        normal, first, second = (anchor - face_center)[local_axes]
+        # m/s with linear coefficients in s^-1 and quadratic coefficients in (m s)^-1.
+        if axis == normal_axis:
+            return -0.75 + normal - first + 0.5 * second + normal**2 + 2 * first**2 - 0.5 * second**2
+        if axis == first_axis:
+            return -(1 + 2 * normal) * first
+        return 0.0
+
+    stored_speed = face_value(normal_axis, face)
+    for direction in range(3):
+        neighbors = [
+            tuple(i + (offset if axis == direction else 0) for axis, i in enumerate(face))
+            for offset in (-1, 0, 1)
+        ]
+        assert len({face_value(normal_axis, index) for index in neighbors}) == 3
+
+    # The 27 cells cover the quadratic cell convolution on the face interior.
+    for offset in product((-1, 0, 1), repeat=3):
+        cell = tuple(i + delta for i, delta in zip(face, offset))
+        outward_difference = sum(
+            face_value(axis, _shift(cell, axis)) - face_value(axis, cell) for axis in range(3)
+        )
+        assert outward_difference == 0.0
+
+    # Transverse B2 knots lie at integer lattice coordinates. The face edges
+    # are consecutive knots in each tangent, so each split has one interval.
+    # Two Gauss points per interval integrate degree <= 3 with weight h/2.
+    offsets = (-h / (2 * sqrt(3)), h / (2 * sqrt(3)))
+    mixed_normal_speeds = []
+    rt0_lower_normal_speeds = []
+    rt0_upper_normal_speeds = []
+    mixed_traces = []
+    for first_offset, second_offset in product(offsets, repeat=2):
+        point = face_center.copy()
+        point[first_axis] += first_offset
+        point[second_axis] += second_offset
+        velocity, gradient = sample_mac_transport(point, h, face_value, reconstruction="mixed")
+        mixed_normal_speeds.append(velocity[normal_axis])
+        mixed_traces.append(np.trace(gradient))
+        velocity, _ = sample_mac_transport(point, h, face_value, reconstruction="rt0")
+        rt0_upper_normal_speeds.append(velocity[normal_axis])
+        point[normal_axis] = nextafter(point[normal_axis], -inf)
+        velocity, _ = sample_mac_transport(point, h, face_value, reconstruction="rt0")
+        rt0_lower_normal_speeds.append(velocity[normal_axis])
+
+    trace_max_abs = max(map(abs, mixed_traces))
+    assert trace_max_abs <= GRADIENT_ATOL
+    rt0_lower_flux = face_area * np.mean(rt0_lower_normal_speeds)
+    rt0_upper_flux = face_area * np.mean(rt0_upper_normal_speeds)
+    mixed_flux = face_area * np.mean(mixed_normal_speeds)
+    stored_flux = face_area * stored_speed
+    # The continuum face average adds the tangential quadratic moment h²/12.
+    # The B3 normal and B2 transverse second moments add h²/3 and h²/4.
+    continuum_flux = stored_flux + h**4 / 8
+    expected_mixed_bias = (17 / 24) * h**4
+    assert rt0_lower_flux == pytest.approx(stored_flux, abs=FLUX_ATOL, rel=0.0)
+    assert rt0_upper_flux == pytest.approx(stored_flux, abs=FLUX_ATOL, rel=0.0)
+    assert mixed_flux - continuum_flux == pytest.approx(expected_mixed_bias, abs=FLUX_ATOL, rel=0.0)
+    assert mixed_flux - stored_flux > FLUX_ATOL
+
+    print(json.dumps({
+        "fixture": "single_face_flux", "h_m": h, "normal_axis": normal_axis, "face_index": face,
+        "stored_flux_m3_per_s": stored_flux, "continuum_flux_m3_per_s": continuum_flux,
+        "rt0_lower_flux_m3_per_s": rt0_lower_flux, "rt0_upper_flux_m3_per_s": rt0_upper_flux,
+        "mixed_flux_m3_per_s": mixed_flux, "mixed_minus_stored_flux_m3_per_s": mixed_flux - stored_flux,
+        "mixed_trace_max_abs_per_s": trace_max_abs,
+    }, allow_nan=False))
 
 
 @pytest.mark.parametrize("reconstruction", ("quadratic", "rt0", "mixed"))
