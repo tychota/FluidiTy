@@ -35,6 +35,44 @@ def centeredQuadratic (x : ℝ) : ℝ :=
   if x ≤ 1 / 2 then 3 / 4 - x ^ 2 else
   if x ≤ 3 / 2 then (x - 3 / 2) ^ 2 / 2 else 0
 
+/-- The centered cubic cardinal spline polynomial selected at the normalized
+coordinate x. Use the left piece at a knot and zero outside the support. -/
+def centeredCubicPolynomial (x : ℝ) : Polynomial ℝ :=
+  if x ≤ -2 then 0 else
+  if x ≤ -1 then C (1 / 6) * (X + 2) ^ 3 else
+  if x ≤ 0 then C (2 / 3) - X ^ 2 - C (1 / 2) * X ^ 3 else
+  if x ≤ 1 then C (2 / 3) - X ^ 2 + C (1 / 2) * X ^ 3 else
+  if x ≤ 2 then C (1 / 6) * (2 - X) ^ 3 else 0
+
+/-- The selected cubic piece has normalized derivative equal to the signed
+difference of centered quadratic weights at the two half shifts. This is a
+formal polynomial identity at every coordinate, including knots and exterior. -/
+theorem cubic_centered_derivative_polynomials (x : ℝ) :
+    (centeredCubicPolynomial x).derivative.eval x =
+      centeredQuadratic (x + 1 / 2) - centeredQuadratic (x - 1 / 2) := by
+  simp only [centeredCubicPolynomial, centeredQuadratic, ← le_sub_iff_add_le, sub_le_iff_le_add]
+  norm_num
+  split_ifs <;> try (exfalso; linarith)
+  all_goals simp [derivative_mul, derivative_pow] <;> ring
+
+#print axioms cubic_centered_derivative_polynomials
+
+example (x : ℝ) : (centeredCubicPolynomial x).derivative.eval x =
+    centeredQuadratic (x + 1 / 2) - centeredQuadratic (x - 1 / 2) :=
+  cubic_centered_derivative_polynomials x
+
+-- Signed interior and knot values catch a reversed difference.
+example :
+    (centeredCubicPolynomial (-2)).derivative.eval (-2) = 0 ∧
+    (centeredCubicPolynomial (-1)).derivative.eval (-1) = 1 / 2 ∧
+    (centeredCubicPolynomial (-1 / 2)).derivative.eval (-1 / 2) = 5 / 8 ∧
+    (centeredCubicPolynomial 0).derivative.eval 0 = 0 ∧
+    (centeredCubicPolynomial (1 / 2)).derivative.eval (1 / 2) = -5 / 8 ∧
+    (centeredCubicPolynomial 1).derivative.eval 1 = -1 / 2 ∧
+    (centeredCubicPolynomial 2).derivative.eval 2 = 0 := by
+  simp only [cubic_centered_derivative_polynomials]
+  norm_num [centeredQuadratic]
+
 theorem quadratic_centered_local (t : ℝ) (lower : 0 ≤ t) (upper : t ≤ 1) (i : Fin 3) :
     centeredQuadratic (-quadraticOffsets t i) = quadraticWeights t i := by
   fin_cases i <;> dsimp [centeredQuadratic, quadraticOffsets, quadraticWeights]

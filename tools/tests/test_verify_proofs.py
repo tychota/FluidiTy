@@ -127,6 +127,7 @@ def test_uniform_transfer_contract_inventory():
         'Fluidity.equal_samples_grid_increment_and_residual',
         'Fluidity.mac_deposit_conserves_row_moments',
         'Fluidity.finite_face_sum_eq_weighted_forward_difference',
+        'Fluidity.cubic_centered_derivative_polynomials',
         'Fluidity.quantized_sum_error_bound',
         'Fluidity.uniform_mac_tile_contains_stencil',
     }
@@ -148,6 +149,7 @@ def test_uniform_basis_and_cap_lemmas_are_independently_exported():
     'Fluidity.equal_samples_grid_increment_and_residual',
     'Fluidity.mac_deposit_conserves_row_moments',
     'Fluidity.finite_face_sum_eq_weighted_forward_difference',
+    'Fluidity.cubic_centered_derivative_polynomials',
     'Fluidity.quantized_sum_error_bound',
     'Fluidity.uniform_mac_tile_contains_stencil',
 ])
@@ -192,7 +194,7 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 28
+    assert len(verify.TARGETS) == 29
 
 
 def test_axiom_free_closures_are_checked():
