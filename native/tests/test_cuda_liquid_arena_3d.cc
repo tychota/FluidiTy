@@ -1571,7 +1571,7 @@ TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPairsAdvectionWithVolumeA
   auto arena = CudaLiquidArena3D::Create(capacities);
   ASSERT_TRUE(arena.ok());
   const auto before = arena->metrics();
-  test_internal::CheckRegularCellTransport([&](const auto& inputs, auto particles) {
+  test_internal::CheckRegularCellTransport([&](const auto& inputs, std::span<LiquidParticleState3D> particles) {
     return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
   });
   ExpectNoReservationChange(before, arena->metrics());
@@ -1580,7 +1580,7 @@ TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPairsAdvectionWithVolumeA
 TEST_F(CudaLiquidTransferStages3D, RegularCellTransportUsesSweptContact) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   ASSERT_TRUE(arena.ok());
-  test_internal::CheckRegularCellTransportContact([&](const auto& inputs, auto particles) {
+  test_internal::CheckRegularCellTransportContact([&](const auto& inputs, std::span<LiquidParticleState3D> particles) {
     return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
   });
 }
@@ -1588,7 +1588,8 @@ TEST_F(CudaLiquidTransferStages3D, RegularCellTransportUsesSweptContact) {
 TEST_F(CudaLiquidTransferStages3D, RejectsMalformedRegularCellTransportBeforePublication) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   ASSERT_TRUE(arena.ok());
-  test_internal::CheckMalformedRegularCellTransport([&](const auto& inputs, auto particles) {
+  test_internal::CheckMalformedRegularCellTransport([&](const auto& inputs,
+                                                        std::span<LiquidParticleState3D> particles) {
     return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
   });
 }
@@ -1596,7 +1597,7 @@ TEST_F(CudaLiquidTransferStages3D, RejectsMalformedRegularCellTransportBeforePub
 TEST_F(CudaLiquidTransferStages3D, RejectsRegularCellTransportAliasingOutputOrScratch) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   ASSERT_TRUE(arena.ok());
-  test_internal::CheckAliasedRegularCellTransport([&](const auto& inputs, auto particles) {
+  test_internal::CheckAliasedRegularCellTransport([&](const auto& inputs, std::span<LiquidParticleState3D> particles) {
     return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
   });
   test_internal::RegularCellUpdateFixture3D fixture;
@@ -1615,7 +1616,8 @@ TEST_F(CudaLiquidTransferStages3D, RejectsRegularCellTransportAliasingOutputOrSc
 TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPreservesParticleErrorOrder) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   ASSERT_TRUE(arena.ok());
-  test_internal::CheckRegularCellTransportErrorOrder([&](const auto& inputs, auto particles) {
+  test_internal::CheckRegularCellTransportErrorOrder([&](const auto& inputs,
+                                                         std::span<LiquidParticleState3D> particles) {
     return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
   });
 }
