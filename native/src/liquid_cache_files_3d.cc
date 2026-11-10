@@ -138,30 +138,30 @@ absl::Status Lease(const fs::path& root, NativeFile& lease, bool create, bool ex
   return absl::OkStatus();
 }
 absl::StatusOr<LiquidCacheBytes3D>
-ReadBytes(const fs::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_length) {
+ReadBytes(const fs::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_byte_length) {
   NativeFile file;
   STORE_TRY(file.Open(path));
-  auto size = file.Size();
-  if (!size.ok()) {
-    return size.status();
+  auto initial_byte_length = file.Size();
+  if (!initial_byte_length.ok()) {
+    return initial_byte_length.status();
   }
-  if (expected_length != 0 && *size != expected_length) {
+  if (expected_byte_length != 0 && *initial_byte_length != expected_byte_length) {
     return Failure(absl::StatusCode::kDataLoss);
   }
-  if (*size > limits.maximum_bytes) {
+  if (*initial_byte_length > limits.maximum_bytes) {
     return Failure(absl::StatusCode::kResourceExhausted);
   }
-  auto bytes = LiquidCacheBytes3D::Create(static_cast<std::size_t>(*size));
+  auto bytes = LiquidCacheBytes3D::Create(static_cast<std::size_t>(*initial_byte_length));
   if (!bytes.ok()) {
     return bytes.status();
   }
-  STORE_TRY(bytes->Resize(static_cast<std::size_t>(*size)));
+  STORE_TRY(bytes->Resize(static_cast<std::size_t>(*initial_byte_length)));
   STORE_TRY(file.Read(bytes->values()));
-  auto final_size = file.Size();
-  if (!final_size.ok()) {
-    return final_size.status();
+  auto final_byte_length = file.Size();
+  if (!final_byte_length.ok()) {
+    return final_byte_length.status();
   }
-  if (*final_size != *size) {
+  if (*final_byte_length != *initial_byte_length) {
     return Failure(absl::StatusCode::kDataLoss);
   }
   return std::move(*bytes);
@@ -182,10 +182,10 @@ absl::StatusOr<fs::path> ContentPath(const fs::path& root, const LiquidContentRe
 absl::StatusOr<LiquidCacheBytes3D> ReadContent(
     const fs::path& root,
     const LiquidContentReference3D& reference,
-    LiquidContentKind3D kind,
+    LiquidContentKind3D expected_kind,
     LiquidCacheLimits3D limits
 ) {
-  if (reference.kind != kind || reference.byte_length == 0) {
+  if (reference.kind != expected_kind || reference.byte_length == 0) {
     return Failure(absl::StatusCode::kDataLoss);
   }
   auto path = ContentPath(root, reference);
@@ -196,28 +196,28 @@ absl::StatusOr<LiquidCacheBytes3D> ReadContent(
   if (!bytes.ok()) {
     return bytes.status();
   }
-  STORE_TRY(VerifyLiquidContent3D(bytes->values(), reference, kind, limits));
+  STORE_TRY(VerifyLiquidContent3D(bytes->values(), reference, expected_kind, limits));
   return std::move(*bytes);
 }
 std::string OrdinalName(std::uint64_t ordinal, std::string_view suffix) {
   auto digits = std::to_string(ordinal);
   return std::string(20 - digits.size(), '0') + digits + std::string(suffix);
 }
-fs::path FramePath(const fs::path& root, std::uint64_t frame, std::string_view suffix) {
-  return root / "frames" / OrdinalName(frame, suffix);
+fs::path FramePath(const fs::path& root, std::uint64_t frame_ordinal, std::string_view suffix) {
+  return root / "frames" / OrdinalName(frame_ordinal, suffix);
 }
 absl::Status Matches(
     const fs::path& path,
-    std::span<const std::uint8_t> expected,
+    std::span<const std::uint8_t> expected_bytes,
     LiquidCacheLimits3D limits,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 ) {
   auto existing = ReadBytes(path, limits);
   if (!existing.ok()) {
     return existing.status();
   }
-  if (!std::ranges::equal(existing->values(), expected)) {
-    return Failure(conflict);
+  if (!std::ranges::equal(existing->values(), expected_bytes)) {
+    return Failure(mismatch_status_code);
   }
   return absl::OkStatus();
 }
@@ -262,17 +262,17 @@ absl::Status WriteAndPromoteBytes(
     LiquidCachePublishControl3D control,
     absl::Status (*promote)(const fs::path&, const fs::path&)
 ) {
-  static std::atomic<std::uint64_t> sequence{0};
+  static std::atomic<std::uint64_t> temporary_file_sequence{0};
 #if defined(_WIN32)
-  const auto process = GetCurrentProcessId();
+  const auto process_id = GetCurrentProcessId();
 #else
-  const auto process = getpid();
+  const auto process_id = getpid();
 #endif
   // Exclusive creation and a per-process sequence tolerate abandoned temporaries
   // and PID reuse. A temporary has no semantic role and is never read on restart.
   for (int attempt = 0; attempt < 128; ++attempt) {
-    const auto temporary =
-        destination.parent_path() / (".tmp-" + std::to_string(process) + "-" + std::to_string(sequence.fetch_add(1)));
+    const auto temporary = destination.parent_path()
+        / (".tmp-" + std::to_string(process_id) + "-" + std::to_string(temporary_file_sequence.fetch_add(1)));
     struct RemoveTemporary {
       fs::path path;
       ~RemoveTemporary() {
@@ -281,11 +281,11 @@ absl::Status WriteAndPromoteBytes(
       }
     };
     NativeFile file;
-    auto opened = file.Open(temporary, true);
-    if (opened.code() == absl::StatusCode::kAlreadyExists) {
+    auto open_status = file.Open(temporary, true);
+    if (open_status.code() == absl::StatusCode::kAlreadyExists) {
       continue;
     }
-    STORE_TRY(opened);
+    STORE_TRY(open_status);
     RemoveTemporary cleanup{temporary};
     STORE_TRY(file.Write(bytes));
     STORE_TRY(Check(control, LiquidCachePublishStage3D::kTemporaryWritten));
@@ -302,22 +302,22 @@ absl::Status PublishBytes(
     std::span<const std::uint8_t> bytes,
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 ) {
-  auto existing = Matches(destination, bytes, limits, conflict);
-  if (existing.ok()) {
+  auto existing_match_status = Matches(destination, bytes, limits, mismatch_status_code);
+  if (existing_match_status.ok()) {
     // A verified existing link may come from a publish interrupted before fsync.
     return FlushDirectory(destination.parent_path());
   }
-  if (existing.code() != absl::StatusCode::kNotFound) {
-    return existing;
+  if (existing_match_status.code() != absl::StatusCode::kNotFound) {
+    return existing_match_status;
   }
-  const auto promoted = WriteAndPromoteBytes(destination, bytes, limits, control, Promote);
-  if (promoted.code() == absl::StatusCode::kAlreadyExists) {
-    STORE_TRY(Matches(destination, bytes, limits, conflict));
+  const auto promotion_status = WriteAndPromoteBytes(destination, bytes, limits, control, Promote);
+  if (promotion_status.code() == absl::StatusCode::kAlreadyExists) {
+    STORE_TRY(Matches(destination, bytes, limits, mismatch_status_code));
     return FlushDirectory(destination.parent_path());
   }
-  return promoted;
+  return promotion_status;
 }
 absl::Status ReplaceOperationalBytes(const fs::path& destination, std::span<const std::uint8_t> bytes) {
   return WriteAndPromoteBytes(destination, bytes, {}, {}, ReplaceSidecar);

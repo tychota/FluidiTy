@@ -220,8 +220,11 @@ class NativeFile {
 absl::Status FlushDirectory(const std::filesystem::path& directory);
 absl::Status
 Lease(const std::filesystem::path& root, NativeFile& lease, bool create = false, bool existing_lease = false);
+// Reads an owning copy of the file, bounded by limits.maximum_bytes.
+// A zero expected_byte_length skips the initial length check. Returns
+// DataLoss for a length mismatch or a length change during the read.
 absl::StatusOr<LiquidCacheBytes3D>
-ReadBytes(const std::filesystem::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_length = 0);
+ReadBytes(const std::filesystem::path& path, LiquidCacheLimits3D limits, std::uint64_t expected_byte_length = 0);
 std::span<const std::uint8_t> Bytes(std::string_view text);
 LiquidContentReference3D Reference(LiquidContentKind3D kind, std::span<const std::uint8_t> bytes);
 absl::StatusOr<std::filesystem::path>
@@ -229,17 +232,17 @@ ContentPath(const std::filesystem::path& root, const LiquidContentReference3D& r
 absl::StatusOr<LiquidCacheBytes3D> ReadContent(
     const std::filesystem::path& root,
     const LiquidContentReference3D& reference,
-    LiquidContentKind3D kind,
+    LiquidContentKind3D expected_kind,
     LiquidCacheLimits3D limits
 );
 std::string OrdinalName(std::uint64_t ordinal, std::string_view suffix);
 std::filesystem::path
-FramePath(const std::filesystem::path& root, std::uint64_t frame, std::string_view suffix = ".flmf");
+FramePath(const std::filesystem::path& root, std::uint64_t frame_ordinal, std::string_view suffix = ".flmf");
 absl::Status Matches(
     const std::filesystem::path& path,
-    std::span<const std::uint8_t> expected,
+    std::span<const std::uint8_t> expected_bytes,
     LiquidCacheLimits3D limits,
-    absl::StatusCode conflict
+    absl::StatusCode mismatch_status_code
 );
 // PublishBytes verifies existing bytes or exclusively writes, flushes, verifies
 // and atomically promotes a same-directory temporary without replacing anything.
@@ -251,7 +254,7 @@ absl::Status PublishBytes(
     std::span<const std::uint8_t> bytes,
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control,
-    absl::StatusCode conflict = absl::StatusCode::kDataLoss
+    absl::StatusCode mismatch_status_code = absl::StatusCode::kDataLoss
 );
 // Flushes and atomically replaces a mutable operational sidecar in the same
 // directory. The caller holds its writer lease. Never use for immutable content.
