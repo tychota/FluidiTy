@@ -194,8 +194,9 @@ try {
 Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
 arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
 Its inventory is separate from the 35 mandatory CTest cases and 33 mandatory memcheck cases.
-Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
-runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
+Release runs 43 cases (42 on hardware and one host-only generation exhaustion case).
+The Debug build also registers allocation-hook cases. Require every listed case to pass
+with zero skips in each configuration.
 
 ```powershell
 foreach ($configuration in @('debug', 'release')) {
@@ -216,7 +217,7 @@ try {
 }
 ```
 
-Require all 39 cases and one zero-error summary for the focused Release memcheck run.
+Require all 43 cases and one zero-error summary for the focused Release memcheck run.
 
 ### Device images
 
