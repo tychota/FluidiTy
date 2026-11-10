@@ -277,7 +277,7 @@ class LiquidCache3D {
       const LiquidResumeMetadata3D& resume,
       LiquidCachePublishControl3D control = {}
   ) const;
-  /// Reads the newest eligible checkpoint at or before the inclusive maximum_frame ordinal.
+  /// Reads the newest eligible checkpoint at or before the inclusive `maximum_frame_ordinal` cutoff.
   /// Validates checkpoint references against their committed manifests and determines the globally newest two
   /// reference ordinals before applying the cutoff. Older references and unreferenced blobs are ineligible.
   /// @return On success, verified owning state and resume metadata matching the committed frame and resolved scene.
@@ -286,7 +286,7 @@ class LiquidCache3D {
   /// consistency mismatch returns `DataLoss`. A failure after reference selection ends the read without trying
   /// an older checkpoint.
   absl::StatusOr<LiquidCheckpoint3D> ReadCheckpoint(
-      std::uint64_t maximum_frame = std::numeric_limits<std::uint64_t>::max()
+      std::uint64_t maximum_frame_ordinal = std::numeric_limits<std::uint64_t>::max()
   ) const;
 
  private:
