@@ -53,51 +53,52 @@ __global__ void LiquidFaceSamples3DKernel(
     LiquidSampleFaceResult3D* results,
     int* architecture
 ) {
+  const std::size_t sample = blockIdx.x * blockDim.x + threadIdx.x;
 #if defined(__CUDA_ARCH__)
-  *architecture = __CUDA_ARCH__;
+  if (sample == 0) {
+    *architecture = __CUDA_ARCH__;
+  }
 #endif
+  if (sample >= query->sample_count) {
+    return;
+  }
   const auto obstacle = query->obstacle;
-  for (std::size_t sample = 0; sample < query->sample_count; ++sample) {
-    LiquidSampleFaceResult3D result{};
-    const Vec3 position = positions[sample];
-    if (obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-      const auto wall = boundary_internal::SampleTankFace(obstacle.tank, query->geometry, position);
-      if (!wall.ok()) {
-        result.error = wall.status();
-      } else {
-        result.tag = {0, wall->inward_distance > 0};
-        if (fabs(wall->inward_distance) <= 2 * query->geometry.cell_width) {
-          result.wall = {true, 0, wall->inward_normal, wall->wall_velocity};
-        }
-      }
-    } else if (obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
-      const double coordinate =
-          obstacle.normal.x * position.x + obstacle.normal.y * position.y + obstacle.normal.z * position.z;
-      const double offset = coordinate - obstacle.coordinate;
-      const double distance =
-          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? fabs(offset) - obstacle.half_width : offset;
-      if (!isfinite(coordinate) || !isfinite(distance)) {
-        result.error = boundary_internal::Error::kRange;
-        results[sample] = result;
-        continue;
-      }
-      result.tag = {
-          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? (offset >= 0 ? 1 : -1) : 0,
-          distance >= 0
-      };
-      if (fabs(distance) <= 2 * query->geometry.cell_width) {
-        const double sign =
-            obstacle.kind == boundary_internal::ObstacleKind::kSlab ? static_cast<double>(query->requested_side) : 1;
-        result.wall = {
-            true,
-            query->requested_side,
-            {sign * obstacle.normal.x, sign * obstacle.normal.y, sign * obstacle.normal.z},
-            obstacle.velocity,
-        };
+  LiquidSampleFaceResult3D result{};
+  const Vec3 position = positions[sample];
+  if (obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+    const auto wall = boundary_internal::SampleTankFace(obstacle.tank, query->geometry, position);
+    if (!wall.ok()) {
+      result.error = wall.status();
+    } else {
+      result.tag = {0, wall->inward_distance > 0};
+      if (fabs(wall->inward_distance) <= 2 * query->geometry.cell_width) {
+        result.wall = {true, 0, wall->inward_normal, wall->wall_velocity};
       }
     }
-    results[sample] = result;
+  } else if (obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    const double coordinate =
+        obstacle.normal.x * position.x + obstacle.normal.y * position.y + obstacle.normal.z * position.z;
+    const double offset = coordinate - obstacle.coordinate;
+    const double distance =
+        obstacle.kind == boundary_internal::ObstacleKind::kSlab ? fabs(offset) - obstacle.half_width : offset;
+    if (!isfinite(coordinate) || !isfinite(distance)) {
+      result.error = boundary_internal::Error::kRange;
+      results[sample] = result;
+      return;
+    }
+    result.tag = {obstacle.kind == boundary_internal::ObstacleKind::kSlab ? (offset >= 0 ? 1 : -1) : 0, distance >= 0};
+    if (fabs(distance) <= 2 * query->geometry.cell_width) {
+      const double sign =
+          obstacle.kind == boundary_internal::ObstacleKind::kSlab ? static_cast<double>(query->requested_side) : 1;
+      result.wall = {
+          true,
+          query->requested_side,
+          {sign * obstacle.normal.x, sign * obstacle.normal.y, sign * obstacle.normal.z},
+          obstacle.velocity,
+      };
+    }
   }
+  results[sample] = result;
 }
 }  // namespace
 int LaunchLiquidFieldSamples3D(
@@ -125,9 +126,17 @@ int LaunchLiquidFaceSamples3D(
     const Vec3* positions,
     LiquidSampleFaceResult3D* results,
     int* architecture,
+    std::size_t sample_count,
     void* stream
 ) {
-  LiquidFaceSamples3DKernel<<<1, 1, 0, static_cast<cudaStream_t>(stream)>>>(query, positions, results, architecture);
+  constexpr unsigned threads = 128;
+  const auto blocks = sample_count == 0 ? 1U : static_cast<unsigned>((sample_count + threads - 1) / threads);
+  LiquidFaceSamples3DKernel<<<blocks, threads, 0, static_cast<cudaStream_t>(stream)>>>(
+      query,
+      positions,
+      results,
+      architecture
+  );
   return static_cast<int>(cudaGetLastError());
 }
 }  // namespace fluidity::cuda_internal
