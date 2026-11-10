@@ -1,5 +1,7 @@
 # Blender point-cache reader qualification
 
+For the current extension interface, see the [0.2 artist workflow](artist-workflow.md).
+
 For the first native solver bake, see the [M1-B evaluation package and evidence](m1-b-evidence.md).
 
 The M0 point fixture qualified the native Alembic Points reader in **Blender 5.2.3 LTS**

@@ -5,8 +5,11 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+import tomllib
 
 
 def main():
@@ -24,7 +27,9 @@ def main():
     output = args.output.resolve()
     root = Path(__file__).resolve().parents[2]
     common = [blender, "--background", "--factory-startup", "--offline-mode", "--disable-autoexec"]
-    package = output / "fluidity-0.1.0-windows-x64.zip"
+    version = tomllib.loads((root / "blender/fluidity/blender_manifest.toml").read_text())["version"]
+    subprocess.run([sys.executable, root / "tools/blender/compile_translations.py"], check=True)
+    package = output / f"fluidity-{version}-windows-x64.zip"
     with tempfile.TemporaryDirectory(dir=output) as temp:
         stage = Path(temp) / "fluidity"
         shutil.copytree(root / "blender" / "fluidity", stage, ignore=shutil.ignore_patterns("__pycache__", "bin"))
