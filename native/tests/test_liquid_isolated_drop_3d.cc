@@ -21,6 +21,7 @@ constexpr double kSeedCovarianceScale =
 
 std::vector<LiquidParticleState3D> DropSeed() {
   std::vector<LiquidParticleState3D> particles;
+  const double stretch_xz = 1 / std::sqrt(1.03);
   for (int z = -5; z < 5; ++z) {
     for (int y = -5; y < 5; ++y) {
       for (int x = -5; x < 5; ++x) {
@@ -32,9 +33,9 @@ std::vector<LiquidParticleState3D> DropSeed() {
               .id = particles.size() + 1,
               .world_position =
                   {
-                      kCellWidth * x_offset / std::sqrt(1.03),
+                      kCellWidth * x_offset * stretch_xz,
                       kCellWidth * y_offset * 1.03,
-                      kCellWidth * z_offset / std::sqrt(1.03),
+                      kCellWidth * z_offset * stretch_xz,
                   },
               .mass = 0.01482107041435402,
               .reference_volume = 1.4821070414354021e-05,
@@ -243,6 +244,54 @@ TEST(IsolatedDrop3D, ResolvedSceneActivatesPressureAndReplaysFromCheckpoint) {
   ASSERT_TRUE(direct_bytes.ok()) << direct_bytes.status();
   ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
   EXPECT_TRUE(std::ranges::equal(direct_bytes->values(), replay_bytes->values()));
+}
+
+TEST(IsolatedDrop3D, ProjectedChangeRetainsArchivedDropAtFrameThree) {
+  LiquidState3D seed;
+  seed.geometry = {{0, 0, 0}, kCellWidth};
+  const auto particles = DropSeed();
+  auto records = LiquidRecords3D<LiquidParticleState3D>::Create(particles.size());
+  ASSERT_TRUE(records.ok()) << records.status();
+  ASSERT_TRUE(records->Resize(particles.size()).ok());
+  std::ranges::copy(particles, records->values().begin());
+  seed.particles = std::move(*records);
+  seed.next_particle_id = particles.size() + 1;
+
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
+  scene.surface_tension = 1;
+  scene.world_acceleration = {};
+  LiquidStepOptions3D options;
+  options.capacities = {1024, 128, 4096, 24576, 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(seed, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  for (int frame = 1; frame <= 3; ++frame) {
+    const auto result = scheduler->AdvanceFrame(frame / 24.0);
+    ASSERT_TRUE(result.ok()) << result;
+  }
+  const auto& state = scheduler->committed();
+  ASSERT_EQ(state.clock.accepted_step_ordinal, 15);
+  ASSERT_EQ(state.particles.size(), 552);
+  Vec3 centroid{};
+  double volume = 0;
+  for (const auto& particle : state.particles.values()) {
+    const double material_volume = particle.reference_volume * particle.volume_ratio;
+    centroid.x += material_volume * particle.world_position.x;
+    centroid.y += material_volume * particle.world_position.y;
+    centroid.z += material_volume * particle.world_position.z;
+    volume += material_volume;
+  }
+  centroid = {centroid.x / volume, centroid.y / volume, centroid.z / volume};
+  double quadrupole = 0;
+  for (const auto& particle : state.particles.values()) {
+    const double material_volume = particle.reference_volume * particle.volume_ratio;
+    const Vec3 position = particle.world_position;
+    const double x = position.x - centroid.x;
+    const double y = position.y - centroid.y;
+    const double z = position.z - centroid.z;
+    quadrupole += material_volume * (y * y - (x * x + z * z) / 2);
+  }
+  EXPECT_NEAR(quadrupole / volume, 0.00028263630776289309, 3e-12);
 }
 
 }  // namespace

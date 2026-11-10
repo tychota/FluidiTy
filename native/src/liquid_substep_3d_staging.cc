@@ -172,8 +172,10 @@ absl::StatusOr<Staging> Staging::Create(
   if (needs_regular_transport) {
     STEP_TRY(Reserve(staging.regular_transport.emplace(), capacities.particles, staging.reserved_bytes));
   }
-  if (needs_wetted_piston) {
+  if (needs_wetted_piston || needs_isolated_drop) {
     STEP_TRY(Reserve(staging.projected_gather_validity.emplace(), capacities.faces, staging.reserved_bytes));
+  }
+  if (needs_wetted_piston) {
     auto workspace = WettedPistonWorkspace3D::Create(capacities);
     if (!workspace.ok()) {
       return workspace.status();

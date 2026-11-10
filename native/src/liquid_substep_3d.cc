@@ -82,6 +82,102 @@ bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAl
       && scene.surface_tension == 0;
 }
 
+// Continue projected changes only when the new donors are a strict subset of
+// the old donors and both histories describe the same open, untagged surface.
+bool CanContinueIsolatedDropProjection(
+    const LiquidBoundaryVelocityHistory3D& old_history,
+    const LiquidBoundaryVelocityHistory3D& projected_history
+) {
+  const auto usable = [](LiquidFaceValidity3D validity) {
+    return validity == LiquidFaceValidity3D::kValid || validity == LiquidFaceValidity3D::kPredicted;
+  };
+  bool removed_donor = false;
+  for (std::size_t slot = 0; slot < projected_history.validity.size(); ++slot) {
+    const auto& old_tag = old_history.face_tags[slot];
+    const auto& projected_tag = projected_history.face_tags[slot];
+    if (old_tag.side_tag != projected_tag.side_tag
+        || old_tag.structurally_eligible != projected_tag.structurally_eligible
+        || old_history.wall_samples[slot].available || projected_history.wall_samples[slot].available) {
+      return false;
+    }
+    const bool old_donor = usable(old_history.validity[slot]);
+    const bool projected_donor = usable(projected_history.validity[slot]);
+    if (projected_donor && !old_donor) {
+      return false;
+    }
+    removed_donor = removed_donor || (old_donor && !projected_donor);
+  }
+  return removed_donor;
+}
+
+Vec3 ContinueProjectedChange(Vec3 full_old, Vec3 projected, Vec3 restricted_old) {
+  return {
+      full_old.x + (projected.x - restricted_old.x),
+      full_old.y + (projected.y - restricted_old.y),
+      full_old.z + (projected.z - restricted_old.z),
+  };
+}
+
+Mat3 ContinueProjectedChange(Mat3 full_old, Mat3 projected, Mat3 restricted_old) {
+  return {
+      ContinueProjectedChange(full_old.x_row, projected.x_row, restricted_old.x_row),
+      ContinueProjectedChange(full_old.y_row, projected.y_row, restricted_old.y_row),
+      ContinueProjectedChange(full_old.z_row, projected.z_row, restricted_old.z_row),
+  };
+}
+
+// The restricted and full old gathers are copied before reusing workspace.
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherIsolatedDropProjectedChange(
+    const LiquidSubstepBackend3D& backend,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace,
+    LiquidBoundaryParticleGather3D& corrected
+) {
+  auto old_inputs = inputs;
+  old_inputs.new_history.face_velocities = inputs.old_history.face_velocities;
+  const auto restricted = backend.gather(backend.context, old_inputs, workspace);
+  if (!restricted.ok()) {
+    return restricted.status();
+  }
+  if (restricted->particles.size() != 1) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  const auto restricted_old = restricted->particles[0];
+  old_inputs.new_history.validity = inputs.old_history.validity;
+  const auto full = backend.gather(backend.context, old_inputs, workspace);
+  if (!full.ok()) {
+    return full.status();
+  }
+  if (full->particles.size() != 1) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  const auto full_old = full->particles[0];
+  auto projected = backend.gather(backend.context, inputs, workspace);
+  if (!projected.ok()) {
+    return projected.status();
+  }
+  if (projected->particles.size() != 1) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  corrected = projected->particles[0];
+  corrected.grid_velocity_increment =
+      ContinueProjectedChange(Vec3{}, corrected.new_pic_velocity, restricted_old.new_pic_velocity);
+  corrected.new_pic_velocity =
+      ContinueProjectedChange(full_old.new_pic_velocity, corrected.new_pic_velocity, restricted_old.new_pic_velocity);
+  corrected.fitted_velocity_slopes = ContinueProjectedChange(
+      full_old.fitted_velocity_slopes,
+      corrected.fitted_velocity_slopes,
+      restricted_old.fitted_velocity_slopes
+  );
+  corrected.velocity_gradient = ContinueProjectedChange(
+      full_old.velocity_gradient,
+      corrected.velocity_gradient,
+      restricted_old.velocity_gradient
+  );
+  projected->particles = std::span(&corrected, 1);
+  return projected;
+}
+
 // The frozen faces and pressure links share the owned-slot order. A sealed
 // face supplies a boundary value independently of its dormant carrier sample.
 std::optional<double> RegularTransportFaceVelocity(
@@ -558,6 +654,7 @@ struct LiquidSubstepScheduler3D::Impl {
     bool attempted_run_uses_projected_history = false;
     std::size_t field_chunk_end = 0;
     bool field_chunk_ready = false;
+    bool continue_isolated_projection = false;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
       const auto& particle = trial.particles[index];
       const auto side = particle.side_tag;
@@ -565,6 +662,11 @@ struct LiquidSubstepScheduler3D::Impl {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
         sampled_wall_side = side;
+        if (staging.isolated_drop && !projected_gather_validity.empty()) {
+          auto projected_history = new_history;
+          projected_history.validity = projected_gather_validity;
+          continue_isolated_projection = CanContinueIsolatedDropProjection(old_history, projected_history);
+        }
       }
       bool use_projected_history = false;
       if (!projected_gather_validity.empty()) {
@@ -589,7 +691,7 @@ struct LiquidSubstepScheduler3D::Impl {
       if (use_projected_history) {
         gather_inputs.new_history.validity = projected_gather_validity;
       }
-      if (backend.gather_run && index >= attempted_run_end) {
+      if (!staging.isolated_drop && backend.gather_run && index >= attempted_run_end) {
         attempted_run_end = index + 1;
         attempted_run_uses_projected_history = use_projected_history;
         while (attempted_run_end < trial.particles.size() && trial.particles[attempted_run_end].side_tag == side) {
@@ -627,7 +729,9 @@ struct LiquidSubstepScheduler3D::Impl {
         diagnostics.new_pic_fallback_count += gathered.new_pic_fallback;
         pending_gathers = pending_gathers.subspan(1);
       } else {
-        const auto gather = backend.gather(backend.context, gather_inputs, boundary);
+        const auto gather = use_projected_history && continue_isolated_projection
+            ? GatherIsolatedDropProjectedChange(backend, gather_inputs, boundary, staging.gathered[index])
+            : backend.gather(backend.context, gather_inputs, boundary);
         if (!gather.ok()) {
           return gather.status();
         }
