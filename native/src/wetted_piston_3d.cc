@@ -98,7 +98,7 @@ bool HasSelectedCell(std::span<const FrozenLiquidCell3D> cells, CellIndex3D inde
 }
 
 // Signed half-open owner with no floor() of a rounded world reconstruction.
-absl::StatusOr<std::int32_t> PistonCellX(const Field& field) {
+absl::StatusOr<std::int32_t> FindPistonOwnerLatticeX(const Field& field) {
   const auto compare = [&](std::int64_t index) {
     return boundary_internal::TankPlaneOffsetSign(
         field.tank.start_low_x,
@@ -230,19 +230,20 @@ absl::Status AddSupport(const Field& field, std::span<const Disk> disks, LiquidR
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::size_t> ReceiverFace(
+absl::StatusOr<std::size_t> FindReceiverFaceOrdinal(
     const FrozenLiquidBoundaryGeometryView3D& frozen,
-    std::int32_t piston_x,
+    std::int32_t piston_cell_x,
     PatchIndex patch,
     double velocity
 ) {
-  const FaceIndex3D face_index{FaceNormalAxis::kX, {piston_x, patch.y, patch.z}};
+  const FaceIndex3D face_index{FaceNormalAxis::kX, {piston_cell_x, patch.y, patch.z}};
   const auto slot = frozen.mac_grid.FaceSlot(face_index);
   if (!slot.ok()) {
     return Status(absl::StatusCode::kFailedPrecondition);
   }
   const auto face = std::ranges::lower_bound(frozen.faces, *slot, {}, &FrozenLiquidFace3D::face_slot);
-  const bool has_tail = piston_x > kFirstLatticeCell && HasSelectedCell(frozen.cells, {piston_x - 1, patch.y, patch.z});
+  const bool has_tail =
+      piston_cell_x > kFirstLatticeCell && HasSelectedCell(frozen.cells, {piston_cell_x - 1, patch.y, patch.z});
   const double h = frozen.mac_grid.geometry().cell_width;
   if (face == frozen.faces.end() || face->face_slot != *slot || has_tail || face->open_area != 0
       || face->blocked_area != h * h || face->wall_normal_velocity != velocity || !face->prescribed_wall_flux
@@ -404,15 +405,15 @@ struct WorkspaceAccess {
       }
     }
 
-    const auto piston_x = PistonCellX(field);
-    if (!piston_x.ok()) {
-      return piston_x.status();
+    const auto piston_cell_x = FindPistonOwnerLatticeX(field);
+    if (!piston_cell_x.ok()) {
+      return piston_cell_x.status();
     }
     auto& indices = workspace.indices_;
     static_cast<void>(indices.Resize(0));
     const double velocity = inputs.tank.piston_velocity_x;
     for (const auto& cell : frozen.cells) {
-      if (cell.cell_index.x == *piston_x) {
+      if (cell.cell_index.x == *piston_cell_x) {
         const auto status = AddIndex(indices, {cell.cell_index.y, cell.cell_index.z});
         if (!status.ok()) {
           return status;
@@ -461,8 +462,8 @@ struct WorkspaceAccess {
       const auto patch = indices[index];
       auto& record = output.patches[index];
       record = {.lattice_y = patch.y, .lattice_z = patch.z};
-      if (HasSelectedCell(frozen.cells, {*piston_x, patch.y, patch.z})) {
-        const auto receiver = ReceiverFace(frozen, *piston_x, patch, velocity);
+      if (HasSelectedCell(frozen.cells, {*piston_cell_x, patch.y, patch.z})) {
+        const auto receiver = FindReceiverFaceOrdinal(frozen, *piston_cell_x, patch, velocity);
         if (!receiver.ok()) {
           return receiver.status();
         }

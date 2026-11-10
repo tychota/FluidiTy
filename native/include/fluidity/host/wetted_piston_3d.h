@@ -31,8 +31,9 @@ struct WettedPistonInputs3D {
 struct WettedPistonView3D {
   std::span<const WettedPistonPatch3D> patches;  // Clipped patches sorted by (z, y), including dry receivers.
   // One entry per frozen face, in frozen face order. Flux in m³/s is signed
-  // along +x, positive into the tank. A dry receiver has explicit zero.
-  // Faces without a pressure receiver have no value.
+  // along +x, positive into the tank. Each receiver sums the midpoint-area
+  // fluxes of its assigned patches in (z, y) order. A dry receiver has explicit
+  // zero. Faces without a pressure receiver have no value.
   std::span<const std::optional<double>> face_fluxes;
   WettedPistonBounds3D whole_area;  // m².
   WettedPistonBounds3D whole_flux;  // m³/s.
@@ -42,9 +43,11 @@ struct WettedPistonView3D {
 
 class WettedPistonWorkspace3D {
  public:
-  // Reserve outside attempts. Patch queries and results are each bounded by
-  // face capacity, and source and interval counts by max(1, particle capacity).
-  // Exhausted or overflowing storage returns ResourceExhausted.
+  /// Reserves scratch and two result banks outside physical attempts.
+  /// Patch coordinates, patch measures and each bank's result arrays have face
+  /// capacity. Source centers, disk sections and each of the two interval
+  /// banks reserve max(1, particle capacity) records. The minimum admits one
+  /// analytic sphere. Exhausted or overflowing storage returns ResourceExhausted.
   static absl::StatusOr<WettedPistonWorkspace3D> Create(LiquidStateCapacities3D capacities);
   // Counts every reserved dynamic host byte, excluding allocator bookkeeping.
   std::size_t reserved_bytes() const;
@@ -75,8 +78,8 @@ class WettedPistonWorkspace3D {
 // OutOfRange, unsupported ownership/area width FailedPrecondition, and scratch
 // limits ResourceExhausted. Empty particle union is dry. The single-threaded
 // stage allocates nothing. Inputs must not alias workspace storage. Results
-// borrow it until the next successful call or workspace replacement. Failure
-// preserves the previous result and all inputs.
+// borrow the published bank until the next successful call, workspace move or
+// workspace destruction. Failure preserves the previous result and all inputs.
 absl::StatusOr<WettedPistonView3D>
 ComputeWettedPiston3D(const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace);
 
