@@ -158,27 +158,27 @@ inline absl::StatusOr<std::size_t> Budget(std::size_t tables, LiquidCacheLimits3
 }
 template <typename Root, typename Create>
 absl::StatusOr<LiquidCacheBytes3D>
-Build(std::size_t table_count, LiquidCacheLimits3D limits, const char* identifier, Create create) {
-  auto budget = Budget(table_count, limits);
-  if (!budget.ok()) {
-    return budget.status();
+Build(std::size_t table_count, LiquidCacheLimits3D limits, const char* file_identifier, Create create) {
+  auto byte_budget = Budget(table_count, limits);
+  if (!byte_budget.ok()) {
+    return byte_budget.status();
   }
-  auto memory = LiquidCacheBytes3D::Create(*budget);
+  auto memory = LiquidCacheBytes3D::Create(*byte_budget);
   if (!memory.ok()) {
     return memory.status();
   }
-  auto resize = memory->Resize(*budget);
+  auto resize = memory->Resize(*byte_budget);
   if (!resize.ok()) {
     return resize;
   }
   ReservedAllocator allocator(memory->values());
-  flatbuffers::FlatBufferBuilder builder(*budget, &allocator);
+  flatbuffers::FlatBufferBuilder builder(*byte_budget, &allocator);
   builder.ForceDefaults(true);
   auto root = create(builder);
   if (!root.ok()) {
     return root.status();
   }
-  builder.Finish(*root, identifier);
+  builder.Finish(*root, file_identifier);
   auto* finished = flatbuffers::GetMutableRoot<Root>(builder.GetBufferPointer());
   if (!finished->mutate_byte_length(builder.GetSize())) {
     return Error(absl::StatusCode::kInternal);
@@ -193,7 +193,7 @@ Build(std::size_t table_count, LiquidCacheLimits3D limits, const char* identifie
 }
 template <typename Root>
 absl::StatusOr<const Root*>
-Verify(std::span<const std::uint8_t> bytes, const char* identifier, LiquidCacheLimits3D limits) {
+Verify(std::span<const std::uint8_t> bytes, const char* expected_file_identifier, LiquidCacheLimits3D limits) {
   if (bytes.size() > limits.maximum_bytes || bytes.size() >= FLATBUFFERS_MAX_BUFFER_SIZE) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -205,7 +205,7 @@ Verify(std::span<const std::uint8_t> bytes, const char* identifier, LiquidCacheL
   // At least four bytes per table reference; bounds verifier work by input size.
   options.max_tables = static_cast<flatbuffers::uoffset_t>(bytes.size() / 4);
   flatbuffers::Verifier verifier(bytes.data(), bytes.size(), options);
-  if (!verifier.VerifyBuffer<Root>(identifier)) {
+  if (!verifier.VerifyBuffer<Root>(expected_file_identifier)) {
     return Corrupt();
   }
   const auto* root = flatbuffers::GetRoot<Root>(bytes.data());

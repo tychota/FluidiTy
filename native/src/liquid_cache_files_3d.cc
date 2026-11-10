@@ -100,9 +100,9 @@ absl::Status CreateDirectoryTree(const fs::path& path) {
   }
   return absl::OkStatus();
 }
-absl::Status Directory(const fs::path& path, bool create) {
+absl::Status Directory(const fs::path& path, bool create_if_missing) {
   std::error_code error;
-  if (create) {
+  if (create_if_missing) {
     STORE_TRY(CreateDirectoryTree(path));
   }
   const auto status = fs::symlink_status(path, error);
@@ -128,12 +128,12 @@ absl::Status Root(const fs::path& root, bool create) {
   }
   return Directory(root, create);
 }
-absl::Status Lease(const fs::path& root, NativeFile& lease, bool create, bool existing_lease) {
-  STORE_TRY(Root(root, create));
-  STORE_TRY(lease.Open(root / ".writer.lock", false, true, existing_lease));
+absl::Status Lease(const fs::path& root, NativeFile& lease, bool create_directories, bool require_existing_lease) {
+  STORE_TRY(Root(root, create_directories));
+  STORE_TRY(lease.Open(root / ".writer.lock", false, true, require_existing_lease));
   STORE_TRY(lease.Lock());
   for (const char* name : {"blobs", "frames", "checkpoints"}) {
-    STORE_TRY(Directory(root / name, create));
+    STORE_TRY(Directory(root / name, create_directories));
   }
   return absl::OkStatus();
 }
