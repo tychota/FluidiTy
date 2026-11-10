@@ -772,7 +772,7 @@ absl::Status LiquidCache3D::PublishCheckpoint(
       control
   );
 }
-absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t maximum_frame) const {
+absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t maximum_frame_ordinal) const {
   if (inspection_only_) {
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
@@ -786,16 +786,16 @@ absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t m
   if (!retained.ok()) {
     return retained.status();
   }
-  std::optional<std::uint64_t> latest;
-  if (retained->newest && *retained->newest <= maximum_frame) {
-    latest = retained->newest;
-  } else if (retained->second && *retained->second <= maximum_frame) {
-    latest = retained->second;
+  std::optional<std::uint64_t> checkpoint_frame_ordinal;
+  if (retained->newest && *retained->newest <= maximum_frame_ordinal) {
+    checkpoint_frame_ordinal = retained->newest;
+  } else if (retained->second && *retained->second <= maximum_frame_ordinal) {
+    checkpoint_frame_ordinal = retained->second;
   }
-  if (!latest) {
+  if (!checkpoint_frame_ordinal) {
     return Failure(absl::StatusCode::kNotFound);
   }
-  auto reference = ReadReference(root_directory_, *latest, fingerprint_, limits_);
+  auto reference = ReadReference(root_directory_, *checkpoint_frame_ordinal, fingerprint_, limits_);
   if (!reference.ok()) {
     return reference.status();
   }
