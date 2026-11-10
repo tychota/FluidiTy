@@ -106,6 +106,15 @@ struct GeometryOutput {
   double exterior_pressure = 0;  // Pa, ambient plus exactly one lift.
   bool lower_theta_regularized = false;
 };
+// A bounded dispatch keeps query staging independent of scene capacity.
+inline constexpr std::size_t kGeometryQueryBatchCapacity3D = 512;
+
+// Device result for one independent query. Failed arithmetic leaves output unused.
+struct GeometryBatchResult {
+  GeometryOutput output{};
+  Error error{};
+  int compiled_architecture = 0;
+};
 using CartesianVector = numeric::array<double, 3>;
 FLUIDITY_HD inline CartesianVector Add(CartesianVector left, CartesianVector right) {
   return {left[0] + right[0], left[1] + right[1], left[2] + right[2]};

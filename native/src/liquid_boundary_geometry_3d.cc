@@ -20,8 +20,6 @@ CellLatticeKey CellKey(Index index) {
   return {index.z, index.y, index.x};
 }
 using boundary_internal::CartesianComponents;
-using boundary_internal::CartesianVector;
-using boundary_internal::ClippingVertex;
 using boundary_internal::Dot;
 using boundary_internal::GeometryBackend;
 using boundary_internal::GeometryInput;
@@ -29,6 +27,7 @@ using boundary_internal::GeometryMode;
 using boundary_internal::HasFiniteComponents;
 using boundary_internal::IsNormalOrZero;
 using boundary_internal::IsPositiveFinite;
+using boundary_internal::kGeometryQueryBatchCapacity3D;
 using boundary_internal::ObstaclePlanes;
 using boundary_internal::PackObstacle;
 absl::Status UnrepresentableGeometry(bool bounded) {
@@ -171,14 +170,14 @@ absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle
   return result;
 }
 // Stage only the centered derivative stencil, preserving absent unused halos.
-absl::StatusOr<double> ComputeCenteredCurvature(
+absl::Status StageCenteredCurvature(
     std::span<const LiquidCenterDistance3D> samples,
     CellIndex3D center,
     double h,
-    GeometryBackend backend,
-    bool bounded
+    bool bounded,
+    GeometryInput& query
 ) {
-  GeometryInput query{};
+  query = {};
   query.mode = GeometryMode::kCurvature;
   query.geometry.cell_width = h;
   for (int z = -1; z <= 1; ++z) {
@@ -204,11 +203,82 @@ absl::StatusOr<double> ComputeCenteredCurvature(
       }
     }
   }
-  const auto result = backend.compute(backend.context, query);
-  if (!result.ok()) {
-    return result.status();
+  return absl::OkStatus();
+}
+
+// Staging is speculative within a batch, but errors are observed in canonical
+// order. If staging fails, replay the completed prefix before returning it.
+template <typename Prepare, typename Consume, typename Selected>
+absl::Status RunGeometryQueries(
+    GeometryBackend backend,
+    std::size_t count,
+    bool bounded,
+    Prepare prepare,
+    Consume consume,
+    Selected selected
+) {
+  if (!backend.batch) {
+    for (std::size_t ordinal = 0; ordinal < count; ++ordinal) {
+      if (!selected(ordinal)) {
+        continue;
+      }
+      GeometryInput query{};
+      const auto staged = prepare(ordinal, 0, query);
+      if (!staged.ok()) {
+        return staged;
+      }
+      const auto output = backend.compute(backend.context, query);
+      if (!output.ok()) {
+        return output.status();
+      }
+      const auto consumed = consume(ordinal, 0, *output);
+      if (!consumed.ok()) {
+        return consumed;
+      }
+    }
+    return absl::OkStatus();
   }
-  return result->interface_curvature;
+  auto& batch = *backend.batch;
+  const std::size_t capacity = std::min({batch.queries.size(), batch.results.size(), kGeometryQueryBatchCapacity3D});
+  if (capacity == 0) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  std::array<std::size_t, kGeometryQueryBatchCapacity3D> ordinals;
+  std::size_t ordinal = 0;
+  while (ordinal < count) {
+    std::size_t submitted = 0;
+    absl::Status staged;
+    for (; ordinal < count && submitted < capacity; ++ordinal) {
+      if (!selected(ordinal)) {
+        continue;
+      }
+      staged = prepare(ordinal, submitted, batch.queries[submitted]);
+      if (!staged.ok()) {
+        break;
+      }
+      ordinals[submitted++] = ordinal;
+    }
+    if (submitted != 0) {
+      const auto dispatched = batch.compute(batch.context, submitted);
+      if (!dispatched.ok()) {
+        return dispatched;
+      }
+      for (std::size_t slot = 0; slot < submitted; ++slot) {
+        const auto& output = batch.results[slot];
+        if (output.error != boundary_internal::Error::kNone) {
+          return boundary_internal::ArithmeticStatus(output.error, bounded);
+        }
+        const auto consumed = consume(ordinals[slot], slot, output.output);
+        if (!consumed.ok()) {
+          return consumed;
+        }
+      }
+    }
+    if (!staged.ok()) {
+      return staged;
+    }
+  }
+  return absl::OkStatus();
 }
 // A nonnull CPU-only context requests inline status codes. CUDA callbacks retain
 // their own context and still execute every calculation through the same core.
@@ -258,7 +328,11 @@ absl::Status FreezeCore(
   if (const auto status = ValidateSamples(corner_distance_samples, bounded); !status.ok()) {
     return status;
   }
-  for (std::size_t ordinal = 0; ordinal < inputs.cell_indices.size(); ++ordinal) {
+  std::array<double, kGeometryQueryBatchCapacity3D> center_distances;
+  const auto all_ordinals = [](std::size_t) {
+    return true;
+  };
+  const auto stage_cell = [&](std::size_t ordinal, std::size_t batch_slot, GeometryInput& query) -> absl::Status {
     const auto index = inputs.cell_indices[ordinal];
     if (ordinal > 0 && CellKey(index) <= CellKey(inputs.cell_indices[ordinal - 1])) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Candidates must be strictly sorted");
@@ -267,10 +341,14 @@ absl::Status FreezeCore(
     if (!center_distance.ok()) {
       return center_distance.status();
     }
-    std::array<ClippingVertex, 8> vertices;
+    center_distances[batch_slot] = *center_distance;
+    query = {};
+    query.mode = GeometryMode::kCell;
+    query.geometry = grid_geometry;
+    query.index = index;
+    query.obstacle = packed_obstacle;
     for (int corner = 0; corner < 8; ++corner) {
       CellIndex3D corner_index = index;
-      CartesianVector cell_width_position{};
       for (int axis = 0; axis < 3; ++axis) {
         const int offset = (corner >> axis) & 1;
         const auto shifted = OffsetCellIndex(corner_index, axis, offset, bounded);
@@ -278,29 +356,23 @@ absl::Status FreezeCore(
           return shifted.status();
         }
         corner_index = *shifted;
-        cell_width_position[axis] = offset;
       }
       const auto distance = LookupSignedDistance(corner_distance_samples, corner_index, bounded);
       if (!distance.ok()) {
         return distance.status();
       }
-      vertices[corner] = {cell_width_position, *distance};
+      query.corner_distances[corner] = *distance;
     }
-    GeometryInput query{};
-    query.mode = GeometryMode::kCell;
-    query.geometry = grid_geometry;
-    query.index = index;
-    query.obstacle = packed_obstacle;
-    for (int corner = 0; corner < 8; ++corner) {
-      query.corner_distances[corner] = vertices[corner].liquid_distance;
-    }
-    const auto volumes = backend.compute(backend.context, query);
-    if (!volumes.ok()) {
-      return volumes.status();
-    }
-    const double low_side_liquid_volume = volumes->low_side_liquid_volume;
-    const double high_side_liquid_volume = volumes->high_side_liquid_volume;
-    if (low_side_liquid_volume > 0 && high_side_liquid_volume > 0 && *center_distance < 0) {
+    return absl::OkStatus();
+  };
+  const auto consume_cell = [&](std::size_t ordinal,
+                                std::size_t batch_slot,
+                                const boundary_internal::GeometryOutput& volumes) -> absl::Status {
+    const auto index = inputs.cell_indices[ordinal];
+    const double center_distance = center_distances[batch_slot];
+    const double low_side_liquid_volume = volumes.low_side_liquid_volume;
+    const double high_side_liquid_volume = volumes.high_side_liquid_volume;
+    if (low_side_liquid_volume > 0 && high_side_liquid_volume > 0 && center_distance < 0) {
       return absl::Status(
           absl::StatusCode::kFailedPrecondition,
           bounded ? "" : "Slab splits one pressure cell into disconnected liquid regions"
@@ -315,10 +387,10 @@ absl::Status FreezeCore(
     if (!IsNormalOrZero(volume)) {
       return UnrepresentableGeometry(bounded);
     }
-    if (*center_distance >= 0 || volume == 0) {
-      continue;
+    if (center_distance >= 0 || volume == 0) {
+      return absl::OkStatus();
     }
-    result.cells_.push_back({index, volume, *center_distance, 0.0});
+    result.cells_.push_back({index, volume, center_distance, 0.0});
     for (int axis = 0; axis < 3; ++axis) {
       for (int side = 0; side < 2; ++side) {
         const auto shifted = OffsetCellIndex(index, axis, side, bounded);
@@ -333,6 +405,12 @@ absl::Status FreezeCore(
         result.faces_.push_back({face, *slot, 0, 0, 0});
       }
     }
+    return absl::OkStatus();
+  };
+  if (const auto status =
+          RunGeometryQueries(backend, inputs.cell_indices.size(), bounded, stage_cell, consume_cell, all_ordinals);
+      !status.ok()) {
+    return status;
   }
   std::ranges::sort(result.faces_.values(), {}, &FrozenLiquidFace3D::face_slot);
   const auto duplicates = std::ranges::unique(result.faces_.values(), {}, &FrozenLiquidFace3D::face_slot);
@@ -340,29 +418,33 @@ absl::Status FreezeCore(
   if (result.faces_.size() > 24576) {
     return absl::Status(absl::StatusCode::kResourceExhausted, bounded ? "" : "Boundary face capacity exceeded");
   }
-  for (auto& frozen_face : result.faces_) {
-    const auto face = frozen_face.face_index;
+  const auto stage_face = [&](std::size_t ordinal, std::size_t, GeometryInput& query) {
+    const auto face = result.faces_[ordinal].face_index;
     const auto face_lattice_index = face.lattice_index;
-    GeometryInput query{};
+    query = {};
     query.mode = GeometryMode::kFace;
     query.geometry = grid_geometry;
     query.index = {face_lattice_index.x, face_lattice_index.y, face_lattice_index.z};
     query.obstacle = packed_obstacle;
     query.axis = static_cast<int>(face.axis);
-    const auto areas = backend.compute(backend.context, query);
-    if (!areas.ok()) {
-      return areas.status();
-    }
-    const double open_area = areas->open_face_area;
-    const double blocked_area = areas->blocked_face_area;
-    frozen_face.open_area = open_area;
-    frozen_face.blocked_area = blocked_area;
+    return absl::OkStatus();
+  };
+  const auto consume_face = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& areas) {
+    auto& frozen_face = result.faces_[ordinal];
+    frozen_face.open_area = areas.open_face_area;
+    frozen_face.blocked_area = areas.blocked_face_area;
     if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-      frozen_face.wall_normal_velocity = areas->piston_normal_velocity;
-      frozen_face.prescribed_wall_flux = areas->piston_flux;
+      frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
+      frozen_face.prescribed_wall_flux = areas.piston_flux;
     } else {
-      frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(face.axis)];
+      frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(frozen_face.face_index.axis)];
     }
+    return absl::OkStatus();
+  };
+  if (const auto status =
+          RunGeometryQueries(backend, result.faces_.size(), bounded, stage_face, consume_face, all_ordinals);
+      !status.ok()) {
+    return status;
   }
   // Curvature and the capillary bound are interface-local. Interior or closed
   // cells neither consume a derivative halo nor impose a capillary restriction.
@@ -393,16 +475,21 @@ absl::Status FreezeCore(
       needs_curvature[has_head ? head_cell : tail_cell] = true;
     }
   }
-  for (std::size_t ordinal = 0; ordinal < result.cells_.size(); ++ordinal) {
-    if (!needs_curvature[ordinal]) {
-      continue;
-    }
-    auto& cell = result.cells_[ordinal];
-    const auto curvature = ComputeCenteredCurvature(center_distance_samples, cell.cell_index, h, backend, bounded);
-    if (!curvature.ok()) {
-      return curvature.status();
-    }
-    cell.curvature = *curvature;
+  const auto stage_curvature = [&](std::size_t ordinal, std::size_t, GeometryInput& query) {
+    return StageCenteredCurvature(center_distance_samples, result.cells_[ordinal].cell_index, h, bounded, query);
+  };
+  const auto consume_curvature = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& output
+                                 ) {
+    result.cells_[ordinal].curvature = output.interface_curvature;
+    return absl::OkStatus();
+  };
+  const auto needs_ordinal = [&](std::size_t ordinal) {
+    return needs_curvature[ordinal];
+  };
+  if (const auto status =
+          RunGeometryQueries(backend, result.cells_.size(), bounded, stage_curvature, consume_curvature, needs_ordinal);
+      !status.ok()) {
+    return status;
   }
   if (std::ranges::any_of(needs_curvature, [](bool needed) {
         return needed;

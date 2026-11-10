@@ -50,6 +50,27 @@ ComputeGeometry(void* context, const boundary_internal::GeometryInput& input) {
   return report->pinned[0].geometry;
 }
 
+// Dispatch only the staged prefix. One fence retires both arena borrows.
+absl::Status ComputeGeometryBatch(void* context, std::size_t count) {
+  auto& arena = *static_cast<CudaLiquidArena3D*>(context);
+  const auto queries = CheckedLiquidRange3D<boundary_internal::GeometryInput>(arena, Range::kGeometryInput, count);
+  const auto results =
+      CheckedLiquidRange3D<boundary_internal::GeometryBatchResult>(arena, Range::kGeometryBatchResults, count);
+  if (!queries.ok()) {
+    return queries.status();
+  }
+  if (!results.ok()) {
+    return results.status();
+  }
+  STAGE_TRY(CopyLiquidRange3D(arena, *queries, true));
+  STAGE_TRY(arena.RecordRuntimeResult(
+      LaunchLiquidBoundaryGeometryBatch3D(queries->device, results->device, count, arena.stream())
+  ));
+  STAGE_TRY(CopyLiquidRange3D(arena, *results, false));
+  STAGE_TRY(FinishLiquidDispatch3D(arena));
+  return results->pinned.front().compiled_architecture == 1200 ? absl::OkStatus()
+                                                               : Error(absl::StatusCode::kFailedPrecondition);
+}
 Vec3 PackedFieldSample(Vec3 world_position) {
   return world_position;
 }
@@ -324,7 +345,33 @@ absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> FreezeLiquidGeometry3D(
     LiquidBoundaryWorkspace3D& workspace
 ) {
   STAGE_TRY(arena.RecordRuntimeResult(cudaSuccess));
-  return boundary_internal::BoundedGeometryAccess::Freeze(workspace, inputs, {ComputeGeometry, &arena});
+  if (AliasesLiquidScratch3D(arena, inputs.cell_indices) || AliasesLiquidScratch3D(arena, inputs.center_distances)
+      || AliasesLiquidScratch3D(arena, inputs.corner_distances)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto query_capacity =
+      arena.range(Range::kGeometryInput).pinned.size() / sizeof(boundary_internal::GeometryInput);
+  const auto result_capacity =
+      arena.range(Range::kGeometryBatchResults).pinned.size() / sizeof(boundary_internal::GeometryBatchResult);
+  const auto batch_capacity =
+      std::min({query_capacity, result_capacity, boundary_internal::kGeometryQueryBatchCapacity3D});
+  const auto queries =
+      CheckedLiquidRange3D<boundary_internal::GeometryInput>(arena, Range::kGeometryInput, batch_capacity);
+  const auto results =
+      CheckedLiquidRange3D<boundary_internal::GeometryBatchResult>(arena, Range::kGeometryBatchResults, batch_capacity);
+  if (!queries.ok()) {
+    return queries.status();
+  }
+  if (!results.ok()) {
+    return results.status();
+  }
+  boundary_internal::GeometryBatch batch{
+      .queries = queries->pinned,
+      .results = results->pinned,
+      .compute = ComputeGeometryBatch,
+      .context = &arena,
+  };
+  return boundary_internal::BoundedGeometryAccess::Freeze(workspace, inputs, {ComputeGeometry, &arena, &batch});
 }
 absl::StatusOr<LiquidPressureProblemView3D> BuildLiquidLinks3D(
     CudaLiquidArena3D& arena,

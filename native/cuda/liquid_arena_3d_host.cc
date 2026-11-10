@@ -168,6 +168,11 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
   using Range = CudaLiquidRange3D;
+  const auto geometry_batch_capacity = std::clamp(
+      std::max(capacity.cells, capacity.faces),
+      std::size_t{1},
+      boundary_internal::kGeometryQueryBatchCapacity3D
+  );
   const bool fits = add(Range::kSampleQuery, 1, sizeof(cuda_internal::LiquidSampleQuery3D))
       && add(Range::kSampleFaceResults, capacity.faces, sizeof(cuda_internal::LiquidSampleFaceResult3D))
       && add(Range::kSortInputKeys, storage.sort_capacity, sizeof(LiquidSortKey3D))
@@ -177,7 +182,8 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
       && add(Range::kSortEntries, capacity.particles, sizeof(LiquidParticleSortEntry3D))
       && add(Range::kSortTemporary, std::max<std::size_t>(temporary_bytes, 1), 1)
       && add(Range::kArchitecture, 1, sizeof(int))
-      && add(Range::kGeometryInput, 1, sizeof(boundary_internal::GeometryInput))
+      && add(Range::kGeometryInput, geometry_batch_capacity, sizeof(boundary_internal::GeometryInput))
+      && add(Range::kGeometryBatchResults, geometry_batch_capacity, sizeof(boundary_internal::GeometryBatchResult))
       && add(Range::kContactInput, 1, sizeof(boundary_internal::ContactInput))
       && add(Range::kBoundaryReport, 1, sizeof(cuda_internal::BoundaryReport3D))
       && add(Range::kTransferQuery, 1, sizeof(cuda_internal::BoundaryTransferQuery3D))

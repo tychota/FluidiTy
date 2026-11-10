@@ -14,10 +14,12 @@
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "../cuda/liquid_arena_dispatch_3d.h"
+#include "../cuda/liquid_boundary_3d_bridge.h"
 #include "../cuda/liquid_geometry_stages_3d.h"
 #include "../cuda/liquid_transfer_stages_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
@@ -272,9 +274,31 @@ TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   arena->CollectRetired();
   EXPECT_EQ(arena->metrics().live_device_bytes, retained_bytes - old_metrics.live_device_bytes);
   EXPECT_EQ(arena->metrics().live_physical_state_bytes, one_state_bytes);
+  // The small arena reserves its configured face extent, not the full 512-query batch.
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      grown.faces * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      grown.faces * sizeof(boundary_internal::GeometryBatchResult)
+  );
   // Exact old reservation ceiling allows initial allocation, but no old+new overlap.
+  ASSERT_GT(old_metrics.live_device_bytes, 1u);
+  EXPECT_EQ(
+      CudaLiquidArena3D::Create(kSmall, 0, old_metrics.live_device_bytes - 1).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
   auto limited = CudaLiquidArena3D::Create(kSmall, 0, old_metrics.live_device_bytes);
   ASSERT_TRUE(limited.ok());
+  EXPECT_EQ(
+      limited->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      kSmall.faces * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      limited->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      kSmall.faces * sizeof(boundary_internal::GeometryBatchResult)
+  );
   ASSERT_TRUE(limited->Initialize(*frame_start).ok());
   const auto before = limited->metrics();
   EXPECT_EQ(limited->PrepareGrowth(grown, *frame_start).code(), absl::StatusCode::kResourceExhausted);
@@ -377,6 +401,14 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
     }
     ranges.push_back(range);
   }
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      512 * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      512 * sizeof(boundary_internal::GeometryBatchResult)
+  );
   const auto metrics = arena->metrics();
   EXPECT_LE(metrics.live_device_bytes, metrics.device_byte_limit);
   EXPECT_LE(metrics.device_byte_limit, metrics.total_device_bytes / 10 * 7 + metrics.total_device_bytes % 10 * 7 / 10);
@@ -659,7 +691,22 @@ TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube)
   auto clipped = cuda_internal::FreezeLiquidGeometry3D(*arena, cut, *workspace);
   ASSERT_TRUE(clipped.ok()) << clipped.status();
   EXPECT_NEAR(clipped->cells[0].fluid_volume, 0.75, 2e-14);
-  for (const auto& face : clipped->faces) {
+  const auto scalar_clipped = CudaFreezeLiquidBoundaryGeometry3D(
+      {*grid, cells, centers, corners, cut.obstacle, cut.step_duration, cut.liquid_density, cut.surface_tension}
+  );
+  ASSERT_TRUE(scalar_clipped.ok()) << scalar_clipped.status();
+  ASSERT_EQ(clipped->cells.size(), scalar_clipped->geometry.cells().size());
+  ASSERT_EQ(clipped->faces.size(), scalar_clipped->geometry.faces().size());
+  EXPECT_EQ(
+      std::bit_cast<std::uint64_t>(clipped->cells[0].fluid_volume),
+      std::bit_cast<std::uint64_t>(scalar_clipped->geometry.cells()[0].fluid_volume)
+  );
+  for (std::size_t ordinal = 0; ordinal < clipped->faces.size(); ++ordinal) {
+    const auto& face = clipped->faces[ordinal];
+    const auto& scalar_face = scalar_clipped->geometry.faces()[ordinal];
+    EXPECT_EQ(face.face_slot, scalar_face.face_slot);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(face.open_area), std::bit_cast<std::uint64_t>(scalar_face.open_area));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(face.blocked_area), std::bit_cast<std::uint64_t>(scalar_face.blocked_area));
     if (face.face_index.axis != FaceNormalAxis::kX) {
       EXPECT_NEAR(face.open_area, 0.75, 2e-14);
     }

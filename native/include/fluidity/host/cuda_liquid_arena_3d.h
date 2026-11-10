@@ -40,7 +40,7 @@ enum class CudaLiquidRange3D : std::size_t {
   kSortEntries,
   kSortTemporary,
   kArchitecture,
-  // One boundary_internal::GeometryInput / ContactInput / BoundaryReport3D.
+  // GeometryInput reserves one to 512 queries; ContactInput and BoundaryReport3D have count one.
   kGeometryInput,
   kContactInput,
   kBoundaryReport,
@@ -75,6 +75,7 @@ enum class CudaLiquidRange3D : std::size_t {
   kSampleDistances,
   kSampleParticles,
   kPressurePreparationScratch,  // Host-only checked assembly/hierarchy; device pointer is null.
+  kGeometryBatchResults,  // GeometryBatchResult array with the same capacity as kGeometryInput.
   kCount,
 };
 struct CudaLiquidRangeView3D {
