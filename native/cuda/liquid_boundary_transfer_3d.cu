@@ -3,6 +3,7 @@
 #include <type_traits>
 
 #include "fluidity/base/liquid_wall_contact_math_3d.h"
+#include "liquid_boundary_donor_slots_3d.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
 namespace fluidity::cuda_internal {
 namespace {
@@ -96,24 +97,29 @@ __device__ Value<ContinuedVelocity> ContinueComponent(
   std::size_t donor_count = 0;
   std::size_t nearest_slot = anchors.size();
   double nearest_squared_distance = numeric::numeric_limits<double>::infinity();
-  for (std::size_t slot = 0; slot < anchors.size(); ++slot) {
-    if (anchors[slot].axis != Axis(component_index) || !IsCompatible(history.Tag(slot), side_tag)
-        || !IsUsable(history.Validity(slot))) {
-      continue;
-    }
-    const Vec3 offset = Difference(anchors[slot].anchor_in_cell_widths, target_in_cell_widths);
-    const double squared_distance = Dot(offset, offset);
-    if (squared_distance > 4.0) {
-      continue;
-    }
-    if (donor_count == donors.size()) {
-      return Error::kRange;
-    }
-    donors[donor_count++] = {offset, history.Velocity(slot)};
-    // Strict comparison keeps the first owned slot on exact distance ties.
-    if (squared_distance < nearest_squared_distance) {
-      nearest_slot = slot;
-      nearest_squared_distance = squared_distance;
+  DonorFaceRows3D neighborhood(anchors, target_in_cell_widths, component_index);
+  DonorFaceRow3D row;
+  while (neighborhood.Next(row)) {
+    for (std::size_t donor_face_slot = row.first_face_slot; donor_face_slot < row.past_last_face_slot;
+         ++donor_face_slot) {
+      if (anchors[donor_face_slot].axis != Axis(component_index)
+          || !IsCompatible(history.Tag(donor_face_slot), side_tag) || !IsUsable(history.Validity(donor_face_slot))) {
+        continue;
+      }
+      const Vec3 offset = Difference(anchors[donor_face_slot].anchor_in_cell_widths, target_in_cell_widths);
+      const double squared_distance = Dot(offset, offset);
+      if (squared_distance > 4.0) {
+        continue;
+      }
+      if (donor_count == donors.size()) {
+        return Error::kRange;
+      }
+      donors[donor_count++] = {offset, history.Velocity(donor_face_slot)};
+      // Strict comparison keeps the first owned slot on exact distance ties.
+      if (squared_distance < nearest_squared_distance) {
+        nearest_slot = donor_face_slot;
+        nearest_squared_distance = squared_distance;
+      }
     }
   }
   const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(donors).first(donor_count));

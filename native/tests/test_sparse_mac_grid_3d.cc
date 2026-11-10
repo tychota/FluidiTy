@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <vector>
 
+#include "../cuda/liquid_boundary_donor_slots_3d.h"
 #include "absl/status/status.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 #include "gtest/gtest.h"
@@ -34,6 +36,64 @@ void ExpectPosition(Vec3 actual, Vec3 expected) {
   EXPECT_EQ(actual.x, expected.x);
   EXPECT_EQ(actual.y, expected.y);
   EXPECT_EQ(actual.z, expected.z);
+}
+
+TEST(SparseMacGrid3D, CudaDonorNeighborhoodMatchesCanonicalSlotOrder) {
+  const std::array blocks{
+      BlockIndex3D{0, 0, 0},
+      BlockIndex3D{-1, -1, -1},
+      BlockIndex3D{0, -1, -1},
+      BlockIndex3D{-1, 0, -1},
+      BlockIndex3D{0, 0, -1},
+      BlockIndex3D{-1, -1, 0},
+      BlockIndex3D{-1, 0, 0},
+      BlockIndex3D{kMinIndex / 4, kMinIndex / 4, kMinIndex / 4},
+      BlockIndex3D{kMaxIndex / 4, kMaxIndex / 4, kMaxIndex / 4},
+  };
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<cuda_internal::BoundaryTransferFace3D> anchors;
+  for (std::size_t face_slot = 0; face_slot < grid->face_count(); ++face_slot) {
+    const auto face = grid->view().FaceIndex(face_slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    const auto anchor = grid->FaceWorldAnchor(*face);
+    ASSERT_TRUE(anchor.ok()) << anchor.status();
+    const auto resolved_face_slot = grid->FaceSlot(*face);
+    ASSERT_TRUE(resolved_face_slot.ok()) << resolved_face_slot.status();
+    ASSERT_EQ(*resolved_face_slot, face_slot);
+    anchors.push_back({
+        .axis = face->axis,
+        .anchor_in_cell_widths = *anchor,
+    });
+  }
+  for (std::size_t target_face_slot = 0; target_face_slot < anchors.size(); ++target_face_slot) {
+    SCOPED_TRACE(target_face_slot);
+    const Vec3 target_anchor = anchors[target_face_slot].anchor_in_cell_widths;
+    for (std::size_t component_index = 0; component_index < kFaceAxes.size(); ++component_index) {
+      SCOPED_TRACE(component_index);
+      std::vector<std::size_t> expected_slots;
+      for (std::size_t face_slot = 0; face_slot < anchors.size(); ++face_slot) {
+        const Vec3 donor_anchor = anchors[face_slot].anchor_in_cell_widths;
+        if (anchors[face_slot].axis == kFaceAxes[component_index] && std::abs(donor_anchor.x - target_anchor.x) <= 2
+            && std::abs(donor_anchor.y - target_anchor.y) <= 2 && std::abs(donor_anchor.z - target_anchor.z) <= 2) {
+          expected_slots.push_back(face_slot);
+        }
+      }
+      cuda_internal::DonorFaceRows3D neighborhood(anchors, target_anchor, component_index);
+      std::vector<std::size_t> actual_slots;
+      cuda_internal::DonorFaceRow3D row;
+      while (neighborhood.Next(row)) {
+        ASSERT_LT(row.first_face_slot, row.past_last_face_slot);
+        ASSERT_LE(row.past_last_face_slot, anchors.size());
+        for (std::size_t donor_face_slot = row.first_face_slot; donor_face_slot < row.past_last_face_slot;
+             ++donor_face_slot) {
+          ASSERT_LT(actual_slots.size(), 125u);
+          actual_slots.push_back(donor_face_slot);
+        }
+      }
+      EXPECT_EQ(actual_slots, expected_slots);
+    }
+  }
 }
 
 TEST(SparseMacGrid3D, SignedFaceOwnership) {
