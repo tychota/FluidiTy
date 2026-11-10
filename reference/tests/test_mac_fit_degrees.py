@@ -247,3 +247,18 @@ def test_smooth_spatial_refinement():
             "max_affine_quadratic_gradient_delta_per_s": max_fit_gradient_delta,
             "max_cubic_spline_affine_gradient_delta_per_s": max_spline_gradient_delta,
         }, allow_nan=False))
+
+@pytest.mark.parametrize(
+    ("position_m", "spacing_m"),
+    [
+        ((2.0**52, 0.0, 0.0), 1.0),
+        ((0.0, -1e20, 0.0), 1.0),
+        ((0.0, 0.0, 1e300), 1e-300),
+    ],
+)
+def test_unrepresentable_mac_support_rejects_before_sampling(position_m, spacing_m):
+    def unexpected_donor(*_):
+        pytest.fail("invalid lattice coordinates reached the donor callback")
+
+    with pytest.raises(ValueError, match="half-cell support"):
+        compare(position_m, spacing_m, unexpected_donor)

@@ -87,7 +87,13 @@ def compare_mac_fit_degrees(position_m, h_m, face_value, *, spline_degree=3):
     if spline_degree not in (2, 3):
         raise ValueError("spline degree must be two or three")
 
-    lattice_position = position_m / h_m
+    with np.errstate(over="ignore"):
+        lattice_position = position_m / h_m
+    # The largest lattice magnitude must leave room for every donor and its
+    # half-cell offset below the binary64 unit-spacing boundary.
+    maximum_lattice_magnitude = 2.0**52 - 4
+    if np.any(~np.isfinite(lattice_position)) or np.any(np.abs(lattice_position) > maximum_lattice_magnitude):
+        raise ValueError("position and spacing cannot resolve MAC half-cell support")
     local_indices = np.array(list(product(range(spline_degree + 1), repeat=3)), dtype=np.int64)
     affine_rows = []
     quadratic_rows = []
