@@ -21,12 +21,13 @@ Vec3 Difference(Vec3 end, Vec3 start) {
   return {end.x - start.x, end.y - start.y, end.z - start.z};
 }
 
-double QuadraticForm(Mat3 matrix, Vec3 offset) {
-  return matrix.x_row.x * offset.x * offset.x + matrix.y_row.y * offset.y * offset.y
-      + matrix.z_row.z * offset.z * offset.z
+// The matrix is symmetric, so the upper triangle determines the form.
+double QuadraticForm(Mat3 matrix, Vec3 vector) {
+  return matrix.x_row.x * vector.x * vector.x + matrix.y_row.y * vector.y * vector.y
+      + matrix.z_row.z * vector.z * vector.z
       + 2
-      * (matrix.x_row.y * offset.x * offset.y + matrix.x_row.z * offset.x * offset.z
-         + matrix.y_row.z * offset.y * offset.z);
+      * (matrix.x_row.y * vector.x * vector.y + matrix.x_row.z * vector.x * vector.z
+         + matrix.y_row.z * vector.y * vector.z);
 }
 
 absl::Status CheckConnected(std::span<const LiquidParticleState3D> particles, double neighbor_radius) {
@@ -150,23 +151,25 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   double total_mass = 0;
-  Vec3 center{};
+  Vec3 mass_weighted_position_sum{};
   for (const auto& particle : particles) {
     if (!Finite(particle.world_position) || !std::isfinite(particle.mass) || particle.mass <= 0) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
-    center.x += particle.mass * particle.world_position.x;
-    center.y += particle.mass * particle.world_position.y;
-    center.z += particle.mass * particle.world_position.z;
+    mass_weighted_position_sum.x += particle.mass * particle.world_position.x;
+    mass_weighted_position_sum.y += particle.mass * particle.world_position.y;
+    mass_weighted_position_sum.z += particle.mass * particle.world_position.z;
     total_mass += particle.mass;
   }
   if (!std::isfinite(total_mass)) {
     return Error(absl::StatusCode::kOutOfRange);
   }
-  center.x /= total_mass;
-  center.y /= total_mass;
-  center.z /= total_mass;
-  if (!Finite(center)) {
+  const Vec3 world_centroid{
+      mass_weighted_position_sum.x / total_mass,
+      mass_weighted_position_sum.y / total_mass,
+      mass_weighted_position_sum.z / total_mass,
+  };
+  if (!Finite(world_centroid)) {
     return Error(absl::StatusCode::kOutOfRange);
   }
   if (const auto status = CheckConnected(particles, neighbor_radius); !status.ok()) {
@@ -181,7 +184,7 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
   double moment_xz = 0;
   double moment_yz = 0;
   for (const auto& particle : particles) {
-    const Vec3 offset = Difference(particle.world_position, center);
+    const Vec3 offset = Difference(particle.world_position, world_centroid);
     moment_xx += particle.mass * offset.x * offset.x;
     moment_yy += particle.mass * offset.y * offset.y;
     moment_zz += particle.mass * offset.z * offset.z;
@@ -223,7 +226,7 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
   }
 
   PreparedIsolatedDrop3D fit;
-  fit.center_ = center;
+  fit.center_ = world_centroid;
   fit.inverse_shape_ = inverse_shape;
   fit.principal_frame_ = axes->frame;
   fit.physical_radius_ = physical_radius;
@@ -277,10 +280,10 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
   const bool inside = normalized_radius < 1;
 
   // Shift the closest-point multiplier by the shortest squared semiaxis.
-  const auto surface_coordinates = [&](double multiplier) {
+  const auto unit_sphere_coordinates = [&](double shifted_multiplier) {
     std::array<double, 3> surface{};
     for (std::size_t axis = 0; axis < 3; ++axis) {
-      const double denominator = shifts[axis] + multiplier;
+      const double denominator = shifts[axis] + shifted_multiplier;
       if (denominator > 0) {
         surface[axis] = numerators[axis] / denominator;
       }
@@ -297,24 +300,24 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
   if (!std::isfinite(upper)) {
     return Error(absl::StatusCode::kOutOfRange);
   }
-  double multiplier = lower;
-  const auto lower_surface = surface_coordinates(lower);
+  double shifted_multiplier = lower;
+  const auto lower_surface = unit_sphere_coordinates(lower);
   if (std::hypot(lower_surface[0], lower_surface[1], lower_surface[2]) > 1) {
     // Near the medial axis the shifted multiplier can be tiny. Terminate at
     // adjacent representable values instead of using an absolute tolerance.
     for (double middle = lower + 0.5 * (upper - lower); middle > lower && middle < upper;
          middle = lower + 0.5 * (upper - lower)) {
-      const auto surface = surface_coordinates(middle);
+      const auto surface = unit_sphere_coordinates(middle);
       if (std::hypot(surface[0], surface[1], surface[2]) > 1) {
         lower = middle;
       } else {
         upper = middle;
       }
     }
-    multiplier = lower + 0.5 * (upper - lower);
+    shifted_multiplier = lower + 0.5 * (upper - lower);
   }
-  auto surface = surface_coordinates(multiplier);
-  if (multiplier == 0) {
+  auto surface = unit_sphere_coordinates(shifted_multiplier);
+  if (shifted_multiplier == 0) {
     // A medial-axis point can reach the surface along a shortest principal axis.
     const double radius = std::hypot(surface[0], surface[1], surface[2]);
     surface[shortest] = std::sqrt(std::max(0.0, 1 - radius * radius));
@@ -358,12 +361,13 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::AirLinkCurvature(Vec3 wet_world_c
   const Vec3 crossing = Add(wet_world_center, Scale(direction, lower + 0.5 * (upper - lower)));
   const Vec3 offset = Difference(crossing, center_);
   const auto& [x, y, z] = inverse_shape_;
-  const Vec3 gradient{Dot(x, offset), Dot(y, offset), Dot(z, offset)};
-  const double length = std::hypot(gradient.x, gradient.y, gradient.z);
+  // S^-1 offset is half the gradient of the fitted quadratic form.
+  const Vec3 half_gradient{Dot(x, offset), Dot(y, offset), Dot(z, offset)};
+  const double length = std::hypot(half_gradient.x, half_gradient.y, half_gradient.z);
   if (!std::isfinite(length) || length == 0) {
     return Error(absl::StatusCode::kOutOfRange);
   }
-  const Vec3 normal{gradient.x / length, gradient.y / length, gradient.z / length};
+  const Vec3 normal{half_gradient.x / length, half_gradient.y / length, half_gradient.z / length};
   const double curvature = (x.x + y.y + z.z - QuadraticForm(inverse_shape_, normal)) / length;
   if (!std::isfinite(curvature)) {
     return Error(absl::StatusCode::kOutOfRange);
