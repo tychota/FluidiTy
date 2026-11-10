@@ -59,9 +59,9 @@ PrepareTransferStencil(const Grid2D& mac_grid, Vec2 particle_world_position, Tra
       if (!node_on_face_lattice) {
         return absl::InvalidArgumentError("particle does not have complete MAC support");
       }
-      const auto face_index =
+      const auto face_slot =
           orientation_face_offset + static_cast<std::size_t>(lattice_node.y * face_column_count + lattice_node.x);
-      const auto face_geometry = FaceGeometry(mac_grid, face_index);
+      const auto face_geometry = FaceGeometry(mac_grid, face_slot);
       if (!face_geometry.ok()) {
         return face_geometry.status();
       }
@@ -70,7 +70,7 @@ PrepareTransferStencil(const Grid2D& mac_grid, Vec2 particle_world_position, Tra
         return absl::OutOfRangeError("face position relative to particle is nonfinite");
       }
       particle_stencil.component_slots[velocity_component_index][stencil_slot_index] = {
-          .face_index = face_index,
+          .face_slot = face_slot,
           .basis_weight = quadratic_basis->weights[stencil_slot_index],
           .basis_gradient = quadratic_basis->gradients[stencil_slot_index],
           .particle_to_face_offset = particle_to_face_offset,
@@ -389,13 +389,12 @@ absl::Status CudaP2G(
 
   static_assert(std::numeric_limits<unsigned long long>::digits == 64);
   static_assert(std::bit_cast<unsigned long long>(std::int64_t{-1}) == std::numeric_limits<unsigned long long>::max());
-  for (std::size_t face_index = 0; face_index < *face_count; ++face_index) {
-    deposit_outputs.mass_quanta[face_index] =
-        std::bit_cast<std::int64_t>(face_accumulators[face_index].mass_quanta_sum);
-    deposit_outputs.pure_momentum_quanta[face_index] =
-        std::bit_cast<std::int64_t>(face_accumulators[face_index].pure_momentum_quanta_sum);
-    deposit_outputs.stress_force_quanta[face_index] =
-        std::bit_cast<std::int64_t>(face_accumulators[face_index].stress_force_quanta_sum);
+  for (std::size_t face_slot = 0; face_slot < *face_count; ++face_slot) {
+    deposit_outputs.mass_quanta[face_slot] = std::bit_cast<std::int64_t>(face_accumulators[face_slot].mass_quanta_sum);
+    deposit_outputs.pure_momentum_quanta[face_slot] =
+        std::bit_cast<std::int64_t>(face_accumulators[face_slot].pure_momentum_quanta_sum);
+    deposit_outputs.stress_force_quanta[face_slot] =
+        std::bit_cast<std::int64_t>(face_accumulators[face_slot].stress_force_quanta_sum);
   }
   kernel_measurement = staged_measurement;
   return absl::OkStatus();

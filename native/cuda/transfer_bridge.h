@@ -16,7 +16,7 @@ inline constexpr std::size_t kTransferComponents = 2;
 inline constexpr std::size_t kTransferSlots = 9;
 
 struct TransferSlot {
-  std::size_t face_index;
+  std::size_t face_slot;  // Flat MAC face slot in x-normal then y-normal face order.
   double basis_weight;
   Vec2 basis_gradient;  // Derivative with respect to particle position, in inverse meters.
   Vec2 particle_to_face_offset;  // Face position minus particle position, in meters.

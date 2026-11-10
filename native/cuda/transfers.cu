@@ -40,7 +40,7 @@ __device__ DepositError DepositComponent(
     weighted_face_offset_mean = weighted_face_offset_mean + slot.particle_to_face_offset * slot.basis_weight;
   }
   for (const auto& slot : component_slots) {
-    if (slot.face_index >= face_count) {
+    if (slot.face_slot >= face_count) {
       return DepositError::kInvalidFaceIndex;
     }
     const Vec2 centered_face_offset = slot.particle_to_face_offset - weighted_face_offset_mean;
@@ -63,7 +63,7 @@ __device__ DepositError DepositComponent(
     // Each particle contributes at most one term of magnitude 2^52 to this face.
     // Across at most 1024 particles the signed sum is representable and the
     // unsigned modular sum has the same bits, regardless of atomic order.
-    auto& face_accumulator = face_accumulators[slot.face_index];
+    auto& face_accumulator = face_accumulators[slot.face_slot];
     atomicAdd(&face_accumulator.mass_quanta_sum, static_cast<unsigned long long>(quantized_mass_contribution));
     atomicAdd(
         &face_accumulator.pure_momentum_quanta_sum,
@@ -177,11 +177,11 @@ __device__ GatherError GatherComponent(
   // Sum both PIC fields in the same order so identical inputs give exactly zero
   // increment. The true derivative uses the unmodified basis gradients.
   for (const auto& slot : component_slots) {
-    if (slot.face_index >= face_fields.face_count) {
+    if (slot.face_slot >= face_fields.face_count) {
       return GatherError::kInvalidFaceIndex;
     }
-    const double old_face_velocity_sample = face_fields.old_face_velocities[slot.face_index];
-    const double new_face_velocity_sample = face_fields.new_face_velocities[slot.face_index];
+    const double old_face_velocity_sample = face_fields.old_face_velocities[slot.face_slot];
+    const double new_face_velocity_sample = face_fields.new_face_velocities[slot.face_slot];
     old_pic_velocity += slot.basis_weight * old_face_velocity_sample;
     new_pic_velocity += slot.basis_weight * new_face_velocity_sample;
     weighted_face_offset_mean = weighted_face_offset_mean + slot.particle_to_face_offset * slot.basis_weight;
@@ -201,7 +201,7 @@ __device__ GatherError GatherComponent(
   for (const auto& slot : component_slots) {
     const Vec2 centered_face_offset = slot.particle_to_face_offset - weighted_face_offset_mean;
     const Vec2 weighted_centered_face_offset = centered_face_offset * slot.basis_weight;
-    const double new_face_velocity_sample = face_fields.new_face_velocities[slot.face_index];
+    const double new_face_velocity_sample = face_fields.new_face_velocities[slot.face_slot];
     const double weighted_new_face_velocity_sample = slot.basis_weight * new_face_velocity_sample;
     centered_moment_xx += weighted_centered_face_offset.x * centered_face_offset.x;
     centered_moment_xy += weighted_centered_face_offset.x * centered_face_offset.y;
