@@ -294,9 +294,14 @@ absl::Status SampleLiquidFaces3D(
   };
   STAGE_TRY(CopyLiquidRange3D(arena, *query, true));
   STAGE_TRY(CopyLiquidRange3D(arena, *positions, true));
-  STAGE_TRY(arena.RecordRuntimeResult(
-      LaunchLiquidFaceSamples3D(query->device, positions->device, output->device, architecture->device, arena.stream())
-  ));
+  STAGE_TRY(arena.RecordRuntimeResult(LaunchLiquidFaceSamples3D(
+      query->device,
+      positions->device,
+      output->device,
+      architecture->device,
+      grid.face_count(),
+      arena.stream()
+  )));
   STAGE_TRY(CopyLiquidRange3D(arena, *output, false));
   STAGE_TRY(Architecture(arena, *architecture));
   for (const auto& result : output->pinned) {

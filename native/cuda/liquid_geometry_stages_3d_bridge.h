@@ -41,5 +41,12 @@ int LaunchLiquidFieldSamples3D(
     std::size_t sample_count,
     void* stream
 );
-int LaunchLiquidFaceSamples3D(const LiquidSampleQuery3D*, const Vec3*, LiquidSampleFaceResult3D*, int*, void*);
+int LaunchLiquidFaceSamples3D(
+    const LiquidSampleQuery3D* device_query,
+    const Vec3* device_face_positions,
+    LiquidSampleFaceResult3D* device_face_samples,
+    int* device_compiled_architecture,
+    std::size_t sample_count,
+    void* stream
+);
 }  // namespace fluidity::cuda_internal
