@@ -49,9 +49,9 @@ __device__ DepositError DepositComponent(
     const double pure_momentum_contribution = mass_contribution * deposited_velocity;
     const double stress_force_contribution =
         -particle.reference_volume * Dot(kirchhoff_stress_row, slot.basis_gradient);
-    const double scaled_mass_contribution = mass_contribution / scales.mass;
-    const double scaled_pure_momentum_contribution = pure_momentum_contribution / scales.pure_momentum;
-    const double scaled_stress_force_contribution = stress_force_contribution / scales.stress_force;
+    const double scaled_mass_contribution = mass_contribution / scales.mass_per_quantum;
+    const double scaled_pure_momentum_contribution = pure_momentum_contribution / scales.pure_momentum_per_quantum;
+    const double scaled_stress_force_contribution = stress_force_contribution / scales.stress_force_per_quantum;
     if (!IsQuantizable(scaled_mass_contribution) || !IsQuantizable(scaled_pure_momentum_contribution)
         || !IsQuantizable(scaled_stress_force_contribution)) {
       return DepositError::kOutOfRange;

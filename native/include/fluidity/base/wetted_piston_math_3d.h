@@ -161,38 +161,42 @@ FLUIDITY_HD inline Bounds Square(Bounds a) {
   return MultiplyNonnegative(magnitude, magnitude);
 }
 
-FLUIDITY_HD inline Bounds LatticeOffset(double world, double origin, double index, double h) {
-  const auto offset = boundary_internal::TankPlaneOffset(world, {origin, index, h}).Bounds();
-  if (!offset.finite()) {
+FLUIDITY_HD inline Bounds
+LatticeOffset(double world_coordinate, double world_origin, double lattice_index, double cell_width) {
+  const auto world_offset =
+      boundary_internal::TankPlaneOffset(world_coordinate, {world_origin, lattice_index, cell_width}).Bounds();
+  if (!world_offset.finite()) {
     return {kInfinity, kInfinity};
   }
-  return Divide({offset.lower, offset.upper}, h);
+  return Divide({world_offset.lower, world_offset.upper}, cell_width);
 }
 
 // The factored section retains the positive difference near tangency. Scaling
 // the factors before multiplying avoids squaring a large world-space radius.
-FLUIDITY_HD inline Disk Section(const Field& field, Vec3 center) {
-  const double h = field.geometry.cell_width;
-  const auto distance = Magnitude(Subtract(Point(center.x), Point(field.tank.start_low_x)));
-  if (!Finite(distance)) {
+FLUIDITY_HD inline Disk Section(const Field& field, Vec3 sphere_world_center) {
+  const double cell_width = field.geometry.cell_width;
+  const auto piston_distance = Magnitude(Subtract(Point(sphere_world_center.x), Point(field.tank.start_low_x)));
+  if (!Finite(piston_distance)) {
     return {.error = Error::kRange};
   }
-  if (distance.lower >= field.sphere_radius) {
+  if (piston_distance.lower >= field.sphere_radius) {
     return {};
   }
-  const auto radius = Point(field.sphere_radius);
-  const auto radius_minus_distance = Maximum(Point(0), Subtract(radius, distance));
-  const auto radius_plus_distance = Add(Divide(radius, h), Divide(distance, h));
-  const auto radius_squared = MultiplyNonnegative(Divide(radius_minus_distance, h), radius_plus_distance);
-  const auto y = LatticeOffset(center.y, field.geometry.world_origin.y, 0, h);
-  const auto z = LatticeOffset(center.z, field.geometry.world_origin.z, 0, h);
-  if (!Finite(radius_squared) || !Finite(y) || !Finite(z) || radius_squared.upper <= 0) {
+  const auto sphere_radius = Point(field.sphere_radius);
+  const auto world_radius_minus_distance = Maximum(Point(0), Subtract(sphere_radius, piston_distance));
+  const auto lattice_radius_plus_distance = Add(Divide(sphere_radius, cell_width), Divide(piston_distance, cell_width));
+  const auto lattice_disk_radius_squared =
+      MultiplyNonnegative(Divide(world_radius_minus_distance, cell_width), lattice_radius_plus_distance);
+  const auto center_lattice_y = LatticeOffset(sphere_world_center.y, field.geometry.world_origin.y, 0, cell_width);
+  const auto center_lattice_z = LatticeOffset(sphere_world_center.z, field.geometry.world_origin.z, 0, cell_width);
+  if (!Finite(lattice_disk_radius_squared) || !Finite(center_lattice_y) || !Finite(center_lattice_z)
+      || lattice_disk_radius_squared.upper <= 0) {
     return {.error = Error::kRange};
   }
   return {
-      .lattice_y = y,
-      .lattice_z = z,
-      .radius_squared = radius_squared,
+      .lattice_y = center_lattice_y,
+      .lattice_z = center_lattice_z,
+      .radius_squared = lattice_disk_radius_squared,
   };
 }
 

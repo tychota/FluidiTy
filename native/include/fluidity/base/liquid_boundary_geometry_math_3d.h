@@ -322,54 +322,58 @@ FLUIDITY_HD inline double PhysicalMeasure(double determinant, int local_exponent
   return physical_measure;
 }
 
+// Sum physical tetrahedron volumes from a common interior apex. Normalize
+// each coordinate row before the determinant, then restore its scale.
 FLUIDITY_HD inline double ComputeClippedVolume(const ClippingPolyhedron& polyhedron, double cell_width) {
   if (polyhedron.overflow) {
     return numeric::numeric_limits<double>::quiet_NaN();
   }
-  CartesianVector center{};
-  numeric::size_t count = 0;
+  CartesianVector tetrahedron_apex_in_cell_widths{};
+  numeric::size_t polygon_vertex_count = 0;
   for (const auto& polygon : polyhedron) {
     if (polygon.overflow) {
       return numeric::numeric_limits<double>::quiet_NaN();
     }
     for (const auto& vertex : polygon) {
-      center = Add(center, vertex.cell_width_position);
-      ++count;
+      tetrahedron_apex_in_cell_widths = Add(tetrahedron_apex_in_cell_widths, vertex.cell_width_position);
+      ++polygon_vertex_count;
     }
   }
-  if (count == 0) {
+  if (polygon_vertex_count == 0) {
     return 0;
   }
-  center = Scale(center, 1.0 / count);
-  double physical_volume = 0;
+  tetrahedron_apex_in_cell_widths = Scale(tetrahedron_apex_in_cell_widths, 1.0 / polygon_vertex_count);
+  double clipped_world_volume = 0;
   for (const auto& polygon : polyhedron) {
     for (numeric::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
       numeric::array edges{
-          Sub(polygon[0].cell_width_position, center),
-          Sub(polygon[vertex].cell_width_position, center),
-          Sub(polygon[vertex + 1].cell_width_position, center),
+          Sub(polygon[0].cell_width_position, tetrahedron_apex_in_cell_widths),
+          Sub(polygon[vertex].cell_width_position, tetrahedron_apex_in_cell_widths),
+          Sub(polygon[vertex + 1].cell_width_position, tetrahedron_apex_in_cell_widths),
       };
-      int determinant_exponent = 0;
+      int volume_exponent = 0;
       for (int axis = 0; axis < 3; ++axis) {
-        determinant_exponent += NormalizeCoordinateRow(edges, axis);
+        volume_exponent += NormalizeCoordinateRow(edges, axis);
       }
-      const double determinant = numeric::abs(Dot(edges[0], Cross(edges[1], edges[2]))) / 6;
-      physical_volume += PhysicalMeasure(determinant, determinant_exponent, cell_width, 3);
+      const double scaled_tetrahedron_volume = numeric::abs(Dot(edges[0], Cross(edges[1], edges[2]))) / 6;
+      clipped_world_volume += PhysicalMeasure(scaled_tetrahedron_volume, volume_exponent, cell_width, 3);
     }
   }
-  return physical_volume;
+  return clipped_world_volume;
 }
+// Sum physical areas of the polygon triangle fan. Each cross-product
+// component restores the scales of its two contributing coordinate rows.
 FLUIDITY_HD inline double ComputeClippedArea(const ClippingPolygon& polygon, double cell_width) {
   if (polygon.overflow) {
     return numeric::numeric_limits<double>::quiet_NaN();
   }
-  double physical_area = 0;
+  double clipped_world_area = 0;
   for (numeric::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
     const numeric::array edges{
         Sub(polygon[vertex].cell_width_position, polygon[0].cell_width_position),
         Sub(polygon[vertex + 1].cell_width_position, polygon[0].cell_width_position),
     };
-    CartesianVector physical_half_cross{};
+    CartesianVector world_triangle_area_vector{};
     for (int axis = 0; axis < 3; ++axis) {
       auto normalized_edges = edges;
       const int first_axis = (axis + 1) % 3;
@@ -377,14 +381,16 @@ FLUIDITY_HD inline double ComputeClippedArea(const ClippingPolygon& polygon, dou
       const int first_axis_exponent = NormalizeCoordinateRow(normalized_edges, first_axis);
       const int second_axis_exponent = NormalizeCoordinateRow(normalized_edges, second_axis);
       const int area_exponent = first_axis_exponent + second_axis_exponent;
-      const double determinant = (normalized_edges[0][first_axis] * normalized_edges[1][second_axis]
-                                  - normalized_edges[0][second_axis] * normalized_edges[1][first_axis])
+      const double scaled_triangle_area_component =
+          (normalized_edges[0][first_axis] * normalized_edges[1][second_axis]
+           - normalized_edges[0][second_axis] * normalized_edges[1][first_axis])
           / 2;
-      physical_half_cross[axis] = PhysicalMeasure(determinant, area_exponent, cell_width, 2);
+      world_triangle_area_vector[axis] = PhysicalMeasure(scaled_triangle_area_component, area_exponent, cell_width, 2);
     }
-    physical_area += numeric::hypot(physical_half_cross[0], physical_half_cross[1], physical_half_cross[2]);
+    clipped_world_area +=
+        numeric::hypot(world_triangle_area_vector[0], world_triangle_area_vector[1], world_triangle_area_vector[2]);
   }
-  return physical_area;
+  return clipped_world_area;
 }
 // A polygon contained in the solid boundary is closed. Strictness changes area
 // only for this coplanar case, and avoids counting the same face on both sides.

@@ -119,7 +119,9 @@ absl::StatusOr<std::array<char, 76>> LiquidContentName3D(const LiquidContentRefe
 // Reject any spelling other than that derived name, including traversal, absolute
 // paths, separators, case variants, extra suffixes and embedded NUL. No filesystem I/O.
 absl::Status ValidateLiquidContentName3D(std::string_view name, const LiquidContentReference3D& reference);
-// Verify kind, exact byte count and exact-byte digest, without parsing a record.
+// Verifies kind, exact byte count and digest without parsing the record. An invalid or mismatched
+// kind returns InvalidArgument, an excessive byte count returns ResourceExhausted, and a content
+// length or digest mismatch returns DataLoss.
 absl::Status VerifyLiquidContent3D(
     std::span<const std::uint8_t> bytes,
     const LiquidContentReference3D& reference,
@@ -139,8 +141,8 @@ absl::Status VerifyLiquidContent3D(
 // unsupported version/model returns FailedPrecondition. Encoders propagate
 // OutOfRange for unrepresentable numerical state. Configured bounds or allocation
 // failure return ResourceExhausted. No partial output escapes on error.
-// A reader alone does not authenticate bytes: 7B must call VerifyLiquidContent3D
-// against a trusted manifest/index reference before decoding referenced content.
+// Authenticate referenced content with VerifyLiquidContent3D against the trusted manifest or
+// checkpoint reference before decoding.
 absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& state, LiquidCacheLimits3D limits = {});
 absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits = {});
 // Checkpoints require a completed-frame clock and enough resume capacities for
@@ -220,18 +222,19 @@ class LiquidCache3D {
   /// Acquiring the cache I/O lease may create the persistent lock file.
   static absl::StatusOr<LiquidCache3D> Open(
       const std::filesystem::path& root_directory,
-      const LiquidDigest3D& expected_fingerprint,
+      const LiquidDigest3D& expected_resolved_fingerprint,
       LiquidCacheLimits3D limits = {}
   );
   /// Opens an existing cache for read-only replay. The caller establishes build and backend identity.
   /// Performs portable inspection using the existing `.writer.lock` file, then verifies the cache fingerprint
-  /// against expected_fingerprint. Propagates inspection failures and returns `FailedPrecondition` on mismatch.
+  /// against expected_resolved_fingerprint. Propagates inspection failures and returns `FailedPrecondition` on
+  /// mismatch.
   /// @return On success, a cache that permits verified retained checkpoint reads and creates or writes no files.
   /// PublishFrame and PublishCheckpoint return `FailedPrecondition` before accessing the cache, even if the
   /// lock file has since been removed.
   static absl::StatusOr<LiquidCache3D> OpenForReplay(
       const std::filesystem::path& root_directory,
-      const LiquidDigest3D& expected_fingerprint,
+      const LiquidDigest3D& expected_resolved_fingerprint,
       LiquidCacheLimits3D limits = {}
   );
   // Verifies portable cache self-consistency without creating or writing files.
@@ -274,8 +277,7 @@ class LiquidCache3D {
   // Repairs/completes optional checkpoint metadata after a frame has committed.
   // Only frame zero and multiples of ten qualify. Must match the verified frame.
   // Keeps the newest two full-state blobs; immutable reference history remains.
-  // Initial zero
-  // remains until both 10 and 20 (or two later checkpoints) are available.
+  // The frame-zero payload remains until two later checkpoints are available.
   // Older checkpoint payloads are pruned, but all point frames remain readable.
   absl::Status PublishCheckpoint(
       const LiquidState3D& checkpoint,

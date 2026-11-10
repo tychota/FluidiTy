@@ -63,13 +63,14 @@ absl::StatusOr<NormalizedLiquidMacFaces3D> NormalizeLiquidMacFaces3D(
     double minimum_face_mass
 );
 
+// One stage snapshot. Each array uses the complete owned face-slot order.
 struct LiquidBoundaryVelocityHistory3D {
   double velocity_sample_time;  // Seconds, must match the requested stage time.
   double wall_sample_time;  // Seconds, must match velocity_sample_time.
-  std::span<const double> face_velocities;
-  std::span<const LiquidFaceValidity3D> validity;
-  std::span<const LiquidBoundaryFaceTag3D> face_tags;
-  std::span<const LiquidPrescribedWallSample3D> wall_samples;
+  std::span<const double> face_velocities;  // Normal velocities in m/s at velocity_sample_time.
+  std::span<const LiquidFaceValidity3D> validity;  // Per-slot availability category used in donor selection.
+  std::span<const LiquidBoundaryFaceTag3D> face_tags;  // Boundary compatibility at the same pose.
+  std::span<const LiquidPrescribedWallSample3D> wall_samples;  // Wall data at wall_sample_time.
 };
 struct LiquidBoundaryGatherInputs3D {
   const SparseMacGrid3D& mac_grid;

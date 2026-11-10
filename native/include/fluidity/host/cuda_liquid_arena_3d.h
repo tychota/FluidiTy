@@ -184,15 +184,20 @@ class CudaLiquidEpochLease3D {
   CudaLiquidEpochLease3D& operator=(const CudaLiquidEpochLease3D&) = delete;
   // Captured identity, unchanged for the entire lease lifetime.
   CudaLiquidEpochIdentity3D identity() const;
-  // Immutable full padded payload; valid through lease destruction. This is an
-  // internal execution ABI, not a portable wire encoding. No scratch is included.
+  // Borrows the immutable padded device payload for this lease. A default or
+  // moved-from lease returns an empty view. The payload uses the internal
+  // execution ABI and excludes scratch. Keep an owning lease until every
+  // asynchronous consumer has fenced its access.
   std::span<const std::byte> device_bytes() const;
   // Execution-ABI byte offsets for this lease, including padding/unused capacity.
   CudaLiquidStateLayout3D layout() const;
   // Job-wide current counters, including retained owners; no device query.
   CudaLiquidArenaMetrics3D metrics() const;
-  // Synchronous checked D2H/decode into caller-owned sufficient host capacities.
-  // Output is unchanged on error. No allocation. Concurrent calls are forbidden.
+  // Synchronously copies and decodes this lease into caller-owned host storage.
+  // An empty lease returns FailedPrecondition, insufficient output capacities
+  // return ResourceExhausted, and mismatched copied active counts or clock return
+  // DataLoss. Job poison or runtime copy/fence failure returns Internal. Output
+  // is unchanged on error. No allocation. Concurrent calls are forbidden.
   absl::Status Readback(LiquidState3D& output) const;
 
  private:
@@ -286,11 +291,12 @@ class CudaLiquidArena3D {
   // disables physical dispatch timing. Both are allocation-free and optional.
   void SetWorkPhase(LiquidWorkPhase3D phase);
   void ObserveDeviceScratch(CudaLiquidRange3D range, std::size_t checked_bytes);
-  // Enqueues a start event once before the first measured submission, then
-  // records the end and reads its elapsed time through the existing dispatch
-  // fence. The field flag labels its pre-topology subset. No new
-  // synchronization. CUDA errors poison this arena as Internal.
+  // Enqueues a start event once before the first measured submission. The
+  // field flag labels the pre-topology subset. CUDA errors poison the arena.
   absl::Status BeginMeasuredDispatch(bool field_sample = false);
+  // Fences prior work on the arena stream and collects enabled dispatch timing
+  // through that fence. Other streams retain their own completion obligations.
+  // A poisoned arena or CUDA runtime failure returns Internal.
   absl::Status FinishDispatch();
   // Explicit nonblocking CUDA stream and disable-timing completion event handles.
   // The caller must keep the selected device current and fence its own work before

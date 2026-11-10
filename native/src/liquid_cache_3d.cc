@@ -408,8 +408,8 @@ LiquidDigest3D cache_detail::DomainDigest(std::string_view domain, std::span<con
   blake3_hasher_finalize(&hasher, digest.data(), digest.size());
   return digest;
 }
-LiquidDigest3D LiquidExecutionId3D(const LiquidDigest3D& fingerprint) {
-  return cache_detail::DomainDigest("fluidity/simulate/execution/v1", fingerprint);
+LiquidDigest3D LiquidExecutionId3D(const LiquidDigest3D& resolved_fingerprint) {
+  return cache_detail::DomainDigest("fluidity/simulate/execution/v1", resolved_fingerprint);
 }
 std::array<char, 65> LiquidDigestHex3D(const LiquidDigest3D& digest) {
   constexpr char digits[] = "0123456789abcdef";

@@ -44,9 +44,9 @@ struct DepositParticle {
 };
 
 struct DepositScales {
-  double mass;
-  double pure_momentum;
-  double stress_force;
+  double mass_per_quantum;
+  double pure_momentum_per_quantum;
+  double stress_force_per_quantum;
 };
 
 struct DepositFaceAccumulator {

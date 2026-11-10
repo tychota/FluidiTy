@@ -10,9 +10,9 @@
 namespace fluidity {
 
 struct CudaDepositScales {
-  double mass;
-  double pure_momentum;
-  double stress_force;
+  double mass;  // Kilograms per quantum.
+  double pure_momentum;  // Kilogram meters per second per quantum.
+  double stress_force;  // Newtons per quantum.
 };
 
 struct CudaDepositViews {
@@ -21,8 +21,8 @@ struct CudaDepositViews {
   std::span<std::int64_t> stress_force_quanta;  // Quantized stress force sums at each face.
 };
 
-// Deposits mass (kg), centered APIC momentum (kg*m/s), and stress force (N) at unit
-// depth on CUDA device 0. Reference volumes are finite nonnegative m^3, and stresses
+// Deposits mass (kg), pure normal momentum (kg*m/s) from centered APIC, and
+// stress force (N) at unit depth on CUDA device 0. Reference volumes are finite nonnegative m^3, and stresses
 // are finite row-major Kirchhoff stresses in Pa, both in particle order. Every
 // particle requires all nine nodes on each lattice, including zero-weight nodes.
 // Scales are positive normal powers of two in the corresponding channel units.

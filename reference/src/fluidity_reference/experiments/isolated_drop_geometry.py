@@ -50,22 +50,23 @@ class DropEllipsoid:
         end level must be nonnegative. Raises ValueError for an unbracketed
         segment, including one whose analytic endpoint rounds inside.
         """
-        wet = (np.asarray(wet_center) - self.center) @ self.frame
-        air = (np.asarray(air_center) - self.center) @ self.frame
-        direction = air - wet
+        wet_principal = (np.asarray(wet_center) - self.center) @ self.frame
+        air_principal = (np.asarray(air_center) - self.center) @ self.frame
+        principal_link_direction = air_principal - wet_principal
 
         def level(fraction):
-            return np.linalg.norm((wet + fraction * direction) / self.semiaxes) - 1
+            return np.linalg.norm((wet_principal + fraction * principal_link_direction) / self.semiaxes) - 1
 
         if not (level(0) < 0 <= level(1)):
             raise ValueError("air link must bracket the ellipsoid from wet to air")
         fraction = brentq(level, 0, 1)
         inverse_squared_axes = (self.semiaxes[-1] / self.semiaxes) ** 2
-        gradient = inverse_squared_axes * ((wet + fraction * direction) / self.semiaxes[-1])
-        length = np.linalg.norm(gradient)
-        normal = gradient / length
+        crossing_principal = wet_principal + fraction * principal_link_direction
+        scaled_half_gradient = inverse_squared_axes * (crossing_principal / self.semiaxes[-1])
+        scaled_half_gradient_length = np.linalg.norm(scaled_half_gradient)
+        normal = scaled_half_gradient / scaled_half_gradient_length
         tangential_trace = inverse_squared_axes @ (1 - normal**2)
-        return tangential_trace / (length * self.semiaxes[-1])
+        return tangential_trace / (scaled_half_gradient_length * self.semiaxes[-1])
 
 
 def _principal_signed_distance(point, axes):

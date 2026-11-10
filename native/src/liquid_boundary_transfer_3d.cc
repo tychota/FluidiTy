@@ -397,16 +397,16 @@ absl::Status DepositCore(const LiquidBoundaryDepositViewInputs3D& inputs, Result
           continue;
         }
         compatible_sample.normalized_weight = sample.weight / compatible_weight_sum;
-        const double weight = compatible_sample.normalized_weight;
+        const double normalized_weight = compatible_sample.normalized_weight;
         compatible_sample.normalized_weight_gradient = {
-            (sample.weight_gradient.x - weight * compatible_gradient_sum.x) / compatible_weight_sum,
-            (sample.weight_gradient.y - weight * compatible_gradient_sum.y) / compatible_weight_sum,
-            (sample.weight_gradient.z - weight * compatible_gradient_sum.z) / compatible_weight_sum,
+            (sample.weight_gradient.x - normalized_weight * compatible_gradient_sum.x) / compatible_weight_sum,
+            (sample.weight_gradient.y - normalized_weight * compatible_gradient_sum.y) / compatible_weight_sum,
+            (sample.weight_gradient.z - normalized_weight * compatible_gradient_sum.z) / compatible_weight_sum,
         };
-        if (!std::isfinite(weight) || !IsFinite(compatible_sample.normalized_weight_gradient)) {
+        if (!std::isfinite(normalized_weight) || !IsFinite(compatible_sample.normalized_weight_gradient)) {
           return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "normalized compatible basis is nonfinite");
         }
-        AddScaled(weighted_mean_offset, sample.face_offset_from_particle, weight);
+        AddScaled(weighted_mean_offset, sample.face_offset_from_particle, normalized_weight);
       }
       if (!IsFinite(weighted_mean_offset)) {
         return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "compatible weighted offset is nonfinite");
@@ -425,9 +425,9 @@ absl::Status DepositCore(const LiquidBoundaryDepositViewInputs3D& inputs, Result
           );
         }
         const double mass_contribution = transfer.particle_mass * sample.normalized_weight;
-        const double velocity_at_face =
+        const double normal_velocity_at_face =
             transfer.particle_velocity.*kVelocityComponents[component] + Dot(affine_row, sample.centered_face_offset);
-        const double pure_momentum_contribution = mass_contribution * velocity_at_face;
+        const double pure_momentum_contribution = mass_contribution * normal_velocity_at_face;
         const double scaled_mass_contribution = mass_contribution / inputs.quantization.mass_per_quantum;
         const double scaled_pure_momentum_contribution =
             pure_momentum_contribution / inputs.quantization.pure_momentum_per_quantum;
@@ -439,11 +439,13 @@ absl::Status DepositCore(const LiquidBoundaryDepositViewInputs3D& inputs, Result
               bounded ? "" : "actual compatible mass or momentum contribution exceeds quanta guard"
           );
         }
-        auto& face = result.face_quanta[sample.face_slot];
+        auto& face_quanta_sums = result.face_quanta[sample.face_slot];
         // One contribution per particle/face; the declared power-of-two
         // capacity bound keeps absolute integer sums <=2^62 in both channels.
-        face.mass_quanta_sum += RoundNearestEven(scaled_mass_contribution);
-        face.pure_momentum_quanta_sum += RoundNearestEven(scaled_pure_momentum_contribution);
+        const auto quantized_mass_contribution = RoundNearestEven(scaled_mass_contribution);
+        face_quanta_sums.mass_quanta_sum += quantized_mass_contribution;
+        const auto quantized_pure_momentum_contribution = RoundNearestEven(scaled_pure_momentum_contribution);
+        face_quanta_sums.pure_momentum_quanta_sum += quantized_pure_momentum_contribution;
       }
     }
   }
@@ -482,25 +484,25 @@ absl::Status NormalizeCore(
         || quanta.stress_force_quanta_sum != 0) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "invalid liquid deposit quanta");
     }
-    const double mass = static_cast<double>(quanta.mass_quanta_sum) * quantization.mass_per_quantum;
-    const double momentum =
+    const double decoded_face_mass = static_cast<double>(quanta.mass_quanta_sum) * quantization.mass_per_quantum;
+    const double decoded_face_pure_momentum =
         static_cast<double>(quanta.pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum;
-    if (!std::isfinite(mass) || !std::isfinite(momentum)) {
+    if (!std::isfinite(decoded_face_mass) || !std::isfinite(decoded_face_pure_momentum)) {
       return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "decoded face deposit is nonfinite");
     }
-    result.face_masses[slot] = mass;
-    if (mass == 0.0) {
+    result.face_masses[slot] = decoded_face_mass;
+    if (decoded_face_mass == 0.0) {
       continue;
     }
-    if (mass <= minimum_face_mass) {
+    if (decoded_face_mass <= minimum_face_mass) {
       result.validity[slot] = LiquidFaceValidity3D::kLowMass;
       continue;
     }
-    const double velocity = momentum / mass;
-    if (!std::isfinite(velocity)) {
+    const double normalized_face_velocity = decoded_face_pure_momentum / decoded_face_mass;
+    if (!std::isfinite(normalized_face_velocity)) {
       return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "normalized face velocity is nonfinite");
     }
-    result.face_velocities[slot] = velocity;
+    result.face_velocities[slot] = normalized_face_velocity;
     result.validity[slot] = LiquidFaceValidity3D::kValid;
   }
   return absl::OkStatus();
@@ -557,21 +559,21 @@ absl::Status GatherCore(
         return stencil.status();
       }
       for (const auto& sample : *stencil) {
-        const auto old_value =
+        const auto old_continued_velocity =
             FillVelocity(inputs.old_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
-        if (!old_value.ok()) {
-          return old_value.status();
+        if (!old_continued_velocity.ok()) {
+          return old_continued_velocity.status();
         }
-        const auto new_value =
+        const auto new_continued_velocity =
             FillVelocity(inputs.new_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
-        if (!new_value.ok()) {
-          return new_value.status();
+        if (!new_continued_velocity.ok()) {
+          return new_continued_velocity.status();
         }
-        filled_old[sample.face_slot] = old_value->velocity;
-        filled_new[sample.face_slot] = new_value->velocity;
-        old_pic_velocity.*kVelocityComponents[component] += sample.weight * old_value->velocity;
-        gathered.old_pic_fallback = gathered.old_pic_fallback || old_value->pic_fallback;
-        gathered.new_pic_fallback = gathered.new_pic_fallback || new_value->pic_fallback;
+        filled_old[sample.face_slot] = old_continued_velocity->velocity;
+        filled_new[sample.face_slot] = new_continued_velocity->velocity;
+        old_pic_velocity.*kVelocityComponents[component] += sample.weight * old_continued_velocity->velocity;
+        gathered.old_pic_fallback = gathered.old_pic_fallback || old_continued_velocity->pic_fallback;
+        gathered.new_pic_fallback = gathered.new_pic_fallback || new_continued_velocity->pic_fallback;
         gathered.low_mass_fallback = gathered.low_mass_fallback
             || inputs.old_history.validity[sample.face_slot] == LiquidFaceValidity3D::kLowMass
             || inputs.new_history.validity[sample.face_slot] == LiquidFaceValidity3D::kLowMass;
@@ -588,20 +590,22 @@ absl::Status GatherCore(
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const auto value = internal::GatherMacVelocityComponent(
+      const auto gathered_component = internal::GatherMacVelocityComponent(
           *stencil,
           inputs.mac_grid.geometry().cell_width,
           filled_old,
           filled_new,
           bounded
       );
-      if (!value.ok()) {
-        return value.status();
+      if (!gathered_component.ok()) {
+        return gathered_component.status();
       }
-      complete_gather.new_pic_velocity.*kVelocityComponents[component] = value->new_pic_velocity;
-      complete_gather.grid_velocity_increment.*kVelocityComponents[component] = value->grid_velocity_increment;
-      complete_gather.fitted_velocity_slopes.*kVelocitySlopeRows[component] = value->fitted_velocity_slope_row;
-      complete_gather.velocity_gradient.*kVelocitySlopeRows[component] = value->velocity_gradient_row;
+      complete_gather.new_pic_velocity.*kVelocityComponents[component] = gathered_component->new_pic_velocity;
+      complete_gather.grid_velocity_increment.*kVelocityComponents[component] =
+          gathered_component->grid_velocity_increment;
+      complete_gather.fitted_velocity_slopes.*kVelocitySlopeRows[component] =
+          gathered_component->fitted_velocity_slope_row;
+      complete_gather.velocity_gradient.*kVelocitySlopeRows[component] = gathered_component->velocity_gradient_row;
     }
     gathered.new_pic_velocity = complete_gather.new_pic_velocity;
     gathered.grid_velocity_increment = complete_gather.grid_velocity_increment;
