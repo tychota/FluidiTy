@@ -159,21 +159,28 @@ absl::StatusOr<LiquidBoundaryGatherView3D> GatherIsolatedDropProjectedChange(
   if (projected->particles.size() != 1) {
     return Error(absl::StatusCode::kInternal);
   }
-  corrected = projected->particles[0];
-  corrected.grid_velocity_increment =
-      ContinueProjectedChange(Vec3{}, corrected.new_pic_velocity, restricted_old.new_pic_velocity);
-  corrected.new_pic_velocity =
-      ContinueProjectedChange(full_old.new_pic_velocity, corrected.new_pic_velocity, restricted_old.new_pic_velocity);
-  corrected.fitted_velocity_slopes = ContinueProjectedChange(
+  auto result = projected->particles[0];
+  result.grid_velocity_increment =
+      ContinueProjectedChange(Vec3{}, result.new_pic_velocity, restricted_old.new_pic_velocity);
+  result.new_pic_velocity =
+      ContinueProjectedChange(full_old.new_pic_velocity, result.new_pic_velocity, restricted_old.new_pic_velocity);
+  result.fitted_velocity_slopes = ContinueProjectedChange(
       full_old.fitted_velocity_slopes,
-      corrected.fitted_velocity_slopes,
+      result.fitted_velocity_slopes,
       restricted_old.fitted_velocity_slopes
   );
-  corrected.velocity_gradient = ContinueProjectedChange(
-      full_old.velocity_gradient,
-      corrected.velocity_gradient,
-      restricted_old.velocity_gradient
-  );
+  result.velocity_gradient =
+      ContinueProjectedChange(full_old.velocity_gradient, result.velocity_gradient, restricted_old.velocity_gradient);
+  using liquid_step_internal::Finite;
+  if (!Finite(result.grid_velocity_increment) || !Finite(result.new_pic_velocity)) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  for (const auto row : {&Mat3::x_row, &Mat3::y_row, &Mat3::z_row}) {
+    if (!Finite(result.fitted_velocity_slopes.*row) || !Finite(result.velocity_gradient.*row)) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+  }
+  corrected = result;
   projected->particles = std::span(&corrected, 1);
   return projected;
 }

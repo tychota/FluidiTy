@@ -644,27 +644,28 @@ absl::Status SetIsolatedDropPressureLifts(
     if (!link) {
       continue;
     }
-    const auto index = face.face_index.lattice_index;
-    const double cell_width = geometry.cell_width;
-    const Vec3 head{
-        geometry.world_origin.x + cell_width * (index.x + 0.5),
-        geometry.world_origin.y + cell_width * (index.y + 0.5),
-        geometry.world_origin.z + cell_width * (index.z + 0.5),
-    };
-    Vec3 tail = head;
-    switch (face.face_index.axis) {
-      case FaceNormalAxis::kX:
-        tail.x -= cell_width;
-        break;
-      case FaceNormalAxis::kY:
-        tail.y -= cell_width;
-        break;
-      case FaceNormalAxis::kZ:
-        tail.z -= cell_width;
-        break;
-      default:
-        return Error(absl::StatusCode::kInvalidArgument);
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    if (axis >= 3) {
+      return Error(absl::StatusCode::kInvalidArgument);
     }
+    const auto index = face.face_index.lattice_index;
+    const std::array<std::int64_t, 3> head_index{index.x, index.y, index.z};
+    auto tail_index = head_index;
+    --tail_index[axis];
+    if (tail_index[axis] < std::numeric_limits<std::int32_t>::min()) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    // Match the center samples used to classify the pressure cells. Subtracting
+    // h from the rounded head position can change a near-surface tail sample.
+    const auto center = [&](const std::array<std::int64_t, 3>& cell) {
+      return Vec3{
+          geometry.world_origin.x + (static_cast<double>(cell[0]) + 0.5) * geometry.cell_width,
+          geometry.world_origin.y + (static_cast<double>(cell[1]) + 0.5) * geometry.cell_width,
+          geometry.world_origin.z + (static_cast<double>(cell[2]) + 0.5) * geometry.cell_width,
+      };
+    };
+    const Vec3 head = center(head_index);
+    const Vec3 tail = center(tail_index);
     const auto tail_level = staging.isolated_drop->QuadraticGridLevelSet(tail);
     if (!tail_level.ok()) {
       return tail_level.status();
@@ -674,8 +675,10 @@ absl::Status SetIsolatedDropPressureLifts(
     if (!curvature.ok()) {
       return curvature.status();
     }
-    const double exterior_pressure = ambient_pressure + surface_tension * *curvature;
-    if (!std::isfinite(exterior_pressure)) {
+    const double capillary_pressure = surface_tension * *curvature;
+    const double exterior_pressure = ambient_pressure + capillary_pressure;
+    if ((surface_tension > 0 && *curvature != 0 && capillary_pressure == 0)
+        || !boundary_internal::IsNormalOrZero(capillary_pressure) || !std::isfinite(exterior_pressure)) {
       return Error(absl::StatusCode::kOutOfRange);
     }
     link->exterior_pressure = exterior_pressure;

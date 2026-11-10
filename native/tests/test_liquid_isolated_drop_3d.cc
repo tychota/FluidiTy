@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "../src/liquid_isolated_drop_3d.h"
+#include "../src/liquid_substep_3d_internal.h"
 #include "absl/status/status.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
@@ -45,6 +45,23 @@ std::vector<LiquidParticleState3D> DropSeed() {
     }
   }
   return particles;
+}
+
+absl::StatusOr<LiquidState3D> DropState() {
+  LiquidState3D seed;
+  seed.geometry = {{0, 0, 0}, kCellWidth};
+  const auto particles = DropSeed();
+  auto records = LiquidRecords3D<LiquidParticleState3D>::Create(particles.size());
+  if (!records.ok()) {
+    return records.status();
+  }
+  if (const auto status = records->Resize(particles.size()); !status.ok()) {
+    return status;
+  }
+  std::ranges::copy(particles, records->values().begin());
+  seed.particles = std::move(*records);
+  seed.next_particle_id = particles.size() + 1;
+  return seed;
 }
 
 TEST(IsolatedDrop3D, AuthoredSeedRetainsWetCentersCornersAndCurvature) {
@@ -175,18 +192,11 @@ TEST(IsolatedDrop3D, RejectsConnectedPlanarCovariance) {
 }
 
 TEST(IsolatedDrop3D, ResolvedSceneActivatesPressureAndReplaysFromCheckpoint) {
-  LiquidState3D seed;
-  seed.geometry = {{0, 0, 0}, kCellWidth};
-  const auto particles = DropSeed();
-  auto records = LiquidRecords3D<LiquidParticleState3D>::Create(particles.size());
-  ASSERT_TRUE(records.ok()) << records.status();
-  ASSERT_TRUE(records->Resize(particles.size()).ok());
-  std::ranges::copy(particles, records->values().begin());
-  seed.particles = std::move(*records);
-  seed.next_particle_id = particles.size() + 1;
+  const auto seed = DropState();
+  ASSERT_TRUE(seed.ok()) << seed.status();
 
   LiquidResolvedSceneView3D authored;
-  authored.geometry = seed.geometry;
+  authored.geometry = seed->geometry;
   authored.scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
   authored.scene.surface_tension = 1;
   authored.scene.world_acceleration = {};
@@ -204,7 +214,7 @@ TEST(IsolatedDrop3D, ResolvedSceneActivatesPressureAndReplaysFromCheckpoint) {
 
   auto options = decoded->options;
   options.capacities = {1024, 128, 4096, 24576, 0};
-  auto direct = LiquidSubstepScheduler3D::Create(seed, decoded->scene, options);
+  auto direct = LiquidSubstepScheduler3D::Create(*seed, decoded->scene, options);
   ASSERT_TRUE(direct.ok()) << direct.status();
   constexpr double kStepDuration = 1.0 / 120;
   ASSERT_TRUE(direct->BeginFrame(kStepDuration).ok());
@@ -247,15 +257,8 @@ TEST(IsolatedDrop3D, ResolvedSceneActivatesPressureAndReplaysFromCheckpoint) {
 }
 
 TEST(IsolatedDrop3D, ProjectedChangeRetainsArchivedDropAtFrameThree) {
-  LiquidState3D seed;
-  seed.geometry = {{0, 0, 0}, kCellWidth};
-  const auto particles = DropSeed();
-  auto records = LiquidRecords3D<LiquidParticleState3D>::Create(particles.size());
-  ASSERT_TRUE(records.ok()) << records.status();
-  ASSERT_TRUE(records->Resize(particles.size()).ok());
-  std::ranges::copy(particles, records->values().begin());
-  seed.particles = std::move(*records);
-  seed.next_particle_id = particles.size() + 1;
+  const auto seed = DropState();
+  ASSERT_TRUE(seed.ok()) << seed.status();
 
   LiquidSceneInputs3D scene;
   scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
@@ -263,7 +266,7 @@ TEST(IsolatedDrop3D, ProjectedChangeRetainsArchivedDropAtFrameThree) {
   scene.world_acceleration = {};
   LiquidStepOptions3D options;
   options.capacities = {1024, 128, 4096, 24576, 0};
-  auto scheduler = LiquidSubstepScheduler3D::Create(seed, scene, options);
+  auto scheduler = LiquidSubstepScheduler3D::Create(*seed, scene, options);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   for (int frame = 1; frame <= 3; ++frame) {
     const auto result = scheduler->AdvanceFrame(frame / 24.0);
@@ -292,6 +295,98 @@ TEST(IsolatedDrop3D, ProjectedChangeRetainsArchivedDropAtFrameThree) {
     quadrupole += material_volume * (y * y - (x * x + z * z) / 2);
   }
   EXPECT_NEAR(quadrupole / volume, 0.00028263630776289309, 3e-12);
+}
+
+TEST(IsolatedDrop3D, PressureLiftsUseTheSignedLatticeAndRejectSubnormalProducts) {
+  // This cube's exact, scaled covariance fits a sphere of radius 1/8 m.
+  std::array<LiquidParticleState3D, 8> particles{};
+  std::size_t ordinal = 0;
+  for (const double z : {-0.0078125, 0.0078125}) {
+    for (const double y : {-0.0078125, 0.0078125}) {
+      for (const double x : {0.1171875, 0.1328125}) {
+        particles[ordinal++].world_position = {x, y, z};
+      }
+    }
+  }
+  const auto fit = PrepareIsolatedDrop3D(particles, kCellWidth, kPhysicalRadius, 256);
+  ASSERT_TRUE(fit.ok()) << fit.status();
+  Staging staging;
+  staging.isolated_drop = *fit;
+  auto faces = LiquidRecords3D<MacPressureFace3D>::Create(1);
+  ASSERT_TRUE(faces.ok()) << faces.status();
+  staging.isolated_drop_pressure_faces.emplace(std::move(*faces));
+
+  constexpr int kHead = -98;
+  const double origin_x = -kCellWidth * (kHead - 0.5);
+  const UniformMacGeometry3D translated{{origin_x, -0.5 * kCellWidth, -0.5 * kCellWidth}, kCellWidth};
+  ASSERT_EQ(origin_x + kCellWidth * (kHead - 0.5), 0);
+  ASSERT_GT((origin_x + kCellWidth * (kHead + 0.5)) - kCellWidth, 1e-17);
+  MacPressureFace3D face{
+      .face_index = {FaceNormalAxis::kX, {kHead, 0, 0}},
+      .pressure_link = DirichletMacPressureLink3D{0},
+  };
+  LiquidPressureProblemView3D pressure{.faces = std::span(&face, 1)};
+  const auto status = SetIsolatedDropPressureLifts(translated, 1, 0, staging, pressure);
+  EXPECT_TRUE(status.ok()) << status;
+  if (status.ok()) {
+    EXPECT_NEAR(std::get<DirichletMacPressureLink3D>(pressure.faces[0].pressure_link).exterior_pressure, 16, 1e-9);
+  }
+
+  face.face_index.lattice_index.x = 1;
+  pressure.faces = std::span(&face, 1);
+  const UniformMacGeometry3D dyadic{{-0.015625, -0.015625, -0.015625}, 0.03125};
+  const auto unrepresentable =
+      SetIsolatedDropPressureLifts(dyadic, std::numeric_limits<double>::denorm_min(), 1, staging, pressure);
+  EXPECT_EQ(unrepresentable.code(), absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(pressure.faces.data(), &face);
+}
+
+TEST(IsolatedDrop3D, OverflowingProjectedChangeRejectsGatherBeforePublishing) {
+  const auto seed = DropState();
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  const auto before = EncodeLiquidState3D(*seed);
+  ASSERT_TRUE(before.ok()) << before.status();
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
+  scene.surface_tension = 1;
+  scene.world_acceleration = {};
+  LiquidStepOptions3D options;
+  options.capacities = {1024, 128, 4096, 24576, 0};
+  struct FaultGather {
+    LiquidSubstepBackend3D cpu = CpuLiquidSubstepBackend3D();
+    LiquidBoundaryParticleGather3D result{};
+    std::size_t old_gathers = 0;
+  } fault;
+  auto backend = fault.cpu;
+  backend.context = &fault;
+  backend.gather = [](void* context,
+                      const LiquidBoundaryGatherViewInputs3D& inputs,
+                      LiquidBoundaryWorkspace3D& workspace) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    auto& fault = *static_cast<FaultGather*>(context);
+    auto gathered = fault.cpu.gather(nullptr, inputs, workspace);
+    if (!gathered.ok()) {
+      return gathered.status();
+    }
+    fault.result = gathered->particles[0];
+    const bool reads_old = inputs.new_history.face_velocities.data() == inputs.old_history.face_velocities.data();
+    fault.old_gathers += reads_old;
+    const double maximum = std::numeric_limits<double>::max();
+    fault.result.new_pic_velocity.x = reads_old ? -maximum : maximum;
+    gathered->particles = std::span(&fault.result, 1);
+    return gathered;
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(*seed, scene, options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(1.0 / 24).ok());
+  const auto outcome = scheduler->Attempt(1.0 / 120);
+  ASSERT_TRUE(outcome.ok()) << outcome.status();
+  EXPECT_EQ(outcome->disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_GT(fault.old_gathers, 0);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kGather);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kOutOfRange);
+  const auto after = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_TRUE(std::ranges::equal(before->values(), after->values()));
 }
 
 }  // namespace
