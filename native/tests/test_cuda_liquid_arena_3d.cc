@@ -1257,6 +1257,40 @@ TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
 }
+TEST_F(CudaLiquidTransferStages3D, NormalizationCopiesOnlyActiveQuantaAndDecodedResults) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  static std::array<const void*, 2> face_buffers;
+  static std::array<std::size_t, 2> copy_bytes;
+  face_buffers = {
+      arena->range(CudaLiquidRange3D::kTransferFaces).device,
+      arena->range(CudaLiquidRange3D::kTransferFaceResults).device,
+  };
+  copy_bytes = {};
+  auto& runtime = cuda_internal::LiquidArenaRuntimeCalls();
+  const auto previous_copy = runtime.memcpy_async;
+  runtime.memcpy_async =
+      [](void* destination, const void* source, std::size_t bytes, cudaMemcpyKind kind, cudaStream_t stream
+      ) -> cudaError_t {
+    if (kind == cudaMemcpyHostToDevice && destination == face_buffers[0]) {
+      copy_bytes[0] += bytes;
+    }
+    if (kind == cudaMemcpyDeviceToHost && source == face_buffers[1]) {
+      copy_bytes[1] += bytes;
+    }
+    return cudaMemcpyAsync(destination, source, bytes, kind, stream);
+  };
+  const std::array<MacFaceDepositQuanta3D, 3> quanta{{{0, 0, 0}, {1, -3, 0}, {4, -6, 0}}};
+  const auto result = cuda_internal::NormalizeLiquid3D(*arena, quanta, {0.5, 0.5, 4}, 0.5, *workspace);
+  runtime.memcpy_async = previous_copy;
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(copy_bytes[0], quanta.size() * sizeof(MacFaceDepositQuanta3D));
+  EXPECT_EQ(copy_bytes[1], quanta.size() * 3 * sizeof(double));
+  EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
+}
+
 TEST_F(CudaLiquidTransferStages3D, ForcesApplyAccelerationOnce) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
