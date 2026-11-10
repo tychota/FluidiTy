@@ -194,7 +194,7 @@ absl::Status PackHierarchy(
 }
 
 // Device recurrence retains FP32 fine vectors and FP64 coarse reductions. The
-// host reads only its status to decide whether another exact iteration is needed.
+// host reads its status once per bounded batch to decide whether more iterations are needed.
 absl::Status Execute(
     CudaLiquidArena3D& arena,
     const PreparedMacPressureUploadView3D& prepared,
@@ -309,11 +309,13 @@ absl::Status Execute(
   FLUIDITY_PRESSURE_TRY(clear(rows));
   FLUIDITY_PRESSURE_TRY(clear(output));
   FLUIDITY_PRESSURE_TRY(clear(state));
-  for (std::size_t launch = 0; launch <= options.max_iterations; ++launch) {
+  for (std::size_t first_iteration = 0; first_iteration < options.max_iterations;
+       first_iteration += kMacPressureIterationsPerBatch3D) {
+    const auto iteration_count = std::min(kMacPressureIterationsPerBatch3D, options.max_iterations - first_iteration);
     FLUIDITY_PRESSURE_TRY(arena.BeginMeasuredDispatch());
-    FLUIDITY_PRESSURE_TRY(
-        arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().launch_pressure(device, launch == 0, arena.stream()))
-    );
+    FLUIDITY_PRESSURE_TRY(arena.RecordRuntimeResult(
+        LiquidArenaRuntimeCalls().launch_pressure_batch(device, first_iteration == 0, iteration_count, arena.stream())
+    ));
     FLUIDITY_PRESSURE_TRY(CopyLiquidRange3D(arena, state, false));
     FLUIDITY_PRESSURE_TRY(FinishLiquidDispatch3D(arena));
     if (state.pinned[0].error != PressureError3D::kNone || state.pinned[0].converged) {

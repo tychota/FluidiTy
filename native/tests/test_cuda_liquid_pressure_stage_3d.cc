@@ -276,7 +276,7 @@ class PressureRuntimeScope {
     failure_ = failure;
     auto& calls = cuda_internal::LiquidArenaRuntimeCalls();
     calls.memcpy_async = Copy;
-    calls.launch_pressure = Launch;
+    calls.launch_pressure_batch = Launch;
     calls.memset_async = Clear;
     calls.event_synchronize = Fence;
   }
@@ -295,8 +295,9 @@ class PressureRuntimeScope {
     ++copies;
     return result == cudaSuccess && failure_ == 1 && copies == 2 ? cudaErrorInvalidValue : result;
   }
-  static int Launch(cuda_internal::PressureDevice3D device, bool initialize, void* stream) {
-    const int result = cuda_internal::LaunchMacPressure3D(device, initialize, stream);
+  static int
+  Launch(cuda_internal::PressureDevice3D device, bool initialize, std::size_t iteration_count, void* stream) {
+    const int result = cuda_internal::LaunchMacPressureBatch3D(device, initialize, iteration_count, stream);
     ++launches;
     return result == cudaSuccess && failure_ == 2 ? cudaErrorInvalidValue : result;
   }
@@ -342,7 +343,11 @@ TEST(CudaLiquidPressureStage3D, CountsRealDeviceRecurrenceAndMeasuresExecution) 
   ASSERT_EQ(cudaEventElapsedTime(&elapsed_ms, start, finish), cudaSuccess);
   ASSERT_EQ(cudaEventDestroy(finish), cudaSuccess);
   ASSERT_EQ(cudaEventDestroy(start), cudaSuccess);
-  EXPECT_EQ(PressureRuntimeScope::launches, result->diagnostics.iteration_count + 1);
+  const auto iterations = result->diagnostics.iteration_count;
+  constexpr auto batch_size = cuda_internal::kMacPressureIterationsPerBatch3D;
+  ASSERT_GT(iterations, 1);
+  EXPECT_EQ(PressureRuntimeScope::launches, (iterations + batch_size - 1) / batch_size);
+  EXPECT_LT(PressureRuntimeScope::launches, iterations + 1);
   EXPECT_EQ(PressureRuntimeScope::copies, 7 + PressureRuntimeScope::launches);
   EXPECT_EQ(PressureRuntimeScope::fences, 1 + PressureRuntimeScope::launches);
   EXPECT_EQ(PressureRuntimeScope::clears, 5);

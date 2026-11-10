@@ -17,7 +17,7 @@ struct LiquidArenaRuntimeCalls3D {
   decltype(&cudaEventQuery) event_query = cudaEventQuery;
   decltype(&cudaEventRecord) event_record = cudaEventRecord;
   decltype(&cudaEventSynchronize) event_synchronize = cudaEventSynchronize;
-  decltype(&LaunchMacPressure3D) launch_pressure = LaunchMacPressure3D;
+  decltype(&LaunchMacPressureBatch3D) launch_pressure_batch = LaunchMacPressureBatch3D;
   decltype(&LaunchLiquidFieldSamples3D) launch_field_samples = LaunchLiquidFieldSamples3D;
   decltype(&SortLiquidBins3D) sort_bins = SortLiquidBins3D;
   decltype(&LaunchLiquidArenaArchitecture3D) launch_architecture = LaunchLiquidArenaArchitecture3D;

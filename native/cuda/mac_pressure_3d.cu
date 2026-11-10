@@ -9,8 +9,8 @@
 namespace fluidity::cuda_internal {
 namespace {
 
-// Serial deterministic device arithmetic is deliberate for this bounded parity
-// slice. One launch performs at most one iteration, never the whole budget.
+// Serial device arithmetic preserves the canonical recurrence and residual
+// reductions. The arena can run several complete iterations in one launch.
 __device__ bool RangeFailure(PressureDevice3D device) {
   device.state->error = PressureError3D::kRange;
   return false;
@@ -356,7 +356,7 @@ __device__ bool RecursivePasses(PressureDevice3D device, const float* residual) 
   }
   return norm <= device.integrated_limit && maximum <= device.local_limit;
 }
-__global__ void InitializeMacPressure3DKernel(PressureDevice3D device) {
+__device__ void InitializeMacPressure3D(PressureDevice3D device) {
 #if defined(__CUDA_ARCH__)
   device.state->compiled_architecture = __CUDA_ARCH__;
 #endif
@@ -373,7 +373,7 @@ __global__ void InitializeMacPressure3DKernel(PressureDevice3D device) {
   device.state->restart = true;
   CopyTrueResidual(device);
 }
-__global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
+__device__ void IterateMacPressure3D(PressureDevice3D device) {
 #if defined(__CUDA_ARCH__)
   device.state->compiled_architecture = __CUDA_ARCH__;
 #endif
@@ -469,6 +469,23 @@ __global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
     state.restart = true;
   }
 }
+__global__ void InitializeMacPressure3DKernel(PressureDevice3D device) {
+  InitializeMacPressure3D(device);
+}
+__global__ void IterateMacPressure3DKernel(PressureDevice3D device) {
+  IterateMacPressure3D(device);
+}
+__global__ void BatchMacPressure3DKernel(PressureDevice3D device, bool initialize, std::size_t iteration_count) {
+  if (initialize) {
+    InitializeMacPressure3D(device);
+  }
+  for (std::size_t iteration = 0; iteration < iteration_count; ++iteration) {
+    if (device.state->error != PressureError3D::kNone || device.state->converged) {
+      break;
+    }
+    IterateMacPressure3D(device);
+  }
+}
 }  // namespace
 
 int LaunchMacPressure3D(PressureDevice3D device, bool initialize, void* stream) {
@@ -476,5 +493,17 @@ int LaunchMacPressure3D(PressureDevice3D device, bool initialize, void* stream) 
   const void* kernel = initialize ? reinterpret_cast<const void*>(InitializeMacPressure3DKernel)
                                   : reinterpret_cast<const void*>(IterateMacPressure3DKernel);
   return cudaLaunchKernel(kernel, dim3(1), dim3(1), arguments, 0, static_cast<cudaStream_t>(stream));
+}
+
+int LaunchMacPressureBatch3D(PressureDevice3D device, bool initialize, std::size_t iteration_count, void* stream) {
+  void* arguments[] = {&device, &initialize, &iteration_count};
+  return cudaLaunchKernel(
+      reinterpret_cast<const void*>(BatchMacPressure3DKernel),
+      dim3(1),
+      dim3(1),
+      arguments,
+      0,
+      static_cast<cudaStream_t>(stream)
+  );
 }
 }  // namespace fluidity::cuda_internal
