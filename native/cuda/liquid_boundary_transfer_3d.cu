@@ -532,7 +532,7 @@ __device__ Error Forces(
   }
   return Error::kNone;
 }
-// J uses the original-basis velocity gradient. Contact constrains the
+// J uses the divergence of the selected advection field. Contact constrains the
 // advecting and retained velocities independently.
 __global__ void LiquidParticleUpdate3DKernel(
     const BoundaryTransferQuery3D* device_query,
@@ -559,31 +559,43 @@ __global__ void LiquidParticleUpdate3DKernel(
   const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
   Vec3 stored = gathered.new_pic_velocity;
   AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
-  const double divergence =
-      gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
-  double solid_distance = numeric::numeric_limits<double>::infinity();
-  if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-    const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
-    if (!wall.ok()) {
-      result.error = wall.status();
+  Vec3 advecting;
+  double divergence;
+  if (particle.regular_cell_transport.active) {
+    const auto field = internal::EvaluateRegularCellTransport3D(particle.regular_cell_transport, query.cell_width);
+    if (!field.ok()) {
+      result.error = field.status();
       return;
     }
-    solid_distance = wall->inward_distance;
-  } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
-    const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
-    solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
-        ? projected_distance
-        : numeric::abs(projected_distance) - query.obstacle.half_width;
-    if (!numeric::isfinite(solid_distance)) {
-      result.error = Error::kRange;
-      return;
+    advecting = field->advecting_world_velocity;
+    divergence = field->divergence;
+  } else {
+    divergence =
+        gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
+    double solid_distance = numeric::numeric_limits<double>::infinity();
+    if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+      const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
+      if (!wall.ok()) {
+        result.error = wall.status();
+        return;
+      }
+      solid_distance = wall->inward_distance;
+    } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+      const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
+      solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
+          ? projected_distance
+          : numeric::abs(projected_distance) - query.obstacle.half_width;
+      if (!numeric::isfinite(solid_distance)) {
+        result.error = Error::kRange;
+        return;
+      }
     }
+    const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
+        && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
+    const double beta = surface_expansion ? query.particle_energy_blend : 0;
+    advecting = gathered.new_pic_velocity;
+    AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
   }
-  const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
-      && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
-  const double beta = surface_expansion ? query.particle_energy_blend : 0;
-  Vec3 advecting = gathered.new_pic_velocity;
-  AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
   const auto contact = boundary_internal::ResolveContact({
       start,
       stored,

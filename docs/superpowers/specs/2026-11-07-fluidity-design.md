@@ -213,6 +213,16 @@ An identical old/new grid gives a zero **grid increment**, not necessarily δ=0.
 
 The energy control is `e∈[0,1]`, `α=0.99e`, `β_max=e`, default e=0.6. Elastic always has β=0. Liquid surface separation uses positive expansion and proximity to its interface, excluding obstacles; granular/snow uses returned admissible state outside contact. This ASFLIP-inspired separation policy is a design approximation with its own effect tests, not an automatic guarantee of energy monotonicity for every scene. Require the specified dam-break look-book test.
 
+**Bounded M1 regular-cell liquid transport.** A source-free, incompressible, zero-surface-tension liquid in a stationary axis-aligned tank can use a six-face transport field when the containing pressure cell is whole and all its face values are usable on the particle side. An aligned, fully sealed stationary face supplies its prescribed zero normal speed. For local cell fraction ξ_a and the signed Cartesian face speeds:
+
+```
+v_adv,a = u_lo,a + ξ_a (u_hi,a − u_lo,a)
+D_h = Σ_a (u_hi,a − u_lo,a)/h
+J_p ← J_p exp(dt D_h)
+```
+
+This lowest-order Raviart–Thomas (RT0) field pairs the actual advection with its divergence. On a whole cell, D_h equals the finite-volume flux difference divided by cell volume. A shared normal trace is constant on the face; transverse velocities can jump. Keep the stored PIC/history velocity and the APIC fit above, bypass β for this checked advection path, and still apply contact and the accepted displacement limit. Cut cells, moving walls, unavailable or incompatible samples, source or prescribed divergence, compliance, and capillarity use the original path. This does not equate material J with the determinant of the discrete position map or extend the divergence claim to adaptive interfaces.
+
 The initial Gas validation baseline is APIC with α=β=0; it does not borrow a liquid free-surface separation test. Any later gas energy blend has a separate effect/transport gate, and unavailable controls are not exposed as functioning settings.
 
 ### 5.2 Contact and work

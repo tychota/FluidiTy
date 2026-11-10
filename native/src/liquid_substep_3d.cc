@@ -58,6 +58,147 @@ bool Complete(const LiquidSubstepBackend3D& backend) {
 auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
 }
+auto FaceKey(FaceIndex3D index) {
+  return std::tuple(index.axis, index.lattice_index.z, index.lattice_index.y, index.lattice_index.x);
+}
+
+bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
+  return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
+      && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus)
+      && scene.surface_tension == 0;
+}
+
+// The frozen faces and pressure links share the owned-slot order. A sealed
+// face supplies a boundary value independently of its dormant carrier sample.
+std::optional<double> RegularTransportFaceVelocity(
+    const FrozenLiquidBoundaryGeometryView3D& frozen,
+    std::span<const MacPressureFace3D> links,
+    const liquid_step_internal::Staging& staging,
+    FaceIndex3D face_index,
+    std::int64_t particle_side_tag,
+    const boundary_internal::TankLatticeAxis& normal_lattice,
+    double wall_coordinate
+) {
+  const auto slot = frozen.mac_grid.FaceSlot(face_index);
+  if (!slot.ok()) {
+    return std::nullopt;
+  }
+  const auto face = std::ranges::lower_bound(frozen.faces, *slot, {}, &FrozenLiquidFace3D::face_slot);
+  if (face == frozen.faces.end() || face->face_slot != *slot) {
+    return std::nullopt;
+  }
+  const auto ordinal = static_cast<std::size_t>(face - frozen.faces.begin());
+  if (ordinal >= links.size()) {
+    return std::nullopt;
+  }
+  const auto& link = links[ordinal];
+  const bool matching_link = FaceKey(link.face_index) == FaceKey(face_index) && link.open_area == face->open_area;
+  if (face->prescribed_wall_flux.value_or(0) != 0) {
+    return std::nullopt;
+  }
+  if (!matching_link || link.prescribed_wall_flux.value_or(0) != 0) {
+    return std::nullopt;
+  }
+  const double full_face_area = normal_lattice.cell_width * normal_lattice.cell_width;
+  if (face->open_area == full_face_area && face->blocked_area == 0) {
+    const auto& tag = staging.new_tags[*slot];
+    const auto validity = staging.validity[*slot];
+    const bool usable = validity == LiquidFaceValidity3D::kValid || validity == LiquidFaceValidity3D::kPredicted;
+    const double velocity = staging.new_velocities[*slot];
+    if (tag.structurally_eligible && tag.side_tag == particle_side_tag && usable && std::isfinite(velocity)) {
+      return velocity;
+    }
+    return std::nullopt;
+  }
+  const bool fully_sealed = face->open_area == 0 && face->blocked_area == full_face_area;
+  const bool stationary = face->wall_normal_velocity == 0 && link.wall_normal_velocity == 0;
+  if (!fully_sealed || !stationary || !std::isfinite(wall_coordinate)) {
+    return std::nullopt;
+  }
+  const auto wall_offset_sign = boundary_internal::TankPlaneOffsetSign(wall_coordinate, normal_lattice);
+  if (wall_offset_sign.ok() && *wall_offset_sign == 0) {
+    return 0;
+  }
+  return std::nullopt;
+}
+
+// Select only a frozen pressure cell with six usable normal samples.
+// Use the same checked lattice arithmetic for the cell and local fractions.
+LiquidRegularCellTransport3D RegularTransportSample(
+    const FrozenLiquidBoundaryGeometryView3D& frozen,
+    const LiquidPressureProblemView3D& links,
+    const liquid_step_internal::Staging& staging,
+    const AxisAlignedLiquidTank3D& tank,
+    const LiquidParticleState3D& particle
+) {
+  const auto geometry = frozen.mac_grid.geometry();
+  const auto cell = liquid_step_internal::TankContainingCell(geometry, particle.world_position);
+  if (!cell) {
+    return {};
+  }
+  const auto cell_key = CellKey(*cell);
+  const auto pressure_cell = std::ranges::lower_bound(frozen.cells, cell_key, {}, [](const auto& frozen_cell) {
+    return CellKey(frozen_cell.cell_index);
+  });
+  if (pressure_cell == frozen.cells.end() || CellKey(pressure_cell->cell_index) != cell_key) {
+    return {};
+  }
+  const auto cell_ordinal = static_cast<std::size_t>(pressure_cell - frozen.cells.begin());
+  if (cell_ordinal >= links.cells.size() || CellKey(links.cells[cell_ordinal].cell_index) != cell_key) {
+    return {};
+  }
+  constexpr std::array components{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  constexpr std::array face_components{&FaceLatticeIndex3D::x, &FaceLatticeIndex3D::y, &FaceLatticeIndex3D::z};
+  const Vec3 low_wall{tank.start_low_x, tank.floor_y, tank.low_z};
+  const Vec3 high_wall{tank.high_x, std::numeric_limits<double>::infinity(), tank.high_z};
+  LiquidRegularCellTransport3D sample;
+  for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+    const auto component = components[axis];
+    const auto face_component = face_components[axis];
+    const FaceIndex3D low_face{axes[axis], {cell->x, cell->y, cell->z}};
+    const auto low_plane_index = low_face.lattice_index.*face_component;
+    FaceIndex3D high_face = low_face;
+    ++(high_face.lattice_index.*face_component);
+    const boundary_internal::TankLatticeAxis low_lattice{
+        geometry.world_origin.*component,
+        static_cast<double>(low_plane_index),
+        geometry.cell_width,
+    };
+    auto high_lattice = low_lattice;
+    high_lattice.lattice_index += 1;
+    const auto fraction = boundary_internal::TankClipCoordinate(particle.world_position.*component, low_lattice);
+    if (!fraction.ok()) {
+      return {};
+    }
+    const auto low_velocity = RegularTransportFaceVelocity(
+        frozen,
+        links.faces,
+        staging,
+        low_face,
+        particle.side_tag,
+        low_lattice,
+        low_wall.*component
+    );
+    const auto high_velocity = RegularTransportFaceVelocity(
+        frozen,
+        links.faces,
+        staging,
+        high_face,
+        particle.side_tag,
+        high_lattice,
+        high_wall.*component
+    );
+    if (!low_velocity || !high_velocity) {
+      return {};
+    }
+    sample.position_in_cell_widths.*component = *fraction;
+    sample.low_face_normal_velocity.*component = *low_velocity;
+    sample.high_face_normal_velocity.*component = *high_velocity;
+  }
+  sample.active = true;
+  return sample;
+}
 }  // namespace
 struct LiquidSubstepScheduler3D::Impl {
   LiquidFrameTransaction3D transaction;
@@ -428,6 +569,13 @@ struct LiquidSubstepScheduler3D::Impl {
       staging.particle_distances[index] = *distance;
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, step_duration));
+    if (staging.regular_transport) {
+      const auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+      for (std::size_t index = 0; index < trial.particles.size(); ++index) {
+        (*staging.regular_transport)[index] =
+            RegularTransportSample(*frozen, *links, staging, tank, trial.particles[index]);
+      }
+    }
     const LiquidParticleUpdateInputs3D particle_update_inputs{
         .gathered = staging.gathered.values(),
         .liquid_distances = staging.particle_distances.values(),
@@ -437,6 +585,8 @@ struct LiquidSubstepScheduler3D::Impl {
         .particle_energy_blend = options.particle_energy_blend,
         .friction_coefficient = scene.friction_coefficient,
         .penetration_tolerance = scene.penetration_tolerance,
+        .regular_cell_transport = staging.regular_transport ? staging.regular_transport->values()
+                                                            : std::span<const LiquidRegularCellTransport3D>{},
     };
     STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWhitewater, step_duration));
@@ -535,7 +685,10 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (!bytes.ok()) {
     return bytes.status();
   }
-  auto staging = liquid_step_internal::Staging::Create(options.capacities);
+  auto staging = liquid_step_internal::Staging::Create(
+      options.capacities,
+      CanStageRegularCellTransport(scene, std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle))
+  );
   if (!staging.ok()) {
     return staging.status();
   }
@@ -719,7 +872,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       if (growth == LiquidStateCapacities3D{} || growth == current) {
         return Error(absl::StatusCode::kResourceExhausted);
       }
-      auto staging = liquid_step_internal::Staging::Create(growth);
+      auto staging = liquid_step_internal::Staging::Create(growth, impl_->staging.regular_transport.has_value());
       if (!staging.ok()) {
         return staging.status();
       }

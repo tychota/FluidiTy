@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fluidity/base/liquid_regular_cell_transport_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity {
@@ -19,6 +20,9 @@ struct LiquidParticleUpdateInputs3D {
   double particle_energy_blend;  // e in [0,1], alpha=0.99e and surface beta=e.
   double friction_coefficient;  // Nonnegative dimensionless Coulomb coefficient.
   double penetration_tolerance;  // Meters.
+  // Empty or one sample per particle in the same order. Active samples select
+  // paired advection and J. No input span may alias output particles or backend scratch.
+  std::span<const LiquidRegularCellTransport3D> regular_cell_transport{};
 };
 struct LiquidMissingFacePredictionInputs3D {
   SparseMacGridView3D grid;
@@ -168,6 +172,10 @@ struct LiquidSubstepBackend3D {
       const LiquidBoundaryGatherViewInputs3D& inputs,
       LiquidBoundaryWorkspace3D& workspace
   );
+  // Apply swept contact and update position, velocity, J and APIC history.
+  // With transport samples, malformed data returns InvalidArgument, nonfinite
+  // transport arithmetic returns OutOfRange, and an unrepresentable J or
+  // excessive displacement returns Aborted. Failed sampled updates publish no particles.
   using UpdateParticles = absl::Status(
       void* context,
       const LiquidParticleUpdateInputs3D& inputs,
@@ -207,6 +215,6 @@ struct LiquidSubstepBackend3D {
   // fatal; other failures allow scalar replay without publishing partial data.
   SampleFieldBatch* sample_gathered_fields = nullptr;
 };
-// CPU operations share the accepted bounded operators and true-gradient J/contact.
+// CPU operations share the bounded operators and the swept-contact particle update.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

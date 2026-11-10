@@ -6,6 +6,29 @@
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
+namespace liquid_step_internal {
+absl::Status ValidateParticleUpdateRecords(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<const LiquidParticleState3D> particles
+) {
+  constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& particle = particles[index];
+    const auto& gather = inputs.gathered[index];
+    if (!Finite(particle.world_position) || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
+        || !std::isfinite(inputs.liquid_distances[index]) || !Finite(gather.new_pic_velocity)
+        || !Finite(gather.particle_minus_old_pic_velocity)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    for (const auto row : rows) {
+      if (!Finite(gather.velocity_gradient.*row) || !Finite(gather.fitted_velocity_slopes.*row)) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+}  // namespace liquid_step_internal
 namespace {
 using liquid_step_internal::Error;
 using liquid_step_internal::Finite;
@@ -145,62 +168,103 @@ absl::Status ApplyForces(
   return absl::OkStatus();
 }
 absl::Status
-UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
-  if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()) {
-    return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
-  }
-  for (std::size_t index = 0; index < particles.size(); ++index) {
-    auto& particle = particles[index];
-    const auto& gather = inputs.gathered[index];
-    const double divergence =
-        gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
-    const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
-    const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
+UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, LiquidParticleState3D& particle) {
+  const auto& gather = inputs.gathered[index];
+  const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
+  const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
+  const auto stored = liquid_step_internal::Add(
+      gather.new_pic_velocity,
+      liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, alpha)
+  );
+  Vec3 advecting;
+  double divergence;
+  if (!inputs.regular_cell_transport.empty() && inputs.regular_cell_transport[index].active) {
+    const auto field =
+        internal::EvaluateRegularCellTransport3D(inputs.regular_cell_transport[index], inputs.cell_width);
+    if (!field.ok()) {
+      return boundary_internal::ArithmeticStatus(field.status(), true);
+    }
+    advecting = field->advecting_world_velocity;
+    divergence = field->divergence;
+  } else {
+    divergence = gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
     const double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
     if (std::isnan(solid_distance)) {
-      return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
+      return Error(absl::StatusCode::kOutOfRange);
     }
     const bool surface_expansion = divergence > 0 && inputs.liquid_distances[index] <= 0
         && inputs.liquid_distances[index] >= -inputs.cell_width && solid_distance > inputs.cell_width;
     const double beta = surface_expansion ? inputs.particle_energy_blend : 0;
-    const auto stored = liquid_step_internal::Add(
-        gather.new_pic_velocity,
-        liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, alpha)
-    );
-    const auto advecting = liquid_step_internal::Add(
+    advecting = liquid_step_internal::Add(
         gather.new_pic_velocity,
         liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, beta * alpha)
     );
-    const auto contact = ResolveLiquidWallContactBounded3D({
-        .start_world_position = particle.world_position,
-        .stored_world_velocity = stored,
-        .advecting_world_velocity = advecting,
-        .obstacle = inputs.obstacle,
-        .step_duration = inputs.step_duration,
-        .friction_coefficient = inputs.friction_coefficient,
-        .penetration_tolerance = inputs.penetration_tolerance,
-    });
-    if (!contact.ok()) {
-      return contact.status();
+  }
+  const auto contact = ResolveLiquidWallContactBounded3D({
+      .start_world_position = particle.world_position,
+      .stored_world_velocity = stored,
+      .advecting_world_velocity = advecting,
+      .obstacle = inputs.obstacle,
+      .step_duration = inputs.step_duration,
+      .friction_coefficient = inputs.friction_coefficient,
+      .penetration_tolerance = inputs.penetration_tolerance,
+  });
+  if (!contact.ok()) {
+    return contact.status();
+  }
+  const Vec3 displacement{
+      contact->world_position.x - particle.world_position.x,
+      contact->world_position.y - particle.world_position.y,
+      contact->world_position.z - particle.world_position.z,
+  };
+  if (liquid_step_internal::MaximumComponentMagnitude(displacement) > 0.5 * inputs.cell_width) {
+    return liquid_step_internal::Error(absl::StatusCode::kAborted);
+  }
+  const double volume_ratio = particle.volume_ratio * std::exp(inputs.step_duration * divergence);
+  if (!std::isfinite(volume_ratio) || volume_ratio <= 0) {
+    return liquid_step_internal::Error(absl::StatusCode::kAborted);
+  }
+  particle.world_position = contact->world_position;
+  particle.world_velocity = contact->stored_world_velocity;
+  particle.volume_ratio = volume_ratio;
+  particle.velocity_slopes = gather.fitted_velocity_slopes;
+  particle.affine_enabled = gather.affine_enabled;
+  particle.pic_initialized = true;
+  return absl::OkStatus();
+}
+
+absl::Status
+UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+  if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto transport = inputs.regular_cell_transport;
+  if (!transport.empty()) {
+    const auto particle_bytes = std::as_bytes(particles);
+    if (transport.size() != particles.size() || Overlap(particle_bytes, std::as_bytes(transport))
+        || Overlap(particle_bytes, std::as_bytes(inputs.gathered))
+        || Overlap(particle_bytes, std::as_bytes(inputs.liquid_distances))) {
+      return Error(absl::StatusCode::kInvalidArgument);
     }
-    const Vec3 displacement{
-        contact->world_position.x - particle.world_position.x,
-        contact->world_position.y - particle.world_position.y,
-        contact->world_position.z - particle.world_position.z,
-    };
-    if (liquid_step_internal::MaximumComponentMagnitude(displacement) > 0.5 * inputs.cell_width) {
-      return liquid_step_internal::Error(absl::StatusCode::kAborted);
+    const auto record_status = liquid_step_internal::ValidateParticleUpdateRecords(inputs, particles);
+    if (!record_status.ok()) {
+      return record_status;
     }
-    const double volume_ratio = particle.volume_ratio * std::exp(inputs.step_duration * divergence);
-    if (!std::isfinite(volume_ratio) || volume_ratio <= 0) {
-      return liquid_step_internal::Error(absl::StatusCode::kAborted);
+    // Check the same arithmetic in particle order before publishing a sampled
+    // update. A late malformed sample must not preempt an earlier retry.
+    for (std::size_t index = 0; index < particles.size(); ++index) {
+      auto checked = particles[index];
+      const auto status = UpdateParticle(inputs, index, checked);
+      if (!status.ok()) {
+        return status;
+      }
     }
-    particle.world_position = contact->world_position;
-    particle.world_velocity = contact->stored_world_velocity;
-    particle.volume_ratio = volume_ratio;
-    particle.velocity_slopes = gather.fitted_velocity_slopes;
-    particle.affine_enabled = gather.affine_enabled;
-    particle.pic_initialized = true;
+  }
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto status = UpdateParticle(inputs, index, particles[index]);
+    if (!status.ok()) {
+      return status;
+    }
   }
   return absl::OkStatus();
 }

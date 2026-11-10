@@ -141,7 +141,7 @@ absl::Status InsertUnique(LiquidRecords3D<T>& records, T value, KeyFunction key)
   return absl::OkStatus();
 }
 }  // namespace
-absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities) {
+absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities, bool needs_regular_transport) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -161,6 +161,9 @@ absl::StatusOr<Staging> Staging::Create(LiquidStateCapacities3D capacities) {
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));
+  if (needs_regular_transport) {
+    STEP_TRY(Reserve(staging.regular_transport.emplace(), capacities.particles, staging.reserved_bytes));
+  }
   return staging;
 }
 absl::Status
@@ -545,10 +548,23 @@ absl::Status PrepareField(
   }
   return absl::OkStatus();
 }
+std::optional<CellIndex3D> TankContainingCell(UniformMacGeometry3D geometry, Vec3 world_position) {
+  const auto x = TankCandidateBound(world_position.x, geometry.world_origin.x, geometry.cell_width, false);
+  const auto y = TankCandidateBound(world_position.y, geometry.world_origin.y, geometry.cell_width, false);
+  const auto z = TankCandidateBound(world_position.z, geometry.world_origin.z, geometry.cell_width, false);
+  if (!x.ok() || !y.ok() || !z.ok()) {
+    return std::nullopt;
+  }
+  return CellIndex3D{*x, *y, *z};
+}
+
 absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging) {
   STEP_TRY(staging.particles.Resize(trial.particles.size()));
   STEP_TRY(staging.gathered.Resize(trial.particles.size()));
   STEP_TRY(staging.particle_distances.Resize(trial.particles.size()));
+  if (staging.regular_transport) {
+    STEP_TRY(staging.regular_transport->Resize(trial.particles.size()));
+  }
   for (std::size_t index = 0; index < trial.particles.size(); ++index) {
     const auto& particle = trial.particles[index];
     staging.particles[index] = {
