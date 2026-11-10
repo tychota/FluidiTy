@@ -35,7 +35,8 @@ class CudaLiquidSubstepBackend3D {
   // Requires the qualified CC12.0 device and checked capacity extents.
   // Propagates the device, image, capacity and runtime statuses from
   // CudaLiquidArena3D::Create. Owner allocation failure returns ResourceExhausted.
-  static absl::StatusOr<CudaLiquidSubstepBackend3D> Create(LiquidStateCapacities3D capacities, int device_ordinal);
+  static absl::StatusOr<CudaLiquidSubstepBackend3D>
+  Create(LiquidStateCapacities3D capacities, int device_ordinal, bool measure_job = false);
   // Immutable committed device source, including its nonreused generation and
   // physical clock. FailedPrecondition before scheduler initialization; ownership
   // counter exhaustion is OutOfRange. Acquire allocates nothing; keep the lease until the consumer's
@@ -50,9 +51,14 @@ class CudaLiquidSubstepBackend3D {
   // drain poisons the job and quarantines storage; no subsequent reuse is allowed.
   void CollectRetired() noexcept;
   // Complete borrowed typed dispatch. Moving the owner preserves its context.
-  LiquidSubstepBackend3D operations();
+  // Opt in to speculative scheduler gather runs. Field batches require both
+  // flags and apply only to particles whose grouped gather has succeeded.
+  LiquidSubstepBackend3D operations(bool enable_gather_runs = false, bool enable_gathered_field_batches = false);
   // Actual reservations and CUDA call counts, including failed/replayed work.
   CudaLiquidSubstepUsage3D usage() const;
+  // Consumes the backend after scheduler and snapshot drain, collecting the
+  // same ownership ledger after arena teardown. External leases remain counted.
+  CudaLiquidArenaMetrics3D DrainMetrics() &&;
 
  private:
   struct Impl;

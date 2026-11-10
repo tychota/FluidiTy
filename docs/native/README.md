@@ -194,8 +194,9 @@ try {
 Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
 arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
 Its inventory is separate from the 35 mandatory CTest cases and 33 mandatory memcheck cases.
-Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
-runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
+Release runs 43 cases (42 on hardware and one host-only generation exhaustion case).
+The Debug build also registers allocation-hook cases. Require every listed case to pass
+with zero skips in each configuration.
 
 ```powershell
 foreach ($configuration in @('debug', 'release')) {
@@ -216,7 +217,7 @@ try {
 }
 ```
 
-Require all 39 cases and one zero-error summary for the focused Release memcheck run.
+Require all 43 cases and one zero-error summary for the focused Release memcheck run.
 
 ### Device images
 
@@ -449,6 +450,54 @@ particle ID and world position in meters, in committed particle storage order.
 Use the previous settled trace or the verified initial FLST to recover step-start
 particle geometry. Both trace options produce the same execution identity and
 cache bytes as an untraced run.
+
+Add `--measure-job` to `run`, `replay` or `step` for one terminal
+`job_measurement` record immediately before the result or error. This option
+is independent of tracing. The record carries the backend when resolved,
+terminal status, total actual physical attempts and the number retained by
+complete frame schedules. Accepted substeps in an interrupted or replayed-away
+schedule contribute actual work. A single `step` stops inside a schedule.
+
+A successful measured CUDA `run` that writes to its cache also reports
+`cuda_execution_device_digest` and `cuda_execution_device_index` in the
+terminal result. The lowercase BLAKE3 digest binds the CUDA device UUID,
+compute capability and exact driver/runtime identity sampled at cache
+admission. It is independent of the scene fingerprint and CUDA ordinal. The
+integer index identifies the device selected for that process.
+
+The `host_wall` phases partition elapsed monotonic seconds from job creation
+through teardown and terminal status persistence. Cold setup includes cache
+and backend admission and initial reservations. Emit, activation and field
+sampling include trial reset, topology and initial face tagging. The next
+phases cover deposit and normalization, forces, geometry and pressure, and
+gather, contact and acceptance. Scheduling covers work between attempts,
+including retries, capacity growth and optional trace output. Snapshot and
+cache time includes D2H polling, host verification or publication and frame
+notifications. Drain includes owner teardown and the heartbeat join.
+
+`cuda_events` sums measured dispatches through their existing completion
+fences across all attempts. Event intervals include transfers and can include
+submission gaps on their stream. The pre-topology field intervals are a subset
+of emit and activation, and snapshot D2H intervals use the independent copy
+streams, including completed canceled copies. Event durations overlap host wall
+time, and copy streams can overlap each other. Setup and teardown have host wall
+intervals. CPU jobs emit null for both CUDA sections.
+
+`cuda_memory` uses the shared arena and snapshot ledger. Current bytes are
+sampled immediately before CUDA teardown. Peaks include simultaneous current,
+prospective and leased retired owners and all snapshot queues. The receipt also
+reports remaining owned bytes after drain, quarantined owners, and the integer
+floor of the smaller of 70% of total device bytes and 80% of free device bytes at
+job start. Growth checks the fixed effective ceiling before attempting
+allocation. Physical state bytes are the populated state-bank payload,
+including the final occupied particle bin. Device scratch covers the owned
+scratch slices, with a separate peak of checked active extents. Snapshot output
+covers pending, ready and writer-borrowed logical D2H payload. Snapshot queues
+reserve pinned host bytes and borrow their device source from the arena.
+
+Free-device observations are system-wide and can include concurrent activity.
+CUDA context, module and graph bookkeeping are opaque. The application
+reservation figures attribute only requested device and pinned payload.
 
 Result records include `frames_per_second`, resolved/execution identity and backend;
 CUDA results additionally carry actual compiled architecture, graph replay count,

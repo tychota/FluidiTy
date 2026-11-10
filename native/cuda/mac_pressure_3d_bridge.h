@@ -112,4 +112,9 @@ static_assert(std::is_trivially_copyable_v<PressureState3D>);
 // Initialize and evaluate the warm start, or execute exactly one PCG iteration.
 // Arithmetic and convergence decisions stay on device. Returns the launch error.
 int LaunchMacPressure3D(PressureDevice3D device, bool initialize, void* stream);
+
+// The arena batches a bounded number of complete iterations between status
+// reads. The device stops at its first convergence or numerical failure.
+inline constexpr std::size_t kMacPressureIterationsPerBatch3D = 8;
+int LaunchMacPressureBatch3D(PressureDevice3D device, bool initialize, std::size_t iteration_count, void* stream);
 }  // namespace fluidity::cuda_internal

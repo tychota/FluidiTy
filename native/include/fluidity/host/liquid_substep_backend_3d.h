@@ -78,8 +78,10 @@ struct LiquidSubstepBackend3D {
   // entire grid. Thin-slab walls use requested_side_tag (+1/-1); tags determine
   // side from each face anchor. Tank faces use side zero, strict interior tags
   // and the active constraint's normal and velocity at the staggered lattice anchor.
-  // The two output spans must not overlap inputs or
-  // one another. Failed outputs remain trial-only and are discarded by scheduler.
+  // Wall values depend only on the supplied grid, obstacle pose and side. The
+  // caller owns both output spans, which must not overlap inputs or one another.
+  // Gather and scalar field sampling leave wall samples intact until the caller
+  // overwrites them. Failed outputs remain trial-only and are discarded by the scheduler.
   using SampleFaces = absl::Status(
       void* context,
       SparseMacGridView3D grid,
@@ -193,6 +195,17 @@ struct LiquidSubstepBackend3D {
   UpdateParticles* update_particles = nullptr;
   SampleFieldBatch* sample_field_batch = nullptr;
   SampleLatticePlane* sample_lattice_plane = nullptr;  // Required for horizontal-plane scenes.
+  // Optional allocation-free diagnostic boundary, with kCount outside attempts.
+  void (*set_work_phase)(void*, LiquidWorkPhase3D) = nullptr;
+  // Optional speculative gather for two or more consecutive particles sharing
+  // wall side and both velocity histories. Return one record per input in order
+  // with a borrow valid across scalar and batched field samples. Failed runs leave
+  // the bank intact. Internal is fatal; other failures allow ordered scalar replay.
+  Gather* gather_run = nullptr;
+  // Optional field batches for successfully grouped particles, in their
+  // original order and bounded by kLiquidFieldBatchCapacity3D. Internal is
+  // fatal; other failures allow scalar replay without publishing partial data.
+  SampleFieldBatch* sample_gathered_fields = nullptr;
 };
 // CPU operations share the accepted bounded operators and true-gradient J/contact.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();

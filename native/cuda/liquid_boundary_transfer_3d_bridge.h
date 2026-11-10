@@ -9,8 +9,7 @@ enum class BoundaryTransferOperation3D {
   kGather,
   kFitGhost,
   kPredict,
-  kForces,
-  kUpdateParticles
+  kForces
 };
 enum class BoundaryHistoryStage3D {
   kOld,
@@ -32,11 +31,6 @@ struct BoundaryTransferFace3D {
 };
 struct BoundaryTransferParticle3D {
   LiquidBoundaryParticle3D particle{};
-  // Particle update consumes only these numerical fields; host identity/mass/V0 stay untouched.
-  LiquidBoundaryParticleGather3D gathered{};
-  double liquid_distance{};  // Frozen start-time signed distance, meters.
-  double volume_ratio{};  // Dimensionless start-time J.
-  bool pic_initialized{};  // False suppresses retained particle velocity.
   MacFaceStencilSample3D stencils[3][27]{};  // X/Y/Z, then original (z,y,x) node order.
 };
 struct BoundaryTransferFaceResult3D {
@@ -48,10 +42,37 @@ struct BoundaryTransferFaceResult3D {
 struct BoundaryTransferParticleResult3D {
   CompatibleMacFaceSample3D stencils[3][27]{};
   LiquidBoundaryParticleGather3D gathered{};
-  Vec3 updated_world_position{};  // Continuous-contact position, meters.
-  Vec3 updated_stored_velocity{};  // Retained/contact-corrected m/s, not advection velocity.
-  double updated_volume_ratio{};  // exp(dt tr L) times start-time J.
 };
+// A gather run reuses particle result scratch, with only the fields it copies back.
+struct BoundaryGatherRunResult3D {
+  LiquidBoundaryParticleGather3D gathered{};
+  boundary_internal::Error error{};
+  int compiled_architecture{};
+};
+static_assert(sizeof(BoundaryGatherRunResult3D) <= sizeof(BoundaryTransferParticleResult3D));
+static_assert(alignof(BoundaryGatherRunResult3D) <= alignof(BoundaryTransferParticleResult3D));
+
+// Update records reuse the checked transfer particle ranges. Identity, mass and
+// reference volume stay with the host particle.
+struct BoundaryUpdateParticle3D {
+  Vec3 world_position{};
+  LiquidBoundaryParticleGather3D gathered{};
+  double liquid_distance{};  // Frozen start-time signed distance, meters.
+  double volume_ratio{};  // Dimensionless start-time J.
+  bool pic_initialized{};  // False suppresses retained particle velocity.
+};
+struct BoundaryUpdateResult3D {
+  Vec3 world_position{};  // Continuous-contact position, meters.
+  Vec3 stored_world_velocity{};  // Retained/contact-corrected m/s.
+  double volume_ratio{};  // Start-time J times exp(dt times the transport divergence).
+  boundary_internal::Error error{};
+  bool retry_step{};
+};
+static_assert(sizeof(BoundaryUpdateParticle3D) <= sizeof(BoundaryTransferParticle3D));
+static_assert(alignof(BoundaryUpdateParticle3D) <= alignof(BoundaryTransferParticle3D));
+static_assert(sizeof(BoundaryUpdateResult3D) <= sizeof(BoundaryTransferParticleResult3D));
+static_assert(alignof(BoundaryUpdateResult3D) <= alignof(BoundaryTransferParticleResult3D));
+
 struct BoundaryTransferQuery3D {
   BoundaryTransferOperation3D operation = BoundaryTransferOperation3D::kDeposit;
   std::size_t particle_count{};
@@ -71,17 +92,32 @@ struct BoundaryTransferQuery3D {
   double friction_coefficient{};  // Nonnegative dimensionless Coulomb coefficient.
   double penetration_tolerance{};  // Nonnegative meters.
 };
+inline constexpr unsigned kBoundaryTransferErrorCodeCount = static_cast<unsigned>(boundary_internal::Error::kRange) + 1;
+inline constexpr auto kNoParallelTransferError = ~0ULL;
+
 struct BoundaryTransferReport3D {
   boundary_internal::Error error{};
   int compiled_architecture{};
   internal::LiquidGhostAffineFit3D fit{};
   double predicted_face_velocity{};  // Continued old velocity plus acceleration*dt, m/s.
-  bool retry_step{};  // Physical displacement/J rejection, separate from arithmetic/runtime errors.
+  // Minimum ordered (ordinal * error code count + error code), or the sentinel.
+  unsigned long long first_parallel_error = kNoParallelTransferError;
 };
 static_assert(std::is_trivially_copyable_v<BoundaryTransferQuery3D>);
 static_assert(std::is_trivially_copyable_v<BoundaryTransferFace3D>);
 static_assert(std::is_trivially_copyable_v<BoundaryTransferParticle3D>);
 static_assert(std::is_trivially_copyable_v<BoundaryTransferParticleResult3D>);
+// Update each independent particle. Checked input and result ranges remain live
+// through the dispatch fence. The host consumes status in particle order.
+int LaunchLiquidParticleUpdate3D(
+    const BoundaryTransferQuery3D* device_query,
+    const BoundaryUpdateParticle3D* device_particles,
+    BoundaryUpdateResult3D* device_results,
+    int* device_compiled_architecture,
+    std::size_t particle_count,
+    void* stream
+);
+
 // Bounded sequential numerical kernel. Resolved POD buffers remain owned until
 // synchronization; error and architecture are written on every operation.
 int LaunchLiquidBoundaryTransfer3D(
@@ -94,6 +130,29 @@ int LaunchLiquidBoundaryTransfer3D(
     void* stream
 );
 
+// Launch one lane per particle/component, with cleared face quanta, or one
+// lane per face for normalization or forces. Counts match the nonempty device query.
+// The report starts at its default value and remains owned through the fence.
+int LaunchLiquidBoundaryDeposit3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report,
+    std::size_t particle_count,
+    void* stream
+);
+int LaunchLiquidBoundaryFaceMap3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferReport3D* report,
+    std::size_t face_count,
+    BoundaryTransferOperation3D operation,
+    void* stream
+);
+
 // Prepares the original stencil samples for one staged kGather particle.
 // Uses the same bounded buffers and synchronization contract as the sequential launch.
 int LaunchLiquidBoundarySingleParticleGather3D(
@@ -103,6 +162,15 @@ int LaunchLiquidBoundarySingleParticleGather3D(
     BoundaryTransferFaceResult3D* face_results,
     BoundaryTransferParticleResult3D* particle_results,
     BoundaryTransferReport3D* report,
+    void* stream
+);
+// One block per particle, with one compact result and error in input order.
+int LaunchLiquidBoundaryGatherRun3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryGatherRunResult3D* results,
+    unsigned particle_count,
     void* stream
 );
 }  // namespace fluidity::cuda_internal

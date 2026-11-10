@@ -3,9 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 
-#include "fluidity/host/liquid_step_workspace_3d.h"
+#include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity {
 namespace cuda_internal {
@@ -39,7 +40,7 @@ enum class CudaLiquidRange3D : std::size_t {
   kSortEntries,
   kSortTemporary,
   kArchitecture,
-  // One boundary_internal::GeometryInput / ContactInput / BoundaryReport3D.
+  // GeometryInput reserves one to 512 queries; ContactInput and BoundaryReport3D have count one.
   kGeometryInput,
   kContactInput,
   kBoundaryReport,
@@ -74,11 +75,16 @@ enum class CudaLiquidRange3D : std::size_t {
   kSampleDistances,
   kSampleParticles,
   kPressurePreparationScratch,  // Host-only checked assembly/hierarchy; device pointer is null.
+  kGeometryBatchResults,  // GeometryBatchResult array with the same capacity as kGeometryInput.
   kCount,
 };
 struct CudaLiquidRangeView3D {
   std::byte* device = nullptr;
   std::span<std::byte> pinned;
+};
+struct CudaLiquidEventIntervals3D {
+  double seconds = 0;  // Sum of finite elapsed event intervals on one stream at a time.
+  std::uint64_t interval_count = 0;  // Count only intervals with a successful CUDA fence.
 };
 // Requested CUDA payload bytes include all alignment/unused capacity and every
 // current, prospective and retired owner, including owners retained by leases.
@@ -88,11 +94,38 @@ struct CudaLiquidRangeView3D {
 struct CudaLiquidArenaMetrics3D {
   std::size_t total_device_bytes = 0;
   std::size_t free_device_bytes_at_start = 0;
-  std::size_t device_byte_limit = 0;
+  std::size_t device_budget_bytes = 0;  // Integer floor of min(70% total, 80% initial free).
+  std::size_t device_byte_limit = 0;  // May be lowered by an explicit representation/payload limit.
+  std::uint64_t budget_refusals = 0;  // Prospective device bytes exceed remaining limit, before cudaMalloc.
+  // Optional system-wide observation after drain, independent of application reservations.
+  std::optional<std::size_t> free_device_bytes_after_drain;
   std::size_t live_device_bytes = 0;
   std::size_t peak_device_bytes = 0;
   std::size_t live_pinned_bytes = 0;
   std::size_t peak_pinned_bytes = 0;
+  // Snapshot pinned reservations are a subset of job-wide pinned bytes. These
+  // queues reserve no explicit device payload; D2H reads the source arena bank.
+  std::size_t live_snapshot_pinned_bytes = 0;
+  std::size_t peak_snapshot_pinned_bytes = 0;
+  // Logical ABI payload of populated state banks across all device owners. A
+  // staged bank remains populated until overwritten or its reservation is freed.
+  std::size_t live_physical_state_bytes = 0;
+  std::size_t peak_physical_state_bytes = 0;
+  // Device scratch slices (including internal alignment) across live owners.
+  std::size_t live_device_scratch_bytes = 0;
+  std::size_t peak_device_scratch_bytes = 0;
+  // Largest sum of checked device scratch extents within any one measured
+  // phase. Repeated uses of one slice take its largest extent, without double counting.
+  std::size_t peak_active_device_scratch_bytes = 0;
+  // Logical ABI payload of pending, ready and writer-borrowed D2H slots. Counts
+  // overlapping queues/leases until drain or release, excluding the pageable cache.
+  std::size_t live_snapshot_output_bytes = 0;
+  std::size_t peak_snapshot_output_bytes = 0;
+  // Sums of actual event intervals for all completed dispatches, including
+  // rejected attempts. A dispatch can contain GPU idle/host submission gaps.
+  std::array<CudaLiquidEventIntervals3D, static_cast<std::size_t>(LiquidWorkPhase3D::kCount)> work_phase_events{};
+  CudaLiquidEventIntervals3D pre_topology_field_events;  // Field-only subset of emit/activation.
+  CudaLiquidEventIntervals3D snapshot_d2h_events;  // Independent D2H streams, including canceled work.
   std::uint64_t device_reservations = 0;
   std::uint64_t device_frees = 0;
   std::uint64_t pinned_reservations = 0;
@@ -182,7 +215,8 @@ class CudaLiquidArena3D {
   static absl::StatusOr<CudaLiquidArena3D> Create(
       LiquidStateCapacities3D capacities,
       int device_ordinal = 0,
-      std::size_t byte_limit = static_cast<std::size_t>(-1)
+      std::size_t byte_limit = static_cast<std::size_t>(-1),
+      bool measure_job = false
   );
   // Copies one valid initial state into the committed bank once. Validation and
   // capacity errors preserve the uninitialized owner; no source borrow survives.
@@ -229,6 +263,20 @@ class CudaLiquidArena3D {
   LiquidStateCapacities3D capacities() const;
   // Job-wide current counters, including retained owners; no device query.
   CudaLiquidArenaMetrics3D metrics() const;
+  // Consumes this arena outside attempts, drains/frees its owners, and returns
+  // the shared receipt. Outstanding external leases and quarantined payload
+  // remain included. On failed system observation, the optional free bytes stay empty.
+  CudaLiquidArenaMetrics3D DrainMetrics() &&;
+  // Sets the diagnostic phase and starts a fresh active scratch extent. kCount
+  // disables physical dispatch timing. Both are allocation-free and optional.
+  void SetWorkPhase(LiquidWorkPhase3D phase);
+  void ObserveDeviceScratch(CudaLiquidRange3D range, std::size_t checked_bytes);
+  // Enqueues a start event once before the first measured submission, then
+  // records the end and reads its elapsed time through the existing dispatch
+  // fence. The field flag labels its pre-topology subset. No new
+  // synchronization. CUDA errors poison this arena as Internal.
+  absl::Status BeginMeasuredDispatch(bool field_sample = false);
+  absl::Status FinishDispatch();
   // Explicit nonblocking CUDA stream and disable-timing completion event handles.
   // The caller must keep the selected device current and fence its own work before
   // reusing pinned staging; event contents change after every arena fence. All

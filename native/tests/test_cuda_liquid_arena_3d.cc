@@ -10,14 +10,19 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "../cuda/liquid_arena_dispatch_3d.h"
+#include "../cuda/liquid_boundary_3d_bridge.h"
+#include "../cuda/liquid_boundary_transfer_3d_bridge.h"
 #include "../cuda/liquid_geometry_stages_3d.h"
 #include "../cuda/liquid_transfer_stages_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
+#include "fluidity/host/cuda_liquid_boundary_3d.h"
+#include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
 
@@ -219,12 +224,20 @@ TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   ASSERT_TRUE(leased.ok());
   const auto old_bytes = PackedBytes(*leased);
   const auto old_metrics = arena->metrics();
+  const std::size_t one_state_bytes = 2 * sizeof(CudaLiquidParticleBin3D) + sizeof(LiquidBlockState3D)
+      + sizeof(LiquidCellState3D) + sizeof(LiquidFaceState3D) + 2 * sizeof(LiquidSourceState3D)
+      + sizeof(cuda_internal::LiquidArenaControl3D);
+  EXPECT_EQ(old_metrics.live_physical_state_bytes, 2 * one_state_bytes);
+  auto old_queue = CudaLiquidSnapshotQueue3D::Create(*leased);
+  ASSERT_TRUE(old_queue.ok());
   constexpr LiquidStateCapacities3D grown{65, 2, 2, 384, 3};
   ASSERT_TRUE(arena->PrepareGrowth(grown, *frame_start).ok());
   EXPECT_GT(arena->metrics().live_device_bytes, old_metrics.live_device_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, 3 * one_state_bytes);
   arena->DiscardGrowth();
   EXPECT_EQ(arena->metrics().live_device_bytes, old_metrics.live_device_bytes);
   EXPECT_EQ(PackedBytes(*leased), old_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, 2 * one_state_bytes);
   const auto graph_before = arena->metrics().graph_creations;
   ASSERT_TRUE(arena->PrepareGrowth(grown, *frame_start).ok());
   arena->CommitGrowth();
@@ -241,16 +254,63 @@ TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   arena->CollectRetired();
   EXPECT_EQ(PackedBytes(*leased), old_bytes);
   const auto retained_bytes = arena->metrics().live_device_bytes;
+  {
+    auto replacement_queue = CudaLiquidSnapshotQueue3D::Create(*restored);
+    ASSERT_TRUE(replacement_queue.ok());
+    const auto overlap = arena->metrics();
+    const auto queue_pinned_bytes = 2 * (leased->layout().total_state_bytes + restored->layout().total_state_bytes);
+    EXPECT_EQ(overlap.live_snapshot_pinned_bytes, queue_pinned_bytes);
+    EXPECT_EQ(overlap.peak_snapshot_pinned_bytes, queue_pinned_bytes);
+    EXPECT_EQ(overlap.peak_device_bytes, retained_bytes);
+    EXPECT_EQ(overlap.peak_pinned_bytes, overlap.live_pinned_bytes);
+    EXPECT_EQ(overlap.live_physical_state_bytes, 3 * one_state_bytes);
+    EXPECT_EQ(overlap.peak_physical_state_bytes, 3 * one_state_bytes);
+    EXPECT_EQ(overlap.live_device_scratch_bytes, retained_bytes - queue_pinned_bytes);
+    std::cout << "growth_overlap_device_bytes=" << overlap.live_device_bytes
+              << " pinned_bytes=" << overlap.live_pinned_bytes << " snapshot_pinned_bytes=" << queue_pinned_bytes
+              << " physical_state_bytes=" << overlap.live_physical_state_bytes
+              << " device_scratch_bytes=" << overlap.live_device_scratch_bytes << '\n';
+  }
+  EXPECT_EQ(arena->metrics().live_snapshot_pinned_bytes, 2 * leased->layout().total_state_bytes);
   leased = CudaLiquidEpochLease3D{};
   arena->CollectRetired();
   EXPECT_EQ(arena->metrics().live_device_bytes, retained_bytes - old_metrics.live_device_bytes);
+  EXPECT_EQ(arena->metrics().live_physical_state_bytes, one_state_bytes);
+  // The small arena reserves its configured face extent, not the full 512-query batch.
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      grown.faces * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      grown.faces * sizeof(boundary_internal::GeometryBatchResult)
+  );
   // Exact old reservation ceiling allows initial allocation, but no old+new overlap.
+  ASSERT_GT(old_metrics.live_device_bytes, 1u);
+  EXPECT_EQ(
+      CudaLiquidArena3D::Create(kSmall, 0, old_metrics.live_device_bytes - 1).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
   auto limited = CudaLiquidArena3D::Create(kSmall, 0, old_metrics.live_device_bytes);
   ASSERT_TRUE(limited.ok());
+  EXPECT_EQ(
+      limited->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      kSmall.faces * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      limited->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      kSmall.faces * sizeof(boundary_internal::GeometryBatchResult)
+  );
   ASSERT_TRUE(limited->Initialize(*frame_start).ok());
   const auto before = limited->metrics();
   EXPECT_EQ(limited->PrepareGrowth(grown, *frame_start).code(), absl::StatusCode::kResourceExhausted);
-  EXPECT_EQ(limited->metrics().live_device_bytes, before.live_device_bytes);
+  const auto refused = limited->metrics();
+  EXPECT_EQ(refused.live_device_bytes, before.live_device_bytes);
+  EXPECT_EQ(refused.peak_device_bytes, before.peak_device_bytes);
+  EXPECT_EQ(refused.budget_refusals, before.budget_refusals + 1);
+  ExpectNoReservationChange(before, refused);
+  std::cout << "growth_budget_bytes=" << refused.device_byte_limit
+            << " refused_allocation_attempts=" << refused.device_reservations - before.device_reservations << '\n';
   ASSERT_TRUE(limited->AcquireCommitted()->Readback(*output).ok());
   EXPECT_EQ(*output, *frame_start);
   EXPECT_EQ(CudaLiquidArena3D::Create(kSmall, 0, 1).status().code(), absl::StatusCode::kResourceExhausted);
@@ -343,6 +403,14 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
     }
     ranges.push_back(range);
   }
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
+      512 * sizeof(boundary_internal::GeometryInput)
+  );
+  EXPECT_EQ(
+      arena->range(CudaLiquidRange3D::kGeometryBatchResults).pinned.size(),
+      512 * sizeof(boundary_internal::GeometryBatchResult)
+  );
   const auto metrics = arena->metrics();
   EXPECT_LE(metrics.live_device_bytes, metrics.device_byte_limit);
   EXPECT_LE(metrics.device_byte_limit, metrics.total_device_bytes / 10 * 7 + metrics.total_device_bytes % 10 * 7 / 10);
@@ -625,10 +693,54 @@ TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube)
   auto clipped = cuda_internal::FreezeLiquidGeometry3D(*arena, cut, *workspace);
   ASSERT_TRUE(clipped.ok()) << clipped.status();
   EXPECT_NEAR(clipped->cells[0].fluid_volume, 0.75, 2e-14);
-  for (const auto& face : clipped->faces) {
+  const auto scalar_clipped = CudaFreezeLiquidBoundaryGeometry3D(
+      {*grid, cells, centers, corners, cut.obstacle, cut.step_duration, cut.liquid_density, cut.surface_tension}
+  );
+  ASSERT_TRUE(scalar_clipped.ok()) << scalar_clipped.status();
+  ASSERT_EQ(clipped->cells.size(), scalar_clipped->geometry.cells().size());
+  ASSERT_EQ(clipped->faces.size(), scalar_clipped->geometry.faces().size());
+  EXPECT_EQ(
+      std::bit_cast<std::uint64_t>(clipped->cells[0].fluid_volume),
+      std::bit_cast<std::uint64_t>(scalar_clipped->geometry.cells()[0].fluid_volume)
+  );
+  for (std::size_t ordinal = 0; ordinal < clipped->faces.size(); ++ordinal) {
+    const auto& face = clipped->faces[ordinal];
+    const auto& scalar_face = scalar_clipped->geometry.faces()[ordinal];
+    EXPECT_EQ(face.face_slot, scalar_face.face_slot);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(face.open_area), std::bit_cast<std::uint64_t>(scalar_face.open_area));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(face.blocked_area), std::bit_cast<std::uint64_t>(scalar_face.blocked_area));
     if (face.face_index.axis != FaceNormalAxis::kX) {
       EXPECT_NEAR(face.open_area, 0.75, 2e-14);
     }
+  }
+  for (const auto scratch_range : {CudaLiquidRange3D::kGeometryInput, CudaLiquidRange3D::kGeometryBatchResults}) {
+    const auto bytes = arena->range(scratch_range).pinned;
+    ASSERT_GE(bytes.size(), sizeof(BlockIndex3D));
+    constexpr BlockIndex3D kActiveBlock{0, 0, 0};
+    auto* active_block = std::construct_at(reinterpret_cast<BlockIndex3D*>(bytes.data()), kActiveBlock);
+    const auto aliased_grid = SparseMacGridView3D::Create(grid->geometry(), {active_block, 1});
+    ASSERT_TRUE(aliased_grid.ok()) << aliased_grid.status();
+
+    auto aliased_frozen = *clipped;
+    aliased_frozen.mac_grid = *aliased_grid;
+    EXPECT_EQ(
+        cuda_internal::BuildLiquidLinks3D(*arena, aliased_frozen, {fields, velocities, 9}, *workspace).status().code(),
+        absl::StatusCode::kInvalidArgument
+    );
+    EXPECT_EQ(active_block->x, kActiveBlock.x);
+    EXPECT_EQ(active_block->y, kActiveBlock.y);
+    EXPECT_EQ(active_block->z, kActiveBlock.z);
+
+    std::construct_at(active_block, kActiveBlock);
+    auto aliased_inputs = inputs;
+    aliased_inputs.mac_grid = *aliased_grid;
+    EXPECT_EQ(
+        cuda_internal::FreezeLiquidGeometry3D(*arena, aliased_inputs, *workspace).status().code(),
+        absl::StatusCode::kInvalidArgument
+    );
+    EXPECT_EQ(active_block->x, kActiveBlock.x);
+    EXPECT_EQ(active_block->y, kActiveBlock.y);
+    EXPECT_EQ(active_block->z, kActiveBlock.z);
   }
 #if defined(_WIN32) && defined(_DEBUG)
   std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());
@@ -1012,6 +1124,71 @@ TEST_F(CudaLiquidTransferStages3D, ExactDepositAndTransactionalBounds) {
   EXPECT_EQ(cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
   EXPECT_EQ(address[42].mass_quanta_sum, previous.mass_quanta_sum);
 }
+TEST_F(CudaLiquidTransferStages3D, ContendedDepositPreservesBoundaryQuantaAndFirstError) {
+  constexpr std::size_t kParticleCount = 256;
+  constexpr std::int64_t kMaximumFaceQuanta = std::int64_t{1} << 62;
+  auto large = capacities;
+  large.particles = kParticleCount;
+  auto arena = CudaLiquidArena3D::Create(large);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(large);
+  auto cpu = LiquidBoundaryWorkspace3D::Create(large);
+  auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{-1, -1, -1}}, 1);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  ASSERT_TRUE(cpu.ok());
+  ASSERT_TRUE(grid.ok());
+  std::array<LiquidBoundaryFaceTag3D, 192> tags;
+  tags.fill({.structurally_eligible = false});
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  std::array<std::size_t, axes.size()> selected_faces{};
+  for (std::size_t index = 0; index < axes.size(); ++index) {
+    const auto face = grid->FaceSlot({axes[index], {-2, -2, -2}});
+    ASSERT_TRUE(face.ok()) << face.status();
+    tags[*face].structurally_eligible = true;
+    selected_faces[index] = *face;
+  }
+  std::vector particles(kParticleCount, TransferParticle({-2, -2, -2}, {1, -1, 1}));
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    particles[index].transfer.particle_mass = 0x1p54;
+    particles[index].transfer.particle_velocity.z = index % 2 == 0 ? 1 : -1;
+  }
+  const LiquidBoundaryDepositViewInputs3D inputs{grid->view(), particles, tags, {1, 1, kParticleCount}};
+  const auto expected = cpu->Deposit(inputs);
+  ASSERT_TRUE(expected.ok()) << expected.status();
+  const auto actual = cuda_internal::DepositLiquid3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(actual.ok()) << actual.status();
+  const auto expect_exact_quanta = [&] {
+    for (std::size_t slot = 0; slot < tags.size(); ++slot) {
+      EXPECT_EQ(actual->face_quanta[slot].mass_quanta_sum, expected->face_quanta[slot].mass_quanta_sum);
+      EXPECT_EQ(
+          actual->face_quanta[slot].pure_momentum_quanta_sum,
+          expected->face_quanta[slot].pure_momentum_quanta_sum
+      );
+      EXPECT_EQ(actual->face_quanta[slot].stress_force_quanta_sum, 0);
+    }
+  };
+  expect_exact_quanta();
+  for (const auto slot : selected_faces) {
+    EXPECT_EQ(actual->face_quanta[slot].mass_quanta_sum, kMaximumFaceQuanta);
+  }
+  EXPECT_EQ(actual->face_quanta[selected_faces[0]].pure_momentum_quanta_sum, kMaximumFaceQuanta);
+  EXPECT_EQ(actual->face_quanta[selected_faces[1]].pure_momentum_quanta_sum, -kMaximumFaceQuanta);
+  EXPECT_EQ(actual->face_quanta[selected_faces[2]].pure_momentum_quanta_sum, 0);
+
+  particles[0].transfer.particle_velocity.x = 2;
+  particles[1].side_tag = 1;
+  EXPECT_EQ(cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
+  expect_exact_quanta();
+  particles[0].side_tag = 1;
+  particles[1].side_tag = 0;
+  particles[1].transfer.particle_velocity.x = 2;
+  EXPECT_EQ(
+      cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  expect_exact_quanta();
+}
+
 TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
@@ -1023,6 +1200,19 @@ TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   EXPECT_EQ(result->validity[0], LiquidFaceValidity3D::kMissing);
   EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_masses[1], 0.5);
+  EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
+
+  quanta = {{{2, 0, 0}, {-1, 0, 0}, {0, 0, 0}}};
+  EXPECT_EQ(
+      cuda_internal::NormalizeLiquid3D(*arena, quanta, {0x1p1023, 1, 4}, 0, *workspace).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  std::swap(quanta[0], quanta[1]);
+  EXPECT_EQ(
+      cuda_internal::NormalizeLiquid3D(*arena, quanta, {0x1p1023, 1, 4}, 0, *workspace).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
 }
 TEST_F(CudaLiquidTransferStages3D, ForcesApplyAccelerationOnce) {
@@ -1239,7 +1429,7 @@ TEST_F(CudaLiquidTransferStages3D, GatherUsesIndependentOldNewSidesWallsAndLowMa
     EXPECT_DOUBLE_EQ(previous[0].new_pic_velocity.x, saved);
   }
 }
-TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailureOrder) {
+TEST_F(CudaLiquidTransferStages3D, SingleAndGroupedGatherMatchSerialBitsAndFailureOrder) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
   auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
@@ -1260,7 +1450,9 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     next[slot] = -1 + face_slot * face_slot * face_slot / 65536;
   }
   const auto particle = TransferParticle({2, 2, 2}, {1, 2, 3});
-  const std::array particles{particle, particle};
+  auto second_particle = particle;
+  second_particle.transfer.trial_world_position.y += 0.25;
+  const std::array particles{particle, second_particle};
   LiquidBoundaryGatherViewInputs3D inputs{
       grid->view(),
       std::span(particles).first(1),
@@ -1283,7 +1475,7 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
       EXPECT_EQ(std::bit_cast<std::uint64_t>(actual.*component), std::bit_cast<std::uint64_t>(expected.*component));
     }
   };
-  for (const auto& expected : serial->particles) {
+  const auto expect_gather_bits = [&](const auto& gathered, const auto& expected) {
     expect_vector_bits(gathered.new_pic_velocity, expected.new_pic_velocity);
     expect_vector_bits(gathered.grid_velocity_increment, expected.grid_velocity_increment);
     expect_vector_bits(gathered.particle_minus_old_pic_velocity, expected.particle_minus_old_pic_velocity);
@@ -1295,7 +1487,17 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     EXPECT_EQ(gathered.old_pic_fallback, expected.old_pic_fallback);
     EXPECT_EQ(gathered.new_pic_fallback, expected.new_pic_fallback);
     EXPECT_EQ(gathered.low_mass_fallback, expected.low_mass_fallback);
+  };
+  expect_gather_bits(gathered, serial->particles[0]);
+  auto grouped = cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(grouped.ok()) << grouped.status();
+  ASSERT_EQ(grouped->particles.size(), 2);
+  EXPECT_EQ(grouped->old_pic_fallback_particle_count, serial->old_pic_fallback_particle_count);
+  EXPECT_EQ(grouped->new_pic_fallback_particle_count, serial->new_pic_fallback_particle_count);
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    expect_gather_bits(grouped->particles[index], serial->particles[index]);
   }
+  const auto saved_second_gather = grouped->particles[1];
 
   // Finite X samples overflow the X increment. Later Y samples have no donor or wall.
   old.fill(-0x1p1023);
@@ -1313,6 +1515,11 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
     inputs.particles = std::span(particles).first(particle_count);
     EXPECT_EQ(cuda_internal::GatherLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
   }
+  EXPECT_EQ(
+      cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  expect_gather_bits(grouped->particles[1], saved_second_gather);
   old = next;
   for (const std::size_t particle_count : {1, 2}) {
     inputs.particles = std::span(particles).first(particle_count);
@@ -1321,6 +1528,11 @@ TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailu
         absl::StatusCode::kFailedPrecondition
     );
   }
+  EXPECT_EQ(
+      cuda_internal::GatherLiquidRun3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  expect_gather_bits(grouped->particles[1], saved_second_gather);
 }
 TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
   auto arena = CudaLiquidArena3D::Create(capacities);
@@ -1355,7 +1567,7 @@ TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
   EXPECT_GT(particles[1].world_position.x, 0.03 + 0.1 - 1e-12);
 }
 TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEveryRecord) {
-  auto arena = CudaLiquidArena3D::Create(capacities);
+  auto arena = CudaLiquidArena3D::Create(capacities, 0, std::numeric_limits<std::size_t>::max(), true);
   ASSERT_TRUE(arena.ok());
   std::array<LiquidParticleState3D, 2> particles{};
   std::array<LiquidBoundaryParticleGather3D, 2> gathered{};
@@ -1369,8 +1581,12 @@ TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEvery
     gathered[i].low_mass_fallback = true;
     gathered[i].affine_enabled = false;
   }
+  arena->SetWorkPhase(LiquidWorkPhase3D::kGatherContactAcceptance);
   LiquidParticleUpdateInputs3D inputs{gathered, distances, {}, 1, 0.1, 1, 0, 1e-10};
   ASSERT_TRUE(cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles).ok());
+  constexpr std::size_t particle_scratch_byte_budget =
+      sizeof(cuda_internal::BoundaryTransferQuery3D) + sizeof(cuda_internal::BoundaryTransferReport3D) + 2 * 1024;
+  EXPECT_LE(arena->metrics().peak_active_device_scratch_bytes, particle_scratch_byte_budget);
   EXPECT_DOUBLE_EQ(particles[0].world_velocity.x, 1);
   EXPECT_NEAR(particles[0].world_position.x, 2.1, 2e-14);
   EXPECT_FALSE(particles[0].affine_enabled);

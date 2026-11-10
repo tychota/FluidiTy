@@ -12,6 +12,7 @@
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_tank_staging_3d_cases.h"
+#include "liquid_wall_sample_3d_cases.h"
 namespace fluidity {
 namespace {
 LiquidState3D Initial(std::size_t count = 1) {
@@ -330,8 +331,15 @@ TEST(LiquidSubstep3D, CapacityGrowthReplaysWholeFrameOnce) {
   options.maximum_step_duration = 0.005;
   options.capacity_replay_reservations = options.capacities;
   options.capacity_replay_reservations.particles = 32;
-  auto initial = Initial();
-  auto scheduler = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  namespace wall_test = liquid_wall_samples_test;
+  const auto initial = wall_test::SlabParticles(2);
+  const auto scene = wall_test::SlabScene();
+  auto reference = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(reference.ok());
+  ASSERT_TRUE(reference->AdvanceFrame(0.01).ok());
+  wall_test::Audit audit(options.capacities.faces);
+  auto scheduler =
+      LiquidSubstepScheduler3D::Create(initial, scene, options, wall_test::Observe(audit, CpuLiquidSubstepBackend3D()));
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   int emits = 0;
   scheduler->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
@@ -344,6 +352,8 @@ TEST(LiquidSubstep3D, CapacityGrowthReplaysWholeFrameOnce) {
   ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
   EXPECT_EQ(scheduler->diagnostics().capacity_replays, 1);
   EXPECT_EQ(scheduler->committed().clock.epoch, 2);
+  wall_test::ExpectGrowthRefreshes(audit);
+  ExpectIdenticalSerializedState(reference->committed(), scheduler->committed());
 }
 TEST(LiquidSubstep3D, ProgressObserverInvalidatesDiscardedPassAndPreservesSchedule) {
   auto options = Options();
@@ -483,6 +493,210 @@ TEST(LiquidSubstep3D, ThinSlabSharedStencilNodesUseBothIncidentWallNormals) {
   EXPECT_LT(scheduler->committed().particles[0].world_position.x, 1.96);
   EXPECT_GT(scheduler->committed().particles[1].world_position.x, 2.06);
 }
+
+TEST(LiquidSubstep3D, ReusesWallSamplesInCanonicalSlabSideRuns) {
+  namespace wall_test = liquid_wall_samples_test;
+  const auto options = Options();
+  for (const std::size_t particle_count : {0, 2, 5}) {
+    SCOPED_TRACE(particle_count);
+    const auto initial = wall_test::SlabParticles(particle_count);
+    wall_test::Audit audit(options.capacities.faces);
+    auto scheduler = LiquidSubstepScheduler3D::Create(
+        initial,
+        wall_test::SlabScene(),
+        options,
+        wall_test::Observe(audit, CpuLiquidSubstepBackend3D())
+    );
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->AdvanceFrame(0.01).ok());
+    const auto calls = wall_test::SlabCalls(2.501);
+    const std::size_t expected_call_count = particle_count == 0 ? 0 : particle_count == 2 ? 6 : calls.size();
+    wall_test::ExpectCalls(audit, std::span(calls).first(expected_call_count));
+    EXPECT_EQ(audit.gather_count, particle_count);
+    EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, audit.old_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, audit.new_fallbacks);
+    for (std::size_t index = 0; index < particle_count; ++index) {
+      const auto& particle = scheduler->committed().particles[index];
+      EXPECT_EQ(particle.id, index + 1);
+      EXPECT_EQ(particle.side_tag, wall_test::kSides[index]);
+      if (particle.side_tag < 0) {
+        EXPECT_LT(particle.world_position.x, 2.45);
+      } else {
+        EXPECT_GT(particle.world_position.x, 2.551);
+      }
+    }
+  }
+}
+
+TEST(LiquidSubstep3D, RejectedGatherRunReplaysOnlyThroughEarlierFieldFailure) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wall_test = liquid_wall_samples_test;
+  struct Audit {
+    int batch_calls = 0;
+    int scalar_gather_calls = 0;
+    int field_calls_after_batch = 0;
+  } audit;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &audit;
+  backend.gather_run = [](void* context,
+                          const LiquidBoundaryGatherViewInputs3D& input,
+                          LiquidBoundaryWorkspace3D&) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    auto& observed = *static_cast<Audit*>(context);
+    ++observed.batch_calls;
+    EXPECT_EQ(input.particles.size(), 2);
+    EXPECT_EQ(input.particles.front().side_tag, input.particles.back().side_tag);
+    return absl::OutOfRangeError("");
+  };
+  backend.gather = [](void* context, const LiquidBoundaryGatherViewInputs3D& input, LiquidBoundaryWorkspace3D& workspace
+                   ) {
+    ++static_cast<Audit*>(context)->scalar_gather_calls;
+    EXPECT_EQ(input.particles.size(), 1);
+    return GatherLiquidBoundaryParticles3D(input, workspace);
+  };
+  backend.sample_field =
+      [](void* context, const LiquidSceneField3D& field, std::span<const LiquidParticleState3D> particles, Vec3 position
+      ) -> absl::StatusOr<double> {
+    auto& observed = *static_cast<Audit*>(context);
+    if (observed.batch_calls > 0) {
+      ++observed.field_calls_after_batch;
+      return absl::InvalidArgumentError("");
+    }
+    return CpuLiquidSubstepBackend3D().sample_field(nullptr, field, particles, position);
+  };
+  const auto initial = wall_test::SlabParticles();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, wall_test::SlabScene(), Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->AdvanceFrame(0.01).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(audit.batch_calls, 1);
+  EXPECT_EQ(audit.scalar_gather_calls, 1);
+  EXPECT_EQ(audit.field_calls_after_batch, 1);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+}
+
+TEST(LiquidSubstep3D, GatheredFieldBatchMatchesScalarAndReplaysRejectionInOrder) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wall_test = liquid_wall_samples_test;
+  const auto initial = wall_test::SlabParticles();
+  const auto scene = wall_test::SlabScene();
+  const auto options = Options();
+  auto baseline = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  ASSERT_TRUE(baseline->AdvanceFrame(0.01).ok());
+  for (const bool reject_batch : {false, true}) {
+    SCOPED_TRACE(reject_batch);
+    struct Audit {
+      bool reject_batch;
+      std::size_t batch_calls = 0;
+      std::size_t gathered_field_samples = 0;
+      std::size_t scalar_calls_after_batch = 0;
+    } audit{reject_batch};
+    auto backend = CpuLiquidSubstepBackend3D();
+    backend.context = &audit;
+    backend.gather_run = [](void*, const LiquidBoundaryGatherViewInputs3D& input, LiquidBoundaryWorkspace3D& workspace
+                         ) {
+      return GatherLiquidBoundaryParticles3D(input, workspace);
+    };
+    backend.sample_gathered_fields = [](void* context,
+                                        const LiquidSceneField3D& field,
+                                        std::span<const LiquidParticleState3D> particles,
+                                        std::span<const Vec3> positions,
+                                        std::span<double> distances) {
+      auto& observed = *static_cast<Audit*>(context);
+      ++observed.batch_calls;
+      EXPECT_EQ(positions.size(), 2);
+      EXPECT_EQ(positions.size(), distances.size());
+      for (const auto position : positions) {
+        const auto expected = wall_test::ParticlePosition(observed.gathered_field_samples++);
+        EXPECT_DOUBLE_EQ(position.x, expected.x);
+        EXPECT_DOUBLE_EQ(position.y, expected.y);
+        EXPECT_DOUBLE_EQ(position.z, expected.z);
+      }
+      if (observed.reject_batch) {
+        return absl::InvalidArgumentError("");
+      }
+      return CpuLiquidSubstepBackend3D().sample_field_batch(nullptr, field, particles, positions, distances);
+    };
+    backend.sample_field = [](void* context,
+                              const LiquidSceneField3D& field,
+                              std::span<const LiquidParticleState3D> particles,
+                              Vec3 position) -> absl::StatusOr<double> {
+      auto& observed = *static_cast<Audit*>(context);
+      if (observed.batch_calls > 0) {
+        ++observed.scalar_calls_after_batch;
+        if (observed.reject_batch) {
+          EXPECT_DOUBLE_EQ(position.y, wall_test::ParticlePosition(0).y);
+          return absl::OutOfRangeError("");
+        }
+      }
+      return CpuLiquidSubstepBackend3D().sample_field(nullptr, field, particles, position);
+    };
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    const auto status = scheduler->AdvanceFrame(0.01);
+    if (reject_batch) {
+      EXPECT_EQ(status.code(), absl::StatusCode::kOutOfRange);
+      EXPECT_EQ(audit.batch_calls, 1);
+      EXPECT_EQ(audit.gathered_field_samples, 2);
+      ExpectIdenticalSerializedState(initial, scheduler->committed());
+    } else {
+      ASSERT_TRUE(status.ok()) << status;
+      EXPECT_EQ(audit.batch_calls, 2);
+      EXPECT_EQ(audit.gathered_field_samples, 4);
+      ExpectIdenticalSerializedState(baseline->committed(), scheduler->committed());
+      EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, baseline->diagnostics().old_pic_fallback_count);
+      EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, baseline->diagnostics().new_pic_fallback_count);
+    }
+    EXPECT_EQ(audit.scalar_calls_after_batch, 1);
+  }
+}
+
+TEST(LiquidSubstep3D, FailedOldOrNewWallRefreshRetainsOnlyEarlierDiagnostics) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wall_test = liquid_wall_samples_test;
+  const auto options = Options();
+  const auto initial = wall_test::SlabParticles();
+  const auto scene = wall_test::SlabScene();
+  for (const bool fail_new : {false, true}) {
+    SCOPED_TRACE(fail_new);
+    wall_test::Audit audit(options.capacities.faces);
+    auto scheduler = LiquidSubstepScheduler3D::Create(
+        initial,
+        scene,
+        options,
+        wall_test::Observe(audit, CpuLiquidSubstepBackend3D())
+    );
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    audit.fail_at_wall_coordinate = fail_new ? 2.501 : 2.5;
+    const auto outcome = scheduler->Attempt(0.01);
+    ASSERT_TRUE(outcome.ok()) << outcome.status();
+    EXPECT_EQ(outcome->disposition, LiquidAttemptDisposition3D::kRetryDt);
+    const auto failed_calls = wall_test::SlabCalls(2.501);
+    wall_test::ExpectCalls(audit, std::span(failed_calls).first(fail_new ? 8 : 7));
+    EXPECT_EQ(audit.gather_count, 2);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kGather);
+    EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kAborted);
+    EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, audit.old_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, audit.new_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().accepted_attempts, 0);
+    ExpectIdenticalSerializedState(initial, scheduler->committed());
+
+    audit.Reset();
+    audit.fail_at_wall_coordinate = 0;
+    const auto retried = scheduler->Attempt(0.005);
+    ASSERT_TRUE(retried.ok()) << retried.status();
+    ASSERT_EQ(retried->disposition, LiquidAttemptDisposition3D::kAccepted);
+    wall_test::ExpectCalls(audit, wall_test::SlabCalls(2.5005));
+    auto reference = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(reference.ok());
+    ASSERT_TRUE(reference->BeginFrame(0.01).ok());
+    const auto expected = reference->Attempt(0.005);
+    ASSERT_TRUE(expected.ok());
+    ASSERT_EQ(expected->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ExpectIdenticalSerializedState(reference->committed(), scheduler->committed());
+  }
+}
+
 TEST(LiquidSubstep3D, EmptyUnionAndMalformedSignedExtentAreDistinguished) {
   auto empty = Initial(0);
   auto scene = Scene();

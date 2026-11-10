@@ -16,6 +16,7 @@
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_tank_staging_3d_cases.h"
+#include "liquid_wall_sample_3d_cases.h"
 namespace fluidity {
 namespace {
 // Declared before implementation: retain FP64 particles and existing FP32 PCG.
@@ -357,7 +358,7 @@ void CheckSignedQuantaAndHistories(bool moving_wall) {
   ASSERT_TRUE(cpu.ok());
   ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
   EXPECT_TRUE(audit.signed_momentum);
-  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, true);
   ASSERT_TRUE(backend.ok());
   audit.compare = true;
   audit.gather_count = 0;
@@ -366,6 +367,13 @@ void CheckSignedQuantaAndHistories(bool moving_wall) {
   ASSERT_TRUE(gpu->BeginFrame(0.01).ok());
   MeasuredAttempt(*gpu, *backend, 0.01, LiquidAttemptDisposition3D::kAccepted);
   ASSERT_TRUE(gpu->FinishFrame().ok());
+  const auto events = backend->usage().arena_metrics;
+  EXPECT_GT(events.pre_topology_field_events.interval_count, 0);
+  EXPECT_GT(events.pre_topology_field_events.seconds, 0);
+  for (const auto& phase : events.work_phase_events) {
+    EXPECT_GT(phase.interval_count, 0);
+    EXPECT_GT(phase.seconds, 0);
+  }
   EXPECT_EQ(audit.mismatches, 0);
   EXPECT_EQ(audit.gather_count, 2);
   EXPECT_TRUE(audit.histories_differ);
@@ -890,6 +898,63 @@ TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   ASSERT_NO_FATAL_FAILURE(CheckRejectedFieldBatch());
 }
 
+void CheckSlabWallSamplesAndRefreshFailures() {
+  namespace wall_test = liquid_wall_samples_test;
+  const auto options = Options();
+  const auto initial = wall_test::SlabParticles();
+  const auto scene = wall_test::SlabScene();
+  std::vector<std::byte> retry_bytes;
+  for (const bool fail_new : {false, true}) {
+    SCOPED_TRACE(fail_new);
+    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    wall_test::Audit audit(options.capacities.faces);
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create(initial, scene, options, wall_test::Observe(audit, backend->operations()));
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    auto retained = backend->AcquireCommitted();
+    ASSERT_TRUE(retained.ok()) << retained.status();
+    const auto initial_bytes = DeviceBytes(*retained);
+    const auto initial_identity = retained->identity();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    audit.fail_at_wall_coordinate = fail_new ? 2.501 : 2.5;
+    ASSERT_NO_FATAL_FAILURE(MeasuredAttempt(*scheduler, *backend, 0.01, LiquidAttemptDisposition3D::kRetryDt));
+    const auto failed_calls = wall_test::SlabCalls(2.501);
+    wall_test::ExpectCalls(audit, std::span(failed_calls).first(fail_new ? 8 : 7));
+    EXPECT_EQ(audit.gather_count, 2);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kGather);
+    EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kAborted);
+    EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, audit.old_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, audit.new_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().accepted_attempts, 0);
+    EXPECT_EQ(scheduler->committed(), initial);
+    auto current = backend->AcquireCommitted();
+    ASSERT_TRUE(current.ok()) << current.status();
+    EXPECT_EQ(current->identity(), initial_identity);
+    EXPECT_EQ(DeviceBytes(*current), initial_bytes);
+
+    audit.Reset();
+    audit.fail_at_wall_coordinate = 0;
+    ASSERT_NO_FATAL_FAILURE(MeasuredAttempt(*scheduler, *backend, 0.005, LiquidAttemptDisposition3D::kAccepted));
+    wall_test::ExpectCalls(audit, wall_test::SlabCalls(2.5005));
+    EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, audit.old_fallbacks);
+    EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, audit.new_fallbacks);
+    EXPECT_EQ(DeviceBytes(*retained), initial_bytes);
+    auto accepted = backend->AcquireCommitted();
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    EXPECT_EQ(accepted->identity().clock, scheduler->committed().clock);
+    auto readback = CloneLiquidState3D(initial, options.capacities);
+    ASSERT_TRUE(readback.ok()) << readback.status();
+    ASSERT_TRUE(accepted->Readback(*readback).ok());
+    EXPECT_EQ(*readback, scheduler->committed());
+    if (retry_bytes.empty()) {
+      retry_bytes = DeviceBytes(*accepted);
+    } else {
+      EXPECT_EQ(DeviceBytes(*accepted), retry_bytes);
+    }
+  }
+}
+
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   auto initial = Initial();
@@ -922,24 +987,30 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   ASSERT_NO_FATAL_FAILURE(CheckSignedQuantaAndHistories(true));
   ASSERT_NO_FATAL_FAILURE(CheckReplayMoveAndEmpty());
   ASSERT_NO_FATAL_FAILURE(CheckSignedTopologyAndSlab());
+  ASSERT_NO_FATAL_FAILURE(CheckSlabWallSamplesAndRefreshFailures());
   ASSERT_NO_FATAL_FAILURE(CheckStalePublicationAndCompleteTable());
   ASSERT_NO_FATAL_FAILURE(CheckRejectedAttempts());
   ASSERT_NO_FATAL_FAILURE(CheckNumericalRejection());
   ASSERT_NO_FATAL_FAILURE(CheckRuntimeFailure());
 }
+
 TEST(CudaLiquidSubstep3D, ReplaysAfterCapacityGrowth) {
   std::cout << "CTEST_FULL_OUTPUT\n";
-  auto initial = Initial();
+  namespace wall_test = liquid_wall_samples_test;
+  const auto initial = wall_test::SlabParticles(2);
+  const auto scene = wall_test::SlabScene();
   auto options = Options();
   options.maximum_step_duration = 0.005;
   options.capacity_replay_reservations = options.capacities;
   options.capacity_replay_reservations.particles = 32;
-  auto cpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(cpu.ok()) << cpu.status();
   ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
   auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
   ASSERT_TRUE(backend.ok()) << backend.status();
-  auto gpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options, backend->operations());
+  wall_test::Audit audit(options.capacities.faces);
+  auto gpu =
+      LiquidSubstepScheduler3D::Create(initial, scene, options, wall_test::Observe(audit, backend->operations()));
   ASSERT_TRUE(gpu.ok()) << gpu.status();
   int emits = 0;
   gpu->SetStageFaultHookForTesting({&emits, [](void* context, LiquidPhysicalStage3D stage, double) {
@@ -957,6 +1028,7 @@ TEST(CudaLiquidSubstep3D, ReplaysAfterCapacityGrowth) {
       << '\n';
   ExpectState(cpu->committed(), gpu->committed());
   EXPECT_EQ(gpu->diagnostics().capacity_replays, 1);
+  wall_test::ExpectGrowthRefreshes(audit);
   EXPECT_GT(backend->usage().graph_preparation_count, before.graph_preparation_count);
   Receipt("liquid_substep_3d_growth", backend->usage());
   ASSERT_NO_FATAL_FAILURE(CheckGrowthLeasesAndRollback());

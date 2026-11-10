@@ -320,7 +320,8 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
         || (flag == "--backend" && (execution || device)) || (flag == "--device" && (execution || device))
         || (flag == "--frame" && (replay || check)) || (flag == "--substep" && replay)
         || ((flag == "--frame-start" || flag == "--frame-end" || flag == "--resume" || flag == "--preview") && run)
-        || (flag == "--trace" && execution) || (flag == "--trace-geometry" && run);
+        || (flag == "--trace" && execution) || (flag == "--trace-geometry" && run)
+        || (flag == "--measure-job" && execution);
     if (!allowed) {
       return invalid("arguments", flag, "unknown or misplaced option");
     }
@@ -333,6 +334,10 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
     }
     if (flag == "--preview") {
       command.preview = true;
+      continue;
+    }
+    if (flag == "--measure-job") {
+      command.measure_job = true;
       continue;
     }
     if (flag == "--trace" || flag == "--trace-geometry") {

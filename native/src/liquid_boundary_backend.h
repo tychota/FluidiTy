@@ -4,11 +4,20 @@
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 namespace fluidity::boundary_internal {
+// Owns no storage. The callback fills the first count results in query order
+// and returns a dispatch-level status. Each result has its own arithmetic status.
+struct GeometryBatch {
+  std::span<GeometryInput> queries;
+  std::span<GeometryBatchResult> results;
+  absl::Status (*compute)(void*, std::size_t);
+  void* context;
+};
 // The orchestrator validates sample ownership and order, then delegates every
 // geometry calculation. CUDA supplies this callback explicitly; it never falls back.
 struct GeometryBackend {
   absl::StatusOr<GeometryOutput> (*compute)(void*, const GeometryInput&);
   void* context;
+  GeometryBatch* batch = nullptr;
 };
 // Internal typed seam preserves the bounded workspace publication and validation.
 struct BoundedGeometryAccess {

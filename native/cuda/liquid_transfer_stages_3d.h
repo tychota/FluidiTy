@@ -55,6 +55,14 @@ absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquid3D(
     const LiquidBoundaryGatherViewInputs3D& inputs,
     LiquidBoundaryWorkspace3D& workspace
 );
+// Gather two or more staged particles against shared histories. The first
+// particle arithmetic failure wins, and errors leave the previous gather bank
+// intact. Use only for speculative scheduler runs with scalar replay on rejection.
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquidRun3D(
+    CudaLiquidArena3D& arena,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace
+);
 // Update J by exp(dt*tr(true gradient)); separately constrain retained/stored and
 // advecting velocities by continuous contact. Preserve ID/tag/side/mass/V0 exactly.
 // Nonpositive/nonfinite J or displacement >0.5h returns Aborted (smaller-dt retry).

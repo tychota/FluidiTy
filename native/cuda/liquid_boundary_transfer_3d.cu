@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 
+#include <cuda/atomic>
 #include <type_traits>
 
 #include "fluidity/base/liquid_wall_contact_math_3d.h"
@@ -16,6 +17,7 @@ constexpr std::size_t kGatherComponentCount = std::extent_v<GatherStencils, 0>;
 constexpr std::size_t kGatherSamplesPerComponent = std::extent_v<GatherStencils, 1>;
 constexpr std::size_t kGatherSampleCount = kGatherComponentCount * kGatherSamplesPerComponent;
 constexpr unsigned kSingleParticleGatherThreads = 96;
+constexpr unsigned kParallelTransferThreads = 128;
 static_assert(kSingleParticleGatherThreads >= kGatherSampleCount);
 __device__ FaceNormalAxis Axis(std::size_t i) {
   return i == 0 ? FaceNormalAxis::kX : (i == 1 ? FaceNormalAxis::kY : FaceNormalAxis::kZ);
@@ -188,6 +190,99 @@ __device__ Value<ContinuedVelocity> FillVelocity(
   }
   return component;
 }
+// Keep the three stencil passes and all floating arithmetic in node order.
+template <bool kParallel>
+__device__ Error DepositComponent(
+    const BoundaryTransferQuery3D& query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D& staged_particle,
+    std::size_t component,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D& particle_result
+) {
+  const auto& particle = staged_particle.particle;
+  const auto& transfer = particle.transfer;
+  const auto& stencil = staged_particle.stencils[component];
+  const Vec3 affine_row = particle.affine_enabled ? transfer.particle_velocity_slopes.*SlopeRow(component) : Vec3{};
+  double compatible_weight_sum = 0.0;
+  Vec3 compatible_gradient_sum{};
+  for (const auto& sample : stencil) {
+    if (IsCompatible(faces[sample.face_slot].deposit_tag, particle.side_tag)) {
+      compatible_weight_sum += sample.weight;
+      AddScaled(compatible_gradient_sum, sample.weight_gradient, 1.0);
+    }
+  }
+  if (!numeric::isfinite(compatible_weight_sum) || !IsFinite(compatible_gradient_sum)) {
+    return Error::kRange;
+  }
+  if (compatible_weight_sum <= 0.0) {
+    return Error::kPrecondition;
+  }
+  auto& compatible_stencil = particle_result.stencils[component];
+  Vec3 weighted_mean_offset{};
+  for (std::size_t sample_index = 0; sample_index < 27; ++sample_index) {
+    const auto& sample = stencil[sample_index];
+    auto& compatible_sample = compatible_stencil[sample_index];
+    compatible_sample = {};
+    compatible_sample.face_slot = sample.face_slot;
+    compatible_sample.compatible = IsCompatible(faces[sample.face_slot].deposit_tag, particle.side_tag);
+    if (!compatible_sample.compatible) {
+      continue;
+    }
+    compatible_sample.normalized_weight = sample.weight / compatible_weight_sum;
+    const double weight = compatible_sample.normalized_weight;
+    compatible_sample.normalized_weight_gradient = {
+        (sample.weight_gradient.x - weight * compatible_gradient_sum.x) / compatible_weight_sum,
+        (sample.weight_gradient.y - weight * compatible_gradient_sum.y) / compatible_weight_sum,
+        (sample.weight_gradient.z - weight * compatible_gradient_sum.z) / compatible_weight_sum,
+    };
+    if (!numeric::isfinite(weight) || !IsFinite(compatible_sample.normalized_weight_gradient)) {
+      return Error::kRange;
+    }
+    AddScaled(weighted_mean_offset, sample.face_offset_from_particle, weight);
+  }
+  if (!IsFinite(weighted_mean_offset)) {
+    return Error::kRange;
+  }
+  for (std::size_t sample_index = 0; sample_index < 27; ++sample_index) {
+    auto& sample = compatible_stencil[sample_index];
+    if (!sample.compatible) {
+      continue;
+    }
+    sample.centered_face_offset = Difference(stencil[sample_index].face_offset_from_particle, weighted_mean_offset);
+    if (!IsFinite(sample.centered_face_offset)) {
+      return Error::kRange;
+    }
+    const double mass_contribution = transfer.particle_mass * sample.normalized_weight;
+    const double velocity_at_face =
+        transfer.particle_velocity.*VelocityComponent(component) + Dot(affine_row, sample.centered_face_offset);
+    const double pure_momentum_contribution = mass_contribution * velocity_at_face;
+    const double scaled_mass_contribution = mass_contribution / query.quantization.mass_per_quantum;
+    const double scaled_pure_momentum_contribution =
+        pure_momentum_contribution / query.quantization.pure_momentum_per_quantum;
+    if (!numeric::isfinite(scaled_mass_contribution)
+        || numeric::abs(scaled_mass_contribution) > query.scaled_contribution_magnitude_limit
+        || !numeric::isfinite(scaled_pure_momentum_contribution)
+        || numeric::abs(scaled_pure_momentum_contribution) > query.scaled_contribution_magnitude_limit) {
+      return Error::kRange;
+    }
+    auto& face = face_results[sample.face_slot].face_quanta;
+    const auto mass_quanta = RoundNearestEven(scaled_mass_contribution);
+    const auto pure_momentum_quanta = RoundNearestEven(scaled_pure_momentum_contribution);
+    // An owned stencil visits each face at most once per particle. The
+    // declared capacity bounds the sum of absolute rounded quanta by 2^62,
+    // so every signed partial sum is representable in any interleaving.
+    if constexpr (kParallel) {
+      using AtomicQuanta = cuda::atomic_ref<std::int64_t, cuda::thread_scope_device>;
+      AtomicQuanta(face.mass_quanta_sum).fetch_add(mass_quanta, cuda::memory_order_relaxed);
+      AtomicQuanta(face.pure_momentum_quanta_sum).fetch_add(pure_momentum_quanta, cuda::memory_order_relaxed);
+    } else {
+      face.mass_quanta_sum += mass_quanta;
+      face.pure_momentum_quanta_sum += pure_momentum_quanta;
+    }
+  }
+  return Error::kNone;
+}
 __device__ Error Deposit(
     const BoundaryTransferQuery3D& query,
     const BoundaryTransferFace3D* faces,
@@ -196,80 +291,52 @@ __device__ Error Deposit(
     BoundaryTransferParticleResult3D* particle_results
 ) {
   for (std::size_t particle_index = 0; particle_index < query.particle_count; ++particle_index) {
-    const auto& particle = particles[particle_index].particle;
-    const auto& transfer = particle.transfer;
-    for (std::size_t component = 0; component < 3; ++component) {
-      const auto& stencil = particles[particle_index].stencils[component];
-      const Vec3 affine_row = particle.affine_enabled ? transfer.particle_velocity_slopes.*SlopeRow(component) : Vec3{};
-      double compatible_weight_sum = 0.0;
-      Vec3 compatible_gradient_sum{};
-      for (const auto& sample : stencil) {
-        if (IsCompatible(faces[sample.face_slot].deposit_tag, particle.side_tag)) {
-          compatible_weight_sum += sample.weight;
-          AddScaled(compatible_gradient_sum, sample.weight_gradient, 1.0);
-        }
-      }
-      if (!numeric::isfinite(compatible_weight_sum) || !IsFinite(compatible_gradient_sum)) {
-        return Error::kRange;
-      }
-      if (compatible_weight_sum <= 0.0) {
-        return Error::kPrecondition;
-      }
-      auto& compatible_stencil = particle_results[particle_index].stencils[component];
-      Vec3 weighted_mean_offset{};
-      for (std::size_t sample_index = 0; sample_index < 27; ++sample_index) {
-        const auto& sample = stencil[sample_index];
-        auto& compatible_sample = compatible_stencil[sample_index];
-        compatible_sample.face_slot = sample.face_slot;
-        compatible_sample.compatible = IsCompatible(faces[sample.face_slot].deposit_tag, particle.side_tag);
-        if (!compatible_sample.compatible) {
-          continue;
-        }
-        compatible_sample.normalized_weight = sample.weight / compatible_weight_sum;
-        const double weight = compatible_sample.normalized_weight;
-        compatible_sample.normalized_weight_gradient = {
-            (sample.weight_gradient.x - weight * compatible_gradient_sum.x) / compatible_weight_sum,
-            (sample.weight_gradient.y - weight * compatible_gradient_sum.y) / compatible_weight_sum,
-            (sample.weight_gradient.z - weight * compatible_gradient_sum.z) / compatible_weight_sum,
-        };
-        if (!numeric::isfinite(weight) || !IsFinite(compatible_sample.normalized_weight_gradient)) {
-          return Error::kRange;
-        }
-        AddScaled(weighted_mean_offset, sample.face_offset_from_particle, weight);
-      }
-      if (!IsFinite(weighted_mean_offset)) {
-        return Error::kRange;
-      }
-      for (std::size_t sample_index = 0; sample_index < 27; ++sample_index) {
-        auto& sample = compatible_stencil[sample_index];
-        if (!sample.compatible) {
-          continue;
-        }
-        sample.centered_face_offset = Difference(stencil[sample_index].face_offset_from_particle, weighted_mean_offset);
-        if (!IsFinite(sample.centered_face_offset)) {
-          return Error::kRange;
-        }
-        const double mass_contribution = transfer.particle_mass * sample.normalized_weight;
-        const double velocity_at_face =
-            transfer.particle_velocity.*VelocityComponent(component) + Dot(affine_row, sample.centered_face_offset);
-        const double pure_momentum_contribution = mass_contribution * velocity_at_face;
-        const double scaled_mass_contribution = mass_contribution / query.quantization.mass_per_quantum;
-        const double scaled_pure_momentum_contribution =
-            pure_momentum_contribution / query.quantization.pure_momentum_per_quantum;
-        if (!numeric::isfinite(scaled_mass_contribution)
-            || numeric::abs(scaled_mass_contribution) > query.scaled_contribution_magnitude_limit
-            || !numeric::isfinite(scaled_pure_momentum_contribution)
-            || numeric::abs(scaled_pure_momentum_contribution) > query.scaled_contribution_magnitude_limit) {
-          return Error::kRange;
-        }
-        auto& face = face_results[sample.face_slot].face_quanta;
-        // One contribution per particle/face; the declared power-of-two
-        // capacity bound keeps absolute integer sums <=2^62 in both channels.
-        face.mass_quanta_sum += RoundNearestEven(scaled_mass_contribution);
-        face.pure_momentum_quanta_sum += RoundNearestEven(scaled_pure_momentum_contribution);
+    for (std::size_t component = 0; component < kGatherComponentCount; ++component) {
+      const auto error = DepositComponent<false>(
+          query,
+          faces,
+          particles[particle_index],
+          component,
+          face_results,
+          particle_results[particle_index]
+      );
+      if (error != Error::kNone) {
+        return error;
       }
     }
   }
+  return Error::kNone;
+}
+__device__ Error NormalizeFace(
+    const BoundaryTransferQuery3D& query,
+    const MacFaceDepositQuanta3D& quanta,
+    BoundaryTransferFaceResult3D& result
+) {
+  if (quanta.mass_quanta_sum < 0 || quanta.mass_quanta_sum > kMaximumQuantaSum
+      || quanta.pure_momentum_quanta_sum < -kMaximumQuantaSum || quanta.pure_momentum_quanta_sum > kMaximumQuantaSum
+      || quanta.stress_force_quanta_sum != 0) {
+    return Error::kInvalid;
+  }
+  const double face_mass = static_cast<double>(quanta.mass_quanta_sum) * query.quantization.mass_per_quantum;
+  const double face_momentum =
+      static_cast<double>(quanta.pure_momentum_quanta_sum) * query.quantization.pure_momentum_per_quantum;
+  if (!numeric::isfinite(face_mass) || !numeric::isfinite(face_momentum)) {
+    return Error::kRange;
+  }
+  result.decoded_face_mass = face_mass;
+  if (face_mass == 0.0) {
+    return Error::kNone;
+  }
+  if (face_mass <= query.minimum_face_mass) {
+    result.validity = LiquidFaceValidity3D::kLowMass;
+    return Error::kNone;
+  }
+  const double velocity = face_momentum / face_mass;
+  if (!numeric::isfinite(velocity)) {
+    return Error::kRange;
+  }
+  result.normalized_face_velocity = velocity;
+  result.validity = LiquidFaceValidity3D::kValid;
   return Error::kNone;
 }
 __device__ Error Normalize(
@@ -278,32 +345,10 @@ __device__ Error Normalize(
     BoundaryTransferFaceResult3D* face_results
 ) {
   for (std::size_t slot = 0; slot < query.face_count; ++slot) {
-    const auto& quanta = faces[slot].face_quanta;
-    if (quanta.mass_quanta_sum < 0 || quanta.mass_quanta_sum > kMaximumQuantaSum
-        || quanta.pure_momentum_quanta_sum < -kMaximumQuantaSum || quanta.pure_momentum_quanta_sum > kMaximumQuantaSum
-        || quanta.stress_force_quanta_sum != 0) {
-      return Error::kInvalid;
+    const auto error = NormalizeFace(query, faces[slot].face_quanta, face_results[slot]);
+    if (error != Error::kNone) {
+      return error;
     }
-    const double face_mass = static_cast<double>(quanta.mass_quanta_sum) * query.quantization.mass_per_quantum;
-    const double face_momentum =
-        static_cast<double>(quanta.pure_momentum_quanta_sum) * query.quantization.pure_momentum_per_quantum;
-    if (!numeric::isfinite(face_mass) || !numeric::isfinite(face_momentum)) {
-      return Error::kRange;
-    }
-    face_results[slot].decoded_face_mass = face_mass;
-    if (face_mass == 0.0) {
-      continue;
-    }
-    if (face_mass <= query.minimum_face_mass) {
-      face_results[slot].validity = LiquidFaceValidity3D::kLowMass;
-      continue;
-    }
-    const double velocity = face_momentum / face_mass;
-    if (!numeric::isfinite(velocity)) {
-      return Error::kRange;
-    }
-    face_results[slot].normalized_face_velocity = velocity;
-    face_results[slot].validity = LiquidFaceValidity3D::kValid;
   }
   return Error::kNone;
 }
@@ -458,87 +503,111 @@ Predict(const BoundaryTransferQuery3D& query, const BoundaryTransferFace3D* face
       continued->velocity + query.step_duration * query.world_acceleration.*VelocityComponent(component);
   return numeric::isfinite(report.predicted_face_velocity) ? Error::kNone : Error::kRange;
 }
+__device__ Error ApplyForcesToFace(
+    const BoundaryTransferQuery3D& query,
+    const BoundaryTransferFace3D& face,
+    BoundaryTransferFaceResult3D& result
+) {
+  const auto axis = face.axis;
+  const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
+  const double predicted =
+      face.old_history.face_velocity + query.step_duration * query.world_acceleration.*VelocityComponent(component);
+  if (!numeric::isfinite(predicted)) {
+    return Error::kRange;
+  }
+  result.normalized_face_velocity = predicted;
+  return Error::kNone;
+}
+
 __device__ Error Forces(
     const BoundaryTransferQuery3D& query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* results
 ) {
   for (std::size_t slot = 0; slot < query.face_count; ++slot) {
-    const auto axis = faces[slot].axis;
-    const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
-    const double predicted = faces[slot].old_history.face_velocity
-        + query.step_duration * query.world_acceleration.*VelocityComponent(component);
-    if (!numeric::isfinite(predicted)) {
-      return Error::kRange;
+    const auto error = ApplyForcesToFace(query, faces[slot], results[slot]);
+    if (error != Error::kNone) {
+      return error;
     }
-    results[slot].normalized_face_velocity = predicted;
   }
   return Error::kNone;
 }
-// J consumes the true original-basis gradient, while retained APIC slopes are the
-// separate fit. Contact constrains stored and advecting velocities independently.
-__device__ Error UpdateParticles(
-    const BoundaryTransferQuery3D& query,
-    const BoundaryTransferParticle3D* particles,
-    BoundaryTransferParticleResult3D* results,
-    BoundaryTransferReport3D& report
+// J uses the original-basis velocity gradient. Contact constrains the
+// advecting and retained velocities independently.
+__global__ void LiquidParticleUpdate3DKernel(
+    const BoundaryTransferQuery3D* device_query,
+    const BoundaryUpdateParticle3D* particles,
+    BoundaryUpdateResult3D* results,
+    int* compiled_architecture
 ) {
-  for (std::size_t index = 0; index < query.particle_count; ++index) {
-    const auto& particle = particles[index];
-    const auto& gathered = particle.gathered;
-    const Vec3 start = particle.particle.transfer.trial_world_position;
-    const double divergence =
-        gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
-    const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
-    const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
-    double solid_distance = numeric::numeric_limits<double>::infinity();
-    if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-      const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
-      if (!wall.ok()) {
-        return wall.status();
-      }
-      solid_distance = wall->inward_distance;
-    } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
-      const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
-      solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
-          ? projected_distance
-          : numeric::abs(projected_distance) - query.obstacle.half_width;
-      if (!numeric::isfinite(solid_distance)) {
-        return Error::kRange;
-      }
-    }
-    const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
-        && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
-    const double beta = surface_expansion ? query.particle_energy_blend : 0;
-    Vec3 stored = gathered.new_pic_velocity;
-    Vec3 advecting = gathered.new_pic_velocity;
-    AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
-    AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
-    const auto contact = boundary_internal::ResolveContact({
-        start,
-        stored,
-        advecting,
-        query.obstacle,
-        query.step_duration,
-        query.friction_coefficient,
-        query.penetration_tolerance,
-    });
-    if (!contact.ok()) {
-      return contact.status();
-    }
-    const Vec3 displacement = Difference(contact->world_position, start);
-    const double volume_ratio = particle.volume_ratio * exp(query.step_duration * divergence);
-    if (numeric::abs(displacement.x) > 0.5 * query.cell_width || numeric::abs(displacement.y) > 0.5 * query.cell_width
-        || numeric::abs(displacement.z) > 0.5 * query.cell_width || !numeric::isfinite(volume_ratio)
-        || volume_ratio <= 0) {
-      report.retry_step = true;
-      return Error::kNone;
-    }
-    results[index].updated_world_position = contact->world_position;
-    results[index].updated_stored_velocity = contact->stored_world_velocity;
-    results[index].updated_volume_ratio = volume_ratio;
+  const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+#if defined(__CUDA_ARCH__)
+  if (index == 0) {
+    *compiled_architecture = __CUDA_ARCH__;
   }
-  return Error::kNone;
+#endif
+  const auto& query = *device_query;
+  if (index >= query.particle_count) {
+    return;
+  }
+  auto& result = results[index];
+  result = {};
+  const auto& particle = particles[index];
+  const auto& gathered = particle.gathered;
+  const Vec3 start = particle.world_position;
+  const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
+  const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
+  Vec3 stored = gathered.new_pic_velocity;
+  AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
+  const double divergence =
+      gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
+  double solid_distance = numeric::numeric_limits<double>::infinity();
+  if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+    const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
+    if (!wall.ok()) {
+      result.error = wall.status();
+      return;
+    }
+    solid_distance = wall->inward_distance;
+  } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
+    solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
+        ? projected_distance
+        : numeric::abs(projected_distance) - query.obstacle.half_width;
+    if (!numeric::isfinite(solid_distance)) {
+      result.error = Error::kRange;
+      return;
+    }
+  }
+  const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
+      && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
+  const double beta = surface_expansion ? query.particle_energy_blend : 0;
+  Vec3 advecting = gathered.new_pic_velocity;
+  AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
+  const auto contact = boundary_internal::ResolveContact({
+      start,
+      stored,
+      advecting,
+      query.obstacle,
+      query.step_duration,
+      query.friction_coefficient,
+      query.penetration_tolerance,
+  });
+  if (!contact.ok()) {
+    result.error = contact.status();
+    return;
+  }
+  const Vec3 displacement = Difference(contact->world_position, start);
+  const double volume_ratio = particle.volume_ratio * exp(query.step_duration * divergence);
+  if (numeric::abs(displacement.x) > 0.5 * query.cell_width || numeric::abs(displacement.y) > 0.5 * query.cell_width
+      || numeric::abs(displacement.z) > 0.5 * query.cell_width || !numeric::isfinite(volume_ratio)
+      || volume_ratio <= 0) {
+    result.retry_step = true;
+    return;
+  }
+  result.world_position = contact->world_position;
+  result.stored_world_velocity = contact->stored_world_velocity;
+  result.volume_ratio = volume_ratio;
 }
 __device__ void InitializeTransferOutputs(
     const BoundaryTransferQuery3D& query,
@@ -583,9 +652,6 @@ __global__ void LiquidBoundaryTransfer3DKernel(
     case BoundaryTransferOperation3D::kForces:
       report->error = Forces(*query, faces, face_results);
       break;
-    case BoundaryTransferOperation3D::kUpdateParticles:
-      report->error = UpdateParticles(*query, particles, particle_results, *report);
-      break;
     case BoundaryTransferOperation3D::kFitGhost: {
       const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(query->fit_samples, query->fit_count));
       report->error = fit.status();
@@ -597,7 +663,20 @@ __global__ void LiquidBoundaryTransfer3DKernel(
   }
 }
 
-__global__ void LiquidBoundarySingleParticleGather3DKernel(
+// Only the earliest failing ordinal can win. Threads write no published data.
+__device__ void ReportParallelTransferError(BoundaryTransferReport3D& report, std::size_t ordinal, Error error) {
+#if defined(__CUDA_ARCH__)
+  if (ordinal == 0) {
+    report.compiled_architecture = __CUDA_ARCH__;
+  }
+#endif
+  if (error != Error::kNone) {
+    const auto ordered_error = ordinal * kBoundaryTransferErrorCodeCount + static_cast<unsigned>(error);
+    atomicMin(&report.first_parallel_error, static_cast<unsigned long long>(ordered_error));
+  }
+}
+
+__global__ void LiquidBoundaryDeposit3DKernel(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     const BoundaryTransferParticle3D* particles,
@@ -605,6 +684,56 @@ __global__ void LiquidBoundarySingleParticleGather3DKernel(
     BoundaryTransferParticleResult3D* particle_results,
     BoundaryTransferReport3D* report
 ) {
+  const std::size_t ordinal = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (ordinal >= query->particle_count * kGatherComponentCount) {
+    return;
+  }
+  const auto particle_index = ordinal / kGatherComponentCount;
+  const auto component = ordinal % kGatherComponentCount;
+  const auto error = DepositComponent<true>(
+      *query,
+      faces,
+      particles[particle_index],
+      component,
+      face_results,
+      particle_results[particle_index]
+  );
+  ReportParallelTransferError(*report, ordinal, error);
+}
+
+template <BoundaryTransferOperation3D kOperation>
+__global__ void LiquidBoundaryFaceMap3DKernel(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferReport3D* report
+) {
+  const std::size_t slot = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (slot >= query->face_count) {
+    return;
+  }
+  auto& result = face_results[slot];
+  result = {};
+  static_assert(
+      kOperation == BoundaryTransferOperation3D::kNormalize || kOperation == BoundaryTransferOperation3D::kForces
+  );
+  const auto error = kOperation == BoundaryTransferOperation3D::kNormalize
+      ? NormalizeFace(*query, faces[slot].face_quanta, result)
+      : ApplyForcesToFace(*query, faces[slot], result);
+  ReportParallelTransferError(*report, slot, error);
+}
+
+template <bool kGatherRun, typename ParticleResult>
+__global__ void LiquidBoundaryParticleGather3DKernel(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    ParticleResult* particle_results,
+    BoundaryTransferReport3D* report
+) {
+  const std::size_t particle_index = kGatherRun ? blockIdx.x : 0;
+  const auto& particle = particles[particle_index];
   const HistoryView old_history{faces, BoundaryHistoryStage3D::kOld};
   const HistoryView new_history{faces, BoundaryHistoryStage3D::kNew};
   const numeric::span<const BoundaryTransferFace3D> anchors(faces, query->face_count);
@@ -615,31 +744,50 @@ __global__ void LiquidBoundarySingleParticleGather3DKernel(
   if (sample_lane < kGatherSampleCount) {
     const std::size_t component = sample_lane / kGatherSamplesPerComponent;
     const std::size_t sample_index = sample_lane % kGatherSamplesPerComponent;
-    const auto& sample = particles[0].stencils[component][sample_index];
-    prepared_samples[component][sample_index] = PrepareGatherSample(
-        old_history,
-        new_history,
-        anchors,
-        sample.face_slot,
-        component,
-        particles[0].particle.side_tag
-    );
+    const auto& sample = particle.stencils[component][sample_index];
+    prepared_samples[component][sample_index] =
+        PrepareGatherSample(old_history, new_history, anchors, sample.face_slot, component, particle.particle.side_tag);
   }
   __syncthreads();
   if (sample_lane == 0) {
-    InitializeTransferOutputs(*query, face_results, particle_results, *report);
-    report->error = GatherParticle<true>(
-        *query,
-        old_history,
-        new_history,
-        anchors,
-        particles[0],
-        &prepared_samples,
-        particle_results[0].gathered
-    );
+    auto& result = particle_results[particle_index];
+    if constexpr (kGatherRun) {
+      result = {};
+#if defined(__CUDA_ARCH__)
+      result.compiled_architecture = __CUDA_ARCH__;
+#endif
+    } else {
+      InitializeTransferOutputs(*query, face_results, particle_results, *report);
+    }
+    const auto error =
+        GatherParticle<true>(*query, old_history, new_history, anchors, particle, &prepared_samples, result.gathered);
+    if constexpr (kGatherRun) {
+      result.error = error;
+    } else {
+      report->error = error;
+    }
   }
 }
 }  // namespace
+int LaunchLiquidParticleUpdate3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryUpdateParticle3D* particles,
+    BoundaryUpdateResult3D* results,
+    int* compiled_architecture,
+    std::size_t particle_count,
+    void* stream
+) {
+  constexpr unsigned threads = 128;
+  const auto block_count = particle_count == 0 ? 1U : static_cast<unsigned>((particle_count + threads - 1) / threads);
+  cudaGetLastError();
+  LiquidParticleUpdate3DKernel<<<block_count, threads, 0, static_cast<cudaStream_t>(stream)>>>(
+      query,
+      particles,
+      results,
+      compiled_architecture
+  );
+  return static_cast<int>(cudaGetLastError());
+}
 int LaunchLiquidBoundaryTransfer3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
@@ -661,6 +809,58 @@ int LaunchLiquidBoundaryTransfer3D(
   return static_cast<int>(cudaGetLastError());
 }
 
+int LaunchLiquidBoundaryDeposit3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report,
+    std::size_t particle_count,
+    void* stream
+) {
+  const auto component_count = particle_count * kGatherComponentCount;
+  const auto blocks =
+      static_cast<unsigned>((component_count + kParallelTransferThreads - 1) / kParallelTransferThreads);
+  cudaGetLastError();
+  LiquidBoundaryDeposit3DKernel<<<blocks, kParallelTransferThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+      query,
+      faces,
+      particles,
+      face_results,
+      particle_results,
+      report
+  );
+  return static_cast<int>(cudaGetLastError());
+}
+
+int LaunchLiquidBoundaryFaceMap3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferReport3D* report,
+    std::size_t face_count,
+    BoundaryTransferOperation3D operation,
+    void* stream
+) {
+  const auto blocks = static_cast<unsigned>((face_count + kParallelTransferThreads - 1) / kParallelTransferThreads);
+  const auto cuda_stream = static_cast<cudaStream_t>(stream);
+  cudaGetLastError();
+  switch (operation) {
+    case BoundaryTransferOperation3D::kNormalize:
+      LiquidBoundaryFaceMap3DKernel<BoundaryTransferOperation3D::kNormalize>
+          <<<blocks, kParallelTransferThreads, 0, cuda_stream>>>(query, faces, face_results, report);
+      break;
+    case BoundaryTransferOperation3D::kForces:
+      LiquidBoundaryFaceMap3DKernel<BoundaryTransferOperation3D::kForces>
+          <<<blocks, kParallelTransferThreads, 0, cuda_stream>>>(query, faces, face_results, report);
+      break;
+    default:
+      return static_cast<int>(cudaErrorInvalidValue);
+  }
+  return static_cast<int>(cudaGetLastError());
+}
+
 int LaunchLiquidBoundarySingleParticleGather3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
@@ -671,14 +871,35 @@ int LaunchLiquidBoundarySingleParticleGather3D(
     void* stream
 ) {
   cudaGetLastError();
-  LiquidBoundarySingleParticleGather3DKernel<<<1, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
-      query,
-      faces,
-      particles,
-      face_results,
-      particle_results,
-      report
-  );
+  LiquidBoundaryParticleGather3DKernel<false>
+      <<<1, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+          query,
+          faces,
+          particles,
+          face_results,
+          particle_results,
+          report
+      );
+  return static_cast<int>(cudaGetLastError());
+}
+int LaunchLiquidBoundaryGatherRun3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryGatherRunResult3D* results,
+    unsigned particle_count,
+    void* stream
+) {
+  cudaGetLastError();
+  LiquidBoundaryParticleGather3DKernel<true>
+      <<<particle_count, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
+          query,
+          faces,
+          particles,
+          nullptr,
+          results,
+          nullptr
+      );
   return static_cast<int>(cudaGetLastError());
 }
 }  // namespace fluidity::cuda_internal
