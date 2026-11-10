@@ -70,6 +70,20 @@ example (t : Fin 3 → ℝ) (velocity : ℝ) (row : Fin 3 → ℝ) :
   intro j k
   fin_cases j <;> fin_cases k <;> norm_num [Fin.sum_univ_succ]
 
+-- Equal face histories give zero grid increment while the old particle can differ from old PIC.
+example :
+    let weight : Fin 2 → ℝ := ![1 / 4, 3 / 4]
+    let sample : Fin 2 → ℝ := ![2, 6]
+    ((∑ i, weight i * sample i) - (∑ i, weight i * sample i) = 0) ∧
+      ((7 : ℝ) - (∑ i, weight i * sample i) ≠ 0) := by
+  intro weight sample
+  have history :=
+    equal_samples_grid_increment_and_residual weight sample sample 7 (fun _ => rfl)
+  refine ⟨history.1, ?_⟩
+  intro zeroResidual
+  have particleMatchesGather := history.2.mp zeroResidual
+  norm_num [weight, sample, Fin.sum_univ_succ] at particleMatchesGather
+
 -- Count cap and guarded nearest rounding imply every prefix's inclusive i64 budget.
 example (q : List ℤ) (scaled : ℤ → ℝ) (n : ℕ) (exponent : n ≤ 62)
     (count : q.length ≤ 2 ^ n)
