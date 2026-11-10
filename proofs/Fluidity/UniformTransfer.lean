@@ -342,4 +342,69 @@ theorem mac_deposit_conserves_row_moments {particleCount faceCount d : ℕ}
 
 #print axioms mac_deposit_conserves_row_moments
 
+/-- On `n` consecutive signed cells starting at `lo`, the face sum against
+backward weight differences equals the cell sum against forward velocity
+differences. The two exterior cell weights at `lo - 1` and `lo + n` must vanish,
+including when `n = 0`. No physical cell-width factor is included. -/
+theorem finite_face_sum_eq_weighted_forward_difference (lo : ℤ) (n : ℕ)
+    (velocity weight : ℤ → ℝ) (leftZero : weight (lo - 1) = 0)
+    (rightZero : weight (lo + (n : ℤ)) = 0) :
+    (∑ j ∈ Finset.range (n + 1), velocity (lo + (j : ℤ)) *
+      (weight (lo + (j : ℤ) - 1) - weight (lo + (j : ℤ)))) =
+      ∑ i ∈ Finset.range n, weight (lo + (i : ℤ)) *
+        (velocity (lo + (i : ℤ) + 1) - velocity (lo + (i : ℤ))) := by
+  simp_rw [mul_sub]
+  rw [Finset.sum_sub_distrib,
+    Finset.sum_range_succ' (fun j => velocity (lo + (j : ℤ)) * weight (lo + (j : ℤ) - 1)) n,
+    Finset.sum_range_succ (fun j => velocity (lo + (j : ℤ)) * weight (lo + (j : ℤ))) n]
+  simp only [Nat.cast_zero, add_zero, leftZero, rightZero, mul_zero]
+  rw [← Finset.sum_sub_distrib]
+  apply Finset.sum_congr rfl
+  intro i _
+  have nextFace : lo + ((i + 1 : ℕ) : ℤ) = lo + (i : ℤ) + 1 := by omega
+  rw [nextFace, add_sub_cancel_right]
+  ring
+
+#print axioms finite_face_sum_eq_weighted_forward_difference
+
+-- Pin the public signature, including both exterior weights and signed indices.
+example (lo : ℤ) (n : ℕ) (u w : ℤ → ℝ)
+    (leftZero : w (lo - 1) = 0) (rightZero : w (lo + (n : ℤ)) = 0) :
+    (∑ j ∈ Finset.range (n + 1), u (lo + (j : ℤ)) * (w (lo + (j : ℤ) - 1) - w (lo + (j : ℤ)))) =
+      ∑ i ∈ Finset.range n, w (lo + (i : ℤ)) * (u (lo + (i : ℤ) + 1) - u (lo + (i : ℤ))) :=
+  finite_face_sum_eq_weighted_forward_difference lo n u w leftZero rightZero
+
+private def traceTestVelocity (face : ℤ) : ℝ :=
+  if face = -2 then 2 else if face = -1 then -3 else 5
+
+private def traceTestWeight (leftExterior rightExterior : ℝ) (cell : ℤ) : ℝ :=
+  if cell = -3 then leftExterior else if cell = -2 then 3 else if cell = -1 then -2
+  else if cell = 0 then rightExterior else 0
+
+example :
+    (∑ j ∈ Finset.range 3, traceTestVelocity (-2 + (j : ℤ)) *
+      (traceTestWeight 0 0 (-2 + (j : ℤ) - 1) - traceTestWeight 0 0 (-2 + (j : ℤ)))) = -31 := by
+  rw [finite_face_sum_eq_weighted_forward_difference (-2) 2 traceTestVelocity (traceTestWeight 0 0)
+    (by norm_num [traceTestWeight]) (by norm_num [traceTestWeight])]
+  norm_num [Finset.sum_range_succ, traceTestVelocity, traceTestWeight]
+
+example (lo : ℤ) (u w : ℤ → ℝ) (leftZero : w (lo - 1) = 0) (rightZero : w lo = 0) :
+    u lo * (w (lo - 1) - w lo) = 0 := by
+  simpa using finite_face_sum_eq_weighted_forward_difference lo 0 u w leftZero (by simpa using rightZero)
+
+-- A nonzero exterior weight on either side changes the face sum, while the cell sum is still -31.
+example :
+    (∑ j ∈ Finset.range 3, traceTestVelocity (-2 + (j : ℤ)) *
+      (traceTestWeight 7 0 (-2 + (j : ℤ) - 1) - traceTestWeight 7 0 (-2 + (j : ℤ)))) ≠
+      ∑ i ∈ Finset.range 2, traceTestWeight 7 0 (-2 + (i : ℤ)) *
+        (traceTestVelocity (-2 + (i : ℤ) + 1) - traceTestVelocity (-2 + (i : ℤ))) := by
+  norm_num [Finset.sum_range_succ, traceTestVelocity, traceTestWeight]
+
+example :
+    (∑ j ∈ Finset.range 3, traceTestVelocity (-2 + (j : ℤ)) *
+      (traceTestWeight 0 7 (-2 + (j : ℤ) - 1) - traceTestWeight 0 7 (-2 + (j : ℤ)))) ≠
+      ∑ i ∈ Finset.range 2, traceTestWeight 0 7 (-2 + (i : ℤ)) *
+        (traceTestVelocity (-2 + (i : ℤ) + 1) - traceTestVelocity (-2 + (i : ℤ))) := by
+  norm_num [Finset.sum_range_succ, traceTestVelocity, traceTestWeight]
+
 end Fluidity
