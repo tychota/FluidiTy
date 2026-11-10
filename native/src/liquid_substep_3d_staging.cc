@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -441,53 +442,104 @@ absl::Status PrepareField(
       STEP_TRY(add_sphere(particle.world_position, std::get<LiquidParticleSphereUnion3D>(field).radius));
     }
   }
-  const auto sample = [&](Vec3 lattice_position) -> absl::StatusOr<double> {
-    if (plane) {
-      return backend.sample_lattice_plane(backend.context, *plane, geometry, lattice_position.y);
-    }
-    const Vec3 world_position{
-        geometry.world_origin.x + lattice_position.x * geometry.cell_width,
-        geometry.world_origin.y + lattice_position.y * geometry.cell_width,
-        geometry.world_origin.z + lattice_position.z * geometry.cell_width,
-    };
-    return backend.sample_field(backend.context, field, trial.particles.values(), world_position);
-  };
+  // These reservations already cover the full undeduplicated stencil. Keep
+  // signed keys intact until both families are sorted and deduplicated.
+  const std::size_t candidate_count = staging.candidates.size();
+  STEP_TRY(staging.centers.Resize(27 * candidate_count));
+  STEP_TRY(staging.corners.Resize(8 * candidate_count));
+  std::size_t center_ordinal = 0;
+  std::size_t corner_ordinal = 0;
   for (const auto& cell : staging.candidates.values()) {
     for (int z = -1; z <= 1; ++z) {
       for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-          const CellIndex3D index{cell.x + x, cell.y + y, cell.z + z};
-          const auto sampled = sample({index.x + 0.5, index.y + 0.5, index.z + 0.5});
-          if (!sampled.ok()) {
-            return sampled.status();
-          }
-          const double distance = *sampled;
-          if (!std::isfinite(distance)) {
-            return Error(absl::StatusCode::kOutOfRange);
-          }
-          STEP_TRY(InsertUnique(staging.centers, LiquidCenterDistance3D{index, distance}, [](const auto& v) {
-            return Key(v.cell_index);
-          }));
+          staging.centers[center_ordinal++].cell_index = {cell.x + x, cell.y + y, cell.z + z};
         }
       }
     }
     for (int z = 0; z <= 1; ++z) {
       for (int y = 0; y <= 1; ++y) {
         for (int x = 0; x <= 1; ++x) {
-          const CellCornerIndex3D index{cell.x + x, cell.y + y, cell.z + z};
-          const auto sampled =
-              sample({static_cast<double>(index.x), static_cast<double>(index.y), static_cast<double>(index.z)});
-          if (!sampled.ok()) {
-            return sampled.status();
-          }
-          const double distance = *sampled;
-          if (!std::isfinite(distance)) {
-            return Error(absl::StatusCode::kOutOfRange);
-          }
-          STEP_TRY(InsertUnique(staging.corners, LiquidCornerDistance3D{index, distance}, [](const auto& v) {
-            return Key(v.corner_index);
-          }));
+          staging.corners[corner_ordinal++].corner_index = {cell.x + x, cell.y + y, cell.z + z};
         }
+      }
+    }
+  }
+  const auto unique_samples = [](auto& records, auto key) {
+    auto samples = records.values();
+    std::ranges::sort(samples, {}, key);
+    const auto duplicates = std::ranges::unique(samples, {}, key);
+    return records.Resize(samples.size() - static_cast<std::size_t>(std::ranges::distance(duplicates)));
+  };
+  STEP_TRY(unique_samples(staging.centers, [](const auto& sample) {
+    return Key(sample.cell_index);
+  }));
+  STEP_TRY(unique_samples(staging.corners, [](const auto& sample) {
+    return Key(sample.corner_index);
+  }));
+
+  const std::size_t center_count = staging.centers.size();
+  const std::size_t sample_count = center_count + staging.corners.size();
+  if (sample_count == 0) {
+    return absl::OkStatus();
+  }
+  // The CUDA arena reserves at least eight sample slots per candidate capacity.
+  const std::size_t batch_capacity =
+      std::min(kLiquidFieldBatchCapacity3D, kLiquidFieldSampleSlotsPerCapacity3D * staging.candidates.capacity());
+  std::array<Vec3, kLiquidFieldBatchCapacity3D> world_positions;
+  std::array<double, kLiquidFieldBatchCapacity3D> lattice_ordinates_y;
+  std::array<double, kLiquidFieldBatchCapacity3D> distances;
+  const auto lattice_position = [&](std::size_t ordinal) -> Vec3 {
+    if (ordinal < center_count) {
+      const auto index = staging.centers[ordinal].cell_index;
+      return {index.x + 0.5, index.y + 0.5, index.z + 0.5};
+    }
+    const auto index = staging.corners[ordinal - center_count].corner_index;
+    return {static_cast<double>(index.x), static_cast<double>(index.y), static_cast<double>(index.z)};
+  };
+  // Centers precede corners, with the same (z, y, x) order within each family
+  // as the old staged fields. Do not round compensated plane y to world space.
+  for (std::size_t first = 0; first < sample_count; first += batch_capacity) {
+    const std::size_t count = std::min(batch_capacity, sample_count - first);
+    const auto output = std::span(distances).first(count);
+    if (plane) {
+      for (std::size_t index = 0; index < count; ++index) {
+        lattice_ordinates_y[index] = lattice_position(first + index).y;
+      }
+      STEP_TRY(backend.sample_lattice_plane(
+          backend.context,
+          *plane,
+          geometry,
+          std::span(lattice_ordinates_y).first(count),
+          output
+      ));
+    } else {
+      for (std::size_t index = 0; index < count; ++index) {
+        const auto position = lattice_position(first + index);
+        world_positions[index] = {
+            geometry.world_origin.x + position.x * geometry.cell_width,
+            geometry.world_origin.y + position.y * geometry.cell_width,
+            geometry.world_origin.z + position.z * geometry.cell_width,
+        };
+      }
+      STEP_TRY(backend.sample_field_batch(
+          backend.context,
+          field,
+          trial.particles.values(),
+          std::span(world_positions).first(count),
+          output
+      ));
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+      const std::size_t ordinal = first + index;
+      const double distance = output[index];
+      if (!std::isfinite(distance)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (ordinal < center_count) {
+        staging.centers[ordinal].signed_distance = distance;
+      } else {
+        staging.corners[ordinal - center_count].signed_distance = distance;
       }
     }
   }

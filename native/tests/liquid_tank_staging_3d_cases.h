@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <tuple>
@@ -9,6 +10,97 @@
 #include "gtest/gtest.h"
 
 namespace fluidity::tank_staging_test {
+
+// The two overlapping supports cross x=-1/0 and z=3/4 block faces.
+// The repeated particle must contribute neither new candidates nor samples.
+inline void ExpectMixedSignedFieldSupport(const LiquidSubstepBackend3D& operations, double distance_tolerance) {
+  LiquidState3D initial;
+  initial.particles = *LiquidRecords3D<LiquidParticleState3D>::Create(3);
+  ASSERT_TRUE(initial.particles.Resize(3).ok());
+  initial.particles[0].world_position = {-0.5, 0.5, 3.5};
+  initial.particles[1].world_position = {0.5, 0.5, 4.5};
+  initial.particles[2] = initial.particles[0];
+  const LiquidSceneField3D field = LiquidParticleSphereUnion3D{0.75};
+  auto staging = liquid_step_internal::Staging::Create({16, 64, 128, 12288, 1});
+  ASSERT_TRUE(staging.ok()) << staging.status();
+  const auto staged = liquid_step_internal::PrepareField(field, {}, initial, *staging, operations);
+  ASSERT_TRUE(staged.ok()) << staged;
+  EXPECT_EQ(staging->candidates.size(), 42);
+  ASSERT_EQ(staging->centers.size(), 170);
+  ASSERT_EQ(staging->corners.size(), 92);
+  const auto check_distances = [&](auto records, auto index_of, double offset) {
+    auto previous = std::tuple{-3, -3, -3};
+    for (const auto& sample : records) {
+      const auto index = index_of(sample);
+      const auto key = std::tuple{index.z, index.y, index.x};
+      EXPECT_LT(previous, key);
+      previous = key;
+      const Vec3 world_position{index.x + offset, index.y + offset, index.z + offset};
+      const double expected = liquid_step_internal::FieldDistance(field, initial.particles.values(), world_position);
+      EXPECT_NEAR(sample.signed_distance, expected, distance_tolerance);
+    }
+  };
+  check_distances(
+      staging->centers.values(),
+      [](const auto& sample) {
+        return sample.cell_index;
+      },
+      0.5
+  );
+  check_distances(
+      staging->corners.values(),
+      [](const auto& sample) {
+        return sample.corner_index;
+      },
+      0
+  );
+}
+
+inline void ExpectFieldBatchContract(const LiquidSubstepBackend3D& operations) {
+  const LiquidSceneField3D sphere = LiquidAnalyticSphere3D{{}, 1};
+  const auto world = [&](std::span<const Vec3> positions, std::span<double> distances) {
+    return operations.sample_field_batch(operations.context, sphere, {}, positions, distances);
+  };
+  constexpr std::array positions{Vec3{3, 0, 0}, Vec3{0, 0, 0}, Vec3{3, 0, 0}};
+  std::array distances{29.0, 29.0, 29.0};
+  constexpr std::array sentinels{29.0, 29.0, 29.0};
+  ASSERT_TRUE(world({}, {}).ok());
+  EXPECT_EQ(world(positions, std::span(distances).first(2)).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(distances, sentinels);
+  auto malformed = positions;
+  malformed.back().z = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(world(malformed, distances).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(distances, sentinels);
+  auto overflow = positions;
+  overflow.back() = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), 0};
+  EXPECT_EQ(world(overflow, distances).code(), absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(distances, sentinels);
+  auto aliased = positions[0];
+  EXPECT_EQ(world({&aliased, 1}, {&aliased.x, 1}).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(aliased.x, 3);
+  std::array<Vec3, kLiquidFieldBatchCapacity3D + 1> oversized_positions{};
+  std::array<double, kLiquidFieldBatchCapacity3D + 1> oversized_distances;
+  oversized_distances.fill(29);
+  EXPECT_EQ(world(oversized_positions, oversized_distances).code(), absl::StatusCode::kResourceExhausted);
+  EXPECT_TRUE(std::ranges::all_of(oversized_distances, [](double distance) {
+    return distance == 29;
+  }));
+  ASSERT_TRUE(world(positions, distances).ok());
+  EXPECT_EQ(distances, (std::array{2.0, -1.0, 2.0}));
+
+  const auto plane = [&](std::span<const double> ordinates, std::span<double> output) {
+    constexpr double origin_y = 0x1p52;
+    return operations
+        .sample_lattice_plane(operations.context, {origin_y + 1}, {{0, origin_y, 0}, 1.25}, ordinates, output);
+  };
+  std::array ordinates{-0.5, 0.0, 0.5, 1.0};
+  std::array plane_distances{29.0, 29.0, 29.0, 29.0};
+  ASSERT_TRUE(plane({}, {}).ok());
+  EXPECT_EQ(plane(ordinates, ordinates).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(ordinates, (std::array{-0.5, 0.0, 0.5, 1.0}));
+  ASSERT_TRUE(plane(ordinates, plane_distances).ok());
+  EXPECT_EQ(plane_distances, (std::array{-1.625, -1.0, -0.375, 0.25}));
+}
 
 // No particle contributes candidate support. High x and z faces cross signed
 // block boundaries. The surface needs an exterior air center and derivatives.
@@ -129,9 +221,17 @@ inline void ExpectTranslatedPlaneKeepsWetCell(const LiquidSubstepBackend3D& oper
   EXPECT_DOUBLE_EQ(frozen->cells[0].center_distance, -0.375);
   EXPECT_DOUBLE_EQ(frozen->cells[0].fluid_volume, 1.5625);
 
-  const auto uncertifiable =
-      operations.sample_lattice_plane(operations.context, {0}, {{}, std::numeric_limits<double>::denorm_min()}, 0.5);
-  EXPECT_EQ(uncertifiable.status().code(), absl::StatusCode::kOutOfRange);
+  const std::array ordinate{0.5};
+  std::array distance{29.0};
+  const auto uncertifiable = operations.sample_lattice_plane(
+      operations.context,
+      {0},
+      {{}, std::numeric_limits<double>::denorm_min()},
+      ordinate,
+      distance
+  );
+  EXPECT_EQ(uncertifiable.code(), absl::StatusCode::kOutOfRange);
+  EXPECT_EQ(distance[0], 29);
 }
 
 inline void ExpectWallSamples(const LiquidSubstepBackend3D& operations) {
