@@ -47,6 +47,13 @@ SUBSTEP_3D_CASES = (
     "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth",
     "CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu",
 )
+WETTED_PISTON_CASES = (
+    "CudaWettedPiston3D.ClipsHorizontalPlaneAndKeepsBothFluxSigns",
+    "CudaWettedPiston3D.EnclosesThinOverlappingCapAndAttachesOnce",
+    "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
+    "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
+    "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+)
 SNAPSHOT_3D_CASES = (
     "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch",
     "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot",
@@ -54,6 +61,7 @@ SNAPSHOT_3D_CASES = (
 MEMCHECK_OPERATOR_CASES = (
     *SNAPSHOT_3D_CASES,
     *SUBSTEP_3D_CASES,
+    *WETTED_PISTON_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
     "CudaTransfer.DepositRoundsContributionsBeforeOrderIndependentSum",
@@ -760,13 +768,13 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "35", "failures": "0", "skipped": "0"}
+    assert gpu_report.attrib == {"name": "gpu", "tests": "40", "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 35,
+        "tests": 40,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -816,7 +824,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 33,
+            "tests": 38,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -1113,10 +1121,10 @@ def test_gpu_requires_boundary_3d_cases(scenario, case_name, problem):
     rejected("missing expected tests", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES)
+@pytest.mark.parametrize("case_name", SUBSTEP_3D_CASES + WETTED_PISTON_CASES)
 @pytest.mark.parametrize("producer", ["ctest", "memcheck"])
 @pytest.mark.parametrize("problem", ["missing", "wrong-name", "duplicate", "skipped"])
-def test_cuda_requires_exact_integrated_substep_cases(scenario, case_name, producer, problem):
+def test_cuda_requires_exact_substep_and_wetted_piston_cases(scenario, case_name, producer, problem):
     processes, _, _, _, rejected = scenario
     case_attribute, skip_attribute, preset = (
         ("gpu_cases", "skipped_gpu_case", "windows-debug-cuda")
@@ -1130,7 +1138,7 @@ def test_cuda_requires_exact_integrated_substep_cases(scenario, case_name, produ
         setattr(processes, case_attribute, tuple(case for case in cases if case != case_name))
     else:
         if problem == "duplicate":
-            replaced_case = next(case for case in SUBSTEP_3D_CASES if case != case_name)
+            replaced_case = next(case for case in SUBSTEP_3D_CASES + WETTED_PISTON_CASES if case != case_name)
             replacement = case_name
         else:
             replaced_case = case_name

@@ -65,12 +65,20 @@ GPU_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.PersistentSubstepMatchesCpu"
 GPU_SUBSTEP_GROWTH_3D_CASE = "CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth"
 GPU_OPEN_TANK_SUBSTEP_3D_CASE = "CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu"
 GPU_SUBSTEP_CASES = {GPU_SUBSTEP_3D_CASE, GPU_SUBSTEP_GROWTH_3D_CASE, GPU_OPEN_TANK_SUBSTEP_3D_CASE}
+GPU_WETTED_PISTON_CASES = {
+    "CudaWettedPiston3D.ClipsHorizontalPlaneAndKeepsBothFluxSigns",
+    "CudaWettedPiston3D.EnclosesThinOverlappingCapAndAttachesOnce",
+    "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
+    "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
+    "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+}
 GPU_SNAPSHOT_3D_CASE = "CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch"
 GPU_SNAPSHOT_FAILURE_3D_CASE = "CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot"
 GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
     *GPU_SNAPSHOT_CASES,
     *GPU_SUBSTEP_CASES,
+    *GPU_WETTED_PISTON_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
     GPU_BOUNDARY_GEOMETRY_3D_CASE,

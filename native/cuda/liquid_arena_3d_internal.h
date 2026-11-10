@@ -33,6 +33,7 @@ struct LiquidArenaLedger3D {
   std::size_t references = 1;
   int device_ordinal = 0;
   bool measure_job = false;  // Fixed before any owner or queue is created.
+  bool reserve_wetted_piston_scratch = false;  // Kept across growth.
   bool runtime_failed = false;  // Job-wide poison; only teardown may drain/release afterward.
 };
 struct LiquidArenaRange3D {
