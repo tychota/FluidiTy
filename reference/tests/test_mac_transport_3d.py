@@ -1,6 +1,7 @@
 """Exact-property fixtures for transport on complete uniform MAC support."""
 
 from itertools import product
+from math import inf, nextafter
 
 import numpy as np
 import pytest
@@ -74,6 +75,35 @@ def test_rt0_uses_positive_side_cell_at_transverse_face(h):
     np.testing.assert_allclose(velocity, [-h, 0.0, 0.0], atol=VALUE_ATOL, rtol=0.0)
     np.testing.assert_allclose(gradient, np.zeros((3, 3)), atol=GRADIENT_ATOL, rtol=0.0)
     assert abs(velocity[0] - (shear @ position)[0]) == pytest.approx(h, abs=VALUE_ATOL, rel=0.0)
+
+
+@pytest.mark.parametrize(("h", "face_index"), ((0.1, -3), (0.3, -3), (0.1, 17), (0.1, 2**40 + 1)))
+def test_rt0_distinguishes_rounded_face_from_adjacent_positions(h, face_index):
+    def face_value(axis, index):
+        if axis == 0:
+            return index[1] - face_index
+        if axis == 1:
+            return (index[1] - face_index) ** 2
+        return 0.0
+
+    face_position = face_index * h
+    positions = (nextafter(face_position, -inf), face_position, nextafter(face_position, inf))
+    transverse_velocities = []
+    normal_velocities = []
+    normal_gradients = []
+    for coordinate in positions:
+        velocity, gradient = sample_mac_transport((0.25 * h, coordinate, 0.25 * h), h, face_value, reconstruction="rt0")
+        transverse_velocities.append(velocity[0])
+        normal_velocities.append(velocity[1])
+        normal_gradients.append(gradient[1, 1])
+
+    assert transverse_velocities == [-1.0, 0.0, 0.0]
+    lower_width = face_position - (face_index - 1) * h
+    upper_width = (face_index + 1) * h - face_position
+    expected_velocities = [(face_position - positions[0]) / lower_width, 0.0, (positions[2] - face_position) / upper_width]
+    expected_gradients = [-1 / lower_width, 1 / upper_width, 1 / upper_width]
+    assert normal_velocities == pytest.approx(expected_velocities, abs=VALUE_ATOL, rel=0.0)
+    assert normal_gradients == pytest.approx(expected_gradients, abs=GRADIENT_ATOL, rel=0.0)
 
 
 def _shift(index, axis):
@@ -189,6 +219,8 @@ def test_missing_donor_raises_key_error(reconstruction):
         ((0.0, 0.0), 1.0, "quadratic"),
         ((0.0, np.nan, 0.0), 1.0, "quadratic"),
         ((0.0, 0.0, 0.0), 0.0, "rt0"),
+        ((1.6e308, 0.0, 0.0), 1e308, "rt0"),
+        ((1.0, 0.0, 0.0), nextafter(0.0, inf), "rt0"),
         ((0.0, 0.0, 0.0), np.inf, "mixed"),
         ((0.0, 0.0, 0.0), 1.0, "cubic"),
     ),

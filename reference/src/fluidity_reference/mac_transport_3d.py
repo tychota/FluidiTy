@@ -1,6 +1,6 @@
 """Float64 transport reconstruction on a complete uniform 3D MAC lattice."""
 
-from math import copysign, floor
+from math import copysign, floor, isfinite
 from numbers import Real
 
 import numpy as np
@@ -48,6 +48,28 @@ def _mixed_row(position, lattice_position, h, axis, face_value):
     return velocity, gradient
 
 
+def _rt0_cell_axis(coordinate, h):
+    """Return the cell index, interpolation fraction and physical span on one axis."""
+    lattice_coordinate = coordinate / h
+    if not isfinite(lattice_coordinate):
+        raise ValueError("RT0 lattice coordinate must be finite")
+    index = floor(lattice_coordinate)
+    lower = index * h
+    upper = (index + 1) * h
+    # The quotient can round across an integer. Compare against the same
+    # physical face coordinates on both sides of the cell boundary.
+    if coordinate < lower:
+        index -= 1
+        lower, upper = index * h, lower
+    elif coordinate >= upper:
+        index += 1
+        lower, upper = upper, (index + 1) * h
+    span = upper - lower
+    if not lower <= coordinate < upper or not isfinite(span):
+        raise ValueError("RT0 cell requires distinct finite face coordinates")
+    return index, (coordinate - lower) / span, span
+
+
 def sample_mac_transport(position, h, face_value, *, reconstruction):
     """Return float64 velocity (m/s) and its component-row gradient (1/s).
 
@@ -62,8 +84,11 @@ def sample_mac_transport(position, h, face_value, *, reconstruction):
     ``quadratic`` uses B2 in all directions. ``mixed`` uses normal B3 and
     transverse B2. ``rt0`` interpolates between the containing cell's two
     normal faces for each component, with a constant transverse extension
-    inside that cell. At a cell boundary RT0 uses the positive-side cell on
-    each tied axis and returns that cell's gradient.
+    inside that cell. RT0 uses half-open intervals of float64-rounded physical
+    face coordinates and selects the positive-side cell at a tie. Each
+    interval must have distinct finite endpoints. Both the normal interpolation
+    fraction and its derivative use this interval's width, which equals h
+    when the face coordinates and their difference are exact.
 
     Supply all stencil donors at the same time on an unmasked uniform grid,
     including selected zero-weight donors at knots. A missing donor propagates
@@ -89,20 +114,19 @@ def sample_mac_transport(position, h, face_value, *, reconstruction):
             velocity[axis], gradient[axis] = _quadratic_row(position, h, axis, face_value)
         return velocity, gradient
 
-    lattice_position = position / h
     if reconstruction == "mixed":
+        lattice_position = position / h
         for axis in range(3):
             velocity[axis], gradient[axis] = _mixed_row(position, lattice_position, h, axis, face_value)
         return velocity, gradient
 
-    cell = tuple(map(floor, lattice_position))
-    for axis in range(3):
+    cell, fractions, spans = zip(*(_rt0_cell_axis(float(coordinate), h) for coordinate in position))
+    for axis, (fraction, span) in enumerate(zip(fractions, spans)):
         upper_face = list(cell)
         upper_face[axis] += 1
         lower_value = float(face_value(axis, cell))
         upper_value = float(face_value(axis, tuple(upper_face)))
-        fraction = lattice_position[axis] - cell[axis]
         normal_difference = upper_value - lower_value
         velocity[axis] = lower_value + fraction * normal_difference
-        gradient[axis, axis] = normal_difference / h
+        gradient[axis, axis] = normal_difference / span
     return velocity, gradient
