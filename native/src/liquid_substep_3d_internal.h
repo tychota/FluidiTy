@@ -1,5 +1,6 @@
 #pragma once
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "liquid_isolated_drop_3d.h"
 namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
@@ -26,9 +27,17 @@ struct Staging {
   std::optional<WettedPistonWorkspace3D> wetted_piston;
   // New-history donor eligibility for pressure-supported particles in moving tanks.
   std::optional<LiquidRecords3D<LiquidFaceValidity3D>> projected_gather_validity;
+  // Rebuilt from the current attempt's particles and used through gather.
+  std::optional<PreparedIsolatedDrop3D> isolated_drop;
+  // Separate owned link copy used by pressure and velocity correction.
+  std::optional<LiquidRecords3D<MacPressureFace3D>> isolated_drop_pressure_faces;
   std::size_t reserved_bytes = 0;
-  static absl::StatusOr<Staging>
-  Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false, bool needs_wetted_piston = false);
+  static absl::StatusOr<Staging> Create(
+      LiquidStateCapacities3D capacities,
+      bool needs_regular_transport = false,
+      bool needs_wetted_piston = false,
+      bool needs_isolated_drop = false
+  );
 };
 bool Finite(Vec3 value);
 // Check finite carrier data and positive start-time J in the checked particle
@@ -55,6 +64,16 @@ absl::Status PrepareField(
     const LiquidState3D& trial,
     Staging& staging,
     const LiquidSubstepBackend3D& backend
+);
+// Copy the assembled faces into staging and replace the isolated drop air
+// lifts with ambient + sigma times analytic curvature. On success the
+// pressure problem borrows that copy for both solve and correction.
+absl::Status SetIsolatedDropPressureLifts(
+    UniformMacGeometry3D geometry,
+    double surface_tension,
+    double ambient_pressure,
+    Staging& staging,
+    LiquidPressureProblemView3D& pressure
 );
 // Return a certified half-open tank lattice cell, or no selection when the
 // containing cell and its one-cell halo cannot be represented.

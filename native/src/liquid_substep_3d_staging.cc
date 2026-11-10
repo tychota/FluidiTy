@@ -98,10 +98,13 @@ double FieldDistance(const LiquidSceneField3D& field, std::span<const LiquidPart
   if (const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field)) {
     return position.y - plane->world_surface_height_y;
   }
-  const double radius = std::get<LiquidParticleSphereUnion3D>(field).radius;
+  const auto* spheres = std::get_if<LiquidParticleSphereUnion3D>(&field);
+  if (!spheres) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
   double result = std::numeric_limits<double>::infinity();
   for (const auto& particle : particles) {
-    result = std::min(result, distance(particle.world_position, radius));
+    result = std::min(result, distance(particle.world_position, spheres->radius));
   }
   return result;
 }
@@ -141,8 +144,12 @@ absl::Status InsertUnique(LiquidRecords3D<T>& records, T value, KeyFunction key)
   return absl::OkStatus();
 }
 }  // namespace
-absl::StatusOr<Staging>
-Staging::Create(LiquidStateCapacities3D capacities, bool needs_regular_transport, bool needs_wetted_piston) {
+absl::StatusOr<Staging> Staging::Create(
+    LiquidStateCapacities3D capacities,
+    bool needs_regular_transport,
+    bool needs_wetted_piston,
+    bool needs_isolated_drop
+) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -176,6 +183,9 @@ Staging::Create(LiquidStateCapacities3D capacities, bool needs_regular_transport
     }
     staging.reserved_bytes += workspace->reserved_bytes();
     staging.wetted_piston.emplace(std::move(*workspace));
+  }
+  if (needs_isolated_drop) {
+    STEP_TRY(Reserve(staging.isolated_drop_pressure_faces.emplace(), capacities.faces, staging.reserved_bytes));
   }
   return staging;
 }
@@ -224,6 +234,19 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
   } else if (const auto* spheres = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
     if (!std::isfinite(spheres->radius) || spheres->radius <= 0) {
       return Error(absl::StatusCode::kInvalidArgument);
+    }
+  } else if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
+    if (!std::isfinite(drop->physical_radius) || drop->physical_radius <= 0
+        || !std::isfinite(drop->seed_covariance_scale) || drop->seed_covariance_scale <= 0
+        || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.target_divergence != 0
+        || initial.particles.size() != kMaxIsolatedDropParticles3D) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    for (const auto& particle : initial.particles.values()) {
+      if (particle.side_tag != 0) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
     }
   } else {
     const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(scene.field);
@@ -413,7 +436,21 @@ absl::Status PrepareField(
   STEP_TRY(staging.centers.Resize(0));
   STEP_TRY(staging.corners.Resize(0));
   const auto geometry = trial.geometry;
-  const auto add_sphere = [&](Vec3 center, double radius) -> absl::Status {
+  staging.isolated_drop.reset();
+  std::optional<PreparedIsolatedDrop3D> isolated_drop;
+  if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&field)) {
+    const auto fit = PrepareIsolatedDrop3D(
+        trial.particles.values(),
+        geometry.cell_width,
+        drop->physical_radius,
+        drop->seed_covariance_scale
+    );
+    if (!fit.ok()) {
+      return fit.status();
+    }
+    isolated_drop = *fit;
+  }
+  const auto add_sphere = [&](Vec3 center, double radius, bool require_coverage = false) -> absl::Status {
     std::array<std::int32_t, 3> lower{}, upper{};
     const std::array centers{center.x, center.y, center.z};
     const std::array origins{geometry.world_origin.x, geometry.world_origin.y, geometry.world_origin.z};
@@ -436,13 +473,21 @@ absl::Status PrepareField(
     for (std::int64_t z = lower[2]; z <= upper[2]; ++z) {
       for (std::int64_t y = lower[1]; y <= upper[1]; ++y) {
         for (std::int64_t x = lower[0]; x <= upper[0]; ++x) {
-          STEP_TRY(InsertUnique(
-              staging.candidates,
-              CellIndex3D{static_cast<std::int32_t>(x), static_cast<std::int32_t>(y), static_cast<std::int32_t>(z)},
-              [](const auto& v) {
-                return Key(v);
-              }
-          ));
+          const CellIndex3D index{
+              static_cast<std::int32_t>(x),
+              static_cast<std::int32_t>(y),
+              static_cast<std::int32_t>(z)
+          };
+          const auto key = [](const CellIndex3D& cell) {
+            return Key(cell);
+          };
+          if (require_coverage) {
+            if (!std::ranges::binary_search(staging.candidates.values(), Key(index), {}, key)) {
+              return Error(absl::StatusCode::kFailedPrecondition);
+            }
+          } else {
+            STEP_TRY(InsertUnique(staging.candidates, index, key));
+          }
         }
       }
     }
@@ -454,8 +499,14 @@ absl::Status PrepareField(
   } else if (plane) {
     STEP_TRY(PrepareTankCandidates(*plane, std::get<AxisAlignedLiquidTank3D>(obstacle), geometry, staging.candidates));
   } else {
+    const double support_radius =
+        isolated_drop ? 3 * geometry.cell_width : std::get<LiquidParticleSphereUnion3D>(field).radius;
     for (const auto& particle : trial.particles.values()) {
-      STEP_TRY(add_sphere(particle.world_position, std::get<LiquidParticleSphereUnion3D>(field).radius));
+      STEP_TRY(add_sphere(particle.world_position, support_radius));
+    }
+    if (isolated_drop) {
+      // Retain the seed's particle activation and certify its fitted interface coverage.
+      STEP_TRY(add_sphere(isolated_drop->world_center(), isolated_drop->maximum_semiaxis(), true));
     }
   }
   // These reservations already cover the full undeduplicated stencil. Keep
@@ -538,13 +589,23 @@ absl::Status PrepareField(
             geometry.world_origin.z + position.z * geometry.cell_width,
         };
       }
-      STEP_TRY(backend.sample_field_batch(
-          backend.context,
-          field,
-          trial.particles.values(),
-          std::span(world_positions).first(count),
-          output
-      ));
+      if (isolated_drop) {
+        for (std::size_t index = 0; index < count; ++index) {
+          const auto sample = isolated_drop->QuadraticGridLevelSet(world_positions[index]);
+          if (!sample.ok()) {
+            return sample.status();
+          }
+          output[index] = *sample;
+        }
+      } else {
+        STEP_TRY(backend.sample_field_batch(
+            backend.context,
+            field,
+            trial.particles.values(),
+            std::span(world_positions).first(count),
+            output
+        ));
+      }
     }
     for (std::size_t index = 0; index < count; ++index) {
       const std::size_t ordinal = first + index;
@@ -559,8 +620,68 @@ absl::Status PrepareField(
       }
     }
   }
+  staging.isolated_drop = isolated_drop;
   return absl::OkStatus();
 }
+
+absl::Status SetIsolatedDropPressureLifts(
+    UniformMacGeometry3D geometry,
+    double surface_tension,
+    double ambient_pressure,
+    Staging& staging,
+    LiquidPressureProblemView3D& pressure
+) {
+  if (!staging.isolated_drop || !staging.isolated_drop_pressure_faces) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  auto& faces = *staging.isolated_drop_pressure_faces;
+  STEP_TRY(faces.Resize(pressure.faces.size()));
+  std::ranges::copy(pressure.faces, faces.values().begin());
+  for (auto& face : faces.values()) {
+    auto* link = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link);
+    if (!link) {
+      continue;
+    }
+    const auto index = face.face_index.lattice_index;
+    const double cell_width = geometry.cell_width;
+    const Vec3 head{
+        geometry.world_origin.x + cell_width * (index.x + 0.5),
+        geometry.world_origin.y + cell_width * (index.y + 0.5),
+        geometry.world_origin.z + cell_width * (index.z + 0.5),
+    };
+    Vec3 tail = head;
+    switch (face.face_index.axis) {
+      case FaceNormalAxis::kX:
+        tail.x -= cell_width;
+        break;
+      case FaceNormalAxis::kY:
+        tail.y -= cell_width;
+        break;
+      case FaceNormalAxis::kZ:
+        tail.z -= cell_width;
+        break;
+      default:
+        return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto tail_level = staging.isolated_drop->QuadraticGridLevelSet(tail);
+    if (!tail_level.ok()) {
+      return tail_level.status();
+    }
+    const auto curvature = *tail_level < 0 ? staging.isolated_drop->AirLinkCurvature(tail, head)
+                                           : staging.isolated_drop->AirLinkCurvature(head, tail);
+    if (!curvature.ok()) {
+      return curvature.status();
+    }
+    const double exterior_pressure = ambient_pressure + surface_tension * *curvature;
+    if (!std::isfinite(exterior_pressure)) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    link->exterior_pressure = exterior_pressure;
+  }
+  pressure.faces = faces.values();
+  return absl::OkStatus();
+}
+
 std::optional<CellIndex3D> TankContainingCell(UniformMacGeometry3D geometry, Vec3 world_position) {
   const auto x = TankCandidateBound(world_position.x, geometry.world_origin.x, geometry.cell_width, false);
   const auto y = TankCandidateBound(world_position.y, geometry.world_origin.y, geometry.cell_width, false);

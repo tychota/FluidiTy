@@ -449,7 +449,7 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       wetted_piston_face_fluxes = wetted->face_fluxes;
     }
-    const auto links = backend.links(
+    auto links = backend.links(
         backend.context,
         *frozen,
         {
@@ -462,6 +462,15 @@ struct LiquidSubstepScheduler3D::Impl {
     );
     if (!links.ok()) {
       return links.status();
+    }
+    if (staging.isolated_drop) {
+      STEP_TRY(liquid_step_internal::SetIsolatedDropPressureLifts(
+          grid.geometry(),
+          scene.surface_tension,
+          scene.ambient_pressure,
+          staging,
+          *links
+      ));
     }
     diagnostics.lower_theta_regularization_count = links->lower_theta_regularization_count;
     STEP_TRY(Enter(LiquidPhysicalStage3D::kViscosity, step_duration));
@@ -626,6 +635,14 @@ struct LiquidSubstepScheduler3D::Impl {
         diagnostics.old_pic_fallback_count += gather->old_pic_fallback_particle_count;
         diagnostics.new_pic_fallback_count += gather->new_pic_fallback_particle_count;
       }
+      if (staging.isolated_drop) {
+        const auto distance = staging.isolated_drop->ParticleSignedDistance(particle.world_position);
+        if (!distance.ok()) {
+          return distance.status();
+        }
+        staging.particle_distances[index] = *distance;
+        continue;
+      }
       if (used_grouped_gather && backend.sample_gathered_fields && index >= field_chunk_end) {
         const auto field_count = std::min(kLiquidFieldBatchCapacity3D, attempted_run_end - index);
         field_chunk_end = index + field_count;
@@ -777,6 +794,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
+  const bool needs_isolated_drop = std::holds_alternative<LiquidIsolatedCovarianceDrop3D>(scene.field);
   if (!Complete(backend) || (needs_lattice_plane ? !backend.sample_lattice_plane : !backend.sample_field_batch)
       || (needs_wetted_piston && !backend.wetted_piston)) {
     return Error(absl::StatusCode::kInvalidArgument);
@@ -789,7 +807,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   auto staging = liquid_step_internal::Staging::Create(
       options.capacities,
       CanStageRegularCellTransport(scene, tank),
-      needs_wetted_piston
+      needs_wetted_piston,
+      needs_isolated_drop
   );
   if (!staging.ok()) {
     return staging.status();
@@ -977,7 +996,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       auto staging = liquid_step_internal::Staging::Create(
           growth,
           impl_->staging.regular_transport.has_value(),
-          impl_->staging.wetted_piston.has_value()
+          impl_->staging.wetted_piston.has_value(),
+          impl_->staging.isolated_drop_pressure_faces.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

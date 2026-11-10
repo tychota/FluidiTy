@@ -1,6 +1,6 @@
 include "common.fbs";
 namespace fluidity.cache.v1;
-enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1, HorizontalPlane = 2 }
+enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1, HorizontalPlane = 2, IsolatedCovarianceDrop = 3 }
 enum ObstacleKind:ubyte { None = 0, Halfspace = 1, Slab = 2, OpenTank = 3 }
 enum UpstreamRole:ubyte { InitialParticles = 0, Source = 1, Obstacle = 2 }
 table Material {
@@ -36,6 +36,7 @@ table Field {
   center:Vector3 (required, id:1);
   radius:double = 1 (id:2);
   horizontal_plane:HorizontalPlane (id:3);
+  seed_covariance_scale:double = null (id:4);
 }
 table Obstacle {
   kind:ObstacleKind (id:0);

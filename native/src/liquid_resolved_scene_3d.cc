@@ -76,6 +76,12 @@ absl::Status ValidateScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D 
     if (!detail::Positive(particles->radius)) {
       return Invalid();
     }
+  } else if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
+    if (!detail::Positive(drop->physical_radius) || !detail::Positive(drop->seed_covariance_scale)
+        || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.target_divergence != 0) {
+      return Invalid();
+    }
   } else {
     const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(scene.field);
     const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
@@ -153,7 +159,7 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   if (root->model_version() != 1) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
-  if (root->backend() > wire::Backend::Cuda || root->field()->kind() > wire::FieldKind::HorizontalPlane
+  if (root->backend() > wire::Backend::Cuda || root->field()->kind() > wire::FieldKind::IsolatedCovarianceDrop
       || root->obstacle()->kind() > wire::ObstacleKind::OpenTank) {
     return detail::Corrupt();
   }
@@ -188,7 +194,9 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   result.options.pressure_solver_options.max_iterations = options->pressure_iterations();
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
-  if ((plane != nullptr) != (field->kind() == wire::FieldKind::HorizontalPlane)) {
+  const auto drop_scale = field->seed_covariance_scale();
+  if ((plane != nullptr) != (field->kind() == wire::FieldKind::HorizontalPlane)
+      || drop_scale.has_value() != (field->kind() == wire::FieldKind::IsolatedCovarianceDrop)) {
     return detail::Corrupt();
   }
   if (plane) {
@@ -199,6 +207,11 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
     result.scene.field = LiquidHorizontalPlaneSurface3D{plane->surface_height_y()};
   } else if (field->kind() == wire::FieldKind::AnalyticSphere) {
     result.scene.field = LiquidAnalyticSphere3D{detail::Unpack(field->center()), field->radius()};
+  } else if (drop_scale.has_value()) {
+    if (!Zero(detail::Unpack(field->center()))) {
+      return detail::Corrupt();
+    }
+    result.scene.field = LiquidIsolatedCovarianceDrop3D{field->radius(), *drop_scale};
   } else {
     if (!Zero(detail::Unpack(field->center()))) {
       return detail::Corrupt();
@@ -257,6 +270,7 @@ absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
   SCENE_TRY(ValidateScene(input, limits));
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&input.scene.field);
+  const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&input.scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
   // Include the optional tables only for the active variants.
   const auto tables =
@@ -291,6 +305,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
         Vec3 field_center{};
         double radius = 1;
         flatbuffers::Offset<wire::HorizontalPlane> plane_record;
+        flatbuffers::Optional<double> drop_scale;
         if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field)) {
           field_kind = wire::FieldKind::AnalyticSphere;
           field_center = sphere->world_center;
@@ -298,12 +313,16 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
         } else if (plane) {
           field_kind = wire::FieldKind::HorizontalPlane;
           plane_record = wire::CreateHorizontalPlane(builder, detail::Canonical(plane->world_surface_height_y));
+        } else if (drop) {
+          field_kind = wire::FieldKind::IsolatedCovarianceDrop;
+          radius = drop->physical_radius;
+          drop_scale = drop->seed_covariance_scale;
         } else {
           radius = std::get<LiquidParticleSphereUnion3D>(scene.field).radius;
         }
         const auto center = detail::PackCanonical(field_center);
         builder.Align(8);
-        const auto field = wire::CreateField(builder, field_kind, &center, radius, plane_record);
+        const auto field = wire::CreateField(builder, field_kind, &center, radius, plane_record, drop_scale);
         wire::ObstacleKind obstacle_kind = wire::ObstacleKind::None;
         Vec3 normal{};
         Vec3 wall_velocity{};

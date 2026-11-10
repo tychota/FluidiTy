@@ -2,10 +2,13 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "../src/liquid_isolated_drop_3d.h"
 #include "absl/status/status.h"
+#include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/liquid_substep_3d.h"
 #include "gtest/gtest.h"
 
 namespace fluidity::liquid_step_internal {
@@ -168,6 +171,78 @@ TEST(IsolatedDrop3D, RejectsConnectedPlanarCovariance) {
       PrepareIsolatedDrop3D(particles, kCellWidth, kPhysicalRadius, kSeedCovarianceScale).status().code(),
       absl::StatusCode::kFailedPrecondition
   );
+}
+
+TEST(IsolatedDrop3D, ResolvedSceneActivatesPressureAndReplaysFromCheckpoint) {
+  LiquidState3D seed;
+  seed.geometry = {{0, 0, 0}, kCellWidth};
+  const auto particles = DropSeed();
+  auto records = LiquidRecords3D<LiquidParticleState3D>::Create(particles.size());
+  ASSERT_TRUE(records.ok()) << records.status();
+  ASSERT_TRUE(records->Resize(particles.size()).ok());
+  std::ranges::copy(particles, records->values().begin());
+  seed.particles = std::move(*records);
+  seed.next_particle_id = particles.size() + 1;
+
+  LiquidResolvedSceneView3D authored;
+  authored.geometry = seed.geometry;
+  authored.scene.field = LiquidIsolatedCovarianceDrop3D{kPhysicalRadius, kSeedCovarianceScale};
+  authored.scene.surface_tension = 1;
+  authored.scene.world_acceleration = {};
+  const auto encoded = EncodeLiquidResolvedScene3D(authored);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto repeated = EncodeLiquidResolvedScene3D(decoded->View());
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_TRUE(std::ranges::equal(encoded->values(), repeated->values()));
+  const auto* field = std::get_if<LiquidIsolatedCovarianceDrop3D>(&decoded->scene.field);
+  ASSERT_NE(field, nullptr);
+  EXPECT_DOUBLE_EQ(field->physical_radius, kPhysicalRadius);
+  EXPECT_DOUBLE_EQ(field->seed_covariance_scale, kSeedCovarianceScale);
+
+  auto options = decoded->options;
+  options.capacities = {1024, 128, 4096, 24576, 0};
+  auto direct = LiquidSubstepScheduler3D::Create(seed, decoded->scene, options);
+  ASSERT_TRUE(direct.ok()) << direct.status();
+  constexpr double kStepDuration = 1.0 / 120;
+  ASSERT_TRUE(direct->BeginFrame(kStepDuration).ok());
+  const auto first = direct->Attempt(kStepDuration);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_EQ(first->disposition, LiquidAttemptDisposition3D::kAccepted) << direct->diagnostics().failure_code;
+  const auto& diagnostics = direct->diagnostics();
+  ASSERT_TRUE(diagnostics.accepted_measurement);
+  const auto& measurement = *diagnostics.accepted_measurement;
+  ASSERT_TRUE(measurement.step_start_capillary_bound_seconds);
+  EXPECT_DOUBLE_EQ(*measurement.step_start_capillary_bound_seconds, 0.035261848971734774);
+  EXPECT_NEAR(measurement.step_start_pressure_cell_volume_m3, 0.0074696016768942049, 2e-15);
+  EXPECT_EQ(diagnostics.lower_theta_regularization_count, 48);
+  ASSERT_EQ(direct->committed().cells.size(), 528);
+  const auto [min_pressure, max_pressure] =
+      std::ranges::minmax_element(direct->committed().cells.values(), {}, &LiquidCellState3D::previous_pressure);
+  EXPECT_NEAR(min_pressure->previous_pressure, 15.588011741638184, 2e-6);
+  EXPECT_NEAR(max_pressure->previous_pressure, 16.720998764038086, 2e-6);
+
+  ASSERT_TRUE(direct->FinishFrame().ok());
+  const auto checkpoint = EncodeLiquidState3D(direct->committed());
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeLiquidState3D(checkpoint->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto replay = LiquidSubstepScheduler3D::Create(*restored, decoded->scene, options);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(direct->BeginFrame(2 * kStepDuration).ok());
+  ASSERT_TRUE(replay->BeginFrame(2 * kStepDuration).ok());
+  const auto direct_next = direct->Attempt(kStepDuration);
+  ASSERT_TRUE(direct_next.ok()) << direct_next.status();
+  EXPECT_EQ(direct_next->disposition, LiquidAttemptDisposition3D::kAccepted);
+  const auto replay_next = replay->Attempt(kStepDuration);
+  ASSERT_TRUE(replay_next.ok()) << replay_next.status();
+  EXPECT_EQ(replay_next->disposition, LiquidAttemptDisposition3D::kAccepted);
+  const auto direct_bytes = EncodeLiquidState3D(direct->committed());
+  const auto replay_bytes = EncodeLiquidState3D(replay->committed());
+  ASSERT_TRUE(direct_bytes.ok()) << direct_bytes.status();
+  ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+  EXPECT_TRUE(std::ranges::equal(direct_bytes->values(), replay_bytes->values()));
 }
 
 }  // namespace

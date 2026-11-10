@@ -43,10 +43,10 @@ absl::Status CheckConnected(std::span<const LiquidParticleState3D> particles, do
       const Vec3 offset = Difference(particles[candidate].world_position, particles[current].world_position);
       const double distance = std::hypot(offset.x, offset.y, offset.z);
       if (!std::isfinite(distance)) {
-        return absl::OutOfRangeError("nonfinite isolated drop particle separation");
+        return Error(absl::StatusCode::kOutOfRange);
       }
       if (distance == 0) {
-        return absl::InvalidArgumentError("duplicate isolated drop particle positions");
+        return Error(absl::StatusCode::kInvalidArgument);
       }
       if (!visited[candidate] && distance <= neighbor_radius) {
         visited[candidate] = true;
@@ -55,7 +55,7 @@ absl::Status CheckConnected(std::span<const LiquidParticleState3D> particles, do
     }
   }
   if (reachable != particles.size()) {
-    return absl::FailedPreconditionError("isolated drop particle graph is disconnected");
+    return Error(absl::StatusCode::kFailedPrecondition);
   }
   return absl::OkStatus();
 }
@@ -101,11 +101,11 @@ absl::StatusOr<PrincipalAxes> DiagonalizeInverseShape(Mat3 inverse_shape) {
   if (!std::ranges::all_of(eigenvalues, [](double value) {
         return std::isfinite(value);
       })) {
-    return absl::OutOfRangeError("nonfinite isolated drop eigenvalues");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   const double tolerance = 32 * std::numeric_limits<double>::epsilon() * std::ranges::max(eigenvalues);
   if (std::ranges::min(eigenvalues) <= std::max(0.0, tolerance)) {
-    return absl::FailedPreconditionError("degenerate isolated drop principal axes");
+    return Error(absl::StatusCode::kFailedPrecondition);
   }
   for (std::size_t axis = 0; axis < 3; ++axis) {
     for (std::size_t row = 0; row < 3; ++row) {
@@ -115,10 +115,10 @@ absl::StatusOr<PrincipalAxes> DiagonalizeInverseShape(Mat3 inverse_shape) {
       }
       const double residual = product - eigenvalues[axis] * frame[row][axis];
       if (!std::isfinite(residual)) {
-        return absl::OutOfRangeError("nonfinite isolated drop eigenpair residual");
+        return Error(absl::StatusCode::kOutOfRange);
       }
       if (std::abs(residual) > tolerance) {
-        return absl::FailedPreconditionError("isolated drop eigenpair residual exceeds tolerance");
+        return Error(absl::StatusCode::kFailedPrecondition);
       }
     }
   }
@@ -142,18 +142,18 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
     double seed_covariance_scale
 ) {
   if (particles.size() < 4 || particles.size() > kMaxIsolatedDropParticles3D) {
-    return absl::InvalidArgumentError("isolated drop particle count is outside the supported range");
+    return Error(absl::StatusCode::kInvalidArgument);
   }
   const double neighbor_radius = 1.04 * cell_width;
   if (!std::isfinite(neighbor_radius) || cell_width <= 0 || !std::isfinite(physical_radius) || physical_radius <= 0
       || !std::isfinite(seed_covariance_scale) || seed_covariance_scale <= 0) {
-    return absl::InvalidArgumentError("invalid isolated drop fit parameters");
+    return Error(absl::StatusCode::kInvalidArgument);
   }
   double total_mass = 0;
   Vec3 center{};
   for (const auto& particle : particles) {
     if (!Finite(particle.world_position) || !std::isfinite(particle.mass) || particle.mass <= 0) {
-      return absl::InvalidArgumentError("invalid isolated drop particle position or mass");
+      return Error(absl::StatusCode::kInvalidArgument);
     }
     center.x += particle.mass * particle.world_position.x;
     center.y += particle.mass * particle.world_position.y;
@@ -161,13 +161,13 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
     total_mass += particle.mass;
   }
   if (!std::isfinite(total_mass)) {
-    return absl::OutOfRangeError("nonfinite isolated drop total mass");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   center.x /= total_mass;
   center.y /= total_mass;
   center.z /= total_mass;
   if (!Finite(center)) {
-    return absl::OutOfRangeError("nonfinite isolated drop centroid");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   if (const auto status = CheckConnected(particles, neighbor_radius); !status.ok()) {
     return status;
@@ -204,10 +204,10 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
   const double cofactor_yz = moment_xy * moment_xz - moment_xx * moment_yz;
   const double determinant = moment_xx * cofactor_xx + moment_xy * cofactor_xy + moment_xz * cofactor_xz;
   if (!std::isfinite(determinant)) {
-    return absl::OutOfRangeError("nonfinite isolated drop covariance determinant");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   if (moment_xx <= 0 || cofactor_zz <= 0 || determinant <= 0) {
-    return absl::FailedPreconditionError("isolated drop covariance is not positive definite");
+    return Error(absl::StatusCode::kFailedPrecondition);
   }
   const Mat3 inverse_shape{
       {cofactor_xx / determinant, cofactor_xy / determinant, cofactor_xz / determinant},
@@ -215,7 +215,7 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
       {cofactor_xz / determinant, cofactor_yz / determinant, cofactor_zz / determinant},
   };
   if (!Finite(inverse_shape.x_row) || !Finite(inverse_shape.y_row) || !Finite(inverse_shape.z_row)) {
-    return absl::OutOfRangeError("nonfinite isolated drop inverse shape");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   const auto axes = DiagonalizeInverseShape(inverse_shape);
   if (!axes.ok()) {
@@ -233,11 +233,19 @@ absl::StatusOr<PreparedIsolatedDrop3D> PrepareIsolatedDrop3D(
   return fit;
 }
 
+Vec3 PreparedIsolatedDrop3D::world_center() const {
+  return center_;
+}
+
+double PreparedIsolatedDrop3D::maximum_semiaxis() const {
+  return std::ranges::max(semiaxes_);
+}
+
 absl::StatusOr<double> PreparedIsolatedDrop3D::QuadraticGridLevelSet(Vec3 world_position) const {
   const double level_set =
       0.5 * physical_radius_ * (QuadraticForm(inverse_shape_, Difference(world_position, center_)) - 1);
   if (!std::isfinite(level_set)) {
-    return absl::OutOfRangeError("nonfinite isolated drop grid level set");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   return level_set;
 }
@@ -254,7 +262,7 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
   if (!std::ranges::all_of(point, [](double value) {
         return std::isfinite(value);
       })) {
-    return absl::OutOfRangeError("nonfinite isolated drop particle position");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   const std::array axes{semiaxes_[0] / scale, semiaxes_[1] / scale, semiaxes_[2] / scale};
   const std::array squares{axes[0] * axes[0], axes[1] * axes[1], axes[2] * axes[2]};
@@ -264,7 +272,7 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
   const std::array numerators{axes[0] * point[0], axes[1] * point[1], axes[2] * point[2]};
   const double normalized_radius = std::hypot(point[0] / axes[0], point[1] / axes[1], point[2] / axes[2]);
   if (!std::isfinite(normalized_radius)) {
-    return absl::OutOfRangeError("nonfinite isolated drop normalized particle position");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   const bool inside = normalized_radius < 1;
 
@@ -287,7 +295,7 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
     upper += 2 * std::hypot(numerators[0], numerators[1], numerators[2]);
   }
   if (!std::isfinite(upper)) {
-    return absl::OutOfRangeError("nonfinite isolated drop closest-point bracket");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   double multiplier = lower;
   const auto lower_surface = surface_coordinates(lower);
@@ -314,7 +322,7 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::ParticleSignedDistance(Vec3 world
   const double distance = scale
       * std::hypot(axes[0] * surface[0] - point[0], axes[1] * surface[1] - point[1], axes[2] * surface[2] - point[2]);
   if (!std::isfinite(distance)) {
-    return absl::OutOfRangeError("nonfinite isolated drop particle distance");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   return inside ? -distance : distance;
 }
@@ -329,7 +337,7 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::AirLinkCurvature(Vec3 wet_world_c
     return air.status();
   }
   if (*wet >= 0 || *air < 0) {
-    return absl::FailedPreconditionError("isolated drop air link does not bracket the surface");
+    return Error(absl::StatusCode::kFailedPrecondition);
   }
 
   const Vec3 direction = Difference(air_world_center, wet_world_center);
@@ -353,12 +361,12 @@ absl::StatusOr<double> PreparedIsolatedDrop3D::AirLinkCurvature(Vec3 wet_world_c
   const Vec3 gradient{Dot(x, offset), Dot(y, offset), Dot(z, offset)};
   const double length = std::hypot(gradient.x, gradient.y, gradient.z);
   if (!std::isfinite(length) || length == 0) {
-    return absl::OutOfRangeError("invalid isolated drop interface normal");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   const Vec3 normal{gradient.x / length, gradient.y / length, gradient.z / length};
   const double curvature = (x.x + y.y + z.z - QuadraticForm(inverse_shape_, normal)) / length;
   if (!std::isfinite(curvature)) {
-    return absl::OutOfRangeError("nonfinite isolated drop interface curvature");
+    return Error(absl::StatusCode::kOutOfRange);
   }
   return curvature;
 }

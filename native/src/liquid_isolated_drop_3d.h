@@ -14,6 +14,11 @@ inline constexpr std::size_t kMaxIsolatedDropParticles3D = 552;
 
 class PreparedIsolatedDrop3D {
  public:
+  // Return the world centroid in meters.
+  Vec3 world_center() const;
+  // Return the largest semiaxis in meters for conservative lattice coverage.
+  double maximum_semiaxis() const;
+
   // Sample (R/2)(r² − 1) in meters at a finite world position, negative inside.
   // This is the quadratic grid level set. Returns OutOfRange for nonfinite arithmetic.
   absl::StatusOr<double> QuadraticGridLevelSet(Vec3 world_position) const;
