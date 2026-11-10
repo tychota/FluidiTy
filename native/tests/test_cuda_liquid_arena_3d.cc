@@ -1093,6 +1093,71 @@ TEST_F(CudaLiquidTransferStages3D, ExactDepositAndTransactionalBounds) {
   EXPECT_EQ(cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
   EXPECT_EQ(address[42].mass_quanta_sum, previous.mass_quanta_sum);
 }
+TEST_F(CudaLiquidTransferStages3D, ContendedDepositPreservesBoundaryQuantaAndFirstError) {
+  constexpr std::size_t kParticleCount = 256;
+  constexpr std::int64_t kMaximumFaceQuanta = std::int64_t{1} << 62;
+  auto large = capacities;
+  large.particles = kParticleCount;
+  auto arena = CudaLiquidArena3D::Create(large);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(large);
+  auto cpu = LiquidBoundaryWorkspace3D::Create(large);
+  auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{-1, -1, -1}}, 1);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  ASSERT_TRUE(cpu.ok());
+  ASSERT_TRUE(grid.ok());
+  std::array<LiquidBoundaryFaceTag3D, 192> tags;
+  tags.fill({.structurally_eligible = false});
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  std::array<std::size_t, axes.size()> selected_faces{};
+  for (std::size_t index = 0; index < axes.size(); ++index) {
+    const auto face = grid->FaceSlot({axes[index], {-2, -2, -2}});
+    ASSERT_TRUE(face.ok()) << face.status();
+    tags[*face].structurally_eligible = true;
+    selected_faces[index] = *face;
+  }
+  std::vector particles(kParticleCount, TransferParticle({-2, -2, -2}, {1, -1, 1}));
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    particles[index].transfer.particle_mass = 0x1p54;
+    particles[index].transfer.particle_velocity.z = index % 2 == 0 ? 1 : -1;
+  }
+  const LiquidBoundaryDepositViewInputs3D inputs{grid->view(), particles, tags, {1, 1, kParticleCount}};
+  const auto expected = cpu->Deposit(inputs);
+  ASSERT_TRUE(expected.ok()) << expected.status();
+  const auto actual = cuda_internal::DepositLiquid3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(actual.ok()) << actual.status();
+  const auto expect_exact_quanta = [&] {
+    for (std::size_t slot = 0; slot < tags.size(); ++slot) {
+      EXPECT_EQ(actual->face_quanta[slot].mass_quanta_sum, expected->face_quanta[slot].mass_quanta_sum);
+      EXPECT_EQ(
+          actual->face_quanta[slot].pure_momentum_quanta_sum,
+          expected->face_quanta[slot].pure_momentum_quanta_sum
+      );
+      EXPECT_EQ(actual->face_quanta[slot].stress_force_quanta_sum, 0);
+    }
+  };
+  expect_exact_quanta();
+  for (const auto slot : selected_faces) {
+    EXPECT_EQ(actual->face_quanta[slot].mass_quanta_sum, kMaximumFaceQuanta);
+  }
+  EXPECT_EQ(actual->face_quanta[selected_faces[0]].pure_momentum_quanta_sum, kMaximumFaceQuanta);
+  EXPECT_EQ(actual->face_quanta[selected_faces[1]].pure_momentum_quanta_sum, -kMaximumFaceQuanta);
+  EXPECT_EQ(actual->face_quanta[selected_faces[2]].pure_momentum_quanta_sum, 0);
+
+  particles[0].transfer.particle_velocity.x = 2;
+  particles[1].side_tag = 1;
+  EXPECT_EQ(cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
+  expect_exact_quanta();
+  particles[0].side_tag = 1;
+  particles[1].side_tag = 0;
+  particles[1].transfer.particle_velocity.x = 2;
+  EXPECT_EQ(
+      cuda_internal::DepositLiquid3D(*arena, inputs, *workspace).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  expect_exact_quanta();
+}
+
 TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
@@ -1104,6 +1169,19 @@ TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   EXPECT_EQ(result->validity[0], LiquidFaceValidity3D::kMissing);
   EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_masses[1], 0.5);
+  EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
+
+  quanta = {{{2, 0, 0}, {-1, 0, 0}, {0, 0, 0}}};
+  EXPECT_EQ(
+      cuda_internal::NormalizeLiquid3D(*arena, quanta, {0x1p1023, 1, 4}, 0, *workspace).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  std::swap(quanta[0], quanta[1]);
+  EXPECT_EQ(
+      cuda_internal::NormalizeLiquid3D(*arena, quanta, {0x1p1023, 1, 4}, 0, *workspace).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
 }
 TEST_F(CudaLiquidTransferStages3D, ForcesApplyAccelerationOnce) {

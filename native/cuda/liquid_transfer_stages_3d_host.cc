@@ -215,22 +215,58 @@ absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_
 // CUDA result poisons the arena first; arithmetic rejection is separately reusable.
 absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
   const auto& query = staged.query_range.pinned[0];
-  const bool single_particle_gather =
-      query.operation == BoundaryTransferOperation3D::kGather && query.particle_count == 1;
-  const auto launch =
-      single_particle_gather ? LaunchLiquidBoundarySingleParticleGather3D : LaunchLiquidBoundaryTransfer3D;
+  const bool parallel_deposit = query.operation == BoundaryTransferOperation3D::kDeposit && query.particle_count > 0;
+  const bool parallel_normalize = query.operation == BoundaryTransferOperation3D::kNormalize && query.face_count > 0;
+  if (parallel_deposit || parallel_normalize) {
+    staged.report_range.pinned[0] = {};
+  }
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.query_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.particle_range, true));
-  TRANSFER_TRY(arena.RecordRuntimeResult(launch(
-      staged.query_range.device,
-      staged.face_range.device,
-      staged.particle_range.device,
-      staged.face_result_range.device,
-      staged.particle_result_range.device,
-      staged.report_range.device,
-      arena.stream()
-  )));
+  if (parallel_deposit || parallel_normalize) {
+    TRANSFER_TRY(CopyLiquidRange3D(arena, staged.report_range, true));
+  }
+  if (parallel_deposit) {
+    TRANSFER_TRY(arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().memset_async(
+        staged.face_result_range.device,
+        0,
+        staged.face_result_range.pinned.size_bytes(),
+        static_cast<cudaStream_t>(arena.stream())
+    )));
+    TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryDeposit3D(
+        staged.query_range.device,
+        staged.face_range.device,
+        staged.particle_range.device,
+        staged.face_result_range.device,
+        staged.particle_result_range.device,
+        staged.report_range.device,
+        query.particle_count,
+        arena.stream()
+    )));
+  } else if (parallel_normalize) {
+    TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryNormalize3D(
+        staged.query_range.device,
+        staged.face_range.device,
+        staged.face_result_range.device,
+        staged.report_range.device,
+        query.face_count,
+        arena.stream()
+    )));
+  } else {
+    const bool single_particle_gather =
+        query.operation == BoundaryTransferOperation3D::kGather && query.particle_count == 1;
+    const auto launch =
+        single_particle_gather ? LaunchLiquidBoundarySingleParticleGather3D : LaunchLiquidBoundaryTransfer3D;
+    TRANSFER_TRY(arena.RecordRuntimeResult(launch(
+        staged.query_range.device,
+        staged.face_range.device,
+        staged.particle_range.device,
+        staged.face_result_range.device,
+        staged.particle_result_range.device,
+        staged.report_range.device,
+        arena.stream()
+    )));
+  }
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_result_range, false));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.particle_result_range, false));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.report_range, false));
@@ -238,6 +274,14 @@ absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
   const auto& report = staged.report_range.pinned[0];
   if (report.compiled_architecture != 1200) {
     return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  if (parallel_deposit || parallel_normalize) {
+    if (report.first_parallel_error == kNoParallelTransferError) {
+      return absl::OkStatus();
+    }
+    const auto error =
+        static_cast<boundary_internal::Error>(report.first_parallel_error % kBoundaryTransferErrorCodeCount);
+    return boundary_internal::ArithmeticStatus(error, true);
   }
   TRANSFER_TRY(boundary_internal::ArithmeticStatus(report.error, true));
   return report.retry_step ? Error(absl::StatusCode::kAborted) : absl::OkStatus();

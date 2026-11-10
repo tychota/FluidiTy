@@ -71,12 +71,17 @@ struct BoundaryTransferQuery3D {
   double friction_coefficient{};  // Nonnegative dimensionless Coulomb coefficient.
   double penetration_tolerance{};  // Nonnegative meters.
 };
+inline constexpr unsigned kBoundaryTransferErrorCodeCount = static_cast<unsigned>(boundary_internal::Error::kRange) + 1;
+inline constexpr auto kNoParallelTransferError = ~0ULL;
+
 struct BoundaryTransferReport3D {
   boundary_internal::Error error{};
   int compiled_architecture{};
   internal::LiquidGhostAffineFit3D fit{};
   double predicted_face_velocity{};  // Continued old velocity plus acceleration*dt, m/s.
   bool retry_step{};  // Physical displacement/J rejection, separate from arithmetic/runtime errors.
+  // Minimum ordered (ordinal * error code count + error code), or the sentinel.
+  unsigned long long first_parallel_error = kNoParallelTransferError;
 };
 static_assert(std::is_trivially_copyable_v<BoundaryTransferQuery3D>);
 static_assert(std::is_trivially_copyable_v<BoundaryTransferFace3D>);
@@ -91,6 +96,28 @@ int LaunchLiquidBoundaryTransfer3D(
     BoundaryTransferFaceResult3D*,
     BoundaryTransferParticleResult3D*,
     BoundaryTransferReport3D*,
+    void* stream
+);
+
+// Launch one lane per particle/component, with cleared face quanta, or one
+// lane per face for normalization. Counts are nonzero and match the device query.
+// The report starts at its default value and remains owned through the fence.
+int LaunchLiquidBoundaryDeposit3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report,
+    std::size_t particle_count,
+    void* stream
+);
+int LaunchLiquidBoundaryNormalize3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferReport3D* report,
+    std::size_t face_count,
     void* stream
 );
 
