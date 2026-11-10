@@ -105,7 +105,7 @@ def launch(tmp_path, monkeypatch):
         verify_inputs()
         return {
             "case": case, "backend": backend, "scene_author": authored, "resolved_tank": resolved,
-            "final_receipt": records[-1], "passed": controls.get("passed", True),
+            "final_receipt": records[-1], "device_probe": device, "passed": controls.get("passed", True),
             "maximum_dt_seconds": 0.01 if case == PISTON_CASE else 0.005,
             "tight_spatial": {field: 0.25 for field in (*PISTON_COMPARISON_VOLUMES, "denominator_m3")},
         }
@@ -128,7 +128,7 @@ def launch(tmp_path, monkeypatch):
             manifest_sha256=sha(manifest) if expected_sha is None else expected_sha,
         )
 
-    return SimpleNamespace(live=live, offline=offline, controls=controls, pins=pins, calls=invocations)
+    return SimpleNamespace(live=live, offline=offline, controls=controls, pins=pins, calls=invocations, solver=solver, fixture=fixture)
 
 
 @pytest.mark.parametrize("kind", ["solver", "fixture"])
@@ -258,7 +258,9 @@ def test_temporal_pair_qualifies_distinct_scenes_on_same_backend(tmp_path, launc
     _, refined = launch.live("refined", backend, PISTON_REFINED_CASE)
     reference = output / f"{PISTON_CASE}-measurements.json"
     assert primary["resolved_tank"]["resolved_fingerprint"] != refined["resolved_tank"]["resolved_fingerprint"]
-    result = runner.verify_temporal_reference(reference, sha(reference), refined)
+    primary = runner.load_temporal_reference(reference, sha(reference), output / "capture/capture-manifest.json",
+                                             backend, launch.pins)
+    result = runner.verify_temporal_reference(primary, refined)
     assert result["passed"] is True and result["temporal_passed"] is True
     assert result["denominator_m3"] == 0.25
     if backend == "cuda":
@@ -272,41 +274,43 @@ def test_temporal_pair_qualifies_distinct_scenes_on_same_backend(tmp_path, launc
     ("resolved_fingerprint", "resolved_fingerprint"), ("execution_id", "execution_id"),
     ("cuda_execution_device_digest", "cuda_execution_device_digest"),
 ])
-def test_temporal_pair_rejects_mismatched_or_reused_identity(tmp_path, launch, field, message):
-    _, primary = launch.live()
+def test_temporal_pair_rejects_mismatched_or_reused_identity(launch, field, message):
+    output, _ = launch.live()
     _, refined = launch.live("refined", "cuda", PISTON_REFINED_CASE)
+    reference = output / f"{PISTON_CASE}-measurements.json"
+    primary = runner.load_temporal_reference(reference, sha(reference), output / "capture/capture-manifest.json",
+                                             "cuda", launch.pins)
     if field in ("solver_sha256", "fixture_sha256"):
-        primary["capture_provenance"][field] = "0" * 64
+        refined["capture_provenance"][field] = "0" * 64
     elif field == "cuda_execution_device_digest":
-        primary["capture_provenance"][field] = primary["final_receipt"][field] = "0" * 64
+        refined["capture_provenance"][field] = refined["final_receipt"][field] = "0" * 64
     else:
-        value = "0" * 64 if field == "seed_digest" else refined["scene_author"][field]
+        value = "0" * 64 if field == "seed_digest" else primary["scene_author"][field]
         for record in ("capture_provenance", "scene_author", "resolved_tank"):
-            primary[record][field] = value
+            refined[record][field] = value
         if field != "seed_digest":
-            primary["final_receipt"][field] = value
-    reference = tmp_path / "external.json"
-    reference.write_text(json.dumps(primary), encoding="utf-8")
+            refined["final_receipt"][field] = value
     with pytest.raises(ValueError, match=message):
-        runner.verify_temporal_reference(reference, sha(reference), refined)
+        runner.verify_temporal_reference(primary, refined)
+
 
 
 @pytest.mark.parametrize("bad_reference", [[], {"scene_author": []}, {"capture_provenance": []}, {"final_receipt": []}])
 def test_pinned_primary_still_requires_a_qualified_object(tmp_path, launch, bad_reference):
-    _, primary = launch.live()
-    _, refined = launch.live("refined", "cuda", PISTON_REFINED_CASE)
+    output, primary = launch.live()
     reference = tmp_path / "external.json"
     contents = primary | bad_reference if isinstance(bad_reference, dict) else bad_reference
     reference.write_text(json.dumps(contents), encoding="utf-8")
     with pytest.raises(ValueError, match="temporal reference"):
-        runner.verify_temporal_reference(reference, sha(reference), refined)
+        runner.load_temporal_reference(reference, sha(reference), output / "capture/capture-manifest.json",
+                                       "cuda", launch.pins)
 
 
 def test_untrusted_primary_digest_refuses_comparison(launch):
     output, _ = launch.live()
-    _, refined = launch.live("refined", "cuda", PISTON_REFINED_CASE)
     with pytest.raises(ValueError, match="temporal reference SHA-256"):
-        runner.verify_temporal_reference(output / f"{PISTON_CASE}-measurements.json", "0" * 64, refined)
+        runner.load_temporal_reference(output / f"{PISTON_CASE}-measurements.json", "0" * 64,
+                                       output / "capture/capture-manifest.json", "cuda", launch.pins)
 
 
 def test_failed_physics_remains_a_written_typed_measurement(launch):
@@ -320,13 +324,15 @@ def test_failed_physics_remains_a_written_typed_measurement(launch):
 
 
 def test_missing_temporal_metric_is_an_ordinary_validation_error(tmp_path, launch):
-    _, primary = launch.live()
+    output, primary = launch.live()
     _, refined = launch.live("refined", "cuda", PISTON_REFINED_CASE)
     del primary["tight_spatial"]
     reference = tmp_path / "external.json"
     reference.write_text(json.dumps(primary), encoding="utf-8")
+    primary = runner.load_temporal_reference(reference, sha(reference), output / "capture/capture-manifest.json",
+                                             "cuda", launch.pins)
     with pytest.raises(ValueError, match="temporal reference.*tight_spatial"):
-        runner.verify_temporal_reference(reference, sha(reference), refined)
+        runner.verify_temporal_reference(primary, refined)
 
 
 @pytest.mark.parametrize("missing", ["--capture-manifest-sha256", "--verification-output"])
@@ -350,3 +356,94 @@ def test_live_run_cannot_replace_the_author_receipt_before_manifest_publication(
     with pytest.raises(ValueError, match="run changed launch inputs"):
         launch.live()
     assert not (tmp_path / "live/capture/capture-manifest.json").exists()
+
+
+def refined_args(output, launch, reference, manifest, *, reference_sha=None):
+    args = [
+        "run_liquid_acceptance.py", "--executable", str(launch.solver), "--fixture", str(launch.fixture),
+        "--backend", "cuda", "--case", PISTON_REFINED_CASE, "--output", str(output),
+        "--solver-sha256", launch.pins["solver"], "--fixture-sha256", launch.pins["fixture"],
+        "--temporal-reference", str(reference), "--temporal-reference-sha256", reference_sha or sha(reference),
+    ]
+    if manifest is not None:
+        args.extend(("--temporal-reference-manifest", str(manifest)))
+    return args
+
+
+@pytest.mark.parametrize(("problem", "diagnostic"), [
+    ("summary_pin", "temporal reference SHA-256"),
+    ("missing", "missing file"),
+    ("changed", "primary capture manifest SHA-256"),
+    ("provenance", "primary capture manifest identity"),
+    ("version", "primary capture manifest version"),
+    ("file_order", "primary capture manifest files"),
+    ("duplicate_file", "primary capture manifest files"),
+    ("noncanonical_file", "primary capture manifest files"),
+    ("terminal_ordinal", "actual CUDA device index differs from probe"),
+    ("probe_ordinal", "wrong CUDA device index"),
+    ("terminal_frame", "frame"),
+])
+def test_bad_primary_is_rejected_before_refined_launch(tmp_path, monkeypatch, capsys, launch, problem, diagnostic):
+    output, primary = launch.live()
+    reference = output / f"{PISTON_CASE}-measurements.json"
+    manifest = output / "capture/capture-manifest.json"
+    reference_sha = None
+    if problem == "summary_pin":
+        reference_sha = "0" * 64
+    elif problem == "missing":
+        manifest.unlink()
+    elif problem == "changed":
+        manifest.write_bytes(manifest.read_bytes() + b"\n")
+    else:
+        record = json.loads(manifest.read_bytes())
+        if problem == "provenance":
+            record["execution_id"] = "0" * 64
+        elif problem == "version":
+            record["manifest_version"] = True
+        elif problem == "file_order":
+            record["files"].reverse()
+        elif problem == "duplicate_file":
+            record["files"].insert(0, record["files"][0])
+        elif problem == "noncanonical_file":
+            record["files"][0][0] = "bad/../capture"
+        elif problem == "terminal_frame":
+            del primary["final_receipt"]["frame"]
+        else:
+            primary["final_receipt"]["cuda_execution_device_index"] = 1
+            primary["capture_provenance"]["cuda_execution_device_index"] = 1
+            record["cuda_execution_device_index"] = 1
+            if problem == "probe_ordinal":
+                primary["device_probe"]["device_index"] = 1
+        manifest.write_text(json.dumps(record), encoding="utf-8")
+        primary["capture_provenance"]["manifest_sha256"] = sha(manifest)
+        reference.write_text(json.dumps(primary), encoding="utf-8")
+    refined = tmp_path / "refined"
+    monkeypatch.setattr("sys.argv", refined_args(refined, launch, reference, manifest, reference_sha=reference_sha))
+    launch.calls.clear()
+    assert runner.main() == 1
+    assert diagnostic in capsys.readouterr().err
+    assert launch.calls == []
+    assert not refined.exists()
+
+
+def test_refined_cli_requires_primary_manifest(tmp_path, monkeypatch, capsys, launch):
+    output, _ = launch.live()
+    reference = output / f"{PISTON_CASE}-measurements.json"
+    monkeypatch.setattr("sys.argv", refined_args(tmp_path / "refined", launch, reference, None))
+    launch.calls.clear()
+    with pytest.raises(SystemExit) as error:
+        runner.main()
+    assert error.value.code == 2
+    assert "--temporal-reference-manifest" in capsys.readouterr().err
+    assert launch.calls == []
+
+
+def test_refined_cli_accepts_verified_primary_manifest(tmp_path, monkeypatch, launch):
+    output, _ = launch.live()
+    reference = output / f"{PISTON_CASE}-measurements.json"
+    manifest = output / "capture/capture-manifest.json"
+    refined = tmp_path / "refined"
+    monkeypatch.setattr("sys.argv", refined_args(refined, launch, reference, manifest))
+    assert runner.main() == 0
+    comparison = json.loads((refined / "piston-temporal-refinement.json").read_bytes())
+    assert comparison["passed"] is True

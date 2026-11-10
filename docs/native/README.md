@@ -588,10 +588,13 @@ Use a fresh directory outside the capture. Offline verification invokes the
 solver's schema command and fixture readers. Older captures without a trusted
 manifest remain diagnostic.
 
-To compare the refined piston against the primary, supply
-`--temporal-reference PRIMARY_MEASUREMENTS --temporal-reference-sha256 PRIMARY_SHA256`
-with the refined case. Obtain the measurements digest through the trusted
-verification channel for the primary. A digest copied from the evidence being
-verified cannot establish independent trust. The comparison checks the
-qualified scene and execution identities and uses the frozen physical and
-temporal limits.
+To compare the refined piston against the primary, supply these arguments with
+the refined case.
+
+`--temporal-reference PRIMARY_MEASUREMENTS --temporal-reference-sha256 PRIMARY_SHA256 --temporal-reference-manifest PRIMARY_MANIFEST`
+
+Obtain the measurements digest through the trusted primary verification
+channel. The verified measurements pin the actual primary launch manifest by
+SHA-256. The runner checks both files before starting the refined job or its
+offline verification. The comparison checks the qualified scene and execution
+identities and uses the frozen physical and temporal limits.

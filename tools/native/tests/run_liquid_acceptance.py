@@ -42,6 +42,13 @@ MAXIMUM_COUNTS = {"block_count": 128, "cell_count": 4096, "face_count": 24576}
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 CAPTURE_MANIFEST = "capture-manifest.json"
 CAPTURE_MANIFEST_VERSION = 1
+CAPTURE_INPUT_FILES = ("scene.flrs", "scene.flrs.flst", "cache/resolved.flrs")
+CAPTURE_RECEIPTS = (
+    ("solver-schema", "protocol_version"),
+    ("device-probe", "protocol_version"),
+    ("scene-author", "fixture_version"),
+    ("simulate-run", "protocol_version"),
+)
 CUDA_COMPATIBILITY_FILE = ".simulate-cuda-compatibility"
 CUDA_COMPATIBILITY_RECORD_SIZE = len(b"FLCUDA1\n") + 64 + 1
 
@@ -904,10 +911,18 @@ def measured_execution(final, backend):
     }
 
 
+def verify_execution_device(final, device, backend):
+    verify_device(device, backend)
+    execution = measured_execution(final, backend)
+    if backend == "cuda":
+        require(execution["cuda_execution_device_index"] == device["device_index"],
+                "actual CUDA device index differs from probe")
+    return execution
+
+
 def inspect_capture(capture, inventory, pins, backend, case, solver_digest):
     receipts = []
-    for name, version in (("solver-schema", "protocol_version"), ("device-probe", "protocol_version"),
-                          ("scene-author", "fixture_version"), ("simulate-run", "protocol_version")):
+    for name, version in CAPTURE_RECEIPTS:
         stdout_name, stderr_name = f"{name}.stdout.jsonl", f"{name}.stderr.txt"
         require(stdout_name in inventory and stderr_name in inventory, f"missing {name} capture receipts")
         require((capture / stderr_name).stat().st_size == 0, f"captured {name} produced diagnostics")
@@ -916,7 +931,6 @@ def inspect_capture(capture, inventory, pins, backend, case, solver_digest):
     require(schema_build_digest(schema) == solver_digest, "captured solver_digest differs from pinned solver schema")
     device = one_record(device, "result")
     authored = one_record(authored, "scene")
-    verify_device(device, backend)
     verify_authored_tank(authored, case, backend, solver_digest)
     measurement = records[-2] if len(records) >= 2 else {}
     require(measurement.get("event") == "job_measurement" and measurement.get("backend") == backend
@@ -925,15 +939,14 @@ def inspect_capture(capture, inventory, pins, backend, case, solver_digest):
     final = records[-1]
     matches_identity(final, authored)
     require(integer(final, "frame") == TANK_CASES[case][0], "captured run did not complete the frozen frames")
-    execution = measured_execution(final, backend)
+    execution = verify_execution_device(final, device, backend)
     compatibility_path = f"cache/{CUDA_COMPATIBILITY_FILE}"
     if backend == "cuda":
-        require(execution["cuda_execution_device_index"] == device["device_index"], "actual CUDA device index differs from probe")
         require(compatibility_path in inventory, "missing CUDA compatibility record")
         execution["cuda_compatibility_record"] = read_cuda_compatibility_record(capture / "cache").decode("ascii")
     else:
         require(compatibility_path not in inventory, "unexpected CUDA compatibility record on CPU capture")
-    for name in ("scene.flrs", "scene.flrs.flst", "cache/resolved.flrs"):
+    for name in CAPTURE_INPUT_FILES:
         require(name in inventory, f"missing captured {name}")
     require(inventory["scene.flrs"][1] == inventory["cache/resolved.flrs"][1],
             "cached and authored resolved tank differ")
@@ -1048,41 +1061,90 @@ def run_frozen_tank(solver, fixture, backend, case, output, pins):
     return evaluate_frozen_capture(capture, output, solver, fixture, pins, backend, case, solver_digest, inventory)
 
 
-def verify_temporal_reference(path, expected_sha256, refined):
+def temporal_capture_provenance(measurements, case, backend):
+    require(measurements.get("case") == case and measurements.get("backend") == backend,
+            "wrong temporal reference case or backend")
+    fields = ("capture_provenance", "scene_author", "resolved_tank", "final_receipt", "device_probe")
+    for field in fields:
+        require(isinstance(measurements.get(field), dict), f"invalid temporal reference {field}")
+    provenance, authored, resolved, final, device = (measurements[field] for field in fields)
+    require(type(provenance.get("manifest_version")) is int
+            and provenance["manifest_version"] == CAPTURE_MANIFEST_VERSION
+            and provenance.get("case") == case and provenance.get("backend") == backend,
+            "invalid temporal reference capture provenance")
+    for field in ("manifest_sha256", "solver_sha256", "fixture_sha256"):
+        digest(provenance, field)
+    for field in ("solver_digest", "seed_digest", "resolved_fingerprint", "execution_id"):
+        require(digest(provenance, field) == digest(authored, field) == digest(resolved, field),
+                f"temporal reference capture and scene disagree on {field}")
+    verify_authored_tank(authored, case, backend, provenance["solver_digest"])
+    matches_identity(resolved, authored)
+    matches_identity(final, authored)
+    require(integer(final, "frame") == TANK_CASES[case][0], "wrong temporal reference terminal frame")
+    execution = verify_execution_device(final, device, backend)
+    if backend == "cuda":
+        for field, value in execution.items():
+            require(type(provenance.get(field)) is type(value) and provenance[field] == value,
+                    f"temporal reference capture and execution disagree on {field}")
+        record = provenance.get("cuda_compatibility_record")
+        require(isinstance(record, str) and re.fullmatch(r"FLCUDA1\n[0-9a-f]{64}\n", record),
+                "invalid temporal reference CUDA compatibility record")
+    else:
+        require(not any(field.startswith("cuda_") or field == "compiled_architecture" for field in provenance),
+                "unexpected CUDA identity on CPU temporal reference")
+    return provenance
+
+
+def verify_primary_manifest(manifest, provenance, backend):
+    require(type(manifest.get("manifest_version")) is int
+            and manifest["manifest_version"] == CAPTURE_MANIFEST_VERSION, "wrong primary capture manifest version")
+    files = manifest.get("files")
+    require(isinstance(files, list), "invalid primary capture manifest files")
+    hashes = {}
+    previous = ""
+    for entry in files:
+        require(isinstance(entry, list) and len(entry) == 2 and all(isinstance(value, str) for value in entry),
+                "invalid primary capture manifest files")
+        name, sha256 = entry
+        parts = name.split("/")
+        require(name > previous and name != CAPTURE_MANIFEST
+                and all(part not in ("", ".", "..") for part in parts)
+                and not re.search(r"[\\:\x00-\x1f]", name) and DIGEST_PATTERN.fullmatch(sha256),
+                "invalid primary capture manifest files")
+        hashes[name] = sha256
+        previous = name
+    receipt_paths = {f"{name}.{suffix}" for name, _ in CAPTURE_RECEIPTS for suffix in ("stdout.jsonl", "stderr.txt")}
+    require(set(CAPTURE_INPUT_FILES) | receipt_paths <= hashes.keys(), "incomplete primary capture manifest files")
+    require(hashes["scene.flrs"] == hashes["cache/resolved.flrs"], "primary capture manifest scene hashes differ")
+
+    identity = {key: value for key, value in manifest.items() if key != "files"}
+    expected = {key: value for key, value in provenance.items() if key != "manifest_sha256"}
+    require(json.dumps(identity, sort_keys=True) == json.dumps(expected, sort_keys=True),
+            "primary capture manifest identity differs from temporal reference")
+    compatibility_path = f"cache/{CUDA_COMPATIBILITY_FILE}"
+    if backend == "cuda":
+        expected_hash = hashlib.sha256(provenance["cuda_compatibility_record"].encode("ascii")).hexdigest()
+        require(hashes.get(compatibility_path) == expected_hash, "primary capture manifest CUDA compatibility differs")
+    else:
+        require(compatibility_path not in hashes, "unexpected CUDA compatibility on CPU primary capture")
+
+
+def load_temporal_reference(path, expected_sha256, manifest_path, backend, pins):
+    """Authenticate the primary receipts before starting or evaluating the refined job."""
     primary = pinned_json(path, expected_sha256, "temporal reference")
+    provenance = temporal_capture_provenance(primary, PISTON_CASE, backend)
+    for kind in ("solver", "fixture"):
+        field = f"{kind}_sha256"
+        require(provenance[field] == digest(pins, kind), f"temporal reference has a different {field}")
+    manifest = pinned_json(manifest_path, provenance["manifest_sha256"], "primary capture manifest")
+    verify_primary_manifest(manifest, provenance, backend)
+    return primary
+
+
+def verify_temporal_reference(primary, refined):
     backend = refined["backend"]
-    provenances = []
-    for measurements, case in ((primary, PISTON_CASE), (refined, PISTON_REFINED_CASE)):
-        require(measurements.get("case") == case and measurements.get("backend") == backend,
-                "wrong temporal reference case or backend")
-        fields = ("capture_provenance", "scene_author", "resolved_tank", "final_receipt")
-        for field in fields:
-            require(isinstance(measurements.get(field), dict), f"invalid temporal reference {field}")
-        provenance, authored, resolved, final = (measurements[field] for field in fields)
-        require(type(provenance.get("manifest_version")) is int and provenance["manifest_version"] == CAPTURE_MANIFEST_VERSION
-                and provenance.get("case") == case and provenance.get("backend") == backend,
-                "invalid temporal reference capture provenance")
-        for field in ("manifest_sha256", "solver_sha256", "fixture_sha256"):
-            digest(provenance, field)
-        for field in ("solver_digest", "seed_digest", "resolved_fingerprint", "execution_id"):
-            require(digest(provenance, field) == digest(authored, field) == digest(resolved, field),
-                    f"temporal reference capture and scene disagree on {field}")
-        verify_authored_tank(authored, case, backend, provenance["solver_digest"])
-        matches_identity(resolved, authored)
-        matches_identity(final, authored)
-        execution = measured_execution(final, backend)
-        if backend == "cuda":
-            for field, value in execution.items():
-                require(type(provenance.get(field)) is type(value) and provenance[field] == value,
-                        f"temporal reference capture and execution disagree on {field}")
-            record = provenance.get("cuda_compatibility_record")
-            require(isinstance(record, str) and re.fullmatch(r"FLCUDA1\n[0-9a-f]{64}\n", record),
-                    "invalid temporal reference CUDA compatibility record")
-        else:
-            require(not any(field.startswith("cuda_") or field == "compiled_architecture" for field in provenance),
-                    "unexpected CUDA identity on CPU temporal reference")
-        provenances.append(provenance)
-    base, fine = provenances
+    base = primary["capture_provenance"]
+    fine = temporal_capture_provenance(refined, PISTON_REFINED_CASE, backend)
     same_fields = ("solver_sha256", "fixture_sha256", "solver_digest", "seed_digest")
     if backend == "cuda":
         same_fields += ("cuda_execution_device_digest",)
@@ -1189,6 +1251,7 @@ def main():
     parser.add_argument("--verification-output", type=Path, help="fresh directory outside the capture")
     parser.add_argument("--temporal-reference", type=Path, help="qualified primary piston measurements")
     parser.add_argument("--temporal-reference-sha256", help="trusted SHA-256 of the qualified primary measurements")
+    parser.add_argument("--temporal-reference-manifest", type=Path, help="primary launch manifest bound by the measurements")
     args = parser.parse_args()
     if args.executable is None:
         parser.error("--executable is required")
@@ -1202,12 +1265,18 @@ def main():
         parser.error("--verification-output and --capture-manifest-sha256 require --verify-capture")
     if frozen and (args.solver_sha256 is None or args.fixture_sha256 is None):
         parser.error("frozen tank cases require --solver-sha256 and --fixture-sha256")
-    if (args.temporal_reference is None) != (args.temporal_reference_sha256 is None):
-        parser.error("--temporal-reference and --temporal-reference-sha256 are required together")
+    temporal_inputs = (args.temporal_reference, args.temporal_reference_sha256, args.temporal_reference_manifest)
+    if any(value is not None for value in temporal_inputs) and any(value is None for value in temporal_inputs):
+        parser.error("--temporal-reference, --temporal-reference-sha256 and --temporal-reference-manifest are required together")
     if args.temporal_reference is not None and args.case != PISTON_REFINED_CASE:
         parser.error("--temporal-reference requires the refined piston case")
     output = args.verification_output if offline else args.output
     try:
+        pins = {"solver": args.solver_sha256, "fixture": args.fixture_sha256} if frozen else None
+        primary = None
+        if args.temporal_reference is not None:
+            primary = load_temporal_reference(args.temporal_reference, args.temporal_reference_sha256,
+                                              args.temporal_reference_manifest, args.backend, pins)
         if output is None:
             args.temporary_output_parent.mkdir(parents=True, exist_ok=True)
             output = Path(tempfile.mkdtemp(prefix=f"ctest-{args.case}-", dir=args.temporary_output_parent)) / "evidence"
@@ -1215,7 +1284,6 @@ def main():
         # Preserve the supplied frozen paths so pin checks can reject symlinks.
         solver = args.executable.absolute() if frozen else args.executable.resolve(strict=True)
         fixture = args.fixture.absolute() if frozen else args.fixture.resolve(strict=True)
-        pins = {"solver": args.solver_sha256, "fixture": args.fixture_sha256} if frozen else None
         if offline:
             measurements = verify_captured_tank(args.verify_capture.absolute(), output, solver, fixture,
                                                 args.backend, args.case, pins=pins,
@@ -1223,8 +1291,8 @@ def main():
         else:
             measurements = run_acceptance(solver, fixture, args.backend, args.case, output, pins=pins)
         print(f"{args.backend} {args.case}: {output}")
-        if args.temporal_reference is not None:
-            comparison = verify_temporal_reference(args.temporal_reference, args.temporal_reference_sha256, measurements)
+        if primary is not None:
+            comparison = verify_temporal_reference(primary, measurements)
             write_measurements(output / "piston-temporal-refinement.json", comparison)
             require(comparison["passed"], "piston exceeds the frozen physical or temporal tolerance")
 
