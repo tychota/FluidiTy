@@ -5,7 +5,9 @@
 The input is the 216-frame public CUDA `oscillating-drop-l2` run, including frame zero, from M1 revision
 `3e0526edb9adda66b4be965ab469d74f5042c990`. The native reader verified the complete frame range against the
 archived export, including resolved fingerprint, execution ID, clock and referenced points. The two benchmark
-processes left all 897 input-cache files byte-identical. See the [M1 closure review](m1-transport-evidence.md#m1-closure-review)
+processes left all 897 input-cache files byte-identical. A copied cache with the frame-zero manifest missing
+and the same copy with one flipped point-blob byte both failed at frame zero without publishing a report.
+See the [M1 closure review](m1-transport-evidence.md#m1-closure-review)
 for the source simulation evidence.
 
 The exact Windows artifacts are required for this receipt. Supply the archived run directory with
@@ -84,6 +86,7 @@ production sampling policy still requires spatial validity, storage, replay and 
 
 | Gate | Status |
 | --- | --- |
+| M1-B entry | In progress on its separate branch. The available native Points playback fixture receipt covers reader behavior on the pinned Blender build. Installed real bake, resume and fresh render evidence belong to the separate M1-B qualification. |
 | M1c before integrated M2 | Partial. M1 closure evidence covers solver and cache contracts. A focused existing-build CTest run passed 68 cache, schema, inspection, CPU replay and lifecycle cases. The checked point reader authenticates published manifests and blobs. The point publication lacks interior/cavity occupancy, timestamped grid-carrier samples and accepted Whitewater events. Repeat the architecture audit against the merged and qualified M1-B workflow. |
 | Zhao CNN reproduction and promotion | Open. The published configuration and archive are identified. Code and model-weight terms remain unresolved, the research runtime is absent from the reference environment, and there are no full, band or tiled inference receipts. Keep the geometric dependency set. [Neural evidence](neural-surface-evidence.md) |
 | Persistent Mesh and replay | Pending M1-B and post-M1-B M1c. |
