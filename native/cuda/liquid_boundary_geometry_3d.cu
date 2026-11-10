@@ -77,6 +77,10 @@ int LaunchLiquidBoundaryGeometryBatch3D(
       LiquidBoundaryGeometryBatch3DKernel<GeometryMode::kCurvature>
           <<<block_count, kThreadsPerBlock, 0, cuda_stream>>>(queries, results, count);
       break;
+    case GeometryMode::kLink:
+      LiquidBoundaryGeometryBatch3DKernel<GeometryMode::kLink>
+          <<<block_count, kThreadsPerBlock, 0, cuda_stream>>>(queries, results, count);
+      break;
     default:
       return static_cast<int>(cudaErrorInvalidValue);
   }

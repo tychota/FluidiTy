@@ -170,7 +170,7 @@ absl::StatusOr<ObstaclePlanes> ValidateObstacle(const LiquidObstacle3D& obstacle
   return result;
 }
 // Stage only the centered derivative stencil, preserving absent unused halos.
-absl::Status StageCenteredCurvature(
+absl::StatusOr<bool> StageCenteredCurvature(
     std::span<const LiquidCenterDistance3D> samples,
     CellIndex3D center,
     double h,
@@ -203,11 +203,12 @@ absl::Status StageCenteredCurvature(
       }
     }
   }
-  return absl::OkStatus();
+  return true;
 }
 
 // Staging is speculative within a batch, but errors are observed in canonical
 // order. If staging fails, replay the completed prefix before returning it.
+// A successful preparation returns true only when the ordinal has device arithmetic.
 template <typename Prepare, typename Consume, typename Selected>
 absl::Status RunGeometryQueries(
     GeometryBackend backend,
@@ -225,7 +226,10 @@ absl::Status RunGeometryQueries(
       GeometryInput query{};
       const auto staged = prepare(ordinal, 0, query);
       if (!staged.ok()) {
-        return staged;
+        return staged.status();
+      }
+      if (!*staged) {
+        continue;
       }
       const auto output = backend.compute(backend.context, query);
       if (!output.ok()) {
@@ -252,11 +256,14 @@ absl::Status RunGeometryQueries(
       if (!selected(ordinal)) {
         continue;
       }
-      staged = prepare(ordinal, submitted, batch.queries[submitted]);
-      if (!staged.ok()) {
+      const auto prepared = prepare(ordinal, submitted, batch.queries[submitted]);
+      if (!prepared.ok()) {
+        staged = prepared.status();
         break;
       }
-      ordinals[submitted++] = ordinal;
+      if (*prepared) {
+        ordinals[submitted++] = ordinal;
+      }
     }
     if (submitted != 0) {
       const auto dispatched = batch.compute(batch.context, submitted);
@@ -332,7 +339,8 @@ absl::Status FreezeCore(
   const auto all_ordinals = [](std::size_t) {
     return true;
   };
-  const auto stage_cell = [&](std::size_t ordinal, std::size_t batch_slot, GeometryInput& query) -> absl::Status {
+  const auto stage_cell = [&](std::size_t ordinal, std::size_t batch_slot, GeometryInput& query
+                          ) -> absl::StatusOr<bool> {
     const auto index = inputs.cell_indices[ordinal];
     if (ordinal > 0 && CellKey(index) <= CellKey(inputs.cell_indices[ordinal - 1])) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Candidates must be strictly sorted");
@@ -363,7 +371,7 @@ absl::Status FreezeCore(
       }
       query.corner_distances[corner] = *distance;
     }
-    return absl::OkStatus();
+    return true;
   };
   const auto consume_cell = [&](std::size_t ordinal,
                                 std::size_t batch_slot,
@@ -418,7 +426,7 @@ absl::Status FreezeCore(
   if (result.faces_.size() > 24576) {
     return absl::Status(absl::StatusCode::kResourceExhausted, bounded ? "" : "Boundary face capacity exceeded");
   }
-  const auto stage_face = [&](std::size_t ordinal, std::size_t, GeometryInput& query) {
+  const auto stage_face = [&](std::size_t ordinal, std::size_t, GeometryInput& query) -> absl::StatusOr<bool> {
     const auto face = result.faces_[ordinal].face_index;
     const auto face_lattice_index = face.lattice_index;
     query = {};
@@ -427,7 +435,7 @@ absl::Status FreezeCore(
     query.index = {face_lattice_index.x, face_lattice_index.y, face_lattice_index.z};
     query.obstacle = packed_obstacle;
     query.axis = static_cast<int>(face.axis);
-    return absl::OkStatus();
+    return true;
   };
   const auto consume_face = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& areas) {
     auto& frozen_face = result.faces_[ordinal];
@@ -543,7 +551,7 @@ absl::Status LinksCore(
     );
   }
   const double h = geometry.mac_grid.geometry().cell_width;
-  for (std::size_t i = 0; i < geometry.faces.size(); ++i) {
+  const auto stage_link = [&](std::size_t i, std::size_t, GeometryInput& query) -> absl::StatusOr<bool> {
     const auto& face = geometry.faces[i];
     if (!std::isfinite(fields.predicted_face_velocities[i])) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid predicted velocity");
@@ -565,8 +573,8 @@ absl::Status LinksCore(
       if (face.open_area > 0) {
         return tail.status();
       }
-      result.faces.push_back(link);
-      continue;
+      result.faces.storage[i] = link;
+      return false;
     }
     const auto head_found = FindCell(geometry.cells, head);
     const auto tail_found = FindCell(geometry.cells, *tail);
@@ -586,7 +594,7 @@ absl::Status LinksCore(
         return MissingBoundarySample(bounded);
       }
       const auto& adjacent_liquid_cell = geometry.cells[has_head ? head_found : tail_found];
-      GeometryInput query{};
+      query = {};
       query.mode = GeometryMode::kLink;
       query.geometry = geometry.mac_grid.geometry();
       query.surface_tension = geometry.surface_tension;
@@ -594,17 +602,28 @@ absl::Status LinksCore(
       query.interface_curvature = adjacent_liquid_cell.curvature;
       query.liquid_center_distance = adjacent_liquid_cell.center_distance;
       query.air_center_distance = *air_distance;
-      const auto values = backend.compute(backend.context, query);
-      if (!values.ok()) {
-        return values.status();
-      }
-      result.lower_theta_regularization_count += values->lower_theta_regularized ? 1 : 0;
-      link.pressure_gradient_distance = values->pressure_gradient_distance;
-      const double exterior_pressure = values->exterior_pressure;
-      link.pressure_link = DirichletMacPressureLink3D{exterior_pressure};
+      result.faces.storage[i] = link;
+      return true;
     }
-    result.faces.push_back(link);
+    result.faces.storage[i] = link;
+    return false;
+  };
+  const auto consume_link = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& values) {
+    result.lower_theta_regularization_count += values.lower_theta_regularized ? 1 : 0;
+    auto& link = result.faces.storage[ordinal];
+    link.pressure_gradient_distance = values.pressure_gradient_distance;
+    link.pressure_link = DirichletMacPressureLink3D{values.exterior_pressure};
+    return absl::OkStatus();
+  };
+  const auto all_ordinals = [](std::size_t) {
+    return true;
+  };
+  const auto status =
+      RunGeometryQueries(backend, geometry.faces.size(), bounded, stage_link, consume_link, all_ordinals);
+  if (!status.ok()) {
+    return status;
   }
+  result.faces.count = geometry.faces.size();
   return absl::OkStatus();
 }
 // Frozen borrows are public values: check ordering and enum/slot metadata before

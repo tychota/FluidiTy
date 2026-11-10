@@ -182,6 +182,111 @@ TEST(LiquidBoundaryWorkspace3D, BoundedGeometryBatchesPreserveBitsAndFirstFailur
   EXPECT_EQ(context.submitted_sizes, (std::vector<std::size_t>{1}));
   EXPECT_EQ(std::bit_cast<std::uint64_t>(batched->faces.front().open_area), published_aperture);
 }
+TEST(LiquidBoundaryWorkspace3D, BoundedPressureLinksBatchOnlyFreeSurfaceFacesInOrder) {
+  using boundary_internal::BoundedGeometryAccess;
+  using boundary_internal::ComputeGeometry;
+  using boundary_internal::Error;
+  using boundary_internal::GeometryBackend;
+  using boundary_internal::GeometryBatch;
+  using boundary_internal::GeometryBatchResult;
+  using boundary_internal::GeometryInput;
+  using boundary_internal::GeometryMode;
+  using boundary_internal::GeometryOutput;
+  struct BatchContext {
+    std::array<GeometryInput, 2> queries{};
+    std::array<GeometryBatchResult, 2> results{};
+    std::vector<std::size_t> submitted_sizes;
+    bool fail_first_query = false;
+  } context;
+  GeometryBatch batch{
+      .queries = context.queries,
+      .results = context.results,
+      .compute =
+          [](void* raw_context, std::size_t count) {
+            auto& context = *static_cast<BatchContext*>(raw_context);
+            context.submitted_sizes.push_back(count);
+            for (std::size_t slot = 0; slot < count; ++slot) {
+              EXPECT_EQ(context.queries[slot].mode, GeometryMode::kLink);
+              const auto result = ComputeGeometry(context.queries[slot]);
+              context.results[slot] = {
+                  .output = result.ok() ? *result : GeometryOutput{},
+                  .error = context.fail_first_query && slot == 0 ? Error::kRange : result.status(),
+              };
+            }
+            return absl::OkStatus();
+          },
+      .context = &context,
+  };
+  const GeometryBackend backend{
+      .compute = [](void*, const GeometryInput&) -> absl::StatusOr<GeometryOutput> {
+        ADD_FAILURE() << "Free-surface links must use the batch callback";
+        return absl::InternalError("Unexpected scalar geometry query");
+      },
+      .context = nullptr,
+      .batch = &batch,
+  };
+
+  Fixture f;
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok());
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(f.geometry(), *workspace);
+  ASSERT_TRUE(frozen.ok());
+  std::array<FrozenLiquidFace3D, 6> faces;
+  ASSERT_EQ(frozen->faces.size(), faces.size());
+  for (std::size_t ordinal = 0; ordinal < faces.size(); ++ordinal) {
+    faces[ordinal] = frozen->faces[ordinal];
+  }
+  faces[1].open_area = 0;
+  faces[1].blocked_area = 1;
+  auto geometry = *frozen;
+  geometry.faces = faces;
+  const std::array cells{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 7}};
+  std::array<double, 6> velocities{1, 2, 3, 4, 5, 6};
+  const LiquidPressureFields3D fields{cells, velocities, 9};
+  const auto scalar = BuildLiquidPressureLinks3D(geometry, fields, *workspace);
+  ASSERT_TRUE(scalar.ok()) << scalar.status();
+  const auto batched = BoundedGeometryAccess::BuildLinks(*workspace, geometry, fields, backend);
+  ASSERT_TRUE(batched.ok()) << batched.status();
+  EXPECT_EQ(context.submitted_sizes, (std::vector<std::size_t>{2, 2, 1}));
+  ASSERT_EQ(batched->faces.size(), scalar->faces.size());
+  for (std::size_t ordinal = 0; ordinal < batched->faces.size(); ++ordinal) {
+    const auto& actual = batched->faces[ordinal];
+    const auto& expected = scalar->faces[ordinal];
+    EXPECT_EQ(actual.face_index.axis, expected.face_index.axis);
+    EXPECT_EQ(actual.face_index.lattice_index.x, expected.face_index.lattice_index.x);
+    EXPECT_EQ(actual.face_index.lattice_index.y, expected.face_index.lattice_index.y);
+    EXPECT_EQ(actual.face_index.lattice_index.z, expected.face_index.lattice_index.z);
+    EXPECT_EQ(actual.predicted_normal_velocity, expected.predicted_normal_velocity);
+    EXPECT_EQ(
+        std::bit_cast<std::uint64_t>(actual.pressure_gradient_distance),
+        std::bit_cast<std::uint64_t>(expected.pressure_gradient_distance)
+    );
+    ASSERT_EQ(actual.pressure_link.index(), expected.pressure_link.index());
+    if (const auto* actual_dirichlet = std::get_if<DirichletMacPressureLink3D>(&actual.pressure_link)) {
+      EXPECT_EQ(
+          std::bit_cast<std::uint64_t>(actual_dirichlet->exterior_pressure),
+          std::bit_cast<std::uint64_t>(std::get<DirichletMacPressureLink3D>(expected.pressure_link).exterior_pressure)
+      );
+    }
+  }
+
+  velocities[2] = std::numeric_limits<double>::quiet_NaN();
+  context.submitted_sizes.clear();
+  context.fail_first_query = true;
+  EXPECT_EQ(
+      BoundedGeometryAccess::BuildLinks(*workspace, geometry, fields, backend).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(context.submitted_sizes, (std::vector<std::size_t>{1}));
+  context.submitted_sizes.clear();
+  context.fail_first_query = false;
+  EXPECT_EQ(
+      BoundedGeometryAccess::BuildLinks(*workspace, geometry, fields, backend).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(context.submitted_sizes, (std::vector<std::size_t>{1}));
+  EXPECT_EQ(std::get<DirichletMacPressureLink3D>(batched->faces[0].pressure_link).exterior_pressure, 9);
+}
 TEST(LiquidBoundaryWorkspace3D, StaticGeometryModesMatchScalarArithmetic) {
   using boundary_internal::ComputeGeometry;
   using boundary_internal::ComputeGeometryForMode;
