@@ -6,20 +6,20 @@ CudaExecutionIdentity
 BuildCudaExecutionIdentity(const CudaExecutionIdentityInputs& inputs, const LiquidDigest3D& resolved_fingerprint) {
   // The UUID is a fixed 16-byte prefix after each domain. The remaining
   // fields are length-delimited or decimal lines in the historical order.
-  std::string device_fields(inputs.uuid.data(), inputs.uuid.size());
-  device_fields += '\n';
-  device_fields += std::to_string(inputs.compute_major) + '\n';
-  device_fields += std::to_string(inputs.compute_minor) + '\n';
-  device_fields += std::to_string(inputs.driver_release.size()) + '\n';
-  device_fields += inputs.driver_release;
-  device_fields += '\n';
-  device_fields += std::to_string(inputs.driver_api_version) + '\n';
-  device_fields += std::to_string(inputs.runtime_api_version) + '\n';
-  device_fields += std::to_string(inputs.compiled_runtime_version) + '\n';
+  std::string device_identity_bytes(inputs.uuid.data(), inputs.uuid.size());
+  device_identity_bytes += '\n';
+  device_identity_bytes += std::to_string(inputs.compute_major) + '\n';
+  device_identity_bytes += std::to_string(inputs.compute_minor) + '\n';
+  device_identity_bytes += std::to_string(inputs.driver_release.size()) + '\n';
+  device_identity_bytes += inputs.driver_release;
+  device_identity_bytes += '\n';
+  device_identity_bytes += std::to_string(inputs.driver_api_version) + '\n';
+  device_identity_bytes += std::to_string(inputs.runtime_api_version) + '\n';
+  device_identity_bytes += std::to_string(inputs.compiled_runtime_version) + '\n';
 
-  const std::string compatibility_preimage =
-      "fluidity.simulate.cuda-compatibility.v1\n" + device_fields + LiquidDigestHex3D(resolved_fingerprint).data();
-  const std::string device_preimage = "fluidity.simulate.cuda-execution-device.v1\n" + device_fields;
+  const std::string compatibility_preimage = "fluidity.simulate.cuda-compatibility.v1\n" + device_identity_bytes
+      + LiquidDigestHex3D(resolved_fingerprint).data();
+  const std::string device_preimage = "fluidity.simulate.cuda-execution-device.v1\n" + device_identity_bytes;
   const auto compatibility_digest = LiquidContentDigest3D(liquid_cache_files_internal::Bytes(compatibility_preimage));
   const auto device_digest = LiquidContentDigest3D(liquid_cache_files_internal::Bytes(device_preimage));
   return {

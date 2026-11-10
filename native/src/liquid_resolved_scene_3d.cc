@@ -36,15 +36,16 @@ bool ValidSource(const LiquidEmissionSource3D& source) {
       && detail::Finite(jitter) && jitter.x >= 0 && jitter.y >= 0 && jitter.z >= 0
       && detail::ValidParticle(source.emitted_particle_template);
 }
-absl::Status BoundScene(std::size_t source_count, std::size_t upstream_content_count, LiquidCacheLimits3D limits) {
+absl::Status
+CheckSceneRecordCounts(std::size_t source_count, std::size_t upstream_content_count, LiquidCacheLimits3D limits) {
   if (source_count > limits.maximum_records.sources || upstream_content_count > limits.maximum_upstream_records
       || source_count > (1 << 20) || upstream_content_count > (1 << 20)) {
     return detail::Error(absl::StatusCode::kResourceExhausted);
   }
   return absl::OkStatus();
 }
-absl::Status ValidateScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
-  SCENE_TRY(BoundScene(input.scene.sources.size(), input.upstream.size(), limits));
+absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
+  SCENE_TRY(CheckSceneRecordCounts(input.scene.sources.size(), input.upstream.size(), limits));
   if (input.model_version != 1) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
@@ -155,7 +156,7 @@ LiquidUpstreamContent3D ReadUpstream(const wire::UpstreamContent* upstream) {
       detail::Unpack(upstream->digest()),
   };
 }
-absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* root) {
+absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::ResolvedScene* root) {
   if (root->model_version() != 1) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
@@ -195,8 +196,11 @@ absl::StatusOr<LiquidResolvedScene3D> ReadScalars(const wire::ResolvedScene* roo
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
   const auto seed_covariance_scale = field->seed_covariance_scale();
-  if ((plane != nullptr) != (field->kind() == wire::FieldKind::HorizontalPlane)
-      || seed_covariance_scale.has_value() != (field->kind() == wire::FieldKind::IsolatedCovarianceDrop)) {
+  const bool has_horizontal_plane = plane != nullptr;
+  const bool expects_horizontal_plane = field->kind() == wire::FieldKind::HorizontalPlane;
+  const bool expects_covariance_scale = field->kind() == wire::FieldKind::IsolatedCovarianceDrop;
+  if (has_horizontal_plane != expects_horizontal_plane
+      || seed_covariance_scale.has_value() != expects_covariance_scale) {
     return detail::Corrupt();
   }
   if (plane) {
@@ -268,7 +272,7 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
 }
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
-  SCENE_TRY(ValidateScene(input, limits));
+  SCENE_TRY(ValidateResolvedScene(input, limits));
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&input.scene.field);
   const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&input.scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
@@ -433,13 +437,13 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
     return verified.status();
   }
   const auto* root = *verified;
-  SCENE_TRY(BoundScene(root->sources()->size(), root->upstream()->size(), limits));
-  auto result = ReadScalars(root);
+  SCENE_TRY(CheckSceneRecordCounts(root->sources()->size(), root->upstream()->size(), limits));
+  auto result = DecodeResolvedSceneHeader(root);
   if (!result.ok()) {
     return result.status();
   }
   // Empty owning arrays let us validate all scalar settings without allocations.
-  if (!ValidateScene(result->View(), limits).ok()) {
+  if (!ValidateResolvedScene(result->View(), limits).ok()) {
     return detail::Corrupt();
   }
   for (flatbuffers::uoffset_t index = 0; index < root->sources()->size(); ++index) {

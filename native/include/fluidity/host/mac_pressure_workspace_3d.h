@@ -104,8 +104,8 @@ class MacPressureWorkspace3D {
   std::size_t scratch_used_bytes_ = 0;
   std::size_t high_water_bytes_ = 0;
 };
-// Project the frozen typed Task 3 problem for positive finite step_duration in
-// seconds. Borrows grid only for this call; cells/links stay read-only. Requires
+// Project the frozen pressure cells and links over a positive finite step duration
+// in seconds. Borrows the grid for this call. Cells and links stay read-only. Requires
 // 1..4096 unique (z,y,x)-ordered cells and their exact incident face union, at
 // most 24576 entries in owned-slot order, including sealed faces. All input
 // arrays/keys must remain unchanged throughout the call and must not overlap

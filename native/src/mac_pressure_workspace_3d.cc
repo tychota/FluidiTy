@@ -57,90 +57,102 @@ struct BorrowedInputs {
 };
 
 absl::StatusOr<PreparedMacPressureView3D> Prepare(const BorrowedInputs& inputs, MacPressureScratch3D& scratch) {
-  const std::size_t count = inputs.pressure_cells.size();
+  const std::size_t cell_count = inputs.pressure_cells.size();
   const std::size_t face_count = inputs.pressure_faces.size();
-  if (count == 0 || face_count == 0 || !IsFinitePositive(inputs.step_duration)) {
+  if (cell_count == 0 || face_count == 0 || !IsFinitePositive(inputs.step_duration)) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  const double width = inputs.mac_grid.geometry().cell_width;
-  const double area = width * width;
-  const double volume = area * width;
-  if (!IsFinitePositive(area) || !IsFinitePositive(volume)) {
+  const double cell_width = inputs.mac_grid.geometry().cell_width;
+  const double full_face_area = cell_width * cell_width;
+  const double full_cell_volume = full_face_area * cell_width;
+  if (!IsFinitePositive(full_face_area) || !IsFinitePositive(full_cell_volume)) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
-  FLUIDITY_PRESSURE_TAKE(cells, PreparedMacPressureCell3D, count);
+  FLUIDITY_PRESSURE_TAKE(cells, PreparedMacPressureCell3D, cell_count);
   FLUIDITY_PRESSURE_TAKE(links, FrozenMacPressureLink3D, face_count);
-  FLUIDITY_PRESSURE_TAKE(rhs, double, count);
-  FLUIDITY_PRESSURE_TAKE(absolute_terms, double, count);
-  FLUIDITY_PRESSURE_TAKE(components, std::size_t, count);
-  FLUIDITY_PRESSURE_TAKE(gauges, std::size_t, count);
-  PreparedMacPressureView3D system{cells, links, rhs, absolute_terms, components, gauges};
+  FLUIDITY_PRESSURE_TAKE(integrated_rhs, double, cell_count);
+  FLUIDITY_PRESSURE_TAKE(rhs_absolute_term_sums, double, cell_count);
+  FLUIDITY_PRESSURE_TAKE(component_ordinals, std::size_t, cell_count);
+  FLUIDITY_PRESSURE_TAKE(gauge_cell_ordinals, std::size_t, cell_count);
+  PreparedMacPressureView3D system{
+      .cell_records = cells,
+      .link_records = links,
+      .rhs = integrated_rhs,
+      .rhs_absolute_terms = rhs_absolute_term_sums,
+      .components = component_ordinals,
+      .gauges = gauge_cell_ordinals,
+  };
   MacPressureScratchMark3D temporary(scratch);
-  FLUIDITY_PRESSURE_TAKE(incident_slots, std::size_t, 6 * count);
-  std::size_t incident_count = 0;
-  for (std::size_t ordinal = 0; ordinal < count; ++ordinal) {
-    const auto& cell = inputs.pressure_cells[ordinal];
-    if (ordinal != 0 && CellSortKey(inputs.pressure_cells[ordinal - 1].cell_index) >= CellSortKey(cell.cell_index)) {
+  FLUIDITY_PRESSURE_TAKE(incident_face_slots, std::size_t, 6 * cell_count);
+  std::size_t incident_face_count = 0;
+  for (std::size_t cell_ordinal = 0; cell_ordinal < cell_count; ++cell_ordinal) {
+    const auto& cell = inputs.pressure_cells[cell_ordinal];
+    if (cell_ordinal != 0
+        && CellSortKey(inputs.pressure_cells[cell_ordinal - 1].cell_index) >= CellSortKey(cell.cell_index)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const auto frozen = FreezeCell(cell, inputs.step_duration, volume);
+    const auto frozen = FreezeCell(cell, inputs.step_duration, full_cell_volume);
     if (!frozen.ok()) {
       return frozen.status();
     }
-    cells[ordinal] = *frozen;
-    const std::array coordinates{cell.cell_index.x, cell.cell_index.y, cell.cell_index.z};
-    for (std::size_t normal = 0; normal < 3; ++normal) {
-      if (coordinates[normal] == std::numeric_limits<std::int32_t>::max()) {
+    cells[cell_ordinal] = *frozen;
+    const std::array cell_lattice_indices{cell.cell_index.x, cell.cell_index.y, cell.cell_index.z};
+    for (std::size_t normal_axis = 0; normal_axis < 3; ++normal_axis) {
+      if (cell_lattice_indices[normal_axis] == std::numeric_limits<std::int32_t>::max()) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
-      for (std::int32_t side = 0; side < 2; ++side) {
-        auto face = coordinates;
-        face[normal] += side;
-        const auto slot = inputs.mac_grid.FaceSlot({kFaceAxes[normal], {face[0], face[1], face[2]}});
-        if (!slot.ok()) {
-          return slot.status();
+      for (std::int32_t normal_side_offset = 0; normal_side_offset < 2; ++normal_side_offset) {
+        auto face_lattice_indices = cell_lattice_indices;
+        face_lattice_indices[normal_axis] += normal_side_offset;
+        const auto face_slot = inputs.mac_grid.FaceSlot(
+            {kFaceAxes[normal_axis], {face_lattice_indices[0], face_lattice_indices[1], face_lattice_indices[2]}}
+        );
+        if (!face_slot.ok()) {
+          return face_slot.status();
         }
-        incident_slots[incident_count++] = *slot;
+        incident_face_slots[incident_face_count++] = *face_slot;
       }
     }
   }
-  std::ranges::sort(incident_slots);
-  incident_count = static_cast<std::size_t>(std::ranges::unique(incident_slots).begin() - incident_slots.begin());
-  if (incident_count != face_count) {
+  std::ranges::sort(incident_face_slots);
+  incident_face_count =
+      static_cast<std::size_t>(std::ranges::unique(incident_face_slots).begin() - incident_face_slots.begin());
+  if (incident_face_count != face_count) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  for (std::size_t face = 0; face < face_count; ++face) {
-    const auto slot = inputs.mac_grid.FaceSlot(inputs.pressure_faces[face].face_index);
-    if (!slot.ok()) {
-      return slot.status();
+  for (std::size_t face_ordinal = 0; face_ordinal < face_count; ++face_ordinal) {
+    const auto& face = inputs.pressure_faces[face_ordinal];
+    const auto face_slot = inputs.mac_grid.FaceSlot(face.face_index);
+    if (!face_slot.ok()) {
+      return face_slot.status();
     }
-    if (*slot != incident_slots[face]) {
+    if (*face_slot != incident_face_slots[face_ordinal]) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const auto link = FreezeLink(inputs.pressure_faces[face], *slot, area, inputs);
+    const auto link = FreezeLink(face, *face_slot, full_face_area, inputs);
     if (!link.ok()) {
       return link.status();
     }
-    links[face] = *link;
+    links[face_ordinal] = *link;
   }
-  FLUIDITY_PRESSURE_TAKE(rows, FluxRow, count);
-  auto status = AssembleIntegratedRhsInto(cells, links, rows);
+  FLUIDITY_PRESSURE_TAKE(rhs_rows, FluxRow, cell_count);
+  auto status = AssembleIntegratedRhsInto(cells, links, rhs_rows);
   if (!status.ok()) {
     return status;
   }
-  for (std::size_t cell = 0; cell < count; ++cell) {
-    rhs[cell] = rows[cell].flux.Total();
-    absolute_terms[cell] = rows[cell].absolute_terms.Total();
-    if (!std::isfinite(rhs[cell]) || !std::isfinite(absolute_terms[cell])) {
+  for (std::size_t cell = 0; cell < cell_count; ++cell) {
+    integrated_rhs[cell] = rhs_rows[cell].flux.Total();
+    rhs_absolute_term_sums[cell] = rhs_rows[cell].absolute_terms.Total();
+    if (!std::isfinite(integrated_rhs[cell]) || !std::isfinite(rhs_absolute_term_sums[cell])) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
   }
-  FLUIDITY_PRESSURE_TAKE(balances, ComponentBalance, count);
-  const auto gauge_count = SelectGaugesInto(cells, links, components, balances, gauges);
+  FLUIDITY_PRESSURE_TAKE(component_balances, ComponentBalance, cell_count);
+  const auto gauge_count = SelectGaugesInto(cells, links, component_ordinals, component_balances, gauge_cell_ordinals);
   if (!gauge_count.ok()) {
     return gauge_count.status();
   }
-  system.gauges = gauges.first(*gauge_count);
+  system.gauges = gauge_cell_ordinals.first(*gauge_count);
   return system;
 }
 
@@ -635,48 +647,50 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
     return MacPressureWorkspaceBytes3D{};
   }
   ScratchByteCounter counter;
-  const auto n = cell_capacity;
-  const auto f = face_capacity;
-  const auto levels = kMaximumPressureLevels3D;
-  const bool fits = counter.Add(n, sizeof(PreparedMacPressureCell3D)) && counter.Add(f, sizeof(FrozenMacPressureLink3D))
-      && counter.Add(n, sizeof(double), 2) && counter.Add(n, sizeof(std::size_t), 4)
-      && counter.Add(levels, sizeof(MacPressureLevelView3D)) && counter.Add(n, sizeof(CellIndex3D), levels)
-      && counter.Add(n, sizeof(double), 2 * levels) && counter.Add(n, sizeof(std::size_t), 3 * levels)
-      && counter.Add(1, sizeof(std::size_t), levels) && counter.Add(f, sizeof(MacPressureEdge3D), levels)
-      && counter.Add(f, 2 * sizeof(MacPressureNeighbor3D), levels) && counter.Add(n, sizeof(std::size_t), 2)
-      && counter.Add(1, sizeof(std::size_t))
-      && counter.Add(n, 32 * sizeof(double))
+  const auto level_capacity = kMaximumPressureLevels3D;
+  const bool fits = counter.Add(cell_capacity, sizeof(PreparedMacPressureCell3D))
+      && counter.Add(face_capacity, sizeof(FrozenMacPressureLink3D)) && counter.Add(cell_capacity, sizeof(double), 2)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 4)
+      && counter.Add(level_capacity, sizeof(MacPressureLevelView3D))
+      && counter.Add(cell_capacity, sizeof(CellIndex3D), level_capacity)
+      && counter.Add(cell_capacity, sizeof(double), 2 * level_capacity)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 3 * level_capacity)
+      && counter.Add(1, sizeof(std::size_t), level_capacity)
+      && counter.Add(face_capacity, sizeof(MacPressureEdge3D), level_capacity)
+      && counter.Add(face_capacity, 2 * sizeof(MacPressureNeighbor3D), level_capacity)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 2) && counter.Add(1, sizeof(std::size_t))
+      && counter.Add(cell_capacity, 32 * sizeof(double))
       // Assembly temporaries: incident duplicates, compensated RHS and balances.
-      && counter.Add(n, 6 * sizeof(std::size_t)) && counter.Add(n, sizeof(FluxRow))
-      && counter.Add(n, sizeof(ComponentBalance))
+      && counter.Add(cell_capacity, 6 * sizeof(std::size_t)) && counter.Add(cell_capacity, sizeof(FluxRow))
+      && counter.Add(cell_capacity, sizeof(ComponentBalance))
       // Coarsening order, CSR cursor and terminal inverse permutation.
-      && counter.Add(n, sizeof(std::size_t), 3) && counter.Add(1, sizeof(std::size_t))
-      && counter.Add(f, sizeof(std::size_t))
+      && counter.Add(cell_capacity, sizeof(std::size_t), 3) && counter.Add(1, sizeof(std::size_t))
+      && counter.Add(face_capacity, sizeof(std::size_t))
       // PCG base, five FP32 vectors, prior gauge shifts and evaluator rows.
-      && counter.Add(n, sizeof(double), 2) && counter.Add(n, sizeof(float), 5)
-      && counter.Add(n, sizeof(FluxRow), 2)
+      && counter.Add(cell_capacity, sizeof(double), 2) && counter.Add(cell_capacity, sizeof(float), 5)
+      && counter.Add(cell_capacity, sizeof(FluxRow), 2)
       // Recursive V-cycle flux, coarse RHS and coarse correction; FP64 bounds FP32.
-      && counter.Add(n, sizeof(double), 3 * levels);
+      && counter.Add(cell_capacity, sizeof(double), 3 * level_capacity);
   if (!fits) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   MacPressureWorkspaceBytes3D result;
   result.scratch_bytes = counter.total;
   constexpr auto limit = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max());
-  constexpr auto cell_stride = 2 * (4 * sizeof(double) + sizeof(std::size_t));
-  if (n > (limit - counter.total) / cell_stride) {
+  constexpr auto projection_bytes_per_cell = 2 * (4 * sizeof(double) + sizeof(std::size_t));
+  if (cell_capacity > (limit - counter.total) / projection_bytes_per_cell) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  result.projection_bytes = n * cell_stride;
-  if (f > (limit - counter.total - result.projection_bytes) / (2 * sizeof(double))) {
+  result.projection_bytes = cell_capacity * projection_bytes_per_cell;
+  if (face_capacity > (limit - counter.total - result.projection_bytes) / (2 * sizeof(double))) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  result.projection_bytes += f * 2 * sizeof(double);
+  result.projection_bytes += face_capacity * 2 * sizeof(double);
   result.total_bytes = result.scratch_bytes + result.projection_bytes;
-  result.maximum_levels = levels;
-  result.maximum_level_cells = n;
-  result.maximum_level_edges = f;
-  result.maximum_terminal_factor_entries = 32 * n;
+  result.maximum_levels = level_capacity;
+  result.maximum_level_cells = cell_capacity;
+  result.maximum_level_edges = face_capacity;
+  result.maximum_terminal_factor_entries = 32 * cell_capacity;
   return result;
 }
 

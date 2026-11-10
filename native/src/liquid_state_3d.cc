@@ -8,36 +8,40 @@
 
 namespace fluidity {
 namespace {
-// Keep device staging and host acceptance on the same clock arithmetic.
-absl::StatusOr<LiquidClock3D> ComputeAcceptedClock(LiquidClock3D clock, double target, double duration) {
-  if (!std::isfinite(duration) || duration <= 0) {
+// Device staging and host acceptance use this clock arithmetic. Only the final interval may snap
+// to the frame boundary, and only when the sum is one representable step away.
+absl::StatusOr<LiquidClock3D>
+ComputeAcceptedClock(LiquidClock3D committed_clock, double target_frame_time, double attempted_duration) {
+  if (!std::isfinite(attempted_duration) || attempted_duration <= 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  const double remaining = target - clock.time;
-  double accepted_time = clock.time + duration;
-  if (duration > remaining || !std::isfinite(accepted_time) || accepted_time <= clock.time) {
+  const double remaining_frame_duration = target_frame_time - committed_clock.time;
+  double accepted_time = committed_clock.time + attempted_duration;
+  if (attempted_duration > remaining_frame_duration || !std::isfinite(accepted_time)
+      || accepted_time <= committed_clock.time) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
-  if (duration == remaining && accepted_time != target) {
-    if (std::nextafter(accepted_time, target) != target) {
+  if (attempted_duration == remaining_frame_duration && accepted_time != target_frame_time) {
+    if (std::nextafter(accepted_time, target_frame_time) != target_frame_time) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    accepted_time = target;
+    accepted_time = target_frame_time;
   }
-  if (accepted_time > target || clock.epoch == UINT64_MAX || clock.accepted_step_ordinal == UINT64_MAX
-      || clock.substep_ordinal == UINT64_MAX || (accepted_time == target && clock.frame_ordinal == UINT64_MAX)) {
+  if (accepted_time > target_frame_time || committed_clock.epoch == UINT64_MAX
+      || committed_clock.accepted_step_ordinal == UINT64_MAX || committed_clock.substep_ordinal == UINT64_MAX
+      || (accepted_time == target_frame_time && committed_clock.frame_ordinal == UINT64_MAX)) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
-  clock.time = accepted_time;
-  ++clock.epoch;
-  ++clock.accepted_step_ordinal;
-  if (accepted_time == target) {
-    ++clock.frame_ordinal;
-    clock.substep_ordinal = 0;
+  committed_clock.time = accepted_time;
+  ++committed_clock.epoch;
+  ++committed_clock.accepted_step_ordinal;
+  if (accepted_time == target_frame_time) {
+    ++committed_clock.frame_ordinal;
+    committed_clock.substep_ordinal = 0;
   } else {
-    ++clock.substep_ordinal;
+    ++committed_clock.substep_ordinal;
   }
-  return clock;
+  return committed_clock;
 }
 auto Components(Vec3 value) {
   return std::tuple(value.x, value.y, value.z);
@@ -46,7 +50,7 @@ auto Components(Mat3 value) {
   return std::tuple(Components(value.x_row), Components(value.y_row), Components(value.z_row));
 }
 template <typename Index>
-auto Key(Index index) {
+auto LatticeSortKey(Index index) {
   return std::tuple(index.z, index.y, index.x);
 }
 bool SameGeometry(UniformMacGeometry3D left, UniformMacGeometry3D right) {
@@ -59,27 +63,32 @@ bool Positive(double value) {
   return std::isfinite(value) && value > 0;
 }
 // C++ division truncates toward zero; signed block ownership requires floor.
-std::int32_t BlockCoordinate(std::int32_t coordinate) {
+std::int32_t OwnerBlockCoordinate(std::int32_t coordinate) {
   return coordinate / 4 - (coordinate % 4 < 0 ? 1 : 0);
 }
+// Returns the active block ordinal, or the block count when the owner is absent.
 template <typename Index>
-std::size_t FindOwner(const LiquidState3D& state, Index index) {
-  const BlockIndex3D owner{BlockCoordinate(index.x), BlockCoordinate(index.y), BlockCoordinate(index.z)};
+std::size_t FindOwnerBlockOrdinal(const LiquidState3D& state, Index index) {
+  const BlockIndex3D owner_block_index{
+      OwnerBlockCoordinate(index.x),
+      OwnerBlockCoordinate(index.y),
+      OwnerBlockCoordinate(index.z)
+  };
   const auto blocks = state.blocks.values();
-  const auto found = std::lower_bound(blocks.begin(), blocks.end(), owner, [](const auto& block, auto key) {
-    return Key(block.block_index) < Key(key);
+  const auto found = std::lower_bound(blocks.begin(), blocks.end(), owner_block_index, [](const auto& block, auto key) {
+    return LatticeSortKey(block.block_index) < LatticeSortKey(key);
   });
-  if (found == blocks.end() || Key(found->block_index) != Key(owner)) {
+  if (found == blocks.end() || LatticeSortKey(found->block_index) != LatticeSortKey(owner_block_index)) {
     return blocks.size();
   }
   return static_cast<std::size_t>(found - blocks.begin());
 }
-bool Fits(const LiquidState3D& state, LiquidStateCapacities3D capacity) {
+bool ActiveRecordsFit(const LiquidState3D& state, LiquidStateCapacities3D capacity) {
   return state.particles.size() <= capacity.particles && state.blocks.size() <= capacity.blocks
       && state.cells.size() <= capacity.cells && state.faces.size() <= capacity.faces
       && state.sources.size() <= capacity.sources;
 }
-bool Reserved(const LiquidState3D& state, LiquidStateCapacities3D capacity) {
+bool HasReservedCapacities(const LiquidState3D& state, LiquidStateCapacities3D capacity) {
   return state.particles.capacity() == capacity.particles && state.blocks.capacity() == capacity.blocks
       && state.cells.capacity() == capacity.cells && state.faces.capacity() == capacity.faces
       && state.sources.capacity() == capacity.sources;
@@ -151,17 +160,17 @@ bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const
       && Components(velocity_slopes) == Components(other.velocity_slopes);
 }
 bool LiquidBlockState3D::operator==(const LiquidBlockState3D& other) const {
-  return Key(block_index) == Key(other.block_index)
+  return LatticeSortKey(block_index) == LatticeSortKey(other.block_index)
       && std::tie(generation, activation_age, inactive_age)
       == std::tie(other.generation, other.activation_age, other.inactive_age);
 }
 bool LiquidCellState3D::operator==(const LiquidCellState3D& other) const {
-  return Key(cell_index) == Key(other.cell_index) && occupancy == other.occupancy
+  return LatticeSortKey(cell_index) == LatticeSortKey(other.cell_index) && occupancy == other.occupancy
       && previous_pressure == other.previous_pressure;
 }
 bool LiquidFaceState3D::operator==(const LiquidFaceState3D& other) const {
   return face_index.axis == other.face_index.axis
-      && Key(face_index.lattice_index) == Key(other.face_index.lattice_index)
+      && LatticeSortKey(face_index.lattice_index) == LatticeSortKey(other.face_index.lattice_index)
       && std::tie(face_slot, carrier_velocity, validity, side_tag, structurally_eligible)
       == std::tie(other.face_slot, other.carrier_velocity, other.validity, other.side_tag, other.structurally_eligible);
 }
@@ -213,16 +222,16 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
-    if (index > 0 && Key(state.blocks[index - 1].block_index) >= Key(block)) {
+    if (index > 0 && LatticeSortKey(state.blocks[index - 1].block_index) >= LatticeSortKey(block)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
   for (std::size_t index = 0; index < state.cells.size(); ++index) {
     const auto& cell = state.cells[index];
-    if (index > 0 && Key(state.cells[index - 1].cell_index) >= Key(cell.cell_index)) {
+    if (index > 0 && LatticeSortKey(state.cells[index - 1].cell_index) >= LatticeSortKey(cell.cell_index)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    if (FindOwner(state, cell.cell_index) == state.blocks.size()) {
+    if (FindOwnerBlockOrdinal(state, cell.cell_index) == state.blocks.size()) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     if (cell.occupancy > LiquidCellOccupancy3D::kSolid || !std::isfinite(cell.previous_pressure)) {
@@ -235,18 +244,18 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
         || !std::isfinite(face.carrier_velocity)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const auto lattice = face.face_index.lattice_index;
-    const auto owner = FindOwner(state, lattice);
-    if (owner == state.blocks.size()) {
+    const auto lattice_index = face.face_index.lattice_index;
+    const auto owner_block_ordinal = FindOwnerBlockOrdinal(state, lattice_index);
+    if (owner_block_ordinal == state.blocks.size()) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const auto block = state.blocks[owner].block_index;
-    const auto local_x = static_cast<std::size_t>(lattice.x - block.x * 4);
-    const auto local_y = static_cast<std::size_t>(lattice.y - block.y * 4);
-    const auto local_z = static_cast<std::size_t>(lattice.z - block.z * 4);
-    const auto slot =
-        owner * 192 + static_cast<std::size_t>(face.face_index.axis) * 64 + local_z * 16 + local_y * 4 + local_x;
-    if (face.face_slot != slot || (index > 0 && state.faces[index - 1].face_slot >= slot)) {
+    const auto owner_block_index = state.blocks[owner_block_ordinal].block_index;
+    const auto local_x = static_cast<std::size_t>(lattice_index.x - owner_block_index.x * 4);
+    const auto local_y = static_cast<std::size_t>(lattice_index.y - owner_block_index.y * 4);
+    const auto local_z = static_cast<std::size_t>(lattice_index.z - owner_block_index.z * 4);
+    const auto expected_face_slot = owner_block_ordinal * 192 + static_cast<std::size_t>(face.face_index.axis) * 64
+        + local_z * 16 + local_y * 4 + local_x;
+    if (face.face_slot != expected_face_slot || (index > 0 && state.faces[index - 1].face_slot >= expected_face_slot)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
@@ -268,7 +277,7 @@ absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, Li
   if (auto status = CheckCapacities(capacities); !status.ok()) {
     return status;
   }
-  if (!Fits(source, capacities)) {
+  if (!ActiveRecordsFit(source, capacities)) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   LiquidState3D result;
@@ -312,18 +321,18 @@ LiquidFrameTransaction3D::Create(const LiquidState3D& initial_state, LiquidState
   result.capacities_ = capacities;
   return result;
 }
-absl::Status LiquidFrameTransaction3D::BeginFrame(double target_time) {
+absl::Status LiquidFrameTransaction3D::BeginFrame(double target_frame_time) {
   if (frame_active_ || committed_.clock.substep_ordinal != 0) {
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
-  if (!std::isfinite(target_time) || target_time <= committed_.clock.time) {
+  if (!std::isfinite(target_frame_time) || target_frame_time <= committed_.clock.time) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (committed_.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   CopyState(committed_, frame_start_);
-  target_time_ = target_time;
+  target_frame_time_ = target_frame_time;
   frame_active_ = true;
   capacity_restarted_ = false;
   fatal_ = false;
@@ -332,10 +341,10 @@ absl::Status LiquidFrameTransaction3D::BeginFrame(double target_time) {
   return absl::OkStatus();
 }
 absl::StatusOr<LiquidState3D*> LiquidFrameTransaction3D::ResetTrialFromCommitted() {
-  if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time == target_time_) {
+  if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time == target_frame_time_) {
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
-  if (!Reserved(trial_, capacities_)) {
+  if (!HasReservedCapacities(trial_, capacities_)) {
     fatal_ = true;
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
@@ -350,7 +359,7 @@ absl::StatusOr<LiquidClock3D> LiquidFrameTransaction3D::PreviewAcceptedClock(dou
   if (retry_duration_ && attempted_duration != *retry_duration_) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  return ComputeAcceptedClock(committed_.clock, target_time_, attempted_duration);
+  return ComputeAcceptedClock(committed_.clock, target_frame_time_, attempted_duration);
 }
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, double attempted_duration) {
@@ -366,20 +375,20 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
   if (retry_duration_ && attempted_duration != *retry_duration_) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  const double remaining = target_time_ - committed_.clock.time;
+  const double remaining = target_frame_time_ - committed_.clock.time;
   double accepted_time = committed_.clock.time + attempted_duration;
   if (attempted_duration > remaining || !std::isfinite(accepted_time) || accepted_time <= committed_.clock.time) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   // Only the scheduled final remaining interval may snap. The predecessor/successor
   // check makes the roundoff allowance explicit, rather than hiding a residual step.
-  if (attempted_duration == remaining && accepted_time != target_time_) {
-    if (std::nextafter(accepted_time, target_time_) != target_time_) {
+  if (attempted_duration == remaining && accepted_time != target_frame_time_) {
+    if (std::nextafter(accepted_time, target_frame_time_) != target_frame_time_) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    accepted_time = target_time_;
+    accepted_time = target_frame_time_;
   }
-  if (accepted_time > target_time_) {
+  if (accepted_time > target_frame_time_) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   switch (decision) {
@@ -409,7 +418,7 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
       || trial_.random_seed != committed_.random_seed || trial_.next_particle_id < committed_.next_particle_id) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  if (!Reserved(trial_, capacities_) || !Fits(trial_, capacities_)) {
+  if (!HasReservedCapacities(trial_, capacities_) || !ActiveRecordsFit(trial_, capacities_)) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
@@ -429,7 +438,7 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
-  const auto accepted_clock = ComputeAcceptedClock(committed_.clock, target_time_, attempted_duration);
+  const auto accepted_clock = ComputeAcceptedClock(committed_.clock, target_frame_time_, attempted_duration);
   if (!accepted_clock.ok()) {
     return accepted_clock.status();
   }
@@ -455,14 +464,14 @@ absl::Status LiquidFrameTransaction3D::RestartFrameWithCapacity(LiquidStateCapac
   if (!replacement.ok()) {
     return replacement.status();
   }
-  replacement->target_time_ = target_time_;
+  replacement->target_frame_time_ = target_frame_time_;
   replacement->frame_active_ = true;
   replacement->capacity_restarted_ = true;
   *this = std::move(*replacement);
   return absl::OkStatus();
 }
 absl::Status LiquidFrameTransaction3D::FinishFrame() {
-  if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time != target_time_) {
+  if (!frame_active_ || trial_active_ || capacity_pending_ || fatal_ || committed_.clock.time != target_frame_time_) {
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   // The final accepted version already contains the completed-frame clock. Closing

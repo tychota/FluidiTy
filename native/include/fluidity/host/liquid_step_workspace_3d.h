@@ -16,10 +16,10 @@ struct LiquidParticleSortEntry3D {
   std::size_t original_ordinal = 0;  // Stable incoming order for equal signed bins.
 };
 
-// Exact dynamic payload reservations for topology and CPU boundary/transfer. Each published/candidate
-// region has two independent banks. Includes bounded activation/sort storage; excludes
-// owner objects, allocator bookkeeping, transaction versions and future GPU regions.
-// Task 6 must extend accounting before claiming a complete physical-step bound.
+// Exact dynamic payload reservations for topology, CPU boundary/transfer, and CPU pressure.
+// Published and candidate results have separate banks. Includes bounded activation and sort
+// storage. Excludes owner objects, allocator bookkeeping, scheduler staging, transaction
+// versions, and CUDA storage.
 struct LiquidWorkspaceBytes3D {
   std::size_t particle_order_bytes = 0;
   std::size_t particle_state_bytes = 0;
@@ -99,9 +99,9 @@ class LiquidStepWorkspace3D {
       std::span<const LiquidParticleSortEntry3D> particle_order,
       const LiquidState3D* previous_state = nullptr
   );
-  // View is valid until next successful PrepareTrialTopology, move or destruction.
-  // A rejected preparation preserves both values and addresses. FailedPrecondition
-  // before the first successful preparation. Task 3/4 numeric APIs borrow grid here.
+  // View is valid until the next successful topology preparation, owner move, or destruction.
+  // A rejected preparation preserves both values and addresses. Returns FailedPrecondition
+  // before the first successful preparation. Boundary and pressure stages borrow this grid.
   absl::StatusOr<LiquidPreparedTopologyView3D> prepared() const;
   // Copies sorted particles and remapped topology into existing trial reservations.
   // Geometry must match (InvalidArgument); insufficient capacity is ResourceExhausted;

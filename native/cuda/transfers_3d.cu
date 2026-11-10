@@ -57,17 +57,18 @@ __device__ bool DepositParticleQuanta3D(
       particle.particle_velocity_slopes.z_row,
   };
   // Traverse each normal component in the same sample order as the CPU.
-  for (std::size_t axis_index = 0; axis_index < kMacComponentCount3D; ++axis_index) {
-    const Vec3 particle_velocity_slope_row = particle_velocity_slope_rows[axis_index];
-    const double particle_velocity_component = particle_velocity_components[axis_index];
-    for (const auto& sample : particle.stencil.face_samples_by_normal[axis_index]) {
-      const double particle_velocity_offset_at_face =
+  for (std::size_t face_normal_axis_ordinal = 0; face_normal_axis_ordinal < kMacComponentCount3D;
+       ++face_normal_axis_ordinal) {
+    const Vec3 particle_velocity_slope_row = particle_velocity_slope_rows[face_normal_axis_ordinal];
+    const double particle_normal_velocity = particle_velocity_components[face_normal_axis_ordinal];
+    for (const auto& sample : particle.stencil.face_samples_by_normal[face_normal_axis_ordinal]) {
+      const double affine_normal_velocity_offset =
           (particle_velocity_slope_row.x * sample.face_offset_from_particle.x
            + particle_velocity_slope_row.y * sample.face_offset_from_particle.y)
           + particle_velocity_slope_row.z * sample.face_offset_from_particle.z;
-      const double velocity_at_face = particle_velocity_component + particle_velocity_offset_at_face;
+      const double particle_normal_velocity_at_face = particle_normal_velocity + affine_normal_velocity_offset;
       const double mass_contribution = sample.weight * particle.particle_mass;
-      const double pure_momentum_contribution = mass_contribution * velocity_at_face;
+      const double pure_momentum_contribution = mass_contribution * particle_normal_velocity_at_face;
       if (!isfinite(mass_contribution) || !isfinite(pure_momentum_contribution)) {
         return false;
       }

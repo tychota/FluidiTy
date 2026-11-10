@@ -91,8 +91,8 @@ struct PressureDevice3D {
   std::size_t level_unknown_count;
   std::size_t unknown_map_offset;
   std::size_t max_iterations;
-  double integrated_limit;
-  double local_limit;
+  double integrated_limit;  // L2 limit for the original integrated residual, m³/s.
+  double local_limit;  // Limit for the volume-scaled residual and physical defect, s⁻¹.
   // Six fine vectors and three coarse vectors; coarse slots include unused
   // fine-level positions to keep every level's explicit scratch offset stable.
   float* fine_scratch;

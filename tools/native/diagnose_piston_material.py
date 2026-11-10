@@ -80,13 +80,13 @@ def _published_frames(files, official, tank, read_capture, steps_per_frame):
         ratios = [point["volume_ratio"] for point in row["points"]]
         _require(all(math.isfinite(ratio) and ratio > 0 for ratio in ratios),
                  f"invalid material volume ratio at frame {frame}")
-        j_weighted = math.fsum(ratio * H**3 for ratio in ratios)
+        point_material_volume_m3 = math.fsum(ratio * H**3 for ratio in ratios)
         recorded = official["volume_budget"]["frames"][frame]["point_material_volume_m3"]
-        _require(abs(j_weighted - recorded) <= 5e-16, f"frame {frame} particle volume differs")
+        _require(abs(point_material_volume_m3 - recorded) <= 5e-16, f"frame {frame} particle volume differs")
         yield {
             "positions": snapshot(row["points"], "world_position"),
             "points_digest": expected_digest,
-            "j_weighted_m3": j_weighted,
+            "j_weighted_m3": point_material_volume_m3,
         }
 
 

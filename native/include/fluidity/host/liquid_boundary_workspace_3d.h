@@ -40,7 +40,7 @@ struct FrozenLiquidBoundaryGeometryView3D {
   double surface_tension = 0;
   double capillary_step_bound = 0;
 };
-// Typed pressure cells and links in frozen cell/face order, ready for Task 4.
+// Pressure cells and typed links in frozen cell and face order.
 struct LiquidPressureProblemView3D {
   std::span<const MacPressureCell3D> cells;
   std::span<const MacPressureFace3D> faces;

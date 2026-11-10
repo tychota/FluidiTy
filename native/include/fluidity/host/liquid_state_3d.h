@@ -228,7 +228,7 @@ class LiquidFrameTransaction3D {
   // Freezes current state for a finite strictly later target (seconds). Requires
   // no active frame and a completed-frame clock (FailedPrecondition). InvalidArgument
   // for invalid target; OutOfRange for exhausted frame count. Errors preserve all state.
-  absl::Status BeginFrame(double target_time);
+  absl::Status BeginFrame(double target_frame_time);
   // Copies committed values into reserved trial storage, without allocation. Requires
   // active, nonfatal frame and no outstanding trial/capacity decision. Borrow ends
   // at FinishAttempt; caller may resize only within configured capacities, may not
@@ -246,13 +246,11 @@ class LiquidFrameTransaction3D {
   // overshoot; a final dt equal to remaining may snap by at most one ULP. Validates
   // before publish; clock changes once. The final accept also advances the frame
   // ordinal and resets substep to zero atomically in that same epoch. Retry allows
-  // exactly two successive halvings
-  // from the same committed version. Invalid attempts, fatal decision and exhausted
+  // up to two successive halvings from the same committed version. Invalid attempts, fatal decision and exhausted
   // retries stop the frame and preserve the last accepted version. Returns status
   // InvalidArgument for invalid data, FailedPrecondition for order, OutOfRange for
   // time/counter overflow, ResourceExhausted for storage; explicit fatal returns a
-  // fatal outcome. No retry for
-  // incompatible physical constraints: their producer must pass kFatal.
+  // fatal outcome. The producer must pass kFatal for incompatible physical constraints.
   absl::StatusOr<LiquidAttemptOutcome3D> FinishAttempt(LiquidAttemptDisposition3D decision, double attempted_duration);
   // Only after kCapacity, once per frame. All capacities must be nondecreasing and
   // at least one must grow. Checks and builds all replacement versions before
@@ -272,7 +270,7 @@ class LiquidFrameTransaction3D {
   LiquidState3D trial_;
   LiquidState3D frame_start_;
   LiquidStateCapacities3D capacities_;
-  double target_time_ = 0.0;
+  double target_frame_time_ = 0.0;
   std::optional<double> retry_duration_;
   unsigned retry_count_ = 0;
   bool frame_active_ = false;

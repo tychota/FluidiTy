@@ -82,7 +82,7 @@ absl::Status Job(const LiquidDigest3D& fingerprint, const LiquidDigest3D& execut
   }
   return absl::OkStatus();
 }
-absl::StatusOr<LiquidResolvedScene3D> ReadResolved(
+absl::StatusOr<LiquidResolvedScene3D> ReadVerifiedResolvedScene(
     const fs::path& root,
     const LiquidDigest3D& expected,
     LiquidCacheLimits3D limits,
@@ -113,8 +113,12 @@ absl::StatusOr<LiquidResolvedScene3D> ReadResolved(
   }
   return std::move(*scene);
 }
-absl::StatusOr<LiquidCommittedFrame3D>
-ReadFrame(const fs::path& root, std::uint64_t ordinal, const LiquidDigest3D& fingerprint, LiquidCacheLimits3D limits) {
+absl::StatusOr<LiquidCommittedFrame3D> ReadVerifiedPointFrame(
+    const fs::path& root,
+    std::uint64_t ordinal,
+    const LiquidDigest3D& fingerprint,
+    LiquidCacheLimits3D limits
+) {
   auto bytes = ReadBytes(FramePath(root, ordinal), limits);
   if (!bytes.ok()) {
     return bytes.status();
@@ -272,7 +276,7 @@ absl::StatusOr<std::uint64_t> CheckpointOrdinal(const fs::path& path) {
   }
   return ordinal;
 }
-absl::StatusOr<CheckpointReference> ReadReference(
+absl::StatusOr<CheckpointReference> ReadCheckpointReference(
     const fs::path& root,
     std::uint64_t ordinal,
     const LiquidDigest3D& fingerprint,
@@ -304,7 +308,7 @@ absl::StatusOr<LiquidCheckpoint3D> ReadCheckpointRecord(
     const LiquidDigest3D& fingerprint,
     LiquidCacheLimits3D limits
 ) {
-  auto frame = ReadFrame(root, reference.clock.frame_ordinal, fingerprint, limits);
+  auto frame = ReadVerifiedPointFrame(root, reference.clock.frame_ordinal, fingerprint, limits);
   if (!frame.ok()) {
     return frame.status();
   }
@@ -323,7 +327,7 @@ absl::StatusOr<LiquidCheckpoint3D> ReadCheckpointRecord(
   return std::move(*checkpoint);
 }
 template <typename Visit>
-absl::Status VisitReferences(const fs::path& root, Visit visit) {
+absl::Status VisitCheckpointReferenceOrdinals(const fs::path& root, Visit visit) {
   std::error_code error;
   fs::directory_iterator iterator(root / "checkpoints", error);
   if (error) {
@@ -345,15 +349,15 @@ absl::Status VisitReferences(const fs::path& root, Visit visit) {
   }
   return error ? Failure(absl::StatusCode::kUnavailable) : absl::OkStatus();
 }
-struct RetainedCheckpoints {
+struct RetainedCheckpointOrdinals {
   std::optional<std::uint64_t> newest_frame_ordinal;
   std::optional<std::uint64_t> second_newest_frame_ordinal;
 };
-absl::StatusOr<RetainedCheckpoints>
-Retained(const fs::path& root, const LiquidDigest3D& fingerprint, LiquidCacheLimits3D limits) {
-  RetainedCheckpoints retained;
-  STORE_TRY(VisitReferences(root, [&](std::uint64_t ordinal) {
-    auto reference = ReadReference(root, ordinal, fingerprint, limits);
+absl::StatusOr<RetainedCheckpointOrdinals>
+FindRetainedCheckpointOrdinals(const fs::path& root, const LiquidDigest3D& fingerprint, LiquidCacheLimits3D limits) {
+  RetainedCheckpointOrdinals retained;
+  STORE_TRY(VisitCheckpointReferenceOrdinals(root, [&](std::uint64_t ordinal) {
+    auto reference = ReadCheckpointReference(root, ordinal, fingerprint, limits);
     if (!reference.ok()) {
       return reference.status();
     }
@@ -367,13 +371,13 @@ Retained(const fs::path& root, const LiquidDigest3D& fingerprint, LiquidCacheLim
   }));
   return retained;
 }
-absl::Status Prune(
+absl::Status PruneSupersededCheckpointPayloads(
     const fs::path& root,
     const LiquidResolvedScene3D& scene,
     const LiquidDigest3D& fingerprint,
     LiquidCacheLimits3D limits
 ) {
-  auto retained = Retained(root, fingerprint, limits);
+  auto retained = FindRetainedCheckpointOrdinals(root, fingerprint, limits);
   if (!retained.ok()) {
     return retained.status();
   }
@@ -385,7 +389,7 @@ absl::Status Prune(
     if (!ordinal) {
       continue;
     }
-    auto reference = ReadReference(root, *ordinal, fingerprint, limits);
+    auto reference = ReadCheckpointReference(root, *ordinal, fingerprint, limits);
     if (!reference.ok()) {
       return reference.status();
     }
@@ -397,11 +401,11 @@ absl::Status Prune(
   if (!retained->second_newest_frame_ordinal) {
     return absl::OkStatus();
   }
-  return VisitReferences(root, [&](std::uint64_t ordinal) {
+  return VisitCheckpointReferenceOrdinals(root, [&](std::uint64_t ordinal) {
     if (ordinal >= *retained->second_newest_frame_ordinal) {
       return absl::OkStatus();
     }
-    auto reference = ReadReference(root, ordinal, fingerprint, limits);
+    auto reference = ReadCheckpointReference(root, ordinal, fingerprint, limits);
     if (!reference.ok()) {
       return reference.status();
     }
@@ -463,7 +467,7 @@ absl::Status PublishCheckpointRecord(
     LiquidCacheLimits3D limits,
     LiquidCachePublishControl3D control
 ) {
-  auto frame = ReadFrame(root, state.clock.frame_ordinal, fingerprint, limits);
+  auto frame = ReadVerifiedPointFrame(root, state.clock.frame_ordinal, fingerprint, limits);
   if (!frame.ok()) {
     return frame.status();
   }
@@ -493,7 +497,7 @@ absl::Status PublishCheckpointRecord(
   ));
   STORE_TRY(Check(control, LiquidCachePublishStage3D::kCheckpointPublished));
   STORE_TRY(Check(control, LiquidCachePublishStage3D::kBeforePrune));
-  return Prune(root, scene, fingerprint, limits);
+  return PruneSupersededCheckpointPayloads(root, scene, fingerprint, limits);
 }
 }  // namespace
 
@@ -531,7 +535,7 @@ absl::StatusOr<LiquidCache3D> LiquidCache3D::Create(
 }
 absl::StatusOr<LiquidCache3D> LiquidCache3D::Open(
     const fs::path& requested_directory,
-    const LiquidDigest3D& expected_fingerprint,
+    const LiquidDigest3D& expected_resolved_fingerprint,
     LiquidCacheLimits3D limits
 ) {
   auto absolute_directory = AbsoluteDirectory(requested_directory);
@@ -541,7 +545,7 @@ absl::StatusOr<LiquidCache3D> LiquidCache3D::Open(
   const auto& root_directory = *absolute_directory;
   NativeFile lease;
   STORE_TRY(Lease(root_directory, lease));
-  auto scene = ReadResolved(root_directory, expected_fingerprint, limits);
+  auto scene = ReadVerifiedResolvedScene(root_directory, expected_resolved_fingerprint, limits);
   if (!scene.ok()) {
     return scene.status();
   }
@@ -551,21 +555,21 @@ absl::StatusOr<LiquidCache3D> LiquidCache3D::Open(
   }
   LiquidCache3D result;
   result.root_directory_ = root_directory;
-  result.fingerprint_ = expected_fingerprint;
+  result.fingerprint_ = expected_resolved_fingerprint;
   result.resolved_reference_ = Reference(LiquidContentKind3D::kResolvedScene, bytes->values());
   result.limits_ = limits;
   return result;
 }
 absl::StatusOr<LiquidCache3D> LiquidCache3D::OpenForReplay(
     const fs::path& root_directory,
-    const LiquidDigest3D& expected_fingerprint,
+    const LiquidDigest3D& expected_resolved_fingerprint,
     LiquidCacheLimits3D limits
 ) {
   auto result = OpenForInspection(root_directory, limits);
   if (!result.ok()) {
     return result.status();
   }
-  if (result->fingerprint_ != expected_fingerprint) {
+  if (result->fingerprint_ != expected_resolved_fingerprint) {
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
   result->inspection_only_ = false;
@@ -592,7 +596,7 @@ LiquidCache3D::OpenForInspection(const fs::path& requested_directory, LiquidCach
   if (!fingerprint.ok()) {
     return fingerprint.status();
   }
-  auto canonical = ReadResolved(root_directory, *fingerprint, limits);
+  auto canonical = ReadVerifiedResolvedScene(root_directory, *fingerprint, limits);
   if (!canonical.ok()) {
     return canonical.status();
   }
@@ -608,7 +612,7 @@ LiquidCache3D::OpenForInspection(const fs::path& requested_directory, LiquidCach
 absl::StatusOr<LiquidResolvedScene3D> LiquidCache3D::ReadResolvedScene() const {
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
-  return ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
+  return ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
 }
 absl::Status LiquidCache3D::PublishFrame(
     const LiquidPointFrame3D& points,
@@ -629,17 +633,17 @@ absl::Status LiquidCache3D::PublishFrame(
   }
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
-  auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
+  auto scene = ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
   }
   if (points.clock.frame_ordinal != 0) {
-    auto initial = ReadFrame(root_directory_, 0, fingerprint_, limits_);
+    auto initial = ReadVerifiedPointFrame(root_directory_, 0, fingerprint_, limits_);
     if (!initial.ok()) {
       return initial.status().code() == absl::StatusCode::kNotFound ? Failure(absl::StatusCode::kFailedPrecondition)
                                                                     : initial.status();
     }
-    auto initial_reference = ReadReference(root_directory_, 0, fingerprint_, limits_);
+    auto initial_reference = ReadCheckpointReference(root_directory_, 0, fingerprint_, limits_);
     if (!initial_reference.ok()) {
       if (initial_reference.status().code() == absl::StatusCode::kNotFound) {
         return Failure(absl::StatusCode::kFailedPrecondition);
@@ -669,7 +673,7 @@ absl::Status LiquidCache3D::PublishFrame(
   const auto manifest_path = FramePath(root_directory_, points.clock.frame_ordinal);
   auto existing = Matches(manifest_path, manifest_bytes->values(), limits_, absl::StatusCode::kAlreadyExists);
   if (existing.ok()) {
-    auto prior = ReadFrame(root_directory_, points.clock.frame_ordinal, fingerprint_, limits_);
+    auto prior = ReadVerifiedPointFrame(root_directory_, points.clock.frame_ordinal, fingerprint_, limits_);
     if (!prior.ok()) {
       return prior.status();
     }
@@ -737,11 +741,11 @@ absl::Status LiquidCache3D::PublishFrame(
 absl::StatusOr<LiquidCommittedFrame3D> LiquidCache3D::ReadCommittedFrame(std::uint64_t frame_ordinal) const {
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
-  auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
+  auto scene = ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
   }
-  return ReadFrame(root_directory_, frame_ordinal, fingerprint_, limits_);
+  return ReadVerifiedPointFrame(root_directory_, frame_ordinal, fingerprint_, limits_);
 }
 absl::Status LiquidCache3D::PublishCheckpoint(
     const LiquidState3D& checkpoint,
@@ -757,7 +761,7 @@ absl::Status LiquidCache3D::PublishCheckpoint(
   }
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
-  auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
+  auto scene = ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
   }
@@ -778,11 +782,11 @@ absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t m
   }
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
-  auto scene = ReadResolved(root_directory_, fingerprint_, limits_, &resolved_reference_);
+  auto scene = ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
   }
-  auto retained = Retained(root_directory_, fingerprint_, limits_);
+  auto retained = FindRetainedCheckpointOrdinals(root_directory_, fingerprint_, limits_);
   if (!retained.ok()) {
     return retained.status();
   }
@@ -795,7 +799,7 @@ absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t m
   if (!checkpoint_frame_ordinal) {
     return Failure(absl::StatusCode::kNotFound);
   }
-  auto reference = ReadReference(root_directory_, *checkpoint_frame_ordinal, fingerprint_, limits_);
+  auto reference = ReadCheckpointReference(root_directory_, *checkpoint_frame_ordinal, fingerprint_, limits_);
   if (!reference.ok()) {
     return reference.status();
   }

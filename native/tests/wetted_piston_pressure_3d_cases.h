@@ -84,6 +84,7 @@ inline void ExpectSphereWallFlux(const LiquidSubstepScheduler3D& scheduler) {
 inline constexpr double kOverflowPistonSpeed = 0x1.ep1023;
 inline constexpr double kOverflowStepDuration = 0x1p-1025;
 
+// Records the first pressure cell and selected top/wall faces from a successful projection.
 struct ProjectionAudit {
   LiquidSubstepBackend3D actual;
   std::size_t cell_count = 0;
@@ -91,20 +92,20 @@ struct ProjectionAudit {
   std::size_t projection_count = 0;
   std::size_t wetted_stage_calls = 0;
   std::size_t piston_face_count = 0;
-  std::int32_t piston_face_z = 0;
+  std::int32_t piston_face_lattice_z = 0;
   std::size_t attached_patch_count = 0;
   int wetted_compiled_architecture = 0;
-  double volume = 0;
-  double rhs = 0;
-  double residual = 0;
-  double defect = 0;
-  double pressure = 0;
-  double top_velocity = 0;
+  double fluid_cell_volume = 0;
+  double integrated_pressure_rhs = 0;
+  double integrated_pressure_residual = 0;
+  double cell_constraint_defect = 0;
+  double cell_pressure = 0;
+  double corrected_top_normal_velocity = 0;
   double top_open_area = 0;
-  double top_distance = 0;
+  double top_pressure_gradient_distance = 0;
   double wall_open_area = 0;
-  double wall_speed = 0;
-  std::optional<double> wall_flux;
+  double wall_normal_velocity = 0;
+  std::optional<double> prescribed_wall_flux;
 };
 
 inline thread_local ProjectionAudit* active_audit = nullptr;
@@ -119,7 +120,7 @@ inline LiquidSubstepBackend3D Observe(ProjectionAudit& audit, LiquidSubstepBacke
     for (const auto& face : inputs.frozen.faces) {
       if (face.is_low_x_piston_face) {
         ++observed.piston_face_count;
-        observed.piston_face_z = face.face_index.lattice_index.z;
+        observed.piston_face_lattice_z = face.face_index.lattice_index.z;
       }
     }
     const auto result = observed.actual.wetted_piston(context, inputs, workspace);
@@ -141,22 +142,22 @@ inline LiquidSubstepBackend3D Observe(ProjectionAudit& audit, LiquidSubstepBacke
       ++observed.projection_count;
       observed.cell_count = problem.cells.size();
       observed.face_count = problem.faces.size();
-      observed.volume = problem.cells.front().fluid_volume;
-      observed.rhs = result->integrated_rhs.front();
-      observed.residual = result->true_residuals.front();
-      observed.defect = result->cell_constraint_defects.front();
-      observed.pressure = result->cell_pressures.front();
+      observed.fluid_cell_volume = problem.cells.front().fluid_volume;
+      observed.integrated_pressure_rhs = result->integrated_rhs.front();
+      observed.integrated_pressure_residual = result->true_residuals.front();
+      observed.cell_constraint_defect = result->cell_constraint_defects.front();
+      observed.cell_pressure = result->cell_pressures.front();
       for (std::size_t i = 0; i < problem.faces.size(); ++i) {
         const auto& face = problem.faces[i];
         if (face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == 1) {
-          observed.top_velocity = result->corrected_face_velocities[i];
+          observed.corrected_top_normal_velocity = result->corrected_face_velocities[i];
           observed.top_open_area = face.open_area;
-          observed.top_distance = face.pressure_gradient_distance;
+          observed.top_pressure_gradient_distance = face.pressure_gradient_distance;
         }
         if (face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == 0) {
           observed.wall_open_area = face.open_area;
-          observed.wall_speed = face.wall_normal_velocity;
-          observed.wall_flux = face.prescribed_wall_flux;
+          observed.wall_normal_velocity = face.wall_normal_velocity;
+          observed.prescribed_wall_flux = face.prescribed_wall_flux;
         }
       }
     }
@@ -181,27 +182,31 @@ inline void CheckPlaneProjection(
   ASSERT_EQ(audit.projection_count, 1);
   EXPECT_EQ(audit.cell_count, 1);
   EXPECT_EQ(audit.face_count, 6);
-  EXPECT_NEAR(audit.volume, std::min(height, 1.0), 1e-14);
+  EXPECT_NEAR(audit.fluid_cell_volume, std::min(height, 1.0), 1e-14);
   EXPECT_DOUBLE_EQ(audit.wall_open_area, 0);
-  EXPECT_DOUBLE_EQ(audit.wall_speed, speed);
-  ASSERT_TRUE(audit.wall_flux.has_value());
-  EXPECT_NEAR(*audit.wall_flux, flux, 1e-14);
+  EXPECT_DOUBLE_EQ(audit.wall_normal_velocity, speed);
+  ASSERT_TRUE(audit.prescribed_wall_flux.has_value());
+  EXPECT_NEAR(*audit.prescribed_wall_flux, flux, 1e-14);
   EXPECT_DOUBLE_EQ(audit.top_open_area, 1);
-  EXPECT_DOUBLE_EQ(audit.top_distance, distance);
-  EXPECT_NEAR(audit.rhs, flux, 1e-14);
-  EXPECT_NEAR(audit.pressure, flux * distance / kDuration, 1e-5);
-  EXPECT_NEAR(audit.top_velocity, flux, 2e-6);
-  EXPECT_NEAR(audit.defect, (audit.top_velocity - flux) / audit.volume, 1e-14);
-  EXPECT_NEAR(audit.defect, -audit.residual / audit.volume, 1e-14);
+  EXPECT_DOUBLE_EQ(audit.top_pressure_gradient_distance, distance);
+  EXPECT_NEAR(audit.integrated_pressure_rhs, flux, 1e-14);
+  EXPECT_NEAR(audit.cell_pressure, flux * distance / kDuration, 1e-5);
+  EXPECT_NEAR(audit.corrected_top_normal_velocity, flux, 2e-6);
+  EXPECT_NEAR(
+      audit.cell_constraint_defect,
+      (audit.corrected_top_normal_velocity - flux) / audit.fluid_cell_volume,
+      1e-14
+  );
+  EXPECT_NEAR(audit.cell_constraint_defect, -audit.integrated_pressure_residual / audit.fluid_cell_volume, 1e-14);
   const auto& measurement = scheduler.diagnostics().accepted_measurement;
   ASSERT_TRUE(measurement.has_value());
   EXPECT_NEAR(measurement->step_start_inward_piston_flux_m3_per_s, flux, 1e-14);
   EXPECT_NEAR(measurement->pressure_rhs_l2_m3_per_s, std::abs(flux), 1e-14);
   std::cout << "wall_area_m2=" << height << " speed_m_s=" << speed << " expected_flux_m3_s=" << flux
             << " native_flux_m3_s=" << measurement->step_start_inward_piston_flux_m3_per_s
-            << " original_rhs_m3_s=" << audit.rhs
-            << " independent_defect_s=" << (audit.top_velocity - flux) / audit.volume
-            << " native_defect_s=" << audit.defect << '\n';
+            << " original_rhs_m3_s=" << audit.integrated_pressure_rhs
+            << " independent_defect_s=" << (audit.corrected_top_normal_velocity - flux) / audit.fluid_cell_volume
+            << " native_defect_s=" << audit.cell_constraint_defect << '\n';
 }
 
 inline void ExpectBroadSphereRefusal(const ProjectionAudit& audit) {
@@ -210,7 +215,7 @@ inline void ExpectBroadSphereRefusal(const ProjectionAudit& audit) {
   // reaching two columns without any receiver.
   EXPECT_EQ(audit.wetted_stage_calls, 1);
   EXPECT_EQ(audit.piston_face_count, 1);
-  EXPECT_EQ(audit.piston_face_z, 2);
+  EXPECT_EQ(audit.piston_face_lattice_z, 2);
   EXPECT_EQ(audit.projection_count, 0);
 
   // Independently bound this single disk against the floor and the z walls.

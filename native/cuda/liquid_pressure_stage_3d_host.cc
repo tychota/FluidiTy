@@ -245,16 +245,16 @@ absl::Status Execute(
   device.local_limit = prepared.stopping.volume_scaled_limit;
   FLUIDITY_PRESSURE_TRY(PackHierarchy(prepared, levels, blocks, indices, coefficients, device));
   // All products below are bounded by the checked 4096-cell/33-level builder.
-  FLUIDITY_PRESSURE_RANGE(fine, float, kPressureFineScratch, 6 * device.unknown_count);
-  FLUIDITY_PRESSURE_RANGE(coarse, double, kPressureCoarseScratch, 3 * device.level_unknown_count);
-  FLUIDITY_PRESSURE_RANGE(rows, PressureRow3D, kPressureRows, 2 * cell_count);
-  FLUIDITY_PRESSURE_RANGE(output, double, kPressureOutput, 4 * cell_count + face_count);
-  FLUIDITY_PRESSURE_RANGE(state, PressureState3D, kPressureState, 1);
-  device.fine_scratch = fine.device;
-  device.coarse_scratch = coarse.device;
-  device.rows = rows.device;
-  device.output = output.device;
-  device.state = state.device;
+  FLUIDITY_PRESSURE_RANGE(fine_unknown_scratch, float, kPressureFineScratch, 6 * device.unknown_count);
+  FLUIDITY_PRESSURE_RANGE(coarse_unknown_scratch, double, kPressureCoarseScratch, 3 * device.level_unknown_count);
+  FLUIDITY_PRESSURE_RANGE(original_and_physical_rows, PressureRow3D, kPressureRows, 2 * cell_count);
+  FLUIDITY_PRESSURE_RANGE(pressure_output_range, double, kPressureOutput, 4 * cell_count + face_count);
+  FLUIDITY_PRESSURE_RANGE(pressure_state_range, PressureState3D, kPressureState, 1);
+  device.fine_scratch = fine_unknown_scratch.device;
+  device.coarse_scratch = coarse_unknown_scratch.device;
+  device.rows = original_and_physical_rows.device;
+  device.output = pressure_output_range.device;
+  device.state = pressure_state_range.device;
   for (std::size_t ordinal = 0; ordinal < cell_count; ++ordinal) {
     const auto& cell = prepared.system.cells()[ordinal];
     cells.pinned[ordinal] = {
@@ -269,10 +269,10 @@ absl::Status Execute(
   }
   for (std::size_t ordinal = 0; ordinal < face_count; ++ordinal) {
     const auto& link = prepared.system.links()[ordinal];
-    double jump = 0;
+    double pressure_jump = 0;
     double exterior_pressure = 0;
     if (const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link)) {
-      jump = internal->pressure_jump;
+      pressure_jump = internal->pressure_jump;
     } else if (const auto* boundary = std::get_if<DirichletMacPressureLink3D>(&link.pressure_link)) {
       exterior_pressure = boundary->exterior_pressure;
     }
@@ -285,7 +285,7 @@ absl::Status Execute(
         .conductance = link.conductance,
         .predicted_normal_velocity = link.predicted_normal_velocity,
         .prescribed_wall_flux = link.prescribed_wall_flux,
-        .jump = jump,
+        .jump = pressure_jump,
         .exterior_pressure = exterior_pressure,
     };
   }
@@ -304,11 +304,11 @@ absl::Status Execute(
             .memset_async(range.device, 0, range.pinned.size_bytes(), static_cast<cudaStream_t>(arena.stream()))
     );
   };
-  FLUIDITY_PRESSURE_TRY(clear(fine));
-  FLUIDITY_PRESSURE_TRY(clear(coarse));
-  FLUIDITY_PRESSURE_TRY(clear(rows));
-  FLUIDITY_PRESSURE_TRY(clear(output));
-  FLUIDITY_PRESSURE_TRY(clear(state));
+  FLUIDITY_PRESSURE_TRY(clear(fine_unknown_scratch));
+  FLUIDITY_PRESSURE_TRY(clear(coarse_unknown_scratch));
+  FLUIDITY_PRESSURE_TRY(clear(original_and_physical_rows));
+  FLUIDITY_PRESSURE_TRY(clear(pressure_output_range));
+  FLUIDITY_PRESSURE_TRY(clear(pressure_state_range));
   for (std::size_t first_iteration = 0; first_iteration < options.max_iterations;
        first_iteration += kMacPressureIterationsPerBatch3D) {
     const auto iteration_count = std::min(kMacPressureIterationsPerBatch3D, options.max_iterations - first_iteration);
@@ -316,17 +316,17 @@ absl::Status Execute(
     FLUIDITY_PRESSURE_TRY(arena.RecordRuntimeResult(
         LiquidArenaRuntimeCalls().launch_pressure_batch(device, first_iteration == 0, iteration_count, arena.stream())
     ));
-    FLUIDITY_PRESSURE_TRY(CopyLiquidRange3D(arena, state, false));
+    FLUIDITY_PRESSURE_TRY(CopyLiquidRange3D(arena, pressure_state_range, false));
     FLUIDITY_PRESSURE_TRY(FinishLiquidDispatch3D(arena));
-    if (state.pinned[0].error != PressureError3D::kNone || state.pinned[0].converged) {
+    if (pressure_state_range.pinned[0].error != PressureError3D::kNone || pressure_state_range.pinned[0].converged) {
       break;
     }
   }
-  const auto& report = state.pinned[0];
-  if (report.compiled_architecture != 1200) {
+  const auto& pressure_device_report = pressure_state_range.pinned[0];
+  if (pressure_device_report.compiled_architecture != 1200) {
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
-  switch (report.error) {
+  switch (pressure_device_report.error) {
     case PressureError3D::kNone:
       break;
     case PressureError3D::kRange:
@@ -337,12 +337,13 @@ absl::Status Execute(
     case PressureError3D::kExhausted:
       return absl::Status(absl::StatusCode::kAborted, {});
   }
-  if (!report.converged) {
+  if (!pressure_device_report.converged) {
     return absl::Status(absl::StatusCode::kInternal, {});
   }
-  FLUIDITY_PRESSURE_TRY(CopyLiquidRange3D(arena, output, false));
+  FLUIDITY_PRESSURE_TRY(CopyLiquidRange3D(arena, pressure_output_range, false));
   FLUIDITY_PRESSURE_TRY(FinishLiquidDispatch3D(arena));
-  projection = BoundedCudaPressureAccess3D::Publish(workspace, prepared, output.pinned, report);
+  projection =
+      BoundedCudaPressureAccess3D::Publish(workspace, prepared, pressure_output_range.pinned, pressure_device_report);
   return absl::OkStatus();
 }
 #undef FLUIDITY_PRESSURE_RANGE

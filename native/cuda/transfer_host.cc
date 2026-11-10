@@ -153,9 +153,9 @@ absl::Status CollectDeposit(
       device_particles,
       particles.size(),
       {
-          .mass = scales.mass,
-          .pure_momentum = scales.pure_momentum,
-          .stress_force = scales.stress_force,
+          .mass_per_quantum = scales.mass,
+          .pure_momentum_per_quantum = scales.pure_momentum,
+          .stress_force_per_quantum = scales.stress_force,
       },
       device_face_accumulators,
       face_accumulators.size(),

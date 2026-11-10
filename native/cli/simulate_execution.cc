@@ -53,7 +53,7 @@ std::string ClockMembers(const LiquidClock3D& clock) {
 std::string Hex(const LiquidDigest3D& digest) {
   return LiquidDigestHex3D(digest).data();
 }
-absl::StatusOr<double> FrameTime(std::uint64_t frame) {
+absl::StatusOr<double> CompletedFrameTime(std::uint64_t frame) {
   if (frame > 9007199254740991ULL) {
     return absl::OutOfRangeError("");
   }
@@ -63,8 +63,8 @@ absl::StatusOr<double> FrameTime(std::uint64_t frame) {
   }
   return time;
 }
-absl::Status CompatibleClock(const LiquidState3D& state) {
-  auto time = FrameTime(state.clock.frame_ordinal);
+absl::Status ValidateCompletedFrameClock(const LiquidState3D& state) {
+  auto time = CompletedFrameTime(state.clock.frame_ordinal);
   if (!time.ok()) {
     return time.status();
   }
@@ -101,7 +101,7 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   }
   return result + ']';
 }
-absl::StatusOr<LiquidPointFrame3D> Points(const LiquidState3D& state) {
+absl::StatusOr<LiquidPointFrame3D> BuildPointFrame(const LiquidState3D& state) {
   LiquidPointFrame3D result;
   result.clock = state.clock;
   auto points = LiquidRecords3D<LiquidPoint3D>::Create(state.particles.size());
@@ -126,13 +126,16 @@ absl::StatusOr<LiquidPointFrame3D> Points(const LiquidState3D& state) {
   result.points = std::move(*points);
   return result;
 }
-// Verifies existing publication without invoking a writer, including preview and replay.
-absl::Status VerifyFrame(const LiquidCache3D& cache, const LiquidState3D& state, bool required) {
-  auto existing = cache.ReadCommittedFrame(state.clock.frame_ordinal);
-  if (!existing.ok()) {
-    return !required && absl::IsNotFound(existing.status()) ? absl::OkStatus() : existing.status();
+// Compare regenerated point bytes with the committed manifest for preview or replay.
+// Intermediate frames may lack a publication. Replay requires its final frame.
+absl::Status
+VerifyCommittedPointFrame(const LiquidCache3D& cache, const LiquidState3D& state, bool require_publication) {
+  auto committed_frame = cache.ReadCommittedFrame(state.clock.frame_ordinal);
+  if (!committed_frame.ok()) {
+    return !require_publication && absl::IsNotFound(committed_frame.status()) ? absl::OkStatus()
+                                                                              : committed_frame.status();
   }
-  auto points = Points(state);
+  auto points = BuildPointFrame(state);
   if (!points.ok()) {
     return points.status();
   }
@@ -140,9 +143,9 @@ absl::Status VerifyFrame(const LiquidCache3D& cache, const LiquidState3D& state,
   if (!bytes.ok()) {
     return bytes.status();
   }
-  return VerifyLiquidContent3D(bytes->values(), existing->manifest.points, LiquidContentKind3D::kPoints);
+  return VerifyLiquidContent3D(bytes->values(), committed_frame->manifest.points, LiquidContentKind3D::kPoints);
 }
-absl::StatusOr<LiquidState3D> InitialState(const Command& command, LiquidResolvedSceneView3D scene) {
+absl::StatusOr<LiquidState3D> ReadInitialState(const Command& command, LiquidResolvedSceneView3D scene) {
   const LiquidUpstreamContent3D* initial_reference = nullptr;
   for (const auto& upstream : scene.upstream) {
     if (upstream.role != LiquidUpstreamRole3D::kInitialParticles || initial_reference != nullptr) {
@@ -550,7 +553,7 @@ absl::StatusOr<std::string> ExecuteCommand(
   }
   diagnostic->field = "frame";
   diagnostic->cause = "frame ordinal cannot represent a distinct model-v1 target time";
-  auto target_time = FrameTime(target_frame);
+  auto target_time = CompletedFrameTime(target_frame);
   if (!target_time.ok()) {
     return target_time.status();
   }
@@ -559,7 +562,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     diagnostic->field = "initial-state";
     diagnostic->cause =
         "initial FLST does not match exact upstream identity, geometry, seed, sources or frame-zero clock";
-    auto decoded = InitialState(command, scene.View());
+    auto decoded = ReadInitialState(command, scene.View());
     if (!decoded.ok()) {
       return decoded.status();
     }
@@ -640,8 +643,8 @@ absl::StatusOr<std::string> ExecuteCommand(
       .capacities = kCapacities,
       .capacity_replay_reservations = {},
   };
-  LiquidState3D starting;
-  bool loaded = false;
+  LiquidState3D starting_state;
+  bool loaded_checkpoint = false;
   if (cache) {
     std::uint64_t maximum = target_frame;
     if (step) {
@@ -653,36 +656,36 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
     auto checkpoint = cache->ReadCheckpoint(maximum);
     if (checkpoint.ok()) {
-      starting = std::move(checkpoint->state);
+      starting_state = std::move(checkpoint->state);
       resume = checkpoint->resume;
-      loaded = true;
+      loaded_checkpoint = true;
     } else if (!absl::IsNotFound(checkpoint.status()) || !initial) {
       return checkpoint.status();
     }
   }
-  if (!loaded) {
+  if (!loaded_checkpoint) {
     if (!initial) {
       diagnostic->field = "initial-state";
       diagnostic->cause = "a verified frame-zero upstream state is required for reconstruction";
-      auto decoded = InitialState(command, scene.View());
+      auto decoded = ReadInitialState(command, scene.View());
       if (!decoded.ok()) {
         return decoded.status();
       }
       initial = std::move(*decoded);
     }
-    starting = std::move(*initial);
+    starting_state = std::move(*initial);
   }
   diagnostic->field = "clock";
   diagnostic->cause = "checkpoint clock does not match the model-v1 absolute frame ordinal divided by 24 seconds";
-  EXEC_TRY(CompatibleClock(starting));
-  job.SetSettledClock(scene.backend, starting.clock, loaded);
+  EXEC_TRY(ValidateCompletedFrameClock(starting_state));
+  job.SetSettledClock(scene.backend, starting_state.clock, loaded_checkpoint);
   EXEC_TRY(job.CheckForJobStopRequest());
   if (step) {
-    if (starting.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
+    if (starting_state.clock.frame_ordinal == std::numeric_limits<std::uint64_t>::max()) {
       return absl::OutOfRangeError("");
     }
-    target_frame = starting.clock.frame_ordinal + 1;
-    target_time = FrameTime(target_frame);
+    target_frame = starting_state.clock.frame_ordinal + 1;
+    target_time = CompletedFrameTime(target_frame);
     if (!target_time.ok()) {
       return target_time.status();
     }
@@ -738,7 +741,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     operations = cuda_backend->operations(/*enable_gather_runs=*/true, /*enable_gathered_field_batches=*/true);
   }
 #endif
-  auto scheduler = LiquidSubstepScheduler3D::Create(starting, scene.View().scene, options, operations);
+  auto scheduler = LiquidSubstepScheduler3D::Create(starting_state, scene.View().scene, options, operations);
   const absl::Cleanup begin_drain = [&] {
     if (measurement) {
       measurement->Enter(JobWallPhase::kDrain);
@@ -785,7 +788,7 @@ absl::StatusOr<std::string> ExecuteCommand(
   // Synchronous writer boundary over a real asynchronous D2H queue. Each call
   // drains its source before the next whole-frame AdvanceFrame; the host writer
   // lease remains alive through checked serialization and manifest publication.
-  auto complete_frame = [&](bool publish) -> absl::Status {
+  auto finish_frame_snapshot = [&](bool publish) -> absl::Status {
     if (measurement) {
       measurement->Enter(JobWallPhase::kSnapshotCache);
     }
@@ -844,9 +847,9 @@ absl::StatusOr<std::string> ExecuteCommand(
       return absl::OkStatus();
     }
     if (!publish) {
-      return VerifyFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame);
+      return VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame);
     }
-    auto points = Points(*state);
+    auto points = BuildPointFrame(*state);
     if (!points.ok()) {
       return points.status();
     }
@@ -881,7 +884,7 @@ absl::StatusOr<std::string> ExecuteCommand(
   };
   diagnostic->field = "frame";
   diagnostic->cause = "completed state, point publication or deterministic replay verification failed";
-  EXEC_TRY(complete_frame(!read_only && starting.clock.frame_ordinal == 0));
+  EXEC_TRY(finish_frame_snapshot(!read_only && starting_state.clock.frame_ordinal == 0));
   EXEC_TRY(job.CheckForJobStopRequest());
   Observations observations{
       .command = command,
@@ -902,10 +905,10 @@ absl::StatusOr<std::string> ExecuteCommand(
               .enter = measurement ? &JobMeasurement::EnterWork : nullptr,
           },
   };
-  for (std::uint64_t frame = starting.clock.frame_ordinal; frame < target_frame;) {
+  for (std::uint64_t frame = starting_state.clock.frame_ordinal; frame < target_frame;) {
     EXEC_TRY(job.CheckForJobStopRequest());
     ++frame;
-    auto time = FrameTime(frame);
+    auto time = CompletedFrameTime(frame);
     if (!time.ok()) {
       return time.status();
     }
@@ -938,7 +941,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     // frame schedule advances the monotonic heartbeat clock.
     job.SetSettledClock(scene.backend, scheduler->committed().clock);
     const bool publish = !read_only && (frame >= command.frame_start || frame % 10 == 0);
-    EXEC_TRY(complete_frame(publish));
+    EXEC_TRY(finish_frame_snapshot(publish));
   }
   auto result = StateMembers(scheduler->committed(), scheduler->diagnostics());
   if (!result.ok()) {
