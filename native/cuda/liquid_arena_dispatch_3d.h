@@ -14,9 +14,14 @@ struct LiquidTypedRange3D {
 };
 // Validate byte extent and both pointer alignments before typed access. Borrow
 // ends on growth or poison; callers check readiness before every staging phase.
+// A host staging borrow can defer device scratch accounting until dispatch.
 template <typename Value>
-absl::StatusOr<LiquidTypedRange3D<Value>>
-CheckedLiquidRange3D(CudaLiquidArena3D& arena, CudaLiquidRange3D name, std::size_t count) {
+absl::StatusOr<LiquidTypedRange3D<Value>> CheckedLiquidRange3D(
+    CudaLiquidArena3D& arena,
+    CudaLiquidRange3D name,
+    std::size_t count,
+    bool observe_device_scratch = true
+) {
   static_assert(std::is_trivially_copyable_v<Value>);
   const auto ready = arena.RecordRuntimeResult(cudaSuccess);
   if (!ready.ok()) {
@@ -30,7 +35,9 @@ CheckedLiquidRange3D(CudaLiquidArena3D& arena, CudaLiquidRange3D name, std::size
       || reinterpret_cast<std::uintptr_t>(range.pinned.data()) % alignof(Value) != 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  arena.ObserveDeviceScratch(name, count * sizeof(Value));
+  if (observe_device_scratch) {
+    arena.ObserveDeviceScratch(name, count * sizeof(Value));
+  }
   return LiquidTypedRange3D<Value>{
       reinterpret_cast<Value*>(range.device),
       {reinterpret_cast<Value*>(range.pinned.data()), count},
