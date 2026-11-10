@@ -18,9 +18,8 @@ namespace {
 namespace files = liquid_cache_files_internal;
 
 constexpr char kCompatibilityFile[] = ".simulate-cuda-compatibility";
-constexpr std::string_view kRecordPrefix = "FLCUDA1\n";
 constexpr std::size_t kHexDigestLength = 64;
-constexpr std::size_t kRecordLength = kRecordPrefix.size() + kHexDigestLength + 1;
+constexpr std::size_t kRecordLength = kCudaCompatibilityRecordPrefix.size() + kHexDigestLength + 1;
 constexpr LiquidCacheLimits3D kRecordLimits{.maximum_bytes = kRecordLength};
 
 // The NVIDIA management library is loaded only during CUDA execution admission.
@@ -88,7 +87,8 @@ bool IsLowercaseHex(char character) {
 }
 }  // namespace
 
-absl::StatusOr<std::string> CudaCompatibilityRecord(int device_ordinal, const LiquidDigest3D& resolved_fingerprint) {
+absl::StatusOr<CudaExecutionIdentity>
+QueryCudaExecutionIdentity(int device_ordinal, const LiquidDigest3D& resolved_fingerprint) {
   auto properties = cuda_internal::QueryLiquidCudaDevice3D(device_ordinal);
   if (!properties.ok()) {
     return properties.status();
@@ -116,22 +116,18 @@ absl::StatusOr<std::string> CudaCompatibilityRecord(int device_ordinal, const Li
     return driver_release.status();
   }
 
-  // The UUID is a fixed 16-byte prefix after the domain. Remaining fields
-  // are length-delimited or decimal lines. The Windows hybrid runtime comes
-  // from the display driver; its exact release and reported API are both bound.
-  std::string identity = "fluidity.simulate.cuda-compatibility.v1\n";
-  identity.append(properties->uuid.bytes, sizeof(properties->uuid.bytes));
-  identity += '\n';
-  identity += std::to_string(properties->major) + '\n';
-  identity += std::to_string(properties->minor) + '\n';
-  identity += std::to_string(driver_release->size()) + '\n';
-  identity += *driver_release + '\n';
-  identity += std::to_string(driver_api_version) + '\n';
-  identity += std::to_string(runtime_api_version) + '\n';
-  identity += std::to_string(CUDART_VERSION) + '\n';
-  identity += LiquidDigestHex3D(resolved_fingerprint).data();
-  const auto digest = LiquidContentDigest3D(files::Bytes(identity));
-  return std::string(kRecordPrefix) + LiquidDigestHex3D(digest).data() + '\n';
+  // The Windows hybrid runtime comes from the display driver. Bind its
+  // exact release and both reported API versions to the admission sample.
+  const CudaExecutionIdentityInputs inputs{
+      .uuid = std::to_array(properties->uuid.bytes),
+      .compute_major = properties->major,
+      .compute_minor = properties->minor,
+      .driver_release = *driver_release,
+      .driver_api_version = driver_api_version,
+      .runtime_api_version = runtime_api_version,
+      .compiled_runtime_version = CUDART_VERSION,
+  };
+  return BuildCudaExecutionIdentity(inputs, resolved_fingerprint);
 }
 
 absl::StatusOr<std::string> ReadCudaCompatibilityRecord(const std::filesystem::path& verified_cache_directory) {
@@ -144,8 +140,8 @@ absl::StatusOr<std::string> ReadCudaCompatibilityRecord(const std::filesystem::p
   }
   const auto values = bytes->values();
   const std::string_view record(reinterpret_cast<const char*>(values.data()), values.size());
-  if (!record.starts_with(kRecordPrefix) || record.back() != '\n'
-      || !std::ranges::all_of(record.substr(kRecordPrefix.size(), kHexDigestLength), IsLowercaseHex)) {
+  if (!record.starts_with(kCudaCompatibilityRecordPrefix) || record.back() != '\n'
+      || !std::ranges::all_of(record.substr(kCudaCompatibilityRecordPrefix.size(), kHexDigestLength), IsLowercaseHex)) {
     return absl::DataLossError("");
   }
   return std::string(record);

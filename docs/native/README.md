@@ -455,6 +455,13 @@ terminal status, total actual physical attempts and the number retained by
 complete frame schedules. Accepted substeps in an interrupted or replayed-away
 schedule contribute actual work. A single `step` stops inside a schedule.
 
+A successful measured CUDA `run` that writes to its cache also reports
+`cuda_execution_device_digest` and `cuda_execution_device_index` in the
+terminal result. The lowercase BLAKE3 digest binds the CUDA device UUID,
+compute capability and exact driver/runtime identity sampled at cache
+admission. It is independent of the scene fingerprint and CUDA ordinal. The
+integer index identifies the device selected for that process.
+
 The `host_wall` phases partition elapsed monotonic seconds from job creation
 through teardown and terminal status persistence. Cold setup includes cache
 and backend admission and initial reservations. Emit, activation and field
