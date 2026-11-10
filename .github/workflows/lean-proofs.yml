@@ -1,0 +1,139 @@
+name: Lean proofs
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Pinned Lean and independent checker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_PYTHON: "3.13.18"
+      UV_PYTHON_PREFERENCE: only-managed
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          enable-cache: false
+
+      - name: Install pinned Lean and fetch the Mathlib cache
+        run: |
+          lean_release="$(python3 -c '
+          import json
+          from pathlib import Path
+
+          pins = json.loads(Path("tools/proof-toolchain.json").read_text(encoding="utf-8"))
+          print(pins["lean_tag"], pins["lean_linux_x64_archive_sha256"])
+          ')"
+          read -r lean_tag lean_archive_sha256 <<< "$lean_release"
+          lean_directory="lean-${lean_tag#v}-linux"
+          lean_root="$RUNNER_TEMP/fluidity-lean"
+          lean_archive="$lean_root/$lean_directory.tar.zst"
+          mkdir -p "$lean_root"
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$lean_archive" \
+            "https://github.com/leanprover/lean4/releases/download/$lean_tag/$lean_directory.tar.zst"
+          printf '%s  %s\n' "$lean_archive_sha256" "$lean_archive" | sha256sum --check
+          tar --zstd -xf "$lean_archive" -C "$lean_root"
+
+          lean_bin="$lean_root/$lean_directory/bin"
+          export PATH="$lean_bin:$PATH"
+          printf '%s\n' "$lean_bin" >> "$GITHUB_PATH"
+          cd proofs
+          lake exe cache get
+
+      - name: Build pinned independent proof tools
+        run: |
+          pins="$(python3 -c '
+          import json
+          from pathlib import Path
+
+          pins = json.loads(Path("tools/proof-toolchain.json").read_text(encoding="utf-8"))
+          print(pins["rust_version"], pins["exporter_version"], pins["nano_lean_commit"])
+          ')"
+          read -r rust_version exporter_version nano_commit <<< "$pins"
+          rustup toolchain install "$rust_version" --profile minimal
+          rust_version_output="$(rustc +"$rust_version" --version)"
+          [[ "$rust_version_output" == "rustc $rust_version "* ]]
+
+          tool_root="$RUNNER_TEMP/fluidity-proof-tools"
+          nano_source="$RUNNER_TEMP/fluidity-nano-lean"
+          nano_url="https://github.com/sdiehl/nano-lean.git"
+          git init --quiet "$nano_source"
+          git -C "$nano_source" fetch --quiet --depth=1 "$nano_url" "$nano_commit"
+          git -C "$nano_source" checkout --quiet --detach FETCH_HEAD
+          actual_nano_commit="$(git -C "$nano_source" rev-parse HEAD)"
+          [[ "$actual_nano_commit" == "$nano_commit" ]]
+          archive_sha256="$(git -C "$nano_source" archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)"
+
+          cargo +"$rust_version" install --locked --root "$tool_root" --version "$exporter_version" olean-export
+          cargo +"$rust_version" install --locked --root "$tool_root" --path "$nano_source" --bin nl-fast
+          checker_sha256="$(sha256sum "$tool_root/bin/nl-fast" | cut -d ' ' -f 1)"
+          python3 - "$tool_root/checker-provenance.json" "$actual_nano_commit" "$rust_version" "$rust_version_output" \
+            "$checker_sha256" "$nano_url" "$archive_sha256" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          path, commit, rust, rust_output, checker_sha, source, archive_sha = sys.argv[1:]
+          receipt = {
+              "schema_version": 1,
+              "nano_lean_commit": commit,
+              "rust_version": rust,
+              "rust_version_output": rust_output,
+              "checker_sha256": checker_sha,
+              "source_url": source,
+              "git_archive_sha256": archive_sha,
+              "build_command": f"cargo +{rust} install --locked --root <tool-root> --path <nano-checkout> --bin nl-fast",
+          }
+          Path(path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Build, audit, export, and independently check the proofs
+        run: |
+          lean_executable="$(command -v lean)"
+          tool_root="$RUNNER_TEMP/fluidity-proof-tools"
+          proof_output="$RUNNER_TEMP/fluidity-proof-verification"
+          SECONDS=0
+          uv run --project reference --locked --no-dev python tools/verify_proofs.py \
+            --lean-bin "$(dirname "$lean_executable")" \
+            --exporter "$tool_root/bin/olean-export" \
+            --checker "$tool_root/bin/nl-fast" \
+            --checker-provenance "$tool_root/checker-provenance.json" \
+            --output "$proof_output"
+          python3 - "$proof_output/evidence.json" "$GITHUB_STEP_SUMMARY" "$(git rev-parse HEAD)" "$SECONDS" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          evidence_path, summary_path, commit, seconds = sys.argv[1:]
+          evidence = json.loads(Path(evidence_path).read_text(encoding="utf-8"))
+          for command in evidence["commands"]:
+              argv = command["argv"]
+              if argv[1:3] == ["env", "lean"] or Path(argv[0]).name == "nl-fast":
+                  transcript = command["output"]
+                  for prefix in (Path.cwd(), Path(evidence_path).parents[1], Path(argv[0]).parent):
+                      transcript = transcript.replace(str(prefix), "<runner-path>")
+                  print(transcript, end="")
+
+          fields = ("pins", "lean_version", "exporter_version", "checker_provenance", "sha256", "axioms")
+          summary = {field: evidence[field] for field in fields}
+          with Path(summary_path).open("a", encoding="utf-8") as output:
+              output.write(f"## Lean proof verification\n\nCommit `{commit}`. "
+                           f"Checked {len(summary['axioms'])} theorem closures in {seconds} s.\n\n"
+                           "```json\n" + json.dumps(summary, indent=2) + "\n```\n")
+          PY

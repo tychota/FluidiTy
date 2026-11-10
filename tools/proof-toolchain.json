@@ -1,6 +1,7 @@
 {
   "lean_tag": "v4.34.1",
   "lean_commit": "5045d0056413266e57c625dcd7c365b10e377c52",
+  "lean_linux_x64_archive_sha256": "47bf4bbd78f70c2e9670598ab7124d92b6efb7330ff33e5fbb4030f6fd72e4e4",
   "mathlib_commit": "d13f23b723b8a846827a245b89c10fc7d3f11612",
   "nano_lean_commit": "54ce971a5ac2513a1bac0ac9bca73f672196c0f2",
   "rust_version": "1.97.1",
