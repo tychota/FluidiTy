@@ -44,6 +44,7 @@ include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
+  native/src/liquid_isolated_drop_3d.cc
   native/src/liquid_substep_3d.cc
   native/src/wetted_piston_3d.cc
   native/src/liquid_substep_3d_cpu.cc
@@ -200,6 +201,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc
     native/tests/test_wetted_piston_3d.cc
+    native/tests/test_liquid_isolated_drop_3d.cc
     native/tests/test_liquid_substep_3d.cc
     native/tests/test_liquid_cache_3d.cc
     native/tests/test_liquid_cache_store_3d.cc
