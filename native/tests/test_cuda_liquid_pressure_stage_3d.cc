@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <set>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -314,6 +315,107 @@ class PressureRuntimeScope {
   static inline int failure_ = 0;
   cuda_internal::LiquidArenaRuntimeCalls3D saved_;
 };
+
+TEST(CudaLiquidPressureStage3D, BatchLaunchProvidesParallelRowLanes) {
+  cudaStream_t stream = nullptr;
+  ASSERT_EQ(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), cudaSuccess);
+  const auto begin = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+  int launch = cudaErrorUnknown;
+  cudaError_t end = cudaErrorUnknown;
+  cudaGraph_t graph = nullptr;
+  if (begin == cudaSuccess) {
+    // Inspect the real launch without executing it or depending on GPU timings.
+    launch = cuda_internal::LaunchMacPressureBatch3D({}, true, 1, stream);
+    end = cudaStreamEndCapture(stream, &graph);
+  }
+  EXPECT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+  ASSERT_EQ(begin, cudaSuccess);
+  ASSERT_EQ(launch, cudaSuccess);
+  ASSERT_EQ(end, cudaSuccess);
+
+  std::size_t node_count = 1;
+  cudaGraphNode_t node = nullptr;
+  cudaKernelNodeParams parameters{};
+  const auto nodes = cudaGraphGetNodes(graph, &node, &node_count);
+  const auto kernel =
+      nodes == cudaSuccess && node_count == 1 ? cudaGraphKernelNodeGetParams(node, &parameters) : cudaErrorUnknown;
+  EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  ASSERT_EQ(nodes, cudaSuccess);
+  ASSERT_EQ(node_count, 1);
+  ASSERT_EQ(kernel, cudaSuccess);
+  EXPECT_EQ(parameters.gridDim.x, 1);
+  EXPECT_EQ(parameters.gridDim.y, 1);
+  EXPECT_EQ(parameters.gridDim.z, 1);
+  EXPECT_GT(parameters.blockDim.x, 1);
+}
+
+TEST(CudaLiquidPressureStage3D, BatchRowsMatchStandaloneSerialIterationsBitwise) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  // Three levels, with an odd fine row count to exercise the partial stride.
+  auto problem = MakeAffineProblem(-4, 7, true);
+  auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  auto arena = CudaLiquidArena3D::Create({1, 128, 4096, 24576, 0});
+  auto workspace = MacPressureWorkspace3D::Create(4096, 24576);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto project = [&] {
+    return cuda_internal::ProjectLiquidPressure3D(
+        *arena,
+        grid->view(),
+        1,
+        {problem.cells, problem.faces},
+        {},
+        *workspace
+    );
+  };
+  const auto batch = project();
+  ASSERT_TRUE(batch.ok()) << batch.status();
+  const auto expected = CopyProjection(*batch);
+  ASSERT_GE(expected.diagnostics.multigrid_level_count, 3);
+  ASSERT_GT(expected.diagnostics.iteration_count, 1);
+
+  // Submit exactly the same iteration budget through the standalone kernel,
+  // with the same prepared device inputs and batch boundaries.
+  PressureRuntimeScope restore_calls;
+  cuda_internal::LiquidArenaRuntimeCalls().launch_pressure_batch =
+      [](cuda_internal::PressureDevice3D device, bool initialize, std::size_t iteration_count, void* stream) -> int {
+    if (initialize) {
+      const int result = cuda_internal::LaunchMacPressure3D(device, true, stream);
+      if (result != cudaSuccess) {
+        return result;
+      }
+    }
+    for (std::size_t iteration = 0; iteration < iteration_count; ++iteration) {
+      const int result = cuda_internal::LaunchMacPressure3D(device, false, stream);
+      if (result != cudaSuccess) {
+        return result;
+      }
+    }
+    return cudaSuccess;
+  };
+  const auto serial = project();
+  ASSERT_TRUE(serial.ok()) << serial.status();
+  const auto expect_equal_bits = [](std::span<const double> actual, std::span<const double> control) {
+    ASSERT_EQ(actual.size(), control.size());
+    EXPECT_EQ(std::memcmp(actual.data(), control.data(), actual.size_bytes()), 0);
+  };
+  expect_equal_bits(serial->cell_pressures, expected.cell_pressures);
+  expect_equal_bits(serial->corrected_face_velocities, expected.corrected_face_velocities);
+  expect_equal_bits(serial->integrated_rhs, expected.integrated_rhs);
+  expect_equal_bits(serial->true_residuals, expected.true_residuals);
+  expect_equal_bits(serial->cell_constraint_defects, expected.cell_constraint_defects);
+  EXPECT_TRUE(std::ranges::equal(serial->gauge_cell_ordinals, expected.gauge_cell_ordinals));
+  const auto& actual = serial->diagnostics;
+  const auto& control = expected.diagnostics;
+  EXPECT_EQ(actual.iteration_count, control.iteration_count);
+  EXPECT_EQ(actual.multigrid_level_count, control.multigrid_level_count);
+  expect_equal_bits({&actual.true_residual_l2, 1}, {&control.true_residual_l2, 1});
+  expect_equal_bits({&actual.max_volume_scaled_residual, 1}, {&control.max_volume_scaled_residual, 1});
+  expect_equal_bits({&actual.max_cell_constraint_defect, 1}, {&control.max_cell_constraint_defect, 1});
+}
+
 TEST(CudaLiquidPressureStage3D, CountsRealDeviceRecurrenceAndMeasuresExecution) {
   ASSERT_NO_FATAL_FAILURE(CheckHardware());
   auto problem = MakeAffineProblem(-3, 4, false);
