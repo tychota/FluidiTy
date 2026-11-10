@@ -529,6 +529,7 @@ TEST(LiquidSubstep3D, ReusesWallSamplesInCanonicalSlabSideRuns) {
 }
 
 TEST(LiquidSubstep3D, RejectedGatherRunReplaysOnlyThroughEarlierFieldFailure) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wall_test = liquid_wall_samples_test;
   struct Audit {
     int batch_calls = 0;
@@ -573,6 +574,7 @@ TEST(LiquidSubstep3D, RejectedGatherRunReplaysOnlyThroughEarlierFieldFailure) {
 }
 
 TEST(LiquidSubstep3D, GatheredFieldBatchMatchesScalarAndReplaysRejectionInOrder) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wall_test = liquid_wall_samples_test;
   const auto initial = wall_test::SlabParticles();
   const auto scene = wall_test::SlabScene();
