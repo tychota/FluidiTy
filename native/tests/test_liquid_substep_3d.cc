@@ -77,11 +77,10 @@ TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
 
 TEST(LiquidSubstep3D, MovingPistonGatherGroupsByPressureSupportAndPreservesCarrier) {
   std::cout << "CTEST_FULL_OUTPUT\n";
-  auto initial = Initial(4);
-  initial.particles[0].world_position = {2.5, 2.375, 2.5};
-  initial.particles[1].world_position = {2.5, 2.625, 2.5};
-  initial.particles[2].world_position = {2.5, 4.375, 2.5};
-  initial.particles[3].world_position = {2.5, 4.625, 2.5};
+  namespace wet = wetted_piston_pressure_test;
+  const auto state = wet::PressureSupportGatherState();
+  ASSERT_TRUE(state.ok()) << state.status();
+  const auto& initial = *state;
   struct Audit {
     std::vector<bool> incident_faces;
     std::vector<std::size_t> run_sizes;
@@ -115,9 +114,7 @@ TEST(LiquidSubstep3D, MovingPistonGatherGroupsByPressureSupportAndPreservesCarri
       };
   auto options = Options();
   options.capacities.particles = initial.particles.size();
-  auto scene = Scene();
-  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 0.9375};
-  scene.obstacle = AxisAlignedLiquidTank3D{-8, 8, 0, -8, 8, 0.0625};
+  const auto scene = wet::PressureSupportGatherScene();
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   const auto status = scheduler->AdvanceFrame(0x1p-7);

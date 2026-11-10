@@ -71,6 +71,7 @@ GPU_WETTED_PISTON_CASES = {
     "CudaWettedPiston3D.CertifiesTangencyAndRejectsUncertainPositiveArea",
     "CudaWettedPiston3D.RejectsDisconnectedAndUnownedWetRows",
     "CudaWettedPiston3D.UsesSignedHalfOpenPistonCellAndChecksQueryCapacity",
+    "CudaLiquidSubstep3D.MovingPistonProjectedGatherMatchesScalar",
     "CudaLiquidSubstep3D.WettedPistonUsesClippedAndAttachedAreaInProjection",
     "CudaLiquidSubstep3D.WettedPistonRejectsWetEmptyPressureWithoutRetry",
     "CudaLiquidSubstep3D.WettedPistonLateCopyAndFenceFailuresPreservePublishedEpoch",

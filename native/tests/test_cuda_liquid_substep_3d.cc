@@ -274,6 +274,65 @@ TEST(CudaLiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   }
 }
 
+TEST(CudaLiquidSubstep3D, MovingPistonProjectedGatherMatchesScalar) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  namespace wet = wetted_piston_pressure_test;
+  const auto initial = wet::PressureSupportGatherState();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  const auto scene = wet::PressureSupportGatherScene();
+  auto options = Options();
+  options.capacities.particles = initial->particles.size();
+
+  auto grouped_backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  auto scalar_backend =
+      CudaLiquidSubstepBackend3D::Create(options.capacities, 0, /*measure_job=*/false, /*needs_wetted_piston=*/true);
+  ASSERT_TRUE(grouped_backend.ok()) << grouped_backend.status();
+  ASSERT_TRUE(scalar_backend.ok()) << scalar_backend.status();
+  auto grouped_operations =
+      grouped_backend->operations(/*enable_gather_runs=*/true, /*enable_gathered_field_batches=*/true);
+  ASSERT_NE(grouped_operations.gather_run, nullptr);
+  struct GatherAudit {
+    LiquidSubstepBackend3D::Gather* gather_run;
+    std::array<std::size_t, 2> run_sizes{};
+    std::size_t successful_runs = 0;
+  } audit{grouped_operations.gather_run};
+  static thread_local GatherAudit* active_audit = nullptr;
+  grouped_operations.gather_run =
+      [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+        auto result = active_audit->gather_run(context, inputs, workspace);
+        if (result.ok()) {
+          auto& observed = *active_audit;
+          if (observed.successful_runs < observed.run_sizes.size()) {
+            observed.run_sizes[observed.successful_runs] = result->particles.size();
+          }
+          ++observed.successful_runs;
+        }
+        return result;
+      };
+  auto grouped = LiquidSubstepScheduler3D::Create(*initial, scene, options, grouped_operations);
+  auto scalar = LiquidSubstepScheduler3D::Create(*initial, scene, options, scalar_backend->operations());
+  auto cpu = LiquidSubstepScheduler3D::Create(*initial, scene, options);
+  ASSERT_TRUE(grouped.ok()) << grouped.status();
+  ASSERT_TRUE(scalar.ok()) << scalar.status();
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+
+  active_audit = &audit;
+  const auto grouped_status = grouped->AdvanceFrame(wet::kDuration);
+  active_audit = nullptr;
+  ASSERT_TRUE(grouped_status.ok()) << grouped_status;
+  const auto scalar_status = scalar->AdvanceFrame(wet::kDuration);
+  ASSERT_TRUE(scalar_status.ok()) << scalar_status;
+  const auto cpu_status = cpu->AdvanceFrame(wet::kDuration);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  constexpr std::array<std::size_t, 2> kExpectedRunSizes{2, 2};
+  EXPECT_EQ(audit.successful_runs, kExpectedRunSizes.size());
+  EXPECT_EQ(audit.run_sizes, kExpectedRunSizes);
+  wet::ExpectCheckpointEqual(scalar->committed(), grouped->committed());
+  ExpectState(cpu->committed(), grouped->committed());
+  EXPECT_EQ(grouped_backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaLiquidSubstep3D, WettedPistonRejectsWetEmptyPressureWithoutRetry) {
   namespace wet = wetted_piston_pressure_test;
   const LiquidState3D initial;
