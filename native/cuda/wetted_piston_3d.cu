@@ -6,6 +6,10 @@ namespace fluidity::cuda_internal {
 namespace {
 namespace wet = wetted_piston_internal;
 
+// Each patch integrates its own bands and sorts its own interval lists. Spread
+// these independent, divergent workloads across SMs with the same scratch size.
+constexpr unsigned int kPatchThreadsPerBlock = 4;
+
 __global__ void WettedPistonSections3DKernel(
     wet::Field field,
     const Vec3* centers,
@@ -36,7 +40,7 @@ __global__ void WettedPistonPatches3DKernel(
     std::size_t interval_stride,
     int* architecture
 ) {
-  const auto index = static_cast<std::size_t>(threadIdx.x);
+  const auto index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (index >= patch_count) {
     return;
   }
@@ -85,8 +89,9 @@ int LaunchWettedPistonPatches3D(
     int* architecture,
     void* stream
 ) {
+  const auto blocks = static_cast<unsigned int>(1 + (patch_count - 1) / kPatchThreadsPerBlock);
   static_cast<void>(cudaGetLastError());
-  WettedPistonPatches3DKernel<<<1, wet::kDevicePatchBatch, 0, static_cast<cudaStream_t>(stream)>>>(
+  WettedPistonPatches3DKernel<<<blocks, kPatchThreadsPerBlock, 0, static_cast<cudaStream_t>(stream)>>>(
       field,
       disks,
       source_count,
