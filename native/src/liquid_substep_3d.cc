@@ -332,12 +332,12 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kInterface, step_duration));
     std::optional<double> exact_curvature;
     const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
-    if (sphere && scene.surface_tension > 0) {
+    const bool analytic_sphere_uses_capillarity = sphere && scene.surface_tension > 0;
+    if (analytic_sphere_uses_capillarity) {
       const double outward_curvature = 2 / sphere->radius;
-      if (!std::isfinite(outward_curvature)) {
-        return Error(absl::StatusCode::kOutOfRange);
+      if (std::isfinite(outward_curvature)) {
+        exact_curvature = outward_curvature;
       }
-      exact_curvature = outward_curvature;
     }
     const LiquidBoundaryGeometryViewInputs3D geometry_inputs{
         .mac_grid = grid,
@@ -371,6 +371,11 @@ struct LiquidSubstepScheduler3D::Impl {
       return frozen.status();
     }
     if (frozen->capillary_step_bound != std::numeric_limits<double>::infinity()) {
+      // An unresolved sphere without an open air link has no capillary
+      // contribution. Require a representable curvature when a link uses it.
+      if (analytic_sphere_uses_capillarity && !exact_curvature.has_value()) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
       accepted_measurement.step_start_capillary_bound_seconds = frozen->capillary_step_bound;
     }
     const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);

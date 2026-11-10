@@ -76,6 +76,20 @@ TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   }
 }
 
+TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
+  const LiquidState3D initial;
+  auto scene = Scene();
+  scene.field = LiquidAnalyticSphere3D{{0.25, 0.25, 0.25}, std::numeric_limits<double>::denorm_min()};
+  scene.surface_tension = 1;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0x1p-7);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  EXPECT_TRUE(scheduler->committed().cells.values().empty());
+  ASSERT_TRUE(scheduler->diagnostics().accepted_measurement.has_value());
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement->step_start_capillary_bound_seconds.has_value());
+}
+
 TEST(LiquidSubstep3D, MovingPistonGatherGroupsByPressureSupportAndPreservesCarrier) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wet = wetted_piston_pressure_test;
