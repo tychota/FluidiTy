@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 
@@ -19,6 +20,43 @@ inline LiquidSceneInputs3D PlaneScene(double height, double speed) {
   scene.obstacle = AxisAlignedLiquidTank3D{0, 1, 0, 0, 1, speed};
   scene.world_acceleration = {};
   scene.liquid_density = 1;
+  return scene;
+}
+
+// Two particles in the selected sphere cell and two above its pressure support.
+inline absl::StatusOr<LiquidState3D> PressureSupportGatherState() {
+  constexpr std::array positions{
+      Vec3{2.5, 2.375, 2.5},
+      Vec3{2.5, 2.625, 2.5},
+      Vec3{2.5, 4.375, 2.5},
+      Vec3{2.5, 4.625, 2.5},
+  };
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(positions.size());
+  if (!particles.ok()) {
+    return particles.status();
+  }
+  const auto resized = particles->Resize(positions.size());
+  if (!resized.ok()) {
+    return resized;
+  }
+  LiquidState3D state;
+  state.particles = std::move(*particles);
+  state.next_particle_id = positions.size() + 1;
+  for (std::size_t ordinal = 0; ordinal < positions.size(); ++ordinal) {
+    auto& particle = state.particles[ordinal];
+    particle.id = ordinal + 1;
+    particle.world_position = positions[ordinal];
+    particle.pic_initialized = true;
+  }
+  return state;
+}
+
+// The translating piston is dry. Gravity still distinguishes projected and
+// force-only faces around the isolated sphere.
+inline LiquidSceneInputs3D PressureSupportGatherScene() {
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 0.9375};
+  scene.obstacle = AxisAlignedLiquidTank3D{-8, 8, 0, -8, 8, kPistonSpeed};
   return scene;
 }
 

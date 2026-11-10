@@ -311,7 +311,7 @@ FLUIDITY_HD inline PatchMeasure IntegratePatch(
     };
   }
 
-  bool connected = floor.upper <= 0 && z_width.lower > 0;
+  bool all_wet_sources_cross_lower_edge = floor.upper <= 0 && z_width.lower > 0;
   bool possibly_wet = false;
   for (std::size_t index = 0; index < disk_count; ++index) {
     const auto& disk = disks[index];
@@ -334,7 +334,7 @@ FLUIDITY_HD inline PatchMeasure IntegratePatch(
     if (!Finite(edge_gap)) {
       return {.error = Error::kRange};
     }
-    connected = connected && edge_gap.lower > 0;
+    all_wet_sources_cross_lower_edge = all_wet_sources_cross_lower_edge && edge_gap.lower > 0;
   }
   if (!possibly_wet) {
     return {};
@@ -391,7 +391,7 @@ FLUIDITY_HD inline PatchMeasure IntegratePatch(
   const auto area = WorldArea(Minimum(area_lattice, rectangle_area), h);
   return {
       .area = area,
-      .all_wet_sources_cross_lower_edge = connected,
+      .all_wet_sources_cross_lower_edge = all_wet_sources_cross_lower_edge,
       .error = Finite(area) ? Error::kNone : Error::kRange,
   };
 }

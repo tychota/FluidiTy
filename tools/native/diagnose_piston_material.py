@@ -207,6 +207,27 @@ def _mesh_budget(frames, steps, fixed):
     }
 
 
+def _fixed_radius_receiving_budget(fixed):
+    """Split the signed receiving discrepancy of a verified fixed-radius result."""
+    initial = fixed["initial_reconstruction"]
+    final = fixed["final_reconstruction"]
+    total_volume_change = math.fsum(
+        final[f"swept_{side}_m3"] - initial[f"swept_{side}_m3"] for side in ("below", "above")
+    )
+    void_change = fixed["final_void_below_reference_m3"] - fixed["initial_void_below_reference_m3"]
+    dry_sweep = fixed["swept_dry_below_reference_m3"]
+    receiving_difference = fixed["receiving_m3"] - fixed["full_wetted_sweep_m3"]
+    # Below-plane capacity shrinks by the nominal sweep. Subtracting the dry
+    # sweep gives the wet part. The remaining terms are inventory changes.
+    return {
+        "receiving_minus_wetted_sweep_m3": receiving_difference,
+        "reconstructed_total_volume_change_m3": total_volume_change,
+        "below_plane_void_change_m3": void_change,
+        "swept_dry_below_plane_m3": dry_sweep,
+        "identity_residual_m3": math.fsum((receiving_difference, -total_volume_change, -void_change, -dry_sweep)),
+    }
+
+
 def diagnose(run, manifest_sha256, measurements_sha256):
     """Compare a pinned capture and pinned frozen measurements without changing their gate."""
     case = run.name
@@ -260,6 +281,7 @@ def diagnose(run, manifest_sha256, measurements_sha256):
         "fixed_radius_above_endpoint_gain_m3": (fixed["final_reconstruction"]["swept_above_m3"]
                                                 - fixed["initial_reconstruction"]["swept_above_m3"]),
         "fixed_radius": {key: value for key, value in fixed.items() if key != "steps"},
+        "fixed_radius_receiving_budget": _fixed_radius_receiving_budget(fixed),
         "mesh_budget": budget,
         "frames": sampled,
     }
