@@ -1,5 +1,7 @@
 # Blender point-cache reader qualification
 
+For the first native solver bake, see the [M1-B evaluation package and evidence](m1-b-evidence.md).
+
 The M0 point fixture qualified the native Alembic Points reader in **Blender 5.2.3 LTS**
 on Windows x64, Release build `e13b728c6880`. Blender imported an independently written
 Ogawa archive as a `POINTCLOUD` with a native `MESH_SEQUENCE_CACHE` modifier. The saved

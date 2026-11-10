@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+id = "fluidity"
+version = "0.1.0"
+name = "FluidiTy"
+tagline = "Bake and inspect a 3D liquid point cache"
+maintainer = "FluidiTy contributors"
+type = "add-on"
+blender_version_min = "5.2.3"
+platforms = ["windows-x64"]
+license = ["SPDX:LicenseRef-FluidiTy-Internal"]
+
+[permissions]
+files = "Run the bundled solver and access the selected local cache"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc", "*.blend1"]

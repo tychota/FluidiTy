@@ -11,6 +11,8 @@
 #include <iostream>
 #include <string>
 
+#include "point_samples.h"
+
 namespace {
 
 namespace abc = Alembic::Abc;
@@ -130,11 +132,6 @@ bool VerifyPointCacheArchive(const std::string& archive_path) {
   return true;
 }
 
-// A quarter turn around X converts Blender Z-up point_position_sample and vectors to Alembic Y-up.
-abc::V3f ToAlembicYUp(const abc::V3f& blender_z_up_vector) {
-  return {blender_z_up_vector.x, blender_z_up_vector.z, -blender_z_up_vector.y};
-}
-
 // Close the archive before the caller reopens it for readback.
 void WritePointCacheArchive(const std::string& archive_path) {
   abc::OArchive archive(ogawa::WriteArchive(), archive_path);
@@ -156,8 +153,8 @@ void WritePointCacheArchive(const std::string& archive_path) {
     for (std::size_t point_index = 0; point_index < point_count; ++point_index) {
       const float point_index_y_m = static_cast<float>(point_index);
       const abc::V3f position_blender_m(timeline_frame_x_m, point_index_y_m, -(timeline_frame_x_m + point_index_y_m));
-      positions_alembic_m[point_index] = ToAlembicYUp(position_blender_m);
-      velocities_alembic_m_per_s[point_index] = ToAlembicYUp(velocity_blender_m_per_s);
+      positions_alembic_m[point_index] = fluidity::blender::ToAlembicYUp(position_blender_m);
+      velocities_alembic_m_per_s[point_index] = fluidity::blender::ToAlembicYUp(velocity_blender_m_per_s);
       point_ids[point_index] = 100 + point_index;
       const float display_radius_m = static_cast<float>(point_index + 1) / 16.0f;
       diameters_m[point_index] = 2.0f * display_radius_m;
@@ -165,13 +162,13 @@ void WritePointCacheArchive(const std::string& archive_path) {
 
     // Alembic treats a null position pointer as a partial sample. At frame 3
     // these typed views have valid backing pointers and all four lengths are zero.
-    const abc::P3fArraySample point_position_sample(positions_alembic_m.data(), point_count);
-    const abc::UInt64ArraySample point_id_sample(point_ids.data(), point_count);
-    const abc::V3fArraySample point_velocity_sample(velocities_alembic_m_per_s.data(), point_count);
-    const abc::FloatArraySample point_width_sample(diameters_m.data(), point_count);
-    const geom::OFloatGeomParam::Sample varying_width_sample(point_width_sample, geom::kVaryingScope);
-    point_cache_schema.set(
-        geom::OPointsSchema::Sample(point_position_sample, point_id_sample, point_velocity_sample, varying_width_sample)
+    fluidity::blender::WritePointSample(
+        point_cache_schema,
+        positions_alembic_m.data(),
+        point_ids.data(),
+        velocities_alembic_m_per_s.data(),
+        diameters_m.data(),
+        point_count
     );
   }
 }
