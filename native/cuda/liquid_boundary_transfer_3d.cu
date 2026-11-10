@@ -1,5 +1,7 @@
 #include <cuda_runtime.h>
 
+#include <type_traits>
+
 #include "fluidity/base/liquid_wall_contact_math_3d.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
 namespace fluidity::cuda_internal {
@@ -9,6 +11,12 @@ using boundary_internal::Error;
 using boundary_internal::Value;
 constexpr std::size_t kMaxDonors = 125;
 constexpr std::int64_t kMaximumQuantaSum = std::int64_t{1} << 62;
+using GatherStencils = decltype(BoundaryTransferParticle3D::stencils);
+constexpr std::size_t kGatherComponentCount = std::extent_v<GatherStencils, 0>;
+constexpr std::size_t kGatherSamplesPerComponent = std::extent_v<GatherStencils, 1>;
+constexpr std::size_t kGatherSampleCount = kGatherComponentCount * kGatherSamplesPerComponent;
+constexpr unsigned kSingleParticleGatherThreads = 96;
+static_assert(kSingleParticleGatherThreads >= kGatherSampleCount);
 __device__ FaceNormalAxis Axis(std::size_t i) {
   return i == 0 ? FaceNormalAxis::kX : (i == 1 ? FaceNormalAxis::kY : FaceNormalAxis::kZ);
 }
@@ -293,8 +301,111 @@ __device__ Error Normalize(
   return Error::kNone;
 }
 
-// Each original node participates, including zero weights. Fill old/new histories
-// independently before accumulating the complete quadratic gather in stencil order.
+struct GatherSample {
+  ContinuedVelocity old_velocity;
+  ContinuedVelocity new_velocity;
+  Error old_error;
+  Error new_error;
+};
+static_assert(std::is_trivial_v<GatherSample>);
+using GatherSamples = GatherSample[kGatherComponentCount][kGatherSamplesPerComponent];
+
+__device__ GatherSample PrepareGatherSample(
+    const HistoryView& old_history,
+    const HistoryView& new_history,
+    numeric::span<const BoundaryTransferFace3D> anchors,
+    std::size_t face_slot,
+    std::size_t component,
+    std::int64_t side_tag
+) {
+  GatherSample prepared{};
+  const auto old_velocity = FillVelocity(old_history, anchors, face_slot, component, side_tag);
+  prepared.old_error = old_velocity.status();
+  if (!old_velocity.ok()) {
+    return prepared;
+  }
+  prepared.old_velocity = *old_velocity;
+  const auto new_velocity = FillVelocity(new_history, anchors, face_slot, component, side_tag);
+  prepared.new_error = new_velocity.status();
+  if (new_velocity.ok()) {
+    prepared.new_velocity = *new_velocity;
+  }
+  return prepared;
+}
+
+// Consume every node, including zero weights, and finish each component before
+// checking the next. The same fold handles on-demand and prepared fills.
+template <bool kUsePreparedSamples>
+__device__ Error GatherParticle(
+    const BoundaryTransferQuery3D& query,
+    const HistoryView& old_history,
+    const HistoryView& new_history,
+    numeric::span<const BoundaryTransferFace3D> anchors,
+    const BoundaryTransferParticle3D& transfer_particle,
+    const GatherSamples* prepared_samples,
+    LiquidBoundaryParticleGather3D& result
+) {
+  const auto& particle = transfer_particle.particle;
+  Vec3 old_pic_velocity_vector{};
+  for (std::size_t component = 0; component < kGatherComponentCount; ++component) {
+    double old_pic_velocity = 0;
+    double new_pic_velocity = 0;
+    Vec3 weighted_velocity_offset_moment{};
+    Vec3 true_velocity_gradient{};
+    for (std::size_t sample_index = 0; sample_index < kGatherSamplesPerComponent; ++sample_index) {
+      const auto& sample = transfer_particle.stencils[component][sample_index];
+      const auto velocities = kUsePreparedSamples
+          ? (*prepared_samples)[component][sample_index]
+          : PrepareGatherSample(old_history, new_history, anchors, sample.face_slot, component, particle.side_tag);
+      if (velocities.old_error != Error::kNone) {
+        return velocities.old_error;
+      }
+      if (velocities.new_error != Error::kNone) {
+        return velocities.new_error;
+      }
+      result.old_pic_fallback = result.old_pic_fallback || velocities.old_velocity.pic_fallback;
+      result.new_pic_fallback = result.new_pic_fallback || velocities.new_velocity.pic_fallback;
+      result.low_mass_fallback = result.low_mass_fallback
+          || old_history.Validity(sample.face_slot) == LiquidFaceValidity3D::kLowMass
+          || new_history.Validity(sample.face_slot) == LiquidFaceValidity3D::kLowMass;
+      old_pic_velocity += sample.weight * velocities.old_velocity.velocity;
+      const double weighted_new_velocity = sample.weight * velocities.new_velocity.velocity;
+      new_pic_velocity += weighted_new_velocity;
+      const Vec3 normalized_offset{
+          sample.face_offset_from_particle.x / query.cell_width,
+          sample.face_offset_from_particle.y / query.cell_width,
+          sample.face_offset_from_particle.z / query.cell_width,
+      };
+      AddScaled(weighted_velocity_offset_moment, normalized_offset, weighted_new_velocity);
+      AddScaled(true_velocity_gradient, sample.weight_gradient, velocities.new_velocity.velocity);
+    }
+    const Vec3 slopes{
+        (4 * weighted_velocity_offset_moment.x) / query.cell_width,
+        (4 * weighted_velocity_offset_moment.y) / query.cell_width,
+        (4 * weighted_velocity_offset_moment.z) / query.cell_width,
+    };
+    const double increment = new_pic_velocity - old_pic_velocity;
+    if (!numeric::isfinite(new_pic_velocity) || !numeric::isfinite(increment) || !IsFinite(slopes)
+        || !IsFinite(true_velocity_gradient)) {
+      return Error::kRange;
+    }
+    result.new_pic_velocity.*VelocityComponent(component) = new_pic_velocity;
+    result.grid_velocity_increment.*VelocityComponent(component) = increment;
+    result.fitted_velocity_slopes.*SlopeRow(component) = slopes;
+    result.velocity_gradient.*SlopeRow(component) = true_velocity_gradient;
+    old_pic_velocity_vector.*VelocityComponent(component) = old_pic_velocity;
+  }
+  const bool fallback = result.old_pic_fallback || result.new_pic_fallback || result.low_mass_fallback;
+  result.affine_enabled = particle.affine_enabled && !fallback;
+  if (!fallback) {
+    result.particle_minus_old_pic_velocity = Difference(particle.transfer.particle_velocity, old_pic_velocity_vector);
+  }
+  if (!IsFinite(result.particle_minus_old_pic_velocity)) {
+    return Error::kRange;
+  }
+  return Error::kNone;
+}
+
 __device__ Error Gather(
     const BoundaryTransferQuery3D& query,
     const BoundaryTransferFace3D* faces,
@@ -305,62 +416,17 @@ __device__ Error Gather(
   const HistoryView new_history{faces, BoundaryHistoryStage3D::kNew};
   const numeric::span<const BoundaryTransferFace3D> anchors(faces, query.face_count);
   for (std::size_t particle_index = 0; particle_index < query.particle_count; ++particle_index) {
-    const auto& particle = particles[particle_index].particle;
-    auto& result = particle_results[particle_index].gathered;
-    Vec3 old_pic_velocity_vector{};
-    for (std::size_t component = 0; component < 3; ++component) {
-      double old_pic_velocity = 0;
-      double new_pic_velocity = 0;
-      Vec3 weighted_velocity_offset_moment{};
-      Vec3 true_velocity_gradient{};
-      for (const auto& sample : particles[particle_index].stencils[component]) {
-        const auto old_value = FillVelocity(old_history, anchors, sample.face_slot, component, particle.side_tag);
-        if (!old_value.ok()) {
-          return old_value.status();
-        }
-        const auto new_value = FillVelocity(new_history, anchors, sample.face_slot, component, particle.side_tag);
-        if (!new_value.ok()) {
-          return new_value.status();
-        }
-        result.old_pic_fallback = result.old_pic_fallback || old_value->pic_fallback;
-        result.new_pic_fallback = result.new_pic_fallback || new_value->pic_fallback;
-        result.low_mass_fallback = result.low_mass_fallback
-            || old_history.Validity(sample.face_slot) == LiquidFaceValidity3D::kLowMass
-            || new_history.Validity(sample.face_slot) == LiquidFaceValidity3D::kLowMass;
-        old_pic_velocity += sample.weight * old_value->velocity;
-        const double weighted_new_velocity = sample.weight * new_value->velocity;
-        new_pic_velocity += weighted_new_velocity;
-        const Vec3 normalized_offset{
-            sample.face_offset_from_particle.x / query.cell_width,
-            sample.face_offset_from_particle.y / query.cell_width,
-            sample.face_offset_from_particle.z / query.cell_width,
-        };
-        AddScaled(weighted_velocity_offset_moment, normalized_offset, weighted_new_velocity);
-        AddScaled(true_velocity_gradient, sample.weight_gradient, new_value->velocity);
-      }
-      const Vec3 slopes{
-          (4 * weighted_velocity_offset_moment.x) / query.cell_width,
-          (4 * weighted_velocity_offset_moment.y) / query.cell_width,
-          (4 * weighted_velocity_offset_moment.z) / query.cell_width,
-      };
-      const double increment = new_pic_velocity - old_pic_velocity;
-      if (!numeric::isfinite(new_pic_velocity) || !numeric::isfinite(increment) || !IsFinite(slopes)
-          || !IsFinite(true_velocity_gradient)) {
-        return Error::kRange;
-      }
-      result.new_pic_velocity.*VelocityComponent(component) = new_pic_velocity;
-      result.grid_velocity_increment.*VelocityComponent(component) = increment;
-      result.fitted_velocity_slopes.*SlopeRow(component) = slopes;
-      result.velocity_gradient.*SlopeRow(component) = true_velocity_gradient;
-      old_pic_velocity_vector.*VelocityComponent(component) = old_pic_velocity;
-    }
-    const bool fallback = result.old_pic_fallback || result.new_pic_fallback || result.low_mass_fallback;
-    result.affine_enabled = particle.affine_enabled && !fallback;
-    if (!fallback) {
-      result.particle_minus_old_pic_velocity = Difference(particle.transfer.particle_velocity, old_pic_velocity_vector);
-    }
-    if (!IsFinite(result.particle_minus_old_pic_velocity)) {
-      return Error::kRange;
+    const Error error = GatherParticle<false>(
+        query,
+        old_history,
+        new_history,
+        anchors,
+        particles[particle_index],
+        nullptr,
+        particle_results[particle_index].gathered
+    );
+    if (error != Error::kNone) {
+      return error;
     }
   }
   return Error::kNone;
@@ -467,6 +533,24 @@ __device__ Error UpdateParticles(
   }
   return Error::kNone;
 }
+__device__ void InitializeTransferOutputs(
+    const BoundaryTransferQuery3D& query,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D& report
+) {
+  report = {};
+#if defined(__CUDA_ARCH__)
+  report.compiled_architecture = __CUDA_ARCH__;
+#endif
+  for (std::size_t slot = 0; slot < query.face_count; ++slot) {
+    face_results[slot] = {};
+  }
+  for (std::size_t particle_index = 0; particle_index < query.particle_count; ++particle_index) {
+    particle_results[particle_index] = {};
+  }
+}
+
 __global__ void LiquidBoundaryTransfer3DKernel(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
@@ -475,16 +559,7 @@ __global__ void LiquidBoundaryTransfer3DKernel(
     BoundaryTransferParticleResult3D* particle_results,
     BoundaryTransferReport3D* report
 ) {
-  *report = {};
-#if defined(__CUDA_ARCH__)
-  report->compiled_architecture = __CUDA_ARCH__;
-#endif
-  for (std::size_t slot = 0; slot < query->face_count; ++slot) {
-    face_results[slot] = {};
-  }
-  for (std::size_t particle = 0; particle < query->particle_count; ++particle) {
-    particle_results[particle] = {};
-  }
+  InitializeTransferOutputs(*query, face_results, particle_results, *report);
   switch (query->operation) {
     case BoundaryTransferOperation3D::kDeposit:
       report->error = Deposit(*query, faces, particles, face_results, particle_results);
@@ -514,6 +589,49 @@ __global__ void LiquidBoundaryTransfer3DKernel(
     }
   }
 }
+
+__global__ void LiquidBoundarySingleParticleGather3DKernel(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report
+) {
+  const HistoryView old_history{faces, BoundaryHistoryStage3D::kOld};
+  const HistoryView new_history{faces, BoundaryHistoryStage3D::kNew};
+  const numeric::span<const BoundaryTransferFace3D> anchors(faces, query->face_count);
+  __shared__ GatherSamples prepared_samples;
+  const std::size_t sample_lane = threadIdx.x;
+  // Fills read immutable histories independently. One consumer keeps the
+  // original accumulation and error order, including component range checks.
+  if (sample_lane < kGatherSampleCount) {
+    const std::size_t component = sample_lane / kGatherSamplesPerComponent;
+    const std::size_t sample_index = sample_lane % kGatherSamplesPerComponent;
+    const auto& sample = particles[0].stencils[component][sample_index];
+    prepared_samples[component][sample_index] = PrepareGatherSample(
+        old_history,
+        new_history,
+        anchors,
+        sample.face_slot,
+        component,
+        particles[0].particle.side_tag
+    );
+  }
+  __syncthreads();
+  if (sample_lane == 0) {
+    InitializeTransferOutputs(*query, face_results, particle_results, *report);
+    report->error = GatherParticle<true>(
+        *query,
+        old_history,
+        new_history,
+        anchors,
+        particles[0],
+        &prepared_samples,
+        particle_results[0].gathered
+    );
+  }
+}
 }  // namespace
 int LaunchLiquidBoundaryTransfer3D(
     const BoundaryTransferQuery3D* query,
@@ -526,6 +644,27 @@ int LaunchLiquidBoundaryTransfer3D(
 ) {
   cudaGetLastError();
   LiquidBoundaryTransfer3DKernel<<<1, 1, 0, static_cast<cudaStream_t>(stream)>>>(
+      query,
+      faces,
+      particles,
+      face_results,
+      particle_results,
+      report
+  );
+  return static_cast<int>(cudaGetLastError());
+}
+
+int LaunchLiquidBoundarySingleParticleGather3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryTransferFace3D* faces,
+    const BoundaryTransferParticle3D* particles,
+    BoundaryTransferFaceResult3D* face_results,
+    BoundaryTransferParticleResult3D* particle_results,
+    BoundaryTransferReport3D* report,
+    void* stream
+) {
+  cudaGetLastError();
+  LiquidBoundarySingleParticleGather3DKernel<<<1, kSingleParticleGatherThreads, 0, static_cast<cudaStream_t>(stream)>>>(
       query,
       faces,
       particles,

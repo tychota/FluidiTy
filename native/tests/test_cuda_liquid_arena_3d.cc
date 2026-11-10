@@ -1,6 +1,7 @@
 #include <cuda_runtime_api.h>
 
 #include <array>
+#include <bit>
 #include <chrono>
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -1236,6 +1237,89 @@ TEST_F(CudaLiquidTransferStages3D, GatherUsesIndependentOldNewSidesWallsAndLowMa
         absl::StatusCode::kInvalidArgument
     );
     EXPECT_DOUBLE_EQ(previous[0].new_pic_velocity.x, saved);
+  }
+}
+TEST_F(CudaLiquidTransferStages3D, SingleParticleGatherMatchesSerialBitsAndFailureOrder) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
+  auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  ASSERT_TRUE(grid.ok());
+  std::array<double, 192> old{}, next{};
+  std::array<LiquidFaceValidity3D, 192> old_validity{}, new_validity{};
+  old_validity.fill(LiquidFaceValidity3D::kValid);
+  new_validity.fill(LiquidFaceValidity3D::kValid);
+  old_validity[42] = LiquidFaceValidity3D::kMissing;
+  new_validity[106] = LiquidFaceValidity3D::kMissing;
+  std::array<LiquidBoundaryFaceTag3D, 192> tags{};
+  std::array<LiquidPrescribedWallSample3D, 192> walls{};
+  for (std::size_t slot = 0; slot < old.size(); ++slot) {
+    const double face_slot = static_cast<double>(slot);
+    old[slot] = 1 + face_slot * face_slot / 1024;
+    next[slot] = -1 + face_slot * face_slot * face_slot / 65536;
+  }
+  const auto particle = TransferParticle({2, 2, 2}, {1, 2, 3});
+  const std::array particles{particle, particle};
+  LiquidBoundaryGatherViewInputs3D inputs{
+      grid->view(),
+      std::span(particles).first(1),
+      0,
+      1,
+      {0, 0, old, old_validity, tags, walls},
+      {1, 1, next, new_validity, tags, walls},
+  };
+  auto single = cuda_internal::GatherLiquid3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(single.ok()) << single.status();
+  ASSERT_EQ(single->particles.size(), 1);
+  const auto gathered = single->particles[0];
+  EXPECT_TRUE(gathered.affine_enabled);
+  inputs.particles = particles;
+  auto serial = cuda_internal::GatherLiquid3D(*arena, inputs, *workspace);
+  ASSERT_TRUE(serial.ok()) << serial.status();
+  ASSERT_EQ(serial->particles.size(), 2);
+  const auto expect_vector_bits = [](Vec3 actual, Vec3 expected) {
+    for (auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(actual.*component), std::bit_cast<std::uint64_t>(expected.*component));
+    }
+  };
+  for (const auto& expected : serial->particles) {
+    expect_vector_bits(gathered.new_pic_velocity, expected.new_pic_velocity);
+    expect_vector_bits(gathered.grid_velocity_increment, expected.grid_velocity_increment);
+    expect_vector_bits(gathered.particle_minus_old_pic_velocity, expected.particle_minus_old_pic_velocity);
+    for (auto row : {&Mat3::x_row, &Mat3::y_row, &Mat3::z_row}) {
+      expect_vector_bits(gathered.fitted_velocity_slopes.*row, expected.fitted_velocity_slopes.*row);
+      expect_vector_bits(gathered.velocity_gradient.*row, expected.velocity_gradient.*row);
+    }
+    EXPECT_EQ(gathered.affine_enabled, expected.affine_enabled);
+    EXPECT_EQ(gathered.old_pic_fallback, expected.old_pic_fallback);
+    EXPECT_EQ(gathered.new_pic_fallback, expected.new_pic_fallback);
+    EXPECT_EQ(gathered.low_mass_fallback, expected.low_mass_fallback);
+  }
+
+  // Finite X samples overflow the X increment. Later Y samples have no donor or wall.
+  old.fill(-0x1p1023);
+  next.fill(0x1p1023);
+  old_validity.fill(LiquidFaceValidity3D::kMissing);
+  for (std::size_t slot = 0; slot < old.size(); ++slot) {
+    const auto face = grid->view().FaceIndex(slot);
+    ASSERT_TRUE(face.ok());
+    if (face->axis == FaceNormalAxis::kX) {
+      old_validity[slot] = LiquidFaceValidity3D::kValid;
+    }
+  }
+  new_validity = old_validity;
+  for (const std::size_t particle_count : {1, 2}) {
+    inputs.particles = std::span(particles).first(particle_count);
+    EXPECT_EQ(cuda_internal::GatherLiquid3D(*arena, inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
+  }
+  old = next;
+  for (const std::size_t particle_count : {1, 2}) {
+    inputs.particles = std::span(particles).first(particle_count);
+    EXPECT_EQ(
+        cuda_internal::GatherLiquid3D(*arena, inputs, *workspace).status().code(),
+        absl::StatusCode::kFailedPrecondition
+    );
   }
 }
 TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
