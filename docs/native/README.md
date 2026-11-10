@@ -73,8 +73,8 @@ run the Windows Debug CUDA preset and select **Windows CUDA** using
 ## CUDA hardware and sanitizer gates
 
 Use the same shell and profiles after the CPU setup. The CUDA qualification receipt is
-separate. Both presets require exactly 34 `gpu` cases across two probe cases, 28 operator
-cases and four graph replay cases. The operator group includes the two integrated 3D liquid
+separate. Both presets require exactly 35 `gpu` cases across two probe cases, 29 operator
+cases and four graph replay cases. The operator group includes three integrated 3D liquid
 scheduler cases and two asynchronous snapshot cases. Both presets also run the separate `cuda-mock` API-double suite.
 
 ```powershell
@@ -111,10 +111,11 @@ Standalone operator receipts use finite nonnegative CUDA event times in `kernel_
 | `CudaLiquidBoundary3D.CoupledBoundaryOperatorsPreserveFailure` | `liquid_boundary_coupled_3d` |
 | `CudaLiquidSubstep3D.PersistentSubstepMatchesCpu` | `liquid_substep_3d` |
 | `CudaLiquidSubstep3D.ReplaysAfterCapacityGrowth` | `liquid_substep_3d_growth` |
+| `CudaLiquidSubstep3D.OpenTankSchedulerMatchesCpu` | `liquid_open_tank_substep_3d` |
 | `CudaLiquidSnapshot3D.DelayedCopyFencesSourceEpoch` | `liquid_snapshot_3d` |
 | `CudaLiquidSnapshot3D.DeviceFailureUsesLastValidHostSnapshot` | `liquid_snapshot_3d_failure` |
 
-The two scheduler receipts require a finite, strictly positive `substep_device_timeline_ms`
+The three scheduler receipts require a finite, strictly positive `substep_device_timeline_ms`
 and `timing_scope=topology_through_publication`. The CUDA events bracket the latest successful
 substep from the topology callback through publication staging. The interval includes host
 preparation and dispatch gaps and starts after the initial field staging. For the growth case,
@@ -154,12 +155,13 @@ architecture 1200, 64 iterations and finite nonnegative times in microseconds.
 
 Windows CUDA Release additionally requires Compute Sanitizer from the qualified toolkit.
 The validator runs three memcheck invocations covering `CudaProbe.SharedVec2Math`,
-27 operator cases (including both scheduler, both snapshot and both open-tank cases), and all four graph replay cases for
-32 mandatory memcheck cases. The two `LaunchIgnoresPriorRuntimeError` cases intentionally
-trigger CUDA API errors and run only in the 34-case CTest inventory. Each memcheck invocation
-must exit successfully and report one zero-error summary. The validator checks the exact
-GoogleTest start and completion names, the probe launch receipt, 18 operator timing receipts
-and one graph timing receipt in their matching cases. It sets the named-pipe connection override only in the sanitizer process
+28 operator cases (including all three scheduler cases, both snapshot cases and the open-tank
+geometry and contact cases), and all four graph replay cases for 33 mandatory memcheck cases.
+The two `LaunchIgnoresPriorRuntimeError` cases intentionally trigger CUDA API errors and run
+only in the 35-case CTest inventory. Each memcheck invocation must exit successfully and
+report one zero-error summary. The validator checks the exact GoogleTest start and completion
+names, the probe launch receipt, 19 operator timing receipts and one graph timing receipt in
+their matching cases. It sets the named-pipe connection override only in the sanitizer process
 environment, with a 30-second launch timeout and a 90-second command timeout per invocation.
 A missing sanitizer, skipped case or incomplete run prevents publication of a Release
 success receipt.
@@ -191,7 +193,7 @@ try {
 
 Run `fluidity_cuda_arena_tests.exe` directly after building each CUDA preset. It covers persistent
 arena ownership, graph sorting, field sampling, boundary transfer, contact and pressure stages.
-Its inventory is separate from the 34 mandatory CTest cases and 32 mandatory memcheck cases.
+Its inventory is separate from the 35 mandatory CTest cases and 33 mandatory memcheck cases.
 Debug runs 43 cases (42 on hardware and one host-only generation exhaustion case). Release
 runs 39 (38 on hardware and the same host-only case). Require every case to pass with zero skips.
 
@@ -251,8 +253,8 @@ fixture and header hashes, commands and separate results for Python, native CPU,
 CUDA doubles, sanitizer and proofs. The proof gate remains `not_run` in this validator.
 The validator clears inherited GoogleTest and pytest selectors. It checks each named native
 case's execution output and compares the Python results with the complete pytest collection.
-The CUDA receipt records the measured operator and scheduler timings in `evidence.gpu.operators`
-and the pressure graph measurement in `evidence.gpu.graph_replay`. The graph receipt
+The CUDA receipt records the measured operator, scheduler and snapshot timings in
+`evidence.gpu.operators` and the pressure graph measurement in `evidence.gpu.graph_replay`. The graph receipt
 contains one capture and instantiation time, the iteration count and separate
 per-sequence host submission and stream intervals for direct and graph execution.
 See the fixture and timing method in the
@@ -457,7 +459,7 @@ execution, replay and process lifecycle.
 The locked validator requires exact inventories, process receipts, qualified image
 identity, positive actual graph/device reservations, finite positive D2H
 intervals and measured heartbeat and cancellation bounds.
-The GPU and sanitizer inventories contain 34 and 32 cases, respectively. The Python driver
+The GPU and sanitizer inventories contain 35 and 33 cases, respectively. The Python driver
 is invoked with required binary paths, rejects optimized Python, and never silently
 skips an unavailable executable or device.
 
