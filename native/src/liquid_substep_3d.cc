@@ -330,6 +330,15 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kBodyContact, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kInterface, step_duration));
+    std::optional<double> exact_curvature;
+    const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
+    const bool analytic_sphere_uses_capillarity = sphere && scene.surface_tension > 0;
+    if (analytic_sphere_uses_capillarity) {
+      const double outward_curvature = 2 / sphere->radius;
+      if (std::isfinite(outward_curvature)) {
+        exact_curvature = outward_curvature;
+      }
+    }
     const LiquidBoundaryGeometryViewInputs3D geometry_inputs{
         .mac_grid = grid,
         .cell_indices = staging.candidates.values(),
@@ -339,6 +348,7 @@ struct LiquidSubstepScheduler3D::Impl {
         .step_duration = step_duration,
         .liquid_density = scene.liquid_density,
         .surface_tension = scene.surface_tension,
+        .exact_outward_interface_curvature = exact_curvature,
     };
     const auto frozen = backend.freeze(backend.context, geometry_inputs, boundary);
     if (!frozen.ok()) {
@@ -361,6 +371,11 @@ struct LiquidSubstepScheduler3D::Impl {
       return frozen.status();
     }
     if (frozen->capillary_step_bound != std::numeric_limits<double>::infinity()) {
+      // An unresolved sphere without an open air link has no capillary
+      // contribution. Require a representable curvature when a link uses it.
+      if (analytic_sphere_uses_capillarity && !exact_curvature.has_value()) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
       accepted_measurement.step_start_capillary_bound_seconds = frozen->capillary_step_bound;
     }
     const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
@@ -455,11 +470,13 @@ struct LiquidSubstepScheduler3D::Impl {
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
     if (!links->cells.empty()) {
+      auto pressure_problem = *links;
+      pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
       const auto projection = backend.project(
           backend.context,
           grid,
           step_duration,
-          *links,
+          pressure_problem,
           options.pressure_solver_options,
           workspace.pressure()
       );

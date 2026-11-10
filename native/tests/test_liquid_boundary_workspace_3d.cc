@@ -98,6 +98,25 @@ TEST(LiquidBoundaryWorkspace3D, FrozenGeometryAndTypedLinksMatchOwningAndUnitCub
     EXPECT_DOUBLE_EQ(std::get<DirichletMacPressureLink3D>(links->faces[i].pressure_link).exterior_pressure, 9);
   }
 }
+TEST(LiquidBoundaryWorkspace3D, ChecksExactCurvatureBeforePublishingGeometry) {
+  Fixture fixture;
+  auto workspace = LiquidBoundaryWorkspace3D::Create(kCap);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  auto inputs = fixture.geometry();
+  inputs.surface_tension = 2;
+  inputs.exact_outward_interface_curvature = -3;
+  const auto frozen = FreezeLiquidBoundaryGeometry3D(inputs, *workspace);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells.size(), 1);
+  EXPECT_DOUBLE_EQ(frozen->cells.front().curvature, -3);
+
+  inputs.exact_outward_interface_curvature = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(FreezeLiquidBoundaryGeometry3D(inputs, *workspace).status().code(), absl::StatusCode::kInvalidArgument);
+  inputs.exact_outward_interface_curvature = std::numeric_limits<double>::max();
+  EXPECT_EQ(FreezeLiquidBoundaryGeometry3D(inputs, *workspace).status().code(), absl::StatusCode::kOutOfRange);
+  EXPECT_DOUBLE_EQ(frozen->cells.front().curvature, -3);
+}
+
 TEST(LiquidBoundaryWorkspace3D, BoundedGeometryBatchesPreserveBitsAndFirstFailure) {
   using boundary_internal::BoundedGeometryAccess;
   using boundary_internal::ComputeGeometry;

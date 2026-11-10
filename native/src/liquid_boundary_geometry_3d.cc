@@ -308,6 +308,10 @@ absl::Status FreezeCore(
       || !std::isfinite(inputs.surface_tension) || inputs.surface_tension < 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid liquid material or step");
   }
+  const auto exact_curvature = inputs.exact_outward_interface_curvature;
+  if (exact_curvature && !std::isfinite(*exact_curvature)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid exact interface curvature");
+  }
   if (inputs.cell_indices.size() > 4096) {
     return absl::Status(absl::StatusCode::kResourceExhausted, bounded ? "" : "Boundary cell capacity exceeded");
   }
@@ -485,25 +489,46 @@ absl::Status FreezeCore(
       needs_curvature[has_head ? head_cell : tail_cell] = true;
     }
   }
-  const auto stage_curvature = [&](std::size_t ordinal, std::size_t, GeometryInput& query) {
-    return StageCenteredCurvature(center_distance_samples, result.cells_[ordinal].cell_index, h, bounded, query);
-  };
-  const auto consume_curvature = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& output
-                                 ) {
-    result.cells_[ordinal].curvature = output.interface_curvature;
-    return absl::OkStatus();
-  };
-  const auto needs_ordinal = [&](std::size_t ordinal) {
-    return needs_curvature[ordinal];
-  };
-  if (const auto status =
-          RunGeometryQueries(backend, result.cells_.size(), bounded, stage_curvature, consume_curvature, needs_ordinal);
-      !status.ok()) {
-    return status;
+  const bool has_capillary_interface = std::ranges::any_of(needs_curvature, [](bool needed) {
+    return needed;
+  });
+  if (exact_curvature) {
+    if (has_capillary_interface && *exact_curvature != 0) {
+      const double capillary_pressure_lift = inputs.surface_tension * *exact_curvature;
+      if (!std::isnormal(capillary_pressure_lift)) {
+        return UnrepresentableGeometry(bounded);
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < needs_curvature.size(); ++ordinal) {
+      if (needs_curvature[ordinal]) {
+        result.cells_[ordinal].curvature = *exact_curvature;
+      }
+    }
+  } else {
+    const auto stage_curvature = [&](std::size_t ordinal, std::size_t, GeometryInput& query) {
+      return StageCenteredCurvature(center_distance_samples, result.cells_[ordinal].cell_index, h, bounded, query);
+    };
+    const auto consume_curvature = [&](std::size_t ordinal, std::size_t, const boundary_internal::GeometryOutput& output
+                                   ) {
+      result.cells_[ordinal].curvature = output.interface_curvature;
+      return absl::OkStatus();
+    };
+    const auto needs_ordinal = [&](std::size_t ordinal) {
+      return needs_curvature[ordinal];
+    };
+    if (const auto status = RunGeometryQueries(
+            backend,
+            result.cells_.size(),
+            bounded,
+            stage_curvature,
+            consume_curvature,
+            needs_ordinal
+        );
+        !status.ok()) {
+      return status;
+    }
   }
-  if (std::ranges::any_of(needs_curvature, [](bool needed) {
-        return needed;
-      })) {
+  if (has_capillary_interface) {
     GeometryInput query{};
     query.mode = GeometryMode::kCapillary;
     query.geometry = grid_geometry;
@@ -770,6 +795,7 @@ boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, 
       .step_duration = inputs.step_duration,
       .liquid_density = inputs.liquid_density,
       .surface_tension = inputs.surface_tension,
+      .exact_outward_interface_curvature = inputs.exact_outward_interface_curvature,
   };
   const auto status = FreezeCore(borrowed_inputs, backend, storage, needs_curvature->values(), false);
   if (!status.ok()) {

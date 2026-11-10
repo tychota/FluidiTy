@@ -149,11 +149,14 @@ struct PreparedMacPressureUploadView3D {
   MacPressureStoppingCriteria3D stopping;
   MacPressureFrozenMeasurement3D frozen_measurement;
 };
+// The rest seed changes only the initial iterate of a checked uniform
+// Dirichlet rest problem. Other inputs use their gauge-adjusted warm start.
 absl::StatusOr<PreparedMacPressureUploadView3D> PrepareBoundedMacPressureUpload3D(
     SparseMacGridView3D grid,
     double step_duration,
     std::span<const MacPressureCell3D> cells,
     std::span<const MacPressureFace3D> faces,
-    MacPressureScratch3D& scratch
+    MacPressureScratch3D& scratch,
+    bool seed_uniform_dirichlet_rest_pressure = false
 );
 }  // namespace fluidity::pressure_internal

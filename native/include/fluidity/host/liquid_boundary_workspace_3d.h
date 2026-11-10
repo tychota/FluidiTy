@@ -24,6 +24,8 @@ struct LiquidBoundaryGeometryViewInputs3D {
   double step_duration;
   double liquid_density;
   double surface_tension;
+  // Finite signed outward curvature in inverse meters, including zero.
+  std::optional<double> exact_outward_interface_curvature = std::nullopt;
 };
 // Frozen sample values are copied into the geometry region. Grid keys remain a
 // topology borrow, so successful topology preparation also invalidates this view.
@@ -43,6 +45,9 @@ struct LiquidPressureProblemView3D {
   std::span<const MacPressureCell3D> cells;
   std::span<const MacPressureFace3D> faces;
   std::size_t lower_theta_regularization_count = 0;
+  // Opt in to the common exterior pressure as the initial iterate only when
+  // the checked problem is uniformly anchored at rest with zero history.
+  bool seed_uniform_dirichlet_rest_pressure = false;
 };
 // Same transfer units and complete-support preconditions as the owning inputs.
 struct LiquidBoundaryDepositViewInputs3D {

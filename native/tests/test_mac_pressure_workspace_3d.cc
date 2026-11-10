@@ -92,6 +92,88 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   });
 }
 
+TEST(MacPressureWorkspace3D, RestSeedUsesOnlyCheckedUniformAnchoredRest) {
+  constexpr double kExteriorPressure = 19;
+  auto rest = MakeAffineProblem(0, 2, true);
+  auto grid = SparseMacGrid3D::Create(kUnitGeometry, rest.blocks, rest.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(rest, *grid);
+  for (auto& face : rest.faces) {
+    face.predicted_normal_velocity = 0;
+    if (auto* exterior = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link)) {
+      exterior->exterior_pressure = kExteriorPressure;
+    }
+  }
+  const auto bytes = QueryMacPressureWorkspaceBytes3D(rest.cells.size(), rest.faces.size());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto scratch_units = bytes->scratch_bytes / sizeof(std::max_align_t);
+  std::vector<std::max_align_t> ordinary_storage(scratch_units);
+  std::vector<std::max_align_t> opted_in_storage(scratch_units);
+  const auto check = [&](const AffineProblem& problem, bool expect_rest_seed) {
+    pressure_internal::MacPressureScratch3D ordinary_scratch(ordinary_storage);
+    pressure_internal::MacPressureScratch3D opted_in_scratch(opted_in_storage);
+    const auto ordinary = pressure_internal::PrepareBoundedMacPressureUpload3D(
+        grid->view(),
+        0.25,
+        problem.cells,
+        problem.faces,
+        ordinary_scratch
+    );
+    const auto opted_in = pressure_internal::PrepareBoundedMacPressureUpload3D(
+        grid->view(),
+        0.25,
+        problem.cells,
+        problem.faces,
+        opted_in_scratch,
+        true
+    );
+    ASSERT_TRUE(ordinary.ok()) << ordinary.status();
+    ASSERT_TRUE(opted_in.ok()) << opted_in.status();
+    if (expect_rest_seed) {
+      for (const double pressure : opted_in->initial_pressure) {
+        EXPECT_DOUBLE_EQ(pressure, kExteriorPressure);
+      }
+    } else {
+      EXPECT_TRUE(std::ranges::equal(opted_in->initial_pressure, ordinary->initial_pressure));
+    }
+    EXPECT_TRUE(std::ranges::equal(opted_in->system.integrated_rhs(), ordinary->system.integrated_rhs()));
+    EXPECT_EQ(opted_in->stopping.integrated_residual_limit, ordinary->stopping.integrated_residual_limit);
+  };
+  ASSERT_NO_FATAL_FAILURE(check(rest, true));
+
+  auto control = rest;
+  control.cells.front().previous_pressure = 7;
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  control = rest;
+  control.cells.front().bulk_modulus = 1000;
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  control = rest;
+  control.cells.front().target_divergence = 0.25;
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  control = rest;
+  control.faces.front().predicted_normal_velocity = 1;
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  control = rest;
+  auto exterior = std::ranges::find_if(control.faces, [](const auto& face) {
+    return std::holds_alternative<DirichletMacPressureLink3D>(face.pressure_link);
+  });
+  ASSERT_NE(exterior, control.faces.end());
+  exterior->pressure_link = DirichletMacPressureLink3D{3};
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  exterior->pressure_link = SealedMacPressureLink3D{};
+  exterior->open_area = 0;
+  exterior->wall_normal_velocity = 0.25;
+  exterior->prescribed_wall_flux = 0.25;
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+  control = rest;
+  auto internal = std::ranges::find_if(control.faces, [](const auto& face) {
+    return std::holds_alternative<InternalMacPressureLink3D>(face.pressure_link);
+  });
+  ASSERT_NE(internal, control.faces.end());
+  internal->pressure_link = InternalMacPressureLink3D{1};
+  ASSERT_NO_FATAL_FAILURE(check(control, false));
+}
+
 TEST(MacPressureWorkspace3D, MatchesIndependentFrozenPressureFixtures) {
   std::vector<pressure_test::MacPressureFixtureCase3D> cases;
   ASSERT_NO_FATAL_FAILURE(pressure_test::LoadMacPressureFixtureCases3D(cases));
