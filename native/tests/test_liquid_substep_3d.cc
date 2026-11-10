@@ -75,6 +75,80 @@ TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   }
 }
 
+TEST(LiquidSubstep3D, MovingPistonGatherGroupsByPressureSupportAndPreservesCarrier) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  auto initial = Initial(4);
+  initial.particles[0].world_position = {2.5, 2.375, 2.5};
+  initial.particles[1].world_position = {2.5, 2.625, 2.5};
+  initial.particles[2].world_position = {2.5, 4.375, 2.5};
+  initial.particles[3].world_position = {2.5, 4.625, 2.5};
+  struct Audit {
+    std::vector<bool> incident_faces;
+    std::vector<std::size_t> run_sizes;
+    std::vector<std::vector<LiquidFaceValidity3D>> new_validities;
+    std::vector<std::vector<double>> new_velocities;
+  } audit;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &audit;
+  backend.freeze =
+      [](void* context, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
+        const auto frozen = CpuLiquidSubstepBackend3D().freeze(nullptr, inputs, workspace);
+        if (frozen.ok()) {
+          auto& incident = static_cast<Audit*>(context)->incident_faces;
+          incident.assign(frozen->mac_grid.face_count(), false);
+          for (const auto& face : frozen->faces) {
+            incident[face.face_slot] = true;
+          }
+        }
+        return frozen;
+      };
+  backend.gather_run =
+      [](void* context, const LiquidBoundaryGatherViewInputs3D& input, LiquidBoundaryWorkspace3D& workspace) {
+        auto& observed = *static_cast<Audit*>(context);
+        observed.run_sizes.push_back(input.particles.size());
+        observed.new_validities.emplace_back(input.new_history.validity.begin(), input.new_history.validity.end());
+        observed.new_velocities.emplace_back(
+            input.new_history.face_velocities.begin(),
+            input.new_history.face_velocities.end()
+        );
+        return GatherLiquidBoundaryParticles3D(input, workspace);
+      };
+  auto options = Options();
+  options.capacities.particles = initial.particles.size();
+  auto scene = Scene();
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 0.9375};
+  scene.obstacle = AxisAlignedLiquidTank3D{-8, 8, 0, -8, 8, 0.0625};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(0x1p-7);
+  ASSERT_TRUE(status.ok()) << status << static_cast<int>(scheduler->diagnostics().failed_stage);
+  ASSERT_EQ(audit.run_sizes, (std::vector<std::size_t>{2, 2}));
+  const auto& supported_validities = audit.new_validities[0];
+  const auto& unsupported_validities = audit.new_validities[1];
+  ASSERT_EQ(supported_validities.size(), scheduler->committed().faces.size());
+  ASSERT_EQ(unsupported_validities.size(), scheduler->committed().faces.size());
+  ASSERT_EQ(audit.new_velocities[0].size(), scheduler->committed().faces.size());
+  ASSERT_EQ(audit.new_velocities[1].size(), scheduler->committed().faces.size());
+  std::size_t masked_donors = 0;
+  for (const auto& face : scheduler->committed().faces.values()) {
+    const auto slot = face.face_slot;
+    const bool usable =
+        face.validity == LiquidFaceValidity3D::kValid || face.validity == LiquidFaceValidity3D::kPredicted;
+    const bool masked = !audit.incident_faces[slot] && face.structurally_eligible && usable;
+    EXPECT_EQ(supported_validities[slot], masked ? LiquidFaceValidity3D::kMissing : face.validity);
+    EXPECT_EQ(unsupported_validities[slot], face.validity);
+    EXPECT_DOUBLE_EQ(audit.new_velocities[0][slot], face.carrier_velocity);
+    EXPECT_DOUBLE_EQ(audit.new_velocities[1][slot], face.carrier_velocity);
+    masked_donors += masked;
+  }
+  EXPECT_GT(masked_donors, 0);
+  auto scalar = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(scalar.ok()) << scalar.status();
+  const auto scalar_status = scalar->AdvanceFrame(0x1p-7);
+  ASSERT_TRUE(scalar_status.ok()) << scalar_status;
+  ExpectIdenticalSerializedState(scalar->committed(), scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, WettedPistonRejectsWetEmptyPressureWithoutRetry) {
   namespace wet = wetted_piston_pressure_test;
   const LiquidState3D initial;

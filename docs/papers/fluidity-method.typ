@@ -110,6 +110,8 @@ $ w_a = u_(a,"lo") + xi_a (u_(a,"hi") - u_(a,"lo")), quad
   D_h = sum_a (u_(a,"hi") - u_(a,"lo")) / Delta x, quad J_p <- J_p exp(Delta t D_h). $
 The lowest-order Raviart–Thomas field has divergence $D_h$, equal to the uncut finite-volume divergence, and a shared constant normal trace. Its transverse velocities can jump across faces. The stored PIC/history velocity and affine fit are unchanged; this path bypasses separation for positions while retaining contact and the displacement check. The original transport covers cut or unsupported cells, moving walls, source or prescribed divergence, compliance, and capillarity. The exponential material volume update is distinct from the determinant of the discrete position map. Adaptive interfaces need separate qualification.
 
+In a translating tank, a particle in a selected pressure cell at step start draws direct new-history carrier values and continuation donors only from usable faces incident to the selected pressure cells. Other particles use the complete carrier history. The old gather history and published carrier keep their original eligibility.
+
 #figure(align(center,transfer-figure()),caption:[Compatible centred deposition and complete old/new ghost gathering have distinct weights and moments. Exact stress–deformation work pairing applies outside cut bands; cut replacement work and reactions are recorded.])
 
 == Renormalised masks for cutting and inactive faces <sec-masks>

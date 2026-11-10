@@ -209,6 +209,8 @@ v_adv = v_pic + β_p αδ
 
 Require partition/first/derivative moments for claimed affine reproduction. Ghosts are built independently from the pre-force and final fields using same-side/body data, rank checks and matching wall times. A boundary-normal replacement reproduces only fields compatible with that boundary. Insufficient rank/ill-conditioned moments cause a counted PIC fallback; test before division/inversion. `kAffineOff` makes every affine consumer read zero, although the persistent C slot may hold diagnostic L. Do not infer L from ordinary C.
 
+**Bounded M1 moving-piston gather.** In a translating tank, a particle whose step-start position lies in a selected pressure cell draws direct new-history carrier values and continuation donors only from usable faces incident to the selected pressure cells. Particles outside the selected cells use the complete carrier history. The old gather history and published carrier retain their original eligibility.
+
 An identical old/new grid gives a zero **grid increment**, not necessarily δ=0. A particle touching an Eulerian low-mass fallback face explicitly sets δ=0. Newly initialized particles have a declared consistent old history or start PIC.
 
 The energy control is `e∈[0,1]`, `α=0.99e`, `β_max=e`, default e=0.6. Elastic always has β=0. Liquid surface separation uses positive expansion and proximity to its interface, excluding obstacles; granular/snow uses returned admissible state outside contact. This ASFLIP-inspired separation policy is a design approximation with its own effect tests, not an automatic guarantee of energy monotonicity for every scene. Require the specified dam-break look-book test.

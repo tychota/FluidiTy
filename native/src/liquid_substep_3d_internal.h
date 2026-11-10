@@ -24,6 +24,8 @@ struct Staging {
   std::optional<LiquidRecords3D<LiquidRegularCellTransport3D>> regular_transport;
   // Reserved only for scenes with a translating piston.
   std::optional<WettedPistonWorkspace3D> wetted_piston;
+  // New-history donor eligibility for pressure-supported particles in moving tanks.
+  std::optional<LiquidRecords3D<LiquidFaceValidity3D>> projected_gather_validity;
   std::size_t reserved_bytes = 0;
   static absl::StatusOr<Staging>
   Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false, bool needs_wetted_piston = false);
