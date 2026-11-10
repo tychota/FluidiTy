@@ -239,8 +239,8 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       || (piston && (!std::isfinite(piston->step_start_low_x_m) || !std::isfinite(piston->step_end_low_x_m)))) {
     return absl::DataLossError("");
   }
-  const auto piston_start = piston ? std::optional{piston->step_start_low_x_m} : std::nullopt;
-  const auto piston_end = piston ? std::optional{piston->step_end_low_x_m} : std::nullopt;
+  const std::string piston_start = piston ? Number(piston->step_start_low_x_m) : "null";
+  const std::string piston_end = piston ? Number(piston->step_end_low_x_m) : "null";
   return "\"accepted_measurement\":{\"accepted_dt_seconds\":" + Number(dt) + ",\"step_start_capillary_bound_seconds\":"
       + OptionalNumber(capillary_bound) + ",\"pressure_iterations\":" + std::to_string(pressure.iteration_count)
       + ",\"pressure_true_residual_l2_m3_per_s\":" + Number(pressure.true_residual_l2)
@@ -248,8 +248,8 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       + ",\"pressure_max_volume_scaled_residual_per_s\":" + Number(pressure.max_volume_scaled_residual)
       + ",\"pressure_max_constraint_defect_per_s\":" + Number(pressure.max_cell_constraint_defect)
       + ",\"step_start_pressure_cell_volume_m3\":" + Number(pressure_volume)
-      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux) + ",\"step_start_piston_low_x_m\":"
-      + OptionalNumber(piston_start) + ",\"step_end_piston_low_x_m\":" + OptionalNumber(piston_end) + '}';
+      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux)
+      + ",\"step_start_piston_low_x_m\":" + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + '}';
 }
 std::string GeometryMembers(const LiquidState3D& state) {
   std::string members = "\"geometry\":{\"particles\":[";
