@@ -58,6 +58,20 @@ bool Complete(const LiquidSubstepBackend3D& backend) {
 auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
 }
+
+// Select the projected new history only for particles in a frozen pressure cell.
+// An unresolved containing cell has to be reported in scalar particle order.
+std::optional<bool> UsesProjectedGatherHistory(const FrozenLiquidBoundaryGeometryView3D& frozen, Vec3 position) {
+  const auto cell = liquid_step_internal::TankContainingCell(frozen.mac_grid.geometry(), position);
+  if (!cell) {
+    return std::nullopt;
+  }
+  const auto cell_key = CellKey(*cell);
+  const auto found = std::ranges::lower_bound(frozen.cells, cell_key, {}, [](const auto& pressure_cell) {
+    return CellKey(pressure_cell.cell_index);
+  });
+  return found != frozen.cells.end() && CellKey(found->cell_index) == cell_key;
+}
 auto FaceKey(FaceIndex3D index) {
   return std::tuple(index.axis, index.lattice_index.z, index.lattice_index.y, index.lattice_index.x);
 }
@@ -484,6 +498,23 @@ struct LiquidSubstepScheduler3D::Impl {
       trial.faces[index].side_tag = staging.new_tags[index].side_tag;
       trial.faces[index].structurally_eligible = staging.new_tags[index].structurally_eligible;
     }
+    std::span<const LiquidFaceValidity3D> projected_gather_validity;
+    if (staging.projected_gather_validity && !links->cells.empty()) {
+      auto validity = staging.projected_gather_validity->values();
+      // Preserve the committed carrier and old history. In the new history,
+      // unprojected usable faces must use continuation from projected donors.
+      for (std::size_t slot = 0; slot < validity.size(); ++slot) {
+        const auto carrier_validity = staging.validity[slot];
+        const bool usable =
+            carrier_validity == LiquidFaceValidity3D::kValid || carrier_validity == LiquidFaceValidity3D::kPredicted;
+        const bool unprojected_donor = staging.new_tags[slot].structurally_eligible && usable;
+        validity[slot] = unprojected_donor ? LiquidFaceValidity3D::kMissing : carrier_validity;
+      }
+      for (const auto& face : frozen->faces) {
+        validity[face.face_slot] = staging.validity[face.face_slot];
+      }
+      projected_gather_validity = validity;
+    }
     const LiquidBoundaryVelocityHistory3D new_history{
         .velocity_sample_time = new_time,
         .wall_sample_time = new_time,
@@ -498,6 +529,7 @@ struct LiquidSubstepScheduler3D::Impl {
     std::optional<std::int64_t> sampled_wall_side;
     std::span<const LiquidBoundaryParticleGather3D> pending_gathers;
     std::size_t attempted_run_end = 0;
+    bool attempted_run_uses_projected_history = false;
     std::size_t field_chunk_end = 0;
     bool field_chunk_ready = false;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
@@ -508,6 +540,18 @@ struct LiquidSubstepScheduler3D::Impl {
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
         sampled_wall_side = side;
       }
+      bool use_projected_history = false;
+      if (!projected_gather_validity.empty()) {
+        if (index < attempted_run_end) {
+          use_projected_history = attempted_run_uses_projected_history;
+        } else {
+          const auto selected = UsesProjectedGatherHistory(*frozen, particle.world_position);
+          if (!selected.has_value()) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          use_projected_history = *selected;
+        }
+      }
       LiquidBoundaryGatherViewInputs3D gather_inputs{
           .mac_grid = grid,
           .particles = staging.particles.values().subspan(index, 1),
@@ -516,9 +560,21 @@ struct LiquidSubstepScheduler3D::Impl {
           .old_history = old_history,
           .new_history = new_history,
       };
+      if (use_projected_history) {
+        gather_inputs.new_history.validity = projected_gather_validity;
+      }
       if (backend.gather_run && index >= attempted_run_end) {
         attempted_run_end = index + 1;
+        attempted_run_uses_projected_history = use_projected_history;
         while (attempted_run_end < trial.particles.size() && trial.particles[attempted_run_end].side_tag == side) {
+          if (!projected_gather_validity.empty()) {
+            const auto& next = trial.particles[attempted_run_end];
+            const auto selected = UsesProjectedGatherHistory(*frozen, next.world_position);
+            // A speculative lookup must not report an error before earlier gathers or field samples.
+            if (!selected.has_value() || *selected != use_projected_history) {
+              break;
+            }
+          }
           ++attempted_run_end;
         }
         const auto run_count = attempted_run_end - index;

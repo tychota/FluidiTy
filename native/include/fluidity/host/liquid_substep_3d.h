@@ -182,6 +182,12 @@ struct LiquidProgressObserver3D {
 // slab sides. An analytic field is stationary in world coordinates; particle union
 // centers freeze after emission, before sort/advection. Candidate bounding boxes
 // and their complete 27-center/8-corner halos must fit the configured reservations.
+// With a translating tank and selected pressure cells, particle positions must
+// have certifiable half-open containing cells at step start or the attempt
+// fails with OutOfRange. Inside selected cells, only usable incident carrier
+// faces supply direct new-history values and continuation donors. Other
+// particles use the full carrier. Old history and carrier publication retain
+// their own eligibility rules.
 class LiquidSubstepScheduler3D {
  public:
   LiquidSubstepScheduler3D(LiquidSubstepScheduler3D&&) noexcept;

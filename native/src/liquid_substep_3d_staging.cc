@@ -166,6 +166,7 @@ Staging::Create(LiquidStateCapacities3D capacities, bool needs_regular_transport
     STEP_TRY(Reserve(staging.regular_transport.emplace(), capacities.particles, staging.reserved_bytes));
   }
   if (needs_wetted_piston) {
+    STEP_TRY(Reserve(staging.projected_gather_validity.emplace(), capacities.faces, staging.reserved_bytes));
     auto workspace = WettedPistonWorkspace3D::Create(capacities);
     if (!workspace.ok()) {
       return workspace.status();
@@ -596,6 +597,9 @@ absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D gr
   STEP_TRY(staging.tags.Resize(count));
   STEP_TRY(staging.new_tags.Resize(count));
   STEP_TRY(staging.validity.Resize(count));
+  if (staging.projected_gather_validity) {
+    STEP_TRY(staging.projected_gather_validity->Resize(count));
+  }
   STEP_TRY(staging.old_velocities.Resize(count));
   STEP_TRY(staging.new_velocities.Resize(count));
   STEP_TRY(staging.old_walls.Resize(count));
