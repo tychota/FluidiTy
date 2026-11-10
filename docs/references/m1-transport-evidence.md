@@ -52,6 +52,24 @@ All three reconstructions agree at the displayed precision. Peak position error 
 
 Reproduce the full records with `uv run --offline --project reference --locked pytest reference/tests/test_mac_transport_3d.py -q -s -k "curved_spatial or affine_euler"`. The 36 JSON rows include component RMS, maximum errors and their locations, and dyadic rates. The ignored evidence directory `out/m1/method-evidence/task-2` contains raw observations and test logs. For the negative controls, shifting the normal donor anchors by `h/2` failed both spline value budgets and substituting exponential J for the Euler determinant failed all three temporal checks.
 
+### Polynomial fit degree at fixed support
+
+The weighted affine and total-degree quadratic fits use the same complete signed MAC donors and
+cubic tensor weights at each spacing. With binary64 analytic data, matching-degree reproduction
+meets 1e-12 m/s for value and 1e-10 s⁻¹ for gradient on all tested phases. The maximum observed
+errors are 8.88e-16 m/s and 8.45e-15 s⁻¹. A quadratic spline tie reduces one quadratic design to rank
+9 of 10; the deficient fit is reported without publishing an ambiguous quadratic value.
+
+On the smooth field at h = 1/64 m, value RMS is 2.36e-4 m/s for the affine fit and 1.10e-6 m/s for
+the quadratic fit. The finest measured value convergence rates are 2.00 and 3.01. The signed
+quarter-cell cubic control explains the third-order bias without extrapolating from the sweep.
+Both fitted gradients have RMS 4.61e-4 s⁻¹ and rate 2.00. Their agreement follows from the complete
+cubic moment symmetry in this fixture. The separately differentiated cubic interpolation gives a
+distinct gradient, with RMS 4.90e-4 s⁻¹. These are uniform complete-support results; the comparison
+does not establish a gradient, cost, or stability gain for the coupled solver.
+
+Reproduce with `uv run --offline --project reference --locked pytest reference/tests/test_mac_fit_degrees.py -q -s`.
+
 ## Separate coupled observables
 
 | Observable | Fixture or budget | Failure isolated by the comparison |
