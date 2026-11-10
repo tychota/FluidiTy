@@ -1,7 +1,9 @@
-"""Exact-property fixtures for transport on complete uniform MAC support."""
+"""Exact and manufactured fixtures for transport on complete uniform MAC support."""
 
+import json
+from functools import cache
 from itertools import product
-from math import inf, nextafter
+from math import cos, exp, inf, log2, nextafter, pi, sin
 
 import numpy as np
 import pytest
@@ -12,6 +14,8 @@ from fluidity_reference.mac_transport_3d import sample_mac_transport
 SPACINGS = (1 / 8, 1 / 16, 1 / 32, 1 / 64)
 VALUE_ATOL = 2e-13
 GRADIENT_ATOL = 2e-11
+RECONSTRUCTIONS = ("quadratic", "rt0", "mixed")
+SUBCELL_PHASES = (0.0, 0.25, 0.5, 0.75)
 LATTICE_POSITIONS = np.array(
     [
         (-2.0, -1.0, 1.0),
@@ -231,3 +235,147 @@ def test_rejects_invalid_sampling_inputs(position, h, reconstruction):
 
     with pytest.raises(ValueError):
         sample_mac_transport(position, h, face_value, reconstruction=reconstruction)
+
+
+def _stratified_positions(h):
+    # One sample per 1/8 m cube in [-1/2, 1/2)^3, with the same phase in each
+    # stratum at every h. Select the middle cell (positive-side on a tie).
+    cells_per_stratum = int(SPACINGS[0] / h)
+    positions = []
+    for x, y, z in product(range(-4, 4), repeat=3):
+        phase_indices = (x + y, y + z, z + x)
+        cell = np.array((x, y, z)) * cells_per_stratum + cells_per_stratum // 2
+        phase = np.array([SUBCELL_PHASES[index % len(SUBCELL_PHASES)] for index in phase_indices])
+        positions.append(h * (cell + phase))
+    return np.array(positions)
+
+
+def _curved_face_values(h, wave_number):
+    @cache
+    def face_value(axis, index):
+        x, y, _ = index
+        # Signed x and y face anchors. The field is independent of z.
+        if axis == 0:
+            return sin(wave_number * h * x) * cos(wave_number * h * (y + 0.5))
+        if axis == 1:
+            return -cos(wave_number * h * (x + 0.5)) * sin(wave_number * h * y)
+        return 0.0
+
+    return face_value
+
+
+def _analytic_curved_field(positions, wave_number):
+    x, y, _ = wave_number * positions.T
+    velocity = np.zeros_like(positions)
+    velocity[:, 0] = np.sin(x) * np.cos(y)
+    velocity[:, 1] = -np.cos(x) * np.sin(y)
+    gradient = np.zeros((len(positions), 3, 3))
+    diagonal = wave_number * np.cos(x) * np.cos(y)
+    shear = wave_number * np.sin(x) * np.sin(y)
+    gradient[:, 0, 0] = diagonal
+    gradient[:, 0, 1] = -shear
+    gradient[:, 1, 0] = shear
+    gradient[:, 1, 1] = -diagonal
+    return velocity, gradient
+
+
+def _error_stats(errors, positions):
+    errors = np.abs(errors)
+    assert np.all(np.isfinite(errors))
+    location, *component = np.unravel_index(np.argmax(errors), errors.shape)
+    component_maxima = np.max(errors, axis=0)
+    return {
+        "rms": float(np.sqrt(np.mean(errors**2))),
+        "rms_by_component": np.sqrt(np.mean(errors**2, axis=0)).tolist(),
+        "max_abs_by_component": component_maxima.tolist(),
+        "max_abs_position_m_by_component": positions[np.argmax(errors, axis=0)].tolist(),
+        "max_abs": float(errors[(location, *component)]),
+        "max_abs_position_m": positions[location].tolist(),
+        "max_abs_component": [int(axis) for axis in component],
+    }
+
+
+@pytest.mark.parametrize("field", ("smooth", "nyquist"))
+@pytest.mark.parametrize("reconstruction", RECONSTRUCTIONS)
+def test_curved_spatial_measurement(field, reconstruction):
+    previous_errors = {}
+    for h in SPACINGS:
+        wave_number = 2 * pi if field == "smooth" else pi / h
+        positions = _stratified_positions(h)
+        donors = _curved_face_values(h, wave_number)
+        exact_velocity, exact_gradient = _analytic_curved_field(positions, wave_number)
+        samples = [
+            sample_mac_transport(position, h, donors, reconstruction=reconstruction) for position in positions
+        ]
+        velocity, gradient = map(np.array, zip(*samples))
+        value_error = _error_stats(velocity - exact_velocity, positions)
+        gradient_error = _error_stats(gradient - exact_gradient, positions)
+        if field == "smooth" and reconstruction != "rt0":
+            bound = wave_number**2 * h**2 / 3 + VALUE_ATOL
+            assert value_error["max_abs"] <= bound, f"smooth spline value bound at h={h} m"
+        if field == "nyquist":
+            # sin(pi*i) vanishes at every normal anchor. The remaining samples
+            # are roundoff; between the faces the exact field still has O(1) amplitude.
+            assert np.max(np.abs(velocity)) <= VALUE_ATOL
+            assert value_error["max_abs"] > 0.5
+
+        for metric, stats in (("value_m_per_s", value_error), ("gradient_per_s", gradient_error)):
+            if metric in previous_errors:
+                stats["dyadic_rms_rate"] = log2(previous_errors[metric]["rms"] / stats["rms"])
+                stats["dyadic_max_rate"] = log2(previous_errors[metric]["max_abs"] / stats["max_abs"])
+            previous_errors[metric] = stats
+        print(json.dumps({
+            "fixture": field, "reconstruction": reconstruction, "h_m": h, "wavelength_m": 2 * pi / wave_number,
+            "sample_count": len(positions), "value_m_per_s": value_error, "gradient_per_s": gradient_error,
+        }, allow_nan=False))
+
+
+@pytest.mark.parametrize("reconstruction", RECONSTRUCTIONS)
+def test_affine_euler_position_and_volume(reconstruction):
+    # Units are metres and seconds. Unit strain over 1 s keeps the affine
+    # reference independent of both the reconstruction and the Euler loop.
+    h = SPACINGS[-1]
+    initial = np.array([(-0.5, 0.25, -0.125), (0.375, -0.5, 0.25), (0.25, 0.125, -0.375)])
+    donors = _affine_face_values(h, np.zeros(3), np.diag([1.0, -1.0, 0.0]))
+    exact_flow_position = initial * [exp(1.0), exp(-1.0), 1.0]
+    exact_flow_ratio = exp(1.0) * exp(-1.0)
+    previous_errors = {}
+    for dt in SPACINGS:
+        steps = int(1 / dt)
+        positions = initial.copy()
+        euler_volume_ratio = np.ones(len(positions))
+        material_j = np.ones(len(positions))
+        for _ in range(steps):
+            for particle, position in enumerate(positions):
+                velocity, gradient = sample_mac_transport(position, h, donors, reconstruction=reconstruction)
+                positions[particle] = position + dt * velocity
+                euler_volume_ratio[particle] *= np.linalg.det(np.eye(3) + dt * gradient)
+                material_j[particle] *= exp(dt * np.trace(gradient))
+
+        discrete_position = initial * [(1 + dt)**steps, (1 - dt)**steps, 1.0]
+        discrete_volume_ratio = (1 - dt**2)**steps
+        np.testing.assert_allclose(positions, discrete_position, atol=VALUE_ATOL, rtol=0.0)
+        np.testing.assert_allclose(
+            euler_volume_ratio, discrete_volume_ratio, atol=2e-13, rtol=0.0,
+            err_msg="Euler map must use its discrete determinant",
+        )
+        np.testing.assert_allclose(material_j, 1.0, atol=2e-13, rtol=0.0)
+        assert exact_flow_ratio == pytest.approx(1.0, abs=2e-13, rel=0.0)
+
+        position_error = _error_stats(positions - exact_flow_position, initial)
+        volume_defect = float(np.max(np.abs(euler_volume_ratio - exact_flow_ratio)))
+        errors = {"position": position_error["rms"], "euler_volume": volume_defect}
+        rates = {metric: log2(previous_errors[metric] / error) for metric, error in errors.items()
+                 if metric in previous_errors}
+        previous_errors = errors
+        print(json.dumps({
+            "fixture": "affine_time", "reconstruction": reconstruction, "h_m": h, "dt_s": dt, "steps": steps,
+            "initial_positions_m": initial.tolist(), "euler_positions_m": positions.tolist(),
+            "analytic_discrete_positions_m": discrete_position.tolist(), "exact_flow_positions_m": exact_flow_position.tolist(),
+            "position_error_m_by_initial_position": position_error, "exact_flow_volume_ratio": exact_flow_ratio,
+            "analytic_discrete_volume_ratio": discrete_volume_ratio, "euler_volume_ratio": euler_volume_ratio.tolist(),
+            "euler_volume_defect": volume_defect, "material_j": material_j.tolist(),
+            "discrete_position_max_abs_error_m": float(np.max(np.abs(positions - discrete_position))),
+            "discrete_volume_max_abs_error": float(np.max(np.abs(euler_volume_ratio - discrete_volume_ratio))),
+            "material_j_max_abs_error": float(np.max(np.abs(material_j - 1.0))), "dyadic_rates": rates,
+        }, allow_nan=False))
