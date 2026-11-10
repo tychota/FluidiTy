@@ -17,23 +17,30 @@ struct LiquidGhostAffineFit3D {
   Vec3 velocity_slopes_in_cell_widths;  // m/s per normalized spatial coordinate.
 };
 
+// A radius-two sphere on the canonical MAC lattice contains 33 offsets
+// within one component. Across components, two half-cell shifts give 36.
+// The spherical test includes its boundary, and sparse ownership can only remove donors.
+inline constexpr std::size_t kMaxRadiusTwoGhostDonors3D = 36;
+
 FLUIDITY_HD inline bool TransferFinite(Vec3 value) {
   return boundary_internal::numeric::isfinite(value.x) && boundary_internal::numeric::isfinite(value.y)
       && boundary_internal::numeric::isfinite(value.z);
 }
 // Bounded column-pivoted QR in h units. Recompute norms, retain column ties,
 // and reject pivots below 1e-10 of the largest without squaring conditioning.
-// Accepts at most 125 finite rows in caller order. Invalid rows return kInvalid;
-// nonfinite intermediate arithmetic returns kRange. Rank loss returns a successful
-// zero result with full_rank=false; no deficient pivot is divided.
-FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitLiquidGhostAffineCore3D(
+// Accepts at most kSampleCapacity finite rows in caller order. Excess or
+// invalid rows return kInvalid, and nonfinite arithmetic returns kRange.
+// Rank loss returns a successful zero result with full_rank=false.
+template <std::size_t kSampleCapacity>
+FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitBoundedLiquidGhostAffineCore3D(
     boundary_internal::numeric::span<const LiquidGhostFitSample3D> samples
 ) {
-  if (samples.size() > 125) {
+  static_assert(kSampleCapacity >= 4 && kSampleCapacity <= 125);
+  if (samples.size() > kSampleCapacity) {
     return boundary_internal::Error::kInvalid;
   }
-  boundary_internal::numeric::array<boundary_internal::numeric::array<double, 4>, 125> matrix{};
-  boundary_internal::numeric::array<double, 125> rhs{};
+  boundary_internal::numeric::array<boundary_internal::numeric::array<double, 4>, kSampleCapacity> matrix{};
+  boundary_internal::numeric::array<double, kSampleCapacity> rhs{};
   double velocity_scale = 0.0;
   for (std::size_t row = 0; row < samples.size(); ++row) {
     const auto& sample = samples[row];
@@ -82,7 +89,7 @@ FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitLiquidGho
       boundary_internal::numeric::swap(matrix[row][pivot], matrix[row][selected_column]);
     }
     const double diagonal = -boundary_internal::numeric::copysign(selected_norm, matrix[pivot][pivot]);
-    boundary_internal::numeric::array<double, 125> reflector{};
+    boundary_internal::numeric::array<double, kSampleCapacity> reflector{};
     double reflector_norm = 0.0;
     for (std::size_t row = pivot; row < samples.size(); ++row) {
       // Divide before subtracting: each reflector entry stays bounded by two.
@@ -134,5 +141,11 @@ FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitLiquidGho
       .velocity_at_target = coefficients[0],
       .velocity_slopes_in_cell_widths = {coefficients[1], coefficients[2], coefficients[3]},
   };
+}
+// Fits up to 125 caller-ordered samples with the same rank and error contract.
+FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitLiquidGhostAffineCore3D(
+    boundary_internal::numeric::span<const LiquidGhostFitSample3D> samples
+) {
+  return FitBoundedLiquidGhostAffineCore3D<125>(samples);
 }
 }  // namespace fluidity::internal

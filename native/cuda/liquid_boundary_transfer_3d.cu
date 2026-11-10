@@ -10,7 +10,6 @@ namespace {
 namespace numeric = boundary_internal::numeric;
 using boundary_internal::Error;
 using boundary_internal::Value;
-constexpr std::size_t kMaxDonors = 125;
 constexpr std::int64_t kMaximumQuantaSum = std::int64_t{1} << 62;
 using GatherStencils = decltype(BoundaryTransferParticle3D::stencils);
 constexpr std::size_t kGatherComponentCount = std::extent_v<GatherStencils, 0>;
@@ -93,7 +92,7 @@ __device__ Value<ContinuedVelocity> ContinueComponent(
     std::int64_t side_tag,
     const LiquidPrescribedWallSample3D& wall
 ) {
-  numeric::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors{};
+  numeric::array<internal::LiquidGhostFitSample3D, internal::kMaxRadiusTwoGhostDonors3D> donors{};
   std::size_t donor_count = 0;
   std::size_t nearest_slot = anchors.size();
   double nearest_squared_distance = numeric::numeric_limits<double>::infinity();
@@ -122,7 +121,9 @@ __device__ Value<ContinuedVelocity> ContinueComponent(
       }
     }
   }
-  const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(donors).first(donor_count));
+  const auto fit = internal::FitBoundedLiquidGhostAffineCore3D<internal::kMaxRadiusTwoGhostDonors3D>(
+      numeric::span(donors).first(donor_count)
+  );
   if (!fit.ok()) {
     return fit.status();
   }

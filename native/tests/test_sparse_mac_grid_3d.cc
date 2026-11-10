@@ -1,4 +1,5 @@
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +9,7 @@
 
 #include "../cuda/liquid_boundary_donor_slots_3d.h"
 #include "absl/status/status.h"
+#include "fluidity/base/liquid_boundary_transfer_math_3d.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 #include "gtest/gtest.h"
 
@@ -92,6 +94,54 @@ TEST(SparseMacGrid3D, CudaDonorNeighborhoodMatchesCanonicalSlotOrder) {
         }
       }
       EXPECT_EQ(actual_slots, expected_slots);
+    }
+  }
+}
+
+TEST(SparseMacGrid3D, CompactGhostFitMatchesFullScratchOnRadiusTwoDonors) {
+  for (const bool staggered : {false, true}) {
+    SCOPED_TRACE(staggered);
+    const int first_transverse_half_cell = staggered ? -3 : -4;
+    std::vector<internal::LiquidGhostFitSample3D> donors;
+    for (int half_z = -4; half_z <= 4; half_z += 2) {
+      for (int half_y = first_transverse_half_cell; half_y <= 4; half_y += 2) {
+        for (int half_x = first_transverse_half_cell; half_x <= 4; half_x += 2) {
+          const int squared_half_cell_distance = half_x * half_x + half_y * half_y + half_z * half_z;
+          if (squared_half_cell_distance > 16) {
+            continue;
+          }
+          donors.push_back({
+              .offset_in_cell_widths = {0.5 * half_x, 0.5 * half_y, 0.5 * half_z},
+              .velocity = 0.125 * (half_x * half_x + half_y * half_z - half_x + 3 * half_z + 1),
+          });
+        }
+      }
+    }
+    EXPECT_EQ(donors.size(), staggered ? 36u : 33u);
+    EXPECT_LE(donors.size(), internal::kMaxRadiusTwoGhostDonors3D);
+    const auto full = internal::FitLiquidGhostAffineCore3D(donors);
+    const auto compact = internal::FitBoundedLiquidGhostAffineCore3D<internal::kMaxRadiusTwoGhostDonors3D>(donors);
+    ASSERT_TRUE(full.ok());
+    ASSERT_TRUE(compact.ok());
+    ASSERT_TRUE(full->full_rank);
+    ASSERT_TRUE(compact->full_rank);
+    const std::array full_coefficients{
+        full->velocity_at_target,
+        full->velocity_slopes_in_cell_widths.x,
+        full->velocity_slopes_in_cell_widths.y,
+        full->velocity_slopes_in_cell_widths.z,
+    };
+    const std::array compact_coefficients{
+        compact->velocity_at_target,
+        compact->velocity_slopes_in_cell_widths.x,
+        compact->velocity_slopes_in_cell_widths.y,
+        compact->velocity_slopes_in_cell_widths.z,
+    };
+    for (std::size_t coefficient_index = 0; coefficient_index < full_coefficients.size(); ++coefficient_index) {
+      EXPECT_EQ(
+          std::bit_cast<std::uint64_t>(full_coefficients[coefficient_index]),
+          std::bit_cast<std::uint64_t>(compact_coefficients[coefficient_index])
+      );
     }
   }
 }
