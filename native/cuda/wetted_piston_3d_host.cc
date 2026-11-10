@@ -99,7 +99,11 @@ absl::Status Patches(
   if (patch_indices.size() > arena.capacities().faces) {
     return Status(absl::StatusCode::kResourceExhausted);
   }
-  const auto disks = gpu::CheckedLiquidRange3D<wet::Disk>(arena, Range::kWettedPistonDisks, sections.size());
+  const auto can_wet_wall = [](const wet::Disk& disk) {
+    return disk.radius_squared.upper > 0;
+  };
+  const auto wet_disk_count = static_cast<std::size_t>(std::ranges::count_if(sections, can_wet_wall));
+  const auto disks = gpu::CheckedLiquidRange3D<wet::Disk>(arena, Range::kWettedPistonDisks, wet_disk_count);
   const auto architecture = gpu::CheckedLiquidRange3D<int>(arena, Range::kArchitecture, 1);
   if (!disks.ok()) {
     return disks.status();
@@ -107,7 +111,12 @@ absl::Status Patches(
   if (!architecture.ok()) {
     return architecture.status();
   }
-  const auto interval_stride = std::max<std::size_t>(1, sections.size());
+  const auto interval_stride = std::max<std::size_t>(1, wet_disk_count);
+  // The shared integrator skips certified zero-radius disks in every band.
+  // Preserve the original disk order and reuse the resident list when all can wet.
+  if (wet_disk_count > 0 && wet_disk_count < sections.size()) {
+    std::ranges::copy_if(sections, disks->pinned.begin(), can_wet_wall);
+  }
   for (std::size_t begin = 0; begin < patch_indices.size();) {
     const auto count = std::min(wet::kDevicePatchBatch, patch_indices.size() - begin);
     const auto indices = gpu::CheckedLiquidRange3D<wet::PatchIndex>(arena, Range::kWettedPistonIndices, count);
@@ -125,6 +134,14 @@ absl::Status Patches(
     }
 
     std::ranges::copy(patch_indices.subspan(begin, count), indices->pinned.begin());
+    // Upload only after all first-batch ranges have been checked. The batch
+    // fence protects the pinned disk span until the next call can overwrite it.
+    if (begin == 0 && wet_disk_count < sections.size()) {
+      const auto uploaded = gpu::CopyLiquidRange3D(arena, *disks, true);
+      if (!uploaded.ok()) {
+        return uploaded;
+      }
+    }
     auto status = gpu::CopyLiquidRange3D(arena, *indices, true);
     if (!status.ok()) {
       return status;
@@ -132,7 +149,7 @@ absl::Status Patches(
     status = arena.RecordRuntimeResult(gpu::LaunchWettedPistonPatches3D(
         field,
         disks->device,
-        sections.size(),
+        wet_disk_count,
         indices->device,
         measures->device,
         count,
