@@ -328,25 +328,32 @@ TEST(CudaLiquidPressureStage3D, BatchLaunchProvidesParallelRowLanes) {
     launch = cuda_internal::LaunchMacPressureBatch3D({}, true, 1, stream);
     end = cudaStreamEndCapture(stream, &graph);
   }
+  std::size_t node_count = 0;
+  const auto count =
+      end == cudaSuccess && graph != nullptr ? cudaGraphGetNodes(graph, nullptr, &node_count) : cudaErrorUnknown;
+  std::size_t node_capacity = 1;
+  cudaGraphNode_t node = nullptr;
+  const auto nodes =
+      count == cudaSuccess && node_count == 1 ? cudaGraphGetNodes(graph, &node, &node_capacity) : cudaErrorUnknown;
+  cudaKernelNodeParams parameters{};
+  const auto kernel = nodes == cudaSuccess ? cudaGraphKernelNodeGetParams(node, &parameters) : cudaErrorUnknown;
+  if (graph != nullptr) {
+    EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  }
   EXPECT_EQ(cudaStreamDestroy(stream), cudaSuccess);
   ASSERT_EQ(begin, cudaSuccess);
   ASSERT_EQ(launch, cudaSuccess);
   ASSERT_EQ(end, cudaSuccess);
-
-  std::size_t node_count = 1;
-  cudaGraphNode_t node = nullptr;
-  cudaKernelNodeParams parameters{};
-  const auto nodes = cudaGraphGetNodes(graph, &node, &node_count);
-  const auto kernel =
-      nodes == cudaSuccess && node_count == 1 ? cudaGraphKernelNodeGetParams(node, &parameters) : cudaErrorUnknown;
-  EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
-  ASSERT_EQ(nodes, cudaSuccess);
+  ASSERT_EQ(count, cudaSuccess);
   ASSERT_EQ(node_count, 1);
+  ASSERT_EQ(nodes, cudaSuccess);
   ASSERT_EQ(kernel, cudaSuccess);
   EXPECT_EQ(parameters.gridDim.x, 1);
   EXPECT_EQ(parameters.gridDim.y, 1);
   EXPECT_EQ(parameters.gridDim.z, 1);
   EXPECT_GT(parameters.blockDim.x, 1);
+  EXPECT_EQ(parameters.blockDim.y, 1);
+  EXPECT_EQ(parameters.blockDim.z, 1);
 }
 
 TEST(CudaLiquidPressureStage3D, BatchRowsMatchStandaloneSerialIterationsBitwise) {
