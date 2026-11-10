@@ -46,8 +46,9 @@ class DropEllipsoid:
     def air_link_curvature(self, wet_center, air_center):
         """Return outward curvature (1/m) at the zero crossing of a wet-to-air segment.
 
-        The segment must start strictly inside and end on or outside this
-        component. Raises ValueError if it does not bracket the surface.
+        The computed start level must be strictly negative and the computed
+        end level must be nonnegative. Raises ValueError for an unbracketed
+        segment, including one whose analytic endpoint rounds inside.
         """
         wet = (np.asarray(wet_center) - self.center) @ self.frame
         air = (np.asarray(air_center) - self.center) @ self.frame
