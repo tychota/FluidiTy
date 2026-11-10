@@ -20,7 +20,7 @@ class PreparedIsolatedDrop3D {
   double maximum_semiaxis() const;
 
   // Sample (R/2)(q − 1) in meters, negative inside, where q is the fitted
-  // inverse shape applied to the world offset from the centroid. The fixed
+  // quadratic form of the world offset with the inverse fitted shape. The fixed
   // authored radius R scales the level set. Returns OutOfRange for nonfinite arithmetic.
   absl::StatusOr<double> QuadraticGridLevelSet(Vec3 world_position) const;
 
@@ -29,7 +29,7 @@ class PreparedIsolatedDrop3D {
   absl::StatusOr<double> ParticleSignedDistance(Vec3 world_position) const;
 
   // Return the sum of outward principal curvatures in inverse meters at the
-  // wet-to-air crossing (+2/R for a sphere). The wet center must have level < 0
+  // wet-to-air crossing (+2/r for a fitted sphere of radius r). The wet center must have level < 0
   // and the air center level >= 0. Returns FailedPrecondition without that
   // bracket and OutOfRange for nonfinite arithmetic.
   absl::StatusOr<double> AirLinkCurvature(Vec3 wet_world_center, Vec3 air_world_center) const;
