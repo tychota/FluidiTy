@@ -308,7 +308,7 @@ void CheckStaleAndWriterLifetimes() {
 }
 TEST(CudaLiquidSnapshot3D, DelayedCopyFencesSourceEpoch) {
   auto state = Fixture();
-  auto arena = CudaLiquidArena3D::Create(kSmall);
+  auto arena = CudaLiquidArena3D::Create(kSmall, 0, std::numeric_limits<std::size_t>::max(), true);
   ASSERT_TRUE(arena.ok());
   ASSERT_TRUE(arena->Initialize(state).ok());
   auto first = arena->AcquireCommitted();
@@ -328,9 +328,13 @@ TEST(CudaLiquidSnapshot3D, DelayedCopyFencesSourceEpoch) {
   auto ticket = queue->BeginCopy(first->identity(), std::move(*first));
   ASSERT_TRUE(ticket.ok());
   EXPECT_EQ(*queue->Poll(*ticket), LiquidSnapshotProgress3D::kPending);
+  const auto single_output_bytes = arena->metrics().live_snapshot_output_bytes;
+  EXPECT_GT(single_output_bytes, 0);
   auto second_ticket = queue->BeginCopy(second->identity(), std::move(*second));
   ASSERT_TRUE(second_ticket.ok());
   EXPECT_EQ(*queue->Poll(*second_ticket), LiquidSnapshotProgress3D::kPending);
+  EXPECT_EQ(arena->metrics().live_snapshot_output_bytes, 2 * single_output_bytes);
+  EXPECT_EQ(arena->metrics().snapshot_d2h_events.interval_count, 0);
   auto next_clock = state.clock;
   next_clock.time += 0.01;
   ++next_clock.frame_ordinal;
@@ -341,6 +345,7 @@ TEST(CudaLiquidSnapshot3D, DelayedCopyFencesSourceEpoch) {
   EXPECT_FALSE(arena->PreparePublication(state, next_clock).ok());
   EXPECT_EQ(queue->LastValidHostSnapshot(), nullptr);
   EXPECT_TRUE(queue->Cancel(*second_ticket).ok());
+  EXPECT_EQ(arena->metrics().live_snapshot_output_bytes, 2 * single_output_bytes);
   gate.Open();
   ASSERT_EQ(*Await(*queue, *ticket), LiquidSnapshotProgress3D::kReady);
   EXPECT_TRUE(*arena->PublicationReady());
@@ -351,12 +356,22 @@ TEST(CudaLiquidSnapshot3D, DelayedCopyFencesSourceEpoch) {
   ASSERT_NE(queue->LastValidHostSnapshot(), nullptr);
   EXPECT_EQ(*queue->LastValidHostSnapshot(), *original);
   EXPECT_EQ(*Await(*queue, *second_ticket), LiquidSnapshotProgress3D::kCanceled);
+  const auto completed = arena->metrics();
+  EXPECT_EQ(completed.live_snapshot_output_bytes, single_output_bytes);
+  EXPECT_EQ(completed.peak_snapshot_output_bytes, 2 * single_output_bytes);
+  EXPECT_EQ(completed.snapshot_d2h_events.interval_count, 2);
+  EXPECT_GT(completed.snapshot_d2h_events.seconds, snapshot->copy_milliseconds() / 1000.0);
+  std::cout << "delayed_snapshot_output_peak_bytes=" << completed.peak_snapshot_output_bytes
+            << " completed_d2h_intervals=" << completed.snapshot_d2h_events.interval_count
+            << " summed_d2h_seconds=" << completed.snapshot_d2h_events.seconds << '\n';
   EXPECT_FALSE(queue->Finish(*second_ticket).ok());
   EXPECT_FALSE(queue->Poll(*second_ticket).ok());
   Advance(*arena, state);
   EXPECT_EQ(*snapshot->state(), *original);
   EXPECT_FALSE(queue->Finish(*ticket).ok());
   Receipt("liquid_snapshot_3d", *arena, snapshot->copy_milliseconds());
+  *snapshot = LiquidSnapshotLease3D{};
+  EXPECT_EQ(arena->metrics().live_snapshot_output_bytes, 0);
   ASSERT_NO_FATAL_FAILURE(CheckStaleAndWriterLifetimes());
 #if defined(_WIN32) && defined(_DEBUG)
   ASSERT_NO_FATAL_FAILURE(CheckNoSubmissionAllocations());

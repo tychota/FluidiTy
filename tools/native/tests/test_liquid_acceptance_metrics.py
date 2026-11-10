@@ -9,7 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from liquid_acceptance_metrics import evaluate_free_fall, uniform_history_velocities
-from run_liquid_acceptance import matches_identity, read_records, run_acceptance, verify_device, verify_solver
+from run_liquid_acceptance import (
+    matches_identity, read_records, run_acceptance, verify_device, verify_job_measurement, verify_solver,
+)
 
 
 def frames():
@@ -317,3 +319,102 @@ def test_cuda_compute_capability_and_executed_architecture_are_independent(
     }
     with pytest.raises(ValueError, match=diagnostic):
         verify_device(probe, "cuda")
+def job_receipt(backend):
+    receipt = {
+        "event": "job_measurement", "command": "run", "backend": backend, "status": "OK",
+        "attempt_count": 6, "settled_attempt_count": 5,
+        "host_wall": {
+            "cold_setup_seconds": 0.125, "scheduling_seconds": 0.125,
+            "emit_activation_field_seconds": 0.125, "deposit_normalization_seconds": 0.125,
+            "forces_geometry_pressure_seconds": 0.125, "gather_contact_acceptance_seconds": 0.125,
+            "snapshot_cache_seconds": 0.125, "drain_seconds": 0.125, "total_seconds": 1.0,
+        },
+        "cuda_events": None, "cuda_memory": None,
+    }
+    if backend == "cuda":
+        receipt["cuda_events"] = {
+            f"{phase}_seconds": 0.025 for phase in (
+                "emit_activation_field", "deposit_normalization", "forces_geometry_pressure",
+                "gather_contact_acceptance", "snapshot_d2h",
+            )
+        }
+        receipt["cuda_events"].update({
+            f"{phase}_interval_count": 6 for phase in (
+                "emit_activation_field", "deposit_normalization", "forces_geometry_pressure",
+                "gather_contact_acceptance", "snapshot_d2h",
+            )
+        })
+        receipt["cuda_events"].update(pre_topology_field_seconds=0.01, pre_topology_field_interval_count=6)
+        receipt["cuda_memory"] = {
+            "total_device_bytes": 1000, "free_device_bytes_at_start": 800,
+            "budget_bytes": 640, "device_byte_limit": 600, "current_device_reserved_bytes": 300,
+            "peak_device_reserved_bytes": 480, "current_pinned_reserved_bytes": 190,
+            "peak_pinned_reserved_bytes": 250, "peak_snapshot_pinned_reserved_bytes": 80,
+            "current_snapshot_pinned_reserved_bytes": 70, "current_snapshot_output_bytes": 0,
+            "current_physical_state_bytes": 70, "peak_physical_state_bytes": 100,
+            "current_device_scratch_bytes": 210, "peak_device_scratch_bytes": 220,
+            "peak_active_device_scratch_bytes": 110, "peak_snapshot_output_bytes": 60,
+            "device_reservation_attempts": 2, "budget_refusals": 0, "quarantined_owner_count": 0,
+            "remaining_device_reserved_bytes_after_drain": 0, "remaining_pinned_reserved_bytes_after_drain": 0,
+            "free_device_bytes_after_drain": 800,
+        }
+    return receipt
+
+
+@pytest.mark.parametrize("backend", ("cpu", "cuda"))
+def test_accepts_opt_in_job_measurement(backend):
+    receipts, frames, identity = solver_receipts()
+    receipts = with_attempt_ledger(receipts)
+    identity["backend"] = backend
+    for record in receipts:
+        if "backend" in record:
+            record["backend"] = backend
+        if backend == "cuda" and record["event"] in ("frame", "result"):
+            record.update(compiled_architecture=1200, snapshot_copy_milliseconds=0.01)
+    if backend == "cuda":
+        receipts[-1].update(graph_replay_count=5, device_reserved_bytes=300)
+    receipts.insert(-1, job_receipt(backend))
+    receipts[-2].update(attempt_count=30, settled_attempt_count=30)
+    if backend == "cuda":
+        for field in receipts[-2]["cuda_events"]:
+            if field.endswith("_interval_count"):
+                receipts[-2]["cuda_events"][field] = 7 if field.startswith("snapshot_d2h") else 30
+    assert verify_solver(receipts, frames, identity, require_job_measurement=True) == receipts[-1]
+    with pytest.raises(ValueError, match="missing job measurement"):
+        verify_solver(receipts[:-2] + receipts[-1:], frames, identity, require_job_measurement=True)
+    receipts[-2]["attempt_count"] += 1
+    with pytest.raises(ValueError, match="job measurement disagrees"):
+        verify_solver(receipts, frames, identity, require_job_measurement=True)
+
+
+@pytest.mark.parametrize("section, field, value, message", (
+    ("host_wall", "drain_seconds", float("nan"), "invalid drain_seconds"),
+    ("host_wall", "cold_setup_seconds", 0.25, "host wall phases"),
+    ("cuda_events", "emit_activation_field_interval_count", 0, "CUDA event interval"),
+    ("cuda_events", "deposit_normalization_seconds", -1.0, "invalid deposit_normalization_seconds"),
+    ("cuda_memory", "budget_bytes", 641, "fixed device budget"),
+    ("cuda_memory", "peak_device_reserved_bytes", 601, "aggregate device reservation"),
+    ("cuda_memory", "peak_snapshot_pinned_reserved_bytes", 251, "aggregate pinned reservation"),
+    ("cuda_memory", "peak_snapshot_output_bytes", 81, "snapshot output extent"),
+))
+def test_rejects_inconsistent_job_measurement(section, field, value, message):
+    receipt = job_receipt("cuda")
+    receipt[section][field] = value
+    with pytest.raises(ValueError, match=message):
+        verify_job_measurement(receipt, "cuda")
+
+
+def test_rejects_missing_or_fabricated_cuda_job_measurement():
+    with pytest.raises(ValueError, match="missing job measurement"):
+        verify_job_measurement(None, "cuda")
+    with pytest.raises(ValueError, match="CUDA evidence on a CPU job"):
+        verify_job_measurement(job_receipt("cuda") | {"backend": "cpu"}, "cpu")
+    with pytest.raises(ValueError, match="missing CUDA event"):
+        verify_job_measurement(job_receipt("cpu") | {"backend": "cuda"}, "cuda")
+
+
+def test_topology_and_face_events_cannot_stand_in_for_pre_topology_field_sampling():
+    receipt = job_receipt("cuda")
+    del receipt["cuda_events"]["pre_topology_field_interval_count"]
+    with pytest.raises(ValueError, match="pre_topology_field"):
+        verify_job_measurement(receipt, "cuda")

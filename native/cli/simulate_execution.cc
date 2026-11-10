@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -7,6 +9,7 @@
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
+#include "absl/cleanup/cleanup.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
@@ -290,14 +293,148 @@ std::string AttemptMembers(const LiquidAttemptMeasurement3D& attempt, bool frame
       + OptionalNumber(attempt.retry_dt_seconds) + ",\"retained\":" + (retained ? "true" : "false")
       + ",\"restarted_frame\":" + (restarted_frame ? "true" : "false");
 }
+enum class JobWallPhase {
+  kColdSetup,
+  kScheduling,
+  kEmitActivationField,
+  kDepositNormalization,
+  kForcesGeometryPressure,
+  kGatherContactAcceptance,
+  kSnapshotCache,
+  kDrain,
+};
+constexpr std::array kWorkPhaseNames{
+    "emit_activation_field",
+    "deposit_normalization",
+    "forces_geometry_pressure",
+    "gather_contact_acceptance",
+};
+constexpr std::array kJobWallPhaseNames{
+    "cold_setup",
+    "scheduling",
+    kWorkPhaseNames[0],
+    kWorkPhaseNames[1],
+    kWorkPhaseNames[2],
+    kWorkPhaseNames[3],
+    "snapshot_cache",
+    "drain",
+};
+// One monotonic partition for the solver thread. The phase clock also owns
+// timing on early exits. CUDA dispatch intervals below are independent.
+struct JobMeasurement {
+  using Clock = std::chrono::steady_clock;
+  const Clock::time_point started = Clock::now();
+  Clock::time_point phase_started = started;
+  JobWallPhase phase = JobWallPhase::kColdSetup;
+  std::array<double, kJobWallPhaseNames.size()> seconds{};
+  std::optional<LiquidBackend3D> backend;
+  std::uint64_t attempt_count = 0;
+  std::uint64_t settled_attempt_count = 0;
+#if defined(FLUIDITY_SIMULATE_CUDA)
+  std::optional<CudaLiquidArenaMetrics3D> cuda_before_drain;
+  std::optional<CudaLiquidArenaMetrics3D> cuda_after_drain;
+#endif
+
+  void Enter(JobWallPhase next) {
+    const auto now = Clock::now();
+    seconds[static_cast<std::size_t>(phase)] += std::chrono::duration<double>(now - phase_started).count();
+    phase_started = now;
+    phase = next;
+  }
+  static void EnterWork(void* context, LiquidWorkPhase3D work_phase) {
+    constexpr std::array wall_phases{
+        JobWallPhase::kEmitActivationField,
+        JobWallPhase::kDepositNormalization,
+        JobWallPhase::kForcesGeometryPressure,
+        JobWallPhase::kGatherContactAcceptance,
+        JobWallPhase::kScheduling,
+    };
+    static_assert(wall_phases.size() == static_cast<std::size_t>(LiquidWorkPhase3D::kCount) + 1);
+    static_cast<JobMeasurement*>(context)->Enter(wall_phases[static_cast<std::size_t>(work_phase)]);
+  }
+  std::string Members(CommandKind kind, const absl::Status& status) {
+    Enter(JobWallPhase::kDrain);
+    const auto total = std::chrono::duration<double>(phase_started - started).count();
+    const auto name = kind == CommandKind::kRun ? "run" : (kind == CommandKind::kReplay ? "replay" : "step");
+    const auto backend_member = backend ? JsonString(*backend == LiquidBackend3D::kCuda ? "cuda" : "cpu") : "null";
+    std::string members = "\"command\":" + JsonString(name) + ",\"backend\":" + backend_member + ",\"status\":"
+        + JsonString(absl::StatusCodeToString(status.code())) + ",\"attempt_count\":" + std::to_string(attempt_count)
+        + ",\"settled_attempt_count\":" + std::to_string(settled_attempt_count)
+        + ",\"host_wall\":{\"total_seconds\":" + Number(total);
+    for (std::size_t index = 0; index < seconds.size(); ++index) {
+      members += ',' + JsonString(std::string(kJobWallPhaseNames[index]) + "_seconds") + ':' + Number(seconds[index]);
+    }
+    members += '}';
+#if defined(FLUIDITY_SIMULATE_CUDA)
+    if (cuda_before_drain && cuda_after_drain) {
+      members += CudaMembers(*cuda_before_drain, *cuda_after_drain);
+      return members;
+    }
+#endif
+    return members + ",\"cuda_events\":null,\"cuda_memory\":null";
+  }
+
+#if defined(FLUIDITY_SIMULATE_CUDA)
+  static std::string CudaMembers(const CudaLiquidArenaMetrics3D& before, const CudaLiquidArenaMetrics3D& after) {
+    std::string members = ",\"cuda_events\":{";
+    const auto add_events = [&](std::string_view phase_name, const CudaLiquidEventIntervals3D& events) {
+      members += JsonString(std::string(phase_name) + "_seconds") + ':' + Number(events.seconds) + ','
+          + JsonString(std::string(phase_name) + "_interval_count") + ':' + std::to_string(events.interval_count);
+    };
+    static_assert(kWorkPhaseNames.size() == static_cast<std::size_t>(LiquidWorkPhase3D::kCount));
+    for (std::size_t index = 0; index < kWorkPhaseNames.size(); ++index) {
+      add_events(kWorkPhaseNames[index], after.work_phase_events[index]);
+      members += ',';
+    }
+    add_events("pre_topology_field", after.pre_topology_field_events);
+    members += ',';
+    add_events("snapshot_d2h", after.snapshot_d2h_events);
+    members += "},\"cuda_memory\":{\"total_device_bytes\":" + std::to_string(after.total_device_bytes);
+    const auto add = [&](std::string_view field, auto value) {
+      members += ',' + JsonString(field) + ':' + std::to_string(value);
+    };
+    add("free_device_bytes_at_start", after.free_device_bytes_at_start);
+    add("budget_bytes", after.device_budget_bytes);
+    add("device_byte_limit", after.device_byte_limit);
+    add("current_device_reserved_bytes", before.live_device_bytes);
+    add("peak_device_reserved_bytes", after.peak_device_bytes);
+    add("current_pinned_reserved_bytes", before.live_pinned_bytes);
+    add("peak_pinned_reserved_bytes", after.peak_pinned_bytes);
+    add("current_snapshot_pinned_reserved_bytes", before.live_snapshot_pinned_bytes);
+    add("peak_snapshot_pinned_reserved_bytes", after.peak_snapshot_pinned_bytes);
+    add("current_physical_state_bytes", before.live_physical_state_bytes);
+    add("peak_physical_state_bytes", after.peak_physical_state_bytes);
+    add("current_device_scratch_bytes", before.live_device_scratch_bytes);
+    add("peak_device_scratch_bytes", after.peak_device_scratch_bytes);
+    add("peak_active_device_scratch_bytes", after.peak_active_device_scratch_bytes);
+    add("current_snapshot_output_bytes", before.live_snapshot_output_bytes);
+    add("peak_snapshot_output_bytes", after.peak_snapshot_output_bytes);
+    add("device_reservation_attempts", after.device_reservations);
+    add("budget_refusals", after.budget_refusals);
+    add("quarantined_owner_count", after.quarantined_storage_count);
+    add("remaining_device_reserved_bytes_after_drain", after.live_device_bytes);
+    add("remaining_pinned_reserved_bytes_after_drain", after.live_pinned_bytes);
+    members += ",\"free_device_bytes_after_drain\":"
+        + (after.free_device_bytes_after_drain ? std::to_string(*after.free_device_bytes_after_drain) : "null");
+    return members + '}';
+  }
+#endif
+};
 struct Observations {
   const Command& command;
   const SimulateJob& job;
+  JobMeasurement* measurement;
   std::vector<std::string> trace;
   std::optional<std::string> selected;
   std::vector<LiquidAttemptMeasurement3D> attempts;
   static void ObserveAttempt(void* context, const LiquidAttemptMeasurement3D& attempt) {
-    static_cast<Observations*>(context)->attempts.push_back(attempt);
+    auto& self = *static_cast<Observations*>(context);
+    if (self.measurement) {
+      ++self.measurement->attempt_count;
+    }
+    if (self.command.trace && self.command.kind == CommandKind::kRun) {
+      self.attempts.push_back(attempt);
+    }
   }
   static absl::Status
   Observe(void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D& diagnostics, bool rollback) {
@@ -337,8 +474,13 @@ struct Observations {
   }
 };
 
-absl::StatusOr<std::string>
-ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job, Diagnostic* diagnostic) {
+absl::StatusOr<std::string> ExecuteCommand(
+    const Command& command,
+    ProtocolWriter& writer,
+    SimulateJob& job,
+    Diagnostic* diagnostic,
+    JobMeasurement* measurement
+) {
   diagnostic->domain = "SIMULATE";
   diagnostic->field = "scene";
   diagnostic->cause = "resolved scene, executable digest or backend is incompatible";
@@ -374,6 +516,9 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
       return absl::FailedPreconditionError("");
     }
     scene = std::move(*resolved);
+  }
+  if (measurement) {
+    measurement->backend = scene.backend;
   }
   auto digest = ExecutableDigest();
   if (!digest.ok()) {
@@ -563,13 +708,22 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   std::optional<CudaLiquidSnapshotQueue3D> queue;
   // Keep a validated host snapshot available until replacement Finish succeeds.
   std::optional<CudaLiquidSnapshotQueue3D> previous_queue;
+  const absl::Cleanup drain_cuda = [&] {
+    if (measurement && cuda_backend) {
+      measurement->Enter(JobWallPhase::kDrain);
+      measurement->cuda_before_drain = cuda_backend->usage().arena_metrics;
+      previous_queue.reset();
+      queue.reset();
+      measurement->cuda_after_drain = std::move(*cuda_backend).DrainMetrics();
+    }
+  };
 #endif
   auto operations = CpuLiquidSubstepBackend3D();
   diagnostic->field = "backend";
   diagnostic->cause = "explicit scheduler backend initialization failed";
 #if defined(FLUIDITY_SIMULATE_CUDA)
   if (scene.backend == LiquidBackend3D::kCuda) {
-    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, command.device_index);
+    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, command.device_index, command.measure_job);
     if (!backend.ok()) {
       return backend.status();
     }
@@ -578,6 +732,11 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   }
 #endif
   auto scheduler = LiquidSubstepScheduler3D::Create(starting, scene.View().scene, options, operations);
+  const absl::Cleanup begin_drain = [&] {
+    if (measurement) {
+      measurement->Enter(JobWallPhase::kDrain);
+    }
+  };
   if (!scheduler.ok()) {
     return scheduler.status();
   }
@@ -620,6 +779,14 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   // drains its source before the next whole-frame AdvanceFrame; the host writer
   // lease remains alive through checked serialization and manifest publication.
   auto complete_frame = [&](bool publish) -> absl::Status {
+    if (measurement) {
+      measurement->Enter(JobWallPhase::kSnapshotCache);
+    }
+    const absl::Cleanup end_publication = [&] {
+      if (measurement) {
+        measurement->Enter(JobWallPhase::kScheduling);
+      }
+    };
     const LiquidState3D* state = &scheduler->committed();
 #if defined(FLUIDITY_SIMULATE_CUDA)
     LiquidSnapshotLease3D writer_lease;
@@ -712,6 +879,7 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   Observations observations{
       .command = command,
       .job = job,
+      .measurement = measurement,
       .trace = {},
       .selected = {},
       .attempts = {},
@@ -719,7 +887,13 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
   const LiquidProgressObserver3D observer{
       .context = &observations,
       .observe = &Observations::Observe,
-      .observe_attempt = command.trace && command.kind == CommandKind::kRun ? &Observations::ObserveAttempt : nullptr,
+      .observe_attempt =
+          measurement || (command.trace && command.kind == CommandKind::kRun) ? &Observations::ObserveAttempt : nullptr,
+      .work_phase =
+          {
+              .context = measurement,
+              .enter = measurement ? &JobMeasurement::EnterWork : nullptr,
+          },
   };
   for (std::uint64_t frame = starting.clock.frame_ordinal; frame < target_frame;) {
     EXEC_TRY(job.CheckForJobStopRequest());
@@ -731,7 +905,12 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
     observations.trace.clear();
     observations.selected.reset();
     observations.attempts.clear();
+    const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
     const auto advanced = scheduler->AdvanceFrame(*time, observer);
+    if (measurement && advanced.ok()) {
+      measurement->settled_attempt_count +=
+          scheduler->committed().clock.accepted_step_ordinal - accepted_steps_before_frame;
+    }
     // The attempt ledger includes work even when the schedule rolls back or
     // cannot finish. Emit it before the terminal error or settled witnesses.
     const auto settled_pass = scheduler->diagnostics().capacity_replays;
@@ -790,11 +969,30 @@ ExecuteCommand(const Command& command, ProtocolWriter& writer, SimulateJob& job,
 }  // namespace
 
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
-  SimulateJob job(writer, command.kind == CommandKind::kRun);
-  auto result = ExecuteCommand(command, writer, job, diagnostic);
-  const auto final_status = job.Finish(result.status(), diagnostic);
-  if (!final_status.ok()) {
-    return final_status;
+  std::optional<JobMeasurement> measurement;
+  if (command.measure_job) {
+    measurement.emplace();
+  }
+  auto result = [&]() -> absl::StatusOr<std::string> {
+    SimulateJob job(writer, command.kind == CommandKind::kRun);
+    auto executed = ExecuteCommand(command, writer, job, diagnostic, measurement ? &*measurement : nullptr);
+    if (measurement) {
+      measurement->Enter(JobWallPhase::kDrain);
+    }
+    const auto final_status = job.Finish(executed.status(), diagnostic);
+    if (!final_status.ok()) {
+      return final_status;
+    }
+    return executed;
+  }();
+  if (measurement) {
+    const auto emitted = writer.Emit("job_measurement", measurement->Members(command.kind, result.status()));
+    if (result.ok() && !emitted.ok()) {
+      return emitted;
+    }
+  }
+  if (!result.ok()) {
+    return result.status();
   }
   return writer.Emit("result", *result);
 }

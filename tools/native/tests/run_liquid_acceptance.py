@@ -250,7 +250,101 @@ def verify_attempt_ledger(attempts, traces, frame_start, target_frame):
             "incomplete attempt ledger")
 
 
-def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME_ORDINALS, *, tank_layout=False):
+WORK_PHASES = (
+    "emit_activation_field", "deposit_normalization", "forces_geometry_pressure", "gather_contact_acceptance",
+)
+JOB_WALL_PHASES = ("cold_setup", "scheduling", *WORK_PHASES, "snapshot_cache", "drain")
+
+
+def nonnegative_seconds(receipt, field):
+    value = receipt.get(field)
+    require(finite_number(value) and value >= 0, f"invalid {field}")
+    return value
+
+
+def verify_job_measurement(receipt, backend):
+    require(isinstance(receipt, dict) and receipt.get("event") == "job_measurement", "missing job measurement")
+    require(receipt.get("backend") == backend and receipt.get("command") == "run" and receipt.get("status") == "OK",
+            "job measurement does not belong to a successful run")
+    attempts = integer(receipt, "attempt_count")
+    settled = integer(receipt, "settled_attempt_count")
+    require(settled <= attempts, "job attempt counts are inconsistent")
+    wall = receipt.get("host_wall")
+    require(isinstance(wall, dict), "missing job host wall measurement")
+    phase_seconds = [nonnegative_seconds(wall, f"{phase}_seconds") for phase in JOB_WALL_PHASES]
+    total = nonnegative_seconds(wall, "total_seconds")
+    require(total > 0 and math.isclose(math.fsum(phase_seconds), total, rel_tol=1e-12, abs_tol=1e-12),
+            "host wall phases do not partition total seconds")
+    if settled:
+        require(all(wall[f"{phase}_seconds"] > 0 for phase in WORK_PHASES),
+                "missing attempted work in host wall phases")
+    events = receipt.get("cuda_events")
+    memory = receipt.get("cuda_memory")
+    if backend == "cpu":
+        require("cuda_events" in receipt and "cuda_memory" in receipt and events is None and memory is None,
+                "CUDA evidence on a CPU job")
+        return
+    require(isinstance(events, dict), "missing CUDA event evidence")
+    for phase in (*WORK_PHASES, "snapshot_d2h"):
+        seconds = nonnegative_seconds(events, f"{phase}_seconds")
+        intervals = integer(events, f"{phase}_interval_count")
+        require(intervals > 0 or seconds == 0, f"CUDA event interval missing for {phase}")
+        if phase in WORK_PHASES and settled:
+            require(seconds > 0 and intervals >= settled, f"missing completed CUDA event intervals for {phase}")
+    field_seconds = nonnegative_seconds(events, "pre_topology_field_seconds")
+    field_intervals = integer(events, "pre_topology_field_interval_count")
+    require(field_seconds <= events["emit_activation_field_seconds"]
+            and settled <= field_intervals <= events["emit_activation_field_interval_count"]
+            and (settled == 0 or field_seconds > 0)
+            and (field_intervals > 0 or field_seconds == 0), "invalid pre_topology_field event subset")
+    require(isinstance(memory, dict), "missing CUDA memory evidence")
+    device_total = integer(memory, "total_device_bytes", minimum=1)
+    free_start = integer(memory, "free_device_bytes_at_start", minimum=1)
+    budget = integer(memory, "budget_bytes", minimum=1)
+    limit = integer(memory, "device_byte_limit", minimum=1)
+    require(free_start <= device_total and budget == min(7 * device_total // 10, 4 * free_start // 5)
+            and limit <= budget, "invalid fixed device budget")
+    for extent, description in (
+        ("device_reserved", "aggregate device reservation"),
+        ("pinned_reserved", "aggregate pinned reservation"),
+        ("snapshot_pinned_reserved", "aggregate pinned reservation"),
+        ("physical_state", "physical state extent"),
+        ("device_scratch", "device scratch extent"),
+        ("snapshot_output", "snapshot output extent"),
+    ):
+        require(integer(memory, f"current_{extent}_bytes") <= integer(memory, f"peak_{extent}_bytes"),
+                f"inconsistent {description}")
+    device_peak = memory["peak_device_reserved_bytes"]
+    require(0 < device_peak <= limit, "aggregate device reservation exceeds the fixed ceiling")
+    require(0 < memory["peak_snapshot_pinned_reserved_bytes"] <= memory["peak_pinned_reserved_bytes"]
+            and memory["current_snapshot_pinned_reserved_bytes"] <= memory["current_pinned_reserved_bytes"],
+            "snapshot reservation exceeds aggregate pinned reservation")
+    require(0 < memory["peak_physical_state_bytes"] <= device_peak
+            and memory["current_physical_state_bytes"] <= memory["current_device_reserved_bytes"],
+            "physical state extent exceeds its reservation")
+    require(0 < memory["peak_device_scratch_bytes"] <= device_peak
+            and memory["current_physical_state_bytes"] + memory["current_device_scratch_bytes"]
+            <= memory["current_device_reserved_bytes"], "device scratch extent exceeds its reservation")
+    active_scratch_peak = integer(memory, "peak_active_device_scratch_bytes", minimum=int(settled > 0))
+    require(active_scratch_peak <= memory["peak_device_scratch_bytes"], "active device scratch extent exceeds reservation")
+    require(0 < memory["peak_snapshot_output_bytes"] <= memory["peak_snapshot_pinned_reserved_bytes"]
+            and memory["current_snapshot_output_bytes"] <= memory["current_snapshot_pinned_reserved_bytes"],
+            "snapshot output extent exceeds its reservation")
+    integer(memory, "device_reservation_attempts", minimum=1)
+    require(all(integer(memory, field) == 0 for field in (
+        "budget_refusals", "quarantined_owner_count",
+        "remaining_device_reserved_bytes_after_drain", "remaining_pinned_reserved_bytes_after_drain",
+    )), "successful CUDA run did not release its job reservations")
+    require("free_device_bytes_after_drain" in memory and (
+        memory["free_device_bytes_after_drain"] is None
+        or integer(memory, "free_device_bytes_after_drain") <= device_total
+    ), "invalid optional free-device observation")
+
+
+def verify_solver(
+    records, frames, authored_scene_identity, frame_ordinals=FRAME_ORDINALS, *,
+    tank_layout=False, require_job_measurement=False,
+):
     final = records[-1]
     backend = authored_scene_identity["backend"]
     require(final.get("event") == "result" and final.get("command") == "run", "missing successful run result")
@@ -263,6 +357,11 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
         integer(final, "graph_replay_count", minimum=1)
         integer(final, "device_reserved_bytes", minimum=1)
 
+    measurement = records[-2] if len(records) > 1 and records[-2]["event"] == "job_measurement" else None
+    if measurement is not None or require_job_measurement:
+        verify_job_measurement(measurement, backend)
+    events_end = -2 if measurement is not None else -1
+
     # Each accepted step emits one trace. Attempt counters are cumulative within
     # a frame and start again after publication.
     published_count = 0
@@ -273,7 +372,9 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
     frame_start = None
     frame_attempts = []
     frame_traces = []
-    for record in records[:-1]:
+    job_attempt_count = 0
+    job_settled_attempt_count = 0
+    for record in records[:events_end]:
         event = record["event"]
         if event == "heartbeat":
             require("backend" in record and record["backend"] in (None, backend), "wrong heartbeat backend")
@@ -307,6 +408,7 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
             previous_dt_retry_count = 0
             continue
         if event == "attempt":
+            job_attempt_count += 1
             require(0 < published_count < len(frame_ordinals) and not frame_traces, "attempt ledger outside frame")
             frame_attempts.append(record)
             continue
@@ -337,10 +439,21 @@ def verify_solver(records, frames, authored_scene_identity, frame_ordinals=FRAME
                 "accepted attempt count differs from the accepted trace count")
         require(integer(record, "attempts") == accepted_trace_count + dt_retry_count, "inconsistent attempt counts")
         previous_dt_retry_count = dt_retry_count
+        job_settled_attempt_count += 1
         digest(record, "state_digest")
         last_clock = trace_clock
         last_trace = record
 
+    if measurement is not None:
+        require(measurement["attempt_count"] == job_attempt_count
+                and measurement["settled_attempt_count"] == job_settled_attempt_count,
+                "job measurement disagrees with the attempt ledger")
+        if backend == "cuda":
+            require(measurement["cuda_events"]["snapshot_d2h_interval_count"] == len(frame_ordinals)
+                    and measurement["cuda_events"]["snapshot_d2h_seconds"] > 0,
+                    "CUDA snapshot event intervals differ from completed frames")
+            require(measurement["cuda_memory"]["current_device_reserved_bytes"] == final["device_reserved_bytes"],
+                    "CUDA job reservation differs from the result")
     require(published_count == len(frame_ordinals), "missing publication receipt")
     require(clock(final) == last_clock == clock(frames[-1]), "final clock and manifest differ")
     require(last_trace is not None and digest(final, "state_digest") == last_trace["state_digest"], "final state differs")
@@ -496,7 +609,7 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
         output, "simulate-run", solver_executable_path, "run", "--stage", "simulate", "--scene", scene,
         "--initial-state", seed,
         "--backend", backend, "--cache", cache, "--frame-end", last_frame,
-        "--trace-geometry" if tank_layout else "--trace", timeout=180,
+        "--trace-geometry" if tank_layout else "--trace", "--measure-job", timeout=180,
     )
     before = snapshot(cache)
     fingerprint = authored_scene_identity["resolved_fingerprint"]
@@ -515,7 +628,8 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
             "unexpected on-disk committed-frame inventory")
     require((cache / "resolved.flrs").read_bytes() == scene.read_bytes(), "cache resolved scene differs from authored bytes")
     verify_frames(frames, authored_scene_identity, frame_ordinals)
-    final = verify_solver(records, frames, authored_scene_identity, frame_ordinals, tank_layout=tank_layout)
+    final = verify_solver(records, frames, authored_scene_identity, frame_ordinals, tank_layout=tank_layout,
+                          require_job_measurement=True)
     if tank_layout:
         measurements = verify_tank_layout(frames, records)
         verify_tank_refusals(output, solver_executable_path, backend, scene, seed)
@@ -526,7 +640,8 @@ def run_acceptance(solver_executable_path, fixture, backend, case, output):
     verify_checkpoint(checkpoint, frames[0], authored_scene_identity, initial_position)
     measurements.update({
         "case": case, "backend": backend, "energy_blend": energy_blend, "device_probe": device,
-        "scene_author": authored_scene_identity, "final_receipt": final, "verified_frame_count": len(frames),
+        "scene_author": authored_scene_identity, "final_receipt": final, "job_measurement": records[-2],
+        "verified_frame_count": len(frames),
         "verified_point_digests": [frame["points_digest"] for frame in frames],
         "verified_immutable_cache_file_count": len(before),
     })

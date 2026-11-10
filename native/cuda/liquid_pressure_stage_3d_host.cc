@@ -310,6 +310,7 @@ absl::Status Execute(
   FLUIDITY_PRESSURE_TRY(clear(output));
   FLUIDITY_PRESSURE_TRY(clear(state));
   for (std::size_t launch = 0; launch <= options.max_iterations; ++launch) {
+    FLUIDITY_PRESSURE_TRY(arena.BeginMeasuredDispatch());
     FLUIDITY_PRESSURE_TRY(
         arena.RecordRuntimeResult(LiquidArenaRuntimeCalls().launch_pressure(device, launch == 0, arena.stream()))
     );

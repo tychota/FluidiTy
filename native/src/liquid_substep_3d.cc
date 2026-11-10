@@ -6,6 +6,7 @@
 #include <numbers>
 #include <tuple>
 
+#include "absl/cleanup/cleanup.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
@@ -85,8 +86,20 @@ struct LiquidSubstepScheduler3D::Impl {
     }
     return absl::OkStatus();
   }
-  absl::Status
-  Execute(double step_duration, LiquidState3D& trial, LiquidAcceptedStepMeasurement3D& accepted_measurement) {
+  void SetWorkPhase(LiquidWorkPhaseObserver3D observer, LiquidWorkPhase3D phase) {
+    if (observer.enter) {
+      observer.enter(observer.context, phase);
+    }
+    if (backend.set_work_phase) {
+      backend.set_work_phase(backend.context, phase);
+    }
+  }
+  absl::Status Execute(
+      double step_duration,
+      LiquidState3D& trial,
+      LiquidAcceptedStepMeasurement3D& accepted_measurement,
+      LiquidWorkPhaseObserver3D work_phase
+  ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
@@ -121,6 +134,7 @@ struct LiquidSubstepScheduler3D::Impl {
     const auto grid = topology->grid;
     STEP_TRY(liquid_step_internal::PrepareTransfers(trial, grid, staging));
     STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, 0, staging.tags.values(), {}));
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, step_duration));
     const auto deposits = backend.deposit(
         backend.context,
@@ -146,6 +160,7 @@ struct LiquidSubstepScheduler3D::Impl {
         .face_tags = staging.tags.values(),
         .wall_samples = staging.old_walls.values(),
     };
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kForces, step_duration));
     STEP_TRY(backend.forces(
         backend.context,
@@ -292,6 +307,7 @@ struct LiquidSubstepScheduler3D::Impl {
         }
       }
     }
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, step_duration));
     STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, 0, staging.new_tags.values(), {}));
     for (std::size_t index = 0; index < trial.faces.size(); ++index) {
@@ -514,13 +530,18 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
   impl_->diagnostics = {};
   return absl::OkStatus();
 }
-absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double step_duration) {
+absl::StatusOr<LiquidAttemptOutcome3D>
+LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase) {
   auto& impl = *impl_;
   auto& diagnostics = impl.diagnostics;
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
+  impl.SetWorkPhase(work_phase, LiquidWorkPhase3D::kEmitActivationField);
+  const absl::Cleanup end_phase = [&] {
+    impl.SetWorkPhase(work_phase, LiquidWorkPhase3D::kCount);
+  };
   auto trial = impl.transaction.ResetTrialFromCommitted();
   if (!trial.ok()) {
     return trial.status();
@@ -536,7 +557,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::Attempt(double 
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.Execute(step_duration, **trial, accepted_measurement);
+  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase);
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -597,7 +618,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
     const auto previous_attempt_count = diagnostics().attempts;
     const auto work_start =
         observer.observe_attempt ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    const auto outcome = Attempt(*duration);
+    const auto outcome = Attempt(*duration, observer.work_phase);
     if (observer.observe_attempt && diagnostics().attempts != previous_attempt_count) {
       const std::chrono::duration<double> work_elapsed = std::chrono::steady_clock::now() - work_start;
       observer.observe_attempt(

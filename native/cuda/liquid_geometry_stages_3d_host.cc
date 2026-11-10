@@ -156,6 +156,7 @@ absl::Status SampleFieldOnDevice(
   for (std::size_t index = 0; index < particles.size(); ++index) {
     centers->pinned[index] = particles[index].world_position;
   }
+  STAGE_TRY(arena.BeginMeasuredDispatch(true));
   STAGE_TRY(CopyLiquidRange3D(arena, *query, true));
   STAGE_TRY(CopyLiquidRange3D(arena, *samples, true));
   STAGE_TRY(CopyLiquidRange3D(arena, *centers, true));

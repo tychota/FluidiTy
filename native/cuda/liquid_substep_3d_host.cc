@@ -10,9 +10,10 @@
 
 namespace fluidity {
 struct CudaLiquidSubstepBackend3D::Impl {
-  explicit Impl(CudaLiquidArena3D storage) : arena(std::move(storage)) {
+  Impl(CudaLiquidArena3D storage, bool measure_job) : arena(std::move(storage)), measure_job(measure_job) {
   }
   CudaLiquidArena3D arena;
+  bool measure_job;
   float substep_device_timeline_ms = 0;
 };
 CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
@@ -21,12 +22,12 @@ CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(CudaLiquidSubstepBackend3
 CudaLiquidSubstepBackend3D& CudaLiquidSubstepBackend3D::operator=(CudaLiquidSubstepBackend3D&&) noexcept = default;
 CudaLiquidSubstepBackend3D::~CudaLiquidSubstepBackend3D() = default;
 absl::StatusOr<CudaLiquidSubstepBackend3D>
-CudaLiquidSubstepBackend3D::Create(LiquidStateCapacities3D capacities, int device_ordinal) {
-  auto arena = CudaLiquidArena3D::Create(capacities, device_ordinal);
+CudaLiquidSubstepBackend3D::Create(LiquidStateCapacities3D capacities, int device_ordinal, bool measure_job) {
+  auto arena = CudaLiquidArena3D::Create(capacities, device_ordinal, static_cast<std::size_t>(-1), measure_job);
   if (!arena.ok()) {
     return arena.status();
   }
-  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena)));
+  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena), measure_job));
   if (!impl) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -39,7 +40,7 @@ void CudaLiquidSubstepBackend3D::CollectRetired() noexcept {
   impl_->arena.CollectRetired();
 }
 LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
-  return {
+  LiquidSubstepBackend3D operations{
       .context = impl_.get(),
       .sample_field =
           [](void* context,
@@ -220,6 +221,15 @@ LiquidSubstepBackend3D CudaLiquidSubstepBackend3D::operations() {
             );
           },
   };
+  if (impl_->measure_job) {
+    operations.set_work_phase = [](void* context, LiquidWorkPhase3D phase) {
+      static_cast<Impl*>(context)->arena.SetWorkPhase(phase);
+    };
+  }
+  return operations;
+}
+CudaLiquidArenaMetrics3D CudaLiquidSubstepBackend3D::DrainMetrics() && {
+  return std::move(impl_->arena).DrainMetrics();
 }
 absl::StatusOr<bool> CudaLiquidSubstepBackend3D::PublicationReady() const {
   return impl_->arena.PublicationReady();

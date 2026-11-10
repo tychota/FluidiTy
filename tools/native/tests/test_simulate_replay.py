@@ -642,7 +642,7 @@ def lifecycle_case(executable, fixture, directory, backend):
     cache = directory / "lifecycle"
     run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
     frame_zero = ["check", "--cache", cache, "--frame", 0]
-    cancellable_simulation = RunningSimulation(executable, [*run, "--frame-end", 1, "--trace"])
+    cancellable_simulation = RunningSimulation(executable, [*run, "--frame-end", 1, "--trace", "--measure-job"])
     try:
         _, published = cancellable_simulation.next_event("frame")
         assert published["frame"] == 0
@@ -681,6 +681,17 @@ def lifecycle_case(executable, fixture, directory, backend):
         assert not any(record["event"] == "trace" for record in complete_records)
         attempts = [record for record in complete_records if record["event"] == "attempt"]
         assert attempts, "cancelled frame lost actual attempt work"
+        measurement = complete_records[-2]
+        assert measurement["event"] == "job_measurement" and measurement["status"] == "CANCELLED"
+        assert measurement["attempt_count"] == len(attempts) and measurement["settled_attempt_count"] == 0
+        assert measurement["host_wall"]["emit_activation_field_seconds"] > 0
+        if backend == "cuda":
+            assert measurement["cuda_events"]["pre_topology_field_interval_count"] >= len(attempts)
+            assert measurement["cuda_events"]["snapshot_d2h_interval_count"] == 1
+            assert measurement["cuda_memory"]["remaining_device_reserved_bytes_after_drain"] == 0
+            assert measurement["cuda_memory"]["remaining_pinned_reserved_bytes_after_drain"] == 0
+        else:
+            assert measurement["cuda_events"] is None and measurement["cuda_memory"] is None
         for index, attempt in enumerate(attempts, start=1):
             assert attempt["target_frame"] == 1 and attempt["attempt_in_frame"] == index
             assert attempt["outcome"] == "accepted" and not attempt["retained"]
