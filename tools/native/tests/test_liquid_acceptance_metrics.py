@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from liquid_acceptance_metrics import evaluate_free_fall, uniform_history_velocities
+from liquid_acceptance_metrics import compare_piston_time_refinement, evaluate_free_fall, uniform_history_velocities
 from run_liquid_acceptance import (
-    matches_identity, read_records, run_acceptance, verify_device, verify_job_measurement, verify_solver,
+    matches_identity, prepare_tank_steps, read_records, run_acceptance, verify_device, verify_job_measurement,
+    verify_solver,
 )
 
 
@@ -595,18 +596,183 @@ def test_piston_validates_same_step_pose_and_rejects_temporally_shifted_end():
         verify_piston_step(step, previous, 0.01)
 
 
-def test_piston_temporal_refinement_compares_receiving_and_all_flux_estimates():
-    from liquid_acceptance_metrics import compare_piston_time_refinement
+@pytest.fixture
+def temporal_receipts():
+    spatial = {
+        "receiving_m3": 0.008,
+        "full_wall_flux_m3": 0.008,
+        "full_wetted_sweep_m3": 0.008,
+        "solver_inward_flux_m3": 0.008,
+        "denominator_m3": 0.008,
+    }
+    primary = {"passed": True, "maximum_dt_seconds": 0.01, "tight_spatial": spatial}
+    refined = {"passed": True, "maximum_dt_seconds": 0.005, "tight_spatial": spatial.copy()}
+    return primary, refined
 
-    coarse = {"receiving_m3": 0.008, "full_wall_flux_m3": 0.008, "full_wetted_sweep_m3": 0.008,
-              "solver_inward_flux_m3": 0.008, "denominator_m3": 0.008}
-    primary = {"passed": True, "maximum_dt_seconds": 0.01, "tight_spatial": coarse}
-    refined = {"passed": True, "maximum_dt_seconds": 0.005, "tight_spatial": coarse.copy()}
-    assert compare_piston_time_refinement(primary, refined)["passed"]
+
+def test_piston_temporal_refinement_compares_receiving_and_all_flux_estimates(temporal_receipts):
+    primary, refined = temporal_receipts
+    assert compare_piston_time_refinement(primary, refined)["passed"] is True
     refined["tight_spatial"]["receiving_m3"] += 0.000021
     result = compare_piston_time_refinement(primary, refined)
-    assert not result["passed"]
+    assert result["passed"] is False
     assert result["relative_changes"]["receiving_m3"] == pytest.approx(0.002625)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("verdict", ["false", 1, {"passed": False}], ids=["string", "number", "object"])
+def test_piston_temporal_refinement_rejects_non_boolean_verdict(temporal_receipts, receipt_index, verdict):
+    temporal_receipts[receipt_index]["passed"] = verdict
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+def test_piston_temporal_refinement_preserves_failed_physical_verdict(temporal_receipts, receipt_index):
+    temporal_receipts[receipt_index]["passed"] = False
+    result = compare_piston_time_refinement(*temporal_receipts)
+    assert result["temporal_passed"] is True
+    assert result["passed"] is False
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+def test_piston_temporal_refinement_rejects_malformed_verdict_despite_physical_failure(temporal_receipts, receipt_index):
+    temporal_receipts[receipt_index]["passed"] = "false"
+    temporal_receipts[1 - receipt_index]["passed"] = False
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("denominator", [-0.008, 0, True, 1e6, math.inf, math.nan, 10 ** 400],
+                         ids=["negative", "zero", "boolean", "inflated", "infinite", "nan", "huge-int"])
+def test_piston_temporal_refinement_rejects_noncanonical_denominator(temporal_receipts, receipt_index, denominator):
+    temporal_receipts[receipt_index]["tight_spatial"]["denominator_m3"] = denominator
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("field", ["receiving_m3", "full_wall_flux_m3", "full_wetted_sweep_m3", "solver_inward_flux_m3"])
+@pytest.mark.parametrize("volume", [math.inf, math.nan, True, 10 ** 400],
+                         ids=["infinite", "nan", "boolean", "huge-int"])
+def test_piston_temporal_refinement_rejects_invalid_volumes(temporal_receipts, receipt_index, field, volume):
+    temporal_receipts[receipt_index]["tight_spatial"][field] = volume
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("invalid_summary", [None, []], ids=["null", "array"])
+def test_piston_temporal_refinement_rejects_non_object_receipt(temporal_receipts, receipt_index, invalid_summary):
+    receipts = list(temporal_receipts)
+    receipts[receipt_index] = invalid_summary
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("invalid_summary", [None, []], ids=["null", "array"])
+def test_piston_temporal_refinement_rejects_non_object_spatial_summary(
+    temporal_receipts, receipt_index, invalid_summary,
+):
+    temporal_receipts[receipt_index]["tight_spatial"] = invalid_summary
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize(
+    ("base_volume", "fine_volume"), [
+        (-sys.float_info.max, sys.float_info.max),
+        (-int(sys.float_info.max), int(sys.float_info.max)),
+        (0, sys.float_info.max),
+    ], ids=["float-difference", "int-difference", "division"],
+)
+def test_piston_temporal_refinement_rejects_unrepresentable_relative_change(temporal_receipts, base_volume, fine_volume):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"]["receiving_m3"] = base_volume
+    refined["tight_spatial"]["receiving_m3"] = fine_volume
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(primary, refined)
+
+
+def test_piston_temporal_refinement_uses_primary_wall_flux_magnitude(temporal_receipts):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"].update(
+        receiving_m3=-0.008, full_wall_flux_m3=-0.008, full_wetted_sweep_m3=-0.008,
+        solver_inward_flux_m3=-0.008,
+    )
+    refined["tight_spatial"].update(
+        receiving_m3=-0.00801, full_wall_flux_m3=-0.00801, full_wetted_sweep_m3=-0.00801,
+        solver_inward_flux_m3=-0.00801, denominator_m3=0.00801,
+    )
+    result = compare_piston_time_refinement(primary, refined)
+    assert result["passed"] is True
+    assert result["denominator_m3"] == 0.008
+    assert result["relative_changes"]["full_wall_flux_m3"] == pytest.approx(0.00125)
+
+
+def test_piston_temporal_refinement_uses_near_zero_denominator_floor(temporal_receipts):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"].update(
+        receiving_m3=-1e-12, full_wall_flux_m3=-1e-12, full_wetted_sweep_m3=-1e-12,
+        solver_inward_flux_m3=-1e-12, denominator_m3=1e-8,
+    )
+    refined["tight_spatial"].update(
+        receiving_m3=2e-12, full_wall_flux_m3=2e-12, full_wetted_sweep_m3=2e-12,
+        solver_inward_flux_m3=2e-12, denominator_m3=1e-8,
+    )
+    result = compare_piston_time_refinement(primary, refined)
+    assert result["passed"] is True
+    assert result["denominator_m3"] == 1e-8
+    assert result["relative_changes"]["full_wall_flux_m3"] == pytest.approx(0.0003)
+
+
+@pytest.mark.parametrize("forge_measurement", [False, True], ids=["ordinary", "forged"])
+def test_prepare_piston_steps_uses_verified_clock_and_previous_geometry(forge_measurement):
+    initial_state = {"particles": [{"id": 1, "world_position": [-0.4, 0.1, 0]}]}
+    frames = [{"points": [{"id": 1, "world_position": [-0.38, 0.1, 0]}]}]
+    piston_measurements = [
+        {
+            "accepted_dt_seconds": 0.01,
+            "step_start_piston_low_x_m": -0.5,
+            "step_end_piston_low_x_m": -0.49984375,
+            "step_start_inward_piston_flux_m3_per_s": 0.003,
+        },
+        {
+            "accepted_dt_seconds": 0.01,
+            "step_start_piston_low_x_m": -0.49984375,
+            "step_end_piston_low_x_m": -0.4996875,
+            "step_start_inward_piston_flux_m3_per_s": 0.004,
+        },
+    ]
+    traces = [
+        {
+            "frame": 0,
+            "substep": 1 if ordinal == 1 else 0,
+            "accepted_step": ordinal,
+            "time_seconds": 0.01 * ordinal,
+            "geometry": {"particles": [{"id": 1, "world_position_m": position}]},
+            "accepted_measurement": {"step_start_capillary_bound_seconds": None, **measurement},
+        }
+        for ordinal, (position, measurement) in enumerate(
+            zip(([-0.39, 0.1, 0], [-0.38, 0.1, 0]), piston_measurements), 1
+        )
+    ]
+    if forge_measurement:
+        for trace in traces:
+            trace["accepted_measurement"].update(accepted_step=99, time_seconds=0.5, start_positions=[[0, 0, 0]])
+
+    steps = prepare_tank_steps(traces, frames, initial_state, 1, piston=True)
+
+    assert [(step["accepted_step"], step["time_seconds"], step["start_positions"]) for step in steps] == [
+        (1, 0.01, [[-0.4, 0.1, 0]]),
+        (2, 0.02, [[-0.39, 0.1, 0]]),
+    ]
+    for step, measurement in zip(steps, piston_measurements):
+        assert {key: step[key] for key in measurement} == measurement
+        if forge_measurement:
+            assert set(step) == {"accepted_step", "time_seconds", "start_positions", *measurement}
 
 
 def test_transport_inventory_tracks_split_and_both_material_loss_classes():

@@ -517,9 +517,13 @@ def integrate_piston_sweep(sections, start_x, end_x, breakpoints, tolerance):
     }
 
 
+def _piston_flux_denominator_m3(wall_flux_m3):
+    return max(abs(wall_flux_m3), PISTON_DENOMINATOR_FLOOR_M3)
+
+
 def compare_piston_estimates(receiving_m3, swept_wet_m3, wall_flux_m3, solver_flux_m3):
     """Compare all pairs relative to the independently measured wet wall flux."""
-    denominator = max(abs(wall_flux_m3), PISTON_DENOMINATOR_FLOOR_M3)
+    denominator = _piston_flux_denominator_m3(wall_flux_m3)
     comparisons = {
         "receiving_to_wall_relative_mismatch": abs(receiving_m3 - wall_flux_m3) / denominator,
         "swept_to_wall_relative_mismatch": abs(swept_wet_m3 - wall_flux_m3) / denominator,
@@ -718,18 +722,52 @@ def evaluate_piston_displacement(frame_samples, accepted_step_samples, *, maximu
     }
 
 
-def compare_piston_time_refinement(primary, refined):
-    """Compare the two declared maximum-dt configurations using primary flux."""
-    if (primary["maximum_dt_seconds"], refined["maximum_dt_seconds"]) != (0.01, 0.005):
+def _validate_piston_temporal_receipt(receipt, label, maximum_dt):
+    if not isinstance(receipt, dict):
+        raise ValueError(f"{label} piston receipt must be an object")
+    if receipt["maximum_dt_seconds"] != maximum_dt:
         raise ValueError("wrong piston temporal refinement pair")
-    base = primary["tight_spatial"]
-    fine = refined["tight_spatial"]
-    relative_changes = {key: abs(fine[key] - base[key]) / base["denominator_m3"] for key in PISTON_COMPARISON_VOLUMES}
+    if type(receipt["passed"]) is not bool:
+        raise ValueError(f"{label} piston verdict must be boolean")
+
+    spatial = receipt["tight_spatial"]
+    if not isinstance(spatial, dict):
+        raise ValueError(f"{label} piston tight_spatial must be an object")
+    for field in PISTON_COMPARISON_VOLUMES:
+        if not finite_number(spatial[field]):
+            raise ValueError(f"{label} piston {field} must be finite")
+
+    denominator = _piston_flux_denominator_m3(spatial["full_wall_flux_m3"])
+    declared_denominator = spatial["denominator_m3"]
+    if not finite_number(declared_denominator) or declared_denominator != denominator:
+        raise ValueError(f"{label} piston denominator_m3 must match the wall flux magnitude with the frozen floor")
+    return spatial, denominator
+
+
+def compare_piston_time_refinement(primary, refined):
+    """Validate both receipts and compare their volumes using the primary wall flux.
+
+    Malformed fields and nonfinite arithmetic raise ValueError. A well-formed
+    receipt with a failed physical verdict yields passed=False.
+    """
+    base, denominator = _validate_piston_temporal_receipt(primary, "primary", 0.01)
+    fine, _ = _validate_piston_temporal_receipt(refined, "refined", 0.005)
+
+    relative_changes = {}
+    for field in PISTON_COMPARISON_VOLUMES:
+        absolute_change = abs(fine[field] - base[field])
+        if not finite_number(absolute_change):
+            raise ValueError(f"nonfinite piston temporal volume change for {field}")
+        relative_change = absolute_change / denominator
+        if not finite_number(relative_change):
+            raise ValueError(f"nonfinite piston temporal relative change for {field}")
+        relative_changes[field] = relative_change
+
     temporal_passed = max(relative_changes.values()) <= PISTON_REFINEMENT_LIMIT
     return {
         "passed": temporal_passed and primary["passed"] and refined["passed"],
         "temporal_passed": temporal_passed,
-        "denominator_m3": base["denominator_m3"],
+        "denominator_m3": denominator,
         "relative_changes": relative_changes,
     }
 
