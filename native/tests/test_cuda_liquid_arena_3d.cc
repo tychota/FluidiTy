@@ -25,6 +25,7 @@
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
 #include "fluidity/host/cuda_probe.h"
 #include "gtest/gtest.h"
+#include "liquid_regular_cell_transport_3d_cases.h"
 
 namespace fluidity {
 namespace {
@@ -1566,6 +1567,59 @@ TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
   EXPECT_LT(particles[0].world_position.x, 0.03 - 0.1 + 1e-12);
   EXPECT_GT(particles[1].world_position.x, 0.03 + 0.1 - 1e-12);
 }
+TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPairsAdvectionWithVolumeAndResetsStaging) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  const auto before = arena->metrics();
+  test_internal::CheckRegularCellTransport([&](const auto& inputs, auto particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+  ExpectNoReservationChange(before, arena->metrics());
+}
+
+TEST_F(CudaLiquidTransferStages3D, RegularCellTransportUsesSweptContact) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  test_internal::CheckRegularCellTransportContact([&](const auto& inputs, auto particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+}
+
+TEST_F(CudaLiquidTransferStages3D, RejectsMalformedRegularCellTransportBeforePublication) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  test_internal::CheckMalformedRegularCellTransport([&](const auto& inputs, auto particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+}
+
+TEST_F(CudaLiquidTransferStages3D, RejectsRegularCellTransportAliasingOutputOrScratch) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  test_internal::CheckAliasedRegularCellTransport([&](const auto& inputs, auto particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+  test_internal::RegularCellUpdateFixture3D fixture;
+  const auto range = arena->range(CudaLiquidRange3D::kTransferParticles);
+  auto* sample = reinterpret_cast<LiquidRegularCellTransport3D*>(range.pinned.data());
+  sample[0] = fixture.transport[0];
+  sample[1] = fixture.transport[1];
+  fixture.inputs.regular_cell_transport = {sample, fixture.transport.size()};
+  const auto initial = fixture.particles;
+  EXPECT_EQ(
+      cuda_internal::UpdateLiquidParticles3D(*arena, fixture.inputs, fixture.particles).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(fixture.particles, initial);
+}
+TEST_F(CudaLiquidTransferStages3D, RegularCellTransportPreservesParticleErrorOrder) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  test_internal::CheckRegularCellTransportErrorOrder([&](const auto& inputs, auto particles) {
+    return cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles);
+  });
+}
+
 TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEveryRecord) {
   auto arena = CudaLiquidArena3D::Create(capacities, 0, std::numeric_limits<std::size_t>::max(), true);
   ASSERT_TRUE(arena.ok());

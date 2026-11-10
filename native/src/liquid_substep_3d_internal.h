@@ -20,8 +20,10 @@ struct Staging {
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
+  // Reserved only for eligible stationary tank scenes.
+  std::optional<LiquidRecords3D<LiquidRegularCellTransport3D>> regular_transport;
   std::size_t reserved_bytes = 0;
-  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities);
+  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false);
 };
 bool Finite(Vec3 value);
 double Component(Vec3 value, FaceNormalAxis axis);
@@ -43,6 +45,9 @@ absl::Status PrepareField(
     Staging& staging,
     const LiquidSubstepBackend3D& backend
 );
+// Return a certified half-open tank lattice cell, or no selection when the
+// containing cell and its one-cell halo cannot be represented.
+std::optional<CellIndex3D> TankContainingCell(UniformMacGeometry3D geometry, Vec3 world_position);
 absl::Status PrepareTransfers(const LiquidState3D& trial, SparseMacGridView3D grid, Staging& staging);
 absl::Status
 FillFaceTags(SparseMacGridView3D grid, const LiquidObstacle3D& obstacle, std::span<LiquidBoundaryFaceTag3D> tags);

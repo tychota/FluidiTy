@@ -598,7 +598,9 @@ absl::Status UpdateLiquidParticles3D(
     std::span<LiquidParticleState3D> particles
 ) {
   TRANSFER_TRY(arena.RecordRuntimeResult(cudaSuccess));
-  if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()) {
+  const auto transport = inputs.regular_cell_transport;
+  if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()
+      || (!transport.empty() && transport.size() != particles.size())) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   if (!std::isnormal(inputs.cell_width) || inputs.cell_width <= 0 || !std::isfinite(inputs.step_duration)
@@ -620,9 +622,11 @@ absl::Status UpdateLiquidParticles3D(
       || LiquidByteRangesOverlap3D(particles.data(),
                                    particles.size_bytes(),
                                    inputs.liquid_distances.data(),
-                                   inputs.liquid_distances.size_bytes());
+                                   inputs.liquid_distances.size_bytes())
+      || LiquidByteRangesOverlap3D(particles.data(), particles.size_bytes(), transport.data(), transport.size_bytes());
   if (outputs_overlap_inputs || AliasesLiquidScratch3D(arena, particles)
-      || AliasesLiquidScratch3D(arena, inputs.gathered) || AliasesLiquidScratch3D(arena, inputs.liquid_distances)) {
+      || AliasesLiquidScratch3D(arena, inputs.gathered) || AliasesLiquidScratch3D(arena, inputs.liquid_distances)
+      || AliasesLiquidScratch3D(arena, transport)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const auto obstacle = boundary_internal::PackObstacle(inputs.obstacle);
@@ -696,6 +700,7 @@ absl::Status UpdateLiquidParticles3D(
         .liquid_distance = inputs.liquid_distances[index],
         .volume_ratio = particles[index].volume_ratio,
         .pic_initialized = particles[index].pic_initialized,
+        .regular_cell_transport = transport.empty() ? LiquidRegularCellTransport3D{} : transport[index],
     };
   }
   TRANSFER_TRY(CopyLiquidRange3D(arena, *query, true));

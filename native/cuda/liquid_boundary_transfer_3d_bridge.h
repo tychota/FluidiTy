@@ -2,6 +2,7 @@
 #include <type_traits>
 
 #include "fluidity/base/liquid_boundary_transfer_math_3d.h"
+#include "fluidity/base/liquid_regular_cell_transport_3d.h"
 namespace fluidity::cuda_internal {
 enum class BoundaryTransferOperation3D {
   kDeposit,
@@ -60,6 +61,7 @@ struct BoundaryUpdateParticle3D {
   double liquid_distance{};  // Frozen start-time signed distance, meters.
   double volume_ratio{};  // Dimensionless start-time J.
   bool pic_initialized{};  // False suppresses retained particle velocity.
+  LiquidRegularCellTransport3D regular_cell_transport{};  // Optional projected normal samples.
 };
 struct BoundaryUpdateResult3D {
   Vec3 world_position{};  // Continuous-contact position, meters.
