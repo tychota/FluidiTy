@@ -4,16 +4,19 @@
 #include <utility>
 
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/cuda_wetted_piston_3d.h"
 #include "liquid_geometry_stages_3d.h"
 #include "liquid_pressure_stage_3d.h"
 #include "liquid_transfer_stages_3d.h"
 
 namespace fluidity {
 struct CudaLiquidSubstepBackend3D::Impl {
-  Impl(CudaLiquidArena3D storage, bool measure_job) : arena(std::move(storage)), measure_job(measure_job) {
+  Impl(CudaLiquidArena3D storage, bool measure_job, bool needs_wetted_piston)
+      : arena(std::move(storage)), measure_job(measure_job), needs_wetted_piston(needs_wetted_piston) {
   }
   CudaLiquidArena3D arena;
   bool measure_job;
+  bool needs_wetted_piston;
   float substep_device_timeline_ms = 0;
 };
 CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
@@ -21,13 +24,20 @@ CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(std::unique_ptr<Impl> imp
 CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(CudaLiquidSubstepBackend3D&&) noexcept = default;
 CudaLiquidSubstepBackend3D& CudaLiquidSubstepBackend3D::operator=(CudaLiquidSubstepBackend3D&&) noexcept = default;
 CudaLiquidSubstepBackend3D::~CudaLiquidSubstepBackend3D() = default;
-absl::StatusOr<CudaLiquidSubstepBackend3D>
-CudaLiquidSubstepBackend3D::Create(LiquidStateCapacities3D capacities, int device_ordinal, bool measure_job) {
-  auto arena = CudaLiquidArena3D::Create(capacities, device_ordinal, static_cast<std::size_t>(-1), measure_job);
+absl::StatusOr<CudaLiquidSubstepBackend3D> CudaLiquidSubstepBackend3D::Create(
+    LiquidStateCapacities3D capacities,
+    int device_ordinal,
+    bool measure_job,
+    bool needs_wetted_piston
+) {
+  constexpr auto no_byte_limit = static_cast<std::size_t>(-1);
+  auto arena = needs_wetted_piston
+      ? CudaLiquidArena3D::CreateWithWettedPiston(capacities, device_ordinal, no_byte_limit, measure_job)
+      : CudaLiquidArena3D::Create(capacities, device_ordinal, no_byte_limit, measure_job);
   if (!arena.ok()) {
     return arena.status();
   }
-  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena), measure_job));
+  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena), measure_job, needs_wetted_piston));
   if (!impl) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -159,6 +169,10 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
           [](void* context, const LiquidBoundaryGeometryViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return cuda_internal::FreezeLiquidGeometry3D(static_cast<Impl*>(context)->arena, inputs, workspace);
           },
+      .wetted_piston =
+          [](void* context, const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace) {
+            return CudaComputeWettedPiston3D(static_cast<Impl*>(context)->arena, inputs, workspace);
+          },
       .links =
           [](void* context,
              const FrozenLiquidBoundaryGeometryView3D& geometry,
@@ -222,6 +236,9 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
             );
           },
   };
+  if (!impl_->needs_wetted_piston) {
+    operations.wetted_piston = nullptr;
+  }
   if (enable_gather_runs) {
     operations.gather_run =
         [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {

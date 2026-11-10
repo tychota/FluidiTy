@@ -35,8 +35,13 @@ class CudaLiquidSubstepBackend3D {
   // Requires the qualified CC12.0 device and checked capacity extents.
   // Propagates the device, image, capacity and runtime statuses from
   // CudaLiquidArena3D::Create. Owner allocation failure returns ResourceExhausted.
-  static absl::StatusOr<CudaLiquidSubstepBackend3D>
-  Create(LiquidStateCapacities3D capacities, int device_ordinal, bool measure_job = false);
+  // Reserve wetted-wall scratch when the scene has a translating piston.
+  static absl::StatusOr<CudaLiquidSubstepBackend3D> Create(
+      LiquidStateCapacities3D capacities,
+      int device_ordinal,
+      bool measure_job = false,
+      bool needs_wetted_piston = false
+  );
   // Immutable committed device source, including its nonreused generation and
   // physical clock. FailedPrecondition before scheduler initialization; ownership
   // counter exhaustion is OutOfRange. Acquire allocates nothing; keep the lease until the consumer's

@@ -22,8 +22,11 @@ struct Staging {
   LiquidRecords3D<double> particle_distances;
   // Reserved only for eligible stationary tank scenes.
   std::optional<LiquidRecords3D<LiquidRegularCellTransport3D>> regular_transport;
+  // Reserved only for scenes with a translating piston.
+  std::optional<WettedPistonWorkspace3D> wetted_piston;
   std::size_t reserved_bytes = 0;
-  static absl::StatusOr<Staging> Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false);
+  static absl::StatusOr<Staging>
+  Create(LiquidStateCapacities3D capacities, bool needs_regular_transport = false, bool needs_wetted_piston = false);
 };
 bool Finite(Vec3 value);
 // Check finite carrier data and positive start-time J in the checked particle

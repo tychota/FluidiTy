@@ -254,6 +254,8 @@ u_f = u*_f − (dt β_f/d_f)(p_j−p_i−J_f)
 
 Use the same area, mobility, distance, jump and wall flux in assembly and correction. Dirichlet terms use the appropriate boundary pressure; sealed-component walls are not fictitious zero-pressure faces.
 
+For the uniform-grid translating piston, substitute the start-pose wetted-wall flux for the generic blocked-face term on selected low-x wall links. Each certified wet patch supplies piston speed times wetted area. The selected head cell receives the patch flux. A wet patch one row above the highest selected cell in its column can use that same receiver only if every potentially wet source is certified to cross the shared edge. Reject unsupported wet patches before pressure projection. A separate receiving-plane volume measurement is required for Q-PISTON.
+
 - Same material: β=1/ρ with a declared face interpolation. A mixture uses its current density law.
 - Two phases: if θ of the link lies in i, `β_f=1/(θρ_i+(1−θ)ρ_j)` (series resistance).
 - Free surface: interface distance θd, `θ=φ_i/(φ_i−φ_j)` regularized to at least 0.05; log the regularization. Use `p_Γ=p_gas,gauge+σκ` and **J_f=0 on that Dirichlet link**. Equivalently an implementation may lift gas pressure and capillarity through a boundary jump, but then it must not also put σκ into p_Γ. Ambient gas has zero gauge pressure; a cavity supplies its own gas pressure.

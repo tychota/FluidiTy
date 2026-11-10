@@ -40,6 +40,18 @@ struct BoundaryTransferFaceResult3D {
   double normalized_face_velocity{};  // Momentum/mass in m/s, zero for missing/low mass.
   LiquidFaceValidity3D validity{};
 };
+// The bounded normalization dispatch borrows the transfer face ranges with
+// compact strides. Its inputs are MacFaceDepositQuanta3D in owned face order.
+struct BoundaryNormalizedFace3D {
+  double decoded_face_mass{};  // Kilograms, before the low-mass decision.
+  double normalized_face_velocity{};  // m/s, zero for missing or low mass.
+  LiquidFaceValidity3D validity{};
+};
+static_assert(sizeof(MacFaceDepositQuanta3D) <= sizeof(BoundaryTransferFace3D));
+static_assert(alignof(MacFaceDepositQuanta3D) <= alignof(BoundaryTransferFace3D));
+static_assert(sizeof(BoundaryNormalizedFace3D) <= sizeof(BoundaryTransferFaceResult3D));
+static_assert(alignof(BoundaryNormalizedFace3D) <= alignof(BoundaryTransferFaceResult3D));
+
 struct BoundaryTransferParticleResult3D {
   CompatibleMacFaceSample3D stencils[3][27]{};
   LiquidBoundaryParticleGather3D gathered{};
@@ -145,13 +157,22 @@ int LaunchLiquidBoundaryDeposit3D(
     std::size_t particle_count,
     void* stream
 );
+// Normalize one decoded face per thread. The report carries the first error
+// in owned face order, and callers fence before publishing any results.
+int LaunchLiquidBoundaryNormalize3D(
+    const BoundaryTransferQuery3D* query,
+    const MacFaceDepositQuanta3D* face_quanta,
+    BoundaryNormalizedFace3D* face_results,
+    BoundaryTransferReport3D* report,
+    std::size_t face_count,
+    void* stream
+);
 int LaunchLiquidBoundaryFaceMap3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* face_results,
     BoundaryTransferReport3D* report,
     std::size_t face_count,
-    BoundaryTransferOperation3D operation,
     void* stream
 );
 

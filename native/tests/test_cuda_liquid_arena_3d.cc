@@ -1,5 +1,6 @@
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -388,22 +389,47 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
   auto arena = CudaLiquidArena3D::Create(capacity);
   ASSERT_TRUE(arena.ok());
   ASSERT_TRUE(arena->Initialize(LiquidState3D{}).ok());
-  std::vector<CudaLiquidRangeView3D> ranges;
-  for (std::size_t ordinal = 0; ordinal < static_cast<std::size_t>(CudaLiquidRange3D::kCount); ++ordinal) {
-    const auto range = arena->range(static_cast<CudaLiquidRange3D>(ordinal));
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.device) % 128, 0);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.pinned.data()) % 128, 0);
-    if (range.device == nullptr) {
-      EXPECT_EQ(static_cast<CudaLiquidRange3D>(ordinal), CudaLiquidRange3D::kPressurePreparationScratch);
-      continue;
+  using Range = CudaLiquidRange3D;
+  constexpr std::array wetted_piston_ranges{
+      Range::kWettedPistonCenters,
+      Range::kWettedPistonDisks,
+      Range::kWettedPistonIndices,
+      Range::kWettedPistonMeasures,
+      Range::kWettedPistonIntervals,
+  };
+  const auto disjoint = [](const std::byte* left, std::size_t left_size, const std::byte* right, std::size_t right_size
+                        ) {
+    const auto left_address = reinterpret_cast<std::uintptr_t>(left);
+    const auto right_address = reinterpret_cast<std::uintptr_t>(right);
+    return left_address + left_size <= right_address || right_address + right_size <= left_address;
+  };
+  const auto check_ranges = [&](const CudaLiquidArena3D& owner, bool with_wetted_piston) {
+    std::vector<CudaLiquidRangeView3D> ranges;
+    for (std::size_t ordinal = 0; ordinal < static_cast<std::size_t>(Range::kCount); ++ordinal) {
+      SCOPED_TRACE(ordinal);
+      const auto name = static_cast<Range>(ordinal);
+      const auto range = owner.range(name);
+      const bool is_wetted_piston = std::ranges::find(wetted_piston_ranges, name) != wetted_piston_ranges.end();
+      if (is_wetted_piston && !with_wetted_piston) {
+        EXPECT_EQ(range.device, nullptr);
+        EXPECT_TRUE(range.pinned.empty());
+        EXPECT_EQ(range.pinned.data(), nullptr);
+        continue;
+      }
+      EXPECT_FALSE(range.pinned.empty());
+      EXPECT_EQ(range.device == nullptr, name == Range::kPressurePreparationScratch);
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.device) % 128, 0);
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.pinned.data()) % 128, 0);
+      for (const auto earlier : ranges) {
+        EXPECT_TRUE(disjoint(earlier.pinned.data(), earlier.pinned.size(), range.pinned.data(), range.pinned.size()));
+        if (earlier.device && range.device) {
+          EXPECT_TRUE(disjoint(earlier.device, earlier.pinned.size(), range.device, range.pinned.size()));
+        }
+      }
+      ranges.push_back(range);
     }
-    for (const auto earlier : ranges) {
-      const auto left = reinterpret_cast<std::uintptr_t>(earlier.device);
-      const auto right = reinterpret_cast<std::uintptr_t>(range.device);
-      EXPECT_TRUE(left + earlier.pinned.size() <= right || right + range.pinned.size() <= left);
-    }
-    ranges.push_back(range);
-  }
+  };
+  check_ranges(*arena, false);
   EXPECT_EQ(
       arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
       512 * sizeof(boundary_internal::GeometryInput)
@@ -427,6 +453,11 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
             << " particle_bin_stride_bytes=" << sizeof(CudaLiquidParticleBin3D)
             << " bytes_per_full_particle_lane=" << sizeof(CudaLiquidParticleBin3D) / 32 << " setup_wall_us=" << elapsed
             << " cccl=" << metrics.cccl_version << " cub=" << metrics.cub_version << '\n';
+
+  auto wetted_piston_arena = CudaLiquidArena3D::CreateWithWettedPiston(capacity);
+  ASSERT_TRUE(wetted_piston_arena.ok()) << wetted_piston_arena.status();
+  ASSERT_TRUE(wetted_piston_arena->Initialize(LiquidState3D{}).ok());
+  check_ranges(*wetted_piston_arena, true);
 }
 #if defined(_WIN32) && defined(_DEBUG)
 std::size_t arena_allocations = 0;
@@ -742,6 +773,16 @@ TEST(CudaLiquidGeometryStages3D, FrozenClippingAndTypedLinksMatchCpuAndUnitCube)
     EXPECT_EQ(active_block->x, kActiveBlock.x);
     EXPECT_EQ(active_block->y, kActiveBlock.y);
     EXPECT_EQ(active_block->z, kActiveBlock.z);
+
+    using WettedFluxes = std::array<std::optional<double>, 6>;
+    ASSERT_GE(bytes.size(), sizeof(WettedFluxes));
+    auto* aliased_fluxes = std::construct_at(reinterpret_cast<WettedFluxes*>(bytes.data()));
+    EXPECT_EQ(
+        cuda_internal::BuildLiquidLinks3D(*arena, *clipped, {fields, velocities, 9, *aliased_fluxes}, *workspace)
+            .status()
+            .code(),
+        absl::StatusCode::kInvalidArgument
+    );
   }
 #if defined(_WIN32) && defined(_DEBUG)
   std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());
@@ -1216,6 +1257,40 @@ TEST_F(CudaLiquidTransferStages3D, NormalizationRetainsLowMass) {
   EXPECT_EQ(result->validity[1], LiquidFaceValidity3D::kLowMass);
   EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
 }
+TEST_F(CudaLiquidTransferStages3D, NormalizationCopiesOnlyActiveQuantaAndDecodedResults) {
+  auto arena = CudaLiquidArena3D::Create(capacities);
+  auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
+  ASSERT_TRUE(arena.ok());
+  ASSERT_TRUE(workspace.ok());
+  static std::array<const void*, 2> face_buffers;
+  static std::array<std::size_t, 2> copy_bytes;
+  face_buffers = {
+      arena->range(CudaLiquidRange3D::kTransferFaces).device,
+      arena->range(CudaLiquidRange3D::kTransferFaceResults).device,
+  };
+  copy_bytes = {};
+  auto& runtime = cuda_internal::LiquidArenaRuntimeCalls();
+  const auto previous_copy = runtime.memcpy_async;
+  runtime.memcpy_async =
+      [](void* destination, const void* source, std::size_t bytes, cudaMemcpyKind kind, cudaStream_t stream
+      ) -> cudaError_t {
+    if (kind == cudaMemcpyHostToDevice && destination == face_buffers[0]) {
+      copy_bytes[0] += bytes;
+    }
+    if (kind == cudaMemcpyDeviceToHost && source == face_buffers[1]) {
+      copy_bytes[1] += bytes;
+    }
+    return cudaMemcpyAsync(destination, source, bytes, kind, stream);
+  };
+  const std::array<MacFaceDepositQuanta3D, 3> quanta{{{0, 0, 0}, {1, -3, 0}, {4, -6, 0}}};
+  const auto result = cuda_internal::NormalizeLiquid3D(*arena, quanta, {0.5, 0.5, 4}, 0.5, *workspace);
+  runtime.memcpy_async = previous_copy;
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(copy_bytes[0], quanta.size() * sizeof(MacFaceDepositQuanta3D));
+  EXPECT_EQ(copy_bytes[1], quanta.size() * 3 * sizeof(double));
+  EXPECT_DOUBLE_EQ(result->face_velocities[2], -1.5);
+}
+
 TEST_F(CudaLiquidTransferStages3D, ForcesApplyAccelerationOnce) {
   auto arena = CudaLiquidArena3D::Create(capacities);
   auto grid = SparseMacGrid3D::Create({{0, 0, 0}, 1}, std::array{BlockIndex3D{0, 0, 0}}, 1);

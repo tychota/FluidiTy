@@ -104,9 +104,11 @@ struct LiquidAcceptedStepMeasurement3D {
   double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
   std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
   MacPressureDiagnostics3D pressure;
-  double pressure_rhs_l2_m3_per_s = 0;  // Original integrated RHS in solver row order.
+  double pressure_rhs_l2_m3_per_s = 0;  // L2 norm of the original integrated RHS, including gauge rows.
   double step_start_pressure_cell_volume_m3 = 0;  // Frozen liquid volume in center-selected pressure cells.
-  double step_start_inward_piston_flux_m3_per_s = 0;  // Signed blocked-face contribution to the original RHS.
+  // Compensated sum of explicit one-sided piston wall flux in owned face order.
+  // Positive into selected cells and negative for a receding wall.
+  double step_start_inward_piston_flux_m3_per_s = 0;
   std::optional<LiquidPistonStepPose3D> piston_pose;  // Present for an open tank, including a stationary piston.
 };
 // Actual work from one AdvanceFrame attempt, including unsuccessful work.

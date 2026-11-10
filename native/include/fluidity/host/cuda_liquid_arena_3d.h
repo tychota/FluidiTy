@@ -76,6 +76,13 @@ enum class CudaLiquidRange3D : std::size_t {
   kSampleParticles,
   kPressurePreparationScratch,  // Host-only checked assembly/hierarchy; device pointer is null.
   kGeometryBatchResults,  // GeometryBatchResult array with the same capacity as kGeometryInput.
+  // Opt-in wet-wall scratch. Patch batches contain up to 32 patches, each
+  // using two interval banks of max(1, particle capacity).
+  kWettedPistonCenters,
+  kWettedPistonDisks,
+  kWettedPistonIndices,
+  kWettedPistonMeasures,
+  kWettedPistonIntervals,
   kCount,
 };
 struct CudaLiquidRangeView3D {
@@ -218,6 +225,14 @@ class CudaLiquidArena3D {
       std::size_t byte_limit = static_cast<std::size_t>(-1),
       bool measure_job = false
   );
+  // Same setup, statuses and byte limit as Create, with wet-wall staging
+  // reserved at creation and at each growth. Use for CudaComputeWettedPiston3D.
+  static absl::StatusOr<CudaLiquidArena3D> CreateWithWettedPiston(
+      LiquidStateCapacities3D capacities,
+      int device_ordinal = 0,
+      std::size_t byte_limit = static_cast<std::size_t>(-1),
+      bool measure_job = false
+  );
   // Copies one valid initial state into the committed bank once. Validation and
   // capacity errors preserve the uninitialized owner; no source borrow survives.
   absl::Status Initialize(const LiquidState3D& initial);
@@ -255,7 +270,7 @@ class CudaLiquidArena3D {
       LiquidStepWorkspace3D& workspace,
       const LiquidState3D* previous_state = nullptr
   );
-  // Named scratch range; invalid enum returns an empty view. No writes to an
+  // Named scratch range; invalid or unreserved names return an empty view. No writes to an
   // immutable state bank are exposed here. Borrows end on growth commit/move or
   // runtime poison, after which this method returns an empty view.
   CudaLiquidRangeView3D range(CudaLiquidRange3D name) const;
@@ -303,6 +318,13 @@ class CudaLiquidArena3D {
 
  private:
   struct Impl;
+  static absl::StatusOr<CudaLiquidArena3D> CreateWithScratch(
+      LiquidStateCapacities3D capacities,
+      int device_ordinal,
+      std::size_t byte_limit,
+      bool measure_job,
+      bool reserve_wetted_piston_scratch
+  );
   CudaLiquidArena3D();
   std::unique_ptr<Impl> impl_;
 };

@@ -10,6 +10,7 @@
 
 #include "absl/status/status.h"
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
+#include "fluidity/host/views.h"
 #include "liquid_boundary_backend.h"
 
 namespace fluidity {
@@ -444,6 +445,7 @@ absl::Status FreezeCore(
     if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
       frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
       frozen_face.prescribed_wall_flux = areas.piston_flux;
+      frozen_face.is_low_x_piston_face = areas.is_low_x_piston_face;
     } else {
       frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(frozen_face.face_index.axis)];
     }
@@ -531,7 +533,10 @@ absl::Status LinksCore(
     LinkStorage& result,
     bool bounded
 ) {
+  const auto wetted_piston_face_fluxes = fields.wetted_piston_face_fluxes;
+  const bool has_wetted_piston_face_fluxes = !wetted_piston_face_fluxes.empty();
   if (fields.cells.size() != geometry.cells.size() || fields.predicted_face_velocities.size() != geometry.faces.size()
+      || (has_wetted_piston_face_fluxes && wetted_piston_face_fluxes.size() != geometry.faces.size())
       || !std::isfinite(fields.ambient_pressure)) {
     return absl::Status(
         absl::StatusCode::kInvalidArgument,
@@ -569,6 +574,27 @@ absl::Status LinksCore(
     const auto index = face.face_index.lattice_index;
     const CellIndex3D head{index.x, index.y, index.z};
     const auto tail = OffsetCellIndex(head, static_cast<int>(face.face_index.axis), -1, bounded);
+    const auto head_found = FindCell(geometry.cells, head);
+    const auto tail_found = tail.ok() ? FindCell(geometry.cells, *tail) : geometry.cells.size();
+    const bool has_head = head_found != geometry.cells.size();
+    const bool has_tail = tail_found != geometry.cells.size();
+    if (has_wetted_piston_face_fluxes) {
+      const bool piston_receiver = face.is_low_x_piston_face && face.face_index.axis == FaceNormalAxis::kX
+          && face.open_area == 0 && has_head && !has_tail && face.prescribed_wall_flux.has_value();
+      const auto signed_piston_flux = wetted_piston_face_fluxes[i];
+      if (piston_receiver != signed_piston_flux.has_value()) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid wetted piston incidence");
+      }
+      if (signed_piston_flux.has_value()) {
+        const double wall_normal_velocity = face.wall_normal_velocity;
+        const bool wrong_direction = (*signed_piston_flux > 0 && wall_normal_velocity <= 0)
+            || (*signed_piston_flux < 0 && wall_normal_velocity >= 0);
+        if (!std::isfinite(*signed_piston_flux) || wrong_direction) {
+          return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid signed wetted piston flux");
+        }
+        link.prescribed_wall_flux = signed_piston_flux;
+      }
+    }
     if (!tail.ok()) {
       if (face.open_area > 0) {
         return tail.status();
@@ -576,10 +602,6 @@ absl::Status LinksCore(
       result.faces.storage[i] = link;
       return false;
     }
-    const auto head_found = FindCell(geometry.cells, head);
-    const auto tail_found = FindCell(geometry.cells, *tail);
-    const bool has_head = head_found != geometry.cells.size();
-    const bool has_tail = tail_found != geometry.cells.size();
     if (!has_head && !has_tail) {
       return MissingBoundarySample(bounded);
     }
@@ -857,6 +879,15 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
     return view_status;
   }
   auto& bank = links_[1 - link_bank_];
+  const auto wetted_flux_bytes = std::as_bytes(fields.wetted_piston_face_fluxes);
+  if (!wetted_flux_bytes.empty()) {
+    const auto reserved_cell_bytes = std::as_bytes(std::span(bank.cells.values().data(), bank.cells.capacity()));
+    const auto reserved_face_bytes = std::as_bytes(std::span(bank.faces.values().data(), bank.faces.capacity()));
+    if (ByteViewsOverlap(wetted_flux_bytes, reserved_cell_bytes)
+        || ByteViewsOverlap(wetted_flux_bytes, reserved_face_bytes)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
   Resize(bank.cells, geometry.cells.size());
   Resize(bank.faces, geometry.faces.size());
   RecordHighWater();

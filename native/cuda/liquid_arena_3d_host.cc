@@ -16,6 +16,7 @@
 #include "liquid_device_3d_internal.h"
 #include "liquid_geometry_stages_3d_bridge.h"
 #include "mac_pressure_3d_bridge.h"
+#include "wetted_piston_3d_bridge.h"
 
 namespace fluidity {
 namespace {
@@ -214,6 +215,19 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
       && add(Range::kSampleParticles, capacity.particles, sizeof(LiquidParticleState3D));
   if (!fits) {
     return Error(absl::StatusCode::kResourceExhausted);
+  }
+  if (storage.ledger->reserve_wetted_piston_scratch) {
+    namespace wet = wetted_piston_internal;
+    const auto source_capacity = std::max<std::size_t>(1, capacity.particles);
+    const auto patch_batch_capacity = std::clamp(capacity.faces, std::size_t{1}, wet::kDevicePatchBatch);
+    const bool wetted_piston_fits = add(Range::kWettedPistonCenters, source_capacity, sizeof(Vec3))
+        && add(Range::kWettedPistonDisks, source_capacity, sizeof(wet::Disk))
+        && add(Range::kWettedPistonIndices, patch_batch_capacity, sizeof(wet::PatchIndex))
+        && add(Range::kWettedPistonMeasures, patch_batch_capacity, sizeof(wet::PatchMeasure))
+        && add(Range::kWettedPistonIntervals, source_capacity, 2 * patch_batch_capacity * sizeof(wet::Interval));
+    if (!wetted_piston_fits) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
   }
   if (!all.Finish()) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -536,6 +550,9 @@ CudaLiquidRangeView3D LiquidArenaStorage3D::Range(CudaLiquidRange3D name) const 
     return {};
   }
   const auto range = ranges[ordinal];
+  if (range.offset == 0) {
+    return {};
+  }
   return {
       name == CudaLiquidRange3D::kPressurePreparationScratch ? nullptr : device + range.offset,
       {pinned + range.offset, range.bytes},
@@ -693,6 +710,23 @@ absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::Create(
     std::size_t byte_limit,
     bool measure_job
 ) {
+  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, false);
+}
+absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithWettedPiston(
+    LiquidStateCapacities3D capacities,
+    int device_ordinal,
+    std::size_t byte_limit,
+    bool measure_job
+) {
+  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, true);
+}
+absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithScratch(
+    LiquidStateCapacities3D capacities,
+    int device_ordinal,
+    std::size_t byte_limit,
+    bool measure_job,
+    bool reserve_wetted_piston_scratch
+) {
   const auto properties = cuda_internal::QueryLiquidCudaDevice3D(device_ordinal);
   if (!properties.ok()) {
     return properties.status();
@@ -713,6 +747,7 @@ absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::Create(
   auto& ledger = *arena.impl_->ledger;
   ledger.device_ordinal = device_ordinal;
   ledger.measure_job = measure_job;
+  ledger.reserve_wetted_piston_scratch = reserve_wetted_piston_scratch;
   auto& metrics = ledger.metrics;
   status = CheckedCuda(cudaMemGetInfo(&metrics.free_device_bytes_at_start, &metrics.total_device_bytes));
   if (!status.ok()) {

@@ -687,7 +687,8 @@ absl::StatusOr<std::string> ExecuteCommand(
       return target_time.status();
     }
   }
-  if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.scene.obstacle)) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.scene.obstacle);
+  if (tank) {
     diagnostic->field = "frame";
     diagnostic->cause = "the requested time requires a finite open tank with positive width";
     const auto pose = boundary_internal::CheckTankStep(*tank, *target_time);
@@ -723,7 +724,13 @@ absl::StatusOr<std::string> ExecuteCommand(
   diagnostic->cause = "explicit scheduler backend initialization failed";
 #if defined(FLUIDITY_SIMULATE_CUDA)
   if (scene.backend == LiquidBackend3D::kCuda) {
-    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, command.device_index, command.measure_job);
+    const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
+    auto backend = CudaLiquidSubstepBackend3D::Create(
+        options.capacities,
+        command.device_index,
+        command.measure_job,
+        needs_wetted_piston
+    );
     if (!backend.ok()) {
       return backend.status();
     }
