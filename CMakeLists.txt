@@ -42,6 +42,7 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+  native/src/motion_interval_3d.cc
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
   native/src/liquid_isolated_drop_3d.cc
@@ -75,7 +76,7 @@ target_compile_features(fluidity_native PUBLIC cxx_std_20)
 add_dependencies(fluidity_native fluidity_cache_schemas)
 target_include_directories(fluidity_native PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
 target_link_libraries(fluidity_native
-  PUBLIC absl::status absl::statusor
+  PUBLIC absl::function_ref absl::status absl::statusor
   PRIVATE flatbuffers::flatbuffers BLAKE3::blake3 fluidity_native_options)
 
 if(FLUIDITY_ENABLE_CUDA)
@@ -198,6 +199,7 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_motion_interval_3d.cc
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc
     native/tests/test_wetted_piston_3d.cc
