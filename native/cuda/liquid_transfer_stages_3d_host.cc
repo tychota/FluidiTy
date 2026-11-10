@@ -283,8 +283,7 @@ absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
         static_cast<boundary_internal::Error>(report.first_parallel_error % kBoundaryTransferErrorCodeCount);
     return boundary_internal::ArithmeticStatus(error, true);
   }
-  TRANSFER_TRY(boundary_internal::ArithmeticStatus(report.error, true));
-  return report.retry_step ? Error(absl::StatusCode::kAborted) : absl::OkStatus();
+  return boundary_internal::ArithmeticStatus(report.error, true);
 }
 absl::Status
 CheckHistory(CudaLiquidArena3D& arena, const LiquidBoundaryVelocityHistory3D& history, std::size_t count, double time) {
@@ -599,32 +598,75 @@ absl::Status UpdateLiquidParticles3D(
       }
     }
   }
-  auto staged = Stage(arena, 0, particles.size());
-  if (!staged.ok()) {
-    return staged.status();
+  TRANSFER_TRY(ValidateCapacity(0, particles.size()));
+  if (particles.size() > arena.capacities().particles) {
+    return Error(absl::StatusCode::kResourceExhausted);
   }
-  auto& query = staged->query_range.pinned[0];
-  query.operation = BoundaryTransferOperation3D::kUpdateParticles;
-  query.cell_width = inputs.cell_width;
-  query.step_duration = inputs.step_duration;
-  query.particle_energy_blend = inputs.particle_energy_blend;
-  query.obstacle = obstacle;
-  query.friction_coefficient = inputs.friction_coefficient;
-  query.penetration_tolerance = inputs.penetration_tolerance;
-  for (std::size_t index = 0; index < particles.size(); ++index) {
-    auto& staged_particle = staged->particles[index];
-    staged_particle.particle.transfer.trial_world_position = particles[index].world_position;
-    staged_particle.gathered = inputs.gathered[index];
-    staged_particle.liquid_distance = inputs.liquid_distances[index];
-    staged_particle.volume_ratio = particles[index].volume_ratio;
-    staged_particle.pic_initialized = particles[index].pic_initialized;
+  const auto query = CheckedLiquidRange3D<BoundaryTransferQuery3D>(arena, Range::kTransferQuery, 1);
+  if (!query.ok()) {
+    return query.status();
   }
-  TRANSFER_TRY(Execute(arena, *staged));
+  const auto staged_particles =
+      CheckedLiquidRange3D<BoundaryUpdateParticle3D>(arena, Range::kTransferParticles, particles.size());
+  if (!staged_particles.ok()) {
+    return staged_particles.status();
+  }
+  const auto results =
+      CheckedLiquidRange3D<BoundaryUpdateResult3D>(arena, Range::kTransferParticleResults, particles.size());
+  if (!results.ok()) {
+    return results.status();
+  }
+  const auto architecture = CheckedLiquidRange3D<int>(arena, Range::kArchitecture, 1);
+  if (!architecture.ok()) {
+    return architecture.status();
+  }
+  query->pinned[0] = {
+      .particle_count = particles.size(),
+      .cell_width = inputs.cell_width,
+      .step_duration = inputs.step_duration,
+      .obstacle = obstacle,
+      .particle_energy_blend = inputs.particle_energy_blend,
+      .friction_coefficient = inputs.friction_coefficient,
+      .penetration_tolerance = inputs.penetration_tolerance,
+  };
   for (std::size_t index = 0; index < particles.size(); ++index) {
-    const auto& result = staged->particle_result_range.pinned[index];
-    particles[index].world_position = result.updated_world_position;
-    particles[index].world_velocity = result.updated_stored_velocity;
-    particles[index].volume_ratio = result.updated_volume_ratio;
+    staged_particles->pinned[index] = {
+        .world_position = particles[index].world_position,
+        .gathered = inputs.gathered[index],
+        .liquid_distance = inputs.liquid_distances[index],
+        .volume_ratio = particles[index].volume_ratio,
+        .pic_initialized = particles[index].pic_initialized,
+    };
+  }
+  TRANSFER_TRY(CopyLiquidRange3D(arena, *query, true));
+  TRANSFER_TRY(CopyLiquidRange3D(arena, *staged_particles, true));
+  TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidParticleUpdate3D(
+      query->device,
+      staged_particles->device,
+      results->device,
+      architecture->device,
+      particles.size(),
+      arena.stream()
+  )));
+  TRANSFER_TRY(CopyLiquidRange3D(arena, *results, false));
+  TRANSFER_TRY(CopyLiquidRange3D(arena, *architecture, false));
+  TRANSFER_TRY(FinishLiquidDispatch3D(arena));
+  if (architecture->pinned[0] != 1200) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  // Match the first serial arithmetic failure or timestep retry before
+  // publishing any updated particle fields.
+  for (const auto& result : results->pinned) {
+    TRANSFER_TRY(boundary_internal::ArithmeticStatus(result.error, true));
+    if (result.retry_step) {
+      return Error(absl::StatusCode::kAborted);
+    }
+  }
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& result = results->pinned[index];
+    particles[index].world_position = result.world_position;
+    particles[index].world_velocity = result.stored_world_velocity;
+    particles[index].volume_ratio = result.volume_ratio;
     particles[index].velocity_slopes = inputs.gathered[index].fitted_velocity_slopes;
     particles[index].affine_enabled = inputs.gathered[index].affine_enabled;
     particles[index].pic_initialized = true;

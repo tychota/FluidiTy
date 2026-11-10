@@ -15,6 +15,7 @@
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "../cuda/liquid_arena_dispatch_3d.h"
 #include "../cuda/liquid_boundary_3d_bridge.h"
+#include "../cuda/liquid_boundary_transfer_3d_bridge.h"
 #include "../cuda/liquid_geometry_stages_3d.h"
 #include "../cuda/liquid_transfer_stages_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
@@ -1514,7 +1515,7 @@ TEST_F(CudaLiquidTransferStages3D, ContinuousSlabContactMatchesCpuOnBothSides) {
   EXPECT_GT(particles[1].world_position.x, 0.03 + 0.1 - 1e-12);
 }
 TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEveryRecord) {
-  auto arena = CudaLiquidArena3D::Create(capacities);
+  auto arena = CudaLiquidArena3D::Create(capacities, 0, std::numeric_limits<std::size_t>::max(), true);
   ASSERT_TRUE(arena.ok());
   std::array<LiquidParticleState3D, 2> particles{};
   std::array<LiquidBoundaryParticleGather3D, 2> gathered{};
@@ -1528,8 +1529,12 @@ TEST_F(CudaLiquidTransferStages3D, ParticleFallbackAndLateRejectionPreserveEvery
     gathered[i].low_mass_fallback = true;
     gathered[i].affine_enabled = false;
   }
+  arena->SetWorkPhase(LiquidWorkPhase3D::kGatherContactAcceptance);
   LiquidParticleUpdateInputs3D inputs{gathered, distances, {}, 1, 0.1, 1, 0, 1e-10};
   ASSERT_TRUE(cuda_internal::UpdateLiquidParticles3D(*arena, inputs, particles).ok());
+  constexpr std::size_t particle_scratch_byte_budget =
+      sizeof(cuda_internal::BoundaryTransferQuery3D) + sizeof(cuda_internal::BoundaryTransferReport3D) + 2 * 1024;
+  EXPECT_LE(arena->metrics().peak_active_device_scratch_bytes, particle_scratch_byte_budget);
   EXPECT_DOUBLE_EQ(particles[0].world_velocity.x, 1);
   EXPECT_NEAR(particles[0].world_position.x, 2.1, 2e-14);
   EXPECT_FALSE(particles[0].affine_enabled);

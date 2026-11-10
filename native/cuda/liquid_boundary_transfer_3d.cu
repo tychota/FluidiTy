@@ -520,70 +520,82 @@ __device__ Error Forces(
   }
   return Error::kNone;
 }
-// J consumes the true original-basis gradient, while retained APIC slopes are the
-// separate fit. Contact constrains stored and advecting velocities independently.
-__device__ Error UpdateParticles(
-    const BoundaryTransferQuery3D& query,
-    const BoundaryTransferParticle3D* particles,
-    BoundaryTransferParticleResult3D* results,
-    BoundaryTransferReport3D& report
+// J uses the original-basis velocity gradient. Contact constrains the
+// advecting and retained velocities independently.
+__global__ void LiquidParticleUpdate3DKernel(
+    const BoundaryTransferQuery3D* device_query,
+    const BoundaryUpdateParticle3D* particles,
+    BoundaryUpdateResult3D* results,
+    int* compiled_architecture
 ) {
-  for (std::size_t index = 0; index < query.particle_count; ++index) {
-    const auto& particle = particles[index];
-    const auto& gathered = particle.gathered;
-    const Vec3 start = particle.particle.transfer.trial_world_position;
-    const double divergence =
-        gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
-    const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
-    const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
-    double solid_distance = numeric::numeric_limits<double>::infinity();
-    if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
-      const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
-      if (!wall.ok()) {
-        return wall.status();
-      }
-      solid_distance = wall->inward_distance;
-    } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
-      const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
-      solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
-          ? projected_distance
-          : numeric::abs(projected_distance) - query.obstacle.half_width;
-      if (!numeric::isfinite(solid_distance)) {
-        return Error::kRange;
-      }
-    }
-    const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
-        && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
-    const double beta = surface_expansion ? query.particle_energy_blend : 0;
-    Vec3 stored = gathered.new_pic_velocity;
-    Vec3 advecting = gathered.new_pic_velocity;
-    AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
-    AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
-    const auto contact = boundary_internal::ResolveContact({
-        start,
-        stored,
-        advecting,
-        query.obstacle,
-        query.step_duration,
-        query.friction_coefficient,
-        query.penetration_tolerance,
-    });
-    if (!contact.ok()) {
-      return contact.status();
-    }
-    const Vec3 displacement = Difference(contact->world_position, start);
-    const double volume_ratio = particle.volume_ratio * exp(query.step_duration * divergence);
-    if (numeric::abs(displacement.x) > 0.5 * query.cell_width || numeric::abs(displacement.y) > 0.5 * query.cell_width
-        || numeric::abs(displacement.z) > 0.5 * query.cell_width || !numeric::isfinite(volume_ratio)
-        || volume_ratio <= 0) {
-      report.retry_step = true;
-      return Error::kNone;
-    }
-    results[index].updated_world_position = contact->world_position;
-    results[index].updated_stored_velocity = contact->stored_world_velocity;
-    results[index].updated_volume_ratio = volume_ratio;
+  const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
+#if defined(__CUDA_ARCH__)
+  if (index == 0) {
+    *compiled_architecture = __CUDA_ARCH__;
   }
-  return Error::kNone;
+#endif
+  const auto& query = *device_query;
+  if (index >= query.particle_count) {
+    return;
+  }
+  auto& result = results[index];
+  result = {};
+  const auto& particle = particles[index];
+  const auto& gathered = particle.gathered;
+  const Vec3 start = particle.world_position;
+  const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
+  const double alpha = particle.pic_initialized && !fallback ? 0.99 * query.particle_energy_blend : 0;
+  Vec3 stored = gathered.new_pic_velocity;
+  AddScaled(stored, gathered.particle_minus_old_pic_velocity, alpha);
+  const double divergence =
+      gathered.velocity_gradient.x_row.x + gathered.velocity_gradient.y_row.y + gathered.velocity_gradient.z_row.z;
+  double solid_distance = numeric::numeric_limits<double>::infinity();
+  if (query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
+    const auto wall = boundary_internal::SampleTankWall(query.obstacle.tank, start);
+    if (!wall.ok()) {
+      result.error = wall.status();
+      return;
+    }
+    solid_distance = wall->inward_distance;
+  } else if (query.obstacle.kind != boundary_internal::ObstacleKind::kAbsent) {
+    const double projected_distance = Dot(query.obstacle.normal, start) - query.obstacle.coordinate;
+    solid_distance = query.obstacle.kind == boundary_internal::ObstacleKind::kHalfspace
+        ? projected_distance
+        : numeric::abs(projected_distance) - query.obstacle.half_width;
+    if (!numeric::isfinite(solid_distance)) {
+      result.error = Error::kRange;
+      return;
+    }
+  }
+  const bool surface_expansion = divergence > 0 && particle.liquid_distance <= 0
+      && particle.liquid_distance >= -query.cell_width && solid_distance > query.cell_width;
+  const double beta = surface_expansion ? query.particle_energy_blend : 0;
+  Vec3 advecting = gathered.new_pic_velocity;
+  AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
+  const auto contact = boundary_internal::ResolveContact({
+      start,
+      stored,
+      advecting,
+      query.obstacle,
+      query.step_duration,
+      query.friction_coefficient,
+      query.penetration_tolerance,
+  });
+  if (!contact.ok()) {
+    result.error = contact.status();
+    return;
+  }
+  const Vec3 displacement = Difference(contact->world_position, start);
+  const double volume_ratio = particle.volume_ratio * exp(query.step_duration * divergence);
+  if (numeric::abs(displacement.x) > 0.5 * query.cell_width || numeric::abs(displacement.y) > 0.5 * query.cell_width
+      || numeric::abs(displacement.z) > 0.5 * query.cell_width || !numeric::isfinite(volume_ratio)
+      || volume_ratio <= 0) {
+    result.retry_step = true;
+    return;
+  }
+  result.world_position = contact->world_position;
+  result.stored_world_velocity = contact->stored_world_velocity;
+  result.volume_ratio = volume_ratio;
 }
 __device__ void InitializeTransferOutputs(
     const BoundaryTransferQuery3D& query,
@@ -627,9 +639,6 @@ __global__ void LiquidBoundaryTransfer3DKernel(
       break;
     case BoundaryTransferOperation3D::kForces:
       report->error = Forces(*query, faces, face_results);
-      break;
-    case BoundaryTransferOperation3D::kUpdateParticles:
-      report->error = UpdateParticles(*query, particles, particle_results, *report);
       break;
     case BoundaryTransferOperation3D::kFitGhost: {
       const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(query->fit_samples, query->fit_count));
@@ -738,6 +747,25 @@ __global__ void LiquidBoundarySingleParticleGather3DKernel(
   }
 }
 }  // namespace
+int LaunchLiquidParticleUpdate3D(
+    const BoundaryTransferQuery3D* query,
+    const BoundaryUpdateParticle3D* particles,
+    BoundaryUpdateResult3D* results,
+    int* compiled_architecture,
+    std::size_t particle_count,
+    void* stream
+) {
+  constexpr unsigned threads = 128;
+  const auto block_count = particle_count == 0 ? 1U : static_cast<unsigned>((particle_count + threads - 1) / threads);
+  cudaGetLastError();
+  LiquidParticleUpdate3DKernel<<<block_count, threads, 0, static_cast<cudaStream_t>(stream)>>>(
+      query,
+      particles,
+      results,
+      compiled_architecture
+  );
+  return static_cast<int>(cudaGetLastError());
+}
 int LaunchLiquidBoundaryTransfer3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
