@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import piston_material_mesh as mesh
-from diagnose_piston_material import diagnose
+from diagnose_piston_material import _fixed_radius_receiving_budget, diagnose
 from piston_material_mesh import clipped_signed_volumes, measure, reconstruct, signed_volume
 
 H = 0.0625
@@ -37,6 +37,38 @@ class MaterialMeshControls(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "frozen measurements differ from the trusted SHA-256"):
                 diagnose(run, "0" * 64, "1" * 64)
 
+
+    def test_receiving_balance_separates_total_volume_loss_from_partial_wetting(self):
+        saturated = {
+            "initial_reconstruction": {"swept_below_m3": 0.25, "swept_above_m3": 0.0},
+            "final_reconstruction": {"swept_below_m3": 0.21875, "swept_above_m3": 0.0234375},
+            "initial_void_below_reference_m3": 0.0,
+            "final_void_below_reference_m3": 0.0,
+            "swept_dry_below_reference_m3": 0.0,
+            "receiving_m3": 0.0234375,
+            "full_wetted_sweep_m3": 0.03125,
+        }
+        partial = {
+            **saturated,
+            "final_reconstruction": {"swept_below_m3": 0.21875, "swept_above_m3": 0.03125},
+            "initial_void_below_reference_m3": 0.015625,
+            "final_void_below_reference_m3": 0.0234375,
+            "swept_dry_below_reference_m3": 0.00390625,
+            "receiving_m3": 0.03515625,
+            "full_wetted_sweep_m3": 0.0234375,
+        }
+        for frozen, volume_change, void_change, dry_sweep in (
+            (saturated, -0.0078125, 0.0, 0.0),
+            (partial, 0.0, 0.0078125, 0.00390625),
+        ):
+            with self.subTest(frozen=frozen):
+                self.assertEqual(_fixed_radius_receiving_budget(frozen), {
+                    "receiving_minus_wetted_sweep_m3": volume_change + void_change + dry_sweep,
+                    "reconstructed_total_volume_change_m3": volume_change,
+                    "below_plane_void_change_m3": void_change,
+                    "swept_dry_below_plane_m3": dry_sweep,
+                    "identity_residual_m3": 0.0,
+                })
 
     def test_identity(self):
         centers = lattice(0.5, 0)
