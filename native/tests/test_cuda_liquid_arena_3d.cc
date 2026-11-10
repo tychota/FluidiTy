@@ -1,5 +1,6 @@
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -388,22 +389,47 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
   auto arena = CudaLiquidArena3D::Create(capacity);
   ASSERT_TRUE(arena.ok());
   ASSERT_TRUE(arena->Initialize(LiquidState3D{}).ok());
-  std::vector<CudaLiquidRangeView3D> ranges;
-  for (std::size_t ordinal = 0; ordinal < static_cast<std::size_t>(CudaLiquidRange3D::kCount); ++ordinal) {
-    const auto range = arena->range(static_cast<CudaLiquidRange3D>(ordinal));
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.device) % 128, 0);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.pinned.data()) % 128, 0);
-    if (range.device == nullptr) {
-      EXPECT_EQ(static_cast<CudaLiquidRange3D>(ordinal), CudaLiquidRange3D::kPressurePreparationScratch);
-      continue;
+  using Range = CudaLiquidRange3D;
+  constexpr std::array wetted_piston_ranges{
+      Range::kWettedPistonCenters,
+      Range::kWettedPistonDisks,
+      Range::kWettedPistonIndices,
+      Range::kWettedPistonMeasures,
+      Range::kWettedPistonIntervals,
+  };
+  const auto disjoint = [](const std::byte* left, std::size_t left_size, const std::byte* right, std::size_t right_size
+                        ) {
+    const auto left_address = reinterpret_cast<std::uintptr_t>(left);
+    const auto right_address = reinterpret_cast<std::uintptr_t>(right);
+    return left_address + left_size <= right_address || right_address + right_size <= left_address;
+  };
+  const auto check_ranges = [&](const CudaLiquidArena3D& owner, bool with_wetted_piston) {
+    std::vector<CudaLiquidRangeView3D> ranges;
+    for (std::size_t ordinal = 0; ordinal < static_cast<std::size_t>(Range::kCount); ++ordinal) {
+      SCOPED_TRACE(ordinal);
+      const auto name = static_cast<Range>(ordinal);
+      const auto range = owner.range(name);
+      const bool is_wetted_piston = std::ranges::find(wetted_piston_ranges, name) != wetted_piston_ranges.end();
+      if (is_wetted_piston && !with_wetted_piston) {
+        EXPECT_EQ(range.device, nullptr);
+        EXPECT_TRUE(range.pinned.empty());
+        EXPECT_EQ(range.pinned.data(), nullptr);
+        continue;
+      }
+      EXPECT_FALSE(range.pinned.empty());
+      EXPECT_EQ(range.device == nullptr, name == Range::kPressurePreparationScratch);
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.device) % 128, 0);
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(range.pinned.data()) % 128, 0);
+      for (const auto earlier : ranges) {
+        EXPECT_TRUE(disjoint(earlier.pinned.data(), earlier.pinned.size(), range.pinned.data(), range.pinned.size()));
+        if (earlier.device && range.device) {
+          EXPECT_TRUE(disjoint(earlier.device, earlier.pinned.size(), range.device, range.pinned.size()));
+        }
+      }
+      ranges.push_back(range);
     }
-    for (const auto earlier : ranges) {
-      const auto left = reinterpret_cast<std::uintptr_t>(earlier.device);
-      const auto right = reinterpret_cast<std::uintptr_t>(range.device);
-      EXPECT_TRUE(left + earlier.pinned.size() <= right || right + range.pinned.size() <= left);
-    }
-    ranges.push_back(range);
-  }
+  };
+  check_ranges(*arena, false);
   EXPECT_EQ(
       arena->range(CudaLiquidRange3D::kGeometryInput).pinned.size(),
       512 * sizeof(boundary_internal::GeometryInput)
@@ -427,6 +453,11 @@ TEST(CudaLiquidArena3D, WorstCaseNamedRangesRemainDisjointAndMeasured) {
             << " particle_bin_stride_bytes=" << sizeof(CudaLiquidParticleBin3D)
             << " bytes_per_full_particle_lane=" << sizeof(CudaLiquidParticleBin3D) / 32 << " setup_wall_us=" << elapsed
             << " cccl=" << metrics.cccl_version << " cub=" << metrics.cub_version << '\n';
+
+  auto wetted_piston_arena = CudaLiquidArena3D::CreateWithWettedPiston(capacity);
+  ASSERT_TRUE(wetted_piston_arena.ok()) << wetted_piston_arena.status();
+  ASSERT_TRUE(wetted_piston_arena->Initialize(LiquidState3D{}).ok());
+  check_ranges(*wetted_piston_arena, true);
 }
 #if defined(_WIN32) && defined(_DEBUG)
 std::size_t arena_allocations = 0;
