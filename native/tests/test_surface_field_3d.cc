@@ -44,5 +44,37 @@ TEST(SurfaceField3D, RejectsClippedSupportInvalidVolumeAndBudget) {
   invalid[0].volume_m3 = -1;
   EXPECT_EQ(BuildSurfaceDensity3D(invalid, options, 1000).status().code(), absl::StatusCode::kInvalidArgument);
 }
+
+TEST(SurfaceField3D, MatchesIndependentSingleGaussianAndLinearGradient) {
+  const std::array particles{SurfaceMaterialPoint3D{.position = {}, .volume_m3 = 0.001}};
+  const SurfaceFieldOptions3D options{
+      .origin = {-1, -1, -1},
+      .spacing_m = 0.05,
+      .extent = {41, 41, 41},
+      .sigma_m = 0.1,
+  };
+  auto field = BuildSurfaceDensity3D(particles, options, 100000);
+  ASSERT_TRUE(field.ok());
+  double sum = 0;
+  for (int i = -8; i <= 8; ++i) {
+    sum += std::exp(-0.125 * i * i);
+  }
+  const double expected = 0.001 * std::exp(-0.125 * 5) / (std::pow(sum, 3) * std::pow(0.05, 3));
+  EXPECT_NEAR(0.5 - field->values[(21 * 41 + 22) * 41 + 20], expected, 1e-14);
+  SurfaceLattice3D linear{.origin = {-1, -1, -1}, .spacing = 1, .extent = {3, 3, 3}};
+  for (int x = -1; x <= 1; ++x) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int z = -1; z <= 1; ++z) {
+        linear.values.push_back(x + 2 * y - 0.5 * z);
+      }
+    }
+  }
+  const auto sample = SampleSurfaceField3D(linear, {-0.3, 0.4, 0.2});
+  ASSERT_TRUE(sample.ok());
+  EXPECT_NEAR(sample->value, 0.4, 1e-14);
+  EXPECT_NEAR(sample->gradient.x, 1, 1e-14);
+  EXPECT_NEAR(sample->gradient.y, 2, 1e-14);
+  EXPECT_NEAR(sample->gradient.z, -0.5, 1e-14);
+}
 }  // namespace
 }  // namespace fluidity
