@@ -84,6 +84,9 @@ production sampling policy still requires spatial validity, storage, replay and 
 
 ## Integrated and research gates
 
+These are the original fixed-cache gate statuses. See the [post-M1-B audit](m1c-post-blender-audit.md)
+and the [Zhao CPU comparison](m2-zhao-cpu-evidence.md) for follow-up evidence.
+
 | Gate | Status |
 | --- | --- |
 | M1-B entry | In progress on its separate branch. The available native Points playback fixture receipt covers reader behavior on the pinned Blender build. Installed real bake, resume and fresh render evidence belong to the separate M1-B qualification. |

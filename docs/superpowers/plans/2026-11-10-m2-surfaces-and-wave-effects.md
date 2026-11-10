@@ -71,6 +71,8 @@ The fixed input is the M1 CUDA `oscillating-drop-l2` publication at `3e0526edb9a
 
 **Interface** — An out-of-tree, pinned research invocation consumes matched full and band-limited particle snapshots and writes scalar queries, extracted geometry and per-stage receipts. It adds no installed dependency.
 
+- [ ] Add `tools/native/m2_zhao_experiment.py` and `tools/native/tests/test_m2_zhao_experiment.py`. Test published patch offsets, an independently evaluated quartic density stencil, a normalization contributor outside direct patch support, and the occupied-cell pruning windows. Run `python -m pytest tools/native/tests/test_m2_zhao_experiment.py -q` first against the missing module and again after implementation.
+- [ ] Run the pinned ONNX weights in an isolated CPU environment. Use an independent implementation of the published coordinate, normalization and pruning formulas. Compare frozen full-data pruning with recomputed pruning so missing feature support and changed query selection stay separate. Label downstream cuts of M1 particles as synthetic bands. Record the deviation from the upstream TensorRT pipeline, the unresolved terms and any unrun authored input.
 - [ ] Resolve software/weight terms, the archive hash and toolchain. Record the blocker if terms or a runnable reproduction are unavailable. Preserve the published stride 2, `h_phi=h_N/2`, fixed batch 1024, 8³ input and all pruning/normalization choices.
 - [ ] Run supplied full-volume and analytic controls, then matched FluidiTy snapshots with actual retained support, density variation and reseeding. Separate field error to full-data CNN from zero-set error, topology, lost components, volume, latency, peak memory and input coverage.
 - [ ] Compare monolithic and tiled queries with global origin/order, identical batches and matched pruning. Start from the 9 h_N L∞ dependency bound and measure query selection, density, extraction and uncertainty halos separately. Exercise a deliberately missing normalization halo as a negative control.
@@ -78,7 +80,7 @@ The fixed input is the M1 CUDA `oscillating-drop-l2` publication at `3e0526edb9a
 
 ## Task 4 — Qualify persistent Mesh and replay
 
-**Entry** — Merged M1-B and completed post-M1-B M1c audit. Task 1 supplies the stateless comparison and Task 2 supplies temporal fixtures.
+**Entry** — M1-B merged at `4cf1715`. The [post-M1-B audit](../../references/m1c-post-blender-audit.md) records the handoff and open M1 physical gates. Task 1 supplies the stateless comparison and Task 2 supplies temporal fixtures.
 
 **Interfaces** — Mesh consumes committed particle and occupancy fields, obstacle closure and a validated timestamped `MotionInterval`. Its checkpoint owns previous geometry, IDs, lineage, frame and backend/settings identity. It publishes a mesh commit keyed by upstream content plus resolved Mesh settings.
 
