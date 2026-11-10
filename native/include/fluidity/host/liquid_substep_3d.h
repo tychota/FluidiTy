@@ -23,8 +23,18 @@ struct LiquidParticleSphereUnion3D {
 struct LiquidHorizontalPlaneSurface3D {
   double world_surface_height_y = 0;
 };
-using LiquidSceneField3D =
-    std::variant<LiquidAnalyticSphere3D, LiquidParticleSphereUnion3D, LiquidHorizontalPlaneSurface3D>;
+// Opt-in field for the authored filled, isolated drop on the uniform grid.
+// Admits exactly 552 particles with side_tag == 0, positive surface tension,
+// incompressibility, zero target divergence, and no obstacles or sources.
+struct LiquidIsolatedCovarianceDrop3D {
+  double physical_radius;  // Authored radius in meters, used to scale the grid level set.
+  double seed_covariance_scale;  // Positive dimensionless scale fixed at authoring.
+};
+using LiquidSceneField3D = std::variant<
+    LiquidAnalyticSphere3D,
+    LiquidParticleSphereUnion3D,
+    LiquidHorizontalPlaneSurface3D,
+    LiquidIsolatedCovarianceDrop3D>;
 struct LiquidEmissionSource3D {
   std::uint64_t source_ordinal = 0;
   double particles_per_second = 0;

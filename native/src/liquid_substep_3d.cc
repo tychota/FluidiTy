@@ -82,6 +82,141 @@ bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAl
       && scene.surface_tension == 0;
 }
 
+// Continue projected changes only when the new donors are a strict subset of
+// the old donors and both histories describe the same open, untagged surface.
+bool CanContinueIsolatedDropProjection(
+    const LiquidBoundaryVelocityHistory3D& old_history,
+    const LiquidBoundaryVelocityHistory3D& projected_history
+) {
+  const auto usable = [](LiquidFaceValidity3D validity) {
+    return validity == LiquidFaceValidity3D::kValid || validity == LiquidFaceValidity3D::kPredicted;
+  };
+  bool removed_donor = false;
+  for (std::size_t slot = 0; slot < projected_history.validity.size(); ++slot) {
+    const auto& old_tag = old_history.face_tags[slot];
+    const auto& projected_tag = projected_history.face_tags[slot];
+    if (old_tag.side_tag != projected_tag.side_tag
+        || old_tag.structurally_eligible != projected_tag.structurally_eligible
+        || old_history.wall_samples[slot].available || projected_history.wall_samples[slot].available) {
+      return false;
+    }
+    const bool old_donor = usable(old_history.validity[slot]);
+    const bool projected_donor = usable(projected_history.validity[slot]);
+    if (projected_donor && !old_donor) {
+      return false;
+    }
+    removed_donor = removed_donor || (old_donor && !projected_donor);
+  }
+  return removed_donor;
+}
+
+Vec3 ContinueProjectedChange(Vec3 full_old, Vec3 projected, Vec3 restricted_old) {
+  return {
+      full_old.x + (projected.x - restricted_old.x),
+      full_old.y + (projected.y - restricted_old.y),
+      full_old.z + (projected.z - restricted_old.z),
+  };
+}
+
+Mat3 ContinueProjectedChange(Mat3 full_old, Mat3 projected, Mat3 restricted_old) {
+  return {
+      ContinueProjectedChange(full_old.x_row, projected.x_row, restricted_old.x_row),
+      ContinueProjectedChange(full_old.y_row, projected.y_row, restricted_old.y_row),
+      ContinueProjectedChange(full_old.z_row, projected.z_row, restricted_old.z_row),
+  };
+}
+
+// The restricted and full old gathers are copied before reusing workspace.
+// The projected result remains borrowed until the next gather.
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherIsolatedDropHistories(
+    const LiquidSubstepBackend3D& backend,
+    LiquidSubstepBackend3D::Gather& gather,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace,
+    std::span<LiquidBoundaryParticleGather3D> restricted_old,
+    std::span<LiquidBoundaryParticleGather3D> full_old
+) {
+  auto old_inputs = inputs;
+  old_inputs.new_history.face_velocities = inputs.old_history.face_velocities;
+  const auto restricted = gather(backend.context, old_inputs, workspace);
+  if (!restricted.ok()) {
+    return restricted.status();
+  }
+  if (restricted->particles.size() != inputs.particles.size()) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  std::ranges::copy(restricted->particles, restricted_old.begin());
+  old_inputs.new_history.validity = inputs.old_history.validity;
+  const auto full = gather(backend.context, old_inputs, workspace);
+  if (!full.ok()) {
+    return full.status();
+  }
+  if (full->particles.size() != inputs.particles.size()) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  std::ranges::copy(full->particles, full_old.begin());
+  auto projected = gather(backend.context, inputs, workspace);
+  if (projected.ok() && projected->particles.size() != inputs.particles.size()) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  return projected;
+}
+
+// Publish the corrected record only after checking all continued components.
+absl::Status CorrectIsolatedDropProjectedChange(
+    const LiquidBoundaryParticleGather3D& full_old,
+    const LiquidBoundaryParticleGather3D& restricted_old,
+    LiquidBoundaryParticleGather3D result,
+    LiquidBoundaryParticleGather3D& corrected
+) {
+  result.grid_velocity_increment =
+      ContinueProjectedChange(Vec3{}, result.new_pic_velocity, restricted_old.new_pic_velocity);
+  result.new_pic_velocity =
+      ContinueProjectedChange(full_old.new_pic_velocity, result.new_pic_velocity, restricted_old.new_pic_velocity);
+  result.fitted_velocity_slopes = ContinueProjectedChange(
+      full_old.fitted_velocity_slopes,
+      result.fitted_velocity_slopes,
+      restricted_old.fitted_velocity_slopes
+  );
+  result.velocity_gradient =
+      ContinueProjectedChange(full_old.velocity_gradient, result.velocity_gradient, restricted_old.velocity_gradient);
+  using liquid_step_internal::Finite;
+  if (!Finite(result.grid_velocity_increment) || !Finite(result.new_pic_velocity)) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  for (const auto row : {&Mat3::x_row, &Mat3::y_row, &Mat3::z_row}) {
+    if (!Finite(result.fitted_velocity_slopes.*row) || !Finite(result.velocity_gradient.*row)) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+  }
+  corrected = result;
+  return absl::OkStatus();
+}
+
+absl::StatusOr<LiquidBoundaryGatherView3D> GatherIsolatedDropProjectedChange(
+    const LiquidSubstepBackend3D& backend,
+    const LiquidBoundaryGatherViewInputs3D& inputs,
+    LiquidBoundaryWorkspace3D& workspace,
+    LiquidBoundaryParticleGather3D& corrected
+) {
+  LiquidBoundaryParticleGather3D restricted_old;
+  LiquidBoundaryParticleGather3D full_old;
+  auto projected = GatherIsolatedDropHistories(
+      backend,
+      *backend.gather,
+      inputs,
+      workspace,
+      std::span(&restricted_old, 1),
+      std::span(&full_old, 1)
+  );
+  if (!projected.ok()) {
+    return projected.status();
+  }
+  STEP_TRY(CorrectIsolatedDropProjectedChange(full_old, restricted_old, projected->particles[0], corrected));
+  projected->particles = std::span(&corrected, 1);
+  return projected;
+}
+
 // The frozen faces and pressure links share the owned-slot order. A sealed
 // face supplies a boundary value independently of its dormant carrier sample.
 std::optional<double> RegularTransportFaceVelocity(
@@ -449,7 +584,7 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       wetted_piston_face_fluxes = wetted->face_fluxes;
     }
-    const auto links = backend.links(
+    auto links = backend.links(
         backend.context,
         *frozen,
         {
@@ -462,6 +597,15 @@ struct LiquidSubstepScheduler3D::Impl {
     );
     if (!links.ok()) {
       return links.status();
+    }
+    if (staging.isolated_drop) {
+      STEP_TRY(liquid_step_internal::SetIsolatedDropPressureLifts(
+          grid.geometry(),
+          scene.surface_tension,
+          scene.ambient_pressure,
+          staging,
+          *links
+      ));
     }
     diagnostics.lower_theta_regularization_count = links->lower_theta_regularization_count;
     STEP_TRY(Enter(LiquidPhysicalStage3D::kViscosity, step_duration));
@@ -549,6 +693,7 @@ struct LiquidSubstepScheduler3D::Impl {
     bool attempted_run_uses_projected_history = false;
     std::size_t field_chunk_end = 0;
     bool field_chunk_ready = false;
+    bool continue_isolated_projection = false;
     for (std::size_t index = 0; index < trial.particles.size(); ++index) {
       const auto& particle = trial.particles[index];
       const auto side = particle.side_tag;
@@ -556,6 +701,11 @@ struct LiquidSubstepScheduler3D::Impl {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
         sampled_wall_side = side;
+        if (staging.isolated_drop && !projected_gather_validity.empty()) {
+          auto projected_history = new_history;
+          projected_history.validity = projected_gather_validity;
+          continue_isolated_projection = CanContinueIsolatedDropProjection(old_history, projected_history);
+        }
       }
       bool use_projected_history = false;
       if (!projected_gather_validity.empty()) {
@@ -580,6 +730,7 @@ struct LiquidSubstepScheduler3D::Impl {
       if (use_projected_history) {
         gather_inputs.new_history.validity = projected_gather_validity;
       }
+      const bool continues_projected_change = use_projected_history && continue_isolated_projection;
       if (backend.gather_run && index >= attempted_run_end) {
         attempted_run_end = index + 1;
         attempted_run_uses_projected_history = use_projected_history;
@@ -598,7 +749,16 @@ struct LiquidSubstepScheduler3D::Impl {
         if (run_count > 1) {
           auto run_inputs = gather_inputs;
           run_inputs.particles = staging.particles.values().subspan(index, run_count);
-          const auto run = backend.gather_run(backend.context, run_inputs, boundary);
+          const auto run = continues_projected_change
+              ? GatherIsolatedDropHistories(
+                    backend,
+                    *backend.gather_run,
+                    run_inputs,
+                    boundary,
+                    staging.isolated_drop_restricted_gathers->values().subspan(index, run_count),
+                    staging.gathered.values().subspan(index, run_count)
+                )
+              : backend.gather_run(backend.context, run_inputs, boundary);
           if (run.ok()) {
             if (run->particles.size() != run_count) {
               return Error(absl::StatusCode::kInternal);
@@ -613,18 +773,37 @@ struct LiquidSubstepScheduler3D::Impl {
       const bool used_grouped_gather = !pending_gathers.empty();
       if (used_grouped_gather) {
         const auto& gathered = pending_gathers.front();
-        staging.gathered[index] = gathered;
+        if (continues_projected_change) {
+          STEP_TRY(CorrectIsolatedDropProjectedChange(
+              staging.gathered[index],
+              (*staging.isolated_drop_restricted_gathers)[index],
+              gathered,
+              staging.gathered[index]
+          ));
+        } else {
+          staging.gathered[index] = gathered;
+        }
         diagnostics.old_pic_fallback_count += gathered.old_pic_fallback;
         diagnostics.new_pic_fallback_count += gathered.new_pic_fallback;
         pending_gathers = pending_gathers.subspan(1);
       } else {
-        const auto gather = backend.gather(backend.context, gather_inputs, boundary);
+        const auto gather = continues_projected_change
+            ? GatherIsolatedDropProjectedChange(backend, gather_inputs, boundary, staging.gathered[index])
+            : backend.gather(backend.context, gather_inputs, boundary);
         if (!gather.ok()) {
           return gather.status();
         }
         staging.gathered[index] = gather->particles[0];
         diagnostics.old_pic_fallback_count += gather->old_pic_fallback_particle_count;
         diagnostics.new_pic_fallback_count += gather->new_pic_fallback_particle_count;
+      }
+      if (staging.isolated_drop) {
+        const auto distance = staging.isolated_drop->ParticleSignedDistance(particle.world_position);
+        if (!distance.ok()) {
+          return distance.status();
+        }
+        staging.particle_distances[index] = *distance;
+        continue;
       }
       if (used_grouped_gather && backend.sample_gathered_fields && index >= field_chunk_end) {
         const auto field_count = std::min(kLiquidFieldBatchCapacity3D, attempted_run_end - index);
@@ -777,6 +956,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
+  const bool needs_isolated_drop = std::holds_alternative<LiquidIsolatedCovarianceDrop3D>(scene.field);
   if (!Complete(backend) || (needs_lattice_plane ? !backend.sample_lattice_plane : !backend.sample_field_batch)
       || (needs_wetted_piston && !backend.wetted_piston)) {
     return Error(absl::StatusCode::kInvalidArgument);
@@ -789,7 +969,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   auto staging = liquid_step_internal::Staging::Create(
       options.capacities,
       CanStageRegularCellTransport(scene, tank),
-      needs_wetted_piston
+      needs_wetted_piston,
+      needs_isolated_drop
   );
   if (!staging.ok()) {
     return staging.status();
@@ -977,7 +1158,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       auto staging = liquid_step_internal::Staging::Create(
           growth,
           impl_->staging.regular_transport.has_value(),
-          impl_->staging.wetted_piston.has_value()
+          impl_->staging.wetted_piston.has_value(),
+          impl_->staging.isolated_drop_pressure_faces.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

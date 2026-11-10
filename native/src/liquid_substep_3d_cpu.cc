@@ -90,8 +90,11 @@ absl::Status SampleWorldBatch(
     if (!std::isfinite(particle_union->radius) || particle_union->radius <= 0) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
-  } else if (!std::isfinite(std::get<LiquidHorizontalPlaneSurface3D>(field).world_surface_height_y)) {
-    return Error(absl::StatusCode::kInvalidArgument);
+  } else {
+    const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&field);
+    if (!plane || !std::isfinite(plane->world_surface_height_y)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
   }
   for (const auto& particle : particles) {
     if (!Finite(particle.world_position)) {
