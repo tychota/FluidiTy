@@ -216,14 +216,17 @@ absl::StatusOr<StagedTransfer> Stage(CudaLiquidArena3D& arena, std::size_t face_
 absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
   const auto& query = staged.query_range.pinned[0];
   const bool parallel_deposit = query.operation == BoundaryTransferOperation3D::kDeposit && query.particle_count > 0;
-  const bool parallel_normalize = query.operation == BoundaryTransferOperation3D::kNormalize && query.face_count > 0;
-  if (parallel_deposit || parallel_normalize) {
+  const bool parallel_face_map = query.face_count > 0
+      && (query.operation == BoundaryTransferOperation3D::kNormalize
+          || query.operation == BoundaryTransferOperation3D::kForces);
+  const bool parallel = parallel_deposit || parallel_face_map;
+  if (parallel) {
     staged.report_range.pinned[0] = {};
   }
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.query_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.face_range, true));
   TRANSFER_TRY(CopyLiquidRange3D(arena, staged.particle_range, true));
-  if (parallel_deposit || parallel_normalize) {
+  if (parallel) {
     TRANSFER_TRY(CopyLiquidRange3D(arena, staged.report_range, true));
   }
   if (parallel_deposit) {
@@ -243,13 +246,14 @@ absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
         query.particle_count,
         arena.stream()
     )));
-  } else if (parallel_normalize) {
-    TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryNormalize3D(
+  } else if (parallel_face_map) {
+    TRANSFER_TRY(arena.RecordRuntimeResult(LaunchLiquidBoundaryFaceMap3D(
         staged.query_range.device,
         staged.face_range.device,
         staged.face_result_range.device,
         staged.report_range.device,
         query.face_count,
+        query.operation,
         arena.stream()
     )));
   } else {
@@ -275,7 +279,7 @@ absl::Status Execute(CudaLiquidArena3D& arena, StagedTransfer& staged) {
   if (report.compiled_architecture != 1200) {
     return Error(absl::StatusCode::kFailedPrecondition);
   }
-  if (parallel_deposit || parallel_normalize) {
+  if (parallel) {
     if (report.first_parallel_error == kNoParallelTransferError) {
       return absl::OkStatus();
     }

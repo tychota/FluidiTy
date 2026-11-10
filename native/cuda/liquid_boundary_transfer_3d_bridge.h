@@ -122,7 +122,7 @@ int LaunchLiquidBoundaryTransfer3D(
 );
 
 // Launch one lane per particle/component, with cleared face quanta, or one
-// lane per face for normalization. Counts are nonzero and match the device query.
+// lane per face for normalization or forces. Counts match the nonempty device query.
 // The report starts at its default value and remains owned through the fence.
 int LaunchLiquidBoundaryDeposit3D(
     const BoundaryTransferQuery3D* query,
@@ -134,12 +134,13 @@ int LaunchLiquidBoundaryDeposit3D(
     std::size_t particle_count,
     void* stream
 );
-int LaunchLiquidBoundaryNormalize3D(
+int LaunchLiquidBoundaryFaceMap3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* face_results,
     BoundaryTransferReport3D* report,
     std::size_t face_count,
+    BoundaryTransferOperation3D operation,
     void* stream
 );
 

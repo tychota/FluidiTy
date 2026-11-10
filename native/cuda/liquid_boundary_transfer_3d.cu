@@ -503,20 +503,32 @@ Predict(const BoundaryTransferQuery3D& query, const BoundaryTransferFace3D* face
       continued->velocity + query.step_duration * query.world_acceleration.*VelocityComponent(component);
   return numeric::isfinite(report.predicted_face_velocity) ? Error::kNone : Error::kRange;
 }
+__device__ Error ApplyForcesToFace(
+    const BoundaryTransferQuery3D& query,
+    const BoundaryTransferFace3D& face,
+    BoundaryTransferFaceResult3D& result
+) {
+  const auto axis = face.axis;
+  const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
+  const double predicted =
+      face.old_history.face_velocity + query.step_duration * query.world_acceleration.*VelocityComponent(component);
+  if (!numeric::isfinite(predicted)) {
+    return Error::kRange;
+  }
+  result.normalized_face_velocity = predicted;
+  return Error::kNone;
+}
+
 __device__ Error Forces(
     const BoundaryTransferQuery3D& query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* results
 ) {
   for (std::size_t slot = 0; slot < query.face_count; ++slot) {
-    const auto axis = faces[slot].axis;
-    const std::size_t component = axis == FaceNormalAxis::kX ? 0 : (axis == FaceNormalAxis::kY ? 1 : 2);
-    const double predicted = faces[slot].old_history.face_velocity
-        + query.step_duration * query.world_acceleration.*VelocityComponent(component);
-    if (!numeric::isfinite(predicted)) {
-      return Error::kRange;
+    const auto error = ApplyForcesToFace(query, faces[slot], results[slot]);
+    if (error != Error::kNone) {
+      return error;
     }
-    results[slot].normalized_face_velocity = predicted;
   }
   return Error::kNone;
 }
@@ -689,7 +701,8 @@ __global__ void LiquidBoundaryDeposit3DKernel(
   ReportParallelTransferError(*report, ordinal, error);
 }
 
-__global__ void LiquidBoundaryNormalize3DKernel(
+template <BoundaryTransferOperation3D kOperation>
+__global__ void LiquidBoundaryFaceMap3DKernel(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* face_results,
@@ -699,8 +712,14 @@ __global__ void LiquidBoundaryNormalize3DKernel(
   if (slot >= query->face_count) {
     return;
   }
-  face_results[slot] = {};
-  const auto error = NormalizeFace(*query, faces[slot].face_quanta, face_results[slot]);
+  auto& result = face_results[slot];
+  result = {};
+  static_assert(
+      kOperation == BoundaryTransferOperation3D::kNormalize || kOperation == BoundaryTransferOperation3D::kForces
+  );
+  const auto error = kOperation == BoundaryTransferOperation3D::kNormalize
+      ? NormalizeFace(*query, faces[slot].face_quanta, result)
+      : ApplyForcesToFace(*query, faces[slot], result);
   ReportParallelTransferError(*report, slot, error);
 }
 
@@ -812,22 +831,30 @@ int LaunchLiquidBoundaryDeposit3D(
   return static_cast<int>(cudaGetLastError());
 }
 
-int LaunchLiquidBoundaryNormalize3D(
+int LaunchLiquidBoundaryFaceMap3D(
     const BoundaryTransferQuery3D* query,
     const BoundaryTransferFace3D* faces,
     BoundaryTransferFaceResult3D* face_results,
     BoundaryTransferReport3D* report,
     std::size_t face_count,
+    BoundaryTransferOperation3D operation,
     void* stream
 ) {
   const auto blocks = static_cast<unsigned>((face_count + kParallelTransferThreads - 1) / kParallelTransferThreads);
+  const auto cuda_stream = static_cast<cudaStream_t>(stream);
   cudaGetLastError();
-  LiquidBoundaryNormalize3DKernel<<<blocks, kParallelTransferThreads, 0, static_cast<cudaStream_t>(stream)>>>(
-      query,
-      faces,
-      face_results,
-      report
-  );
+  switch (operation) {
+    case BoundaryTransferOperation3D::kNormalize:
+      LiquidBoundaryFaceMap3DKernel<BoundaryTransferOperation3D::kNormalize>
+          <<<blocks, kParallelTransferThreads, 0, cuda_stream>>>(query, faces, face_results, report);
+      break;
+    case BoundaryTransferOperation3D::kForces:
+      LiquidBoundaryFaceMap3DKernel<BoundaryTransferOperation3D::kForces>
+          <<<blocks, kParallelTransferThreads, 0, cuda_stream>>>(query, faces, face_results, report);
+      break;
+    default:
+      return static_cast<int>(cudaErrorInvalidValue);
+  }
   return static_cast<int>(cudaGetLastError());
 }
 
