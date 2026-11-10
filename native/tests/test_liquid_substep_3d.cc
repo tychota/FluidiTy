@@ -556,7 +556,7 @@ TEST(LiquidSubstep3D, FailedOldOrNewWallRefreshRetainsOnlyEarlierDiagnostics) {
     EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kAborted);
     EXPECT_EQ(scheduler->diagnostics().old_pic_fallback_count, audit.old_fallbacks);
     EXPECT_EQ(scheduler->diagnostics().new_pic_fallback_count, audit.new_fallbacks);
-    EXPECT_FALSE(scheduler->diagnostics().accepted_measurement.has_value());
+    EXPECT_EQ(scheduler->diagnostics().accepted_attempts, 0);
     ExpectIdenticalSerializedState(initial, scheduler->committed());
 
     audit.Reset();
