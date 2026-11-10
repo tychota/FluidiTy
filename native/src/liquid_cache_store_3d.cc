@@ -346,8 +346,8 @@ absl::Status VisitReferences(const fs::path& root, Visit visit) {
   return error ? Failure(absl::StatusCode::kUnavailable) : absl::OkStatus();
 }
 struct RetainedCheckpoints {
-  std::optional<std::uint64_t> newest;
-  std::optional<std::uint64_t> second;
+  std::optional<std::uint64_t> newest_frame_ordinal;
+  std::optional<std::uint64_t> second_newest_frame_ordinal;
 };
 absl::StatusOr<RetainedCheckpoints>
 Retained(const fs::path& root, const LiquidDigest3D& fingerprint, LiquidCacheLimits3D limits) {
@@ -357,11 +357,11 @@ Retained(const fs::path& root, const LiquidDigest3D& fingerprint, LiquidCacheLim
     if (!reference.ok()) {
       return reference.status();
     }
-    if (!retained.newest || ordinal > *retained.newest) {
-      retained.second = retained.newest;
-      retained.newest = ordinal;
-    } else if (!retained.second || ordinal > *retained.second) {
-      retained.second = ordinal;
+    if (!retained.newest_frame_ordinal || ordinal > *retained.newest_frame_ordinal) {
+      retained.second_newest_frame_ordinal = retained.newest_frame_ordinal;
+      retained.newest_frame_ordinal = ordinal;
+    } else if (!retained.second_newest_frame_ordinal || ordinal > *retained.second_newest_frame_ordinal) {
+      retained.second_newest_frame_ordinal = ordinal;
     }
     return absl::OkStatus();
   }));
@@ -381,7 +381,7 @@ absl::Status Prune(
   // Verify both retained states before removing any older payload. Keeping the
   // references also preserves historical replay identity and avoids depending
   // on durable unlink ordering (which Windows does not expose for directories).
-  for (const auto ordinal : {retained->newest, retained->second}) {
+  for (const auto ordinal : {retained->newest_frame_ordinal, retained->second_newest_frame_ordinal}) {
     if (!ordinal) {
       continue;
     }
@@ -394,11 +394,11 @@ absl::Status Prune(
       return checkpoint.status();
     }
   }
-  if (!retained->second) {
+  if (!retained->second_newest_frame_ordinal) {
     return absl::OkStatus();
   }
   return VisitReferences(root, [&](std::uint64_t ordinal) {
-    if (ordinal >= *retained->second) {
+    if (ordinal >= *retained->second_newest_frame_ordinal) {
       return absl::OkStatus();
     }
     auto reference = ReadReference(root, ordinal, fingerprint, limits);
@@ -787,10 +787,10 @@ absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t m
     return retained.status();
   }
   std::optional<std::uint64_t> checkpoint_frame_ordinal;
-  if (retained->newest && *retained->newest <= maximum_frame_ordinal) {
-    checkpoint_frame_ordinal = retained->newest;
-  } else if (retained->second && *retained->second <= maximum_frame_ordinal) {
-    checkpoint_frame_ordinal = retained->second;
+  if (retained->newest_frame_ordinal && *retained->newest_frame_ordinal <= maximum_frame_ordinal) {
+    checkpoint_frame_ordinal = retained->newest_frame_ordinal;
+  } else if (retained->second_newest_frame_ordinal && *retained->second_newest_frame_ordinal <= maximum_frame_ordinal) {
+    checkpoint_frame_ordinal = retained->second_newest_frame_ordinal;
   }
   if (!checkpoint_frame_ordinal) {
     return Failure(absl::StatusCode::kNotFound);

@@ -216,8 +216,8 @@ class LiquidCache3D {
       LiquidResolvedSceneView3D resolved_scene,
       LiquidCacheLimits3D limits = {}
   );
-  // Open is read-only apart from acquiring the persistent lock file. It verifies
-  // canonical resolved bytes against the supplied fingerprint before accepting.
+  /// Opens a publication-capable cache after verifying canonical resolved bytes against the supplied fingerprint.
+  /// Acquiring the cache I/O lease may create the persistent lock file.
   static absl::StatusOr<LiquidCache3D> Open(
       const std::filesystem::path& root_directory,
       const LiquidDigest3D& expected_fingerprint,
@@ -237,34 +237,39 @@ class LiquidCache3D {
   // Verifies portable cache self-consistency without creating or writing files.
   // Requires an existing lease file. Inspection instances reject PublishFrame,
   // PublishCheckpoint and ReadCheckpoint with FailedPrecondition. Open and
-  // OpenForReplay authenticate a fingerprint for checkpoint reads. Only Open
-  // authorizes publication.
+  // OpenForReplay authenticate a fingerprint for checkpoint reads. Create and
+  // Open authorize publication.
   static absl::StatusOr<LiquidCache3D>
   OpenForInspection(const std::filesystem::path& root_directory, LiquidCacheLimits3D limits = {});
   // Returns owning canonical resolved inputs after exact content/job verification.
   absl::StatusOr<LiquidResolvedScene3D> ReadResolvedScene() const;
-  // points.clock must be completed (substep zero). Frame zero is the initial
-  // state, with time/step/epoch zero; its checkpoint metadata must commit before
-  // any later frame. Every
-  // tenth frame requires a checkpoint; other frames forbid one. Checkpoint clock,
-  // geometry, seed and the exported subset of particle fields must match points
-  // and resolved inputs. Resume metadata must identify this exact job.
-  //
-  // Data and deterministic JSON inspection mirror are flushed and published with
-  // no replacement, then the binary frame manifest commits last. Identical bytes
-  // are verified and reused without modification; conflicting bytes reject.
-  // Checkpoint reference publication/retention is a separate step AFTER commit.
-  // Failure/cancellation can therefore leave the new frame committed; reread it.
-  // Earlier frame bytes never change. Orphan blobs/temporaries are not commits
-  // and are never resumed. Inputs borrow only through this synchronous call.
+  /// Publishes a committed point frame and, at frame zero and multiples of ten, its restart checkpoint.
+  /// Frame zero requires time, accepted step and epoch zero. Its checkpoint metadata must commit before
+  /// any later frame. Checkpoint clock, geometry, seed and exported particle fields must match the point
+  /// frame and resolved scene. Resume metadata must identify this cache's job.
+  /// @param points Point frame with a completed-frame clock (substep zero).
+  /// @param checkpoint Required state for a checkpoint frame. Null for other frames.
+  /// @param resume Required resume metadata for a checkpoint frame. Null for other frames.
+  /// @param control Optional cancellation and failure callback. All inputs are borrowed through this call.
+  /// @return OK when frame publication and any required checkpoint retention finish. Read-only caches return
+  /// FailedPrecondition before cache access. A conflicting manifest or checkpoint reference returns AlreadyExists.
+  /// Verified identical bytes are reused.
+  /// @note The cache flushes and publishes the content and JSON inspection mirror before committing the point frame
+  /// with the binary manifest. Publication uses no-replace promotion.
+  /// Checkpoint reference publication and pruning follow the manifest commit. A failure can leave the
+  /// point frame readable through ReadCommittedFrame, with checkpoint publication repairable through
+  /// PublishCheckpoint. Earlier point frames remain intact.
   absl::Status PublishFrame(
       const LiquidPointFrame3D& points,
       const LiquidState3D* checkpoint = nullptr,
       const LiquidResumeMetadata3D* resume = nullptr,
       LiquidCachePublishControl3D control = {}
   ) const;
-  // Verifies the named commit, deterministic inspection mirror, and exact points
-  // reference before returning owning points with the identical completed clock.
+  /// Reads a committed point frame by ordinal, independently of restart checkpoint retention.
+  /// Verifies the resolved scene, binary manifest, deterministic JSON inspection mirror and exact
+  /// point content. The manifest and point frame must share a completed-frame clock.
+  /// @return The owning manifest and point data on success. Missing required records return NotFound.
+  /// Corrupt records or inconsistent clocks return DataLoss.
   absl::StatusOr<LiquidCommittedFrame3D> ReadCommittedFrame(std::uint64_t frame_ordinal) const;
   // Repairs/completes optional checkpoint metadata after a frame has committed.
   // Only frame zero and multiples of ten qualify. Must match the verified frame.
@@ -292,9 +297,12 @@ class LiquidCache3D {
  private:
   std::filesystem::path root_directory_;
   LiquidDigest3D fingerprint_{};
+  /// Expected kind, byte length and digest of the canonical resolved scene, captured at creation or open.
   LiquidContentReference3D resolved_reference_;
   LiquidCacheLimits3D limits_;
+  /// When true, this cache verified portable self-consistency and disallows checkpoint reads.
   bool inspection_only_ = false;
+  /// Portable inspection and replay require an existing cache I/O lease file and disallow publication.
   bool read_only_ = false;
 };
 }  // namespace fluidity
