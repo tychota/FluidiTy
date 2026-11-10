@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from liquid_acceptance_metrics import evaluate_free_fall, uniform_history_velocities
+from liquid_acceptance_metrics import compare_piston_time_refinement, evaluate_free_fall, uniform_history_velocities
 from run_liquid_acceptance import (
-    matches_identity, read_records, run_acceptance, verify_device, verify_job_measurement, verify_solver,
+    matches_identity, prepare_tank_steps, read_records, run_acceptance, verify_device, verify_job_measurement,
+    verify_solver,
 )
 
 
@@ -418,3 +419,494 @@ def test_topology_and_face_events_cannot_stand_in_for_pre_topology_field_samplin
     del receipt["cuda_events"]["pre_topology_field_interval_count"]
     with pytest.raises(ValueError, match="pre_topology_field"):
         verify_job_measurement(receipt, "cuda")
+
+def test_hydrostatic_pressure_uses_signed_cell_center_depth():
+    from liquid_acceptance_metrics import evaluate_hydrostatic_column
+
+    samples = column_frames()
+    checkpoints = column_checkpoints()
+    result = evaluate_hydrostatic_column(samples, checkpoints)
+    assert result["passed"]
+    assert result["pressure"][0]["depth_bands"][0]["max_absolute_error_pa"] == 0
+    for cell in checkpoints[0]["pressure_cells"]:
+        cell["pressure_pa"] += 613.125
+    wrong_depth = evaluate_hydrostatic_column(samples, checkpoints)
+    assert wrong_depth["pressure"][0]["depth_bands"][0]["max_absolute_error_pa"] == pytest.approx(613.125)
+
+
+def test_hydrostatic_frame_48_uses_the_actual_two_second_clock():
+    from liquid_acceptance_metrics import evaluate_hydrostatic_column
+
+    samples = column_frames()
+    samples[48]["time_seconds"] = 48 / 25
+    with pytest.raises(ValueError, match="time"):
+        evaluate_hydrostatic_column(samples, column_checkpoints())
+
+
+def test_hydrostatic_speed_equal_to_the_limit_fails():
+    from liquid_acceptance_metrics import evaluate_hydrostatic_column
+
+    samples = column_frames()
+    samples[48]["points"][0]["world_velocity"] = [0.001, 0, 0]
+    result = evaluate_hydrostatic_column(samples, column_checkpoints())
+    assert result["frame_48_maximum_speed_m_per_s"] == 0.001
+    assert not result["passed"]
+
+
+def test_volume_equal_to_seed_cannot_hide_lost_id():
+    from liquid_acceptance_metrics import evaluate_volume_budget
+
+    samples = column_frames()[:2]
+    missing = samples[1]["points"].pop()
+    samples[1]["points"][0]["radius"] = missing["radius"] * 2 ** (1 / 3)
+    with pytest.raises(ValueError, match="ID"):
+        evaluate_volume_budget(samples, [0, 0])
+
+
+@pytest.mark.parametrize("field", ["source_volume_m3", "compression_volume_m3"])
+def test_volume_rejects_undeclared_source_or_compression(field):
+    from liquid_acceptance_metrics import evaluate_volume_budget
+
+    samples = column_frames()[:2]
+    samples[1][field] = 0.001
+    with pytest.raises(ValueError, match=field):
+        evaluate_volume_budget(samples, [0, 0])
+
+
+def test_volume_cannot_hide_a_transient_deviation_with_zero_final_drift():
+    from liquid_acceptance_metrics import evaluate_volume_budget
+
+    samples = column_frames()[:3]
+    for point in samples[1]["points"]:
+        point["radius"] *= 1.02 ** (1 / 3)
+    result = evaluate_volume_budget(samples, [0, 0, 0])
+    assert result["maximum_relative_drift"] == pytest.approx(0.02)
+    assert not result["passed"]
+
+
+def test_piston_planar_sweep_recovers_exact_displaced_volume_and_orientation():
+    from liquid_acceptance_metrics import integrate_piston_sweep
+
+    # A planar liquid, wet to the 0.5 m reference and with fixed 0.5 m width.
+    def sections(_x):
+        return (0.25, 0), (0, 0)
+
+    inward = integrate_piston_sweep(sections, -0.5, -0.46875, [], 1e-10)
+    outward = integrate_piston_sweep(sections, -0.46875, -0.5, [], 1e-10)
+    assert inward["swept_below_m3"] == pytest.approx(0.0078125)
+    assert outward["swept_below_m3"] == pytest.approx(-0.0078125)
+    assert inward["swept_above_m3"] == 0
+
+
+def test_piston_thin_rise_defeats_coincident_midpoint_grids():
+    from liquid_acceptance_metrics import split_interval_lengths
+
+    h = 0.0625
+    rise = (8 / 31) * h
+    samples = [h / n * sum((i + 0.5) * h / n < rise for i in range(n)) for n in (8, 16)]
+    assert samples[0] == samples[1]
+    assert (rise - samples[0]) / rise == pytest.approx(0.03125)
+    below, above = split_interval_lengths([(-h, 0.5 + rise)], 0, 0.5)
+    assert below == 0.5
+    assert above == pytest.approx(rise)
+
+
+def test_piston_sphere_sections_merge_overlap_and_clip_wetted_area():
+    from liquid_acceptance_metrics import SphereUnionSections
+
+    # Coincident x/z centers produce two overlapping vertical intervals.
+    geometry = SphereUnionSections([(0, 0, 0), (0, 0.5, 0)], 1, (-1, 1), 0, 0.5)
+    (below, above), (below_error, above_error) = geometry.section(0, 1e-8)
+    # The intervals from both ends cover the full layer when their common
+    # half-height is >= 0.25 m. Integrate the two circle tails beyond that.
+    assert below == pytest.approx(math.sqrt(15) / 8 + 2 * math.asin(0.25))
+    assert above == pytest.approx(math.pi / 2)
+    assert 0 <= below_error < 1e-7 and 0 <= above_error < 1e-7
+
+
+@pytest.mark.parametrize("solver_flux", [-0.0078125, 0.006])
+def test_piston_signed_solver_flux_exposes_wrong_orientation_or_aperture(solver_flux):
+    from liquid_acceptance_metrics import compare_piston_estimates
+
+    result = compare_piston_estimates(0.0078125, 0.0078125, 0.0078125, solver_flux)
+    assert not result["passed"]
+    assert result["solver_to_wall_relative_mismatch"] > 0.01
+
+
+def column_frames():
+    radius = (3 * 0.125 ** 3 / (4 * math.pi)) ** (1 / 3)
+    points = [
+        {"id": pid, "world_position": [(x + 0.5) / 8, (y + 0.5) / 8, (z + 0.5) / 8],
+         "world_velocity": [0, 0, 0], "radius": radius, "volume_ratio": 1}
+        for pid, (x, y, z) in enumerate(
+            ((x, y, z) for z in range(-2, 2) for y in range(8) for x in range(-2, 2)), 1)
+    ]
+    return [
+        {"frame": ordinal, "time_seconds": ordinal / 24, "points": copy.deepcopy(points),
+         "source_volume_m3": 0, "compression_volume_m3": 0}
+        for ordinal in range(241)
+    ]
+
+
+def column_checkpoints():
+    cells = [
+        {"cell_index": [x, y, z], "occupancy": 1, "pressure_pa": 9810 * (1 - (y + 0.5) / 8)}
+        for z in range(-2, 2) for y in range(8) for x in range(-2, 2)
+    ]
+    return [{"frame": ordinal, "time_seconds": ordinal / 24, "pressure_cells": copy.deepcopy(cells)}
+            for ordinal in (230, 240)]
+
+
+def test_numerical_j_drift_remains_measured_with_zero_physical_compression():
+    from liquid_acceptance_metrics import evaluate_volume_budget
+
+    samples = column_frames()[:2]
+    for point in samples[1]["points"]:
+        point["volume_ratio"] = 1.000004
+        point["radius"] *= 1.000004 ** (1 / 3)
+    result = evaluate_volume_budget(samples, [0, 0])
+    assert result["passed"]
+    assert result["maximum_relative_drift"] == pytest.approx(0.000004)
+    assert result["frames"][1]["compression_volume_m3"] == 0
+
+
+def test_particle_spatial_reordering_preserves_complete_id_inventory():
+    from liquid_acceptance_metrics import evaluate_volume_budget
+
+    samples = column_frames()[:2]
+    samples[1]["points"].reverse()
+    assert evaluate_volume_budget(samples, [0, 0])["passed"]
+
+
+def test_piston_validates_same_step_pose_and_rejects_temporally_shifted_end():
+    from liquid_acceptance_metrics import verify_piston_step
+
+    previous = {"accepted_step": 0, "time_seconds": 0}
+    step = {
+        "accepted_step": 1,
+        "accepted_dt_seconds": 0.008333333333333333,
+        "time_seconds": 0.008333333333333333,
+        "step_start_piston_low_x_m": -0.5,
+        "step_end_piston_low_x_m": -0.4998697916666667,
+        "step_start_inward_piston_flux_m3_per_s": 0.00390625,
+    }
+    verify_piston_step(step, previous, 0.01)
+    step["step_end_piston_low_x_m"] = math.nextafter(step["step_end_piston_low_x_m"], 0)
+    with pytest.raises(ValueError, match="pose"):
+        verify_piston_step(step, previous, 0.01)
+
+
+@pytest.fixture
+def temporal_receipts():
+    spatial = {
+        "receiving_m3": 0.008,
+        "full_wall_flux_m3": 0.008,
+        "full_wetted_sweep_m3": 0.008,
+        "solver_inward_flux_m3": 0.008,
+        "denominator_m3": 0.008,
+    }
+    primary = {"passed": True, "maximum_dt_seconds": 0.01, "tight_spatial": spatial}
+    refined = {"passed": True, "maximum_dt_seconds": 0.005, "tight_spatial": spatial.copy()}
+    return primary, refined
+
+
+def test_piston_temporal_refinement_compares_receiving_and_all_flux_estimates(temporal_receipts):
+    primary, refined = temporal_receipts
+    assert compare_piston_time_refinement(primary, refined)["passed"] is True
+    refined["tight_spatial"]["receiving_m3"] += 0.000021
+    result = compare_piston_time_refinement(primary, refined)
+    assert result["passed"] is False
+    assert result["relative_changes"]["receiving_m3"] == pytest.approx(0.002625)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("verdict", ["false", 1, {"passed": False}], ids=["string", "number", "object"])
+def test_piston_temporal_refinement_rejects_non_boolean_verdict(temporal_receipts, receipt_index, verdict):
+    temporal_receipts[receipt_index]["passed"] = verdict
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+def test_piston_temporal_refinement_preserves_failed_physical_verdict(temporal_receipts, receipt_index):
+    temporal_receipts[receipt_index]["passed"] = False
+    result = compare_piston_time_refinement(*temporal_receipts)
+    assert result["temporal_passed"] is True
+    assert result["passed"] is False
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+def test_piston_temporal_refinement_rejects_malformed_verdict_despite_physical_failure(temporal_receipts, receipt_index):
+    temporal_receipts[receipt_index]["passed"] = "false"
+    temporal_receipts[1 - receipt_index]["passed"] = False
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("denominator", [-0.008, 0, True, 1e6, math.inf, math.nan, 10 ** 400],
+                         ids=["negative", "zero", "boolean", "inflated", "infinite", "nan", "huge-int"])
+def test_piston_temporal_refinement_rejects_noncanonical_denominator(temporal_receipts, receipt_index, denominator):
+    temporal_receipts[receipt_index]["tight_spatial"]["denominator_m3"] = denominator
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("field", ["receiving_m3", "full_wall_flux_m3", "full_wetted_sweep_m3", "solver_inward_flux_m3"])
+@pytest.mark.parametrize("volume", [math.inf, math.nan, True, 10 ** 400],
+                         ids=["infinite", "nan", "boolean", "huge-int"])
+def test_piston_temporal_refinement_rejects_invalid_volumes(temporal_receipts, receipt_index, field, volume):
+    temporal_receipts[receipt_index]["tight_spatial"][field] = volume
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("invalid_summary", [None, []], ids=["null", "array"])
+def test_piston_temporal_refinement_rejects_non_object_receipt(temporal_receipts, receipt_index, invalid_summary):
+    receipts = list(temporal_receipts)
+    receipts[receipt_index] = invalid_summary
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*receipts)
+
+
+@pytest.mark.parametrize("receipt_index", [0, 1], ids=["primary", "refined"])
+@pytest.mark.parametrize("invalid_summary", [None, []], ids=["null", "array"])
+def test_piston_temporal_refinement_rejects_non_object_spatial_summary(
+    temporal_receipts, receipt_index, invalid_summary,
+):
+    temporal_receipts[receipt_index]["tight_spatial"] = invalid_summary
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(*temporal_receipts)
+
+
+@pytest.mark.parametrize(
+    ("base_volume", "fine_volume"), [
+        (-sys.float_info.max, sys.float_info.max),
+        (-int(sys.float_info.max), int(sys.float_info.max)),
+        (0, sys.float_info.max),
+    ], ids=["float-difference", "int-difference", "division"],
+)
+def test_piston_temporal_refinement_rejects_unrepresentable_relative_change(temporal_receipts, base_volume, fine_volume):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"]["receiving_m3"] = base_volume
+    refined["tight_spatial"]["receiving_m3"] = fine_volume
+    with pytest.raises(ValueError):
+        compare_piston_time_refinement(primary, refined)
+
+
+def test_piston_temporal_refinement_uses_primary_wall_flux_magnitude(temporal_receipts):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"].update(
+        receiving_m3=-0.008, full_wall_flux_m3=-0.008, full_wetted_sweep_m3=-0.008,
+        solver_inward_flux_m3=-0.008,
+    )
+    refined["tight_spatial"].update(
+        receiving_m3=-0.00801, full_wall_flux_m3=-0.00801, full_wetted_sweep_m3=-0.00801,
+        solver_inward_flux_m3=-0.00801, denominator_m3=0.00801,
+    )
+    result = compare_piston_time_refinement(primary, refined)
+    assert result["passed"] is True
+    assert result["denominator_m3"] == 0.008
+    assert result["relative_changes"]["full_wall_flux_m3"] == pytest.approx(0.00125)
+
+
+def test_piston_temporal_refinement_uses_near_zero_denominator_floor(temporal_receipts):
+    primary, refined = temporal_receipts
+    primary["tight_spatial"].update(
+        receiving_m3=-1e-12, full_wall_flux_m3=-1e-12, full_wetted_sweep_m3=-1e-12,
+        solver_inward_flux_m3=-1e-12, denominator_m3=1e-8,
+    )
+    refined["tight_spatial"].update(
+        receiving_m3=2e-12, full_wall_flux_m3=2e-12, full_wetted_sweep_m3=2e-12,
+        solver_inward_flux_m3=2e-12, denominator_m3=1e-8,
+    )
+    result = compare_piston_time_refinement(primary, refined)
+    assert result["passed"] is True
+    assert result["denominator_m3"] == 1e-8
+    assert result["relative_changes"]["full_wall_flux_m3"] == pytest.approx(0.0003)
+
+
+@pytest.mark.parametrize("forge_measurement", [False, True], ids=["ordinary", "forged"])
+def test_prepare_piston_steps_uses_verified_clock_and_previous_geometry(forge_measurement):
+    initial_state = {"particles": [{"id": 1, "world_position": [-0.4, 0.1, 0]}]}
+    frames = [{"points": [{"id": 1, "world_position": [-0.38, 0.1, 0]}]}]
+    piston_measurements = [
+        {
+            "accepted_dt_seconds": 0.01,
+            "step_start_piston_low_x_m": -0.5,
+            "step_end_piston_low_x_m": -0.49984375,
+            "step_start_inward_piston_flux_m3_per_s": 0.003,
+        },
+        {
+            "accepted_dt_seconds": 0.01,
+            "step_start_piston_low_x_m": -0.49984375,
+            "step_end_piston_low_x_m": -0.4996875,
+            "step_start_inward_piston_flux_m3_per_s": 0.004,
+        },
+    ]
+    traces = [
+        {
+            "frame": 0,
+            "substep": 1 if ordinal == 1 else 0,
+            "accepted_step": ordinal,
+            "time_seconds": 0.01 * ordinal,
+            "geometry": {"particles": [{"id": 1, "world_position_m": position}]},
+            "accepted_measurement": {"step_start_capillary_bound_seconds": None, **measurement},
+        }
+        for ordinal, (position, measurement) in enumerate(
+            zip(([-0.39, 0.1, 0], [-0.38, 0.1, 0]), piston_measurements), 1
+        )
+    ]
+    if forge_measurement:
+        for trace in traces:
+            trace["accepted_measurement"].update(accepted_step=99, time_seconds=0.5, start_positions=[[0, 0, 0]])
+
+    steps = prepare_tank_steps(traces, frames, initial_state, 1, piston=True)
+
+    assert [(step["accepted_step"], step["time_seconds"], step["start_positions"]) for step in steps] == [
+        (1, 0.01, [[-0.4, 0.1, 0]]),
+        (2, 0.02, [[-0.39, 0.1, 0]]),
+    ]
+    for step, measurement in zip(steps, piston_measurements):
+        assert {key: step[key] for key in measurement} == measurement
+        if forge_measurement:
+            assert set(step) == {"accepted_step", "time_seconds", "start_positions", *measurement}
+
+
+def test_transport_inventory_tracks_split_and_both_material_loss_classes():
+    from liquid_acceptance_metrics import evaluate_transport_components
+
+    def point(particle_id, x, radius):
+        return {"id": particle_id, "world_position": [x, 0, 0], "radius": radius}
+
+    frames = [
+        {"frame": 0, "points": [point(2, 0, 0.1), point(1, 0.1, 0.4), point(3, 2, 0.1)]},
+        {"frame": 1, "points": [point(1, 0.1, 0.4), point(2, 1, 0.1), point(3, 2, 0.1)]},
+        {"frame": 2, "points": [point(2, 1, 0.1)]},
+    ]
+    result = evaluate_transport_components(frames, 0.2, 1)
+    assert result["frames"][0]["components"][0]["particle_ids"] == [1, 2]
+    assert [c["previous_component_overlap_counts"] for c in result["frames"][1]["components"]] == [
+        {1: 1}, {1: 1}, {3: 1},
+    ]
+    assert result["frames"][2]["lost_below_threshold"][0]["particle_ids"] == [3]
+    assert result["frames"][2]["lost_at_or_above_threshold"][0]["particle_ids"] == [1]
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+def test_piston_endpoint_retains_disjoint_thin_spherical_caps(tolerance):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    cap_height = 0.002
+    positions = [
+        (-0.4375 + 0.125 * x, 0.5 - radius + cap_height, -0.1875 + 0.125 * z)
+        for x in range(8) for z in range(4)
+    ]
+    expected = 32 * math.pi * cap_height ** 2 * (radius - cap_height / 3)
+    result = _piston_volume(positions, -0.5, 0.5, tolerance)
+    assert result["swept_above_m3"] == pytest.approx(expected, rel=0.003)
+    assert result["swept_above_estimated_error_m3"] <= tolerance
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7, 1e-10])
+@pytest.mark.parametrize("clip", ["reference", "side", "floor"])
+def test_piston_sweep_retains_rotated_off_center_cap_in_both_directions(tolerance, clip):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    cap_height = 0.002
+    half_cap = math.pi * cap_height ** 2 * (radius - cap_height / 3) / 2
+    # Reflect the cap across the plane through its center, or rotate the
+    # reference-plane cap into a side-wall cap bisected by the reference.
+    center_y, center_z, expected_below, expected_above = {
+        "reference": (0.5 - radius + cap_height, 0.25, None, half_cap),
+        "side": (0.5, 0.25 + radius - cap_height, half_cap, half_cap),
+        "floor": (cap_height - radius, 0.25, half_cap, 0),
+    }[clip]
+    positions = [(0.123456, center_y, center_z)]
+    inward = _piston_volume(positions, -0.4, 0.5, tolerance)
+    outward = _piston_volume(positions, 0.5, -0.4, tolerance)
+    if expected_below is not None:
+        assert inward["swept_below_m3"] == pytest.approx(expected_below, rel=0.003)
+    assert inward["swept_above_m3"] == pytest.approx(expected_above, rel=0.003)
+    for volume in ("swept_below_m3", "swept_above_m3"):
+        assert outward[volume] == -inward[volume]
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+def test_piston_endpoint_retains_volume_at_the_reference_and_side_wall_intersection(tolerance):
+    from scipy.integrate import quad
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    corner_distance = radius - 0.002
+    plane_distance = corner_distance / math.sqrt(2)
+    positions = [(-0.13456, 0.5 - plane_distance, 0.25 + plane_distance)]
+
+    # Along the rotated corner bisector u, each disk is clipped to the
+    # strip |v| <= u - corner_distance. Integrate its circular segment area.
+    def disk_strip_area(u):
+        disk_radius_sq = radius ** 2 - u ** 2
+        if disk_radius_sq <= 0:
+            return 0
+        half_width = min(u - corner_distance, math.sqrt(disk_radius_sq))
+        return 2 * (half_width * math.sqrt(max(0, disk_radius_sq - half_width ** 2))
+                    + disk_radius_sq * math.asin(half_width / math.sqrt(disk_radius_sq)))
+
+    full_disk_start = (corner_distance + math.sqrt(2 * radius ** 2 - corner_distance ** 2)) / 2
+    expected, _ = quad(disk_strip_area, corner_distance, radius, points=[full_disk_start], epsabs=1e-15)
+    result = _piston_volume(positions, -0.5, 0.5, tolerance)
+    assert result["swept_above_m3"] == pytest.approx(expected, rel=0.003)
+
+
+@pytest.mark.parametrize("tolerance", [9.765625e-7, 2.44140625e-7])
+@pytest.mark.parametrize("direction", [(0, 1, 0), (1, 0, 0), (1 / 3, 2 / 3, 2 / 3)])
+def test_piston_endpoint_resolves_near_tangent_pair_lenses(tolerance, direction):
+    from liquid_acceptance_metrics import _piston_volume
+
+    radius = 0.05625
+    separation = 2 * radius - 0.004
+    # Neighboring pairs stay disjoint. The vertical version packs 32 lenses
+    # into the tank so the missed intersection exceeds the spatial budget.
+    vertical = direction[0] == 0
+    x_centers = [-0.4375 + 0.125 * x for x in range(8)] if vertical else [-0.3, 0, 0.3]
+    z_centers = [-0.1875 + 0.125 * z for z in range(4)] if vertical else [-0.125, 0.125]
+    centers = [
+        tuple(center + sign * separation * axis / 2 for center, axis in zip((x, 0.25, z), direction))
+        for x in x_centers for z in z_centers for sign in (-1, 1)
+    ]
+    pair_count = len(x_centers) * len(z_centers)
+    intersection = math.pi * (4 * radius + separation) * (2 * radius - separation) ** 2 / 12
+    union = pair_count * (8 * math.pi * radius ** 3 / 3 - intersection)
+    result = _piston_volume(centers, -0.5, 0.5, tolerance)
+    assert result["swept_below_m3"] == pytest.approx(union, abs=tolerance)
+    assert result["swept_above_m3"] == 0
+
+
+@pytest.mark.parametrize("tolerance", [4.8828125e-7, 1.220703125e-7])
+def test_piston_wall_section_resolves_thin_overlap_between_active_disks(tolerance):
+    from liquid_acceptance_metrics import SphereUnionSections
+
+    radius = 0.05625
+    separation = 2 * radius - 0.0004
+    centers = [(0, 0.25 + sign * separation / 2, 0) for sign in (-1, 1)]
+    intersection = (2 * radius ** 2 * math.acos(separation / (2 * radius))
+                    - separation * math.sqrt(4 * radius ** 2 - separation ** 2) / 2)
+    expected = 2 * math.pi * radius ** 2 - intersection
+    section = SphereUnionSections(centers, radius, (-0.25, 0.25), 0, 0.5)
+    (below, above), _ = section.section(0, tolerance)
+    assert below == pytest.approx(expected, abs=tolerance / 4)
+    assert above == 0
+
+
+def test_piston_endpoint_with_coincident_and_disjoint_spheres_is_deterministic():
+    from liquid_acceptance_metrics import _piston_volume
+
+    centers = [(-0.1, 0.25, 0), (-0.1, 0.25, 0), (0.1, 0.25, 0)]
+    result = _piston_volume(centers, -0.5, 0.5, 2.44140625e-7)
+    expected = 8 * math.pi * 0.05625 ** 3 / 3
+    assert result["swept_below_m3"] == pytest.approx(expected, abs=2.44140625e-7)
+    assert result == _piston_volume(list(reversed(centers)), -0.5, 0.5, 2.44140625e-7)
