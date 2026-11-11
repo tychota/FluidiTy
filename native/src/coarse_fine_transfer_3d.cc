@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <tuple>
 
 #include "absl/status/status.h"
@@ -125,9 +126,13 @@ TensorFactor EvaluateCoarseTensor(const std::array<AxisRow, 3>& axes, const std:
   return result;
 }
 
+auto MakeOwnerKey(std::uint8_t level, FaceIndex3D owner) {
+  const auto [x, y, z] = owner.lattice_index;
+  return std::tuple{level, owner.axis, x, y, z};
+}
+
 auto OwnerKey(const CoarseFineStencilRow3D& row) {
-  const auto [x, y, z] = row.owner.lattice_index;
-  return std::tuple{row.level, x, y, z};
+  return MakeOwnerKey(row.level, row.owner);
 }
 
 using LatticePoint = std::array<int, 3>;
@@ -271,6 +276,92 @@ ClassifyCoarseFineMask3D(const CoarseFineStencil3D& stencil, std::span<const boo
     }
   }
   return CoarseFineMaskDisposition3D::kPicRequiredRankDeficient;
+}
+
+absl::Status ApplyCoarseFinePicFallback3D(
+    const CoarseFineStencil3D& stencil,
+    std::span<const bool> retained_rows,
+    std::span<const CoarseFinePicCarrierSample3D> carriers,
+    LiquidBoundaryParticleGather3D& gather
+) {
+  const auto disposition = ClassifyCoarseFineMask3D(stencil, retained_rows);
+  if (!disposition.ok()) {
+    return disposition.status();
+  }
+  if (*disposition == CoarseFineMaskDisposition3D::kComplete) {
+    return absl::FailedPreconditionError("coarse-fine PIC fallback requires incomplete support");
+  }
+
+  const auto rows = stencil.rows();
+  std::array<const CoarseFinePicCarrierSample3D*, CoarseFineStencil3D::kMaxRows> carrier_by_row{};
+  double minimum_velocity = std::numeric_limits<double>::infinity();
+  double maximum_velocity = -std::numeric_limits<double>::infinity();
+  bool low_mass = false;
+  for (const auto& carrier : carriers) {
+    const auto key = MakeOwnerKey(carrier.level, carrier.owner);
+    const auto row = std::ranges::lower_bound(rows, key, {}, OwnerKey);
+    if (row == rows.end() || OwnerKey(*row) != key) {
+      return absl::InvalidArgumentError("coarse-fine PIC carrier owner is outside the stencil");
+    }
+    const auto index = static_cast<std::size_t>(row - rows.begin());
+    if (!retained_rows[index] || carrier_by_row[index] != nullptr) {
+      return absl::InvalidArgumentError("coarse-fine PIC carrier owner is masked or duplicated");
+    }
+    if (!std::isfinite(carrier.new_face_velocity)) {
+      return absl::InvalidArgumentError("coarse-fine PIC carrier velocity must be finite");
+    }
+    carrier_by_row[index] = &carrier;
+    low_mass = low_mass || carrier.low_mass;
+  }
+
+  double total_weight = 0;
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    if (!retained_rows[index]) {
+      continue;
+    }
+    const auto* carrier = carrier_by_row[index];
+    if (carrier == nullptr) {
+      return absl::FailedPreconditionError("coarse-fine PIC requires a valid carrier for each retained row");
+    }
+    total_weight += rows[index].weight;
+    minimum_velocity = std::min(minimum_velocity, carrier->new_face_velocity);
+    maximum_velocity = std::max(maximum_velocity, carrier->new_face_velocity);
+  }
+  if (!std::isfinite(total_weight) || total_weight <= 0) {
+    return absl::OutOfRangeError("coarse-fine PIC requires positive finite weight");
+  }
+
+  // Scale before accumulating so finite donors near the floating-point limits
+  // cannot overflow the sum. Equal donors reproduce their constant exactly.
+  double new_pic_velocity = minimum_velocity;
+  if (minimum_velocity != maximum_velocity) {
+    const double velocity_scale = std::max(-minimum_velocity, maximum_velocity);
+    double scaled_weighted_velocity = 0;
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+      if (const auto* carrier = carrier_by_row[index]; carrier != nullptr) {
+        scaled_weighted_velocity += rows[index].weight * (carrier->new_face_velocity / velocity_scale);
+      }
+    }
+    new_pic_velocity = (scaled_weighted_velocity / total_weight) * velocity_scale;
+  }
+  if (!std::isfinite(new_pic_velocity)) {
+    return absl::OutOfRangeError("coarse-fine PIC velocity is nonfinite");
+  }
+
+  constexpr std::array velocity_components{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array matrix_rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  const auto normal_axis = static_cast<std::size_t>(rows.front().owner.axis);
+  const auto component = velocity_components[normal_axis];
+  const auto matrix_row = matrix_rows[normal_axis];
+  gather.new_pic_velocity.*component = new_pic_velocity;
+  gather.grid_velocity_increment.*component = 0.0;
+  gather.particle_minus_old_pic_velocity.*component = 0.0;
+  gather.fitted_velocity_slopes.*matrix_row = {};
+  gather.velocity_gradient.*matrix_row = {};
+  gather.affine_enabled = false;
+  gather.new_pic_fallback = true;
+  gather.low_mass_fallback = gather.low_mass_fallback || low_mass;
+  return absl::OkStatus();
 }
 
 }  // namespace fluidity

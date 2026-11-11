@@ -54,5 +54,30 @@ then substitute the path to the native test executable in the selected build tre
 & ./out/build/windows-release-cpu/fluidity_native_tests.exe '--gtest_filter=CoarseFineTransfer3D.*' '--gtest_output=xml:out/adaptivity-m3/native-transfer.xml'
 ```
 
-Native FP64 and CUDA parity, physical PIC fallback, solver integration, multilevel
+Native FP64 and CUDA parity, solver integration, multilevel
 junctions and conservative remap remain open.
+
+## Masked PIC fallback
+
+The checked CPU fallback takes one caller-certified new-stage Eulerian normal velocity
+for every retained owner key. It uses only retained weights and normalizes their sum
+in canonical owner order. A low deposited mass can coexist with a certified usable
+Eulerian velocity. The low-mass value from deposit normalization is a placeholder
+under that separate API's contract.
+
+On success the gather receives the PIC velocity for the affected component. Its grid
+velocity increment, particle-minus-old-PIC residual, fitted velocity slope row and
+velocity gradient row are zero. The fallback disables particle affine use and sets
+`new_pic_fallback`. A low-mass donor sets `low_mass_fallback`. Existing low-mass and
+old-PIC flags and unaffected component values carry through. Empty masks or missing
+retained carriers return `kFailedPrecondition`. Duplicate, unexpected or masked
+owner keys and nonfinite donor velocities return `kInvalidArgument`. Failures leave
+the gather unchanged.
+
+The same Release CPU procedure passed all 510 tests, including nine focused transfer
+tests. The four PIC cases cover exact constant reproduction, a weighted non-affine
+coplanar donor field, reversed order including signed zeros, a single certified
+low-mass donor and transactional refusal of malformed support. The executable
+SHA-256 was `f31e8d5bb3dd60e8bff05917153db0a8802fcb3014037be65d73837f2c797802`.
+The clang-format 19.1.5 check passed. Production substep integration and CUDA
+parity remain open.

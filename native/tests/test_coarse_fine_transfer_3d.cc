@@ -5,6 +5,7 @@
 #include <limits>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "fluidity/host/coarse_fine_transfer_3d.h"
@@ -240,6 +241,155 @@ TEST(CoarseFineTransfer3D, DistinguishesIncompleteCoplanarAndEmptyMasks) {
     EXPECT_EQ(ClassifyCoarseFineMask3D(*stencil, mask).status().code(), absl::StatusCode::kFailedPrecondition);
     EXPECT_EQ(ClassifyCoarseFineMask3D(*stencil, mask.first(1)).status().code(), absl::StatusCode::kInvalidArgument);
   }
+}
+
+TEST(CoarseFineTransfer3D, MaskedPicReproducesConstantAndClearsAffectedHistory) {
+  const auto stencil = EvaluateCoarseFineStencil3D({{}, 1, {-1, 1, -1}}, FaceNormalAxis::kY, {-0.875, 0.875, -0.875});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  const auto rows = stencil->rows();
+  std::array<bool, CoarseFineStencil3D::kMaxRows> keep{};
+  const auto mask = std::span{keep}.first(rows.size());
+  std::vector<CoarseFinePicCarrierSample3D> carriers;
+  constexpr double velocity = 0.1;
+  for (std::size_t i = 1; i < rows.size(); ++i) {
+    keep[i] = true;
+    carriers.push_back({rows[i].owner, rows[i].level, velocity});
+  }
+  LiquidBoundaryParticleGather3D gather{
+      .new_pic_velocity = {1, 2, 3},
+      .grid_velocity_increment = {4, 5, 6},
+      .particle_minus_old_pic_velocity = {7, 8, 9},
+      .fitted_velocity_slopes = {{10, 11, 12}, {13, 14, 15}, {16, 17, 18}},
+      .velocity_gradient = {{19, 20, 21}, {22, 23, 24}, {25, 26, 27}},
+  };
+  const auto status = ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, gather);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(gather.new_pic_velocity.y, velocity);
+  EXPECT_EQ(gather.grid_velocity_increment.y, 0);
+  EXPECT_EQ(gather.particle_minus_old_pic_velocity.y, 0);
+  const auto components = [](Vec3 value) {
+    return std::array{value.x, value.y, value.z};
+  };
+  EXPECT_EQ(components(gather.fitted_velocity_slopes.y_row), (std::array{0.0, 0.0, 0.0}));
+  EXPECT_EQ(components(gather.velocity_gradient.y_row), (std::array{0.0, 0.0, 0.0}));
+  EXPECT_EQ(components(gather.new_pic_velocity), (std::array{1.0, velocity, 3.0}));
+  EXPECT_EQ(components(gather.grid_velocity_increment), (std::array{4.0, 0.0, 6.0}));
+  EXPECT_EQ(components(gather.particle_minus_old_pic_velocity), (std::array{7.0, 0.0, 9.0}));
+  EXPECT_EQ(components(gather.fitted_velocity_slopes.x_row), (std::array{10.0, 11.0, 12.0}));
+  EXPECT_EQ(components(gather.fitted_velocity_slopes.z_row), (std::array{16.0, 17.0, 18.0}));
+  EXPECT_EQ(components(gather.velocity_gradient.x_row), (std::array{19.0, 20.0, 21.0}));
+  EXPECT_EQ(components(gather.velocity_gradient.z_row), (std::array{25.0, 26.0, 27.0}));
+  EXPECT_FALSE(gather.affine_enabled);
+  EXPECT_FALSE(gather.old_pic_fallback);
+  EXPECT_TRUE(gather.new_pic_fallback);
+  EXPECT_FALSE(gather.low_mass_fallback);
+}
+
+TEST(CoarseFineTransfer3D, CoplanarPicUsesWeightedNonAffineDonorsInCanonicalOrder) {
+  const auto stencil = EvaluateCoarseFineStencil3D({{}, 1, {1, 1, 1}}, FaceNormalAxis::kX, {0.875, 0.875, 0.875});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  const auto rows = stencil->rows();
+  std::array<bool, CoarseFineStencil3D::kMaxRows> keep{};
+  const auto mask = std::span{keep}.first(rows.size());
+  std::vector<CoarseFinePicCarrierSample3D> carriers;
+  double total_weight = 0;
+  double impulse_weight = 0;
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].offset_coarse_units[0] != 0.125f) {
+      continue;
+    }
+    keep[i] = true;
+    const bool impulse = carriers.empty();
+    if (impulse) {
+      impulse_weight = rows[i].weight;
+    }
+    carriers.push_back({rows[i].owner, rows[i].level, impulse ? 13.0 : -5.0});
+    total_weight += rows[i].weight;
+  }
+  ASSERT_GT(carriers.size(), 4);
+  const auto disposition = ClassifyCoarseFineMask3D(*stencil, mask);
+  ASSERT_TRUE(disposition.ok()) << disposition.status();
+  ASSERT_EQ(*disposition, CoarseFineMaskDisposition3D::kPicRequiredRankDeficient);
+  LiquidBoundaryParticleGather3D forward{};
+  ASSERT_TRUE(ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, forward).ok());
+  EXPECT_NEAR(forward.new_pic_velocity.x, -5.0 + 18.0 * impulse_weight / total_weight, 1e-14);
+  std::ranges::reverse(carriers);
+  LiquidBoundaryParticleGather3D reverse{};
+  ASSERT_TRUE(ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, reverse).ok());
+  EXPECT_EQ(reverse.new_pic_velocity.x, forward.new_pic_velocity.x);
+  for (auto& carrier : carriers) {
+    carrier.new_face_velocity = 0.0;
+  }
+  carriers.back().new_face_velocity = -0.0;
+  ASSERT_TRUE(ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, reverse).ok());
+  std::ranges::reverse(carriers);
+  ASSERT_TRUE(ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, forward).ok());
+  EXPECT_EQ(std::signbit(reverse.new_pic_velocity.x), std::signbit(forward.new_pic_velocity.x));
+}
+
+TEST(CoarseFineTransfer3D, CertifiedLowMassEulerianCarrierCanBeTheOnlyPicDonor) {
+  const auto stencil = EvaluateCoarseFineStencil3D({{}, 1, {1, 1, 0}}, FaceNormalAxis::kZ, {0.875, 0.875, 0.875});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  const auto rows = stencil->rows();
+  const auto& row = rows.front();
+  std::array<bool, CoarseFineStencil3D::kMaxRows> keep{true};
+  const auto mask = std::span{keep}.first(rows.size());
+  const std::array carriers{CoarseFinePicCarrierSample3D{
+      .owner = row.owner,
+      .level = row.level,
+      .new_face_velocity = 7.0,
+      .low_mass = true,
+  }};
+  LiquidBoundaryParticleGather3D gather{};
+  const auto status = ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, gather);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(gather.new_pic_velocity.z, 7.0);
+  EXPECT_TRUE(gather.low_mass_fallback);
+  EXPECT_TRUE(gather.new_pic_fallback);
+}
+
+TEST(CoarseFineTransfer3D, PicRefusesInvalidCarrierSetsWithoutPublishing) {
+  const auto stencil = EvaluateCoarseFineStencil3D({{}, 1, {1, 1, 0}}, FaceNormalAxis::kX, {0.875, 0.875, 0.875});
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  const auto rows = stencil->rows();
+  std::array<bool, CoarseFineStencil3D::kMaxRows> keep{true, true};
+  const auto mask = std::span{keep}.first(rows.size());
+  const CoarseFinePicCarrierSample3D first{rows[0].owner, rows[0].level, 1};
+  const CoarseFinePicCarrierSample3D second{rows[1].owner, rows[1].level, 2};
+  const auto check = [&](std::span<const CoarseFinePicCarrierSample3D> carriers, absl::StatusCode expected) {
+    LiquidBoundaryParticleGather3D gather{
+        .new_pic_velocity = {3, 4, 5},
+        .grid_velocity_increment = {6, 7, 8},
+        .particle_minus_old_pic_velocity = {9, 10, 11},
+        .fitted_velocity_slopes = {{12, 13, 14}, {}, {}},
+        .velocity_gradient = {{15, 16, 17}, {}, {}},
+    };
+    const auto status = ApplyCoarseFinePicFallback3D(*stencil, mask, carriers, gather);
+    EXPECT_EQ(status.code(), expected) << status;
+    EXPECT_EQ(gather.new_pic_velocity.x, 3);
+    EXPECT_EQ(gather.grid_velocity_increment.x, 6);
+    EXPECT_EQ(gather.particle_minus_old_pic_velocity.x, 9);
+    EXPECT_EQ(gather.fitted_velocity_slopes.x_row.x, 12);
+    EXPECT_EQ(gather.velocity_gradient.x_row.x, 15);
+    EXPECT_TRUE(gather.affine_enabled);
+    EXPECT_FALSE(gather.new_pic_fallback);
+    EXPECT_FALSE(gather.low_mass_fallback);
+  };
+  check(std::array{first}, absl::StatusCode::kFailedPrecondition);
+  check(std::array{first, first}, absl::StatusCode::kInvalidArgument);
+  auto wrong_owner = second;
+  wrong_owner.owner.axis = FaceNormalAxis::kZ;
+  check(std::array{first, wrong_owner}, absl::StatusCode::kInvalidArgument);
+  wrong_owner.owner = rows[2].owner;
+  wrong_owner.level = rows[2].level;
+  check(std::array{first, wrong_owner}, absl::StatusCode::kInvalidArgument);
+  auto nonfinite = second;
+  nonfinite.new_face_velocity = std::numeric_limits<double>::infinity();
+  check(std::array{first, nonfinite}, absl::StatusCode::kInvalidArgument);
+  std::ranges::fill(mask, false);
+  check({}, absl::StatusCode::kFailedPrecondition);
+  std::ranges::fill(mask, true);
+  check({}, absl::StatusCode::kFailedPrecondition);
 }
 
 TEST(CoarseFineTransfer3D, RejectsInvalidGeometryAndUnrepresentableQueries) {

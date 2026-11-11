@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <span>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "fluidity/base/liquid_boundary_transfer_types_3d.h"
 #include "fluidity/base/mac_types_3d.h"
 
 namespace fluidity {
@@ -68,5 +70,29 @@ EvaluateCoarseFineStencil3D(const CoarseFinePatch3D& patch, FaceNormalAxis face_
 // Returns kInvalidArgument for a mask of the wrong size or kFailedPrecondition when no carrier remains.
 absl::StatusOr<CoarseFineMaskDisposition3D>
 ClassifyCoarseFineMask3D(const CoarseFineStencil3D& stencil, std::span<const bool> retained_rows);
+
+struct CoarseFinePicCarrierSample3D {
+  FaceIndex3D owner;
+  std::uint8_t level;  // Same level and lattice convention as CoarseFineStencilRow3D.
+  double new_face_velocity;  // Caller-certified usable new-stage Eulerian normal velocity, m/s.
+  bool low_mass = false;  // True when a certified Eulerian velocity is available despite low deposited mass.
+};
+
+// Applies PIC for an incomplete or rank-deficient mask. Every true mask row must have exactly one
+// finite, caller-certified sample. Sample order is arbitrary. Low mass is eligible when the caller
+// supplies a usable Eulerian velocity. Retained positive weights are normalized in canonical row order.
+// Sets the affected component of new_pic_velocity and clears its grid_velocity_increment,
+// particle_minus_old_pic_velocity, fitted_velocity_slopes row and velocity_gradient row.
+// Disables particle affine use, sets new_pic_fallback and sets low_mass_fallback if a used donor is low mass.
+// Other component values and old_pic_fallback are preserved.
+// Returns kInvalidArgument for a malformed mask, unexpected/duplicate owner or nonfinite velocity,
+// kFailedPrecondition for complete support, missing retained samples or an empty mask, or kOutOfRange
+// for nonfinite arithmetic. Errors leave gather unchanged.
+absl::Status ApplyCoarseFinePicFallback3D(
+    const CoarseFineStencil3D& stencil,
+    std::span<const bool> retained_rows,
+    std::span<const CoarseFinePicCarrierSample3D> carriers,
+    LiquidBoundaryParticleGather3D& gather
+);
 
 }  // namespace fluidity
