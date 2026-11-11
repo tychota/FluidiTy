@@ -219,14 +219,42 @@ end to end and the process peak RSS was 6,676,480 bytes. This is one small
 control, not a breaking-wave throughput measurement. The full suites passed
 572 CPU and 640 CUDA-enabled tests with no skips.
 
+## Blender foam projection control
+
+The analytic control's Mesh and Whitewater caches share the exact Simulate
+source identity. The locked Alembic bridge exports the existing surface and
+foam points to separate native carriers. The signed-volume test caught
+Blender's import winding reversal; the bridge now compensates at export.
+The native M1 point export remained byte-identical in a three-frame control.
+
+Blender 5.2.3 LTS (`e13b728c6880`) read 0, 16 and 40 baked foam points across
+the three frames. The named `fluidity_foam_mask` was exactly zero on the empty
+frame and matched an independent nearest-point calculation within `1.5e-7`
+on the moving frames. Radius, strength and material edits changed the mask
+and left each frame's vertex/index bytes, published cache files/timestamps
+and execution IDs unchanged. Two 64×64 CPU Cycles renders of the same surface
+with mask off/on differed by up to 0.424 in a pixel channel. The relocated
+`.blend` and its two relative Alembic paths reopened in a fresh process with
+the extension and solver absent and no frame handlers.
+
+[Blender receipt](m2-blender-foam-control-data.json) records geometry and
+archive hashes, foam counts, mask comparisons and render response. Run
+`tools/blender/verify_m2_foam_projection.py` in the pinned Blender with
+`--bridge`, `--mesh-cache`, `--whitewater-cache` and a new `--output` directory;
+the control uses the CPU `whitewater-effects` fixture through frame 2 and
+Mesh spacing 0.125 m / sigma 0.25 m. The same script's `--reopen` mode checks
+the saved blend without importing the extension. This qualifies the mask
+contract for the analytic control. The integrated breaking-wave bake and
+artist workflow inspection are separate and remain open.
+
 ## Open integrated gates
 
-The breaking-wave physical source sampler and obstacle collisions remain open. Mesh
-local repair, contact, component lineage and droplet handling remain open.
-Whitewater transport/publication,
-volume export/publication, Ocean Boundary and the Blender foam workflow are
-unfinished. No integrated breaking-wave bake or Blender M2 inspection has
-qualified them. Full CPU/device numerical qualification remains open.
+The breaking-wave source sampler and whitewater obstacle collisions remain
+open, as do Mesh local repair, contact, component transitions and droplet
+publication. Volume export/publication, Ocean Boundary and the complete
+Blender breaking-wave workflow are unfinished. The integrated bake and its
+Blender inspection have not run. Full CPU/device numerical qualification
+remains open.
 
 The uniform M1 execution plan is still bounded to 1,024 particles, 128 blocks,
 4,096 cells and 24,576 faces. Its small Blender bake does not demonstrate the
