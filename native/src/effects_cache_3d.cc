@@ -84,10 +84,14 @@ absl::StatusOr<LiquidCacheBytes3D> ReadManifest(
     const std::filesystem::path& root,
     const EffectsIdentity3D& expected,
     std::uint64_t frame,
-    LiquidCacheLimits3D limits
+    LiquidCacheLimits3D limits,
+    bool* manifest_absent = nullptr
 ) {
   auto bytes = files::ReadBytes(files::FramePath(root, frame, ".flem"), limits);
   if (!bytes.ok()) {
+    if (manifest_absent != nullptr) {
+      *manifest_absent = absl::IsNotFound(bytes.status());
+    }
     return bytes.status();
   }
   const auto manifest = detail::Verify<wire::StageManifest>(bytes->values(), "FLEM", limits);
@@ -336,6 +340,17 @@ absl::Status EffectsCache3D::Publish(
 }
 
 absl::StatusOr<EffectsCommit3D> EffectsCache3D::ReadFrame(std::uint64_t frame) const {
+  auto committed = ReadFrameIfCommitted(frame);
+  if (!committed.ok()) {
+    return committed.status();
+  }
+  if (!committed->has_value()) {
+    return absl::NotFoundError("effects frame has no commit");
+  }
+  return std::move(**committed);
+}
+
+absl::StatusOr<std::optional<EffectsCommit3D>> EffectsCache3D::ReadFrameIfCommitted(std::uint64_t frame) const {
   files::NativeFile lease;
   EFFECTS_TRY(files::Lease(root_, lease, false, true));
   const auto current_identity = ReadRootIdentity(root_, limits_);
@@ -345,9 +360,14 @@ absl::StatusOr<EffectsCommit3D> EffectsCache3D::ReadFrame(std::uint64_t frame) c
   if (*current_identity != identity_) {
     return absl::DataLossError("effects root identity changed");
   }
-  const auto bytes = ReadManifest(root_, identity_, frame, limits_);
+  bool manifest_absent = false;
+  const auto bytes = ReadManifest(root_, identity_, frame, limits_, &manifest_absent);
   if (!bytes.ok()) {
-    return bytes.status();
+    if (manifest_absent) {
+      return std::optional<EffectsCommit3D>{};
+    }
+    return absl::IsNotFound(bytes.status()) ? absl::DataLossError("effects manifest mirror is missing")
+                                            : bytes.status();
   }
   const auto* manifest = flatbuffers::GetRoot<wire::StageManifest>(bytes->values().data());
   const auto clock = detail::Unpack(manifest->clock());
@@ -359,7 +379,8 @@ absl::StatusOr<EffectsCommit3D> EffectsCache3D::ReadFrame(std::uint64_t frame) c
   const auto digest = detail::Unpack(manifest->payload_digest());
   auto payload = files::ReadBytes(PayloadPath(root_, digest), limits_, manifest->payload_byte_length());
   if (!payload.ok()) {
-    return payload.status();
+    return absl::IsNotFound(payload.status()) ? absl::DataLossError("effects committed payload is missing")
+                                              : payload.status();
   }
   if (LiquidContentDigest3D(payload->values()) != digest) {
     return absl::DataLossError("effects payload is corrupt");

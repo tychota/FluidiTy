@@ -92,6 +92,21 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
     return execution.status();
   }
   const std::uint64_t target = replay ? *command.frame : command.frame_end;
+  std::uint64_t restored_prefix_frames = 0;
+  double restore_wall_seconds = 0;
+  if (command.resume && target > 0) {
+    const auto restore_started = std::chrono::steady_clock::now();
+    // Always regenerate the target frame, even if already committed, so the
+    // terminal result verifies the requested output and contains its metrics.
+    const auto restored = stage->RestoreCommittedPrefix(target - 1, [&] {
+      return job.CheckForJobStopRequest();
+    });
+    if (!restored.ok()) {
+      return restored.status();
+    }
+    restored_prefix_frames = *restored;
+    restore_wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - restore_started).count();
+  }
   std::string final_members;
   while (stage->next_frame() <= target) {
     const auto stopped = job.CheckForJobStopRequest();
@@ -131,7 +146,9 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
         + ",\"retained_ids\":" + std::to_string(reconstructed.retained_ids)
         + ",\"volume_relative_error\":" + Number(relative_error) + ",\"frame_wall_seconds\":" + Number(wall_seconds)
         + ",\"peak_process_resident_bytes\":" + std::to_string(*peak_resident_bytes);
-    final_members = frame_members + ",\"frame\":" + std::to_string(frame.clock.frame_ordinal);
+    final_members = frame_members + ",\"frame\":" + std::to_string(frame.clock.frame_ordinal)
+        + ",\"restored_prefix_frames\":" + std::to_string(restored_prefix_frames)
+        + ",\"restore_wall_seconds\":" + Number(restore_wall_seconds);
     job.SetSettledClock(LiquidBackend3D::kCpu, frame.clock, true);
     if (!replay && frame.clock.frame_ordinal >= command.frame_start) {
       const auto reported = job.ReportPublishedFrame(frame.clock.frame_ordinal, "," + frame_members);

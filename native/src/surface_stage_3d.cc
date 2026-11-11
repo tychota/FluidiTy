@@ -110,6 +110,63 @@ const EffectsIdentity3D& SurfaceStage3D::identity() const {
   return cache_.identity();
 }
 
+absl::StatusOr<std::uint64_t>
+SurfaceStage3D::RestoreCommittedPrefix(std::uint64_t maximum_frame, absl::FunctionRef<absl::Status()> check_stop) {
+  if (read_only_ || next_frame_ != 0) {
+    return absl::FailedPreconditionError("Mesh checkpoint restore requires a fresh publication owner");
+  }
+  if (maximum_frame == std::numeric_limits<std::uint64_t>::max()) {
+    return absl::OutOfRangeError("Mesh restore frame bound exhausts cursor");
+  }
+  std::optional<EffectsCommit3D> checkpoint_commit;
+  double checkpoint_material_volume_m3 = 0;
+  std::uint64_t restored_count = 0;
+  for (; restored_count <= maximum_frame; ++restored_count) {
+    const auto stopped = check_stop();
+    if (!stopped.ok()) {
+      return stopped;
+    }
+    auto committed = cache_.ReadFrameIfCommitted(restored_count);
+    if (!committed.ok()) {
+      return committed.status();
+    }
+    if (!committed->has_value()) {
+      break;
+    }
+    auto source = source_.ReadFrame(restored_count);
+    if (!source.ok()) {
+      return absl::IsNotFound(source.status()) ? absl::DataLossError("committed Mesh source is missing")
+                                               : source.status();
+    }
+    const auto expected_previous = checkpoint_commit ? checkpoint_commit->payload_digest : LiquidDigest3D{};
+    if ((**committed).clock != source->motion.last_clock || (**committed).upstream_content != source->source_payload
+        || (**committed).previous_payload != expected_previous) {
+      return absl::DataLossError("Mesh checkpoint source or predecessor differs");
+    }
+    checkpoint_material_volume_m3 = 0;
+    for (const auto& particle : source->motion.samples.back().particles.values()) {
+      checkpoint_material_volume_m3 += particle.reference_volume * particle.volume_ratio;
+    }
+    checkpoint_commit = std::move(**committed);
+  }
+  if (!checkpoint_commit) {
+    return 0;
+  }
+  auto checkpoint = DecodeSurfaceFrame3D(checkpoint_commit->payload.values(), options_.limits);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  const double declared_material_volume_m3 = checkpoint->volumes.empty() ? 0 : checkpoint->volumes.front().material_m3;
+  if (checkpoint->clock != checkpoint_commit->clock || checkpoint->cell_width_m != source_.scene().geometry.cell_width
+      || checkpoint->volumes.size() > 1 || declared_material_volume_m3 != checkpoint_material_volume_m3) {
+    return absl::DataLossError("Mesh checkpoint clock, grid or material volume differs from source");
+  }
+  previous_frame_ = std::move(*checkpoint);
+  previous_payload_ = checkpoint_commit->payload_digest;
+  next_frame_ = restored_count;
+  return restored_count;
+}
+
 absl::StatusOr<SurfaceStageFrame3D> SurfaceStage3D::ProcessNextFrame(LiquidCachePublishControl3D control) {
   if (next_frame_ == std::numeric_limits<std::uint64_t>::max()) {
     return absl::OutOfRangeError("Mesh frame cursor exhausted");

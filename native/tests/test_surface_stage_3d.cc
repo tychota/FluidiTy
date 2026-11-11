@@ -210,5 +210,60 @@ TEST(SurfaceStage3D, RetriesCancellationBeforeAndAfterManifestWithoutLosingCheck
   EXPECT_EQ(retried->payload_digest, committed->payload_digest);
   EXPECT_EQ(stage->next_frame(), 2);
 }
+
+TEST(SurfaceStage3D, RestoresAuthenticatedPrefixWithoutReconstruction) {
+  SurfaceStageFixture fixture;
+  fixture.PublishSource();
+  auto writer = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(writer.ok());
+  ASSERT_TRUE(writer->ProcessNextFrame().ok());
+  ASSERT_TRUE(writer->ProcessNextFrame().ok());
+  fixture.options.maximum_nodes = 1;
+  auto resumed = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(resumed.ok());
+  EXPECT_EQ(resumed->ProcessNextFrame().status().code(), absl::StatusCode::kResourceExhausted);
+  auto restored = resumed->RestoreCommittedPrefix(2);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(*restored, 2);
+  EXPECT_EQ(resumed->next_frame(), 2);
+  EXPECT_EQ(resumed->ProcessNextFrame().status().code(), absl::StatusCode::kNotFound);
+}
+
+TEST(SurfaceStage3D, MissingCommittedPayloadIsCorruptionRatherThanEndOfPrefix) {
+  SurfaceStageFixture fixture;
+  fixture.PublishSource();
+  auto writer = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(writer.ok());
+  ASSERT_TRUE(writer->ProcessNextFrame().ok());
+  auto next = writer->ProcessNextFrame();
+  ASSERT_TRUE(next.ok());
+  const auto blob =
+      fixture.root / "mesh/blobs" / (std::string(LiquidDigestHex3D(next->payload_digest).data()) + ".flef");
+  ASSERT_TRUE(std::filesystem::remove(blob));
+  auto resumed = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(resumed.ok());
+  EXPECT_EQ(resumed->RestoreCommittedPrefix(2).status().code(), absl::StatusCode::kDataLoss);
+  EXPECT_EQ(resumed->next_frame(), 0);
+}
 }  // namespace
 }  // namespace fluidity

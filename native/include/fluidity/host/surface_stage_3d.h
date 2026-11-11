@@ -21,8 +21,8 @@ class SurfaceStage3D {
   // Existing different identity returns FailedPrecondition. Invalid settings
   // or overlapping output roots return InvalidArgument. The effects/mesh subtree
   // of Simulate is allowed; other output roots must be disjoint from Simulate.
-  // return InvalidArgument; native I/O/budget errors propagate. Re-running from
-  // zero regenerates and verifies existing frames without replacing their bytes.
+  // Native I/O/budget errors propagate. Re-running from zero regenerates and
+  // verifies existing frames without replacing their bytes.
   static absl::StatusOr<SurfaceStage3D> OpenForPublication(
       const std::filesystem::path& simulate_root,
       const std::filesystem::path& mesh_root,
@@ -39,6 +39,19 @@ class SurfaceStage3D {
   );
   std::uint64_t next_frame() const;
   const EffectsIdentity3D& identity() const;
+  // Authenticates committed source/Mesh pairs from zero through the inclusive
+  // bound or first absent binary manifest, then decodes only the latest Mesh
+  // checkpoint. Returns the restored frame count without reconstructing geometry
+  // or writing files. A damaged committed dependency fails; cursor and checkpoint
+  // stay unchanged on failure. Checks the stop callback between frames.
+  // Requires a fresh publication owner, not replay.
+  absl::StatusOr<std::uint64_t> RestoreCommittedPrefix(
+      std::uint64_t maximum_frame,
+      absl::FunctionRef<absl::Status()> check_stop =
+          [] {
+            return absl::OkStatus();
+          }
+  );
   // Consumes the next contiguous source interval, reconstructs and encodes its
   // complete persistent state, then publishes or compares an existing commit.
   // Derived upstream content is the exact source payload, not parent point data.

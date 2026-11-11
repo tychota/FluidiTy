@@ -801,6 +801,7 @@ def case_cpu_mesh(executable, fixture, directory, cuda):
     assert snapshot(mesh) == before, "Mesh replay must be entirely read-only"
     resumed = execute(executable, *command, "--resume", "--frame-end", 2)[-1]
     assert resumed["frame"] == 2
+    assert resumed["restored_prefix_frames"] == 2 and resumed["restore_wall_seconds"] > 0
     after = snapshot(mesh)
     assert all(after[path] == value for path, value in immutable_cache_files(before).items())
     assert snapshot(source) == source_before, "Mesh must leave source cache unchanged"

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "fluidity/host/liquid_cache_3d.h"
 
 namespace fluidity {
@@ -75,6 +77,10 @@ class EffectsCache3D {
   // Missing records return NotFound, corruption DataLoss, excessive size
   // ResourceExhausted, busy stores Aborted and native I/O errors Unavailable.
   absl::StatusOr<EffectsCommit3D> ReadFrame(std::uint64_t frame) const;
+  // As ReadFrame, but an absent binary manifest is a normal empty result.
+  // An existing manifest with missing mirror, lineage or payload is DataLoss,
+  // so a reader cannot mistake damaged committed content for an unbaked frame.
+  absl::StatusOr<std::optional<EffectsCommit3D>> ReadFrameIfCommitted(std::uint64_t frame) const;
 
  private:
   EffectsCache3D(std::filesystem::path root, EffectsIdentity3D identity, LiquidCacheLimits3D limits, bool read_only);

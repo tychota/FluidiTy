@@ -140,8 +140,9 @@ parent point commits exist. The Mesh execution binds source identity, canonical
 physical settings and executable bytes. Its frame manifests bind the source
 payload and the prior Mesh payload. `replay --stage mesh` reconstructs the
 requested prefix and compares exact bytes without changing either cache.
-`run --resume` currently rebuilds the prefix and reuses identical publications;
-restoring a verified checkpoint without repeating reconstruction is open.
+`run --resume` authenticates the existing prefix, restores the latest checked
+Mesh checkpoint and reconstructs the target frame. A missing dependency of a
+committed frame is corruption; only an absent binary manifest ends the prefix.
 
 The three-frame stationary single-particle control was measured once at two
 grid spacings with a fixed 0.25 m Gaussian scale. Wall time includes source
@@ -164,11 +165,19 @@ with no skips. The validator passed 565 Python tests. These are host Mesh
 controls with manufactured geometry, separate from
 the historical fixed-cache experiment and the integrated breaking-wave gate.
 
+At 0.0625 m spacing, resuming from frame 1 to frame 2 took **1.702 s** median
+process wall time with checkpoint restore versus **3.981 s** rebuilding the
+prefix (three trials per executable). All six runs reproduced the same target
+payload digest and preserved the earlier files and timestamps. This measures
+one small control; it is not a throughput forecast for the wave workload.
+[Resume receipt](m2-mesh-resume-control-data.json) records individual trials
+and executable hashes. The resumed CPU suite passed 547 tests with no skips.
+
 ## Open integrated gates
 
 The accepted observer does not yet publish whitewater source events. Mesh
-local repair, contact, component lineage, droplet handling and checkpoint-based
-resume remain open. Whitewater transport/publication,
+local repair, contact, component lineage and droplet handling remain open.
+Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are
 unfinished. No integrated breaking-wave bake or Blender M2 inspection has
 qualified them. Full CPU/device numerical qualification remains open.
