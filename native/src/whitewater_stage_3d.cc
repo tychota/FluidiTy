@@ -171,7 +171,7 @@ absl::StatusOr<WhitewaterStageFrame3D> WhitewaterStage3D::ProcessNextFrame(Liqui
     return accepted.status();
   }
   const auto scene = source_.scene();
-  auto reconstructed = ReconstructWhitewaterSphereFrame3D(
+  auto reconstructed = ReconstructWhitewaterFrame3D(
       accepted->motion,
       scene.scene,
       scene.options,

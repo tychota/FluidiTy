@@ -294,17 +294,50 @@ changed position by 0.099989 m and velocity by 0.415088 m/s. All 7 cell keys
 and 768 face keys matched and their pressure and velocity matched at the
 FlatBuffers JSON export precision. Both caches replayed frame 9 read-only.
 This fixture has one particle and exercises the inlet velocity path.
-Particle level control, measured outlet reflection and breaking-wave parity
-remain open.
+
+Optional inlet level control fills vacant wet sites on a bounded world
+lattice, retires particles above the prescribed surface in the inlet strip,
+and seeds new particles at the analytical velocity. The site volume is the
+cube of the authored spacing. Trial particle changes and IDs are discarded
+on rejection. CPU and CUDA produced identical calm inlet checkpoints through
+frame 10, with two new particles and no duplicate births. A moving-swell
+CPU test checked dry particle retirement and exact rollback after the inlet
+edit. The reference wave still needs source volume and level measurements.
+
+The production outlet relaxation was also tested in a staggered linear
+shallow-water flume. At a gauge 4 m before the start of the 6 m absorption
+zone, the first returning pulse carried 19.49% of incident energy at 2/s
+relaxation, compared with 100% against a closed wall. The 0.05 m grid used a
+0.00625 s timestep and a 1 m still-water depth. This isolates outlet
+reflection from breaking, pressure projection and particle transport.
+
+## Stationary beach contact control
+
+Mesh clips the density field against an inclined stationary halfspace,
+protects contact vertices during bounded volume correction, and removes
+inward continued-carrier velocity near the plane during tracking. Whitewater
+samples the accepted particle sphere union and clips source probes against
+the same halfspace. Transport clamps beach contact and removes inward
+velocity. CPU and CUDA process tests cover Simulate, Mesh, Whitewater and
+Volumes for the control, including exact read-only Whitewater replay.
+
+The three-frame CPU bake retained 813 vertex IDs on both tracked frames,
+with maximum relative volume error 0.259% and frame time 0.228–0.416 s.
+Whitewater frame 2 held 16 foam points and 48 bubbles and took 0.021 s.
+Blender 5.2.3 imported the resulting 0, 10 and 16 foam points and matched the
+nearest-point mask oracle within `7.9e-7`. Projection and material changes
+preserved vertex and index hashes and cache identity. Rendered mask changes
+reached 0.416 in one pixel channel. Relocated native caches reopened without
+the extension. The imported signed volumes agreed with the published Mesh
+volumes within `2e-8` m³. See the [Blender beach control receipt](m2-blender-beach-control-data.json).
 
 ## Open integrated gates
 
-The breaking-wave source sampler and whitewater obstacle collisions remain
-open, as do Mesh local repair, contact, component transitions and droplet
-publication. Blender volume export, Ocean Boundary level control and the complete
-Blender breaking-wave workflow are unfinished. The integrated bake and its
-Blender inspection have not run. Full CPU/device numerical qualification
-remains open.
+The three-frame stationary beach control uses a single liquid particle.
+Wave-scale source sampling, wetting and topology transitions, droplet
+publication and outlet reflection in the particle solver still need
+qualification. Blender volume export and the full breaking-wave workflow
+remain open. The breaking-wave acceptance bake and inspection have not run.
 
 The uniform M1 execution plan is still bounded to 1,024 particles, 128 blocks,
 4,096 cells and 24,576 faces. Its small Blender bake does not demonstrate the

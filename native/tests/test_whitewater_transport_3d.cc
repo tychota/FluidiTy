@@ -1,6 +1,7 @@
 #include <array>
 #include <cmath>
 
+#include "fluidity/host/liquid_boundary_geometry_3d.h"
 #include "fluidity/host/whitewater_transport_3d.h"
 #include "gtest/gtest.h"
 
@@ -36,6 +37,34 @@ TEST(WhitewaterTransport3D, SprayIntegratesFromBirthAndDoesNotReadLiquidCarrier)
   EXPECT_DOUBLE_EQ(result->point.kinematics.position.y, -0.125);
   EXPECT_DOUBLE_EQ(result->point.kinematics.velocity.y, -1);
   EXPECT_LE(result->maximum_displacement_m, 0.5);
+}
+
+TEST(WhitewaterTransport3D, SprayContactRemovesOnlyInwardVelocity) {
+  const auto interval = TransportInterval();
+  ASSERT_TRUE(interval.ok());
+  const TranslatingHalfspace3D beach{
+      .unit_normal = {0, 1, 0},
+      .start_plane_coordinate = 0,
+      .wall_velocity = {},
+  };
+  const WhitewaterTransportPoint3D spray{
+      .kinematics = {.position = {0, 0.1, 0}, .velocity = {1, -1, 0}},
+      .kind = WhitewaterKind3D::kSpray,
+  };
+  const auto no_carrier = [](std::size_t, Vec3) -> absl::StatusOr<Vec3> {
+    return absl::FailedPreconditionError("spray has no carrier");
+  };
+  const auto air = [](Vec3 position, double) -> absl::StatusOr<double> {
+    if (position.y < 0) {
+      return absl::FailedPreconditionError("classification query inside the beach");
+    }
+    return 1;
+  };
+  const auto result = AdvanceWhitewaterPoint3D(spray, *interval, {}, no_carrier, air, &beach);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_NEAR(result->point.kinematics.position.y, 0, 1e-8);
+  EXPECT_EQ(result->point.kinematics.velocity.y, 0);
+  EXPECT_EQ(result->point.kinematics.velocity.x, 1);
 }
 
 TEST(WhitewaterTransport3D, FoamUsesValidCarrierAndRejectsMissingSupport) {

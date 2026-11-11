@@ -5,6 +5,8 @@
 #include <numeric>
 #include <optional>
 
+#include "fluidity/host/liquid_boundary_geometry_3d.h"
+
 namespace fluidity {
 namespace {
 bool Finite(Vec3 value) {
@@ -71,7 +73,8 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
     const MotionInterval3D& interval,
     const WhitewaterTransportOptions3D& options,
     MotionSpatialSampler3D carrier,
-    WhitewaterDistanceSampler3D liquid_distance
+    WhitewaterDistanceSampler3D liquid_distance,
+    const TranslatingHalfspace3D* stationary_beach
 ) {
   const auto stamps = interval.stamps();
   if (stamps.size() < 2) {
@@ -102,6 +105,52 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
   }
   WhitewaterTransportResult3D result{.point = point};
   auto& current = result.point;
+  const auto constrain_contact = [&]() -> absl::Status {
+    if (!stationary_beach) {
+      return absl::OkStatus();
+    }
+    const auto normal = stationary_beach->unit_normal;
+    auto& position = current.kinematics.position;
+    auto& velocity = current.kinematics.velocity;
+    const double distance_m = normal.x * position.x + normal.y * position.y + normal.z * position.z
+        - stationary_beach->start_plane_coordinate;
+    const double margin_m = 1e-9 * options.cell_width_m;
+    if (!std::isfinite(distance_m)) {
+      return absl::OutOfRangeError("whitewater beach contact overflow");
+    }
+    if (distance_m <= 2 * margin_m) {
+      const double correction_m = std::max(0.0, margin_m - distance_m);
+      position = {
+          position.x + correction_m * normal.x,
+          position.y + correction_m * normal.y,
+          position.z + correction_m * normal.z
+      };
+      const double inward_speed_m_per_s =
+          std::min(0.0, normal.x * velocity.x + normal.y * velocity.y + normal.z * velocity.z);
+      velocity = {
+          velocity.x - inward_speed_m_per_s * normal.x,
+          velocity.y - inward_speed_m_per_s * normal.y,
+          velocity.z - inward_speed_m_per_s * normal.z
+      };
+      if (!Finite(position) || !Finite(velocity)) {
+        return absl::OutOfRangeError("whitewater constrained beach state overflow");
+      }
+    }
+    return absl::OkStatus();
+  };
+  if (stationary_beach) {
+    const auto normal = stationary_beach->unit_normal;
+    const auto wall_velocity = stationary_beach->wall_velocity;
+    if (!Finite(normal) || !std::isfinite(stationary_beach->start_plane_coordinate)
+        || std::abs(std::hypot(normal.x, normal.y, normal.z) - 1) > 1e-12 || wall_velocity.x != 0
+        || wall_velocity.y != 0 || wall_velocity.z != 0) {
+      return absl::InvalidArgumentError("whitewater contact needs a stationary unit-normal plane");
+    }
+    const auto contact = constrain_contact();
+    if (!contact.ok()) {
+      return contact;
+    }
+  }
   double time_seconds = std::max(stamps.front().time_seconds, point.birth_time_seconds);
   for (const auto stamp : stamps) {
     while (time_seconds < stamp.time_seconds) {
@@ -130,6 +179,10 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
           return FoamCarrierStatus(advected.status());
         }
         current.kinematics.position = advected->world_position;
+        const auto contact = constrain_contact();
+        if (!contact.ok()) {
+          return contact;
+        }
         time_seconds = foam_step_end;
         result.accepted_substeps += advected->accepted_substeps;
         result.maximum_displacement_m = std::max(result.maximum_displacement_m, advected->maximum_displacement_m);
@@ -167,6 +220,10 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
           return step.status();
         }
         current.kinematics = step->kinematics;
+        const auto contact = constrain_contact();
+        if (!contact.ok()) {
+          return contact;
+        }
         time_seconds = step->end_time_seconds;
         ++result.accepted_substeps;
         result.bubble_fallback_substeps += bubble_missing_carrier;
@@ -181,6 +238,10 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
             endpoint_carrier = *sampled;
           }
         }
+      }
+      const auto contact = constrain_contact();
+      if (!contact.ok()) {
+        return contact;
       }
       if (bubble_missing_carrier) {
         continue;
@@ -207,6 +268,10 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
           endpoint_carrier = *sampled;
         }
         current.kinematics.velocity = *endpoint_carrier;
+        const auto foam_contact = constrain_contact();
+        if (!foam_contact.ok()) {
+          return foam_contact;
+        }
       }
     }
   }

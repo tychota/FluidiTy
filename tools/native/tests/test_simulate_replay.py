@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "ocean") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level") else []
     return scene, initial
 
 
@@ -778,12 +778,13 @@ def effects_case(executable, fixture, directory, backend):
 def case_cpu_effects(executable, fixture, directory, cuda):
     effects_case(executable, fixture, directory, "cpu")
     whitewater_source_case(executable, fixture, directory, "cpu")
+    whitewater_source_case(executable, fixture, directory, "cpu", "whitewater-beach")
 
 
-def whitewater_source_case(executable, fixture, directory, backend):
-    root = directory / "whitewater-source"
+def whitewater_source_case(executable, fixture, directory, backend, mode="whitewater-effects"):
+    root = directory / mode
     root.mkdir()
-    scene, initial = make_scene(executable, fixture, root, backend, "whitewater-effects")
+    scene, initial = make_scene(executable, fixture, root, backend, mode)
     cache = root / "cache"
     args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache, "--backend", backend, *initial]
     execute(executable, *args, "--frame-end", 2)
@@ -834,6 +835,14 @@ def whitewater_source_case(executable, fixture, directory, backend):
     volume_resume = execute(executable, *volume_command, "--resume", "--frame-end", 2)[-1]
     assert volume_resume["restored_prefix_frames"] == 2 and volume_resume["frame"] == 2
     assert snapshot(points) == points_after, "volumes must leave Whitewater data unchanged"
+    if mode == "whitewater-beach":
+        mesh = root / "mesh"
+        bake = ["run", "--stage", "mesh", "--cache", cache, "--output-cache", mesh,
+                "--surface-spacing", ".125", "--surface-sigma", ".25"]
+        surface = execute(executable, *bake, "--frame-end", 2)[-1]
+        assert surface["retained_ids"] == surface["vertex_count"] > 0
+        assert abs(surface["volume_relative_error"]) <= 0.005
+        assert snapshot(cache) == before
     (points / "blobs" / (result["payload_digest"] + ".flef")).write_bytes(b"corrupt")
     assert invoke(executable, *replay, success=False)["code"] == "E-WHITEWATER-DATA_LOSS"
 
@@ -882,6 +891,7 @@ def case_cuda_effects(executable, fixture, directory, cuda):
     cpu_payloads = {path.name: path.read_bytes() for path in blobs.glob("*.flef")}
     assert cpu_payloads == cuda_payloads, "manufactured static source intervals differ across CPU/CUDA"
     whitewater_source_case(executable, fixture, directory, "cuda")
+    whitewater_source_case(executable, fixture, directory, "cuda", "whitewater-beach")
 
 
 def ocean_case(executable, fixture, directory, backend, mode):
@@ -892,7 +902,9 @@ def ocean_case(executable, fixture, directory, backend, mode):
             "--cache", cache, *initial, "--frame-end", 10)
     checkpoint = json.loads(subprocess.run([str(fixture), "checkpoint", str(cache)],
                                           capture_output=True, check=True, timeout=30).stdout)
-    assert checkpoint["frame"] == 10 and checkpoint["particle_count"] == 1, checkpoint
+    expected_particles = 3 if mode == "ocean-level" else 1
+    assert checkpoint["frame"] == 10 and checkpoint["particle_count"] == expected_particles, checkpoint
+    assert checkpoint["next_particle_id"] == expected_particles + 1, checkpoint
     before = snapshot(cache)
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial,
            "--frame", 9, "--substep", 0)
@@ -905,6 +917,7 @@ def case_cpu_ocean(executable, fixture, directory, cuda):
     control = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
     assert math.dist(active["first_velocity"], control["first_velocity"]) > 0.001
     assert math.dist(active["first_position"], control["first_position"]) > 0.00001
+    ocean_case(executable, fixture, directory / "level", "cpu", "ocean-level")
 
 
 def case_cuda_ocean(executable, fixture, directory, cuda):
@@ -913,6 +926,9 @@ def case_cuda_ocean(executable, fixture, directory, cuda):
     assert cpu["accepted_step"] == device["accepted_step"]
     assert math.dist(cpu["first_position"], device["first_position"]) < 1e-10
     assert math.dist(cpu["first_velocity"], device["first_velocity"]) < 1e-9
+    cpu_level = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
+    device_level = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
+    assert cpu_level["state_digest"] == device_level["state_digest"]
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):

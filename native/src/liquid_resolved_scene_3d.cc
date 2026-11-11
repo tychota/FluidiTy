@@ -3,6 +3,7 @@
 
 #include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/whitewater_sphere_source_3d.h"
 #include "liquid_cache_3d_internal.h"
 #include "resolved_scene_generated.h"
 
@@ -71,6 +72,10 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
     return Invalid();
   }
   if (options.ocean_boundary) {
+    if (options.ocean_boundary->inlet_particle_spacing_m > 0
+        && !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)) {
+      return Invalid();
+    }
     const auto boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
     if (!boundary.ok()) {
       return boundary.status();
@@ -78,9 +83,11 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   }
   if (const auto& capture = options.whitewater_capture) {
     const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
-    if (options.motion_sample_intervals == 0 || sphere == nullptr
-        || !std::holds_alternative<std::monostate>(scene.obstacle)
-        || sphere->radius <= 2 * capture->source_options.spacing_m) {
+    const bool supported_field = sphere || std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field);
+    const bool supported_obstacle =
+        std::holds_alternative<std::monostate>(scene.obstacle) || IsStationaryWhitewaterBeach3D(scene.obstacle);
+    if (options.motion_sample_intervals == 0 || !supported_field || !supported_obstacle
+        || (sphere && sphere->radius <= 2 * capture->source_options.spacing_m)) {
       return Invalid();
     }
     const auto valid_source = ComputeWhitewaterBirths3D(
@@ -254,6 +261,9 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
         .outlet_wall_x_m = boundary->outlet_wall_x_m(),
         .inlet_rate_per_s = boundary->inlet_rate_per_s(),
         .outlet_rate_per_s = boundary->outlet_rate_per_s(),
+        .inlet_particle_spacing_m = boundary->inlet_particle_spacing_m(),
+        .inlet_low_z_m = boundary->inlet_low_z_m(),
+        .inlet_high_z_m = boundary->inlet_high_z_m(),
     };
   }
   const auto* field = root->field();
@@ -399,7 +409,10 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
               detail::Canonical(boundary->outlet_interior_x_m),
               detail::Canonical(boundary->outlet_wall_x_m),
               detail::Canonical(boundary->inlet_rate_per_s),
-              detail::Canonical(boundary->outlet_rate_per_s)
+              detail::Canonical(boundary->outlet_rate_per_s),
+              detail::Canonical(boundary->inlet_particle_spacing_m),
+              detail::Canonical(boundary->inlet_low_z_m),
+              detail::Canonical(boundary->inlet_high_z_m)
           );
         }
         wire::StepOptionsBuilder settings_builder(builder);

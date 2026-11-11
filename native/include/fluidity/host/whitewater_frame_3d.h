@@ -29,16 +29,17 @@ struct WhitewaterFrameResult3D {
 };
 
 // Evolves a persistent dispersed point frame from checked accepted motion and
-// birth records for the analytic sphere control. Frame zero has no points or
+// birth records for a sphere field. Frame zero has no points or
 // remainder. Later frames require the exact preceding clock and emission cursor.
 // Incoming plus newborn point count is bounded before transport. Newborns are
 // classified at their birth position using ±r, then all points use accepted-time
 // transport, hysteresis and foam expiry. Source states/geometry are read-only.
-// This adapter supports no obstacles or material sides. Unsupported scenes
+// A stationary halfspace constrains contact. Material sides and other obstacles
+// require a different adapter. Unsupported scenes
 // return Unimplemented, invalid clocks/records InvalidArgument or
 // FailedPrecondition, excess work ResourceExhausted. Sampling errors propagate.
 // No partial frame on failure; the supplied checkpoint is unchanged.
-absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterSphereFrame3D(
+absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterFrame3D(
     const MotionFrame3D& source,
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& step_options,

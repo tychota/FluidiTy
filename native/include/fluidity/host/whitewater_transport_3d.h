@@ -4,6 +4,7 @@
 #include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
+struct TranslatingHalfspace3D;
 struct WhitewaterTransportPoint3D {
   WhitewaterKinematics3D kinematics{};
   WhitewaterKind3D kind = WhitewaterKind3D::kFoam;
@@ -30,7 +31,7 @@ struct WhitewaterTransportResult3D {
 // Positive is air. The geometry query is independent of carrier validity.
 using WhitewaterDistanceSampler3D = absl::FunctionRef<absl::StatusOr<double>(Vec3 world_position, double time_seconds)>;
 
-// Advances a point in a collision-free domain from its birth time or interval
+// Advances a point from its birth time or interval
 // start (whichever is later) to the final accepted stamp. Position/velocity
 // are the state at that start. Splits at carrier knots; foam uses bounded RK2,
 // spray and bubbles use exact frozen drag with each displacement ≤0.5h.
@@ -38,7 +39,8 @@ using WhitewaterDistanceSampler3D = absl::FunctionRef<absl::StatusOr<double>(Vec
 // means missing support: foam fails, bubbles use zero velocity and keep their
 // class, spray uses ambient forcing without a liquid carrier query. Other
 // errors propagate. A birth at the target does no transport or queries.
-// Foam stops at expiry before later carrier queries. No obstacle response.
+// Foam stops at expiry before later carrier queries. Optional stationary
+// beach contact clamps position outside the plane and removes inward velocity.
 // Invalid controls return
 // InvalidArgument, overflow OutOfRange, and work/refinement bounds
 // ResourceExhausted. Inputs are borrowed, no partial output on failure.
@@ -47,6 +49,7 @@ absl::StatusOr<WhitewaterTransportResult3D> AdvanceWhitewaterPoint3D(
     const MotionInterval3D& interval,
     const WhitewaterTransportOptions3D& options,
     MotionSpatialSampler3D carrier,
-    WhitewaterDistanceSampler3D liquid_distance
+    WhitewaterDistanceSampler3D liquid_distance,
+    const TranslatingHalfspace3D* stationary_beach = nullptr
 );
 }  // namespace fluidity

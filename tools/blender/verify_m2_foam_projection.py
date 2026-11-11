@@ -145,7 +145,7 @@ def prepare(args):
         obj["fluidity_execution"] = identity["execution_id"]
         obj["fluidity_source_execution"] = identity["source_execution_id"]
     baseline = [sample(surface, foam, frame)[0] for frame in range(3)]
-    assert [record["foam_points"] for record in baseline] == [0, 16, 40], baseline
+    assert [record["foam_points"] for record in baseline] == args.expected_foam_counts, baseline
     material = create_foam_material("Control water", (0.01, 0.1, 0.3, 1), (0.85, 0.9, 1, 1))
     modifier = attach_foam_projection(surface, foam, material, radius=0.6, strength=1)
     initial = [sample(surface, foam, frame, 0.6, 1) for frame in range(3)]
@@ -195,6 +195,7 @@ if __name__ == "__main__":
     parser.add_argument("--whitewater-cache", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--reopen", type=Path)
+    parser.add_argument("--expected-foam-counts", type=int, nargs=3, default=[0, 16, 40])
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     assert bpy.app.build_hash == b"e13b728c6880", bpy.app.build_hash
     if args.reopen:

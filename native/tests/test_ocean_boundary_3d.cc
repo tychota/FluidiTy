@@ -1,5 +1,6 @@
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 #include "fluidity/host/ocean_boundary_3d.h"
 #include "gtest/gtest.h"
@@ -83,6 +84,96 @@ TEST(OceanBoundary3D, ReferenceInletReturnsTheDepthIntegratedStokesDrift) {
   EXPECT_GT(drift_flux_m2_per_s, 0.2);
   EXPECT_LT(return_flux_m2_per_s, -0.2);
   EXPECT_NEAR(return_flux_m2_per_s + drift_flux_m2_per_s, 0, 1e-6);
+}
+
+TEST(OceanBoundary3D, OutletReducesReturnEnergyInLinearWaveFlume) {
+  constexpr std::size_t kCells = 400;
+  constexpr double kSpacingM = 0.05;
+  constexpr double kTimeStepS = 0.00625;
+  constexpr double kDepthM = 1;
+  constexpr double kGravityMPerS2 = 9.81;
+  constexpr double kAmplitudeM = 0.01;
+  constexpr double kPulseCenterM = 4;
+  constexpr double kPulseWidthM = 1;
+  constexpr std::size_t kGauge = 200;
+  constexpr int kSteps = 1840;
+  const double celerity_m_per_s = std::sqrt(kGravityMPerS2 * kDepthM);
+  const auto elevation_at = [&](double position_m) {
+    const double normalized_offset = (position_m - kPulseCenterM) / kPulseWidthM;
+    return kAmplitudeM * std::exp(-0.5 * normalized_offset * normalized_offset);
+  };
+  struct GaugeEnergy {
+    double incident = 0;
+    double reflected = 0;
+  };
+  const auto measure = [&](double outlet_rate_per_s) -> absl::StatusOr<GaugeEnergy> {
+    const auto boundary = ResolvedOceanBoundary3D::Resolve({
+        .outlet_interior_x_m = 14,
+        .outlet_wall_x_m = 20,
+        .outlet_rate_per_s = outlet_rate_per_s,
+    });
+    if (!boundary.ok()) {
+      return boundary.status();
+    }
+    // Staggered linear shallow-water flume, with a closed wall at each end.
+    // A right-going pulse starts upstream of the gauge. Sum characteristic
+    // energy separately over the first outgoing and returning arrivals.
+    std::vector<double> elevation_m(kCells);
+    std::vector<double> face_velocity_m_per_s(kCells + 1);
+    for (std::size_t index = 0; index < kCells; ++index) {
+      elevation_m[index] = elevation_at((index + 0.5) * kSpacingM);
+    }
+    for (std::size_t index = 1; index < kCells; ++index) {
+      const double prior_x_m = index * kSpacingM + 0.5 * kTimeStepS * celerity_m_per_s;
+      face_velocity_m_per_s[index] = elevation_at(prior_x_m) * celerity_m_per_s / kDepthM;
+    }
+    GaugeEnergy energy;
+    for (int step = 0; step < kSteps; ++step) {
+      const double time_s = (step + 1) * kTimeStepS;
+      for (std::size_t index = 1; index < kCells; ++index) {
+        const double slope = (elevation_m[index] - elevation_m[index - 1]) / kSpacingM;
+        const double predicted_velocity_m_per_s = face_velocity_m_per_s[index] - kGravityMPerS2 * kTimeStepS * slope;
+        const auto relaxed = boundary->RelaxFace(
+            FaceNormalAxis::kX,
+            {index * kSpacingM, 0, 0},
+            predicted_velocity_m_per_s,
+            time_s,
+            kTimeStepS
+        );
+        if (!relaxed.ok()) {
+          return relaxed.status();
+        }
+        face_velocity_m_per_s[index] = *relaxed;
+      }
+      for (std::size_t index = 0; index < kCells; ++index) {
+        const double velocity_gradient_per_s =
+            (face_velocity_m_per_s[index + 1] - face_velocity_m_per_s[index]) / kSpacingM;
+        elevation_m[index] -= kDepthM * kTimeStepS * velocity_gradient_per_s;
+      }
+      const double gauge_elevation_m = 0.5 * (elevation_m[kGauge - 1] + elevation_m[kGauge]);
+      const double characteristic_velocity_m = face_velocity_m_per_s[kGauge] * kDepthM / celerity_m_per_s;
+      if (time_s < 4) {
+        const double outgoing = 0.5 * (gauge_elevation_m + characteristic_velocity_m);
+        energy.incident += outgoing * outgoing * kTimeStepS;
+      } else {
+        const double returning = 0.5 * (gauge_elevation_m - characteristic_velocity_m);
+        energy.reflected += returning * returning * kTimeStepS;
+      }
+    }
+    return energy;
+  };
+  const auto closed = measure(0);
+  const auto absorbing = measure(2);
+  ASSERT_TRUE(closed.ok()) << closed.status();
+  ASSERT_TRUE(absorbing.ok()) << absorbing.status();
+  ASSERT_GT(closed->incident, 0);
+  const double closed_reflection = closed->reflected / closed->incident;
+  const double absorbed_reflection = absorbing->reflected / absorbing->incident;
+  RecordProperty("closed_reflected_energy_fraction", closed_reflection);
+  RecordProperty("absorbing_reflected_energy_fraction", absorbed_reflection);
+  EXPECT_NEAR(absorbing->incident, closed->incident, closed->incident * 0.001);
+  EXPECT_NEAR(closed_reflection, 1, 0.02);
+  EXPECT_LT(absorbed_reflection, 0.25);
 }
 
 TEST(OceanBoundary3D, DeepWaterAndFrozenTargetSubdivisionRemainFinite) {

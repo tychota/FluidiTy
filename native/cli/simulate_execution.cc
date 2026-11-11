@@ -427,7 +427,7 @@ struct Observations {
     EXEC_TRY(self.job.CheckForJobStopRequest());
     if (self.motion_capture) {
       if (const auto& capture = self.step_options.whitewater_capture; capture && !rollback) {
-        const auto births = SampleAcceptedWhitewaterSphereStep3D(
+        const auto births = SampleAcceptedWhitewaterStep3D(
             state,
             self.source_scene,
             self.step_options,

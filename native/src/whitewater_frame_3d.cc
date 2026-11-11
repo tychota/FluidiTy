@@ -5,6 +5,8 @@
 #include <limits>
 
 #include "fluidity/host/motion_carrier_3d.h"
+#include "fluidity/host/whitewater_sphere_source_3d.h"
+#include "liquid_substep_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -17,7 +19,7 @@ bool SameGrid(UniformMacGeometry3D a, UniformMacGeometry3D b) {
 }
 }  // namespace
 
-absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterSphereFrame3D(
+absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterFrame3D(
     const MotionFrame3D& source,
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& step_options,
@@ -25,15 +27,19 @@ absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterSphereFrame3D(
     const WhitewaterFrameOptions3D& options
 ) {
   const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
-  if (sphere == nullptr || !std::holds_alternative<std::monostate>(scene.obstacle)) {
-    return absl::UnimplementedError("whitewater frame requires the analytic sphere without obstacles");
+  const auto* union_field = std::get_if<LiquidParticleSphereUnion3D>(&scene.field);
+  const auto* beach = std::get_if<TranslatingHalfspace3D>(&scene.obstacle);
+  if ((!sphere && !union_field)
+      || (!std::holds_alternative<std::monostate>(scene.obstacle) && !IsStationaryWhitewaterBeach3D(scene.obstacle))) {
+    return absl::UnimplementedError("whitewater frame requires sphere fields and stationary beach or no wall");
   }
+  const double field_radius_m = sphere ? sphere->radius : union_field->radius;
   if (source.samples.size() > 65) {
     return absl::ResourceExhaustedError("whitewater motion sample budget exceeded");
   }
   if (source.samples.empty() || source.samples.front().clock != source.first_clock
-      || source.samples.back().clock != source.last_clock || !Finite(sphere->world_center)
-      || !std::isfinite(sphere->radius) || sphere->radius <= 0 || !std::isfinite(options.emission_rate_per_m3_second)
+      || source.samples.back().clock != source.last_clock || (sphere && !Finite(sphere->world_center))
+      || !std::isfinite(field_radius_m) || field_radius_m <= 0 || !std::isfinite(options.emission_rate_per_m3_second)
       || options.emission_rate_per_m3_second <= 0 || !std::isfinite(options.represented_count_per_point)
       || options.represented_count_per_point <= 0 || !std::isfinite(options.transport.classification_radius_m)
       || options.transport.classification_radius_m <= 0) {
@@ -117,19 +123,45 @@ absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterSphereFrame3D(
     carriers.push_back(std::move(*carrier));
   }
   const auto sample_carrier = [&](std::size_t stamp, Vec3 position) -> absl::StatusOr<Vec3> {
+    if (beach) {
+      const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, position);
+      const double margin_m = 1e-9 * first_sample.geometry.cell_width;
+      if (clearance_m < margin_m) {
+        position = liquid_step_internal::Add(
+            position,
+            liquid_step_internal::Scale(beach->unit_normal, margin_m - clearance_m)
+        );
+      }
+    }
     const auto sample = carriers[stamp].Sample(position);
     if (!sample.ok()) {
       return sample.status();
     }
     return sample->velocity;
   };
-  const auto signed_distance = [&](Vec3 position, double) -> absl::StatusOr<double> {
-    const double distance_m = std::hypot(
-                                  position.x - sphere->world_center.x,
-                                  position.y - sphere->world_center.y,
-                                  position.z - sphere->world_center.z
-                              )
-        - sphere->radius;
+  const auto signed_distance = [&](Vec3 position, double time_s) -> absl::StatusOr<double> {
+    double distance_m = 0;
+    if (sphere) {
+      distance_m = liquid_step_internal::FieldDistance(scene.field, {}, position);
+    } else {
+      const auto upper = std::ranges::lower_bound(stamps, time_s, {}, &MotionStamp3D::time_seconds);
+      if (upper == stamps.end()) {
+        return absl::OutOfRangeError("whitewater distance is beyond its accepted samples");
+      }
+      const auto index = static_cast<std::size_t>(upper - stamps.begin());
+      const auto sample_distance = [&](std::size_t stamp) {
+        const auto particles = source.samples[stamp].particles.values();
+        // An empty accepted liquid state is known air within this frame.
+        return particles.empty() ? 2 * options.transport.classification_radius_m
+                                 : liquid_step_internal::FieldDistance(scene.field, particles, position);
+      };
+      distance_m = sample_distance(index);
+      if (upper != stamps.begin() && upper->time_seconds != time_s) {
+        const double lower_time_s = stamps[index - 1].time_seconds;
+        const double fraction = (time_s - lower_time_s) / (upper->time_seconds - lower_time_s);
+        distance_m = std::lerp(sample_distance(index - 1), distance_m, fraction);
+      }
+    }
     if (!std::isfinite(distance_m)) {
       return absl::OutOfRangeError("whitewater sphere distance overflowed");
     }
@@ -140,7 +172,8 @@ absl::StatusOr<WhitewaterFrameResult3D> ReconstructWhitewaterSphereFrame3D(
   transport.gravity = scene.world_acceleration;
   result.frame.points.reserve(previous->points.size() + emitted->points.size());
   const auto advance = [&](const WhitewaterPointRecord3D& record) -> absl::Status {
-    const auto moved = AdvanceWhitewaterPoint3D(record.point, *interval, transport, sample_carrier, signed_distance);
+    const auto moved =
+        AdvanceWhitewaterPoint3D(record.point, *interval, transport, sample_carrier, signed_distance, beach);
     if (!moved.ok()) {
       return moved.status();
     }

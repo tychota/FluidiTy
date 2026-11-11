@@ -358,6 +358,7 @@ struct LiquidSubstepScheduler3D::Impl {
   LiquidStepOptions3D options;
   LiquidSubstepBackend3D backend;
   std::optional<ResolvedOceanBoundary3D> ocean_boundary;
+  std::optional<liquid_step_internal::OceanInletParticles3D> ocean_inlet_particles;
   LiquidStepDiagnostics3D diagnostics;
   LiquidStageFaultHook3D hook;
   double target_time = 0;
@@ -410,6 +411,9 @@ struct LiquidSubstepScheduler3D::Impl {
       new_obstacle = liquid_step_internal::ObstacleAtTime(obstacle, step_duration);
     }
     STEP_TRY(liquid_step_internal::Emit(scene, step_duration, trial));
+    if (ocean_inlet_particles) {
+      STEP_TRY(ocean_inlet_particles->Apply(*ocean_boundary, obstacle, old_time, trial));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, step_duration));
     STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend));
     STEP_TRY(backend.topology(
@@ -1042,6 +1046,20 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       return ocean_boundary.status();
     }
     impl->ocean_boundary = std::move(*ocean_boundary);
+    if (options.ocean_boundary->inlet_particle_spacing_m > 0) {
+      if (!std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)) {
+        return absl::InvalidArgumentError("ocean particle level control needs a particle-derived liquid field");
+      }
+      auto inlet = liquid_step_internal::OceanInletParticles3D::Create(*options.ocean_boundary, scene.liquid_density);
+      if (!inlet.ok()) {
+        return inlet.status();
+      }
+      if (inlet->reserved_bytes() > SIZE_MAX - impl->reservation_bytes) {
+        return Error(absl::StatusCode::kResourceExhausted);
+      }
+      impl->reservation_bytes += inlet->reserved_bytes();
+      impl->ocean_inlet_particles = std::move(*inlet);
+    }
   }
   STEP_TRY(backend.initialize(backend.context, initial));
   impl->backend = backend;
@@ -1211,6 +1229,10 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       if (!reservation_bytes.ok()) {
         return reservation_bytes.status();
       }
+      const auto inlet_bytes = impl_->ocean_inlet_particles ? impl_->ocean_inlet_particles->reserved_bytes() : 0;
+      if (inlet_bytes > SIZE_MAX - *reservation_bytes) {
+        return Error(absl::StatusCode::kResourceExhausted);
+      }
       const auto prepared_growth =
           impl_->backend.prepare_growth(impl_->backend.context, growth, impl_->transaction.frame_start());
       if (!prepared_growth.ok()) {
@@ -1223,7 +1245,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
         return restarted;
       }
       impl_->backend.commit_growth(impl_->backend.context);
-      impl_->reservation_bytes = *reservation_bytes;
+      impl_->reservation_bytes = *reservation_bytes + inlet_bytes;
       impl_->workspace = std::move(*workspace);
       impl_->staging = std::move(*staging);
       impl_->options.capacities = growth;

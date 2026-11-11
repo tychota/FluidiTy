@@ -54,8 +54,10 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.world_acceleration = {};
   }
   const bool slow_frame = args[5] == "slow";
-  const bool whitewater = args[5] == "whitewater-effects";
-  const bool ocean = args[5] == "ocean";
+  const bool whitewater_beach = args[5] == "whitewater-beach";
+  const bool whitewater = args[5] == "whitewater-effects" || whitewater_beach;
+  const bool ocean_level = args[5] == "ocean-level";
+  const bool ocean = args[5] == "ocean" || ocean_level;
   const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
@@ -89,7 +91,24 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
             },
     };
   }
-  if (initial_particle) {
+  if (ocean_level) {
+    auto& settings = *scene.options.ocean_boundary;
+    settings.swell.wave_height_m = 0;
+    settings.inlet_wall_x_m = 2;
+    settings.inlet_interior_x_m = 3;
+    settings.inlet_particle_spacing_m = 1;
+    settings.inlet_low_z_m = 2;
+    settings.inlet_high_z_m = 3;
+    scene.scene.liquid_density = 1;
+    scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
+  } else if (whitewater_beach) {
+    scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
+    scene.scene.obstacle = fluidity::TranslatingHalfspace3D{
+        .unit_normal = {-0.6, 0.8, 0},
+        .start_plane_coordinate = 0.125,
+        .wall_velocity = {},
+    };
+  } else if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
   if (args[5] != "defaults") {

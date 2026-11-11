@@ -37,6 +37,9 @@ table OceanBoundary {
   outlet_wall_x_m:double (id:10);
   inlet_rate_per_s:double (id:11);
   outlet_rate_per_s:double (id:12);
+  inlet_particle_spacing_m:double (id:13);
+  inlet_low_z_m:double (id:14);
+  inlet_high_z_m:double (id:15);
 }
 table StepOptions {
   energy_blend:double = 0.6 (id:0);

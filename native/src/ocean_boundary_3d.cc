@@ -167,6 +167,13 @@ absl::StatusOr<ResolvedOceanBoundary3D> ResolvedOceanBoundary3D::Resolve(const O
       || settings.swell.propagation_direction.x <= 0) {
     return absl::InvalidArgumentError("ocean zones need nonnegative rates and swell traveling into the inlet");
   }
+  if (!std::isfinite(settings.inlet_particle_spacing_m) || settings.inlet_particle_spacing_m < 0
+      || !std::isfinite(settings.inlet_low_z_m) || !std::isfinite(settings.inlet_high_z_m)) {
+    return absl::InvalidArgumentError("invalid ocean inlet particle lattice");
+  }
+  if (settings.inlet_particle_spacing_m > 0 && settings.inlet_low_z_m >= settings.inlet_high_z_m) {
+    return absl::InvalidArgumentError("ocean inlet particle lattice needs a positive width in z");
+  }
   const auto swell = ResolvedOceanSwell3D::Resolve(settings.swell);
   if (!swell.ok()) {
     return swell.status();

@@ -48,7 +48,7 @@ TEST(WhitewaterSphereSource3D, RealAcceptedSchedulerStepsProduceBirthsBetweenCar
                 .trapped_air_weight = 0,
                 .crest_weight = 1,
             };
-            auto births = SampleAcceptedWhitewaterSphereStep3D(
+            auto births = SampleAcceptedWhitewaterStep3D(
                 accepted,
                 context.scene,
                 context.step,
@@ -85,10 +85,10 @@ TEST(WhitewaterSphereSource3D, RealAcceptedSchedulerStepsProduceBirthsBetweenCar
   const auto source_seed = DecodeMotionFrame3D(seed_bytes->values());
   ASSERT_TRUE(source_seed.ok());
   const WhitewaterFrameOptions3D options{.emission_rate_per_m3_second = 1000};
-  const auto initial = ReconstructWhitewaterSphereFrame3D(*source_seed, scene, step, nullptr, options);
+  const auto initial = ReconstructWhitewaterFrame3D(*source_seed, scene, step, nullptr, options);
   ASSERT_TRUE(initial.ok()) << initial.status();
   EXPECT_TRUE(initial->frame.points.empty());
-  const auto next = ReconstructWhitewaterSphereFrame3D(*motion, scene, step, &initial->frame, options);
+  const auto next = ReconstructWhitewaterFrame3D(*motion, scene, step, &initial->frame, options);
   ASSERT_TRUE(next.ok()) << next.status();
   ASSERT_FALSE(next->frame.points.empty());
   EXPECT_GT(next->birth_count, 0);

@@ -22,6 +22,11 @@ struct OceanBoundarySettings3D {
   double outlet_wall_x_m = 3;
   double inlet_rate_per_s = 0;
   double outlet_rate_per_s = 0;
+  // Zero disables particle level control. Positive spacing seeds vacant wet
+  // sites in the inlet strip, with one spacing-cubed reference volume per site.
+  double inlet_particle_spacing_m = 0;
+  double inlet_low_z_m = 0;
+  double inlet_high_z_m = 0;
 };
 
 struct OceanSwellSample3D {
@@ -86,6 +91,11 @@ class ResolvedOceanBoundary3D {
   // The input velocity is returned unchanged in the interior.
   absl::StatusOr<double>
   RelaxFace(FaceNormalAxis axis, Vec3 world_anchor_m, double velocity_m_per_s, double time_s, double duration_s) const;
+
+  // Samples the prescribed inlet elevation and world velocity.
+  absl::StatusOr<OceanSwellSample3D> SampleInlet(Vec3 world_position_m, double time_s) const {
+    return swell_.Sample(world_position_m, time_s);
+  }
 
  private:
   ResolvedOceanBoundary3D(OceanBoundarySettings3D settings, ResolvedOceanSwell3D swell)

@@ -14,6 +14,63 @@ LiquidState3D Seed() {
   state.next_particle_id = 2;
   return state;
 }
+TEST(SurfaceReconstruction3D, ClipsSeedAgainstInclinedStationaryBeach) {
+  auto seed = Seed();
+  seed.particles[0].world_velocity.x = 2;
+  const auto bytes = EncodeMotionSeed3D(seed);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto motion = DecodeMotionFrame3D(bytes->values());
+  ASSERT_TRUE(motion.ok()) << motion.status();
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  const TranslatingHalfspace3D beach{
+      .unit_normal = {-0.6, 0.8, 0},
+      .start_plane_coordinate = 0.125,
+      .wall_velocity = {},
+  };
+  scene.obstacle = beach;
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.world_acceleration = {};
+  LiquidStepOptions3D step;
+  step.maximum_step_duration = 0.03;
+  step.capacities = {16, 64, 128, 12288, 1};
+  const SurfaceReconstructionOptions3D options{.spacing_m = 0.125, .sigma_m = 0.25};
+  const auto result = ReconstructSurfaceFrame3D(*motion, scene, step, nullptr, options);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_NEAR(result->corrected_metrics.signed_volume, 1, 0.005);
+  EXPECT_EQ(result->corrected_metrics.boundary_edges, 0);
+  EXPECT_EQ(result->corrected_metrics.self_intersections, 0);
+  std::size_t contact_count = 0;
+  for (const auto& vertex : result->frame.mesh.vertices) {
+    const double clearance_m = beach.unit_normal.x * vertex.position.x + beach.unit_normal.y * vertex.position.y
+        - beach.start_plane_coordinate;
+    EXPECT_GE(clearance_m, 0);
+    contact_count += vertex.contact;
+  }
+  EXPECT_GT(contact_count, 0);
+  auto scheduler = LiquidSubstepScheduler3D::Create(seed, scene, step);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto capture = MotionCapture3D::Create(seed, 1.0 / 24, 1);
+  ASSERT_TRUE(capture.ok()) << capture.status();
+  const LiquidProgressObserver3D observer{
+      .context = &*capture,
+      .observe =
+          [](void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D&, bool rollback) {
+            return static_cast<MotionCapture3D*>(context)->Observe(state, rollback);
+          },
+  };
+  const auto advanced = scheduler->AdvanceFrame(1.0 / 24, observer);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  const auto captured = capture->Finish(scheduler->committed());
+  ASSERT_TRUE(captured.ok()) << captured.status();
+  const auto interval = DecodeMotionFrame3D(captured->values());
+  ASSERT_TRUE(interval.ok()) << interval.status();
+  const auto next = ReconstructSurfaceFrame3D(*interval, scene, step, &result->frame, options);
+  ASSERT_TRUE(next.ok()) << next.status();
+  EXPECT_TRUE(next->used_tracker);
+  EXPECT_EQ(next->retained_ids, result->frame.mesh.vertices.size());
+}
+
 TEST(SurfaceReconstruction3D, ReconstructsAndEncodesMeasuredSeedThenTracksAcceptedFrame) {
   const auto seed = Seed();
   const auto encoded_seed = EncodeMotionSeed3D(seed);
@@ -101,7 +158,7 @@ TEST(SurfaceReconstruction3D, RejectsMissingSeedAndUnsupportedContactBeforePubli
   scene.obstacle = TranslatingHalfspace3D{
       .unit_normal = {0, 1, 0},
       .start_plane_coordinate = 0,
-      .wall_velocity = {},
+      .wall_velocity = {0, 0.1, 0},
   };
   EXPECT_EQ(
       ReconstructSurfaceFrame3D(*motion, scene, {}, nullptr, {}).status().code(),
