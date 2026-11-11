@@ -50,6 +50,7 @@ add_library(fluidity_native STATIC
     native/src/surface_tracking_3d.cc
     native/src/surface_field_3d.cc
   native/src/surface_mesh_3d.cc
+  native/src/surface_occupancy_3d.cc
   native/src/motion_carrier_3d.cc
   native/src/motion_capture_3d.cc
   native/src/effects_cache_3d.cc
@@ -218,6 +219,7 @@ if(BUILD_TESTING)
     native/tests/test_surface_tracking_3d.cc
     native/tests/test_surface_field_3d.cc
     native/tests/test_surface_mesh_3d.cc
+    native/tests/test_surface_occupancy_3d.cc
     native/tests/test_motion_carrier_3d.cc
     native/tests/test_motion_capture_3d.cc
     native/tests/test_effects_cache_3d.cc
