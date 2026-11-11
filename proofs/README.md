@@ -23,6 +23,8 @@ lake env lean Fluidity/UniformTransfer.lean
 lake env lean Fluidity/UniformTile.lean
 lake env lean Fluidity/LiquidTransaction.lean
 lake env lean Fluidity/VolumeTransport.lean
+lake env lean Fluidity/Resampling.lean
+lake env lean Fluidity/Merge.lean
 ```
 
 The default build includes typed consumers in `Fluidity.lean`: concrete tensor reconstruction,
@@ -427,10 +429,55 @@ the proof does not authorize clipping or renormalizing an incomplete stencil.
 | `trilinear_deposition_conserves_inventory` | One complete splat preserves its assigned inventory. |
 | `trilinear_batch_conserves_inventory` | Any finite batch, including an empty one, preserves its total. |
 
-The target registry now contains 33 closures. These four targets require the same
+The target registry now contains 42 closures. These four targets require the same
 pinned Lean build, axiom audit, export and independent checker receipt before
 qualification. Proof-tool Python tests check that they cannot be omitted; they
 do not execute the Lean kernel. The native tests separately measure floating
 deposition and explicit validity. The statements do not certify Gaussian filter
 boundaries, physical gas thermodynamics, liquid-to-gas transfer, surface topology
 or the integrated breaking-wave workflow.
+
+## F3 symmetric split and the uniform 2:1 MAC deficit
+
+The split proof uses equal child mass and reference volume, unchanged affine rows
+and volume ratio, and zero-mean offsets with a supplied covariance. Its energy
+and spatial momentum use the same row-dependent supports as F2. All five
+targets are included in the pinned build, axiom audit and independent checker.
+
+| Audited target | Result |
+| --- | --- |
+| `symmetric_split_moments` | Preserves mass, reference and current volume, and linear momentum. The child energy and F2 spatial moments are the parent values minus their contractions with D_parent,a − D_child,a − S. |
+| `split_normal_deficit_preserves_angular_momentum` | The row-normal deficit leaves the antisymmetric spatial moments unchanged. |
+| `split_corner_covariance` | The eight equal-weight sign combinations with squared displacement 3h²/16 have zero mean and covariance 3h²I/16. |
+| `split_uniform_mac_deficits` | Halving the width gives a zero quadratic deficit and mixed MAC deficit h² e_a e_aᵀ/16. The support matrices use the uniform basis variances 1/4 and 1/3 in cell units. |
+| `split_uniform_mac_energy_deficits` | The resulting losses are 0 and m h² Σ C_aa²/32 respectively. |
+
+The 3D reference fixtures in `reference/tests/test_resampling.py` check the
+mixed-row and pure diagonal/off-diagonal cases, including the angular moments
+and the zero quadratic deficit. The fixture exercises the uniform resampling
+algebra. Runtime geometry and phase qualification must independently establish
+unmasked support, affine eligibility and child admissibility.
+
+## F4 merge conservation and rowwise covariance gate
+
+The merge takes the mass-weighted position and velocity and computes the target
+affine row from the child cross moment and the inverse of its positive-definite
+target support. Each velocity row has its own PSD gap between the target
+mass-weighted support and the child covariance. The row energy proof completes
+the child velocity and affine squares at the target affine row, then applies
+that row's PSD gap. This yields the F4 energy bound without a pseudoinverse.
+
+| Audited target | Result |
+| --- | --- |
+| `merge_affine_row_matches_cross_moment` | The mass-weighted target affine spatial moment equals the child cross moment. |
+| `merge_covariance_gate_bounds_row_energy` | The PSD gate bounds the target affine energy by the centered child kinetic plus affine energy for that row. |
+| `merge_preserves_moments_and_bounds_energy` | With total child mass and mass-weighted means, preserves the spatial and velocity first moments and every F2 spatial-momentum entry. The latter preserves angular momentum. The full target energy is bounded by the full child energy. |
+| `merge_preserves_volume_inventories` | With target reference volume equal to its child sum and positive volume denominators, preserves current volume and each constituent volume using J V0 weights. |
+
+The counterstreaming reference fixture uses distinct child rows and support
+matrices. It checks energy 28 before and 17/8 after, angular momentum −6,
+and current constituent volumes 2 and 9 with reference volumes 1 and 3.
+Lowering one target row alone makes its covariance gap indefinite and
+triggers refusal. Geometry and EOS admissibility, phase/body/side matching,
+and conservative floating eigenvalue tolerances require separate runtime
+qualification.

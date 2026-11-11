@@ -194,7 +194,22 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 33
+    assert len(verify.TARGETS) == 42
+
+
+def test_m3_resampling_contracts_are_exported_and_audited():
+    required = {
+        'Fluidity.symmetric_split_moments',
+        'Fluidity.split_normal_deficit_preserves_angular_momentum',
+        'Fluidity.split_corner_covariance',
+        'Fluidity.split_uniform_mac_deficits',
+        'Fluidity.split_uniform_mac_energy_deficits',
+        'Fluidity.merge_affine_row_matches_cross_moment',
+        'Fluidity.merge_covariance_gate_bounds_row_energy',
+        'Fluidity.merge_preserves_moments_and_bounds_energy',
+        'Fluidity.merge_preserves_volume_inventories',
+    }
+    assert required <= set(verify.TARGETS)
 
 
 def test_m2_trilinear_volume_contracts_are_exported_and_audited():
