@@ -18,6 +18,14 @@ The regular initial particle lattice leaves a gap across shallow columns. Mesh r
 
 The separate three-frame stationary beach surface and foam control reopens in Blender 5.3.0 build 02f0899d78e3. Surface geometry hashes and foam counts matched the 5.2.3 receipt. Mask float hashes differed at the two populated frames while the 5.3 mask agreed with its nearest-point oracle within 6.81e-8. The OpenVDB playback receipt matched. Wave-scale surface tracking, full reference bake and artist workflow qualification remain open.
 
+## Reconstruction direction
+
+Hu et al.'s [MLS-MPM](https://yuanming.taichi.graphics/publication/2018-mlsmpm/) improves material-to-grid transfer and discretizes the stress divergence. The accepted particle positions and material volumes still need a separate rendering reconstruction. Yu and Turk's [anisotropic surface kernels](https://faculty.cc.gatech.edu/~turk/my_papers/sph_surfaces.pdf) show why a spherical kernel struggles with flat features. Bhattacharya et al.'s [constrained level-set skinning](https://sealab.cs.utah.edu/Papers/Bhattacharya-2011-ALM/) fits a smooth surface between particle-derived bounds. Ando et al.'s [sheet preservation](https://ryichando.graphics/sheetflip/tvcg.html) also changes the FLIP sampling during simulation. For M2 the surface stage can use those geometric ideas on a frozen cache. Changes to simulation sampling and the narrow band belong to M3.
+
+Frame zero now partitions material before density smoothing. Each of at most 16 components has a separate density lattice and volume target. Reconstruction divides the node budget across components. Publication measures the aggregate for intersections and rejects potential nesting. Replay checks the payload and restore authenticates each component against the original particle IDs and material volumes. Tracking later multi-component frames and repairing splits or merges remain open.
+
+The separated-component control fits two unit-volume components and rejects overlapping scaffolds. On the original frozen swell, partitioning passes the connectivity guard and reaches reconstruction of a component with 1.875 m³ of material. Its raw surface encloses 1.30507 m³. The next step is a thin-water scaffold with local support fitted to the wet layer and beach, compared with the isotropic reference on the same frozen inputs. The existing geometric correction and topology gates still apply.
+
 ## Reproduce the fixed inputs
 
 Use the native fixture from this branch and pass the exact solver executable to bind its digest into the scene. Create a new output directory for each run.

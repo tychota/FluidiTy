@@ -231,6 +231,122 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     return result;
   }
   if (const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
+    if (previous == nullptr) {
+      const auto partition = PartitionSurfaceSphereUnion3D(
+          endpoint.particles.values(),
+          sphere_union->radius,
+          options.limits.cache.maximum_records.particles
+      );
+      if (!partition.ok()) {
+        return partition.status();
+      }
+      if (partition->size() > 1) {
+        // Separate the material before density smoothing. The aggregate
+        // encoder rejects intersecting components, including across dry gaps.
+        constexpr std::size_t kMaximumSeedComponents = 16;
+        if (partition->size() > kMaximumSeedComponents || partition->size() > options.maximum_nodes) {
+          return absl::ResourceExhaustedError("material component seed exceeds the reconstruction budget");
+        }
+        auto component_options = options;
+        component_options.maximum_nodes /= partition->size();
+        using MeshBounds = std::array<Vec3, 2>;
+        std::vector<MeshBounds> component_bounds;
+        const auto contains_bounds = [](const MeshBounds& outer, const MeshBounds& inner) {
+          return outer[0].x <= inner[0].x && outer[0].y <= inner[0].y && outer[0].z <= inner[0].z
+              && outer[1].x >= inner[1].x && outer[1].y >= inner[1].y && outer[1].z >= inner[1].z;
+        };
+        for (const auto& material : *partition) {
+          MotionFrame3D component_source{};
+          auto& seed = component_source.samples.emplace_back();
+          seed.geometry = endpoint.geometry;
+          seed.random_seed = endpoint.random_seed;
+          seed.next_particle_id = endpoint.next_particle_id;
+          auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(material.particle_indices.size());
+          if (!particles.ok()) {
+            return particles.status();
+          }
+          const auto sized = particles->Resize(material.particle_indices.size());
+          if (!sized.ok()) {
+            return sized;
+          }
+          for (std::size_t index = 0; index < material.particle_indices.size(); ++index) {
+            (*particles)[index] = endpoint.particles[material.particle_indices[index]];
+          }
+          seed.particles = std::move(*particles);
+          auto reconstructed =
+              ReconstructSurfaceFrame3D(component_source, scene, step_options, nullptr, component_options);
+          if (!reconstructed.ok()) {
+            return reconstructed.status();
+          }
+          auto& mesh = result.frame.mesh;
+          auto& component_mesh = reconstructed->frame.mesh;
+          if (component_mesh.vertices.size() > options.limits.maximum_vertices - mesh.vertices.size()
+              || component_mesh.triangles.size() > options.limits.maximum_triangles - mesh.triangles.size()) {
+            return absl::ResourceExhaustedError("combined Mesh seed exceeds the geometry budget");
+          }
+          const auto first_position = component_mesh.vertices.front().position;
+          MeshBounds bounds{first_position, first_position};
+          for (const auto& vertex : component_mesh.vertices) {
+            const auto position = vertex.position;
+            bounds[0] = {
+                std::min(bounds[0].x, position.x),
+                std::min(bounds[0].y, position.y),
+                std::min(bounds[0].z, position.z)
+            };
+            bounds[1] = {
+                std::max(bounds[1].x, position.x),
+                std::max(bounds[1].y, position.y),
+                std::max(bounds[1].z, position.z)
+            };
+          }
+          // A triangle intersection test cannot detect nested closed meshes.
+          // Fail closed if their boxes admit nesting.
+          if (std::ranges::any_of(component_bounds, [&](const auto& prior) {
+                return contains_bounds(prior, bounds) || contains_bounds(bounds, prior);
+              })) {
+            return absl::FailedPreconditionError("separate Mesh seed surfaces may enclose one another");
+          }
+          component_bounds.push_back(bounds);
+          const auto component_id = endpoint.particles[material.particle_indices.front()].id;
+          const auto vertex_offset = static_cast<std::uint32_t>(mesh.vertices.size());
+          for (auto& vertex : component_mesh.vertices) {
+            vertex.component = component_id;
+            vertex.id = mesh.next_id++;
+            mesh.vertices.push_back(vertex);
+          }
+          for (auto triangle : component_mesh.triangles) {
+            for (auto& vertex_index : triangle) {
+              vertex_index += vertex_offset;
+            }
+            mesh.triangles.push_back(triangle);
+          }
+          auto volume = reconstructed->frame.volumes.front();
+          volume.component = component_id;
+          result.frame.volumes.push_back(volume);
+          result.raw_metrics.signed_volume += reconstructed->raw_metrics.signed_volume;
+          result.raw_metrics.area += reconstructed->raw_metrics.area;
+          result.raw_metrics.components += reconstructed->raw_metrics.components;
+          result.raw_metrics.euler_characteristic += reconstructed->raw_metrics.euler_characteristic;
+          result.deep_liquid_fills += reconstructed->deep_liquid_fills;
+          result.deep_air_fills += reconstructed->deep_air_fills;
+          result.maximum_source_field_distance_m =
+              std::max(result.maximum_source_field_distance_m, reconstructed->maximum_source_field_distance_m);
+        }
+        auto measured = MeasureSurfaceMesh3D(result.frame.mesh);
+        if (!measured.ok()) {
+          return measured.status();
+        }
+        if (!Safe(*measured) || measured->components != partition->size()) {
+          return absl::FailedPreconditionError("separate material component surfaces intersect or are unsafe");
+        }
+        result.corrected_metrics = *measured;
+        const auto encoded = EncodeSurfaceFrame3D(result.frame, options.limits);
+        if (!encoded.ok()) {
+          return encoded.status();
+        }
+        return result;
+      }
+    }
     const auto continuity = CheckSphereUnionContinuity(
         source,
         sphere_union->radius,
