@@ -82,6 +82,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_state_3d.cc
   native/src/grid.cc
   native/src/adaptive_family_change_3d.cc
+  native/src/adaptive_liquid_remap_3d.cc
   native/src/adaptive_mac_topology_3d.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
@@ -272,6 +273,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_wall_contact_3d.cc
     native/tests/test_mac_pressure_workspace_3d.cc
     native/tests/test_adaptive_mac_topology_3d.cc
+    native/tests/test_adaptive_liquid_remap_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
     native/tests/test_viscosity.cc)
