@@ -66,6 +66,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_cache_store_3d.cc
   native/src/liquid_cache_files_3d.cc
   native/src/liquid_state_3d.cc
+  native/src/liquid_remap_3d.cc
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
@@ -230,6 +231,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_cache_3d.cc
     native/tests/test_liquid_cache_store_3d.cc
     native/tests/test_liquid_state_3d.cc
+    native/tests/test_liquid_remap_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
