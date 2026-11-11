@@ -4,7 +4,7 @@
 
 The bounded 3D qualification covers aligned cubic-normal MAC transfer, the native pressure projection, signed subface ownership, masked PIC, and the first refine/coarsen family remap. The manufactured band tests cover rollback and cavity preservation. Use the measured edge/corner cases and the separately checked F3/F4 contracts as regression controls as these pieces enter the production path.
 
-The accepted M2 increment supplies authenticated effects products, accepted motion, Ocean Boundary, and the stationary beach workflow. Its quarter-scale swell follow-up records Mesh connectivity and volume-correction failures. Use the corrected breaking-wave inputs and their receipts when available. A completed Simulate stage alone does not qualify the surface, whitewater, volume, or cache-drain portion of the wave. [M2 increment](https://github.com/tychota/FluidiTy/pull/52) · [Swell follow-up](https://github.com/tychota/FluidiTy/pull/65)
+The accepted M2 increment supplies authenticated effects products, accepted motion, Ocean Boundary, and the stationary beach workflow. In the quarter-scale swell follow-up, the partial-column seed now publishes frame zero within 0.23% of target volume and replays it byte-for-byte. Frame one rejects 30 triangle intersections, and the regular seed still has an unresolved material component. Use the corrected breaking-wave inputs and their receipts when available. A completed Simulate stage alone does not qualify the surface, whitewater, volume, or cache-drain portion of the wave. [M2 increment](https://github.com/tychota/FluidiTy/pull/52) · [Swell follow-up](https://github.com/tychota/FluidiTy/pull/65)
 
 ## Native adaptive Simulate
 
