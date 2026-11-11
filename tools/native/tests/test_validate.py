@@ -151,7 +151,7 @@ SCHEMA_CASES = tuple(
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 ) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame"))
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects"))
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "public_interface"))
 CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects")
 CUDA_EXECUTION_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
@@ -1283,7 +1283,7 @@ def test_cli_gate_is_required_and_recorded(scenario, preset):
     _, _, output, run, _ = scenario
     run(preset)
     evidence = json.loads((output / "summary.json").read_text())["evidence"]
-    assert evidence["cli"] == {"status": "passed", "tests": 10, "lifecycle": lifecycle_receipt("cpu")}
+    assert evidence["cli"] == {"status": "passed", "tests": 11, "lifecycle": lifecycle_receipt("cpu")}
     assert (output / "ctest-cli.xml").is_file()
     if preset.endswith("cuda"):
         assert evidence["cuda_cli"]["tests"] == 5

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -15,6 +16,9 @@
 #include "liquid_state_generated.h"
 #include "point_frame_generated.h"
 #include "resolved_scene_generated.h"
+#if defined(FLUIDITY_PUBLIC_CLI)
+#include "public_cli.h"
+#endif
 #include "simulate_job.h"
 #include "simulate_schema_text.h"
 #if defined(__APPLE__)
@@ -540,12 +544,27 @@ void ConfigureSimulateFaultFixture(std::vector<std::string>& arguments);
 #endif
 
 namespace {
-int Main(std::vector<std::string> arguments) {
+int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
 #if defined(FLUIDITY_SIMULATE_FAULT_FIXTURE)
   fluidity::simulate::ConfigureSimulateFaultFixture(arguments);
 #endif
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
+#if defined(FLUIDITY_PUBLIC_CLI)
+  if (public_cli && std::all_of(arguments.begin(), arguments.end(), fluidity::simulate::ValidUtf8)) {
+    auto parsed = fluidity::simulate::ParsePublicCli(arguments);
+    if (!parsed.ok()) {
+      diagnostic.field = "arguments";
+      diagnostic.cause = std::string(parsed.status().message());
+      const auto output_status = writer.Error(parsed.status(), diagnostic);
+      return output_status.ok() && parsed.status().code() == absl::StatusCode::kInvalidArgument ? 2 : 1;
+    }
+    if (!parsed->has_value()) {
+      return 0;
+    }
+    arguments = std::move(**parsed);
+  }
+#endif
   auto command = fluidity::simulate::ParseCommand(arguments, &diagnostic);
   const auto status = command.ok() ? fluidity::simulate::Dispatch(*command, writer, &diagnostic) : command.status();
   if (!status.ok()) {
@@ -557,12 +576,13 @@ int Main(std::vector<std::string> arguments) {
 }  // namespace
 #if defined(_WIN32)
 int wmain(int argc, wchar_t** argv) {
+  const bool public_cli = argc > 0 && _wcsicmp(std::filesystem::path(argv[0]).stem().c_str(), L"fluidity") == 0;
   std::vector<std::string> arguments;
   for (int index = 1; index < argc; ++index) {
     const int utf8_byte_count =
         WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[index], -1, nullptr, 0, nullptr, nullptr);
     if (utf8_byte_count <= 0) {
-      return Main({std::string(1, static_cast<char>(0xff))});
+      return Main({std::string(1, static_cast<char>(0xff))}, public_cli);
     }
     std::string text(static_cast<std::size_t>(utf8_byte_count), '\0');
     if (WideCharToMultiByte(
@@ -576,19 +596,20 @@ int wmain(int argc, wchar_t** argv) {
             nullptr
         )
         != utf8_byte_count) {
-      return Main({std::string(1, static_cast<char>(0xff))});
+      return Main({std::string(1, static_cast<char>(0xff))}, public_cli);
     }
     text.pop_back();
     arguments.push_back(std::move(text));
   }
-  return Main(std::move(arguments));
+  return Main(std::move(arguments), public_cli);
 }
 #else
 int main(int argc, char** argv) {
+  const bool public_cli = argc > 0 && std::filesystem::path(argv[0]).filename() == "fluidity";
   std::vector<std::string> arguments;
   for (int index = 1; index < argc; ++index) {
     arguments.emplace_back(argv[index]);
   }
-  return Main(std::move(arguments));
+  return Main(std::move(arguments), public_cli);
 }
 #endif
