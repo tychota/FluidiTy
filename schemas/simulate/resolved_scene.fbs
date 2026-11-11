@@ -23,6 +23,21 @@ table WhitewaterCapture {
   trapped_air_weight:double (id:6);
   crest_weight:double (id:7);
 }
+table OceanBoundary {
+  still_water_height_m:double (id:0);
+  water_depth_m:double (id:1);
+  wave_height_m:double (id:2);
+  wave_period_s:double (id:3);
+  gravity_m_per_s2:double (id:4);
+  propagation_direction:Vector3 (required, id:5);
+  phase_at_world_origin_rad:double (id:6);
+  inlet_wall_x_m:double (id:7);
+  inlet_interior_x_m:double (id:8);
+  outlet_interior_x_m:double (id:9);
+  outlet_wall_x_m:double (id:10);
+  inlet_rate_per_s:double (id:11);
+  outlet_rate_per_s:double (id:12);
+}
 table StepOptions {
   energy_blend:double = 0.6 (id:0);
   maximum_step_duration:double = 0.01 (id:1);
@@ -32,6 +47,7 @@ table StepOptions {
   pressure_iterations:uint = 256 (id:5);
   motion_sample_intervals:uint (id:6);
   whitewater_capture:WhitewaterCapture (id:7);
+  ocean_boundary:OceanBoundary (id:8);
 }
 table HorizontalPlane {
   surface_height_y:double (id:0);

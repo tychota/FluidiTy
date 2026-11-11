@@ -70,6 +70,12 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   if (!options_valid) {
     return Invalid();
   }
+  if (options.ocean_boundary) {
+    const auto boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
+    if (!boundary.ok()) {
+      return boundary.status();
+    }
+  }
   if (const auto& capture = options.whitewater_capture) {
     const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
     if (options.motion_sample_intervals == 0 || sphere == nullptr
@@ -227,6 +233,29 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
             },
     };
   }
+  if (const auto* boundary = options->ocean_boundary()) {
+    if (!AllFieldsPresent(boundary, wire::OceanBoundary::VT_OUTLET_RATE_PER_S)) {
+      return detail::Corrupt();
+    }
+    result.options.ocean_boundary = OceanBoundarySettings3D{
+        .swell =
+            {
+                .still_water_height_m = boundary->still_water_height_m(),
+                .water_depth_m = boundary->water_depth_m(),
+                .wave_height_m = boundary->wave_height_m(),
+                .wave_period_s = boundary->wave_period_s(),
+                .gravity_m_per_s2 = boundary->gravity_m_per_s2(),
+                .propagation_direction = detail::Unpack(boundary->propagation_direction()),
+                .phase_at_world_origin_rad = boundary->phase_at_world_origin_rad(),
+            },
+        .inlet_wall_x_m = boundary->inlet_wall_x_m(),
+        .inlet_interior_x_m = boundary->inlet_interior_x_m(),
+        .outlet_interior_x_m = boundary->outlet_interior_x_m(),
+        .outlet_wall_x_m = boundary->outlet_wall_x_m(),
+        .inlet_rate_per_s = boundary->inlet_rate_per_s(),
+        .outlet_rate_per_s = boundary->outlet_rate_per_s(),
+    };
+  }
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
   const auto seed_covariance_scale = field->seed_covariance_scale();
@@ -312,7 +341,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
   // Include the optional tables only for the active variants.
   const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
-      + (tank != nullptr) + input.options.whitewater_capture.has_value();
+      + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
       tables,
       limits,
@@ -352,7 +381,31 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
               detail::Canonical(source.crest_weight)
           );
         }
+        flatbuffers::Offset<wire::OceanBoundary> ocean;
+        if (const auto& boundary = options.ocean_boundary) {
+          const auto& swell = boundary->swell;
+          const auto direction = detail::PackCanonical(swell.propagation_direction);
+          ocean = wire::CreateOceanBoundary(
+              builder,
+              detail::Canonical(swell.still_water_height_m),
+              swell.water_depth_m,
+              detail::Canonical(swell.wave_height_m),
+              swell.wave_period_s,
+              swell.gravity_m_per_s2,
+              &direction,
+              detail::Canonical(swell.phase_at_world_origin_rad),
+              detail::Canonical(boundary->inlet_wall_x_m),
+              detail::Canonical(boundary->inlet_interior_x_m),
+              detail::Canonical(boundary->outlet_interior_x_m),
+              detail::Canonical(boundary->outlet_wall_x_m),
+              detail::Canonical(boundary->inlet_rate_per_s),
+              detail::Canonical(boundary->outlet_rate_per_s)
+          );
+        }
         wire::StepOptionsBuilder settings_builder(builder);
+        if (options.ocean_boundary) {
+          settings_builder.add_ocean_boundary(ocean);
+        }
         // Preserve the original v1 bytes when capture is disabled.
         if (options.whitewater_capture) {
           settings_builder.add_whitewater_capture(whitewater);

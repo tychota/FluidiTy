@@ -55,7 +55,25 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   }
   const bool slow_frame = args[5] == "slow";
   const bool whitewater = args[5] == "whitewater-effects";
-  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater;
+  const bool ocean = args[5] == "ocean";
+  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean;
+  if (ocean) {
+    scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
+        .swell =
+            {
+                .still_water_height_m = 3,
+                .water_depth_m = 3,
+                .wave_height_m = 1,
+                .wave_period_s = 4,
+            },
+        .inlet_wall_x_m = 0,
+        .inlet_interior_x_m = 4,
+        .outlet_interior_x_m = 5,
+        .outlet_wall_x_m = 8,
+        .inlet_rate_per_s = 5,
+        .outlet_rate_per_s = 4,
+    };
+  }
   scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" ? 16 : 0);
   if (whitewater) {
     scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
@@ -186,6 +204,9 @@ int CheckpointFixture(const std::filesystem::path& path) {
   }
   const auto& state = checkpoint->state;
   const auto& capacities = checkpoint->resume.capacities;
+  const auto position = state.particles.size() ? state.particles[0].world_position : fluidity::Vec3{};
+  const auto velocity = state.particles.size() ? state.particles[0].world_velocity : fluidity::Vec3{};
+  std::cout.precision(17);
   std::cout << "{\"state_digest\":\""
             << fluidity::LiquidDigestHex3D(fluidity::LiquidContentDigest3D(bytes->values())).data()
             << "\",\"frame\":" << state.clock.frame_ordinal << ",\"seed\":" << state.random_seed
@@ -193,7 +214,9 @@ int CheckpointFixture(const std::filesystem::path& path) {
             << ",\"particle_count\":" << state.particles.size() << ",\"next_particle_id\":" << state.next_particle_id
             << ",\"capacities\":[" << capacities.particles << ',' << capacities.blocks << ',' << capacities.cells << ','
             << capacities.faces << ',' << capacities.sources << ']'
-            << ",\"first_tag\":" << (state.particles.size() ? state.particles[0].tag : 0)
+            << ",\"first_tag\":" << (state.particles.size() ? state.particles[0].tag : 0) << ",\"first_position\":["
+            << position.x << ',' << position.y << ',' << position.z << ']' << ",\"first_velocity\":[" << velocity.x
+            << ',' << velocity.y << ',' << velocity.z << ']'
             << ",\"capacity_replay_particles\":" << checkpoint->resume.capacity_replay_reservations.particles
             << ",\"source_next_child\":" << (state.sources.size() ? state.sources[0].next_child_ordinal : 0) << "}\n";
   return 0;

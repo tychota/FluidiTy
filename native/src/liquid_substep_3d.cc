@@ -357,6 +357,7 @@ struct LiquidSubstepScheduler3D::Impl {
   LiquidSceneInputs3D scene;
   LiquidStepOptions3D options;
   LiquidSubstepBackend3D backend;
+  std::optional<ResolvedOceanBoundary3D> ocean_boundary;
   LiquidStepDiagnostics3D diagnostics;
   LiquidStageFaultHook3D hook;
   double target_time = 0;
@@ -463,6 +464,33 @@ struct LiquidSubstepScheduler3D::Impl {
         staging.new_velocities.values()
     ));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, step_duration));
+    // Both backends publish predicted velocities into host staging. Pressure
+    // consumes the relaxed staging values, and old history remains untouched.
+    const auto relax_face = [&](std::size_t slot) -> absl::Status {
+      const auto face = grid.FaceIndex(slot);
+      if (!face.ok()) {
+        return face.status();
+      }
+      const auto anchor = grid.FaceWorldAnchor(*face);
+      if (!anchor.ok()) {
+        return anchor.status();
+      }
+      const auto velocity =
+          ocean_boundary->RelaxFace(face->axis, *anchor, staging.new_velocities[slot], new_time, step_duration);
+      if (!velocity.ok()) {
+        return velocity.status();
+      }
+      staging.new_velocities[slot] = *velocity;
+      return absl::OkStatus();
+    };
+    if (ocean_boundary) {
+      for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
+        const auto validity = normalized->validity[slot];
+        if (validity == LiquidFaceValidity3D::kValid || validity == LiquidFaceValidity3D::kPredicted) {
+          STEP_TRY(relax_face(slot));
+        }
+      }
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kBodyContact, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kInterface, step_duration));
     std::optional<double> exact_curvature;
@@ -562,6 +590,9 @@ struct LiquidSubstepScheduler3D::Impl {
         // Preserve old validity: pressure prediction must not erase a low-mass
         // retention fallback. The backend applies acceleration once to continuation.
         staging.new_velocities[slot] = *predicted_face_velocity;
+        if (ocean_boundary) {
+          STEP_TRY(relax_face(slot));
+        }
       }
       staging.incident_velocities[index] = staging.new_velocities[slot];
     }
@@ -1005,6 +1036,13 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   impl->scene = scene;
   impl->scene.sources = impl->sources.values();
   impl->options = options;
+  if (options.ocean_boundary) {
+    auto ocean_boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
+    if (!ocean_boundary.ok()) {
+      return ocean_boundary.status();
+    }
+    impl->ocean_boundary = std::move(*ocean_boundary);
+  }
   STEP_TRY(backend.initialize(backend.context, initial));
   impl->backend = backend;
   return LiquidSubstepScheduler3D(std::move(impl));

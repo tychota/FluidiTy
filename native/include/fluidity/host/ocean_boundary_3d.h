@@ -14,6 +14,16 @@ struct OceanSwellSettings3D {
   double phase_at_world_origin_rad = 0;
 };
 
+struct OceanBoundarySettings3D {
+  OceanSwellSettings3D swell{};
+  double inlet_wall_x_m = 0;
+  double inlet_interior_x_m = 1;
+  double outlet_interior_x_m = 2;
+  double outlet_wall_x_m = 3;
+  double inlet_rate_per_s = 0;
+  double outlet_rate_per_s = 0;
+};
+
 struct OceanSwellSample3D {
   double surface_height_m;
   Vec3 world_velocity_m_per_s;
@@ -66,4 +76,22 @@ absl::StatusOr<double> RelaxOceanVelocity(
     double rate_per_s,
     double duration_s
 );
+class ResolvedOceanBoundary3D {
+ public:
+  // Resolve the inlet swell and two non-overlapping x intervals. The outlet
+  // relaxes to rest. Each rate is nonnegative, with zero disabling that zone.
+  static absl::StatusOr<ResolvedOceanBoundary3D> Resolve(const OceanBoundarySettings3D& settings);
+
+  // Relax one checked MAC face velocity toward the frozen target at time_s.
+  // The input velocity is returned unchanged in the interior.
+  absl::StatusOr<double>
+  RelaxFace(FaceNormalAxis axis, Vec3 world_anchor_m, double velocity_m_per_s, double time_s, double duration_s) const;
+
+ private:
+  ResolvedOceanBoundary3D(OceanBoundarySettings3D settings, ResolvedOceanSwell3D swell)
+      : settings_(settings), swell_(swell) {
+  }
+  OceanBoundarySettings3D settings_;
+  ResolvedOceanSwell3D swell_;
+};
 }  // namespace fluidity

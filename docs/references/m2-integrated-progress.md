@@ -276,14 +276,32 @@ exponential update with a cubic spatial ramp.
 The tests compare against direct finite-depth formulas at the bed and in the
 water column, exercise deep water without overflowing the hyperbolic profiles,
 and check that two half steps match a full step for a frozen relaxation target.
-These tests do not exercise the solver's Waves stage, level control, measured
-reflection, or CPU/CUDA parity.
+The reference inlet control integrates the mean return flow and independent
+Stokes drift over a 3 m water column for a 1 m wave and 4 s period.
+
+The solver consumes the resolved settings in its Waves stage after the old
+velocity snapshot and acceleration. The low-x zone relaxes toward the swell
+and the high-x zone toward rest. Both backends use the same allocation-free
+host relaxation on the existing predicted velocity staging. Open faces
+requiring continuation receive relaxation after continuation is computed,
+before pressure assembly. The optional scene table is bound to the existing
+cache identity.
+
+A ten-frame analytic solver fixture exercised 20 accepted steps on CPU and
+CUDA. Final particle positions and velocities matched across backends at
+17-digit output precision. Relative to the unforced CPU control, forcing
+changed position by 0.099989 m and velocity by 0.415088 m/s. All 7 cell keys
+and 768 face keys matched and their pressure and velocity matched at the
+FlatBuffers JSON export precision. Both caches replayed frame 9 read-only.
+This fixture has one particle and exercises the inlet velocity path.
+Particle level control, measured outlet reflection and breaking-wave parity
+remain open.
 
 ## Open integrated gates
 
 The breaking-wave source sampler and whitewater obstacle collisions remain
 open, as do Mesh local repair, contact, component transitions and droplet
-publication. Blender volume export, Ocean Boundary and the complete
+publication. Blender volume export, Ocean Boundary level control and the complete
 Blender breaking-wave workflow are unfinished. The integrated bake and its
 Blender inspection have not run. Full CPU/device numerical qualification
 remains open.

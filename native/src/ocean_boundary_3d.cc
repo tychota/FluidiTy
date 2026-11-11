@@ -155,4 +155,61 @@ absl::StatusOr<double> RelaxOceanVelocity(
   const double weight = -std::expm1(-(ramp * rate_per_s) * duration_s);
   return std::lerp(velocity_m_per_s, target_m_per_s, weight);
 }
+absl::StatusOr<ResolvedOceanBoundary3D> ResolvedOceanBoundary3D::Resolve(const OceanBoundarySettings3D& settings) {
+  const double inlet_width_m = settings.inlet_interior_x_m - settings.inlet_wall_x_m;
+  const double outlet_width_m = settings.outlet_wall_x_m - settings.outlet_interior_x_m;
+  if (!std::isfinite(inlet_width_m) || inlet_width_m <= 0 || !std::isfinite(outlet_width_m) || outlet_width_m <= 0
+      || settings.inlet_interior_x_m > settings.outlet_interior_x_m) {
+    return absl::InvalidArgumentError("ocean zones must have positive widths and not overlap");
+  }
+  if (!std::isfinite(settings.inlet_rate_per_s) || settings.inlet_rate_per_s < 0
+      || !std::isfinite(settings.outlet_rate_per_s) || settings.outlet_rate_per_s < 0
+      || settings.swell.propagation_direction.x <= 0) {
+    return absl::InvalidArgumentError("ocean zones need nonnegative rates and swell traveling into the inlet");
+  }
+  const auto swell = ResolvedOceanSwell3D::Resolve(settings.swell);
+  if (!swell.ok()) {
+    return swell.status();
+  }
+  return ResolvedOceanBoundary3D(settings, *swell);
+}
+
+absl::StatusOr<double> ResolvedOceanBoundary3D::RelaxFace(
+    FaceNormalAxis axis,
+    Vec3 world_anchor_m,
+    double velocity_m_per_s,
+    double time_s,
+    double duration_s
+) const {
+  if (!Finite(world_anchor_m) || !std::isfinite(velocity_m_per_s) || !std::isfinite(time_s)
+      || !std::isfinite(duration_s) || duration_s < 0 || axis > FaceNormalAxis::kZ) {
+    return absl::InvalidArgumentError("invalid ocean face sample");
+  }
+  const double face_x_m = world_anchor_m.x;
+  if (face_x_m < settings_.inlet_interior_x_m && settings_.inlet_rate_per_s > 0) {
+    const auto sample = swell_.Sample(world_anchor_m, time_s);
+    if (!sample.ok()) {
+      return sample.status();
+    }
+    const auto target = sample->world_velocity_m_per_s;
+    const double target_normal_velocity = axis == FaceNormalAxis::kX ? target.x
+        : axis == FaceNormalAxis::kY                                 ? target.y
+                                                                     : target.z;
+    const double zone_fraction = (settings_.inlet_interior_x_m - std::max(settings_.inlet_wall_x_m, face_x_m))
+        / (settings_.inlet_interior_x_m - settings_.inlet_wall_x_m);
+    return RelaxOceanVelocity(
+        velocity_m_per_s,
+        target_normal_velocity,
+        zone_fraction,
+        settings_.inlet_rate_per_s,
+        duration_s
+    );
+  }
+  if (face_x_m > settings_.outlet_interior_x_m && settings_.outlet_rate_per_s > 0) {
+    const double zone_fraction = (std::min(settings_.outlet_wall_x_m, face_x_m) - settings_.outlet_interior_x_m)
+        / (settings_.outlet_wall_x_m - settings_.outlet_interior_x_m);
+    return RelaxOceanVelocity(velocity_m_per_s, 0, zone_fraction, settings_.outlet_rate_per_s, duration_s);
+  }
+  return velocity_m_per_s;
+}
 }  // namespace fluidity

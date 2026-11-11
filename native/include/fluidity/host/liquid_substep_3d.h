@@ -8,6 +8,7 @@
 #include <variant>
 
 #include "fluidity/host/liquid_step_workspace_3d.h"
+#include "fluidity/host/ocean_boundary_3d.h"
 #include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
@@ -74,6 +75,7 @@ struct LiquidStepOptions3D {
   std::uint32_t motion_sample_intervals = 0;  // Zero disables effects capture; otherwise 1..64 accepted-time slots.
   std::optional<WhitewaterCaptureSettings3D> whitewater_capture{
   };  // Optional accepted source events; analytic control.
+  std::optional<OceanBoundarySettings3D> ocean_boundary;  // Optional inlet and outlet velocity relaxation.
 };
 enum class LiquidPhysicalStage3D {
   kEmit,
