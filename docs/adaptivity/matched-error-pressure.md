@@ -51,12 +51,24 @@ This measurement is for manufactured pressure in a Debug build on a shared
 host. It provides no full-wave or production-throughput result. Elapsed time
 has no acceptance threshold.
 
+## Release CPU measurement
+
+A locked Release build with the same MSVC, host, layouts and error limits
+reproduced every numerical and workspace entry above. The median projection
+was 0.5470 ms uniform and 0.1291 ms adaptive. The nine-sample ranges were
+0.3961–0.5936 ms and 0.1114–0.1902 ms, respectively. The timer has the same
+projection-only scope.
+
+The measured source was `bb9938c036ce246817b4c1f8a149c4e30a0f2a17` and the executable SHA-256 was
+`c632e1855ecd6e772d1e58d27a10d636c18ac2b069420952e028eec74661ab99`.
+
 ## Reproduce
 
 Configure the Debug CPU preset with the
 [Windows native build procedure](../native/README.md#cpu-only-build-on-windows).
 From the repository root, build and run the benchmark to emit the individual
-elapsed samples in JSON. The CTest label runs the same error gates.
+elapsedsamplesinJSON.TheCTestlabelrunsthesameerrorgates.Forthe
+Releasemeasurement,usethewindows-release-cpupresetandoutputdirectory.
 
 ```powershell
 uv run --offline --project reference --locked --group native cmake --build --preset windows-debug-cpu --target fluidity_m3_matched_pressure
