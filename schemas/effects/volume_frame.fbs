@@ -1,0 +1,24 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+
+struct VolumeVoxel {
+  linear_index:uint;
+  foam_count_per_m3:double;
+  bubble_count_per_m3:double;
+  gas_fraction:double;
+}
+table VolumeFrame {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:fluidity.cache.v1.Clock (required, id:2);
+  origin:fluidity.cache.v1.Vector3 (required, id:3);
+  spacing_m:double (id:4);
+  nx:uint (id:5);
+  ny:uint (id:6);
+  nz:uint (id:7);
+  validity:[ubyte] (required, id:8);
+  voxels:[VolumeVoxel] (required, id:9);
+}
+root_type VolumeFrame;
+file_identifier "FLVO";
+file_extension "flvo";

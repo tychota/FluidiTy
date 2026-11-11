@@ -1,0 +1,44 @@
+[
+  {
+    "metadata": {
+      "fluidity_frame": 0,
+      "fluidity_execution": "875b087df8e0e65764ef3b2c64f5f3bdafc356768301f18ab6934df9c6b29677",
+      "fluidity_source_execution": "90ead2c5597dc5d97a4af8cda0907f892f362c5db4884cc5c4cca9c68ccfd4df",
+      "fluidity_payload": "4fa7ab2a3a015dacd507456114eb725955776f668c1a3ed394a3e17271adf6ce"
+    },
+    "inventory": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "sha256": "a5d58d552e4d030dd5450d1c2becca94fcf8c2d35c5ae443db8252bc8e857389"
+  },
+  {
+    "metadata": {
+      "fluidity_frame": 1,
+      "fluidity_execution": "875b087df8e0e65764ef3b2c64f5f3bdafc356768301f18ab6934df9c6b29677",
+      "fluidity_source_execution": "90ead2c5597dc5d97a4af8cda0907f892f362c5db4884cc5c4cca9c68ccfd4df",
+      "fluidity_payload": "5d43158ecc92792ebaa9fd41844b13f7ae22b59d56fe942c73337cb0429f6780"
+    },
+    "inventory": [
+      9.999999804556865,
+      15.99999979983113,
+      0.008377580577459298
+    ],
+    "sha256": "b0d1589bd968942d499506e8bbc8fb69f43dbc45ae7073f10b3135c629df8922"
+  },
+  {
+    "metadata": {
+      "fluidity_frame": 2,
+      "fluidity_execution": "875b087df8e0e65764ef3b2c64f5f3bdafc356768301f18ab6934df9c6b29677",
+      "fluidity_source_execution": "90ead2c5597dc5d97a4af8cda0907f892f362c5db4884cc5c4cca9c68ccfd4df",
+      "fluidity_payload": "a0e01ea850e0ccc704a14f196e539f955e5f97fc3377959e91ce39b1575f23ba"
+    },
+    "inventory": [
+      16.000000189524144,
+      47.99999984565511,
+      0.025132741110153844
+    ],
+    "sha256": "2682aea6f84a93a463e12626b102db9b99257ff8c37eb7190acadb762379de66"
+  }
+]

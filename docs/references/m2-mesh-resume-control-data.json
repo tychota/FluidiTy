@@ -1,0 +1,144 @@
+{
+  "scenario": "stationary accepted three-frame control, 0.0625 m spacing and 0.25 m sigma, resume frame 2 after frame 1",
+  "trials_per_build": 3,
+  "measurements": {
+    "reconstruct_prefix": {
+      "executable_sha256": "136d3cc0af3022ddb103bd687a807fad535ccbaf8c2811866ef3330bebd5590b",
+      "median_process_wall_seconds": 3.9807834000093862,
+      "trials": [
+        {
+          "process_wall_seconds": 3.9807834000093862,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.6104522,
+            "peak_process_resident_bytes": 12402688,
+            "frame": 2
+          }
+        },
+        {
+          "process_wall_seconds": 3.9493169999914244,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.602403,
+            "peak_process_resident_bytes": 13266944,
+            "frame": 2
+          }
+        },
+        {
+          "process_wall_seconds": 3.994607599976007,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.6454501,
+            "peak_process_resident_bytes": 12423168,
+            "frame": 2
+          }
+        }
+      ]
+    },
+    "restore_checkpoint": {
+      "executable_sha256": "cd19e64d3ddf231eaa410da8801d7281def15b896d5aac3b28617c4aafa4c88e",
+      "median_process_wall_seconds": 1.7019620999926701,
+      "trials": [
+        {
+          "process_wall_seconds": 1.7019620999926701,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "1fd4c14001635fb179a1e260a0ac5234cd8a19894697cd106b7038abd470df16",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.5683443,
+            "peak_process_resident_bytes": 12931072,
+            "frame": 2,
+            "restored_prefix_frames": 2,
+            "restore_wall_seconds": 0.1064448
+          }
+        },
+        {
+          "process_wall_seconds": 1.6950106999720447,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "1fd4c14001635fb179a1e260a0ac5234cd8a19894697cd106b7038abd470df16",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.5555494,
+            "peak_process_resident_bytes": 12636160,
+            "frame": 2,
+            "restored_prefix_frames": 2,
+            "restore_wall_seconds": 0.107044
+          }
+        },
+        {
+          "process_wall_seconds": 1.7020282999728806,
+          "result": {
+            "protocol_version": 1,
+            "event": "result",
+            "command": "run",
+            "stage": "mesh",
+            "backend": "cpu",
+            "read_only": false,
+            "execution_id": "1fd4c14001635fb179a1e260a0ac5234cd8a19894697cd106b7038abd470df16",
+            "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+            "vertex_count": 3830,
+            "triangle_count": 7656,
+            "retained_ids": 3830,
+            "volume_relative_error": 0.004627106119815316,
+            "frame_wall_seconds": 1.5623875,
+            "peak_process_resident_bytes": 12427264,
+            "frame": 2,
+            "restored_prefix_frames": 2,
+            "restore_wall_seconds": 0.1112107
+          }
+        }
+      ]
+    }
+  }
+}
