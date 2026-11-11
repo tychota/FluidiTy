@@ -1,10 +1,12 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -39,6 +41,234 @@ std::array<MacPressureFace3D, 6> SealedFacesAtX(std::int32_t x) {
 
 MacPressureCell3D IncompressibleCellAtX(std::int32_t x) {
   return {.cell_index = {x, 0, 0}, .fluid_volume = 1.0, .bulk_modulus = kInfinity};
+}
+
+struct ExplicitPressureCase {
+  std::array<std::size_t, 3> axes;
+  std::size_t plane_count;
+  bool reversed;
+  std::array<double, 11> reference_pressure;
+};
+
+constexpr std::array kExplicitPressureCases{
+    ExplicitPressureCase{
+        .axes = {0, 1, 2},
+        .plane_count = 2,
+        .reversed = false,
+        .reference_pressure =
+            {
+                0,
+                0,
+                0.4898695054945057,
+                -0.02111950549450526,
+                0.32194368131868156,
+                -0.040693681318681146,
+                0.3219436813186816,
+                -0.040693681318681035,
+                0.2312843406593409,
+                0.04996565934065957,
+            },
+    },
+    ExplicitPressureCase{
+        .axes = {1, 2, 0},
+        .plane_count = 2,
+        .reversed = true,
+        .reference_pressure =
+            {
+                0,
+                0,
+                0.39766483516483525,
+                0.4203296703296704,
+                0.42032967032967045,
+                0.06387362637362647,
+                0.3523351648351649,
+                0.32967032967032983,
+                0.3296703296703298,
+                -0.06387362637362629,
+            },
+    },
+    ExplicitPressureCase{
+        .axes = {0, 1, 2},
+        .plane_count = 3,
+        .reversed = false,
+        .reference_pressure =
+            {
+                0,
+                0.06617647058823546,
+                0.13235294117647078,
+                0.6034899034240563,
+                0.01316944688323106,
+                0.21169885864793697,
+                -0.07835820895522373,
+                0.4102282704126429,
+                -0.012181738366988364,
+                0.0539947322212469,
+                -0.012181738366988406,
+            },
+    },
+    ExplicitPressureCase{
+        .axes = {1, 2, 0},
+        .plane_count = 3,
+        .reversed = true,
+        .reference_pressure =
+            {
+                0,
+                -0.06617647058823489,
+                0.0661764705882357,
+                0.4533582089552242,
+                0.387181738366989,
+                0.4533582089552241,
+                0.030948200175592924,
+                0.5195346795434596,
+                0.229477611940299,
+                0.4280070237050047,
+                -0.16231343283582053,
+            },
+    },
+};
+
+struct ExplicitPressureFixture {
+  std::vector<MacPressureCell3D> cells;
+  std::vector<pressure_internal::ExplicitMacPressureFace3D> faces;
+};
+
+ExplicitPressureFixture MakeExplicitPressureFixture(const ExplicitPressureCase& pressure_case) {
+  ExplicitPressureFixture fixture;
+  const std::size_t coarse_count = pressure_case.plane_count;
+  for (std::size_t cell = 0; cell < coarse_count + 8; ++cell) {
+    fixture.cells.push_back({
+        .cell_index = {static_cast<std::int32_t>(cell) - 8, -2, 0},
+        .fluid_volume = cell < coarse_count ? 1.0 : 0.125,
+        .target_divergence = 0.0,
+        .bulk_modulus = kInfinity,
+        .previous_pressure = 0.0,
+    });
+  }
+  const auto add_face = [&](std::size_t tail, std::size_t head, double distance, double flux) {
+    if (pressure_case.reversed) {
+      std::swap(tail, head);
+      flux = -flux;
+    }
+    fixture.faces.push_back({
+        .face_slot = fixture.faces.size(),
+        .tail_cell_ordinal = tail,
+        .head_cell_ordinal = head,
+        .open_area = 0.25,
+        .inverse_density = 1.0,
+        .pressure_gradient_distance = distance,
+        .predicted_normal_velocity = flux / 0.25,
+    });
+  };
+  constexpr std::array predicted_subface_fluxes{0.375, -0.125, 0.25, -0.25};
+  for (std::size_t coarse = 0; coarse < coarse_count; ++coarse) {
+    const std::size_t normal_bit = std::size_t{1} << (2 - pressure_case.axes[coarse]);
+    std::size_t subface = 0;
+    for (std::size_t fine = 0; fine < 8; ++fine) {
+      if (((fine & normal_bit) != 0) == pressure_case.reversed) {
+        add_face(coarse, coarse_count + fine, 0.75, predicted_subface_fluxes[subface++]);
+      }
+    }
+  }
+  for (std::size_t tail = 0; tail < 8; ++tail) {
+    for (std::size_t head = tail + 1; head < 8; ++head) {
+      const std::size_t differing_coordinates = tail ^ head;
+      if (std::has_single_bit(differing_coordinates)) {
+        add_face(coarse_count + tail, coarse_count + head, 0.5, 0.0);
+      }
+    }
+  }
+  return fixture;
+}
+
+TEST(MacPressureExplicitGraph3D, MatchesEdgeAndCornerReferencePressure) {
+  for (const auto& pressure_case : kExplicitPressureCases) {
+    SCOPED_TRACE(pressure_case.plane_count);
+    SCOPED_TRACE(pressure_case.reversed);
+    const auto fixture = MakeExplicitPressureFixture(pressure_case);
+    const auto system = pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, fixture.faces);
+    ASSERT_TRUE(system.ok()) << system.status();
+    ASSERT_EQ(system->gauge_cell_ordinals().size(), 1);
+    EXPECT_EQ(system->gauge_cell_ordinals().front(), 0);
+
+    const auto constant = EvaluateMacPressure3D(*system, std::vector<double>(fixture.cells.size(), 1.3));
+    ASSERT_TRUE(constant.ok()) << constant.status();
+    for (std::size_t cell = 0; cell < fixture.cells.size(); ++cell) {
+      EXPECT_DOUBLE_EQ(constant->integrated_rhs[cell], constant->true_residuals[cell]);
+    }
+    for (std::size_t coarse = 0; coarse < pressure_case.plane_count; ++coarse) {
+      EXPECT_DOUBLE_EQ(constant->cell_constraint_defects[coarse], 0.25);
+    }
+    double fine_outward_flux = 0.0;
+    for (std::size_t fine = pressure_case.plane_count; fine < fixture.cells.size(); ++fine) {
+      fine_outward_flux += fixture.cells[fine].fluid_volume * constant->cell_constraint_defects[fine];
+    }
+    EXPECT_DOUBLE_EQ(fine_outward_flux, -0.25 * static_cast<double>(pressure_case.plane_count));
+
+    const auto pressure = std::span(pressure_case.reference_pressure).first(fixture.cells.size());
+    const auto projected = EvaluateMacPressure3D(*system, pressure);
+    ASSERT_TRUE(projected.ok()) << projected.status();
+    EXPECT_LE(projected->diagnostics.max_cell_constraint_defect, 1e-12);
+    EXPECT_LE(projected->diagnostics.max_volume_scaled_residual, 1e-12);
+    for (std::size_t cell = 0; cell < fixture.cells.size(); ++cell) {
+      EXPECT_NEAR(
+          projected->true_residuals[cell],
+          -fixture.cells[cell].fluid_volume * projected->cell_constraint_defects[cell],
+          1e-15
+      );
+    }
+
+    auto corrupt_faces = fixture.faces;
+    std::swap(corrupt_faces.front().tail_cell_ordinal, corrupt_faces.front().head_cell_ordinal);
+    const auto corrupt_system =
+        pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, corrupt_faces);
+    ASSERT_TRUE(corrupt_system.ok()) << corrupt_system.status();
+    const auto corrupt_projection = EvaluateMacPressure3D(*corrupt_system, pressure);
+    ASSERT_TRUE(corrupt_projection.ok()) << corrupt_projection.status();
+    EXPECT_GE(corrupt_projection->diagnostics.max_cell_constraint_defect, 0.75);
+  }
+}
+
+TEST(MacPressureExplicitGraph3D, RejectsInvalidOwnershipAndCoefficients) {
+  const auto fixture = MakeExplicitPressureFixture(kExplicitPressureCases.front());
+  auto faces = fixture.faces;
+  faces[1].face_slot = faces[0].face_slot;
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, faces).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  faces = fixture.faces;
+  faces[0].tail_cell_ordinal = fixture.cells.size();
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, faces).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  faces = fixture.faces;
+  faces[0].pressure_gradient_distance = 0.0;
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, faces).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  const std::vector<MacPressureCell3D> oversized_cells(4097, fixture.cells.front());
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, oversized_cells, fixture.faces).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
+}
+
+TEST(MacPressureExplicitGraph3D, RejectsInexactSubnormalMobilityProduct) {
+  const auto fixture = MakeExplicitPressureFixture(kExplicitPressureCases.front());
+  auto face = fixture.faces.front();
+  face.head_cell_ordinal = 1;
+  face.open_area = 1.0;
+  face.inverse_density = 1.5;
+  face.pressure_gradient_distance = std::numeric_limits<double>::denorm_min();
+  const auto cells = std::span(fixture.cells).first(2);
+  const auto graph = pressure_internal::PrepareExplicitMacPressureSystem3D(
+      face.pressure_gradient_distance,
+      cells,
+      std::span(&face, 1)
+  );
+  EXPECT_EQ(graph.status().code(), absl::StatusCode::kOutOfRange);
 }
 
 TEST(MacPressureSystem3D, EvaluatesAllIndependentFixtureCases) {
