@@ -8,7 +8,7 @@ remain binding. Fixed-cache research results are recorded separately in
 
 ## Verified native foundations
 
-On 2026-11-11, the Windows Release CPU build passed all 521 CTests, with no skips. Native
+On 2026-11-11, the Windows Release CPU build passed all 529 CTests, with no skips. Native
 formatting passed with clang-format 19.1.5. A fresh CUDA build targeting
 sm_120 with CUDA 13.4.59 passed 27 focused M2 tests, including actual CUDA
 source-cache publication, read-only replay, extension by resume, unchanged
@@ -99,11 +99,42 @@ The geometric reconstruction, tracking, source statistics and whitewater
 dynamics described here execute on the CPU. Linking and testing them in a
 CUDA-enabled build does not qualify a device implementation.
 
+The latest clean CUDA-enabled build passed all 597 registered tests with no
+skips, including the pre-existing real-device and interruption suites. The
+manufactured static source fixture also compares all six CPU/CUDA accepted
+carrier payloads byte for byte. This is a producer control, not a dynamic-wave
+carrier error qualification. Windows Debug/Release CI passed `f723e94`; the
+Linux/macOS jobs exposed strict missing-field-initializer warnings, now corrected
+with explicit record defaults. A supplementary local GCC 16 MinGW syntax/warning
+audit passed; qualified cross-platform CI remains required.
+
+## Persistent frame control
+
+`ReconstructSurfaceFrame3D` now connects full accepted source snapshots, the
+geometric density reference, authoritative deep occupancy, RK2 transport,
+actual-volume correction and the persistent checkpoint codec for one closed
+component without contact. A deterministic triangle BVH supplies closest points
+on the **already volume-qualified** scaffold. Projection distance is geometric;
+Simulate's complete field remains the separate occupancy authority.
+
+An initial raw-field reprojection implementation folded a frozen source at frame
+15 because it repeatedly undid and reapplied the volume correction. The scaffold
+control passes 24 calm accepted frames with identical vertex coordinates,
+unchanged IDs/connectivity, increasing ages and checkpoint round trips. It checks
+geometric velocity after the final correction and independently samples fluid
+velocity. Small-triangle projection tolerances respect incident altitudes.
+Clock substitution, source-record/sample budgets and material-volume underflow
+regressions were observed failing before their fixes.
+
+This is a manufactured one-particle control. Contact, component births/deaths,
+droplets and topology events explicitly fail pending qualified adapters; this
+control does not close drop-to-pool, wet-wall, cavity, thin-sheet or wave gates.
+
 ## Open integrated gates
 
 The accepted observer does not yet publish whitewater source events. Mesh stage
-orchestration, occupancy-qualified projection, local repair, droplet handling
-and production replay are unfinished. Whitewater transport/publication,
+CLI/publication, local repair, droplet handling and production replay are
+unfinished. Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are
 unfinished. No integrated breaking-wave bake or Blender M2 inspection has
 qualified them. New M2-specific Lean contracts and full CPU/device numerical

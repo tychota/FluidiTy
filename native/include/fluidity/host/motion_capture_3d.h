@@ -10,7 +10,7 @@ namespace fluidity {
 struct MotionFrame3D {
   LiquidClock3D first_clock;
   LiquidClock3D last_clock;
-  std::vector<LiquidState3D> samples;  // Owning accepted samples in increasing time/epoch order.
+  std::vector<LiquidState3D> samples{};  // Owning accepted samples in increasing time/epoch order.
 };
 
 // Encodes the initial completed frame as one accepted sample. Returns checked

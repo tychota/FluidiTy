@@ -88,7 +88,7 @@ struct WhitewaterBirthPoint3D {
 };
 struct WhitewaterEmission3D {
   WhitewaterEmissionState3D state;
-  std::vector<WhitewaterBirthPoint3D> points;
+  std::vector<WhitewaterBirthPoint3D> points{};
 };
 // Emits one event without averaging its velocity with any other event. Computes
 // floor(q*volume_time/represented_count + remainder) points at the quadrature

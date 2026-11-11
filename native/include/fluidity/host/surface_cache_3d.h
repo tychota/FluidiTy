@@ -11,15 +11,15 @@ struct SurfaceVolume3D {
   double corrected_m3;  // Must match measured geometry, within 0.5% of material.
 };
 struct SurfaceFrame3D {
-  LiquidClock3D clock;
-  double cell_width_m;
-  SurfaceMesh3D mesh;
-  std::vector<SurfaceVolume3D> volumes;
+  LiquidClock3D clock{};
+  double cell_width_m = 0;
+  SurfaceMesh3D mesh{};
+  std::vector<SurfaceVolume3D> volumes{};
 };
 struct SurfaceCacheLimits3D {
   std::size_t maximum_vertices = 100000;
   std::size_t maximum_triangles = 200000;
-  LiquidCacheLimits3D cache;
+  LiquidCacheLimits3D cache{};
 };
 
 // Serializes all persistent Mesh attributes at a completed clock. Checks finite

@@ -4,7 +4,7 @@
 
 namespace fluidity {
 struct SurfaceProjectionSample3D {
-  double value;  // Zero on the geometric field; negative inside liquid.
+  double value;  // Zero on the target: signed liquid field or unsigned geometric distance residual.
   Vec3 gradient;  // World derivative of value, nonzero at a regular surface.
   std::uint64_t component;  // Stable material/sheet identity supplied by the field.
   double obstacle_distance_m;  // Nonnegative outside solids; finite.
@@ -27,6 +27,7 @@ struct SurfaceTrackingResult3D {
 
 // Advances a safe, closed mesh across the entire accepted MotionInterval using
 // bounded RK2 and same-component Newton projection with decreasing residual.
+// Tightens residual tolerance to 1% of each incident triangle's minimum altitude.
 // Preserves vertex IDs, lineage, topology and next_id. Updates age, geometric
 // velocity and the independently sampled endpoint fluid velocity. Queries and
 // candidate endpoints must remain outside obstacles. Missing support, changed

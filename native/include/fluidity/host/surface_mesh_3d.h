@@ -22,15 +22,15 @@ struct SurfaceVertex3D {
   bool unresolved_sheet = false;  // Excluded from volume offsets until sheet resolution.
 };
 struct SurfaceMesh3D {
-  std::vector<SurfaceVertex3D> vertices;
-  std::vector<std::array<std::uint32_t, 3>> triangles;  // Outward winding from liquid to air.
+  std::vector<SurfaceVertex3D> vertices{};
+  std::vector<std::array<std::uint32_t, 3>> triangles{};  // Outward winding from liquid to air.
   std::uint64_t next_id = 1;
 };
 struct SurfaceLattice3D {
-  Vec3 origin;
-  double spacing;
-  std::array<std::size_t, 3> extent;
-  std::vector<double> values;  // Negative liquid, x-major then y then z.
+  Vec3 origin{};
+  double spacing = 0;
+  std::array<std::size_t, 3> extent{};
+  std::vector<double> values{};  // Negative liquid, x-major then y then z.
 };
 struct SurfaceMetrics3D {
   double signed_volume = 0;  // m³, local-origin tetrahedron sum.

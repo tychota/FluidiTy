@@ -1,7 +1,10 @@
 #include "fluidity/host/surface_tracking_3d.h"
 
+#include <algorithm>
 #include <cmath>
 #include <set>
+
+#include "absl/strings/str_cat.h"
 
 namespace fluidity {
 namespace {
@@ -62,7 +65,25 @@ absl::StatusOr<SurfaceTrackingResult3D> TrackSurfaceMesh3D(
   const double bound = options.maximum_projection_cells * width;
   const double tolerance = options.projection_tolerance_cells * width;
   SurfaceTrackingResult3D result{.mesh = mesh, .metrics = {}};
-  for (auto& vertex : result.mesh.vertices) {
+  std::vector<double> tolerances(mesh.vertices.size(), tolerance);
+  for (const auto triangle : mesh.triangles) {
+    const auto a = mesh.vertices[triangle[0]].position;
+    const auto b = mesh.vertices[triangle[1]].position;
+    const auto c = mesh.vertices[triangle[2]].position;
+    const Vec3 first_edge{b.x - a.x, b.y - a.y, b.z - a.z};
+    const Vec3 second_edge{c.x - a.x, c.y - a.y, c.z - a.z};
+    const double twice_area = std::hypot(
+        first_edge.y * second_edge.z - first_edge.z * second_edge.y,
+        first_edge.z * second_edge.x - first_edge.x * second_edge.z,
+        first_edge.x * second_edge.y - first_edge.y * second_edge.x
+    );
+    const double altitude = twice_area / std::max({Distance(a, b), Distance(b, c), Distance(c, a)});
+    for (const auto index : triangle) {
+      tolerances[index] = std::min(tolerances[index], 0.01 * altitude);
+    }
+  }
+  for (std::size_t vertex_index = 0; vertex_index < result.mesh.vertices.size(); ++vertex_index) {
+    auto& vertex = result.mesh.vertices[vertex_index];
     const Vec3 original = vertex.position;
     auto advected =
         AdvectMotionPoint3D(interval, original, first, last, width, options.maximum_advection_substeps, carrier);
@@ -86,7 +107,7 @@ absl::StatusOr<SurfaceTrackingResult3D> TrackSurfaceMesh3D(
         return absl::FailedPreconditionError("surface projection has no regular gradient");
       }
       const double residual = std::abs(sample->value) / gradient_length;
-      if (residual <= tolerance) {
+      if (residual <= tolerances[vertex_index]) {
         vertex.normal = {
             sample->gradient.x / gradient_length,
             sample->gradient.y / gradient_length,
@@ -100,11 +121,16 @@ absl::StatusOr<SurfaceTrackingResult3D> TrackSurfaceMesh3D(
       }
       bool accepted = false;
       double step = sample->value / gradient_length;
+      const Vec3 direction{
+          sample->gradient.x / gradient_length,
+          sample->gradient.y / gradient_length,
+          sample->gradient.z / gradient_length
+      };
       for (int backtrack = 0; backtrack < 16; ++backtrack) {
         const Vec3 candidate{
-            projected.x - step * (sample->gradient.x / gradient_length),
-            projected.y - step * (sample->gradient.y / gradient_length),
-            projected.z - step * (sample->gradient.z / gradient_length),
+            projected.x - step * direction.x,
+            projected.y - step * direction.y,
+            projected.z - step * direction.z,
         };
         if (Finite(candidate) && Distance(candidate, advected->world_position) <= bound) {
           auto next = surface(candidate, vertex.component);
@@ -154,7 +180,20 @@ absl::StatusOr<SurfaceTrackingResult3D> TrackSurfaceMesh3D(
     return measured.status();
   }
   if (!Safe(*measured)) {
-    return absl::FailedPreconditionError("tracked geometry requires local repair");
+    return absl::FailedPreconditionError(absl::StrCat(
+        "tracked geometry requires local repair: intersections=",
+        measured->self_intersections,
+        " boundary_edges=",
+        measured->boundary_edges,
+        " nonmanifold_edges=",
+        measured->nonmanifold_edges,
+        " nonmanifold_vertices=",
+        measured->nonmanifold_vertices,
+        " winding=",
+        measured->orientation_defects,
+        " degenerate_triangles=",
+        measured->degenerate_triangles
+    ));
   }
   result.metrics = *measured;
   return result;

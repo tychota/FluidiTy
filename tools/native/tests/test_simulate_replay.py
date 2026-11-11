@@ -760,6 +760,7 @@ def effects_case(executable, fixture, directory, backend):
     execute(executable, *run, "--resume", "--frame-end", 5)
     assert len(list((products / "frames").glob("*.flem"))) == 6
     assert all(snapshot(products)[path] == value for path, value in before.items())
+    payloads = {path.name: path.read_bytes() for path in (products / "blobs").glob("*.flef")}
     source_blob = next((products / "blobs").glob("*.flef"))
     source_blob.write_bytes(b"corrupt")
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 3, "--substep", 0,
@@ -768,6 +769,7 @@ def effects_case(executable, fixture, directory, backend):
         assert result["compiled_architecture"] == 1200 and result["graph_replay_count"] > 0
         assert result["snapshot_copy_milliseconds"] > 0 and result["device_reserved_bytes"] > 0
         print(json.dumps(result, sort_keys=True))
+    return payloads
 
 
 def case_cpu_effects(executable, fixture, directory, cuda):
@@ -775,7 +777,16 @@ def case_cpu_effects(executable, fixture, directory, cuda):
 
 
 def case_cuda_effects(executable, fixture, directory, cuda):
-    effects_case(executable, fixture, directory, "cuda")
+    cuda_payloads = effects_case(executable, fixture, directory, "cuda")
+    control = directory / "cpu-control"
+    control.mkdir()
+    scene, initial = make_scene(executable, fixture, control, "cpu", "effects")
+    cache = control / "cache"
+    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", "cpu", "--cache", cache,
+            *initial, "--frame-end", 5)
+    blobs = cache / "effects" / "source" / "blobs"
+    cpu_payloads = {path.name: path.read_bytes() for path in blobs.glob("*.flef")}
+    assert cpu_payloads == cuda_payloads, "manufactured static source intervals differ across CPU/CUDA"
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):
