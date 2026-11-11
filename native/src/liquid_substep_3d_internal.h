@@ -5,6 +5,25 @@ namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+class OceanInletParticles3D {
+ public:
+  static absl::StatusOr<OceanInletParticles3D> Create(const OceanBoundarySettings3D& settings, double density);
+  // Reconciles the trial inlet strip with the prescribed surface. The
+  // transaction discards all particle and ID changes on rejected attempts.
+  absl::Status
+  Apply(const ResolvedOceanBoundary3D& boundary, const LiquidObstacle3D& obstacle, double time_s, LiquidState3D& trial);
+  std::size_t reserved_bytes() const;
+
+ private:
+  Vec3 lower_m_{};
+  Vec3 upper_m_{};
+  std::array<std::size_t, 3> extent_{};
+  double spacing_m_ = 0;
+  double particle_volume_m3_ = 0;
+  double particle_mass_kg_ = 0;
+  LiquidRecords3D<std::uint8_t> occupied_;
+  LiquidRecords3D<LiquidParticleState3D> births_;
+};
 struct Staging {
   LiquidRecords3D<CellIndex3D> candidates;
   LiquidRecords3D<LiquidCenterDistance3D> centers;

@@ -154,6 +154,13 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidCheckpoint3D(
 );
 absl::StatusOr<LiquidCheckpoint3D>
 DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits = {});
+// Exports a checked completed state in stable particle order. Copies ID/tag,
+// world position/velocity and J, with level zero and equivalent-volume radius
+// cbrt(3*V0*J/(4*pi)) using the M1 numerical expression/order. Requires a completed
+// clock. Invalid state/clock returns InvalidArgument, record/allocation bounds
+// ResourceExhausted and unrepresentable radius OutOfRange. No input mutation or
+// borrowed aliases; failures return no partial point frame.
+absl::StatusOr<LiquidPointFrame3D> BuildLiquidPointFrame3D(const LiquidState3D& state, LiquidCacheLimits3D limits = {});
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidPointFrame3D(const LiquidPointFrame3D& frame, LiquidCacheLimits3D limits = {});
 absl::StatusOr<LiquidPointFrame3D>

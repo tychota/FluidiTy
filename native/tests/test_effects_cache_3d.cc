@@ -17,6 +17,29 @@ EffectsIdentity3D Identity() {
   return identity;
 }
 
+TEST(EffectsCache3D, ExecutionIdentityBindsStageSettingsBuildAndUpstreamWithoutPaths) {
+  const auto identity = Identity();
+  const auto original = EffectsExecutionId3D(identity);
+  ASSERT_TRUE(original.ok());
+  EXPECT_EQ(EffectsExecutionId3D(identity).value(), *original);
+  for (int field = 0; field < 4; ++field) {
+    auto changed = identity;
+    if (field == 0) {
+      changed.stage = EffectsStage3D::kMesh;
+    } else if (field == 1) {
+      ++changed.settings[0];
+    } else if (field == 2) {
+      ++changed.build[0];
+    } else {
+      ++changed.upstream_execution[0];
+    }
+    auto digest = EffectsExecutionId3D(changed);
+    ASSERT_TRUE(digest.ok());
+    EXPECT_NE(*digest, *original);
+  }
+  EXPECT_EQ(EffectsExecutionId3D({}).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 std::filesystem::path Scratch() {
   const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
   return std::filesystem::path(FLUIDITY_CACHE_SCRATCH_PATH) / ("effects-" + std::to_string(stamp));
@@ -49,6 +72,32 @@ TEST(EffectsCache3D, CommitsExactContentAndRejectsConflictingReplay) {
   auto incompatible = Identity();
   incompatible.settings[0] += 1;
   EXPECT_EQ(EffectsCache3D::Create(root, incompatible).status().code(), absl::StatusCode::kFailedPrecondition);
+}
+
+TEST(EffectsCache3D, DerivedSettingsAreImmutableAuthenticatedAndReadOnlyOnInspection) {
+  const auto root = Scratch();
+  constexpr std::array<std::uint8_t, 4> settings{1, 2, 3, 4};
+  auto identity = Identity();
+  identity.stage = EffectsStage3D::kMesh;
+  identity.settings = LiquidContentDigest3D(settings);
+  auto cache = EffectsCache3D::Create(root, identity);
+  ASSERT_TRUE(cache.ok());
+  ASSERT_TRUE(cache->PublishStageSettings(settings).ok());
+  const auto timestamp = std::filesystem::last_write_time(root / "settings.flec");
+  ASSERT_TRUE(cache->PublishStageSettings(settings).ok());
+  EXPECT_EQ(std::filesystem::last_write_time(root / "settings.flec"), timestamp);
+  const auto read = cache->ReadStageSettings();
+  ASSERT_TRUE(read.ok());
+  EXPECT_TRUE(std::ranges::equal(read->values(), settings));
+  constexpr std::array<std::uint8_t, 4> changed{4, 3, 2, 1};
+  EXPECT_EQ(cache->PublishStageSettings(changed).code(), absl::StatusCode::kFailedPrecondition);
+  auto inspection = EffectsCache3D::OpenForInspection(root);
+  ASSERT_TRUE(inspection.ok());
+  EXPECT_EQ(inspection->PublishStageSettings(settings).code(), absl::StatusCode::kFailedPrecondition);
+  std::ofstream stream(root / "settings.flec", std::ios::binary | std::ios::trunc);
+  stream << "corrupt";
+  stream.close();
+  EXPECT_EQ(inspection->ReadStageSettings().status().code(), absl::StatusCode::kDataLoss);
 }
 
 TEST(EffectsCache3D, InterruptedManifestAndCorruptionFailClosed) {

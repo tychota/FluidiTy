@@ -1,4 +1,7 @@
-"""Capture the installed extension's actual sidebar from an isolated Blender UI."""
+"""Capture the installed extension's Physics panels from an isolated Blender UI.
+
+The historical filename is retained for existing review commands.
+"""
 
 import sys
 from pathlib import Path
@@ -9,9 +12,9 @@ root = Path(sys.argv[sys.argv.index("--") + 1]).resolve()
 root.mkdir(parents=True, exist_ok=True)
 sequence = iter((("en_US", False), ("en_US", True), ("fr_FR", False), ("fr_FR", True)))
 window = bpy.context.window_manager.windows[0]
-area = next(area for area in window.screen.areas if area.type == "VIEW_3D")
-area.spaces.active.show_region_ui = True
-region = next(region for region in area.regions if region.type == "UI")
+area = next(area for area in window.screen.areas if area.type == "PROPERTIES")
+area.spaces.active.context = "PHYSICS"
+region = next(region for region in area.regions if region.type == "WINDOW")
 view = bpy.context.preferences.view
 view.use_translate_interface = True
 bpy.context.preferences.use_preferences_save = False
@@ -26,14 +29,13 @@ def capture():
             bpy.ops.screen.screenshot(
                 filepath=str(root / f"{language}-{'recovery' if error else 'setup'}.png"), hide_props_region=False
             )
-        print("Sidebar width in pixels:", region.width, flush=True)
+        print("Physics region width in pixels:", region.width, flush=True)
     pending = next(sequence, None)
     if pending is None:
         bpy.ops.wm.quit_blender()
         return None
     language, error = pending
     view.language = language
-    region.active_panel_category = "FluidiTy"
     with bpy.context.temp_override(window=window, area=area, region=region):
         scene = window.scene
         if error:

@@ -4,7 +4,9 @@
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
+#include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/whitewater_volume_cache_3d.h"
 int Produce(int argc, const std::filesystem::path& path, bool digest) {
   if (argc != 3) {
     return 1;
@@ -52,9 +54,61 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.world_acceleration = {};
   }
   const bool slow_frame = args[5] == "slow";
-  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame;
-  scene.options.motion_sample_intervals = args[5] == "effects" ? 16 : 0;
-  if (initial_particle) {
+  const bool whitewater_beach = args[5] == "whitewater-beach";
+  const bool whitewater = args[5] == "whitewater-effects" || whitewater_beach;
+  const bool ocean_level = args[5] == "ocean-level";
+  const bool ocean = args[5] == "ocean" || ocean_level;
+  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean;
+  if (ocean) {
+    scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
+        .swell =
+            {
+                .still_water_height_m = 3,
+                .water_depth_m = 3,
+                .wave_height_m = 1,
+                .wave_period_s = 4,
+            },
+        .inlet_wall_x_m = 0,
+        .inlet_interior_x_m = 4,
+        .outlet_interior_x_m = 5,
+        .outlet_wall_x_m = 8,
+        .inlet_rate_per_s = 5,
+        .outlet_rate_per_s = 4,
+    };
+  }
+  scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" ? 16 : 0);
+  if (whitewater) {
+    scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
+        .source_options =
+            {
+                .spacing_m = 0.5,
+                .radius_m = 0.5,
+                .kinetic = {0, 1},
+                .trapped_air = {0, 1},
+                .crest = {0, 1},
+                .trapped_air_weight = 0,
+                .crest_weight = 1,
+            },
+    };
+  }
+  if (ocean_level) {
+    auto& settings = *scene.options.ocean_boundary;
+    settings.swell.wave_height_m = 0;
+    settings.inlet_wall_x_m = 2;
+    settings.inlet_interior_x_m = 3;
+    settings.inlet_particle_spacing_m = 1;
+    settings.inlet_low_z_m = 2;
+    settings.inlet_high_z_m = 3;
+    scene.scene.liquid_density = 1;
+    scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
+  } else if (whitewater_beach) {
+    scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
+    scene.scene.obstacle = fluidity::TranslatingHalfspace3D{
+        .unit_normal = {-0.6, 0.8, 0},
+        .start_plane_coordinate = 0.125,
+        .wall_velocity = {},
+    };
+  } else if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
   if (args[5] != "defaults") {
@@ -83,6 +137,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     state.particles[0].id = 1;
     state.particles[0].tag = 19;
     state.particles[0].world_position = {2.5, 2.5, 2.5};
+    if (whitewater) {
+      state.particles[0].world_velocity.x = 2;
+    }
     state.next_particle_id = 2;
     auto initial = fluidity::EncodeLiquidState3D(state);
     if (!initial.ok()) {
@@ -166,6 +223,9 @@ int CheckpointFixture(const std::filesystem::path& path) {
   }
   const auto& state = checkpoint->state;
   const auto& capacities = checkpoint->resume.capacities;
+  const auto position = state.particles.size() ? state.particles[0].world_position : fluidity::Vec3{};
+  const auto velocity = state.particles.size() ? state.particles[0].world_velocity : fluidity::Vec3{};
+  std::cout.precision(17);
   std::cout << "{\"state_digest\":\""
             << fluidity::LiquidDigestHex3D(fluidity::LiquidContentDigest3D(bytes->values())).data()
             << "\",\"frame\":" << state.clock.frame_ordinal << ",\"seed\":" << state.random_seed
@@ -173,12 +233,48 @@ int CheckpointFixture(const std::filesystem::path& path) {
             << ",\"particle_count\":" << state.particles.size() << ",\"next_particle_id\":" << state.next_particle_id
             << ",\"capacities\":[" << capacities.particles << ',' << capacities.blocks << ',' << capacities.cells << ','
             << capacities.faces << ',' << capacities.sources << ']'
-            << ",\"first_tag\":" << (state.particles.size() ? state.particles[0].tag : 0)
+            << ",\"first_tag\":" << (state.particles.size() ? state.particles[0].tag : 0) << ",\"first_position\":["
+            << position.x << ',' << position.y << ',' << position.z << ']' << ",\"first_velocity\":[" << velocity.x
+            << ',' << velocity.y << ',' << velocity.z << ']'
             << ",\"capacity_replay_particles\":" << checkpoint->resume.capacity_replay_reservations.particles
             << ",\"source_next_child\":" << (state.sources.size() ? state.sources[0].next_child_ordinal : 0) << "}\n";
   return 0;
 }
+int SourceBirthFixture(const std::filesystem::path& path) {
+  const auto source = fluidity::EffectsSource3D::Open(path);
+  if (!source.ok()) {
+    return 2;
+  }
+  const auto frame = source->ReadFrame(1);
+  if (!frame.ok()) {
+    return 3;
+  }
+  const auto& births = frame->motion.whitewater_births;
+  std::cout << "{\"birth_count\":" << births.size() << ",\"sample_count\":" << frame->motion.samples.size()
+            << ",\"first_birth_step\":" << (births.empty() ? 0 : births.front().accepted_step_ordinal)
+            << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
+  return 0;
+}
+int VolumeSettingsFixture(const std::filesystem::path& path) {
+  const fluidity::WhitewaterVolumeSettings3D settings{
+      .grid = {.origin = {-1, -1, -1}, .spacing_m = 0.25, .extent = {24, 24, 24}},
+      .physical_bubble_radius_m = 0.05,
+  };
+  const auto bytes = fluidity::EncodeWhitewaterVolumeSettings3D(settings);
+  if (!bytes.ok()) {
+    return 2;
+  }
+  std::ofstream output(path, std::ios::binary);
+  output.write(reinterpret_cast<const char*>(bytes->values().data()), bytes->size());
+  return output ? 0 : 3;
+}
 int Entry(const std::vector<std::filesystem::path>& args) {
+  if (args.size() == 3 && args[1] == "volume-settings") {
+    return VolumeSettingsFixture(args[2]);
+  }
+  if (args.size() == 3 && args[1] == "source-births") {
+    return SourceBirthFixture(args[2]);
+  }
   if (args.size() == 3 && args[1] == "checkpoint") {
     return CheckpointFixture(args[2]);
   }
