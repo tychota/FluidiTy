@@ -1,3 +1,5 @@
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -38,6 +40,133 @@ int Produce(int argc, const std::filesystem::path& path, bool digest) {
   return cache->PublishFrame(points, &state, &resume).ok() ? 0 : 5;
 }
 
+// Quarter-scale gravity-wave control with a single stationary planar beach.
+// The reference shot and its resolution remain separate acceptance fixtures.
+absl::Status SetBoundedWaveScene(
+    fluidity::LiquidResolvedSceneView3D& scene,
+    fluidity::LiquidState3D& state,
+    bool fill_partial_columns
+) {
+  constexpr double kSpacingM = 0.25;
+  constexpr double kBeachSlope = 0.15;
+  constexpr double kStillDepthM = 0.75;
+  const double normal_length = std::hypot(kBeachSlope, 1.0);
+  scene.scene.world_acceleration = {0, -9.81, 0};
+  scene.scene.field = fluidity::LiquidParticleSphereUnion3D{0.22};
+  scene.scene.obstacle = fluidity::TranslatingHalfspace3D{
+      .unit_normal = {-kBeachSlope / normal_length, 1 / normal_length, 0},
+      .start_plane_coordinate = 0,
+      .wall_velocity = {},
+  };
+  scene.options.maximum_step_duration = 0.01;
+  scene.options.motion_sample_intervals = 4;
+  scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
+      .source_options =
+          {
+              .spacing_m = 0.25,
+              .radius_m = 0.125,
+              .kinetic = {0.01, 0.25},
+              .trapped_air = {0, 1},
+              .crest = {0, 1},
+              .trapped_air_weight = 0,
+              .crest_weight = 1,
+          },
+  };
+  scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
+      .swell =
+          {
+              .still_water_height_m = kStillDepthM,
+              .water_depth_m = kStillDepthM,
+              .wave_height_m = 0.25,
+              .wave_period_s = 2,
+          },
+      .inlet_wall_x_m = 0,
+      .inlet_interior_x_m = 0.75,
+      .outlet_interior_x_m = 3.5,
+      .outlet_wall_x_m = 5,
+      .inlet_rate_per_s = 5,
+      .outlet_rate_per_s = 2,
+      .inlet_particle_spacing_m = kSpacingM,
+      .inlet_low_z_m = 0,
+      .inlet_high_z_m = 1,
+  };
+  const auto boundary = fluidity::ResolvedOceanBoundary3D::Resolve(*scene.options.ocean_boundary);
+  if (!boundary.ok()) {
+    return boundary.status();
+  }
+  scene.geometry.cell_width = kSpacingM;
+  state.geometry = scene.geometry;
+  auto particles = fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(20 * 4 * 4);
+  if (!particles.ok()) {
+    return particles.status();
+  }
+  constexpr double kBedClearanceM = 0.03;
+  struct Column {
+    double lower_y_m;
+    double layer_depth_m;
+    int layer_count;
+  };
+  std::array<Column, 20> columns{};
+  columns.fill({.lower_y_m = 0, .layer_depth_m = kSpacingM, .layer_count = 4});
+  if (fill_partial_columns) {
+    for (std::size_t x = 0; x < columns.size(); ++x) {
+      const double world_x_m = (x + 0.5) * kSpacingM;
+      const double bed_m = kBeachSlope * world_x_m + kBedClearanceM;
+      const auto surface = boundary->SampleInlet({world_x_m, bed_m, 0}, 0);
+      if (!surface.ok()) {
+        return surface.status();
+      }
+      const double water_depth_m = surface->surface_height_m - bed_m;
+      auto& column = columns[x];
+      if (water_depth_m < kBedClearanceM) {
+        column.layer_count = 0;
+        continue;
+      }
+      column.lower_y_m = bed_m;
+      column.layer_count = static_cast<int>(std::ceil(water_depth_m / kSpacingM));
+      column.layer_depth_m = water_depth_m / column.layer_count;
+    }
+  }
+  // Preserve the original z/y/x ID order for both layouts.
+  for (int z = 0; z < 4; ++z) {
+    for (int y = 0; y < 4; ++y) {
+      for (std::size_t x = 0; x < columns.size(); ++x) {
+        const auto& column = columns[x];
+        if (y >= column.layer_count) {
+          continue;
+        }
+        const fluidity::Vec3 position{
+            (x + 0.5) * kSpacingM,
+            column.lower_y_m + (y + 0.5) * column.layer_depth_m,
+            (z + 0.5) * kSpacingM,
+        };
+        const auto sample = boundary->SampleInlet(position, 0);
+        if (!sample.ok()) {
+          return sample.status();
+        }
+        if (position.y <= kBeachSlope * position.x + kBedClearanceM || position.y >= sample->surface_height_m) {
+          continue;
+        }
+        const auto index = particles->size();
+        const auto resized = particles->Resize(index + 1);
+        if (!resized.ok()) {
+          return resized;
+        }
+        const double particle_volume_m3 = kSpacingM * kSpacingM * column.layer_depth_m;
+        (*particles)[index] = {
+            .id = state.next_particle_id++,
+            .world_position = position,
+            .world_velocity = sample->world_velocity_m_per_s,
+            .mass = scene.scene.liquid_density * particle_volume_m3,
+            .reference_volume = particle_volume_m3,
+        };
+      }
+    }
+  }
+  state.particles = std::move(*particles);
+  return absl::OkStatus();
+}
+
 int SceneFixture(const std::vector<std::filesystem::path>& args) {
   if (args.size() != 6) {
     return 1;
@@ -58,7 +187,10 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool whitewater = args[5] == "whitewater-effects" || whitewater_beach;
   const bool ocean_level = args[5] == "ocean-level";
   const bool ocean = args[5] == "ocean" || ocean_level;
-  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean;
+  const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
+  const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
+  const bool initial_particle =
+      args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean || bounded_wave;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -130,17 +262,25 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.sources = std::span(&source, 1);
   }
   if (initial_particle) {
-    state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
-    if (!state.particles.Resize(1).ok()) {
-      return 3;
+    if (bounded_wave) {
+      const auto authored = SetBoundedWaveScene(scene, state, wave_column_seed);
+      if (!authored.ok()) {
+        std::cerr << authored << '\n';
+        return 3;
+      }
+    } else {
+      state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
+      if (!state.particles.Resize(1).ok()) {
+        return 3;
+      }
+      state.particles[0].id = 1;
+      state.particles[0].tag = 19;
+      state.particles[0].world_position = {2.5, 2.5, 2.5};
+      if (whitewater) {
+        state.particles[0].world_velocity.x = 2;
+      }
+      state.next_particle_id = 2;
     }
-    state.particles[0].id = 1;
-    state.particles[0].tag = 19;
-    state.particles[0].world_position = {2.5, 2.5, 2.5};
-    if (whitewater) {
-      state.particles[0].world_velocity.x = 2;
-    }
-    state.next_particle_id = 2;
     auto initial = fluidity::EncodeLiquidState3D(state);
     if (!initial.ok()) {
       return 4;
@@ -255,9 +395,11 @@ int SourceBirthFixture(const std::filesystem::path& path) {
             << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
   return 0;
 }
-int VolumeSettingsFixture(const std::filesystem::path& path) {
+int VolumeSettingsFixture(const std::filesystem::path& path, bool bounded_wave) {
   const fluidity::WhitewaterVolumeSettings3D settings{
-      .grid = {.origin = {-1, -1, -1}, .spacing_m = 0.25, .extent = {24, 24, 24}},
+      .grid = bounded_wave
+          ? fluidity::WhitewaterVolumeGrid3D{.origin = {-4, -3, -3}, .spacing_m = 0.25, .extent = {52, 32, 36}}
+          : fluidity::WhitewaterVolumeGrid3D{.origin = {-1, -1, -1}, .spacing_m = 0.25, .extent = {24, 24, 24}},
       .physical_bubble_radius_m = 0.05,
   };
   const auto bytes = fluidity::EncodeWhitewaterVolumeSettings3D(settings);
@@ -270,7 +412,10 @@ int VolumeSettingsFixture(const std::filesystem::path& path) {
 }
 int Entry(const std::vector<std::filesystem::path>& args) {
   if (args.size() == 3 && args[1] == "volume-settings") {
-    return VolumeSettingsFixture(args[2]);
+    return VolumeSettingsFixture(args[2], false);
+  }
+  if (args.size() == 3 && args[1] == "wave-volume-settings") {
+    return VolumeSettingsFixture(args[2], true);
   }
   if (args.size() == 3 && args[1] == "source-births") {
     return SourceBirthFixture(args[2]);

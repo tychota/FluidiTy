@@ -2,6 +2,8 @@
 
 #include <limits>
 
+#include "fluidity/host/surface_material_components_3d.h"
+
 namespace fluidity {
 SurfaceStage3D::SurfaceStage3D(
     EffectsSource3D source,
@@ -96,7 +98,9 @@ SurfaceStage3D::RestoreCommittedPrefix(std::uint64_t maximum_frame, absl::Functi
     return absl::OutOfRangeError("Mesh restore frame bound exhausts cursor");
   }
   std::optional<EffectsCommit3D> checkpoint_commit;
-  double checkpoint_material_volume_m3 = 0;
+  std::vector<std::pair<std::uint64_t, double>> expected_component_volumes;
+  const auto scene = source_.scene();
+  const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.scene.field);
   std::uint64_t restored_count = 0;
   for (; restored_count <= maximum_frame; ++restored_count) {
     const auto stopped = check_stop();
@@ -120,9 +124,32 @@ SurfaceStage3D::RestoreCommittedPrefix(std::uint64_t maximum_frame, absl::Functi
         || (**committed).previous_payload != expected_previous) {
       return absl::DataLossError("Mesh checkpoint source or predecessor differs");
     }
-    checkpoint_material_volume_m3 = 0;
-    for (const auto& particle : source->motion.samples.back().particles.values()) {
-      checkpoint_material_volume_m3 += particle.reference_volume * particle.volume_ratio;
+    expected_component_volumes.clear();
+    const auto particles = source->motion.samples.back().particles.values();
+    if (restored_count == 0 && sphere_union && !particles.empty()) {
+      const auto partition = PartitionSurfaceSphereUnion3D(
+          particles,
+          sphere_union->radius,
+          options_.limits.cache.maximum_records.particles
+      );
+      if (!partition.ok()) {
+        return partition.status();
+      }
+      if (partition->size() > 1) {
+        for (const auto& component : *partition) {
+          expected_component_volumes.emplace_back(
+              particles[component.particle_indices.front()].id,
+              component.target_volume_m3
+          );
+        }
+      }
+    }
+    if (expected_component_volumes.empty() && !particles.empty()) {
+      double material_volume_m3 = 0;
+      for (const auto& particle : particles) {
+        material_volume_m3 += particle.reference_volume * particle.volume_ratio;
+      }
+      expected_component_volumes.emplace_back(1, material_volume_m3);
     }
     checkpoint_commit = std::move(**committed);
   }
@@ -133,10 +160,16 @@ SurfaceStage3D::RestoreCommittedPrefix(std::uint64_t maximum_frame, absl::Functi
   if (!checkpoint.ok()) {
     return checkpoint.status();
   }
-  const double declared_material_volume_m3 = checkpoint->volumes.empty() ? 0 : checkpoint->volumes.front().material_m3;
   if (checkpoint->clock != checkpoint_commit->clock || checkpoint->cell_width_m != source_.scene().geometry.cell_width
-      || checkpoint->volumes.size() > 1 || declared_material_volume_m3 != checkpoint_material_volume_m3) {
-    return absl::DataLossError("Mesh checkpoint clock, grid or material volume differs from source");
+      || checkpoint->volumes.size() != expected_component_volumes.size()) {
+    return absl::DataLossError("Mesh checkpoint clock, grid or component count differs from source");
+  }
+  for (std::size_t index = 0; index < expected_component_volumes.size(); ++index) {
+    const auto [component_id, material_volume_m3] = expected_component_volumes[index];
+    const auto& volume = checkpoint->volumes[index];
+    if (volume.component != component_id || volume.material_m3 != material_volume_m3) {
+      return absl::DataLossError("Mesh checkpoint material component or volume differs from source");
+    }
   }
   previous_frame_ = std::move(*checkpoint);
   previous_payload_ = checkpoint_commit->payload_digest;

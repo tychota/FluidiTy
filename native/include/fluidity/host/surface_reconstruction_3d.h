@@ -25,7 +25,9 @@ struct SurfaceReconstructionResult3D {
 };
 
 // Connects the density reference, accepted carrier, persistent tracking and
-// measured correction for a single closed material component without obstacles.
+// measured correction for a closed material component and stationary planar contact.
+// Frame zero can also seed up to 16 separate sphere-union components, sharing
+// the lattice budget evenly. Nested or intersecting render surfaces fail closed.
 // World lattice bounds snap to fixed spacing; they do not change the query
 // origin. Projection uses a measured, volume-qualified geometric scaffold rather
 // than repeatedly undoing/reapplying the raw field's volume deficit. Uses the
@@ -34,7 +36,7 @@ struct SurfaceReconstructionResult3D {
 // missing samples. Records field discrepancy rather than certifying it.
 // Seed requires one zero-clock sample and no predecessor. Later intervals must
 // match the supplied checked SurfaceFrame clock and preserve raw component count
-// and Euler characteristic. Contact, multiple components and topology events
+// and Euler characteristic. Moving obstacles and multi-component tracking or repair
 // return Unimplemented/FailedPrecondition until their repair adapters qualify.
 // Missing support propagates; volume or unsafe geometry failure publishes no
 // result. Inputs are borrowed and never modified. At most 65 source samples and

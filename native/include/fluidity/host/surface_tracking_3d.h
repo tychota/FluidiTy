@@ -28,7 +28,10 @@ struct SurfaceTrackingResult3D {
 // Advances a safe, closed mesh across the entire accepted MotionInterval using
 // bounded RK2 and same-component Newton projection with decreasing residual.
 // Tightens residual tolerance to 1% of each incident triangle's minimum altitude.
-// Preserves vertex IDs, lineage, topology and next_id. Updates age, geometric
+// Preserves vertex IDs, lineage and next_id. A bounded repair can redistribute
+// vertices tangentially and flip local diagonals after projection. A candidate
+// must reduce crossings and preserve the patch boundary and manifold topology.
+// Updates age, geometric
 // velocity and the independently sampled endpoint fluid velocity. Queries and
 // candidate endpoints must remain outside obstacles. Missing support, changed
 // component, failed projection or unsafe final geometry returns

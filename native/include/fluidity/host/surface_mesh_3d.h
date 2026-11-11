@@ -62,6 +62,10 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
 // check and closed vertex-link check. Invalid indices/coordinates return
 // InvalidArgument. Topology defects are measurements, not suppressed failures.
 absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh);
+// As above, also records up to 256 intersecting triangle index pairs in sweep
+// order. The total count in the returned metrics is not truncated.
+absl::StatusOr<SurfaceMetrics3D>
+MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh, std::vector<std::array<std::size_t, 2>>* crossings);
 
 // Adjusts mobile vertices along area-weighted normals with a step capped at
 // ±0.25 cell_width_m in total from the input, excluding contact and unresolved-sheet vertices. Remeasures

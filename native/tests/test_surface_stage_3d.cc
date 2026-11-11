@@ -28,7 +28,7 @@ struct SurfaceStageFixture {
     state.particles[0].world_position = {2.5, 2.5, 2.5};
     state.next_particle_id = 2;
   }
-  void PublishSource() {
+  void PublishSource(bool seed_only = false) {
     auto parent = LiquidCache3D::Create(root / "simulate", scene);
     ASSERT_TRUE(parent.ok()) << parent.status();
     auto fingerprint = ResolvedSceneFingerprint(scene);
@@ -57,6 +57,9 @@ struct SurfaceStageFixture {
     ASSERT_TRUE(point_bytes.ok());
     ASSERT_TRUE(seed.ok());
     ASSERT_TRUE(source->Publish({}, LiquidContentDigest3D(point_bytes->values()), {}, seed->values()).ok());
+    if (seed_only) {
+      return;
+    }
     const auto previous_payload = LiquidContentDigest3D(seed->values());
     auto capture = MotionCapture3D::Create(state, 1.0 / 24, 16);
     auto scheduler = LiquidSubstepScheduler3D::Create(state, scene.scene, scene.options);
@@ -209,6 +212,46 @@ TEST(SurfaceStage3D, RetriesCancellationBeforeAndAfterManifestWithoutLosingCheck
   ASSERT_TRUE(retried.ok()) << retried.status();
   EXPECT_EQ(retried->payload_digest, committed->payload_digest);
   EXPECT_EQ(stage->next_frame(), 2);
+}
+
+TEST(SurfaceStage3D, PublishesReplaysAndRestoresSeparateSeedComponents) {
+  SurfaceStageFixture fixture;
+  fixture.scene.scene.field = LiquidParticleSphereUnion3D{.radius = 1.1};
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  ASSERT_TRUE(particles.ok());
+  ASSERT_TRUE(particles->Resize(2).ok());
+  (*particles)[0] = fixture.state.particles[0];
+  (*particles)[1] = (*particles)[0];
+  (*particles)[1].id = 2;
+  (*particles)[1].world_position.x += 3;
+  fixture.state.particles = std::move(*particles);
+  fixture.state.next_particle_id = 3;
+  fixture.PublishSource(true);
+  auto writer = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(writer.ok()) << writer.status();
+  const auto published = writer->ProcessNextFrame();
+  ASSERT_TRUE(published.ok()) << published.status();
+  ASSERT_EQ(published->reconstruction.frame.volumes.size(), 2);
+  auto replay = SurfaceStage3D::OpenForReplay(fixture.root / "simulate", fixture.root / "mesh", fixture.build);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  const auto replayed = replay->ProcessNextFrame();
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  EXPECT_EQ(replayed->payload_digest, published->payload_digest);
+  auto resumed = SurfaceStage3D::OpenForPublication(
+      fixture.root / "simulate",
+      fixture.root / "mesh",
+      fixture.build,
+      fixture.options
+  );
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  const auto restored = resumed->RestoreCommittedPrefix(0);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(*restored, 1);
 }
 
 TEST(SurfaceStage3D, RestoresAuthenticatedPrefixWithoutReconstruction) {

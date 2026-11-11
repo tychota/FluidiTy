@@ -196,7 +196,7 @@ TEST(SurfaceReconstruction3D, EnforcesSourceRecordBudgetAndReportsMaterialUnderf
   EXPECT_EQ(ReconstructSurfaceFrame3D(*source, {}, {}, nullptr, {}).status().code(), absl::StatusCode::kOutOfRange);
 }
 
-TEST(SurfaceReconstruction3D, RejectsDisconnectedMaterialBeforeDensityCanBridgeTheGap) {
+TEST(SurfaceReconstruction3D, SeedsSeparatedComponentsAndRejectsOverlappingScaffolds) {
   auto seed = Seed();
   auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
   ASSERT_TRUE(particles.ok());
@@ -204,7 +204,7 @@ TEST(SurfaceReconstruction3D, RejectsDisconnectedMaterialBeforeDensityCanBridgeT
   (*particles)[0] = seed.particles[0];
   (*particles)[1] = seed.particles[0];
   (*particles)[1].id = 2;
-  (*particles)[1].world_position.x += 0.21;
+  (*particles)[1].world_position.x += 3;
   seed.particles = std::move(*particles);
   seed.next_particle_id = 3;
   auto bytes = EncodeMotionSeed3D(seed);
@@ -213,12 +213,21 @@ TEST(SurfaceReconstruction3D, RejectsDisconnectedMaterialBeforeDensityCanBridgeT
   ASSERT_TRUE(source.ok());
   LiquidSceneInputs3D scene;
   scene.field = LiquidParticleSphereUnion3D{.radius = 0.1};
-  // The gap is narrower than the Gaussian scale. Do not allocate the render
-  // field or infer connected material from its potentially bridged geometry.
-  const SurfaceReconstructionOptions3D options{.maximum_nodes = 1};
+  const SurfaceReconstructionOptions3D options{.spacing_m = 0.125, .sigma_m = 0.25};
   const auto result = ReconstructSurfaceFrame3D(*source, scene, {}, nullptr, options);
-  EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
-  EXPECT_NE(result.status().message().find("material component"), std::string_view::npos);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_EQ(result->frame.volumes.size(), 2);
+  EXPECT_EQ(result->corrected_metrics.components, 2);
+  EXPECT_NEAR(result->frame.volumes[0].corrected_m3, 1, 0.005);
+  EXPECT_NEAR(result->frame.volumes[1].corrected_m3, 1, 0.005);
+  EXPECT_EQ(result->frame.volumes[0].component, 1);
+  EXPECT_EQ(result->frame.volumes[1].component, 2);
+
+  // Both particles stay disconnected in the source, but the reconstructed
+  // volumes cannot fit at this separation without overlapping.
+  source->samples.front().particles[1].world_position.x = 2.71;
+  const auto overlapping = ReconstructSurfaceFrame3D(*source, scene, {}, nullptr, options);
+  EXPECT_EQ(overlapping.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
 TEST(SurfaceReconstruction3D, RejectsCoincidentNewComponentInsteadOfReusingSurfaceIds) {
