@@ -1,72 +1,25 @@
-"""French translations for the setup, job, inspection and recovery controls."""
+"""Load compiled gettext catalogs into Blender's translation registry."""
 
-FRENCH = {
-    "Domain": "Domaine",
-    "Initial Liquid": "Liquide initial",
-    "Paddle": "Palette",
-    "Cell Width": "Taille des cellules",
-    "Solver": "Solveur",
-    "Use the NVIDIA CUDA device": "Utiliser le périphérique NVIDIA CUDA",
-    "Use the CPU backend": "Utiliser le processeur",
-    "Preview Cache": "Cache d’aperçu",
-    "Bake Cache": "Cache du calcul",
-    "Attached Cache": "Cache lié",
-    "Point Index": "Indice du point",
-    "Check Scene": "Vérifier la scène",
-    "Preview": "Aperçu",
-    "Bake": "Simuler",
-    "Resume": "Reprendre",
-    "Cancel": "Annuler",
-    "Inspect": "Inspecter",
-    "Attach Points": "Lier les points",
-    "Attach Preview": "Lier l’aperçu",
-    "Relink Cache": "Relier le cache",
-    "Last heartbeat": "Dernier signal",
-    "Committed frame": "Image publiée",
-    "Set the scene to 24 fps.": "Réglez la scène sur 24 i/s.",
-    "Remove animation and drivers from scene settings.": "Retirez l’animation et les pilotes des réglages de la scène.",
-    "Use one Blender unit per meter.": "Utilisez une unité Blender par mètre.",
-    "Assign distinct objects to Domain, Initial Liquid and Paddle.": "Assignez des objets distincts au domaine, au liquide initial et à la palette.",
-    "Keep the domain and initial liquid static.": "Gardez le domaine et le liquide initial immobiles.",
-    "Set a frame range starting at 0 and ending from 2 through 240.": "Commencez à l’image 0 et terminez entre les images 2 et 240.",
-    "Select a closed mesh box.": "Sélectionnez une boîte fermée.",
-    "Apply modifiers and remove parents, constraints and shape keys.": "Appliquez les modificateurs et retirez parents, contraintes et clés de forme.",
-    "Use a closed, world-axis-aligned box.": "Utilisez une boîte fermée alignée sur les axes du monde.",
-    "Keep world coordinates within 100 meters of the origin.": "Restez à moins de 100 mètres de l’origine.",
-    "Give the box positive thickness on every axis.": "Donnez à la boîte une épaisseur sur chaque axe.",
-    "Animate X with two linear location keys that cover the bake.": "Animez X avec deux clés linéaires couvrant la simulation.",
-    "Translate the paddle along world X only.": "Déplacez la palette uniquement sur l’axe X.",
-    "Move the starting paddle clear of the initial liquid.": "Éloignez la palette du liquide initial au départ.",
-    "Extend the paddle across the domain on Y and Z.": "Étendez la palette sur tout le domaine en Y et Z.",
-    "Place the initial liquid inside the domain.": "Placez le liquide initial dans le domaine.",
-    "Choose a cell width from 0.001 to 10 meters.": "Choisissez une taille de cellule de 0,001 à 10 mètres.",
-    "Choose a cell width that seeds 1 to 1024 particles.": "Choisissez une taille donnant de 1 à 1 024 particules.",
-    "Save the Blender project before using a cache.": "Enregistrez le projet Blender avant d’utiliser le cache.",
-    "Choose a cache directory.": "Choisissez un dossier de cache.",
-    "Use a Blender project-relative or absolute cache path.": "Utilisez un chemin relatif au projet ou absolu.",
-    "Choose separate, non-nested Preview and Bake directories.": "Choisissez des dossiers distincts et non imbriqués pour l’aperçu et la simulation.",
-    "Choose a fresh cache directory, or use Resume for an existing bake.": "Choisissez un nouveau dossier de cache ou reprenez la simulation existante.",
-    "Use the pinned RTX 5060 Ti device and driver, or select CPU.": "Utilisez la RTX 5060 Ti et son pilote, ou le CPU.",
-    "Install the Windows x64 FluidiTy extension package from disk.": "Installez l’extension FluidiTy Windows x64 depuis le disque.",
-    "Scene is ready to bake.": "La scène est prête à simuler.",
-    "The bake settings changed. Choose a fresh Bake cache.": "Les réglages ont changé. Choisissez un nouveau cache de simulation.",
-    "Waiting for the first committed frame.": "En attente de la première image publiée.",
-    "Cancelling at a safe boundary.": "Arrêt au prochain point sûr.",
-    "Bake complete. Attach the committed points to render.": "Simulation terminée. Liez les points pour le rendu.",
-    "Cancelled. Committed frames are available for Resume.": "Simulation annulée. Les images publiées permettent de reprendre.",
-    "Job ended unexpectedly. Committed frames are preserved.": "Arrêt inattendu. Les images publiées sont conservées.",
-    "Bake failed. Committed frames are preserved.": "La simulation a échoué. Les images publiées sont conservées.",
-    "The solver rejected this request. Check the scene or cache.": "Le solveur a refusé la demande. Vérifiez la scène ou le cache.",
-    "Read the committed frame.": "Image publiée lue.",
-    "Points attached. Save the project to keep the binding.": "Points liés. Enregistrez le projet pour garder le lien.",
-    "Move the cache to the same drive as the Blender project.": "Déplacez le cache sur le disque du projet Blender.",
-    "Choose a directory containing a committed FluidiTy cache.": "Choisissez un dossier contenant un cache FluidiTy.",
-    "This cache has no committed frames.": "Ce cache ne contient aucune image publiée.",
-    "Restore the FluidiTy Points cache reader before relinking.": "Restaurez le lecteur de points avant de relier le cache.",
-    "The saved Points binding is not a FluidiTy object.": "Le lien de points enregistré ne cible pas un objet FluidiTy.",
-    "Blender could not open the verified Points archive.": "Blender n’a pas pu ouvrir l’archive de points vérifiée.",
-    "Blender could not find the native Points reader.": "Blender n’a pas trouvé le lecteur de points natif.",
-    "Blender could not read the last committed Points sample.": "Blender n’a pas pu lire la dernière image publiée.",
-}
+import gettext
+from pathlib import Path
 
-TRANSLATIONS = {"fr_FR": {(context, key): value for key, value in FRENCH.items() for context in ("*", "FluidiTy")}}
+
+def load_catalogs():
+    translations = {}
+    for path in sorted((Path(__file__).parent / "locale").glob("*/LC_MESSAGES/fluidity.mo")):
+        with path.open("rb") as stream:
+            catalog = gettext.GNUTranslations(stream)
+        messages = {}
+        for key, value in catalog._catalog.items():
+            if isinstance(key, str) and key and isinstance(value, str):
+                if "\x04" in key:
+                    context, message = key.split("\x04", 1)
+                    messages[context, message] = value
+                else:
+                    for context in ("*", "Operator", "FluidiTy"):
+                        messages[context, key] = value
+        translations[path.parents[1].name] = messages
+    return translations
+
+
+TRANSLATIONS = load_catalogs()

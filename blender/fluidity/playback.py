@@ -10,17 +10,26 @@ import bpy
 from . import jobs
 from .scene_inputs import require_cadence
 
-ASSET_VERSION = 1
+ASSET_VERSION = 2
 
 
 def create_points_asset():
-    tree = bpy.data.node_groups.new("FluidiTy Points v1", "GeometryNodeTree")
+    tree = bpy.data.node_groups.new("FluidiTy Points v2", "GeometryNodeTree")
     tree.asset_mark()
     tree["fluidity_asset_version"] = ASSET_VERSION
     tree.interface.new_socket(name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    for name, socket_type, description in (
+        ("Points", "NodeSocketGeometry", "Uninstanced committed points; connect to a custom display or reconstruction"),
+        ("Velocity", "NodeSocketVector", "Diagnostic Blender-space velocity in meters per second on the point domain"),
+        ("Speed", "NodeSocketFloat", "Velocity magnitude in meters per second on the point domain"),
+        ("Radius", "NodeSocketFloat", "Unscaled committed display radius in meters on the point domain"),
+    ):
+        socket = tree.interface.new_socket(name=name, in_out="OUTPUT", socket_type=socket_type)
+        socket.description = description
     tree.interface.new_socket(name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
     size = tree.interface.new_socket(name="Size", in_out="INPUT", socket_type="NodeSocketFloat")
     size.default_value, size.min_value, size.max_value = 1.0, 0.01, 10.0
+    size.description = "Display radius multiplier; does not change the committed simulation"
     material_socket = tree.interface.new_socket(name="Material", in_out="INPUT", socket_type="NodeSocketMaterial")
     tree["fluidity_size_socket"] = size.identifier
     tree["fluidity_material_socket"] = material_socket.identifier
@@ -50,6 +59,11 @@ def create_points_asset():
     scale = node("ShaderNodeMath", -300, -420)
     scale.operation = "MULTIPLY"
     instance = node("GeometryNodeInstanceOnPoints", 50, 120)
+    velocity = node("GeometryNodeInputNamedAttribute", -560, -650)
+    velocity.data_type = "FLOAT_VECTOR"
+    velocity.inputs["Name"].default_value = "velocity"
+    speed = node("ShaderNodeVectorMath", -280, -650)
+    speed.operation = "LENGTH"
     for source, destination in (
         (inputs.outputs["Geometry"], instance.inputs["Points"]),
         (inputs.outputs["Size"], scale.inputs[1]),
@@ -59,6 +73,11 @@ def create_points_asset():
         (ico.outputs["Mesh"], set_material.inputs["Geometry"]),
         (set_material.outputs["Geometry"], instance.inputs["Instance"]),
         (instance.outputs["Instances"], output.inputs["Geometry"]),
+        (inputs.outputs["Geometry"], output.inputs["Points"]),
+        (velocity.outputs["Attribute"], output.inputs["Velocity"]),
+        (velocity.outputs["Attribute"], speed.inputs[0]),
+        (speed.outputs["Value"], output.inputs["Speed"]),
+        (radius.outputs["Radius"], output.inputs["Radius"]),
     ):
         tree.links.new(source, destination)
     return tree
@@ -85,11 +104,10 @@ def inspection(cache, frame):
     return json.loads(jobs.checked("blender_bridge", "inspect", cache, frame))
 
 
-def attach(scene, cache):
-    require_cadence(scene)
+def committed_last(cache):
+    """Find the last publication record; the bridge subsequently verifies its contents."""
     if not cache.is_dir():
         raise jobs.ToolError("Choose a directory containing a committed FluidiTy cache.")
-    relative_cache = relative(cache)
     frames = [
         int(p.stem)
         for p in (cache / "frames").glob("*.flmf")
@@ -97,7 +115,13 @@ def attach(scene, cache):
     ]
     if not frames:
         raise jobs.ToolError("This cache has no committed frames.")
-    last = max(frames)
+    return max(frames)
+
+
+def attach(scene, cache):
+    require_cadence(scene)
+    relative_cache = relative(cache)
+    last = committed_last(cache)
     info = inspection(cache, last)
     identity = info["execution_id"]
     existing = scene.fluidity.playback_object
