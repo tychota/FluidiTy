@@ -22,6 +22,7 @@ enum class CommandKind {
 enum class CommandStage {
   kSimulate,
   kMesh,
+  kWhitewater,
 };
 // Parsed process inputs own their paths. Scene paths name the shared FLRS binary,
 // not a second JSON settings format. Frame/substep numbers are unsigned physical

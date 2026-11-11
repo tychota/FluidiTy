@@ -210,13 +210,18 @@ The host frame control reconstructs nonempty persistent foam from those
 accepted events. Focused controls cover birth-time spray, bounded RK2 foam,
 explicit bubble fallback and foam expiry before later carrier reads. `FLWW`
 checkpoints and `FLWC` physical settings round-trip with bounded codecs.
-The full CPU suite passed 572 tests. The preceding source/transport checkpoint
-passed the CUDA-enabled suite of 635 tests.
+`run --stage whitewater` now publishes those points under exact source lineage,
+with read-only replay and verified checkpoint resume. Real process tests cover
+CPU and CUDA accepted sources, unchanged upstream bytes/timestamps, and corrupt
+point rejection. Whitewater transport itself runs on the host. The CPU analytic
+control had 40 foam and 40 bubble points at frame 2; that frame took 0.033 s
+end to end and the process peak RSS was 6,676,480 bytes. This is one small
+control, not a breaking-wave throughput measurement. The full suites passed
+572 CPU and 640 CUDA-enabled tests with no skips.
 
 ## Open integrated gates
 
-The breaking-wave physical source sampler and Whitewater stage publication
-remain open. Mesh
+The breaking-wave physical source sampler and obstacle collisions remain open. Mesh
 local repair, contact, component lineage and droplet handling remain open.
 Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are

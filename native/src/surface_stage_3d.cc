@@ -3,29 +3,6 @@
 #include <limits>
 
 namespace fluidity {
-namespace {
-// Keep derived files out of Simulate's own publication namespaces. The declared
-// effects/mesh subtree is reserved for this stage; sibling cache roots also work.
-bool Within(const std::filesystem::path& path, const std::filesystem::path& root) {
-  const auto relative = path.lexically_relative(root);
-  return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
-}
-absl::Status CheckOutputRoot(const std::filesystem::path& simulate_root, const std::filesystem::path& mesh_root) {
-  std::error_code error;
-  const auto source = std::filesystem::weakly_canonical(simulate_root, error);
-  if (error) {
-    return absl::UnavailableError("could not resolve Simulate source root");
-  }
-  const auto output = std::filesystem::weakly_canonical(mesh_root, error);
-  if (error) {
-    return absl::UnavailableError("could not resolve Mesh output root");
-  }
-  if (Within(source, output) || (Within(output, source) && !Within(output, source / "effects/mesh"))) {
-    return absl::InvalidArgumentError("Mesh output overlaps Simulate-owned data");
-  }
-  return absl::OkStatus();
-}
-}  // namespace
 SurfaceStage3D::SurfaceStage3D(
     EffectsSource3D source,
     EffectsCache3D cache,
@@ -41,7 +18,7 @@ absl::StatusOr<SurfaceStage3D> SurfaceStage3D::OpenForPublication(
     LiquidDigest3D build,
     const SurfaceReconstructionOptions3D& options
 ) {
-  const auto output_root = CheckOutputRoot(simulate_root, mesh_root);
+  const auto output_root = ValidateEffectsOutputRoot3D(simulate_root, mesh_root, EffectsStage3D::kMesh);
   if (!output_root.ok()) {
     return output_root;
   }
@@ -75,7 +52,7 @@ absl::StatusOr<SurfaceStage3D> SurfaceStage3D::OpenForReplay(
     const std::filesystem::path& mesh_root,
     LiquidDigest3D build
 ) {
-  const auto output_root = CheckOutputRoot(simulate_root, mesh_root);
+  const auto output_root = ValidateEffectsOutputRoot3D(simulate_root, mesh_root, EffectsStage3D::kMesh);
   if (!output_root.ok()) {
     return output_root;
   }

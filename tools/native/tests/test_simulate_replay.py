@@ -786,7 +786,7 @@ def whitewater_source_case(executable, fixture, directory, backend):
     scene, initial = make_scene(executable, fixture, root, backend, "whitewater-effects")
     cache = root / "cache"
     args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache, "--backend", backend, *initial]
-    execute(executable, *args, "--frame-end", 1)
+    execute(executable, *args, "--frame-end", 2)
     receipt = json.loads(subprocess.run([str(fixture), "source-births", str(cache)], check=True,
                                         capture_output=True, encoding="utf-8", timeout=30).stdout)
     assert receipt["birth_count"] > 0 and receipt["sample_count"] == 2
@@ -794,6 +794,26 @@ def whitewater_source_case(executable, fixture, directory, backend):
     before = snapshot(cache)
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 1, "--substep", 0)
     assert snapshot(cache) == before, "whitewater source replay must be read-only"
+    points = root / "whitewater"
+    command = ["run", "--stage", "whitewater", "--cache", cache, "--output-cache", points]
+    result = execute(executable, *command, "--frame-end", 1)[-1]
+    assert result["stage"] == "whitewater" and result["backend"] == "cpu" and result["frame"] == 1
+    assert result["source_backend"] == backend
+    assert result["foam_count"] > 0 and result["birth_count"] > 0
+    assert result["point_count"] == result["foam_count"] + result["spray_count"] + result["bubble_count"]
+    assert result["frame_wall_seconds"] > 0 and result["peak_process_resident_bytes"] > 0
+    points_before = snapshot(points)
+    replay = ["replay", "--stage", "whitewater", "--cache", cache, "--output-cache", points,
+              "--frame", 1, "--substep", 0]
+    assert invoke(executable, *replay)["payload_digest"] == result["payload_digest"]
+    assert snapshot(points) == points_before, "whitewater replay must be read-only"
+    resumed = execute(executable, *command, "--resume", "--frame-end", 2)[-1]
+    assert resumed["frame"] == 2 and resumed["restored_prefix_frames"] == 2
+    points_after = snapshot(points)
+    assert all(points_after[path] == value for path, value in immutable_cache_files(points_before).items())
+    assert snapshot(cache) == before, "whitewater must leave Simulate data unchanged"
+    (points / "blobs" / (result["payload_digest"] + ".flef")).write_bytes(b"corrupt")
+    assert invoke(executable, *replay, success=False)["code"] == "E-WHITEWATER-DATA_LOSS"
 
 
 def case_cpu_mesh(executable, fixture, directory, cuda):

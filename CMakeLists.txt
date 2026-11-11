@@ -53,6 +53,7 @@ add_library(fluidity_native STATIC
     native/src/whitewater_transport_3d.cc
     native/src/whitewater_frame_3d.cc
     native/src/whitewater_cache_3d.cc
+    native/src/whitewater_stage_3d.cc
     native/src/whitewater_volume_3d.cc
     native/src/whitewater_3d.cc
     native/src/surface_cache_3d.cc

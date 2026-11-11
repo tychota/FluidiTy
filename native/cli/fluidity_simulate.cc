@@ -10,12 +10,12 @@
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "blake3.h"
 #include "checkpoint_reference_generated.h"
+#include "effects_execution.h"
 #include "flatbuffers/minireflect.h"
 #include "fluidity/host/cuda_probe.h"
 #include "fluidity/host/simulate_cli.h"
 #include "frame_manifest_generated.h"
 #include "liquid_state_generated.h"
-#include "mesh_execution.h"
 #include "point_frame_generated.h"
 #include "resolved_scene_generated.h"
 #include "simulate_job.h"
@@ -357,8 +357,10 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
     if (flag == "--stage") {
       if (value == "mesh") {
         command.stage = CommandStage::kMesh;
+      } else if (value == "whitewater") {
+        command.stage = CommandStage::kWhitewater;
       } else if (value != "simulate") {
-        return invalid(flag, value, "stage must be simulate or mesh");
+        return invalid(flag, value, "stage must be simulate, mesh or whitewater");
       }
     } else if (flag == "--output-cache") {
       command.output_cache_directory = PathFromUtf8(value);
@@ -414,12 +416,13 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
     }
   }
   if (run && !seen.contains("--stage")) {
-    return invalid("stage", "", "run requires --stage simulate");
+    return invalid("stage", "", "run requires a stage");
   }
   const bool mesh = command.stage == CommandStage::kMesh;
-  if (mesh) {
+  const bool derived = command.stage != CommandStage::kSimulate;
+  if (derived) {
     if ((!run && !replay) || command.output_cache_directory.empty()) {
-      return invalid("output-cache", "", "Mesh run/replay requires its own output cache");
+      return invalid("output-cache", "", "derived stage run/replay requires its own output cache");
     }
     for (const auto flag :
          {"--scene",
@@ -431,17 +434,19 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
           "--trace-geometry",
           "--measure-job"}) {
       if (seen.contains(flag)) {
-        return invalid(flag, "", "option is not supported for Mesh; source comes from --cache");
+        return invalid(flag, "", "option is not supported for derived stages; source comes from --cache");
       }
     }
     if (replay && command.substep.value_or(0) != 0) {
-      return invalid("substep", "", "Mesh replay requires a completed frame");
+      return invalid("substep", "", "derived stage replay requires a completed frame");
     }
-  } else if (seen.contains("--output-cache") || seen.contains("--surface-spacing")
-             || seen.contains("--surface-sigma")) {
-    return invalid("stage", "", "derived output and surface settings require --stage mesh");
+  } else if (seen.contains("--output-cache")) {
+    return invalid("stage", "", "output-cache requires a derived stage");
   }
-  if ((run || step) && !mesh && command.scene_path.empty()) {
+  if (!mesh && (seen.contains("--surface-spacing") || seen.contains("--surface-sigma"))) {
+    return invalid("stage", "", "surface settings require --stage mesh");
+  }
+  if ((run || step) && !derived && command.scene_path.empty()) {
     return invalid("scene", "", "resolved scene is required");
   }
   if (execution && command.cache_directory.empty()) {
@@ -547,8 +552,8 @@ absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic
   if (diagnostic == nullptr) {
     return absl::InvalidArgumentError("");
   }
-  if (command.stage == CommandStage::kMesh) {
-    return ExecuteMesh(command, writer, diagnostic);
+  if (command.stage != CommandStage::kSimulate) {
+    return ExecuteEffects(command, writer, diagnostic);
   }
   if (command.kind == CommandKind::kCheck) {
     return CheckScene(command, writer, diagnostic);

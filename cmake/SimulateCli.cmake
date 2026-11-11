@@ -9,7 +9,7 @@ configure_file("${PROJECT_SOURCE_DIR}/cmake/simulate_schema_text.h.in"
   "${FLUIDITY_CACHE_GENERATED_DIR}/simulate_schema_text.h" @ONLY)
 function(fluidity_add_simulate_executable target)
   add_executable(${target}
-    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc native/cli/mesh_execution.cc)
+    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc native/cli/effects_execution.cc)
   target_include_directories(${target} PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   target_link_libraries(${target} PRIVATE fluidity_native fluidity_native_options
     flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)

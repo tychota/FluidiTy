@@ -5,6 +5,10 @@
 
 namespace fluidity {
 namespace {
+bool IsAtOrBelow(const std::filesystem::path& path, const std::filesystem::path& root) {
+  const auto relative = path.lexically_relative(root);
+  return !relative.empty() && !relative.is_absolute() && *relative.begin() != "..";
+}
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
       && a.world_origin.z == b.world_origin.z;
@@ -26,6 +30,40 @@ MatchesParent(const LiquidState3D& state, const LiquidCommittedFrame3D& parent, 
   return VerifyLiquidContent3D(bytes->values(), parent.manifest.points, LiquidContentKind3D::kPoints, limits);
 }
 }  // namespace
+
+absl::Status ValidateEffectsOutputRoot3D(
+    const std::filesystem::path& simulate_root,
+    const std::filesystem::path& output_root,
+    EffectsStage3D stage
+) {
+  std::filesystem::path reserved_subtree;
+  switch (stage) {
+    case EffectsStage3D::kMesh:
+      reserved_subtree = "effects/mesh";
+      break;
+    case EffectsStage3D::kWhitewater:
+      reserved_subtree = "effects/whitewater";
+      break;
+    case EffectsStage3D::kVolumes:
+      reserved_subtree = "effects/volumes";
+      break;
+    default:
+      return absl::InvalidArgumentError("expected a derived effects output stage");
+  }
+  std::error_code error;
+  const auto source = std::filesystem::weakly_canonical(simulate_root, error);
+  if (error) {
+    return absl::UnavailableError("could not resolve Simulate source root");
+  }
+  const auto output = std::filesystem::weakly_canonical(output_root, error);
+  if (error) {
+    return absl::UnavailableError("could not resolve derived effects output root");
+  }
+  if (IsAtOrBelow(source, output) || (IsAtOrBelow(output, source) && !IsAtOrBelow(output, source / reserved_subtree))) {
+    return absl::InvalidArgumentError("derived effects output overlaps Simulate-owned data or another stage");
+  }
+  return absl::OkStatus();
+}
 
 EffectsSource3D::EffectsSource3D(
     LiquidCache3D parent,

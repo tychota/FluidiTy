@@ -1,4 +1,4 @@
-#include "mesh_execution.h"
+#include "effects_execution.h"
 
 #include <array>
 #include <charconv>
@@ -19,6 +19,7 @@
 #endif
 
 #include "fluidity/host/surface_stage_3d.h"
+#include "fluidity/host/whitewater_stage_3d.h"
 #include "simulate_job.h"
 
 namespace fluidity::simulate {
@@ -62,21 +63,23 @@ std::string Digest(const LiquidDigest3D& digest) {
   return JsonString(LiquidDigestHex3D(digest).data());
 }
 
-absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
-  const auto build = ExecutableDigest();
-  if (!build.ok()) {
-    return build.status();
-  }
+struct FrameDescription {
+  LiquidClock3D clock;
+  LiquidDigest3D payload_digest;
+  std::string measurements;
+};
+
+// Both host stages use the same lease, cancellation, prefix restoration and
+// reporting protocol. The stage owner supplies its checked frame description.
+template <typename Stage, typename DescribeFrame>
+absl::StatusOr<std::string> RunStage(
+    const Command& command,
+    SimulateJob& job,
+    Stage& stage,
+    std::string_view stage_name,
+    DescribeFrame describe_frame
+) {
   const bool replay = command.kind == CommandKind::kReplay;
-  SurfaceReconstructionOptions3D options;
-  options.spacing_m = command.surface_spacing_m;
-  options.sigma_m = command.surface_sigma_m;
-  auto stage = replay
-      ? SurfaceStage3D::OpenForReplay(command.cache_directory, command.output_cache_directory, *build)
-      : SurfaceStage3D::OpenForPublication(command.cache_directory, command.output_cache_directory, *build, options);
-  if (!stage.ok()) {
-    return stage.status();
-  }
   if (!replay) {
     const auto attached = job.AttachCache(command.output_cache_directory, !command.resume);
     if (!attached.ok()) {
@@ -87,7 +90,7 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
       return marked;
     }
   }
-  const auto execution = EffectsExecutionId3D(stage->identity());
+  const auto execution = EffectsExecutionId3D(stage.identity());
   if (!execution.ok()) {
     return execution.status();
   }
@@ -98,7 +101,7 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
     const auto restore_started = std::chrono::steady_clock::now();
     // Always regenerate the target frame, even if already committed, so the
     // terminal result verifies the requested output and contains its metrics.
-    const auto restored = stage->RestoreCommittedPrefix(target - 1, [&] {
+    const auto restored = stage.RestoreCommittedPrefix(target - 1, [&] {
       return job.CheckForJobStopRequest();
     });
     if (!restored.ok()) {
@@ -108,7 +111,7 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
     restore_wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - restore_started).count();
   }
   std::string final_members;
-  while (stage->next_frame() <= target) {
+  while (stage.next_frame() <= target) {
     const auto stopped = job.CheckForJobStopRequest();
     if (!stopped.ok()) {
       return stopped;
@@ -121,30 +124,20 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
             },
         .context = &job,
     };
-    auto result = stage->ProcessNextFrame(control);
+    auto result = stage.ProcessNextFrame(control);
     if (!result.ok()) {
       return result.status();
     }
-    const auto& reconstructed = result->reconstruction;
-    const auto& frame = reconstructed.frame;
-    double material_volume_m3 = 0;
-    for (const auto& volume : frame.volumes) {
-      material_volume_m3 += volume.material_m3;
-    }
-    const double relative_error =
-        material_volume_m3 == 0 ? 0 : reconstructed.corrected_metrics.signed_volume / material_volume_m3 - 1;
     const double wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     const auto peak_resident_bytes = PeakProcessResidentBytes();
     if (!peak_resident_bytes.ok()) {
       return peak_resident_bytes.status();
     }
+    const auto frame = describe_frame(*result);
     const std::string frame_members = "\"command\":" + JsonString(replay ? "replay" : "run")
-        + ",\"stage\":\"mesh\",\"backend\":\"cpu\",\"read_only\":" + (replay ? "true" : "false")
-        + ",\"execution_id\":" + Digest(*execution) + ",\"payload_digest\":" + Digest(result->payload_digest)
-        + ",\"vertex_count\":" + std::to_string(frame.mesh.vertices.size())
-        + ",\"triangle_count\":" + std::to_string(frame.mesh.triangles.size())
-        + ",\"retained_ids\":" + std::to_string(reconstructed.retained_ids)
-        + ",\"volume_relative_error\":" + Number(relative_error) + ",\"frame_wall_seconds\":" + Number(wall_seconds)
+        + ",\"stage\":" + JsonString(stage_name) + ",\"backend\":\"cpu\",\"read_only\":" + (replay ? "true" : "false")
+        + ",\"execution_id\":" + Digest(*execution) + ",\"payload_digest\":" + Digest(frame.payload_digest)
+        + frame.measurements + ",\"frame_wall_seconds\":" + Number(wall_seconds)
         + ",\"peak_process_resident_bytes\":" + std::to_string(*peak_resident_bytes);
     final_members = frame_members + ",\"frame\":" + std::to_string(frame.clock.frame_ordinal)
         + ",\"restored_prefix_frames\":" + std::to_string(restored_prefix_frames)
@@ -159,14 +152,73 @@ absl::StatusOr<std::string> RunMesh(const Command& command, SimulateJob& job) {
   }
   return final_members;
 }
+
+absl::StatusOr<std::string> RunEffects(const Command& command, SimulateJob& job) {
+  const auto build = ExecutableDigest();
+  if (!build.ok()) {
+    return build.status();
+  }
+  const bool replay = command.kind == CommandKind::kReplay;
+  if (command.stage == CommandStage::kMesh) {
+    SurfaceReconstructionOptions3D options;
+    options.spacing_m = command.surface_spacing_m;
+    options.sigma_m = command.surface_sigma_m;
+    auto stage = replay
+        ? SurfaceStage3D::OpenForReplay(command.cache_directory, command.output_cache_directory, *build)
+        : SurfaceStage3D::OpenForPublication(command.cache_directory, command.output_cache_directory, *build, options);
+    if (!stage.ok()) {
+      return stage.status();
+    }
+    return RunStage(command, job, *stage, "mesh", [](const SurfaceStageFrame3D& result) {
+      const auto& reconstruction = result.reconstruction;
+      const auto& frame = reconstruction.frame;
+      double material_volume_m3 = 0;
+      for (const auto& volume : frame.volumes) {
+        material_volume_m3 += volume.material_m3;
+      }
+      const double relative_error =
+          material_volume_m3 == 0 ? 0 : reconstruction.corrected_metrics.signed_volume / material_volume_m3 - 1;
+      return FrameDescription{
+          .clock = frame.clock,
+          .payload_digest = result.payload_digest,
+          .measurements = ",\"vertex_count\":" + std::to_string(frame.mesh.vertices.size())
+              + ",\"triangle_count\":" + std::to_string(frame.mesh.triangles.size()) + ",\"retained_ids\":"
+              + std::to_string(reconstruction.retained_ids) + ",\"volume_relative_error\":" + Number(relative_error),
+      };
+    });
+  }
+  if (command.stage != CommandStage::kWhitewater) {
+    return absl::InvalidArgumentError("unsupported derived stage");
+  }
+  auto stage = replay
+      ? WhitewaterStage3D::OpenForReplay(command.cache_directory, command.output_cache_directory, *build)
+      : WhitewaterStage3D::OpenForPublication(command.cache_directory, command.output_cache_directory, *build);
+  if (!stage.ok()) {
+    return stage.status();
+  }
+  const auto source_backend = stage->source_backend();
+  return RunStage(command, job, *stage, "whitewater", [source_backend](const WhitewaterStageFrame3D& frame) {
+    return FrameDescription{
+        .clock = frame.clock,
+        .payload_digest = frame.payload_digest,
+        .measurements = ",\"source_backend\":" + JsonString(source_backend == LiquidBackend3D::kCuda ? "cuda" : "cpu")
+            + ",\"point_count\":" + std::to_string(frame.foam_count + frame.spray_count + frame.bubble_count)
+            + ",\"foam_count\":" + std::to_string(frame.foam_count) + ",\"spray_count\":"
+            + std::to_string(frame.spray_count) + ",\"bubble_count\":" + std::to_string(frame.bubble_count)
+            + ",\"birth_count\":" + std::to_string(frame.birth_count)
+            + ",\"expired_count\":" + std::to_string(frame.expired_count)
+            + ",\"bubble_fallback_substeps\":" + std::to_string(frame.bubble_fallback_substeps),
+    };
+  });
+}
 }  // namespace
 
-absl::Status ExecuteMesh(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
-  diagnostic->domain = "MESH";
+absl::Status ExecuteEffects(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
+  diagnostic->domain = command.stage == CommandStage::kMesh ? "MESH" : "WHITEWATER";
   diagnostic->field = "cache";
-  diagnostic->cause = "accepted source, physical settings, geometry or immutable Mesh publication failed";
+  diagnostic->cause = "accepted source, physical settings, reconstruction or immutable publication failed";
   SimulateJob job(writer, command.kind == CommandKind::kRun);
-  auto result = RunMesh(command, job);
+  auto result = RunEffects(command, job);
   const auto finalized = job.Finish(result.status(), diagnostic);
   if (!finalized.ok()) {
     return finalized;

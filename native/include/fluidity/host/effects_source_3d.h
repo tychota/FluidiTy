@@ -4,6 +4,15 @@
 #include "fluidity/host/motion_capture_3d.h"
 
 namespace fluidity {
+// Verifies distinct trusted cache roots before a derived writer opens. Output
+// may be disjoint or below the stage's reserved effects subtree. Rejects roots
+// overlapping Simulate-owned data or another stage. No files are created.
+absl::Status ValidateEffectsOutputRoot3D(
+    const std::filesystem::path& simulate_root,
+    const std::filesystem::path& output_root,
+    EffectsStage3D stage
+);
+
 struct EffectsSourceFrame3D {
   MotionFrame3D motion;
   LiquidDigest3D source_payload;
