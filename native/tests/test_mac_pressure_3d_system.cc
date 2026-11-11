@@ -48,6 +48,7 @@ MacPressureCell3D IncompressibleCellAtX(std::int32_t x) {
 }
 
 TEST(MacPressureExplicitGraph3D, BoundedSolverMatchesEdgeAndCornerReferencePressure) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   for (const auto& pressure_case : kExplicitPressureCases) {
     SCOPED_TRACE(pressure_case.plane_count);
     SCOPED_TRACE(pressure_case.reversed);
