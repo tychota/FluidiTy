@@ -20,8 +20,11 @@ Python experiment/receipt tests, three effects-schema conformance tests and both
 CPU/CUDA accepted-source process checks. The first cross-platform CI attempt
 rejected the old exact CLI roster after the new process checks ran. The roster
 and CUDA effects receipt validation were corrected through failing/passing tests.
-The pre-existing Lean proof/checker job passed on `d28a7d3`; this does not qualify
-new M2-specific mathematical contracts.
+The pinned Lean build and independent checker passed on `c0ec263` in
+[run 42933921543](https://github.com/tychota/FluidiTy/actions/runs/42933921543),
+including the four new exact trilinear weight/deposition contracts. These proofs
+assume complete unmasked support; they do not certify Gaussian boundaries,
+surface topology, gas physics or integrated M2 acceptance.
 
 - `EffectsCache3D` authenticates separate source, Mesh, Whitewater and Volumes
   identities and contiguous payload lineage, using no-replace publication.
@@ -137,8 +140,7 @@ CLI/publication, local repair, droplet handling and production replay are
 unfinished. Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are
 unfinished. No integrated breaking-wave bake or Blender M2 inspection has
-qualified them. New M2-specific Lean contracts and full CPU/device numerical
-qualification remain open.
+qualified them. Full CPU/device numerical qualification remains open.
 
 The uniform M1 execution plan is still bounded to 1,024 particles, 128 blocks,
 4,096 cells and 24,576 faces. Its small Blender bake does not demonstrate the

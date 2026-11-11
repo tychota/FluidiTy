@@ -761,7 +761,10 @@ def effects_case(executable, fixture, directory, backend):
     assert len(list((products / "frames").glob("*.flem"))) == 6
     assert all(snapshot(products)[path] == value for path, value in before.items())
     payloads = {path.name: path.read_bytes() for path in (products / "blobs").glob("*.flef")}
-    source_blob = next((products / "blobs").glob("*.flef"))
+    # Directory enumeration order is filesystem-dependent. Corrupt a payload in
+    # the requested replay prefix, rather than an arbitrary later frame.
+    seed_manifest = json.loads((products / "frames" / "00000000000000000000.json").read_text())
+    source_blob = products / "blobs" / (seed_manifest["payload_digest"] + ".flef")
     source_blob.write_bytes(b"corrupt")
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 3, "--substep", 0,
            success=False)
