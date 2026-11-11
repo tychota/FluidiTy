@@ -1,0 +1,26 @@
+# M3 production integration and wave qualification
+
+## Entry evidence
+
+The bounded 3D qualification covers aligned cubic-normal MAC transfer, the native pressure projection, signed subface ownership, masked PIC, and the first refine/coarsen family remap. The manufactured band tests cover rollback and cavity preservation. Use the measured edge/corner cases and the separately checked F3/F4 contracts as regression controls as these pieces enter the production path.
+
+The accepted M2 increment supplies authenticated effects products, accepted motion, Ocean Boundary, and the stationary beach workflow. Its quarter-scale swell follow-up records Mesh connectivity and volume-correction failures. Use the corrected breaking-wave inputs and their receipts when available. A completed Simulate stage alone does not qualify the surface, whitewater, volume, or cache-drain portion of the wave. [M2 increment](https://github.com/tychota/FluidiTy/pull/52) · [Swell follow-up](https://github.com/tychota/FluidiTy/pull/65)
+
+## Native adaptive Simulate
+
+1. Keep the current uniform entry as the control. Build sparse 4³ blocks from graded leaves, assign canonical level and face ownership, and freeze the active topology for each trial. Qualify face, edge and corner transitions including sparse holes, signed coordinates, obstacles and physical support masks. Compare device PIC against the checked host fallback before enabling it.
+2. Build the real support and motion halo from accepted positions and carrier data. Apply the physical/interface/support/camera width upper bounds and accepted-time hysteresis. Prepare sibling topology, inventories, pressures and signed subfaces in a candidate. Extend remap tests to partial apertures, EOS reconstruction and cut/contact vetoes. Complete the split/merge phase, body, side, support and energy budget checks on the candidate.
+3. Use the same aperture and conductance for pressure assembly and correction. Add exterior Dirichlet, wall and source flux links to the explicit adaptive graph before comparing the projection with the current uniform solver. Size the production hierarchy, dual owners and scratch for measured active blocks. The current 4,096-cell bounded pressure ceiling applies to the verified implementation. It needs a measured scalability change before wave-scale admission.
+4. Wire adaptation to the accepted-state transaction and checkpoint. Keep old and proposed topology, particle inventories, warm starts, accepted clock, IDs and source/RNG counters stable across injected failures. Publish and invalidate graphs only after a successful replacement. Check interrupted and uninterrupted hashes on native CPU and the qualified CUDA device.
+
+## Production band and M2 boundary
+
+Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.
+
+Publish authoritative liquid and cavity occupancy with valid coverage and the accepted component inventory/flux ledger. Match that data and obstacle closure to the accepted MotionInterval epoch. Mesh consumes the mapped occupancy outside valid particle support, retains genuine enclosed air and derives target volume from the authoritative ledger. Verify false inner shells, cavity lineage, material component splits/merges, moving correspondence, restart and rollback on real accepted sources. Verify Whitewater and Volumes consume the same authenticated stage identities. Use the native occupancy adapter and manufactured one-owner fixtures as controls.
+
+## Matched-error wave campaign
+
+- Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.
+- Record unprofiled launch-to-exit time including every requested stage and pipeline drain, published-frame intervals, retries, active levels, remap work and simultaneous peak GPU bytes. Include old and new owners, graph/solver scratch, stage buffers and in-flight snapshots in the memory measurement. Use a matched short capture for profiling, separate from the acceptance run. [CUDA optimization procedure](../native/cuda-optimization.md)
+- Run all 240 frames of the reference wave. Require at most 10,800 s and GPU peak at most `min(0.70 × total, 0.80 × free_at_job_start)`. The temporary uniform-sparse narrow-band path may qualify at most 21,600 s under the same cap and leaves adaptivity open. Qualify cage/native Multires when the authored reference output requests it.
