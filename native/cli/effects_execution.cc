@@ -263,6 +263,11 @@ absl::Status ExecuteEffects(const Command& command, ProtocolWriter& writer, Diag
   diagnostic->cause = "accepted source, physical settings, reconstruction or immutable publication failed";
   SimulateJob job(writer, command.kind == CommandKind::kRun);
   auto result = RunEffects(command, job);
+  // Derived numerical preconditions carry a specific reason suitable for
+  // reporting beside the stable domain error code.
+  if (absl::IsFailedPrecondition(result.status()) && !result.status().message().empty()) {
+    diagnostic->cause = std::string(result.status().message());
+  }
   const auto finalized = job.Finish(result.status(), diagnostic);
   if (!finalized.ok()) {
     return finalized;
