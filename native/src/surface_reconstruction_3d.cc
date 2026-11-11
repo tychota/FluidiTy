@@ -618,11 +618,14 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       vertex.component = component;
     }
   }
+  const bool repaired_connectivity = previous && result.frame.mesh.triangles != previous->mesh.triangles;
   const auto final_contact = mark_contact(result.frame.mesh);
   if (!final_contact.ok()) {
     return final_contact;
   }
-  auto corrected = CorrectSurfaceVolumeWithNormals3D(
+  // Rebuild the correction normals from the new triangle rings after flips.
+  const auto correct_volume = repaired_connectivity ? CorrectSurfaceVolume3D : CorrectSurfaceVolumeWithNormals3D;
+  auto corrected = correct_volume(
       result.frame.mesh,
       material_volume,
       endpoint.geometry.cell_width,

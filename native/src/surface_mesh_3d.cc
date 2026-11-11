@@ -322,6 +322,10 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
 }
 
 absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh) {
+  return MeasureSurfaceMesh3D(mesh, nullptr);
+}
+absl::StatusOr<SurfaceMetrics3D>
+MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh, std::vector<std::array<std::size_t, 2>>* crossings) {
   SurfaceMetrics3D metrics;
   DisjointSet sets(mesh.vertices.size());
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::pair<std::size_t, int>> edges;
@@ -425,7 +429,12 @@ absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh)
           || std::max({q[0].z, q[1].z, q[2].z}) < std::min({p[0].z, p[1].z, p[2].z})) {
         continue;
       }
-      metrics.self_intersections += Intersects(p, q, shared_a, shared_b);
+      if (Intersects(p, q, shared_a, shared_b)) {
+        ++metrics.self_intersections;
+        if (crossings && crossings->size() < 256) {
+          crossings->push_back({a, b});
+        }
+      }
     }
   }
   if (!std::isfinite(metrics.signed_volume) || !std::isfinite(metrics.area)) {

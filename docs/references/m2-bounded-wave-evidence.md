@@ -32,6 +32,31 @@ The Mesh field reflects each eligible particle's density contribution across the
 
 On the frozen partial-column seed at 0.125 m spacing and 0.16 m sigma, the raw enclosed volume rose from 0.992169 to 1.341566 m³. The corrected surface encloses 1.759954 m³ of 1.763927 m³ of material, a relative error of -0.2253%. Frame zero published with 2,878 vertices and 5,752 triangles. The measured Debug CPU frame took 19.50 s with 16.15 MB peak process RSS. Read-only replay reproduced the exact frame-zero payload. Resume rejected frame one with 30 triangle intersections and no boundary, manifold, winding or degeneracy defects. The regular seed still fails at its smaller component, with 0.088769 m³ raw against 0.1875 m³ material.
 
+## Frame-one projection repair
+
+A diagnostic build measured the same triangle connectivity at three points in
+the frozen frame-one bake. The seed and RK2-advected meshes each had zero
+intersecting pairs. Nearest-surface projection introduced 30. The
+[affected patch](m2-wave-frame-one-crossing.png) shows a measured pair near
+world position (4.580, 0.732, 0.900) m, using the same axes and scale for
+both stages. The plotted triangles are IDs 5522 and 5583 in the frame mesh
+array. Their vertices moved only millimetres during projection.
+
+Bounded tangential redistribution and reprojection reduced the crossings
+but could not remove them all. Local edge flips then removed the remaining
+crossings. The repair accepts only candidates with fewer crossings and no
+other measured topology defects. It keeps vertex IDs, checks the original
+projection distance and residual bounds for moved vertices, and remeasures
+the entire mesh. The volume correction uses geometry-derived normals when
+triangle connectivity changes.
+
+The optimized CPU bake published frame one with all 2,878 vertex IDs,
+5,752 triangles, and -0.0141% volume error. Ten triangle slots changed
+connectivity, spanning 0.00361 m² after repair. Read-only replay reproduced the exact frame-one payload. Frame two then failed
+scaffold volume correction before tracking. Its raw scaffold encloses
+1.32813 m³ against a 1.76750 m³ material target. The full Blender
+breaking-wave acceptance gate remains open.
+
 ## Reproduce the fixed inputs
 
 Use the native fixture from this branch and pass the exact solver executable to bind its digest into the scene. Create a new output directory for each run.
