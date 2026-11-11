@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <vector>
@@ -11,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <thread>
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
@@ -192,7 +194,8 @@ std::vector<std::byte> DeviceBytes(const CudaLiquidEpochLease3D& lease) {
 #if defined(_WIN32) && defined(_DEBUG)
 std::size_t attempt_allocations = 0;
 std::size_t attempt_frees = 0;
-_CRT_ALLOC_HOOK previous_allocation_hook = nullptr;
+std::atomic<std::thread::id> attempt_thread{};
+std::atomic<_CRT_ALLOC_HOOK> previous_allocation_hook{nullptr};
 int AttemptAllocationHook(
     int operation,
     void* data,
@@ -202,13 +205,18 @@ int AttemptAllocationHook(
     const unsigned char* filename,
     int line
 ) {
-  if (operation == _HOOK_ALLOC || operation == _HOOK_REALLOC) {
-    ++attempt_allocations;
+  // The hook is process-wide. Count only the synchronous scheduler attempt;
+  // Windows loader threads may allocate while the CUDA runtime starts.
+  if (std::this_thread::get_id() == attempt_thread.load(std::memory_order_relaxed)) {
+    if (operation == _HOOK_ALLOC || operation == _HOOK_REALLOC) {
+      ++attempt_allocations;
+    }
+    if (operation == _HOOK_FREE) {
+      ++attempt_frees;
+    }
   }
-  if (operation == _HOOK_FREE) {
-    ++attempt_frees;
-  }
-  return previous_allocation_hook ? previous_allocation_hook(operation, data, size, type, request, filename, line) : 1;
+  const auto previous = previous_allocation_hook.load(std::memory_order_relaxed);
+  return previous ? previous(operation, data, size, type, request, filename, line) : 1;
 }
 #endif
 // Enclose the complete attempt AND result destruction; assertions run afterward.
@@ -224,7 +232,8 @@ void MeasuredAttempt(
 #if defined(_WIN32) && defined(_DEBUG)
   attempt_allocations = 0;
   attempt_frees = 0;
-  previous_allocation_hook = _CrtSetAllocHook(AttemptAllocationHook);
+  attempt_thread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+  previous_allocation_hook.store(_CrtSetAllocHook(AttemptAllocationHook), std::memory_order_relaxed);
 #endif
   {
     const auto result = scheduler.Attempt(duration);
@@ -234,7 +243,8 @@ void MeasuredAttempt(
     }
   }
 #if defined(_WIN32) && defined(_DEBUG)
-  _CrtSetAllocHook(previous_allocation_hook);
+  _CrtSetAllocHook(previous_allocation_hook.load(std::memory_order_relaxed));
+  attempt_thread.store({}, std::memory_order_relaxed);
   EXPECT_EQ(attempt_allocations, 0);
   EXPECT_EQ(attempt_frees, 0);
 #endif
