@@ -27,10 +27,11 @@ target_link_libraries(fluidity_simulate PRIVATE taywee::args)
 
 # Both entry points must hash to the same executable identity for FLRS scenes
 # and existing caches. The executable selects the interface by its filename.
-set(fluidity_cli_executable "$<TARGET_FILE_DIR:fluidity_simulate>/fluidity${CMAKE_EXECUTABLE_SUFFIX}")
-add_custom_target(fluidity ALL
+set(fluidity_cli_executable
+  "${CMAKE_CURRENT_BINARY_DIR}/$<$<BOOL:${CMAKE_CONFIGURATION_TYPES}>:$<CONFIG>/>fluidity${CMAKE_EXECUTABLE_SUFFIX}")
+add_custom_command(TARGET fluidity_simulate POST_BUILD
+  BYPRODUCTS "${fluidity_cli_executable}"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:fluidity_simulate>" "${fluidity_cli_executable}"
-  DEPENDS fluidity_simulate
   VERBATIM)
 if(BUILD_TESTING)
   add_executable(fluidity_simulate_cuda_identity_tests

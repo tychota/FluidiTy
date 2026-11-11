@@ -1,6 +1,7 @@
 """Exercise the public CLI and the existing machine interface together."""
 
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -9,14 +10,14 @@ from tempfile import TemporaryDirectory
 from test_simulate_replay import execute, invoke, make_scene, snapshot
 
 
-def run(executable, *arguments):
+def run(executable, *arguments, cwd=None):
     return subprocess.run(
-        [executable, *arguments], capture_output=True, encoding="utf-8", timeout=30, check=False
+        [executable, *arguments], cwd=cwd, capture_output=True, encoding="utf-8", timeout=30, check=False
     )
 
 
 def main():
-    fluidity, legacy, fixture = map(Path, sys.argv[1:])
+    fluidity, legacy, fixture = (Path(argument).resolve() for argument in sys.argv[1:])
     help_result = run(fluidity, "--help")
     assert help_result.returncode == 0, help_result
     assert all(
@@ -29,6 +30,7 @@ def main():
 
     for arguments in (
         ("simulate",),
+        ("simulate", "scene.flrs", "--cache", "--trace"),
         ("unknown",),
         ("simulate", "scene.flrs", "--cache", "bake", "--frame-end", "-1"),
         ("devices", "--backend", "cpu", "--backend", "cuda"),
@@ -49,7 +51,17 @@ def main():
         root.mkdir()
         scene, initial = make_scene(legacy, fixture, root, "cpu")
         cache = root / "output cache"
-        assert invoke(fluidity, "validate", scene) == invoke(legacy, "check", "--scene", scene)
+        validated = invoke(legacy, "check", "--scene", scene)
+        assert invoke(fluidity, "validate", scene) == validated
+        shutil.copyfile(scene, root / "--scene.flrs")
+        dash_scene = run(fluidity, "validate", "--", "--scene.flrs", cwd=root)
+        assert dash_scene.returncode == 0, dash_scene
+        assert json.loads(dash_scene.stdout) == validated
+        dash_cache = run(
+            fluidity, "simulate", scene, "--cache=--bake", *initial, "--frame-end=0", cwd=root
+        )
+        assert dash_cache.returncode == 0, dash_cache
+        assert (root / "--bake").is_dir()
         baked = execute(
             fluidity, "simulate", scene, "--cache", cache, *initial, "--frame-end=1"
         )[-1]

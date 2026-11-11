@@ -552,10 +552,10 @@ run status. Neither file contributes to fingerprints, immutable frame data,
 or replay identity. Preview has a heartbeat and cancellation without writing
 operational files.
 
-Nine mandatory CTest `cli` cases launch real executables for arguments, schema,
-identity, inspection, CPU selection, CPU execution, CPU replay, validation and
-process lifecycle. Four separate `cuda-cli` cases require the real CUDA probe,
-execution, replay and process lifecycle.
+Eleven mandatory CTest `cli` cases launch real executables for arguments, schema,
+identity, inspection, CPU selection, CPU execution, CPU replay, validation, process
+lifecycle, effects and the public interface. Five separate `cuda-cli` cases require
+the real CUDA probe, execution, replay, process lifecycle and effects.
 The locked validator requires exact inventories, process receipts, qualified image
 identity, positive actual graph/device reservations, finite positive D2H
 intervals and measured heartbeat and cancellation bounds.

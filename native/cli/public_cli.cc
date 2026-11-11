@@ -1,5 +1,6 @@
 #include "public_cli.h"
 
+#include <algorithm>
 #include <args.hxx>
 #include <array>
 #include <cstdio>
@@ -46,12 +47,20 @@ struct OptionDefinition {
   const char* value_name;
   const char* description;
   bool required = false;
+  bool is_path = false;
 };
 
 constexpr std::array kOptions{
-    OptionDefinition{kSimulate | kStep, "cache", "directory", "Simulation cache directory.", true},
-    OptionDefinition{kReplay, "scene", "file", "Optional resolved FLRS scene."},
-    OptionDefinition{kExecution, "initial-state", "file", "Raw FLST initial state."},
+    OptionDefinition{
+        .commands = kSimulate | kStep,
+        .name = "cache",
+        .value_name = "directory",
+        .description = "Simulation cache directory.",
+        .required = true,
+        .is_path = true,
+    },
+    OptionDefinition{kReplay, "scene", "file", "Optional resolved FLRS scene.", false, true},
+    OptionDefinition{kExecution, "initial-state", "file", "Raw FLST initial state.", false, true},
     OptionDefinition{kExecution | kDevices, "backend", "cpu|cuda", "Select the compute backend."},
     OptionDefinition{kExecution | kDevices, "device", "index", "CUDA device index (requires --backend cuda)."},
     OptionDefinition{kInspect, "frame", "ordinal", "Verify a committed frame."},
@@ -106,7 +115,7 @@ class PublicCommand {
             args::Matcher{option.name},
             properties
         );
-        values_.emplace_back(std::move(flag), std::move(binding));
+        values_.push_back({std::move(flag), std::move(binding), option.is_path});
       }
     }
   }
@@ -115,24 +124,29 @@ class PublicCommand {
     return command_.Matched();
   }
 
-  std::vector<std::string> LegacyArguments() {
+  std::vector<std::string> LegacyArguments(const std::vector<std::string>& public_arguments) {
     std::vector<std::string> arguments{definition_.legacy_name};
     if (definition_.mask == kSimulate) {
       arguments.insert(arguments.end(), {"--stage", "simulate"});
     }
     if (positional_) {
       arguments.push_back(std::string("--") + definition_.positional);
-      arguments.push_back(positional_->Get());
+      const auto& path = positional_->Get();
+      arguments.push_back(path.starts_with("--") ? "./" + path : path);
     }
     for (auto& [flag, binding] : flags_) {
       if (binding->Matched()) {
         arguments.push_back(flag);
       }
     }
-    for (auto& [flag, binding] : values_) {
+    for (auto& [flag, binding, is_path] : values_) {
       if (binding->Matched()) {
+        const auto& value = binding->Get();
         arguments.push_back(flag);
-        arguments.push_back(binding->Get());
+        // Only an attached value explicitly distinguishes a dash-leading path from a missing option value.
+        const bool attached_dash_path = is_path && value.starts_with("--")
+            && std::ranges::find(public_arguments, flag + "=" + value) != public_arguments.end();
+        arguments.push_back(attached_dash_path ? "./" + value : value);
       }
     }
     return arguments;
@@ -143,7 +157,12 @@ class PublicCommand {
   args::Command command_;
   std::unique_ptr<args::Positional<std::string>> positional_;
   std::vector<std::pair<std::string, std::unique_ptr<args::Flag>>> flags_;
-  std::vector<std::pair<std::string, std::unique_ptr<args::ValueFlag<std::string>>>> values_;
+  struct ValueBinding {
+    std::string flag;
+    std::unique_ptr<args::ValueFlag<std::string>> option;
+    bool is_path;
+  };
+  std::vector<ValueBinding> values_;
 };
 
 }  // namespace
@@ -170,7 +189,7 @@ absl::StatusOr<std::optional<std::vector<std::string>>> ParsePublicCli(std::vect
   }
   for (const auto& command : commands) {
     if (command->Selected()) {
-      return command->LegacyArguments();
+      return command->LegacyArguments(arguments);
     }
   }
   return absl::InvalidArgumentError("a command is required; see fluidity --help");
