@@ -83,6 +83,7 @@ add_library(fluidity_native STATIC
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
+  native/src/coarse_fine_transfer_3d.cc
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
@@ -130,6 +131,7 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/transfers.cu
     native/cuda/transfer_3d_host.cc
     native/cuda/transfers_3d.cu
+    native/cuda/coarse_fine_transfer_3d.cu
     native/cuda/liquid_boundary_geometry_3d_host.cc
     native/cuda/liquid_boundary_geometry_3d.cu
     native/cuda/liquid_boundary_transfer_3d.cu
@@ -143,6 +145,7 @@ if(FLUIDITY_ENABLE_CUDA)
   target_link_libraries(fluidity_cuda_operators PUBLIC fluidity_native PRIVATE CUDA::cudart fluidity_native_options)
   if(MSVC)
     set_source_files_properties(
+      native/cuda/coarse_fine_transfer_3d.cu
       native/cuda/wetted_piston_3d.cu
       native/cuda/liquid_geometry_stages_3d.cu
       native/cuda/liquid_arena_3d.cu
@@ -258,6 +261,7 @@ if(BUILD_TESTING)
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
+    native/tests/test_coarse_fine_transfer_3d.cc
     native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
@@ -327,6 +331,14 @@ if(BUILD_TESTING)
       endforeach()
     endif()
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
+
+    # Keep bounded adaptivity parity separate from the production CUDA validation inventory.
+    add_executable(fluidity_cuda_coarse_fine_tests native/tests/test_cuda_coarse_fine_transfer_3d.cc)
+    target_include_directories(fluidity_cuda_coarse_fine_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/cuda")
+    target_link_libraries(fluidity_cuda_coarse_fine_tests
+      PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
+    target_compile_options(fluidity_cuda_coarse_fine_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+    gtest_discover_tests(fluidity_cuda_coarse_fine_tests PROPERTIES LABELS cuda-adaptivity)
 
     add_executable(fluidity_cuda_graph_tests
       native/tests/test_cuda_graph_deposit.cc
