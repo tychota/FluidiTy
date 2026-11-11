@@ -1,0 +1,30 @@
+{
+  "cpu": {
+    "source_backend": "cpu",
+    "executable_sha256": "9add72665d1715649b9041377be9fa873b11af8db529419d8f3a9efa59cc01e3",
+    "resolved_scene_sha256": "7a95b138588e8553ff00c4ad338859929e19ceafd6e7dbd6810fa56ebe8ef5b9",
+    "births": {
+      "birth_count": 24,
+      "sample_count": 2,
+      "first_birth_step": 1,
+      "last_accepted_step": 2
+    },
+    "process_wall_seconds": 0.16337329999078065,
+    "source_payload_bytes": 44624
+  },
+  "cuda": {
+    "source_backend": "cuda",
+    "executable_sha256": "d19ae3636676349227f0463a702cc4e315d4d8326252c16b839e8701fa3b9726",
+    "resolved_scene_sha256": "5f01b7dd73aea850bc7b29d1d950ac05f8bd71b66bbd1705ca2edd205df1e5e5",
+    "births": {
+      "birth_count": 24,
+      "sample_count": 2,
+      "first_birth_step": 1,
+      "last_accepted_step": 2
+    },
+    "process_wall_seconds": 0.4359474999946542,
+    "source_payload_bytes": 44624,
+    "compiled_architecture": 1200,
+    "device_reserved_bytes": 113546240
+  }
+}

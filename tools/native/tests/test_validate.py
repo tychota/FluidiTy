@@ -150,9 +150,9 @@ SCHEMA_CASES = tuple(
         "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
-) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame"))
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "public_interface"))
-CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects")
+) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings", "volume_frame", "volume_settings"))
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh", "cpu_ocean", "public_interface"))
+CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects", "SimulateCli.cuda_ocean")
 CUDA_EXECUTION_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",
     "frame": 2, "substep": 0, "epoch": 4, "accepted_step": 4, "particle_count": 1,
@@ -1267,7 +1267,7 @@ def test_schema_gate_is_required_and_recorded(scenario):
     _, _, output, run, _ = scenario
     run()
     summary = json.loads((output / "summary.json").read_text())
-    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 11}
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 16}
     assert (output / "ctest-schema.xml").is_file()
 
 
@@ -1283,10 +1283,10 @@ def test_cli_gate_is_required_and_recorded(scenario, preset):
     _, _, output, run, _ = scenario
     run(preset)
     evidence = json.loads((output / "summary.json").read_text())["evidence"]
-    assert evidence["cli"] == {"status": "passed", "tests": 11, "lifecycle": lifecycle_receipt("cpu")}
+    assert evidence["cli"] == {"status": "passed", "tests": 13, "lifecycle": lifecycle_receipt("cpu")}
     assert (output / "ctest-cli.xml").is_file()
     if preset.endswith("cuda"):
-        assert evidence["cuda_cli"]["tests"] == 5
+        assert evidence["cuda_cli"]["tests"] == 6
         assert evidence["cuda_cli"]["lifecycle"] == lifecycle_receipt("cuda")
         assert evidence["cuda_cli"]["device"] == CUDA_CLI_RECEIPT["device_name"]
         assert evidence["cuda_cli"]["compiled_architecture"] == 1200

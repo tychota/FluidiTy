@@ -42,8 +42,21 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+    native/src/effects_source_3d.cc
     native/src/surface_closest_point_3d.cc
     native/src/surface_reconstruction_3d.cc
+    native/src/surface_settings_3d.cc
+    native/src/surface_stage_3d.cc
+    native/src/surface_component_lineage_3d.cc
+    native/src/surface_material_components_3d.cc
+    native/src/whitewater_sphere_source_3d.cc
+    native/src/whitewater_transport_3d.cc
+    native/src/whitewater_frame_3d.cc
+    native/src/whitewater_cache_3d.cc
+    native/src/whitewater_stage_3d.cc
+    native/src/whitewater_volume_cache_3d.cc
+    native/src/ocean_boundary_3d.cc
+    native/src/volumes_stage_3d.cc
     native/src/whitewater_volume_3d.cc
     native/src/whitewater_3d.cc
     native/src/surface_cache_3d.cc
@@ -213,6 +226,16 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_surface_settings_3d.cc
+    native/tests/test_surface_stage_3d.cc
+    native/tests/test_surface_component_lineage_3d.cc
+    native/tests/test_surface_material_components_3d.cc
+    native/tests/test_whitewater_sphere_source_3d.cc
+    native/tests/test_whitewater_transport_3d.cc
+    native/tests/test_whitewater_cache_3d.cc
+    native/tests/test_whitewater_volume_cache_3d.cc
+    native/tests/test_ocean_boundary_3d.cc
+    native/tests/test_effects_source_3d.cc
     native/tests/test_surface_closest_point_3d.cc
     native/tests/test_surface_reconstruction_3d.cc
     native/tests/test_whitewater_volume_3d.cc

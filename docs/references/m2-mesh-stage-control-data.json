@@ -1,0 +1,130 @@
+{
+  "scenario": "three accepted stationary unit-volume particle frames, host Mesh, CPU source",
+  "executable_sha256": "136d3cc0af3022ddb103bd687a807fad535ccbaf8c2811866ef3330bebd5590b",
+  "fixture_sha256": "4cd1a7ca74d8f39ca6aa08d46ad5fdf1929696aef5d160c831b947cdb7d71345",
+  "resolved_scene_sha256": "716827d9409a38863482df086cc01bad4a082c9021b281f2a0f008bc917ecba3",
+  "measurements": [
+    {
+      "spacing_m": 0.125,
+      "sigma_m": 0.25,
+      "frames": [
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 0,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "09b71aa60d2099b26f9bb7d892895a44bac9fb8b57930168276998be003f02f2",
+          "payload_digest": "7bdb2c14d7d64469a4beb7e46d6341e611887a678c336b43ccc5e61892ba2016",
+          "vertex_count": 866,
+          "triangle_count": 1728,
+          "retained_ids": 0,
+          "volume_relative_error": 0.004833452559863005,
+          "frame_wall_seconds": 0.2932356,
+          "peak_process_resident_bytes": 6713344
+        },
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 1,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "09b71aa60d2099b26f9bb7d892895a44bac9fb8b57930168276998be003f02f2",
+          "payload_digest": "30d0bd53310223999cabdd1ea0edc4ed1f205ce6896c45d1e549d121281a9ab1",
+          "vertex_count": 866,
+          "triangle_count": 1728,
+          "retained_ids": 866,
+          "volume_relative_error": 0.004833452559863005,
+          "frame_wall_seconds": 0.449636,
+          "peak_process_resident_bytes": 7733248
+        },
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 2,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "09b71aa60d2099b26f9bb7d892895a44bac9fb8b57930168276998be003f02f2",
+          "payload_digest": "ae4b52790602c3134cd55e8515e1af42fd4939c52e4d8926d66c1e21eed0e002",
+          "vertex_count": 866,
+          "triangle_count": 1728,
+          "retained_ids": 866,
+          "volume_relative_error": 0.004833452559863005,
+          "frame_wall_seconds": 0.4004346,
+          "peak_process_resident_bytes": 7733248
+        }
+      ],
+      "payload_bytes": 457608
+    },
+    {
+      "spacing_m": 0.0625,
+      "sigma_m": 0.25,
+      "frames": [
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 0,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+          "payload_digest": "3c2f118f51841912b90c96ce5b489a5b5f254bf9c29e2b324aacca476d0eb9ff",
+          "vertex_count": 3830,
+          "triangle_count": 7656,
+          "retained_ids": 0,
+          "volume_relative_error": 0.004627106119815316,
+          "frame_wall_seconds": 0.8267919,
+          "peak_process_resident_bytes": 10416128
+        },
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 1,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+          "payload_digest": "5d27816309ff100461a7daaa64defcfa5d7263c78205fb24b4e5851c6a58f7d2",
+          "vertex_count": 3830,
+          "triangle_count": 7656,
+          "retained_ids": 3830,
+          "volume_relative_error": 0.004627106119815316,
+          "frame_wall_seconds": 1.5967939,
+          "peak_process_resident_bytes": 12972032
+        },
+        {
+          "protocol_version": 1,
+          "event": "frame",
+          "published": true,
+          "frame": 2,
+          "command": "run",
+          "stage": "mesh",
+          "backend": "cpu",
+          "read_only": false,
+          "execution_id": "44ab151455aaf663a72d5f97f8d8f649a53cd4e287914a0a7300987fc3a856f3",
+          "payload_digest": "efb8091aa09471339de7c239b96fb7c1647e5586967aa55084ba86506eb3dbe1",
+          "vertex_count": 3830,
+          "triangle_count": 7656,
+          "retained_ids": 3830,
+          "volume_relative_error": 0.004627106119815316,
+          "frame_wall_seconds": 1.7632544,
+          "peak_process_resident_bytes": 12972032
+        }
+      ],
+      "payload_bytes": 2022600
+    }
+  ]
+}

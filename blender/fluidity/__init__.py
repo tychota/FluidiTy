@@ -10,13 +10,15 @@ from bpy.app.handlers import persistent
 from bpy.props import (
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
 )
-from bpy.types import Object, Operator, Panel, PropertyGroup
+from bpy.types import Object, Operator, PropertyGroup
 
-from . import jobs, playback
+from . import authoring, interchange, jobs, playback, ui
+from .preferences import FLUIDITY_Preferences, preview_end
 from .scene_inputs import SceneError, require_cadence, scene_inputs
 from .translations import TRANSLATIONS
 
@@ -24,22 +26,151 @@ is_running = jobs.is_running
 tick = jobs.tick
 
 
+def invalidate_guidance(settings, _context):
+    """Discard a previous preflight result when artist inputs change."""
+    settings.message = ""
+    settings.issue_field = ""
+    settings.diagnostic = ""
+
+
+def custom_material(settings, context):
+    settings.material_preset = "CUSTOM"
+    invalidate_guidance(settings, context)
+
+
 class FluidiTySettings(PropertyGroup):
-    domain: PointerProperty(name="Domain", type=Object)
-    liquid: PointerProperty(name="Initial Liquid", type=Object)
-    paddle: PointerProperty(name="Paddle", type=Object)
-    cell_width: FloatProperty(name="Cell Width", subtype="DISTANCE", default=0.125, min=0.001, max=10)
+    boundary_mode: EnumProperty(
+        name="Boundaries",
+        description="Choose the actual collision model used by the solver",
+        items=(
+            ("TANK", "Open Tank", "Domain floor and four walls; open top"),
+            ("FREE", "Free Space", "No solid boundaries; domain is initial containment only"),
+            ("PLANE", "Plane Collider", "Infinite floor at the top of the collider box"),
+            ("SLAB", "Slab Collider", "Infinite X slab using the collider box thickness"),
+            ("LEGACY_PADDLE", "Legacy Paddle", "Original first-bake packet for existing scenes"),
+        ),
+        default="LEGACY_PADDLE",
+        update=invalidate_guidance,
+    )
+    collider: PointerProperty(
+        name="Collider", type=Object, description="Box defining the analytic plane or slab", update=invalidate_guidance
+    )
+    material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
+    density: FloatProperty(
+        name="Density",
+        description="Liquid mass per volume in kg/m³",
+        default=1000,
+        min=1,
+        max=50000,
+        update=custom_material,
+    )
+    surface_tension: FloatProperty(
+        name="Surface Tension",
+        description="Interface tension in N/m; zero disables capillary forces",
+        default=0,
+        min=0,
+        max=10,
+        precision=4,
+        update=custom_material,
+    )
+    friction: FloatProperty(
+        name="Wall Friction",
+        description="Dimensionless Coulomb friction coefficient at solid contact",
+        default=0,
+        min=0,
+        max=2,
+        update=invalidate_guidance,
+    )
+    initial_velocity: FloatVectorProperty(
+        name="Initial Velocity",
+        description="World-space initial liquid velocity in m/s",
+        size=3,
+        default=(0, 0, 0),
+        min=-100,
+        max=100,
+        update=invalidate_guidance,
+    )
+    energy_blend: FloatProperty(
+        name="Velocity Retention",
+        description="Particle energy blend in [0,1]; lower values damp the motion more",
+        default=0.6,
+        min=0,
+        max=1,
+        update=invalidate_guidance,
+    )
+    maximum_step: FloatProperty(
+        name="Maximum Time Step",
+        description="Maximum attempted solver step in seconds; stability can require smaller steps",
+        default=0.01,
+        min=0.00001,
+        max=0.04,
+        precision=5,
+        update=invalidate_guidance,
+    )
+    pressure_iterations: IntProperty(
+        name="Pressure Iterations",
+        description="Pressure solve iteration budget; a failed convergence gate never publishes a frame",
+        default=256,
+        min=1,
+        max=256,
+        update=invalidate_guidance,
+    )
+    domain: PointerProperty(
+        name="Domain",
+        type=Object,
+        description="Static closed box defining the validated scene extent",
+        update=invalidate_guidance,
+    )
+    liquid: PointerProperty(
+        name="Initial Liquid",
+        type=Object,
+        description="Static closed box seeded with liquid particles at frame zero",
+        update=invalidate_guidance,
+    )
+    paddle: PointerProperty(
+        name="Paddle",
+        type=Object,
+        description="Closed box spanning domain Y/Z, animated linearly along world X",
+        update=invalidate_guidance,
+    )
+    cell_width: FloatProperty(
+        name="Cell Width",
+        subtype="DISTANCE",
+        default=0.125,
+        precision=4,
+        min=0.001,
+        max=10,
+        description="Solver cell width in meters; smaller cells seed more particles (M1 limit: 1024)",
+        update=invalidate_guidance,
+    )
     backend: EnumProperty(
-        name="Backend",
+        name="Solver",
+        translation_context="FluidiTy",
         items=(("cuda", "RTX", "Use the NVIDIA CUDA device"), ("cpu", "CPU", "Use the CPU backend")),
         default="cuda",
+        update=invalidate_guidance,
     )
-    preview_cache: StringProperty(name="Preview Cache", default="//FluidiTy Preview")
-    bake_cache: StringProperty(name="Bake Cache", default="//FluidiTy Bake")
+    preview_cache: StringProperty(
+        name="Preview Cache",
+        default="//FluidiTy Preview",
+        subtype="DIR_PATH",
+        options={"PATH_SUPPORTS_BLEND_RELATIVE"},
+        description="Separate directory for the shortened preview; existing committed data is never overwritten",
+        update=invalidate_guidance,
+    )
+    bake_cache: StringProperty(
+        name="Bake Cache",
+        default="//FluidiTy Bake",
+        subtype="DIR_PATH",
+        options={"PATH_SUPPORTS_BLEND_RELATIVE"},
+        description="Committed simulation cache; choose a new directory for changed inputs",
+        update=invalidate_guidance,
+    )
     attached_cache: StringProperty(name="Attached Cache")
     playback_object: PointerProperty(type=Object)
     point_index: IntProperty(name="Point Index", min=0, max=1023)
     committed_frame: IntProperty(default=-1, options={"SKIP_SAVE"})
+    target_frame: IntProperty(default=-1, options={"SKIP_SAVE"})
     elapsed: FloatProperty(options={"SKIP_SAVE"})
     heartbeat_age: FloatProperty(default=-1, options={"SKIP_SAVE"})
     message: StringProperty(options={"SKIP_SAVE"})
@@ -47,6 +178,7 @@ class FluidiTySettings(PropertyGroup):
     inspect_frame: IntProperty(default=-1, options={"SKIP_SAVE"})
     point_count: IntProperty(options={"SKIP_SAVE"})
     point_detail: StringProperty(options={"SKIP_SAVE"})
+    issue_field: StringProperty(options={"SKIP_SAVE"})
 
 
 def project_path(value):
@@ -81,14 +213,23 @@ def check_device(backend):
 class SceneAction:
     bl_translation_context = "FluidiTy"
 
+    @classmethod
+    def poll(cls, context):
+        if is_running(context.scene):
+            cls.poll_message_set("Wait for the running job or cancel it first.")
+            return False
+        return True
+
     def execute(self, context):
         scene = context.scene
         scene.fluidity.diagnostic = ""
+        scene.fluidity.issue_field = ""
         try:
             self.perform(scene)
         except SceneError as error:
             field, message = error.args
-            scene.fluidity.message = f"{field}: {bpy.app.translations.pgettext_iface(message)}"
+            scene.fluidity.issue_field = field
+            scene.fluidity.message = f"{field}: {bpy.app.translations.pgettext_iface(message, 'FluidiTy')}"
             return {"CANCELLED"}
         except jobs.ToolError as error:
             if error.record:
@@ -105,6 +246,7 @@ class SceneAction:
 
 class FLUIDITY_OT_check_scene(SceneAction, Operator):
     bl_idname = "fluidity.check_scene"
+    bl_description = "Validate geometry, timing, cache paths and the selected backend before baking"
     bl_label = "Check Scene"
 
     def perform(self, scene):
@@ -122,10 +264,6 @@ class StartJob(SceneAction):
     preview = False
     resume = False
 
-    @classmethod
-    def poll(cls, context):
-        return not is_running(context.scene)
-
     def perform(self, scene):
         settings = scene.fluidity
         packet = scene_inputs(scene, self.preview)
@@ -134,7 +272,7 @@ class StartJob(SceneAction):
         if not self.resume and cache.exists():
             raise SceneError("cache", "Choose a fresh cache directory, or use Resume for an existing bake.")
         check_device(settings.backend)
-        last_frame = min(scene.frame_end, 3) if self.preview else scene.frame_end
+        last_frame = preview_end(scene) if self.preview else scene.frame_end
         try:
             jobs.start(scene, cache, packet, settings.backend, last_frame, self.resume)
         except jobs.ToolError as error:
@@ -142,6 +280,7 @@ class StartJob(SceneAction):
                 raise SceneError("scene", "The bake settings changed. Choose a fresh Bake cache.") from error
             raise
         settings.committed_frame = -1
+        settings.target_frame = last_frame
         settings.message = "Waiting for the first committed frame."
         if not bpy.app.timers.is_registered(tick):
             bpy.app.timers.register(tick, first_interval=0.01)
@@ -149,23 +288,29 @@ class StartJob(SceneAction):
 
 class FLUIDITY_OT_preview(StartJob, Operator):
     bl_idname = "fluidity.preview"
+    bl_description = (
+        "Bake a shortened run in the separate Preview cache; the end frame is configured in Add-on Preferences"
+    )
     bl_label = "Preview"
     preview = True
 
 
 class FLUIDITY_OT_bake(StartJob, Operator):
     bl_idname = "fluidity.bake"
+    bl_description = "Start a new simulation in a fresh Bake cache directory"
     bl_label = "Bake"
 
 
 class FLUIDITY_OT_resume(StartJob, Operator):
     bl_idname = "fluidity.resume"
+    bl_description = "Continue compatible committed Bake data; changed solver inputs require a fresh cache"
     bl_label = "Resume"
     resume = True
 
 
 class FLUIDITY_OT_cancel(SceneAction, Operator):
     bl_idname = "fluidity.cancel"
+    bl_description = "Request cancellation at a safe solver boundary; preserve committed frames for Resume"
     bl_label = "Cancel"
 
     @classmethod
@@ -179,6 +324,7 @@ class FLUIDITY_OT_cancel(SceneAction, Operator):
 
 class FLUIDITY_OT_inspect(SceneAction, Operator):
     bl_idname = "fluidity.inspect"
+    bl_description = "Read verified point positions, velocities and stable IDs for the current committed frame"
     bl_label = "Inspect"
 
     def perform(self, scene):
@@ -200,6 +346,7 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
 
 class FLUIDITY_OT_attach(SceneAction, Operator):
     bl_idname = "fluidity.attach"
+    bl_description = "Validate and attach native Alembic Points playback without replacing artist display edits"
     bl_label = "Attach Points"
     preview: bpy.props.BoolProperty(default=False)
 
@@ -211,6 +358,7 @@ class FLUIDITY_OT_attach(SceneAction, Operator):
 
 class FLUIDITY_OT_relink(SceneAction, Operator):
     bl_idname = "fluidity.relink"
+    bl_description = "Validate a relocated committed cache before replacing the existing playback binding"
     bl_label = "Relink Cache"
     directory: StringProperty(subtype="DIR_PATH")
 
@@ -223,70 +371,6 @@ class FLUIDITY_OT_relink(SceneAction, Operator):
         scene.fluidity.message = "Points attached. Save the project to keep the binding."
 
 
-class FLUIDITY_PT_main(Panel):
-    bl_label = "FluidiTy"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "FluidiTy"
-
-    def draw(self, context):
-        settings = context.scene.fluidity
-        layout = self.layout
-        tr = bpy.app.translations.pgettext_iface
-
-        def field(prop, label):
-            row = layout.split(factor=0.44)
-            row.label(text=tr(label, "FluidiTy"), translate=False)
-            row.prop(settings, prop, text="")
-
-        for prop, label in (
-            ("domain", "Domain"),
-            ("liquid", "Initial Liquid"),
-            ("paddle", "Paddle"),
-            ("cell_width", "Cell Width"),
-            ("backend", "Solver"),
-        ):
-            field(prop, label)
-        layout.operator("fluidity.check_scene")
-        layout.separator()
-        field("preview_cache", "Preview Cache")
-        layout.operator("fluidity.preview")
-        layout.operator("fluidity.attach", text="Attach Preview").preview = True
-        field("bake_cache", "Bake Cache")
-        row = layout.row()
-        row.operator("fluidity.bake")
-        row.operator("fluidity.resume")
-        if is_running(context.scene):
-            layout.operator("fluidity.cancel")
-            layout.label(text=f"{settings.elapsed:.1f} s")
-            if settings.heartbeat_age >= 0:
-                layout.label(
-                    text=f"{bpy.app.translations.pgettext_iface('Last heartbeat')}: {settings.heartbeat_age:.1f} s"
-                )
-        if settings.committed_frame >= 0:
-            layout.label(text=f"{bpy.app.translations.pgettext_iface('Committed frame')}: {settings.committed_frame}")
-        layout.separator()
-        layout.operator("fluidity.attach")
-        layout.operator("fluidity.relink")
-        layout.prop(settings, "point_index")
-        layout.operator("fluidity.inspect")
-        if settings.inspect_frame >= 0:
-            layout.label(text=f"{bpy.app.translations.pgettext_iface('Points')}: {settings.point_count}")
-            layout.label(text="XYZ (m) • Vxyz (m/s)", translate=False)
-            if settings.point_detail:
-                for value in settings.point_detail.split(" | "):
-                    layout.label(text=value, translate=False)
-        if settings.message:
-            # Keep guidance readable in a narrow sidebar.
-            from textwrap import wrap
-
-            for line in wrap(bpy.app.translations.pgettext_iface(settings.message), width=32):
-                layout.label(text=line, translate=False)
-            if settings.diagnostic:
-                for line in wrap(settings.diagnostic, width=32):
-                    layout.label(text=line, translate=False)
-
-
 _CLASSES = (
     FluidiTySettings,
     FLUIDITY_OT_check_scene,
@@ -297,7 +381,10 @@ _CLASSES = (
     FLUIDITY_OT_inspect,
     FLUIDITY_OT_attach,
     FLUIDITY_OT_relink,
-    FLUIDITY_PT_main,
+    FLUIDITY_Preferences,
+    *authoring.CLASSES,
+    *interchange.CLASSES,
+    *ui.CLASSES,
 )
 
 

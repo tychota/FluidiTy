@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level") else []
     return scene, initial
 
 
@@ -777,6 +777,106 @@ def effects_case(executable, fixture, directory, backend):
 
 def case_cpu_effects(executable, fixture, directory, cuda):
     effects_case(executable, fixture, directory, "cpu")
+    whitewater_source_case(executable, fixture, directory, "cpu")
+    whitewater_source_case(executable, fixture, directory, "cpu", "whitewater-beach")
+
+
+def whitewater_source_case(executable, fixture, directory, backend, mode="whitewater-effects"):
+    root = directory / mode
+    root.mkdir()
+    scene, initial = make_scene(executable, fixture, root, backend, mode)
+    cache = root / "cache"
+    args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache, "--backend", backend, *initial]
+    execute(executable, *args, "--frame-end", 2)
+    receipt = json.loads(subprocess.run([str(fixture), "source-births", str(cache)], check=True,
+                                        capture_output=True, encoding="utf-8", timeout=30).stdout)
+    assert receipt["birth_count"] > 0 and receipt["sample_count"] == 2
+    assert 0 < receipt["first_birth_step"] < receipt["last_accepted_step"]
+    before = snapshot(cache)
+    invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 1, "--substep", 0)
+    assert snapshot(cache) == before, "whitewater source replay must be read-only"
+    points = root / "whitewater"
+    command = ["run", "--stage", "whitewater", "--cache", cache, "--output-cache", points]
+    result = execute(executable, *command, "--frame-end", 1)[-1]
+    assert result["stage"] == "whitewater" and result["backend"] == "cpu" and result["frame"] == 1
+    assert result["source_backend"] == backend
+    assert result["foam_count"] > 0 and result["birth_count"] > 0
+    assert result["point_count"] == result["foam_count"] + result["spray_count"] + result["bubble_count"]
+    assert result["frame_wall_seconds"] > 0 and result["peak_process_resident_bytes"] > 0
+    points_before = snapshot(points)
+    replay = ["replay", "--stage", "whitewater", "--cache", cache, "--output-cache", points,
+              "--frame", 1, "--substep", 0]
+    assert invoke(executable, *replay)["payload_digest"] == result["payload_digest"]
+    assert snapshot(points) == points_before, "whitewater replay must be read-only"
+    resumed = execute(executable, *command, "--resume", "--frame-end", 2)[-1]
+    assert resumed["frame"] == 2 and resumed["restored_prefix_frames"] == 2
+    points_after = snapshot(points)
+    assert all(points_after[path] == value for path, value in immutable_cache_files(points_before).items())
+    assert snapshot(cache) == before, "whitewater must leave Simulate data unchanged"
+    volume_settings = root / "volume.flvc"
+    subprocess.run([str(fixture), "volume-settings", str(volume_settings)], check=True, timeout=30)
+    volume = root / "volumes"
+    volume_command = ["run", "--stage", "volumes", "--cache", points, "--output-cache", volume,
+                      "--volume-settings", volume_settings]
+    volume_records = execute(executable, *volume_command, "--frame-end", 1)
+    empty = next(record for record in volume_records if record["event"] == "frame" and record["frame"] == 0)
+    assert empty["known_voxels"] == 24 ** 3 and empty["nonzero_voxels"] == 0
+    density = volume_records[-1]
+    assert density["stage"] == "volumes" and density["nonzero_voxels"] > 0
+    assert math.isclose(density["foam_inventory_count"], result["foam_count"], rel_tol=1e-12)
+    assert math.isclose(density["bubble_inventory_count"], result["bubble_count"], rel_tol=1e-12)
+    assert math.isclose(density["gas_inventory_m3"], result["bubble_count"] * 4 * math.pi / 3 * 0.05 ** 3,
+                        rel_tol=1e-12)
+    volume_before = snapshot(volume)
+    volume_replay = invoke(executable, "replay", "--stage", "volumes", "--cache", points,
+                           "--output-cache", volume, "--frame", 1, "--substep", 0)
+    assert volume_replay["payload_digest"] == density["payload_digest"]
+    assert snapshot(volume) == volume_before
+    volume_resume = execute(executable, *volume_command, "--resume", "--frame-end", 2)[-1]
+    assert volume_resume["restored_prefix_frames"] == 2 and volume_resume["frame"] == 2
+    assert snapshot(points) == points_after, "volumes must leave Whitewater data unchanged"
+    if mode == "whitewater-beach":
+        mesh = root / "mesh"
+        bake = ["run", "--stage", "mesh", "--cache", cache, "--output-cache", mesh,
+                "--surface-spacing", ".125", "--surface-sigma", ".25"]
+        surface = execute(executable, *bake, "--frame-end", 2)[-1]
+        assert surface["retained_ids"] == surface["vertex_count"] > 0
+        assert abs(surface["volume_relative_error"]) <= 0.005
+        assert snapshot(cache) == before
+    (points / "blobs" / (result["payload_digest"] + ".flef")).write_bytes(b"corrupt")
+    assert invoke(executable, *replay, success=False)["code"] == "E-WHITEWATER-DATA_LOSS"
+
+
+def case_cpu_mesh(executable, fixture, directory, cuda):
+    scene, initial = make_scene(executable, fixture, directory, "cpu", "effects")
+    source = directory / "simulate"
+    mesh = directory / "mesh"
+    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--cache", source, *initial,
+            "--frame-end", 2)
+    source_before = snapshot(source)
+    command = ["run", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+               "--surface-spacing", "0.125", "--surface-sigma", "0.25"]
+    result = execute(executable, *command, "--frame-end", 1)[-1]
+    assert result["stage"] == "mesh" and result["backend"] == "cpu" and result["frame"] == 1
+    assert result["vertex_count"] > 0 and result["triangle_count"] > 0
+    assert result["retained_ids"] == result["vertex_count"]
+    assert abs(result["volume_relative_error"]) <= 0.005
+    assert result["frame_wall_seconds"] > 0 and result["peak_process_resident_bytes"] > 0
+    before = snapshot(mesh)
+    replay = invoke(executable, "replay", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+                    "--frame", 1, "--substep", 0)
+    assert replay["payload_digest"] == result["payload_digest"]
+    assert snapshot(mesh) == before, "Mesh replay must be entirely read-only"
+    resumed = execute(executable, *command, "--resume", "--frame-end", 2)[-1]
+    assert resumed["frame"] == 2
+    assert resumed["restored_prefix_frames"] == 2 and resumed["restore_wall_seconds"] > 0
+    after = snapshot(mesh)
+    assert all(after[path] == value for path, value in immutable_cache_files(before).items())
+    assert snapshot(source) == source_before, "Mesh must leave source cache unchanged"
+    invoke(executable, *command, "--frame-end", 1, success=False)
+    invalid = invoke(executable, "run", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+                     "--surface-spacing", "nan", success=False)
+    assert invalid["code"] == "E-CLI-INVALID_ARGUMENT"
 
 
 def case_cuda_effects(executable, fixture, directory, cuda):
@@ -790,6 +890,45 @@ def case_cuda_effects(executable, fixture, directory, cuda):
     blobs = cache / "effects" / "source" / "blobs"
     cpu_payloads = {path.name: path.read_bytes() for path in blobs.glob("*.flef")}
     assert cpu_payloads == cuda_payloads, "manufactured static source intervals differ across CPU/CUDA"
+    whitewater_source_case(executable, fixture, directory, "cuda")
+    whitewater_source_case(executable, fixture, directory, "cuda", "whitewater-beach")
+
+
+def ocean_case(executable, fixture, directory, backend, mode):
+    directory.mkdir()
+    scene, initial = make_scene(executable, fixture, directory, backend, mode)
+    cache = directory / "cache"
+    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+            "--cache", cache, *initial, "--frame-end", 10)
+    checkpoint = json.loads(subprocess.run([str(fixture), "checkpoint", str(cache)],
+                                          capture_output=True, check=True, timeout=30).stdout)
+    expected_particles = 3 if mode == "ocean-level" else 1
+    assert checkpoint["frame"] == 10 and checkpoint["particle_count"] == expected_particles, checkpoint
+    assert checkpoint["next_particle_id"] == expected_particles + 1, checkpoint
+    before = snapshot(cache)
+    invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial,
+           "--frame", 9, "--substep", 0)
+    assert snapshot(cache) == before
+    return checkpoint
+
+
+def case_cpu_ocean(executable, fixture, directory, cuda):
+    active = ocean_case(executable, fixture, directory / "ocean", "cpu", "ocean")
+    control = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
+    assert math.dist(active["first_velocity"], control["first_velocity"]) > 0.001
+    assert math.dist(active["first_position"], control["first_position"]) > 0.00001
+    ocean_case(executable, fixture, directory / "level", "cpu", "ocean-level")
+
+
+def case_cuda_ocean(executable, fixture, directory, cuda):
+    cpu = ocean_case(executable, fixture, directory / "cpu", "cpu", "ocean")
+    device = ocean_case(executable, fixture, directory / "cuda", "cuda", "ocean")
+    assert cpu["accepted_step"] == device["accepted_step"]
+    assert math.dist(cpu["first_position"], device["first_position"]) < 1e-10
+    assert math.dist(cpu["first_velocity"], device["first_velocity"]) < 1e-9
+    cpu_level = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
+    device_level = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
+    assert cpu_level["state_digest"] == device_level["state_digest"]
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):
@@ -800,7 +939,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

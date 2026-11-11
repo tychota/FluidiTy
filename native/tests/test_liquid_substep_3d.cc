@@ -55,6 +55,60 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
 }
 
+TEST(LiquidSubstep3D, OceanInletRetiresDryParticleAndDiscardsRejectedBirths) {
+  auto seed = Initial(2);
+  seed.particles[0].world_position = {2.25, 1.25, 2.25};
+  seed.particles[1].world_position = {2.25, 3.25, 2.25};
+  auto scene = Scene();
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.world_acceleration = {};
+  auto options = Options();
+  options.ocean_boundary = OceanBoundarySettings3D{
+      .swell =
+          {
+              .still_water_height_m = 3,
+              .water_depth_m = 3,
+              .wave_height_m = 0.5,
+              .wave_period_s = 4,
+              .phase_at_world_origin_rad = std::numbers::pi,
+          },
+      .inlet_wall_x_m = 2,
+      .inlet_interior_x_m = 2.5,
+      .outlet_interior_x_m = 5,
+      .outlet_wall_x_m = 8,
+      .inlet_particle_spacing_m = 0.5,
+      .inlet_low_z_m = 2,
+      .inlet_high_z_m = 2.5,
+  };
+  auto rejected = LiquidSubstepScheduler3D::Create(seed, scene, options);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  rejected->SetStageFaultHookForTesting({
+      nullptr,
+      [](void*, LiquidPhysicalStage3D stage, double) {
+        return stage == LiquidPhysicalStage3D::kActivate ? absl::InternalError("reject after inlet edit")
+                                                         : absl::OkStatus();
+      },
+  });
+  ASSERT_TRUE(rejected->BeginFrame(0.01).ok());
+  const auto attempt = rejected->Attempt(0.01);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
+  ExpectIdenticalSerializedState(seed, rejected->committed());
+
+  auto accepted = LiquidSubstepScheduler3D::Create(seed, scene, options);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  const auto advanced = accepted->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  const auto& state = accepted->committed();
+  EXPECT_FALSE(std::ranges::any_of(state.particles.values(), [](const auto& particle) {
+    return particle.id == 2;
+  }));
+  EXPECT_TRUE(std::ranges::any_of(state.particles.values(), [](const auto& particle) {
+    return particle.id == 1;
+  }));
+  EXPECT_GT(state.next_particle_id, seed.next_particle_id);
+}
+
 TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wet = wetted_piston_pressure_test;

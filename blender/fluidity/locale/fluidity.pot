@@ -1,0 +1,713 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en_US\n"
+
+msgid "Add Simulation Object"
+msgstr ""
+
+msgid "Alembic exports verified committed points, including empty frames."
+msgstr ""
+
+msgid "Alembic preserves empty point samples. Blender 5.2.3 USD export requires nonempty samples. USD and VDB import use native Blender readers. The solver does not produce volume grids."
+msgstr ""
+
+msgid "Animate X with two linear location keys that cover the bake."
+msgstr ""
+
+msgid "Animated Paddle"
+msgstr ""
+
+msgid "Apply Fluid Preset"
+msgstr ""
+
+msgid "Apply modifiers and remove parents, constraints and shape keys."
+msgstr ""
+
+msgid "Apply only density and surface tension; preserve objects, velocities, solver settings and cache paths"
+msgstr ""
+
+msgid "Assign Selected"
+msgstr ""
+
+msgid "Assign Selected Object"
+msgstr ""
+
+msgid "Assign a collider for the selected boundary model."
+msgstr ""
+
+msgid "Assign a different object to each simulation role."
+msgstr ""
+
+msgid "Assign a visible object and leave Edit Mode first."
+msgstr ""
+
+msgid "Assign distinct Domain and Initial Liquid objects."
+msgstr ""
+
+msgid "Assign distinct objects to Domain, Initial Liquid and Paddle."
+msgstr ""
+
+msgid "Assign the active mesh to a simulation role; geometry and materials are preserved"
+msgstr ""
+
+msgid "Assign the three inputs, check the scene, then preview."
+msgstr ""
+
+msgid "Attach Points"
+msgstr ""
+
+msgid "Attach Preview"
+msgstr ""
+
+msgid "Attach a cache and leave Edit Mode first."
+msgstr ""
+
+msgid "Attach a cache to edit point size and material."
+msgstr ""
+
+msgid "Attached Cache"
+msgstr ""
+
+msgid "Backend"
+msgstr ""
+
+msgid "Backend used by Initialize Scene; existing scenes keep their settings"
+msgstr ""
+
+msgid "Bake"
+msgstr ""
+
+msgid "Bake Cache"
+msgstr ""
+
+msgid "Bake a shortened run in the separate Preview cache; the end frame is configured in Add-on Preferences"
+msgstr ""
+
+msgid "Bake complete. Attach the committed points to render."
+msgstr ""
+
+msgid "Bake failed. Committed frames are preserved."
+msgstr ""
+
+msgid "Blender could not export the verified points."
+msgstr ""
+
+msgid "Blender could not find the native Points reader."
+msgstr ""
+
+msgid "Blender could not open the verified Points archive."
+msgstr ""
+
+msgid "Blender could not read the last committed Points sample."
+msgstr ""
+
+msgid "Boundaries"
+msgstr ""
+
+msgid "Box defining the analytic plane or slab"
+msgstr ""
+
+msgid "Cache & Bake"
+msgstr ""
+
+msgid "Cancel"
+msgstr ""
+
+msgid "Cancelled. Committed frames are available for Resume."
+msgstr ""
+
+msgid "Cancelling at a safe boundary."
+msgstr ""
+
+msgid "Cell Width"
+msgstr ""
+
+msgid "Check Scene"
+msgstr ""
+
+msgid "Choose Alembic, USD or OpenVDB."
+msgstr ""
+
+msgid "Choose Plane or Slab collision before assigning a collider."
+msgstr ""
+
+msgid "Choose a .usd, .usda or .usdc destination."
+msgstr ""
+
+msgid "Choose a cache directory."
+msgstr ""
+
+msgid "Choose a cell width from 0.001 to 10 meters."
+msgstr ""
+
+msgid "Choose a cell width that seeds 1 to 1024 particles."
+msgstr ""
+
+msgid "Choose a directory containing a committed FluidiTy cache."
+msgstr ""
+
+msgid "Choose a fresh cache directory, or use Resume for an existing bake."
+msgstr ""
+
+msgid "Choose a new export path; existing files are preserved."
+msgstr ""
+
+msgid "Choose an .abc destination."
+msgstr ""
+
+msgid "Choose an existing interchange file."
+msgstr ""
+
+msgid "Choose separate, non-nested Preview and Bake directories."
+msgstr ""
+
+msgid "Choose the actual collision model used by the solver"
+msgstr ""
+
+msgid "Closed box spanning domain Y/Z, animated linearly along world X"
+msgstr ""
+
+msgid "Collider"
+msgstr ""
+
+msgid "Collision"
+msgstr ""
+
+msgid "Committed Frames"
+msgstr ""
+
+msgid "Committed frame"
+msgstr ""
+
+msgid "Committed points exported."
+msgstr ""
+
+msgid "Committed simulation cache; choose a new directory for changed inputs"
+msgstr ""
+
+msgid "Connect Points to your own nodes. Velocity is in m/s; Radius is in meters."
+msgstr ""
+
+msgid "Connect the Points output to your own Geometry Nodes. Velocity and Speed use m/s; Radius uses meters. Size and material are display controls and never change the simulation."
+msgstr ""
+
+msgid "Continue compatible committed Bake data; changed solver inputs require a fresh cache"
+msgstr ""
+
+msgid "Copy Blender/build, backend, frame and solver diagnostic details to the clipboard; no files are sent"
+msgstr ""
+
+msgid "Copy Support Report"
+msgstr ""
+
+msgid "Create Liquid Setup"
+msgstr ""
+
+msgid "Create a real open tank domain and initial liquid box with the Water preset; keep existing scene objects"
+msgstr ""
+
+msgid "Create and assign a box for an unassigned simulation role"
+msgstr ""
+
+msgid "Custom"
+msgstr ""
+
+msgid "Default Backend"
+msgstr ""
+
+msgid "Default Cell Width"
+msgstr ""
+
+msgid "Default Fluid Preset"
+msgstr ""
+
+msgid "Density"
+msgstr ""
+
+msgid "Density (kg/m³)"
+msgstr ""
+
+msgid "Diagnostics"
+msgstr ""
+
+msgid "Dimensionless Coulomb friction coefficient at solid contact"
+msgstr ""
+
+msgid "Display & Geometry Nodes"
+msgstr ""
+
+msgid "Display edits do not change the simulation cache."
+msgstr ""
+
+msgid "Domain"
+msgstr ""
+
+msgid "Domain floor and four walls; open top"
+msgstr ""
+
+msgid "Editable density and surface tension starting point"
+msgstr ""
+
+msgid "End Frame"
+msgstr ""
+
+msgid "Export Alembic..."
+msgstr ""
+
+msgid "Export Committed Alembic Points"
+msgstr ""
+
+msgid "Export Committed USD Points"
+msgstr ""
+
+msgid "Export USD..."
+msgstr ""
+
+msgid "Export all verified committed samples with positions, radii, velocities and IDs to a new .abc file"
+msgstr ""
+
+msgid "Export the active scene."
+msgstr ""
+
+msgid "Export verified raw point animation through Blender; preserves frame and selection, omits display materials"
+msgstr ""
+
+msgid "Extend the paddle across the domain on Y and Z."
+msgstr ""
+
+msgid "Fluid"
+msgstr ""
+
+msgid "Fluid Preset"
+msgstr ""
+
+msgid "FluidiTy"
+msgstr ""
+
+msgid "FluidiTy Help"
+msgstr ""
+
+msgid "FluidiTy protocol reader"
+msgstr ""
+
+msgid "Frame 0 is time zero. Use 24 fps and one Blender unit per meter."
+msgstr ""
+
+msgid "Free Space"
+msgstr ""
+
+msgid "Geometry"
+msgstr ""
+
+msgid "Give the box positive thickness on every axis."
+msgstr ""
+
+msgid "High Surface Tension"
+msgstr ""
+
+msgid "Import & Export"
+msgstr ""
+
+msgid "Import Alembic / USD / OpenVDB"
+msgstr ""
+
+msgid "Import Cache..."
+msgstr ""
+
+msgid "Import external playback using Blender's native readers; imported data is not a resumable solver cache"
+msgstr ""
+
+msgid "Infinite Plane"
+msgstr ""
+
+msgid "Infinite X Slab"
+msgstr ""
+
+msgid "Infinite X slab using the collider box thickness"
+msgstr ""
+
+msgid "Infinite floor at the top of the collider box"
+msgstr ""
+
+msgid "Initial Liquid"
+msgstr ""
+
+msgid "Initial Velocity"
+msgstr ""
+
+msgid "Initialize Scene Timing & Units"
+msgstr ""
+
+msgid "Inputs"
+msgstr ""
+
+msgid "Inspect"
+msgstr ""
+
+msgid "Install the Windows x64 FluidiTy extension package from disk."
+msgstr ""
+
+msgid "Interface tension in N/m; zero disables capillary forces"
+msgstr ""
+
+msgid "Job ended unexpectedly. Committed frames are preserved."
+msgstr ""
+
+msgid "Keep collider dimensions fixed during translation."
+msgstr ""
+
+msgid "Keep the domain and initial liquid static."
+msgstr ""
+
+msgid "Keep world coordinates within 100 meters of the origin."
+msgstr ""
+
+msgid "Last frame of a shortened preview, capped by the scene end frame; frame zero is included"
+msgstr ""
+
+msgid "Last heartbeat"
+msgstr ""
+
+msgid "Leave Edit Mode before creating simulation objects."
+msgstr ""
+
+msgid "Leave Edit Mode before exporting."
+msgstr ""
+
+msgid "Legacy Paddle"
+msgstr ""
+
+msgid "Liquid"
+msgstr ""
+
+msgid "Liquid mass per volume in kg/m³"
+msgstr ""
+
+msgid "Low Surface Tension"
+msgstr ""
+
+msgid "M1 inputs must be closed, axis-aligned boxes. Paddle translates on world X."
+msgstr ""
+
+msgid "M1: boxes, linear paddle motion, 24 fps, meters"
+msgstr ""
+
+msgid "Material"
+msgstr ""
+
+msgid "Material starting point for Create Liquid Setup; existing scenes are unchanged"
+msgstr ""
+
+msgid "Max Step (s)"
+msgstr ""
+
+msgid "Maximum Time Step"
+msgstr ""
+
+msgid "Maximum attempted solver step in seconds; stability can require smaller steps"
+msgstr ""
+
+msgid "Move the cache to the same drive as the Blender project."
+msgstr ""
+
+msgid "Move the slab clear of the initial liquid."
+msgstr ""
+
+msgid "Move the starting paddle clear of the initial liquid."
+msgstr ""
+
+msgid "No Solid Boundaries"
+msgstr ""
+
+msgid "No Surface Tension"
+msgstr ""
+
+msgid "No solid boundaries; domain is initial containment only"
+msgstr ""
+
+msgid "Open Tank"
+msgstr ""
+
+msgid "Open Tank uses the domain floor and four side walls; the top is open. Free Space uses the domain only for initial containment. Inputs must be closed axis-aligned boxes. Keep 24 fps and one unit per meter."
+msgstr ""
+
+msgid "Open Top · Five Solid Walls"
+msgstr ""
+
+msgid "Original first-bake packet for existing scenes"
+msgstr ""
+
+msgid "Paddle"
+msgstr ""
+
+msgid "Particle energy blend in [0,1]; lower values damp the motion more"
+msgstr ""
+
+msgid "Place liquid above the plane collider."
+msgstr ""
+
+msgid "Place the initial liquid inside the domain."
+msgstr ""
+
+msgid "Plane Collider"
+msgstr ""
+
+msgid "Point Index"
+msgstr ""
+
+msgid "Points attached. Save the project to keep the binding."
+msgstr ""
+
+msgid "Presets change density (kg/m³) and surface tension (N/m). They are editable starting points. Initial velocity is in world-space m/s. Viscosity is not implemented by this solver; these presets do not simulate honey or oil."
+msgstr ""
+
+msgid "Pressure Iterations"
+msgstr ""
+
+msgid "Pressure solve iteration budget; a failed convergence gate never publishes a frame"
+msgstr ""
+
+msgid "Preview"
+msgstr ""
+
+msgid "Preview Cache"
+msgstr ""
+
+msgid "Preview End Frame"
+msgstr ""
+
+msgid "Preview and Bake have independent caches. Cancel preserves committed frames. Resume requires unchanged physical inputs. Relink validates a replacement before changing playback."
+msgstr ""
+
+msgid "Preview and Bake use separate caches. Resume preserves committed frames."
+msgstr ""
+
+msgid "Read the committed frame."
+msgstr ""
+
+msgid "Read verified point positions, velocities and stable IDs for the current committed frame"
+msgstr ""
+
+msgid "Relink Cache"
+msgstr ""
+
+msgid "Relink Cache..."
+msgstr ""
+
+msgid "Remove animation and drivers from scene settings."
+msgstr ""
+
+msgid "Request cancellation at a safe solver boundary; preserve committed frames for Resume"
+msgstr ""
+
+msgid "Restore the FluidiTy Points cache reader before relinking."
+msgstr ""
+
+msgid "Resume"
+msgstr ""
+
+msgid "Save Project Before Baking..."
+msgstr ""
+
+msgid "Save Project..."
+msgstr ""
+
+msgid "Save the Blender project before using a cache."
+msgstr ""
+
+msgid "Save the project and choose a committed cache first."
+msgstr ""
+
+msgid "Save the project before previewing or baking."
+msgstr ""
+
+msgid "Scene is ready to bake."
+msgstr ""
+
+msgid "Select Input"
+msgstr ""
+
+msgid "Select Playback for Geometry Nodes"
+msgstr ""
+
+msgid "Select a closed mesh box."
+msgstr ""
+
+msgid "Select a mesh in Object Mode."
+msgstr ""
+
+msgid "Select the assigned input object in the current view layer"
+msgstr ""
+
+msgid "Select the playback object, then open the Geometry Nodes workspace to connect its node group"
+msgstr ""
+
+msgid "Separate directory for the shortened preview; existing committed data is never overwritten"
+msgstr ""
+
+msgid "Set 24 fps, meter units, frame start zero and the preferred backend; keep input objects and animation"
+msgstr ""
+
+msgid "Set Timing & Units"
+msgstr ""
+
+msgid "Set a frame range starting at 0 and ending from 2 through 240."
+msgstr ""
+
+msgid "Set the scene to 24 fps."
+msgstr ""
+
+msgid "Show Debug Details"
+msgstr ""
+
+msgid "Show raw solver diagnostics and committed-point inspection in Physics Properties"
+msgstr ""
+
+msgid "Show supported geometry, units and workflow details"
+msgstr ""
+
+msgid "Simulation"
+msgstr ""
+
+msgid "Simulation Running"
+msgstr ""
+
+msgid "Simulation controls: Properties > Physics > FluidiTy"
+msgstr ""
+
+msgid "Size"
+msgstr ""
+
+msgid "Slab Collider"
+msgstr ""
+
+msgid "Solver"
+msgstr ""
+
+msgid "Solver cell width in meters for new liquid setups"
+msgstr ""
+
+msgid "Solver cell width in meters; smaller cells seed more particles (M1 limit: 1024)"
+msgstr ""
+
+msgid "Start a new simulation in a fresh Bake cache directory"
+msgstr ""
+
+msgid "Static closed box defining the validated scene extent"
+msgstr ""
+
+msgid "Static closed box seeded with liquid particles at frame zero"
+msgstr ""
+
+msgid "Support report copied."
+msgstr ""
+
+msgid "Surface Tension"
+msgstr ""
+
+msgid "Surface Tension (N/m)"
+msgstr ""
+
+msgid "Tank, plane or slab · 24 fps · meters"
+msgstr ""
+
+msgid "The bake settings changed. Choose a fresh Bake cache."
+msgstr ""
+
+msgid "The current engine supports one analytic collision model: tank walls, an infinite floor plane, or an infinite X slab. Plane uses the top of its box; Slab uses its X thickness. A collider may be static or translate linearly. Arbitrary meshes and multiple independent colliders are not supported."
+msgstr ""
+
+msgid "The saved Points binding is not a FluidiTy object."
+msgstr ""
+
+msgid "The solver rejected this request. Check the scene or cache."
+msgstr ""
+
+msgid "This cache contains empty frames. Export Alembic to preserve them."
+msgstr ""
+
+msgid "This cache has no committed frames."
+msgstr ""
+
+msgid "This role already has an object. Clear it before creating a replacement."
+msgstr ""
+
+msgid "Translate the paddle along world X only."
+msgstr ""
+
+msgid "USD and VDB import use native Blender readers. M1 does not generate volume grids."
+msgstr ""
+
+msgid "USD export requires nonempty samples in Blender 5.2.3. Use Alembic for empty frames."
+msgstr ""
+
+msgid "Use Selected as Collider"
+msgstr ""
+
+msgid "Use a Blender project-relative or absolute cache path."
+msgstr ""
+
+msgid "Use a closed, world-axis-aligned box."
+msgstr ""
+
+msgid "Use a static collider or linear location animation."
+msgstr ""
+
+msgid "Use one Blender unit per meter."
+msgstr ""
+
+msgid "Use the CPU backend"
+msgstr ""
+
+msgid "Use the NVIDIA CUDA device"
+msgstr ""
+
+msgid "Use the current density and surface tension"
+msgstr ""
+
+msgid "Use the pinned RTX 5060 Ti device and driver, or select CPU."
+msgstr ""
+
+msgid "Use two linear location keys covering the simulation."
+msgstr ""
+
+msgid "Uses Domain Walls"
+msgstr ""
+
+msgid "Validate a relocated committed cache before replacing the existing playback binding"
+msgstr ""
+
+msgid "Validate and attach native Alembic Points playback without replacing artist display edits"
+msgstr ""
+
+msgid "Validate geometry, timing, cache paths and the selected backend before baking"
+msgstr ""
+
+msgid "Velocity Retention"
+msgstr ""
+
+msgid "Velocity X (m/s)"
+msgstr ""
+
+msgid "Velocity Y (m/s)"
+msgstr ""
+
+msgid "Velocity Z (m/s)"
+msgstr ""
+
+msgid "Wait for the running job or cancel it first."
+msgstr ""
+
+msgid "Waiting for the first committed frame."
+msgstr ""
+
+msgid "Wall Friction"
+msgstr ""
+
+msgid "Water"
+msgstr ""
+
+msgid "World-space initial liquid velocity in m/s"
+msgstr ""
+
