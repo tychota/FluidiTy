@@ -1,0 +1,26 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+
+enum WhitewaterKind:ubyte { Spray = 0, Foam = 1, Bubble = 2 }
+struct WhitewaterPoint {
+  id:ulong;
+  position:fluidity.cache.v1.Vector3;
+  velocity:fluidity.cache.v1.Vector3;
+  birth_time_seconds:double;
+  kind:WhitewaterKind;
+}
+struct WhitewaterRemainder {
+  source_cell:fluidity.cache.v1.Index3;
+  fractional_count:double;
+}
+table WhitewaterFrame {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:fluidity.cache.v1.Clock (required, id:2);
+  next_point_id:ulong (id:3);
+  points:[WhitewaterPoint] (required, id:4);
+  remainders:[WhitewaterRemainder] (required, id:5);
+}
+root_type WhitewaterFrame;
+file_identifier "FLWW";
+file_extension "flww";

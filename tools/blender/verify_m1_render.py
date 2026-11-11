@@ -15,7 +15,7 @@ def main():
     obj = scene.objects["FluidiTy Points"]
     reader, display = obj.modifiers
     assert reader.type == "MESH_SEQUENCE_CACHE"
-    assert display.type == "NODES" and display.node_group.get("fluidity_asset_version") == 1
+    assert display.type == "NODES" and display.node_group.get("fluidity_asset_version") in {1, 2}
     assert reader.cache_file.filepath.startswith("//")
     assert Path(bpy.path.abspath(reader.cache_file.filepath)).is_file()
     scene.render.film_transparent = True

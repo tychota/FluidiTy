@@ -13,6 +13,7 @@
 #include "fluidity/host/effects_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/motion_capture_3d.h"
+#include "fluidity/host/whitewater_sphere_source_3d.h"
 #include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
 #include "fluidity/host/cuda_liquid_snapshot_3d.h"
@@ -103,31 +104,6 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   }
   return result + ']';
 }
-absl::StatusOr<LiquidPointFrame3D> BuildPointFrame(const LiquidState3D& state) {
-  LiquidPointFrame3D result;
-  result.clock = state.clock;
-  auto points = LiquidRecords3D<LiquidPoint3D>::Create(state.particles.size());
-  if (!points.ok()) {
-    return points.status();
-  }
-  EXEC_TRY(points->Resize(state.particles.size()));
-  for (std::size_t i = 0; i < state.particles.size(); ++i) {
-    const auto& particle = state.particles[i];
-    // Equivalent-volume spherical radius in meters, using accepted V0 * J.
-    const double radius = std::cbrt(3 * particle.reference_volume * particle.volume_ratio / (4 * std::acos(-1.0)));
-    (*points)[i] = {
-        .id = particle.id,
-        .tag = particle.tag,
-        .world_position = particle.world_position,
-        .world_velocity = particle.world_velocity,
-        .radius = radius,
-        .volume_ratio = particle.volume_ratio,
-        .level = 0,
-    };
-  }
-  result.points = std::move(*points);
-  return result;
-}
 // Compare regenerated point bytes with the committed manifest for preview or replay.
 // Intermediate frames may lack a publication. Replay requires its final frame.
 absl::Status
@@ -137,7 +113,7 @@ VerifyCommittedPointFrame(const LiquidCache3D& cache, const LiquidState3D& state
     return !require_publication && absl::IsNotFound(committed_frame.status()) ? absl::OkStatus()
                                                                               : committed_frame.status();
   }
-  auto points = BuildPointFrame(state);
+  auto points = BuildLiquidPointFrame3D(state);
   if (!points.ok()) {
     return points.status();
   }
@@ -428,11 +404,14 @@ struct JobMeasurement {
 struct Observations {
   const Command& command;
   const SimulateJob& job;
+  const LiquidSceneInputs3D& source_scene;
+  const LiquidStepOptions3D& step_options;
   JobMeasurement* measurement;
   std::vector<std::string> trace;
   std::optional<std::string> selected;
   std::vector<LiquidAttemptMeasurement3D> attempts;
   MotionCapture3D* motion_capture = nullptr;
+  double previous_accepted_time_seconds = 0;
   static void ObserveAttempt(void* context, const LiquidAttemptMeasurement3D& attempt) {
     auto& self = *static_cast<Observations*>(context);
     if (self.measurement) {
@@ -447,7 +426,23 @@ struct Observations {
     auto& self = *static_cast<Observations*>(context);
     EXEC_TRY(self.job.CheckForJobStopRequest());
     if (self.motion_capture) {
-      EXEC_TRY(self.motion_capture->Observe(state, rollback));
+      if (const auto& capture = self.step_options.whitewater_capture; capture && !rollback) {
+        const auto births = SampleAcceptedWhitewaterStep3D(
+            state,
+            self.source_scene,
+            self.step_options,
+            capture->world_source_grid_origin,
+            self.previous_accepted_time_seconds,
+            capture->source_options
+        );
+        if (!births.ok()) {
+          return births.status();
+        }
+        EXEC_TRY(self.motion_capture->Observe(state, false, *births));
+      } else {
+        EXEC_TRY(self.motion_capture->Observe(state, rollback));
+      }
+      self.previous_accepted_time_seconds = state.clock.time;
     }
     if (rollback) {
       self.trace.clear();
@@ -878,7 +873,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (!publish) {
       EXEC_TRY(VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame));
     }
-    auto points = BuildPointFrame(*state);
+    auto points = BuildLiquidPointFrame3D(*state);
     if (!points.ok()) {
       return points.status();
     }
@@ -963,9 +958,12 @@ absl::StatusOr<std::string> ExecuteCommand(
   diagnostic->cause = "completed state, point publication or deterministic replay verification failed";
   EXEC_TRY(finish_frame_snapshot(!read_only && starting_state.clock.frame_ordinal == 0));
   EXEC_TRY(job.CheckForJobStopRequest());
+  const auto source_scene = scene.View().scene;
   Observations observations{
       .command = command,
       .job = job,
+      .source_scene = source_scene,
+      .step_options = options,
       .measurement = measurement,
       .trace = {},
       .selected = {},
@@ -999,6 +997,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       }
       motion_capture = std::move(*capture);
       observations.motion_capture = &*motion_capture;
+      observations.previous_accepted_time_seconds = scheduler->committed().clock.time;
     }
     const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
     const auto advanced = scheduler->AdvanceFrame(*time, observer);
