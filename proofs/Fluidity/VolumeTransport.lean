@@ -19,7 +19,8 @@ def trilinearVolumeWeight (x y z : ℝ) (corner : Fin 2 × Fin 2 × Fin 2) : ℝ
 /-- Complete eight-corner support partitions unity in exact arithmetic. -/
 theorem trilinear_volume_weight_partition (x y z : ℝ) :
     (∑ corner : Fin 2 × Fin 2 × Fin 2, trilinearVolumeWeight x y z corner) = 1 := by
-  simp [trilinearVolumeWeight, volumeAxisWeights, Fintype.sum_prod_type, Fin.sum_univ_succ] <;> ring
+  simp [trilinearVolumeWeight, volumeAxisWeights, Fintype.sum_prod_type, Fin.sum_univ_succ]
+  ring
 
 #print axioms trilinear_volume_weight_partition
 
