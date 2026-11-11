@@ -79,5 +79,37 @@ tests. The four PIC cases cover exact constant reproduction, a weighted non-affi
 coplanar donor field, reversed order including signed zeros, a single certified
 low-mass donor and transactional refusal of malformed support. The executable
 SHA-256 was `f31e8d5bb3dd60e8bff05917153db0a8802fcb3014037be65d73837f2c797802`.
-The clang-format 19.1.5 check passed. Production substep integration and CUDA
-parity remain open.
+The clang-format 19.1.5 check passed.
+
+## CUDA stencil parity
+
+The checked launch accepts up to 1,024 disjoint device queries and results per call.
+Each CUDA thread evaluates one query with the same FP32 core as the CPU. Traversing
+reflected axes in ascending world order emits canonical owner rows directly.
+Malformed or out-of-range queries return zero rows and a per-query error status.
+
+The Release build used MSVC 19.44.35229, nvcc 13.4.59 and
+`CMAKE_CUDA_ARCHITECTURES=120-real;120-virtual`. On the NVIDIA GeForce RTX 5060 Ti
+(driver 610.88), every device result reported the executed image marker 1200.
+The three CUDA cases passed. The comparison covered the 360 measured adaptive
+queries plus all 26 signed half-space, edge and corner orientations with each of
+the three MAC components, for 438 queries. Row counts, owner/level keys and
+offsets matched exactly. The maximum absolute CPU–CUDA difference was zero for
+both weights and gradients. Three selected edge and corner rows also matched the
+independent NumPy weights and gradients within 2e-7. Invalid geometry and
+out-of-range device cases produced no rows.
+
+Compute Sanitizer memcheck reported zero errors. The CUDA test executable
+SHA-256 was `14d5919699d027d184701c7166e39e7fbe7abf152a57b99dc538c18a8f4a95eb`.
+The CPU-only rebuild passed all 510 tests after the shared-core refactor.
+
+Build the `fluidity_cuda_coarse_fine_tests` target using the
+[Windows CUDA procedure](../native/README.md#cuda-hardware-and-sanitizer-gates),
+then run the separate `cuda-adaptivity` CTest label.
+
+```powershell
+ctest --test-dir out/build/windows-release-cuda -L '^cuda-adaptivity$' --output-on-failure
+```
+
+This fixture covers the bounded stencil. Device PIC fallback, production substep
+integration and workload throughput remain open.
