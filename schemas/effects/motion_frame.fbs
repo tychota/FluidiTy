@@ -3,12 +3,22 @@ namespace fluidity.effects.v1;
 table MotionSnapshot {
   state:[ubyte] (required, id:0);
 }
+struct AcceptedWhitewaterBirth {
+  accepted_step:ulong;
+  source_cell:fluidity.cache.v1.Index3;
+  time_seconds:double;
+  position:fluidity.cache.v1.Vector3;
+  velocity:fluidity.cache.v1.Vector3;
+  normal:fluidity.cache.v1.Vector3;
+  volume_time_m3_seconds:double;
+}
 table MotionFrame {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
   first_clock:fluidity.cache.v1.Clock (required, id:2);
   last_clock:fluidity.cache.v1.Clock (required, id:3);
   snapshots:[MotionSnapshot] (required, id:4);
+  whitewater_births:[AcceptedWhitewaterBirth] (id:5);
 }
 root_type MotionFrame;
 file_identifier "FLMO";

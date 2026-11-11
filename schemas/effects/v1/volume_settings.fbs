@@ -1,0 +1,17 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+
+table VolumeSettings {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  algorithm_version:uint = 1 (id:2);
+  origin:fluidity.cache.v1.Vector3 (required, id:3);
+  spacing_m:double (id:4);
+  nx:uint (id:5);
+  ny:uint (id:6);
+  nz:uint (id:7);
+  physical_bubble_radius_m:double (id:8);
+}
+root_type VolumeSettings;
+file_identifier "FLVC";
+file_extension "flvc";
