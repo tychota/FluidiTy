@@ -272,7 +272,7 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
           }
           std::vector<std::uint32_t> polygon;
           if (liquid.size() == 2) {
-            for (const auto pair :
+            for (const auto& pair :
                  {std::pair{liquid[0], air[0]},
                   std::pair{liquid[0], air[1]},
                   std::pair{liquid[1], air[1]},
@@ -361,7 +361,7 @@ absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh)
   for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
     roots.insert(sets.Find(index));
     std::map<std::uint32_t, std::vector<std::uint32_t>> link;
-    for (const auto [a, b] : links[index]) {
+    for (const auto& [a, b] : links[index]) {
       link[a].push_back(b);
       link[b].push_back(a);
     }

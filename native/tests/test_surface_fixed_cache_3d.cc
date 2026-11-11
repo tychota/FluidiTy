@@ -89,9 +89,10 @@ TEST(SurfaceFixedCache3D, MeasuresPinnedParticleCacheWithoutChangingIt) {
   }
   if (const char* input = std::getenv("FLUIDITY_FIXED_CACHE_SPACING")) {
     const std::string_view value(input);
-    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), spacing);
-    ASSERT_EQ(parsed.ec, std::errc{});
-    ASSERT_EQ(parsed.ptr, value.data() + value.size());
+    // This experiment has exactly two pinned resolutions. Avoid a floating
+    // from_chars dependency unavailable in the qualified Apple libc++.
+    ASSERT_TRUE(value == "0.0125" || value == "0.00625");
+    spacing = value == "0.0125" ? 0.0125 : 0.00625;
   }
   ASSERT_TRUE(spacing == 0.0125 || spacing == 0.00625);
   ASSERT_TRUE(ordinal == 0 || ordinal == 48 || ordinal == 96 || ordinal == 144 || ordinal == 192 || ordinal == 216);
