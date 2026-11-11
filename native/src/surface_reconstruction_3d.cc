@@ -8,6 +8,7 @@
 #include "fluidity/host/motion_carrier_3d.h"
 #include "fluidity/host/surface_closest_point_3d.h"
 #include "fluidity/host/surface_field_3d.h"
+#include "fluidity/host/surface_material_components_3d.h"
 #include "liquid_substep_3d_internal.h"
 
 namespace fluidity {
@@ -19,6 +20,60 @@ bool Safe(const SurfaceMetrics3D& m) {
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
       && a.world_origin.z == b.world_origin.z;
+}
+
+// Render smoothing can bridge a narrow gap, and spatial coincidence is not
+// material ancestry. Check the authoritative union before constructing a
+// density field. Until local repair is supported, accept only one continuing
+// material component, with no replacement by an unrelated component.
+absl::Status CheckSphereUnionContinuity(
+    const MotionFrame3D& source,
+    double sphere_radius_m,
+    const SurfaceFrame3D* previous,
+    std::size_t maximum_particles
+) {
+  const auto current_material =
+      PartitionSurfaceSphereUnion3D(source.samples.back().particles.values(), sphere_radius_m, maximum_particles);
+  if (!current_material.ok()) {
+    return current_material.status();
+  }
+  if (current_material->size() != 1) {
+    return absl::FailedPreconditionError("disconnected material components require separate Mesh geometry");
+  }
+  if (previous == nullptr) {
+    return absl::OkStatus();
+  }
+  if (previous->volumes.size() != 1) {
+    return absl::FailedPreconditionError("material component birth or change requires Mesh lineage");
+  }
+  const auto prior_material =
+      PartitionSurfaceSphereUnion3D(source.samples.front().particles.values(), sphere_radius_m, maximum_particles);
+  if (!prior_material.ok()) {
+    return prior_material.status();
+  }
+  if (prior_material->size() != 1) {
+    return absl::FailedPreconditionError("prior material components do not match the Mesh checkpoint");
+  }
+  const auto prior_component_id = previous->volumes.front().component;
+  if (prior_component_id == std::numeric_limits<std::uint64_t>::max()) {
+    return absl::ResourceExhaustedError("Mesh component identity counter exhausted");
+  }
+  const std::array history{SurfaceComponentHistory3D{
+      .component_id = prior_component_id,
+      .members = prior_material->front().members,
+  }};
+  const std::array material{SurfaceComponentMaterial3D{
+      .members = current_material->front().members,
+      .target_volume_m3 = current_material->front().target_volume_m3,
+  }};
+  const auto lineage = MatchSurfaceComponentLineage3D(history, material, prior_component_id + 1, maximum_particles);
+  if (!lineage.ok()) {
+    return lineage.status();
+  }
+  if (lineage->components.front().component_id != prior_component_id) {
+    return absl::FailedPreconditionError("new material component requires Mesh lineage and fresh vertex IDs");
+  }
+  return absl::OkStatus();
 }
 // Interpolates centred nodal derivatives, giving a continuous offset direction
 // across voxel boundaries rather than an unrelated one-sided cell derivative.
@@ -80,10 +135,35 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       || !std::isfinite(options.sigma_m) || options.sigma_m <= 0 || options.maximum_correction_iterations == 0) {
     return absl::InvalidArgumentError("invalid surface source or reconstruction settings");
   }
-  if (!std::holds_alternative<std::monostate>(scene.obstacle)) {
-    return absl::UnimplementedError("surface contact adapter has not qualified");
+  const auto* beach = std::get_if<TranslatingHalfspace3D>(&scene.obstacle);
+  if (!std::holds_alternative<std::monostate>(scene.obstacle)
+      && (beach == nullptr || beach->wall_velocity.x != 0 || beach->wall_velocity.y != 0 || beach->wall_velocity.z != 0
+      )) {
+    return absl::UnimplementedError("surface contact requires a stationary halfspace");
+  }
+  if (beach
+      && (!std::isfinite(beach->start_plane_coordinate)
+          || std::abs(std::hypot(beach->unit_normal.x, beach->unit_normal.y, beach->unit_normal.z) - 1) > 1e-12
+          || !liquid_step_internal::Finite(beach->unit_normal))) {
+    return absl::InvalidArgumentError("surface contact plane is invalid");
   }
   const auto& endpoint = source.samples.back();
+  const double cell_width_m = endpoint.geometry.cell_width;
+  // Leave a roundoff margin above the collision plane. An affine signed
+  // distance interpolates exactly within the extraction tetrahedra.
+  const double contact_margin_m = 1e-9 * cell_width_m;
+  const auto mark_contact = [&](SurfaceMesh3D& mesh) -> absl::Status {
+    if (beach) {
+      for (auto& vertex : mesh.vertices) {
+        const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, vertex.position);
+        if (!std::isfinite(clearance_m) || clearance_m < 0) {
+          return absl::FailedPreconditionError("surface vertex enters the stationary contact plane");
+        }
+        vertex.contact = clearance_m <= 0.25 * cell_width_m + contact_margin_m;
+      }
+    }
+    return absl::OkStatus();
+  };
   std::vector<MotionStamp3D> stamps;
   for (const auto& sample : source.samples) {
     const auto limits = options.limits.cache.maximum_records;
@@ -148,6 +228,17 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     result.frame.mesh.next_id = previous == nullptr ? 1 : previous->mesh.next_id;
     return result;
+  }
+  if (const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
+    const auto continuity = CheckSphereUnionContinuity(
+        source,
+        sphere_union->radius,
+        previous,
+        options.limits.cache.maximum_records.particles
+    );
+    if (!continuity.ok()) {
+      return continuity;
+    }
   }
   std::optional<liquid_step_internal::PreparedIsolatedDrop3D> isolated;
   if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
@@ -240,6 +331,14 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           value = 0.5;
           ++result.deep_air_fills;
         }
+        if (beach) {
+          const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, position);
+          const double obstacle_field = (contact_margin_m - clearance_m) / options.spacing_m;
+          if (!std::isfinite(obstacle_field)) {
+            return absl::OutOfRangeError("surface contact field overflow");
+          }
+          value = std::max(value, obstacle_field);
+        }
       }
     }
   }
@@ -268,6 +367,10 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   // Track the already volume-qualified scaffold. Reprojecting a corrected
   // surface onto the deficient raw zero set and expanding it every frame
   // introduces artificial drift even in a perfectly frozen source.
+  const auto scaffold_contact = mark_contact(*raw_mesh);
+  if (!scaffold_contact.ok()) {
+    return scaffold_contact;
+  }
   const auto scaffold_metrics = CorrectSurfaceVolumeWithNormals3D(
       *raw_mesh,
       material_volume,
@@ -291,7 +394,18 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (!sample.ok()) {
       return sample.status();
     }
-    return sample->velocity;
+    auto velocity = sample->velocity;
+    if (beach) {
+      const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, position);
+      if (clearance_m <= 0.5 * cell_width_m + contact_margin_m) {
+        // The free surface carrier may use continued faces next to the wall.
+        // Remove its inward component within one accepted RK2 displacement.
+        const double inward_speed_m_per_s = std::min(0.0, liquid_step_internal::Dot(velocity, beach->unit_normal));
+        velocity =
+            liquid_step_internal::Add(velocity, liquid_step_internal::Scale(beach->unit_normal, -inward_speed_m_per_s));
+      }
+    }
+    return velocity;
   };
   if (previous != nullptr) {
     const auto metrics = MeasureSurfaceMesh3D(previous->mesh);
@@ -329,7 +443,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           .value = closest->distance_m,
           .gradient = gradient,
           .component = component,
-          .obstacle_distance_m = std::numeric_limits<double>::max(),
+          .obstacle_distance_m = beach ? liquid_step_internal::SolidDistance(scene.obstacle, position)
+                                       : std::numeric_limits<double>::max(),
       };
     };
     auto tracked = TrackSurfaceMesh3D(
@@ -359,6 +474,10 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       vertex.component = component;
     }
   }
+  const auto final_contact = mark_contact(result.frame.mesh);
+  if (!final_contact.ok()) {
+    return final_contact;
+  }
   auto corrected = CorrectSurfaceVolumeWithNormals3D(
       result.frame.mesh,
       material_volume,
@@ -368,6 +487,10 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   );
   if (!corrected.ok()) {
     return corrected.status();
+  }
+  const auto corrected_contact = mark_contact(result.frame.mesh);
+  if (!corrected_contact.ok()) {
+    return corrected_contact;
   }
   result.corrected_metrics = *corrected;
   result.frame.volumes.push_back({component, material_volume, raw_metrics->signed_volume, corrected->signed_volume});
