@@ -194,27 +194,114 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const Mac
     system.links_.push_back(*link);
   }
 
-  const auto rhs_rows = AssembleIntegratedRhs(system.cells(), system.links());
+  const auto status = system.Finalize();
+  if (!status.ok()) {
+    return status;
+  }
+  return system;
+}
+
+absl::Status PreparedMacPressureSystem3D::Finalize() {
+  const auto rhs_rows = AssembleIntegratedRhs(cells(), links());
   if (!rhs_rows.ok()) {
     return rhs_rows.status();
   }
-  system.integrated_rhs_.reserve(rhs_rows->size());
-  system.rhs_absolute_term_sums_.reserve(rhs_rows->size());
+  integrated_rhs_.reserve(rhs_rows->size());
+  rhs_absolute_term_sums_.reserve(rhs_rows->size());
   for (const auto& row : *rhs_rows) {
     const double integrated_rhs = row.flux.Total();
     const double absolute_rhs_terms = row.absolute_terms.Total();
     if (!std::isfinite(integrated_rhs) || !std::isfinite(absolute_rhs_terms)) {
       return absl::OutOfRangeError("pressure integrated RHS or its terms are unrepresentable");
     }
-    system.integrated_rhs_.push_back(integrated_rhs);
-    system.rhs_absolute_term_sums_.push_back(absolute_rhs_terms);
+    integrated_rhs_.push_back(integrated_rhs);
+    rhs_absolute_term_sums_.push_back(absolute_rhs_terms);
   }
-  system.component_ordinals_.resize(system.cells().size());
-  auto gauges = SelectGauges(system.cells(), system.links(), system.component_ordinals_);
+  component_ordinals_.resize(cells().size());
+  auto gauges = SelectGauges(cells(), links(), component_ordinals_);
   if (!gauges.ok()) {
     return gauges.status();
   }
-  system.gauge_cell_ordinals_ = std::move(*gauges);
+  gauge_cell_ordinals_ = std::move(*gauges);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
+    double step_duration,
+    std::span<const MacPressureCell3D> pressure_cells,
+    std::span<const ExplicitMacPressureFace3D> pressure_faces
+) {
+  if (pressure_cells.size() > kMaxPressureCells || pressure_faces.size() > kMaxPressureFaces) {
+    return absl::ResourceExhaustedError("3D pressure graph exceeds cell or face capacity");
+  }
+  if (pressure_cells.empty()) {
+    return absl::InvalidArgumentError("3D pressure graph requires cells");
+  }
+  if (!IsFinitePositive(step_duration)) {
+    return absl::InvalidArgumentError("pressure step duration must be positive and finite");
+  }
+
+  PreparedMacPressureSystem3D system;
+  system.cells_.reserve(pressure_cells.size());
+  for (const auto& cell : pressure_cells) {
+    if (!system.cells_.empty() && CellSortKey(system.cells_.back().cell_index) >= CellSortKey(cell.cell_index)) {
+      return absl::InvalidArgumentError("pressure cells must be unique and ordered by (z,y,x)");
+    }
+    const auto coefficients = FreezeCell(cell, step_duration, std::numeric_limits<double>::infinity());
+    if (!coefficients.ok()) {
+      return coefficients.status();
+    }
+    system.cells_.push_back(*coefficients);
+  }
+
+  system.links_.reserve(pressure_faces.size());
+  for (const auto& face : pressure_faces) {
+    if (!system.links_.empty() && system.links_.back().face_slot >= face.face_slot) {
+      return absl::InvalidArgumentError("pressure graph faces must be in unique owned slot order");
+    }
+    if (face.tail_cell_ordinal >= pressure_cells.size() || face.head_cell_ordinal >= pressure_cells.size()
+        || face.tail_cell_ordinal == face.head_cell_ordinal) {
+      return absl::InvalidArgumentError("pressure graph face requires two distinct in-range endpoints");
+    }
+    if (!IsFinitePositive(face.open_area) || !IsFinitePositive(face.inverse_density)
+        || !IsFinitePositive(face.pressure_gradient_distance) || !std::isfinite(face.predicted_normal_velocity)) {
+      return absl::InvalidArgumentError("pressure graph face coefficients are invalid");
+    }
+
+    const double step_scaled_mobility = step_duration * face.inverse_density;
+    if (!arithmetic::IsRepresentablePressureProduct(step_duration, face.inverse_density, step_scaled_mobility)) {
+      return absl::OutOfRangeError("pressure graph step-scaled mobility is unrepresentable");
+    }
+    const double pressure_to_velocity_scale = step_scaled_mobility / face.pressure_gradient_distance;
+    const double conductance = face.open_area * pressure_to_velocity_scale;
+    const double predicted_fluid_flux = face.open_area * face.predicted_normal_velocity;
+    if (!std::isnormal(pressure_to_velocity_scale) || !IsFinitePositive(conductance)
+        || !arithmetic::IsRepresentablePressureProduct(face.open_area, pressure_to_velocity_scale, conductance)
+        || !arithmetic::IsRepresentablePressureProduct(
+            face.open_area,
+            face.predicted_normal_velocity,
+            predicted_fluid_flux
+        )) {
+      return absl::OutOfRangeError("pressure graph face arithmetic is unrepresentable");
+    }
+    system.links_.push_back({
+        .face_slot = face.face_slot,
+        .tail_cell_ordinal = face.tail_cell_ordinal,
+        .head_cell_ordinal = face.head_cell_ordinal,
+        .open_area = face.open_area,
+        .blocked_area = 0.0,
+        .pressure_to_velocity_scale = pressure_to_velocity_scale,
+        .conductance = conductance,
+        .predicted_normal_velocity = face.predicted_normal_velocity,
+        .prescribed_wall_flux = 0.0,
+        .pressure_link = InternalMacPressureLink3D{.pressure_jump = 0.0},
+    });
+  }
+
+  const auto status = system.Finalize();
+  if (!status.ok()) {
+    return status;
+  }
   return system;
 }
 

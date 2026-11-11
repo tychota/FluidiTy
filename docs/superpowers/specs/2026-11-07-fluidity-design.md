@@ -586,7 +586,25 @@ Checkpoint Simulate persistent particles/grid/topology/control/body/source state
 
 ### 14.2 User-facing and file interfaces
 
-CLI: `run --stage`, `check`, `schema`, `step`, `replay --frame --substep`, `device-info`; frame range, resume, preview and trace options use one schema shared with the add-on. Errors carry `E-<DOMAIN>-<NAME>`, object/field and cause; warnings carry documented thresholds and indicate potentially compromised results. Information logs are not warnings. Default scenes have zero warnings.
+The native build exposes `fluidity` for terminal use. Command and option definitions generate
+root and per-command help. Current commands operate on canonical FLRS scenes and native caches.
+
+- `fluidity simulate scene.flrs --cache bake` runs the simulate stage. It accepts frame ranges,
+  resume, preview, backend selection and tracing.
+- `fluidity validate scene.flrs` verifies a resolved scene. `fluidity inspect bake --frame 120`
+  verifies a committed cache frame. Both are read-only.
+- `fluidity step scene.flrs --cache bake` advances one substep without publishing.
+  `fluidity replay bake --frame 120 --substep 0` verifies and replays a cached clock.
+- `fluidity devices` reports CPU availability and CUDA build support. Add `--backend cuda`
+  to probe a CUDA device. `fluidity schema` prints the resolved scene schema and defaults.
+
+Conan 2 pins Taywee Args, which the CLI compiles in exception-free mode. The CLI delegates to
+the shared command validation and simulation handlers. Both entry points use the same executable
+bytes so resolved scenes, caches and checkpoints share build identity. Blender continues to use
+`fluidity_simulate` with its existing `run --stage`, `check`, `schema`, `step`, `replay` and
+`device-info` syntax. Operational output is protocol-v1 JSON Lines. Errors carry
+`E-<DOMAIN>-<NAME>`, object/field and cause. Warnings carry documented thresholds and indicate
+potentially compromised results. Default scenes have zero warnings.
 
 The subprocess writes **versioned JSON Lines protocol only to stdout** and structured logs to stderr. It emits a heartbeat at least 1 Hz, including the last coherently known job progress, without pretending an unfinished GPU step is committed. A stdin `cancel` request stops at a safe boundary and preserves published output; timeout fallback uses platform-appropriate termination. Blender `bpy` calls remain on its main thread, with timer polling of subprocess events and transient job state outside persistent Blender ID data. FlatBuffers defaults are materialized in persisted resolved scene/settings records **and** fingerprints (`ForceDefaults` or equivalent), so changing a later default cannot reinterpret an old cache, numeric field/enum IDs are stable, and `flatc --conform` runs in CI; settings evolution is not inferred from Python dictionaries.
 
@@ -659,7 +677,7 @@ Blender's extension, translation, timer and asset APIs provide the integration p
 
 Production uses C++20, CUDA on Windows/Linux and a CPU backend on macOS. Initial Blender floor is5.2 LTS. Google C++ style with mandatory braces, `#pragma once`,100 columns; Google Python via ruff. `.h` is portable host/device, `.cuh` requires nvcc, `.cu` kernels, `.cc` host. One `FLUIDITY_HD` definition. No host exceptions: Status/StatusOr; device status bits are decoded at a safe boundary. Abseil is host-only. Prefer CUB/libcu++ to Thrust. No modules, coroutines, production RTTI, intricate metaprogramming or `using namespace`; no production BLAS dependency.
 
-CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
+CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark, Taywee Args for the native CLI and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
 
 No download of an unlicensed checkpoint or inferred license grants distribution permission. Select the project's own code/documentation license before public release, with third-party notices; this specification does not silently choose a license for the owner. Do not commit proprietary binaries, model weights, personal paths, source PDFs or internal review logs. Keep portable public source evidence and document build instructions.
 
@@ -684,11 +702,12 @@ Adversarial fixtures include: negative/boundary particle bins; masked ghost mism
 | M1-B: first usable Blender add-on | After M1, install a Windows x64 extension in pinned Blender 5.2 LTS, check and bake a real 3D single-liquid scene, cancel/resume, inspect committed frames and render points through the native reader and Points Geometry Nodes asset. Qualify English and French, cache-only reopen and a fresh render process with the extension disabled. |
 | M2: surfaces and wave effects | Geometric field + persistent tracker, whitewater/volumes/Ocean Boundary; fixed-cache CNN full/band experiment and MotionInterval error study; no neural dependency adopted without its gates |
 | M3: adaptivity and band | Certified transitions/remaps/resampling and Eulerian-core handoff; F3/F4; validated cage/native Multires when requested by the benchmark; complete reference wave≤3 h and within memory, or explicit temporary≤6 h fallback with adaptivity still open |
+| M3-B: adaptive Blender workflow | After M3, qualify a real adaptive bake through the offline add-on, with regional detail authoring, cache inspection, native playback, and recovery. |
 | M4: extended liquids | Certified grid viscosity/F7, EOS/compliance, trapped-air pressure, miscible/immiscible liquids, tension extension and shared-interface gates |
 | M5: granular and snow | Constitutive invariants, pile/compaction, distinct-body water coupling |
 | M6: solids/cutting/rigids | Uncut work, explicit cut budget, persistent sides, continuous contact and two-way floating-body gate |
 | M7: low-Mach gas | Conservative scalar/enthalpy state, reaction/source/p0; baseline APIC; optional measured impulse/maps transport |
-| Follow-on Blender integration, timing open | Evaluated Geometry Nodes meshes can author solver inputs through existing object roles. Qualify procedural inlets and colliders against equivalent explicit geometry as their solver contracts become available. |
+| Final Blender release | After the last required solver milestone, qualify the complete supported authoring, bake, recovery, interchange, and render workflow on the published platform and Blender matrix. |
 | Later optional | Supersonic conservative solver, damage/porous models, other backends and measured research improvements |
 
 **M1-B entry.** The Uniform CUDA Operators phase delivers bounded 2D evidence within M0. Qualify the Blender reader in M0. Start the first usable add-on after the M1 solver can run the real 3D acceptance scene and publish its resolved settings, checkpoints and committed point frames. M1-B may add a thin export adapter from those committed frames to the qualified native reader representation.
@@ -697,7 +716,11 @@ Adversarial fixtures include: negative/boundary particle bins; masked ghost mism
 
 The first Preview runs a short real bake with its own resolved cache fingerprint. Inspect shows the committed frame, point count and velocity legend, and can report ID, position and velocity for a selected point. Render requires correct time-mapped positions, counts and empty frames. The Points asset supplies display radius and material, while stable IDs and diagnostic velocity remain in Inspect. Motion blur and per-particle render attributes qualify with the features that use them. Save native cache paths relative to the project so the `.blend` and cache tree can travel together. Moving the cache independently uses explicit relinking in the add-on.
 
-**M1-B exit.** A headless test drives the public extension operators against the real solver and verifies that Check Scene identifies an invalid field, Preview writes a separate cache, a valid bake publishes data, cancel/resume preserves completed frames and a changed fingerprint blocks incompatible resume. Test paths with spaces and non-ASCII characters, project-tree relocation, independent relink, repeat attachment, failed replacement, and cache-only open. Reopen in a fresh Blender process with the extension disabled and render two distinguishable committed frames. Review the actual narrow sidebar in English and French from setup through failure recovery. Use process fixtures for additional fault cases and real solver evidence for the bake and render gates.
+**M1-B exit.** A headless test drives the public extension operators against the real solver and verifies that Check Scene identifies an invalid field, Preview writes a separate cache, a valid bake publishes data, cancel/resume preserves completed frames and a changed fingerprint blocks incompatible resume. Test paths with spaces and non-ASCII characters, project-tree relocation, independent relink, repeat attachment, failed replacement, and cache-only open. Reopen in a fresh Blender process with the extension disabled and render two distinguishable committed frames. Review the actual narrow Physics Properties panels in English and French from setup through failure recovery. Use process fixtures for additional fault cases and real solver evidence for the bake and render gates.
+
+**M3-B entry and exit.** Enter after M3 passes its adaptive reference gate. From the installed extension, author one regional detail control and bake the adaptive reference scene through at least one refinement and one coarsening event. The diagnostic view must identify the committed frame, region, level and transition count, with values checked against solver receipts. Qualify a supported procedural object role by comparing evaluated Geometry Nodes input with equivalent explicit geometry. Verify unchanged-input resume, changed-input rejection, relocation and fresh cache-only render. Inspect both a coarse/fine transition and a frame with no data in an optional layer. Exercise any advertised grid asset with the version, transform, channel and resource checks in the [Blender compatibility notes](../../blender/blender-5.3.md). Record actual runtime and peak memory on the M3 reference hardware.
+
+**Final Blender release exit.** Install the release ZIP offline into a clean profile on every advertised platform and Blender build. Run one real authored bake for each exposed solver family and the full representative mixed-feature scene. Exercise setup, presets and units, procedural inputs where supported, preview, cancellation, restart, incompatible-cache rejection, relink, and package upgrades with a previous saved project. Verify portable cache-only reopen and two distinct fresh renders with the extension disabled. Round-trip every advertised interchange carrier against its channel, timing and coordinate contract, including changing and empty samples where supported. Record English and French Physics Properties review at narrow and normal widths, backend/version receipts, diagnostics for unsupported modes, and the linked solver acceptance evidence. Publish an explicit support matrix with measured results before release.
 
 ### 15.3 Required owner review
 

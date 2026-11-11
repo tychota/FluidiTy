@@ -6,6 +6,7 @@
 #include <variant>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "fluidity/host/mac_pressure_3d.h"
 
@@ -33,6 +34,18 @@ struct FrozenMacPressureLink3D {
   std::variant<InternalMacPressureLink3D, DirichletMacPressureLink3D, SealedMacPressureLink3D> pressure_link;
 };
 
+// Explicitly owned open subface between two pressure cells. Cell ordinals
+// index the supplied cell span. Normal velocity points from tail to head.
+struct ExplicitMacPressureFace3D {
+  std::size_t face_slot;
+  std::size_t tail_cell_ordinal;
+  std::size_t head_cell_ordinal;
+  double open_area;  // m².
+  double inverse_density;  // m³/kg.
+  double pressure_gradient_distance;  // m.
+  double predicted_normal_velocity;  // m/s.
+};
+
 // Owns validated coefficients and topology independently of the original input
 // storage. The following views borrow from this object and follow input order.
 class PreparedMacPressureSystem3D {
@@ -51,6 +64,11 @@ class PreparedMacPressureSystem3D {
   PreparedMacPressureSystem3D() = default;
   friend absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const MacPressureInputs3D&);
 
+  friend absl::StatusOr<PreparedMacPressureSystem3D>
+  PrepareExplicitMacPressureSystem3D(double, std::span<const MacPressureCell3D>, std::span<const ExplicitMacPressureFace3D>);
+
+  absl::Status Finalize();
+
   std::vector<PreparedMacPressureCell3D> cells_;
   std::vector<FrozenMacPressureLink3D> links_;
   std::vector<double> integrated_rhs_;
@@ -66,6 +84,20 @@ class PreparedMacPressureSystem3D {
 // unrepresentable lattice indices or arithmetic, including inexact flux
 // products that round to zero or a subnormal. Errors carry no system.
 absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const MacPressureInputs3D& inputs);
+
+// Freeze a closed graph with explicit subface ownership. Supply positive
+// finite duration, cells ordered by signed (z,y,x), and distinct subfaces in
+// increasing slot order. The caller certifies geometric coverage, cell
+// volumes and apertures. Each subface has two distinct in-range endpoints.
+// Invalid data or ownership returns kInvalidArgument, excessive extents
+// kResourceExhausted, unrepresentable arithmetic kOutOfRange, and an
+// incompatible unanchored component kFailedPrecondition. The pressure to
+// velocity scale must be normal. Errors carry no system.
+absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
+    double step_duration,
+    std::span<const MacPressureCell3D> pressure_cells,
+    std::span<const ExplicitMacPressureFace3D> pressure_faces
+);
 
 // Evaluate all original rows for the supplied finite pressures in Pa, in
 // prepared cell order. Reports residual, independently accumulated physical
