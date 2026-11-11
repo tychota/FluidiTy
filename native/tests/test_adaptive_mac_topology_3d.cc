@@ -93,6 +93,54 @@ TEST(AdaptiveMacTopology3D, OwnsSignedEdgeAndCornerSubfaces) {
   }
 }
 
+TEST(AdaptiveMacTopology3D, CompletesPartiallyCoveredCoarseFaceWithoutDuplicateSlots) {
+  for (const bool high_side : {false, true}) {
+    SCOPED_TRACE(high_side);
+    const std::array keys{
+        AdaptiveMacCellKey3D{.lower_corner = {-4, -4, -4}, .width_exponent = 1},
+        AdaptiveMacCellKey3D{.lower_corner = {high_side ? -2 : -5, -4, -4}, .width_exponent = 0},
+    };
+    const auto topology = AdaptiveMacTopology3D::Create(keys, 0.5);
+    ASSERT_TRUE(topology.ok()) << topology.status();
+    ASSERT_EQ(topology->interior_faces().size(), 1U);
+    const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+    ASSERT_TRUE(ownership.ok()) << ownership.status();
+    ASSERT_EQ(ownership->interior_face_slots.size(), 1U);
+    ASSERT_EQ(ownership->exterior_faces.size(), 13U);
+    std::set<std::size_t> slots{ownership->interior_face_slots.front()};
+    std::array<std::array<double, 6>, 2> area_by_side{};
+    const auto& internal = topology->interior_faces().front();
+    area_by_side[internal.tail_cell_ordinal][1] += internal.face_area;
+    area_by_side[internal.head_cell_ordinal][0] += internal.face_area;
+    std::size_t coarse_open_quarters = 0;
+    for (const auto& face : ownership->exterior_faces) {
+      ASSERT_LT(face.cell_ordinal, topology->cells().size());
+      EXPECT_TRUE(slots.insert(face.face_slot).second);
+      const std::size_t side = 2 * static_cast<std::size_t>(face.face_index.axis) + face.cell_is_tail;
+      area_by_side[face.cell_ordinal][side] += face.face_area;
+      const auto& cell = topology->cells()[face.cell_ordinal];
+      if (cell.key.width_exponent == 1 && face.width_exponent == 0) {
+        EXPECT_EQ(face.face_index.axis, FaceNormalAxis::kX);
+        EXPECT_EQ(face.cell_is_tail, high_side);
+        EXPECT_EQ(face.face_index.lattice_index.x, high_side ? -2 : -4);
+        EXPECT_TRUE(face.face_index.lattice_index.y == -3 || face.face_index.lattice_index.z == -3);
+        EXPECT_DOUBLE_EQ(face.face_area, 0.25);
+        ++coarse_open_quarters;
+      }
+    }
+    EXPECT_EQ(slots.size(), 14U);
+    EXPECT_EQ(*slots.begin(), 0U);
+    EXPECT_EQ(*slots.rbegin(), 13U);
+    EXPECT_EQ(coarse_open_quarters, 3U);
+    for (std::size_t cell = 0; cell < area_by_side.size(); ++cell) {
+      const double width = topology->cells()[cell].cell_width;
+      for (const double side_area : area_by_side[cell]) {
+        EXPECT_DOUBLE_EQ(side_area, width * width);
+      }
+    }
+  }
+}
+
 TEST(AdaptiveMacTopology3D, SolvesPressureOnOwnedCoarseFineJunction) {
   const auto keys = MakeJunction(3, false);
   const auto topology = AdaptiveMacTopology3D::Create(keys, 0.5);
