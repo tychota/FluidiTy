@@ -14,7 +14,7 @@
 
 Baseline is the locally available origin/main at 563a33e5fdd9488dfac9a2daa2a934226017e9b2. Local main is an ancestor 87 commits behind. The milestone builds on the existing fractional projection. A coupled Stokes solve becomes required if the fixed traction gate fails. Start with bounded algebra so certification and finite-compliance oracles can run while adaptive integration and surface qualification progress.
 
-M2's bounded wave branch e0ca6aa has active reconstruction fixes. M3's integration branch 1af7b0f includes face ownership and CUDA allocation accounting beyond the baseline. Recheck ancestry and production evidence before consuming either. Uniform operator/proof cases do not require the adaptive integration, while adaptive qualification requires production coarse/fine strain, matching face inertia, remap and rollback. Shared interface publication requires phase-aware reconstruction and Blender asset/cache integration. M2's single-phase reconstruction alone does not establish that geometry gate.
+The M2 bounded wave reconstruction fix e0ca6aa is already in the baseline. Full multi-phase reconstruction and the wave qualification receipt are separate dependencies. M3's integration branch 1af7b0f includes face ownership and CUDA allocation accounting beyond the baseline. Recheck ancestry and production evidence before consuming either. Uniform operator/proof cases do not require the adaptive integration, while adaptive qualification requires production coarse/fine strain, matching face inertia, remap and rollback. Shared interface publication requires phase-aware reconstruction and Blender asset/cache integration. M2's single-phase reconstruction alone does not establish that geometry gate.
 
 ## Global Constraints
 
@@ -52,3 +52,7 @@ Use the accepted-state transaction and preserve the zero-compliance path. Requir
 - First slice GREEN: python -m pytest reference/tests/test_viscosity.py -q -p no:cacheprovider. Exit 0, 22 passed.
 - First slice full reference: python -m pytest reference/tests -q -p no:cacheprovider. Exit 0, 290 passed.
 - The checked-in reference uses existing local packages for these runs. The installed uv 0.13.6 was rejected by the repository's >=0.13.7 requirement before the locked setup.
+
+- F7 theorem slice RED: python -m pytest tools/tests/test_verify_proofs.py -k f7_contracts -q -p no:cacheprovider. Exit 1, four missing inventory targets.
+- F7 theorem slice GREEN: python -m pytest tools/tests/test_verify_proofs.py -q -p no:cacheprovider. Exit 0, 34 passed.
+- Lean 4.34.1, pinned Mathlib: lake --wfail build completed 2,451 jobs in /var/tmp/fluidity-m4-proof.DmTffk/proofs. lake env lean Fluidity/Viscosity.lean confirmed all four closures use only propext, Classical.choice and Quot.sound. Retained output: out/m4-f7-lean.log.
