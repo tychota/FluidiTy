@@ -49,6 +49,42 @@ TEST(OceanBoundary3D, SatisfiesDispersionAndSecondOrderFiniteDepthProfile) {
   );
 }
 
+TEST(OceanBoundary3D, ReferenceInletReturnsTheDepthIntegratedStokesDrift) {
+  constexpr double kDepthM = 3;
+  constexpr double kPeriodS = 4;
+  constexpr double kAmplitudeM = 0.5;
+  const auto swell = ResolvedOceanSwell3D::Resolve({
+      .water_depth_m = kDepthM,
+      .wave_height_m = 2 * kAmplitudeM,
+      .wave_period_s = kPeriodS,
+  });
+  ASSERT_TRUE(swell.ok()) << swell.status();
+  const double wave_number = swell->wave_number_rad_per_m();
+  const double angular_frequency = 2 * std::numbers::pi / kPeriodS;
+  constexpr int kDepthSamples = 256;
+  const double depth_spacing_m = kDepthM / kDepthSamples;
+  const double sinh_depth_phase = std::sinh(wave_number * kDepthM);
+  double return_flux_m2_per_s = 0;
+  double drift_flux_m2_per_s = 0;
+  for (int index = 0; index < kDepthSamples; ++index) {
+    const double height_above_bed_m = (index + 0.5) * depth_spacing_m;
+    const Vec3 position{0, height_above_bed_m - kDepthM, 0};
+    double mean_velocity_m_per_s = 0;
+    for (int quarter = 0; quarter < 4; ++quarter) {
+      const auto sample = swell->Sample(position, quarter * kPeriodS / 4);
+      ASSERT_TRUE(sample.ok()) << sample.status();
+      mean_velocity_m_per_s += sample->world_velocity_m_per_s.x / 4;
+    }
+    return_flux_m2_per_s += mean_velocity_m_per_s * depth_spacing_m;
+    const double drift_velocity_m_per_s = kAmplitudeM * kAmplitudeM * angular_frequency * wave_number
+        * std::cosh(2 * wave_number * height_above_bed_m) / (2 * sinh_depth_phase * sinh_depth_phase);
+    drift_flux_m2_per_s += drift_velocity_m_per_s * depth_spacing_m;
+  }
+  EXPECT_GT(drift_flux_m2_per_s, 0.2);
+  EXPECT_LT(return_flux_m2_per_s, -0.2);
+  EXPECT_NEAR(return_flux_m2_per_s + drift_flux_m2_per_s, 0, 1e-6);
+}
+
 TEST(OceanBoundary3D, DeepWaterAndFrozenTargetSubdivisionRemainFinite) {
   const auto swell = ResolvedOceanSwell3D::Resolve({.water_depth_m = 20000, .wave_height_m = 0.1});
   ASSERT_TRUE(swell.ok()) << swell.status();
