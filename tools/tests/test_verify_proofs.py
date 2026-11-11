@@ -194,7 +194,7 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 33
+    assert len(verify.TARGETS) == 38
 
 
 def test_m2_trilinear_volume_contracts_are_exported_and_audited():

@@ -23,6 +23,7 @@ lake env lean Fluidity/UniformTransfer.lean
 lake env lean Fluidity/UniformTile.lean
 lake env lean Fluidity/LiquidTransaction.lean
 lake env lean Fluidity/VolumeTransport.lean
+lake env lean Fluidity/Resampling.lean
 ```
 
 The default build includes typed consumers in `Fluidity.lean`: concrete tensor reconstruction,
@@ -427,10 +428,31 @@ the proof does not authorize clipping or renormalizing an incomplete stencil.
 | `trilinear_deposition_conserves_inventory` | One complete splat preserves its assigned inventory. |
 | `trilinear_batch_conserves_inventory` | Any finite batch, including an empty one, preserves its total. |
 
-The target registry now contains 33 closures. These four targets require the same
+The target registry now contains 38 closures. These four targets require the same
 pinned Lean build, axiom audit, export and independent checker receipt before
 qualification. Proof-tool Python tests check that they cannot be omitted; they
 do not execute the Lean kernel. The native tests separately measure floating
 deposition and explicit validity. The statements do not certify Gaussian filter
 boundaries, physical gas thermodynamics, liquid-to-gas transfer, surface topology
 or the integrated breaking-wave workflow.
+
+## F3 symmetric split and the uniform 2:1 MAC deficit
+
+The split proof uses equal child mass and reference volume, unchanged affine rows
+and volume ratio, and zero-mean offsets with a supplied covariance. Its energy
+and spatial momentum use the same row-dependent supports as F2. All five
+targets are included in the pinned build, axiom audit and independent checker.
+
+| Audited target | Result |
+| --- | --- |
+| `symmetric_split_moments` | Preserves mass, reference and current volume, and linear momentum. The child energy and F2 spatial moments are the parent values minus their contractions with D_parent,a − D_child,a − S. |
+| `split_normal_deficit_preserves_angular_momentum` | The row-normal deficit leaves the antisymmetric spatial moments unchanged. |
+| `split_corner_covariance` | The eight equal-weight sign combinations with squared displacement 3h²/16 have zero mean and covariance 3h²I/16. |
+| `split_uniform_mac_deficits` | Halving the width gives a zero quadratic deficit and mixed MAC deficit h² e_a e_aᵀ/16. The support matrices use the uniform basis variances 1/4 and 1/3 in cell units. |
+| `split_uniform_mac_energy_deficits` | The resulting losses are 0 and m h² Σ C_aa²/32 respectively. |
+
+The 3D reference fixtures in `reference/tests/test_resampling.py` check the
+mixed-row and pure diagonal/off-diagonal cases, including the angular moments
+and the zero quadratic deficit. The fixture exercises the uniform resampling
+algebra. Runtime geometry and phase qualification must independently establish
+unmasked support, affine eligibility and child admissibility.
