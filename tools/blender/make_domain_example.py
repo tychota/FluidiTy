@@ -8,6 +8,7 @@ from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
 import fluidity
+from fluidity import grid_asset
 
 fluidity.register()
 for obj in list(bpy.context.scene.objects):
@@ -33,4 +34,6 @@ for screen in bpy.data.screens:
         if area.type == "PROPERTIES":
             area.spaces.active.context = "PHYSICS"
 fluidity.playback.create_points_asset()
+if grid_asset.supported():
+    grid_asset.create_grid_asset()
 bpy.ops.wm.save_as_mainfile(filepath=sys.argv[sys.argv.index("--") + 1])

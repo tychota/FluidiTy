@@ -31,3 +31,14 @@ The 5.3.0 build created and validated an offline ZIP with a 5.3.0 minimum versio
 - A two-point fixture used Rasterize Points with one scalar weight of 2 per point and a 1-unit voxel size. Sample Grid returned `[2.0, 2.0]` at the input points. This covers scalar wiring at the default transform and kernel. Sparse boundaries, vector channels, nonidentity transforms and solver equivalence remain qualification work.
 
 Local package and receipts are in `out/blender-53-polish`, `out/blender-53-polish-check`, `out/blender-53-polish-domain` and `out/blender-53-polish-ui`. The upstream checkouts and grid fixture are under `out/blender-upstream`.
+
+
+## Water Tank grid asset
+
+The Blender 5.3 package embeds **FluidiTy Point Density and Velocity** as a Geometry Nodes asset in **Water Tank.blend**. Open that example, bake and attach Points, then choose this node group in place of the point display group in the playback object's Geometry Nodes modifier. Keep the native Mesh Sequence Cache modifier above it. For another file, append the node group from the example. In a custom graph, feed the raw **Points** output to the asset before point display instancing.
+
+The volume contains a scalar `density` grid in points/m³ and a vector `velocity` grid in m/s. The constant kernel assigns each point to its nearest voxel. The graph divides voxel count by voxel volume and divides the accumulated velocity by the count. It deactivates zero-weight halo voxels. The default voxel edge is 0.125 m. Point count density depends on the sampling resolution of the solver. It serves as a visualization and diagnostic channel. The graph uses the committed velocity attribute from the native Alembic reader.
+
+On Windows x64 Blender 5.3.0 build `02f0899d78e3`, a fresh factory-startup process evaluated all 49 samples of the actual Water Tank bake and four samples of a separate committed cache whose first frame was empty. It reopened each project from a relocated directory with a relative Alembic path, the extension disabled and script auto-execution disabled. The witness graph read both named grids and compared each occupied voxel against committed point positions and velocities. Counts and both grid values matched, the empty sample had no occupied voxels, and reverse seeks reproduced those results.
+
+To reproduce, run `verify_grid_asset.py` inside Blender 5.3 with `-- prepare OUTPUT_DIRECTORY COMMITTED_CACHE BRIDGE_EXE LAST_FRAME`. Move or copy the resulting directory, then run the same script in a fresh factory-startup Blender process with `-- verify RELOCATED_DIRECTORY`. The verification reads the saved native graph and its Alembic file. The expected-values JSON is used only by the test script.
