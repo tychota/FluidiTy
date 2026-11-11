@@ -65,7 +65,8 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   const bool options_valid = detail::Nonnegative(options.particle_energy_blend) && options.particle_energy_blend <= 1
       && detail::Positive(options.maximum_step_duration) && detail::Nonnegative(options.minimum_face_mass)
       && PowerOfTwo(options.mass_per_quantum) && PowerOfTwo(options.momentum_per_quantum)
-      && options.pressure_solver_options.max_iterations >= 1 && options.pressure_solver_options.max_iterations <= 256;
+      && options.pressure_solver_options.max_iterations >= 1 && options.pressure_solver_options.max_iterations <= 256
+      && options.motion_sample_intervals <= 64;
   if (!options_valid) {
     return Invalid();
   }
@@ -193,6 +194,7 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   result.options.mass_per_quantum = options->mass_per_quantum();
   result.options.momentum_per_quantum = options->momentum_per_quantum();
   result.options.pressure_solver_options.max_iterations = options->pressure_iterations();
+  result.options.motion_sample_intervals = options->motion_sample_intervals();
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
   const auto seed_covariance_scale = field->seed_covariance_scale();
@@ -296,15 +298,20 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             detail::Canonical(scene.friction_coefficient),
             detail::Canonical(scene.penetration_tolerance)
         );
-        const auto settings = wire::CreateStepOptions(
-            builder,
-            detail::Canonical(options.particle_energy_blend),
-            options.maximum_step_duration,
-            detail::Canonical(options.minimum_face_mass),
-            options.mass_per_quantum,
-            options.momentum_per_quantum,
+        wire::StepOptionsBuilder settings_builder(builder);
+        // Preserve the original v1 bytes when capture is disabled.
+        if (options.motion_sample_intervals != 0) {
+          settings_builder.add_motion_sample_intervals(options.motion_sample_intervals);
+        }
+        settings_builder.add_momentum_per_quantum(options.momentum_per_quantum);
+        settings_builder.add_mass_per_quantum(options.mass_per_quantum);
+        settings_builder.add_minimum_face_mass(detail::Canonical(options.minimum_face_mass));
+        settings_builder.add_maximum_step_duration(options.maximum_step_duration);
+        settings_builder.add_energy_blend(detail::Canonical(options.particle_energy_blend));
+        settings_builder.add_pressure_iterations(
             static_cast<std::uint32_t>(options.pressure_solver_options.max_iterations)
         );
+        const auto settings = settings_builder.Finish();
         wire::FieldKind field_kind = wire::FieldKind::ParticleUnion;
         Vec3 field_center{};
         double radius = 1;

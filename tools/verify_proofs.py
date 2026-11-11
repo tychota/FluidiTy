@@ -35,6 +35,10 @@ MODULE_TARGETS = {
                           'liquid_accept_advances_clock_once',
                           'liquid_same_state_key_replays_trial',
                           'liquid_adaptation_preserves_input_snapshot'),
+    'VolumeTransport': ('trilinear_volume_weight_partition',
+                        'trilinear_volume_weight_nonnegative',
+                        'trilinear_deposition_conserves_inventory',
+                        'trilinear_batch_conserves_inventory'),
 }
 TARGETS = tuple('Fluidity.' + target for targets in MODULE_TARGETS.values() for target in targets)
 ALLOWED = {'propext', 'Classical.choice', 'Quot.sound'}

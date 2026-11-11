@@ -42,6 +42,17 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+    native/src/surface_closest_point_3d.cc
+    native/src/surface_reconstruction_3d.cc
+    native/src/whitewater_volume_3d.cc
+    native/src/whitewater_3d.cc
+    native/src/surface_cache_3d.cc
+    native/src/surface_tracking_3d.cc
+    native/src/surface_field_3d.cc
+  native/src/surface_mesh_3d.cc
+  native/src/motion_carrier_3d.cc
+  native/src/motion_capture_3d.cc
+  native/src/effects_cache_3d.cc
   native/src/motion_interval_3d.cc
   native/src/liquid_boundary_workspace_3d.cc
   native/src/liquid_step_workspace_3d.cc
@@ -199,6 +210,17 @@ if(BUILD_TESTING)
   target_link_libraries(fluidity_pressure_3d_test_support PUBLIC fluidity_native GTest::gtest)
 
   add_executable(fluidity_native_tests
+    native/tests/test_surface_closest_point_3d.cc
+    native/tests/test_surface_reconstruction_3d.cc
+    native/tests/test_whitewater_volume_3d.cc
+    native/tests/test_whitewater_3d.cc
+    native/tests/test_surface_cache_3d.cc
+    native/tests/test_surface_tracking_3d.cc
+    native/tests/test_surface_field_3d.cc
+    native/tests/test_surface_mesh_3d.cc
+    native/tests/test_motion_carrier_3d.cc
+    native/tests/test_motion_capture_3d.cc
+    native/tests/test_effects_cache_3d.cc
     native/tests/test_motion_interval_3d.cc
     native/tests/test_liquid_boundary_workspace_3d.cc
     native/tests/test_liquid_step_workspace_3d.cc
@@ -246,6 +268,12 @@ if(BUILD_TESTING)
     target_link_libraries(${target} PRIVATE GTest::gtest_main)
     gtest_discover_tests(${target} PROPERTIES LABELS cpu)
   endforeach()
+
+  # Historical-cache research needs an external authenticated archive. Keep it
+  # outside the mandatory CPU inventory, which never permits skipped tests.
+  add_executable(fluidity_surface_fixed_cache_tests native/tests/test_surface_fixed_cache_3d.cc)
+  target_link_libraries(fluidity_surface_fixed_cache_tests PRIVATE fluidity_native GTest::gtest_main)
+  target_compile_options(fluidity_surface_fixed_cache_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
 
   if(FLUIDITY_ENABLE_CUDA)
     add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)

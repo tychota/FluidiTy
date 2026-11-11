@@ -1,8 +1,9 @@
-# Exact pressure, transfer, integer, tile and transaction contracts
+# Exact pressure, transfer, integer, tile, transaction and volume contracts
 
 This pinned Lean project checks the M0 F5/F8 pilots, integrated-pressure F5/F6, the uniform-transfer slice of
 [F1, F2, F8 and F10](../docs/references/formal-contracts.md), and the F9 committed-state transition.
-The proofs use exact reals and unbounded integer and natural-number counts.
+The M2 volume slice adds exact trilinear deposition inventories. The proofs use
+exact reals and unbounded integer and natural-number counts.
 
 ## Build and independent verification
 
@@ -21,6 +22,7 @@ lake env lean Fluidity/FixedPoint.lean
 lake env lean Fluidity/UniformTransfer.lean
 lake env lean Fluidity/UniformTile.lean
 lake env lean Fluidity/LiquidTransaction.lean
+lake env lean Fluidity/VolumeTransport.lean
 ```
 
 The default build includes typed consumers in `Fluidity.lean`: concrete tensor reconstruction,
@@ -407,6 +409,28 @@ The runtime supplies a validated positive duration and a correct frame-boundary 
 | `liquid_same_state_key_replays_trial` | Evaluations of one pure trial function with equal state and accepted-step key have equal outcomes and committed results, even when diagnostics differ. The shared function fixes settings, execution artifact and requested duration. |
 | `liquid_adaptation_preserves_input_snapshot` | A separate pure adaptation proposes new fields and retains its original committed snapshot. The proposal has no clock or publication operation. |
 
-All five targets are included in the 29-target independent export and axiom audit. Runtime
+All five targets remain included in the independent export and axiom audit. Runtime
 fault injection and serialized-state comparison are separate evidence for the C++ ownership
 discipline, allocation/retry rules, CUDA ordering, floating-point behavior and actual byte replay.
+
+## M2 trilinear volume deposition
+
+`VolumeTransport.lean` models the eight unmasked weights used by the geometric
+material-volume splat and the foam/bubble volume rasterizer. Fractions must lie
+in [0,1] for nonnegativity. The runtime must provide every positive-weight donor;
+the proof does not authorize clipping or renormalizing an incomplete stencil.
+
+| Added audited target | Exact statement |
+| --- | --- |
+| `trilinear_volume_weight_partition` | The eight weights sum to one. |
+| `trilinear_volume_weight_nonnegative` | Valid fractions produce nonnegative weights. |
+| `trilinear_deposition_conserves_inventory` | One complete splat preserves its assigned inventory. |
+| `trilinear_batch_conserves_inventory` | Any finite batch, including an empty one, preserves its total. |
+
+The target registry now contains 33 closures. These four targets require the same
+pinned Lean build, axiom audit, export and independent checker receipt before
+qualification. Proof-tool Python tests check that they cannot be omitted; they
+do not execute the Lean kernel. The native tests separately measure floating
+deposition and explicit validity. The statements do not certify Gaussian filter
+boundaries, physical gas thermodynamics, liquid-to-gas transfer, surface topology
+or the integrated breaking-wave workflow.

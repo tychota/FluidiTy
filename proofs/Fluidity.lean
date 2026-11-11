@@ -5,6 +5,7 @@ import Fluidity.FixedPoint
 import Fluidity.UniformTransfer
 import Fluidity.UniformTile
 import Fluidity.LiquidTransaction
+import Fluidity.VolumeTransport
 
 open scoped BigOperators
 attribute [local instance] Classical.propDecidable

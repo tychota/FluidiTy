@@ -360,6 +360,26 @@ TEST(LiquidCache3D, ResolvedDefaultsMaterializeAndRoundTrip) {
   ASSERT_TRUE(capacity_only.ok());
   EXPECT_EQ(Copy(*encoded), Copy(*capacity_only));
 }
+
+TEST(LiquidCache3D, EffectsCaptureSettingsAreOptionalAndFingerprintTheirSamplePolicy) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(baseline.ok());
+  const auto original = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(original.ok());
+  scene.options.motion_sample_intervals = 16;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok());
+  auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok());
+  EXPECT_EQ(decoded->options.motion_sample_intervals, 16);
+  EXPECT_NE(*original, *ResolvedSceneFingerprint(scene));
+  EXPECT_EQ(Copy(*encoded), Copy(*EncodeLiquidResolvedScene3D(decoded->View())));
+  scene.options.motion_sample_intervals = 65;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.options.motion_sample_intervals = 0;
+  EXPECT_EQ(Copy(*baseline), Copy(*EncodeLiquidResolvedScene3D(scene)));
+}
 TEST(LiquidCache3D, ResolvedFingerprintChangesWithSettingsAndExactUpstreamContent) {
   LiquidResolvedSceneView3D scene;
   auto baseline = ResolvedSceneFingerprint(scene);

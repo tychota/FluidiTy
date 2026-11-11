@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects") else []
     return scene, initial
 
 
@@ -747,6 +747,51 @@ def case_cpu_lifecycle(executable, fixture, directory, cuda):
     lifecycle_case(executable, fixture, directory, "cpu")
 
 
+def effects_case(executable, fixture, directory, backend):
+    scene, initial = make_scene(executable, fixture, directory, backend, "effects")
+    cache = directory / "effects-cache"
+    run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache, *initial]
+    result = execute(executable, *run, "--frame-end", 3)[-1]
+    products = cache / "effects" / "source"
+    assert len(list((products / "frames").glob("*.flem"))) == 4
+    before = snapshot(products)
+    execute(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 3, "--substep", 0)
+    assert snapshot(products) == before
+    execute(executable, *run, "--resume", "--frame-end", 5)
+    assert len(list((products / "frames").glob("*.flem"))) == 6
+    assert all(snapshot(products)[path] == value for path, value in before.items())
+    payloads = {path.name: path.read_bytes() for path in (products / "blobs").glob("*.flef")}
+    # Directory enumeration order is filesystem-dependent. Corrupt a payload in
+    # the requested replay prefix, rather than an arbitrary later frame.
+    seed_manifest = json.loads((products / "frames" / "00000000000000000000.json").read_text())
+    source_blob = products / "blobs" / (seed_manifest["payload_digest"] + ".flef")
+    source_blob.write_bytes(b"corrupt")
+    invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 3, "--substep", 0,
+           success=False)
+    if backend == "cuda":
+        assert result["compiled_architecture"] == 1200 and result["graph_replay_count"] > 0
+        assert result["snapshot_copy_milliseconds"] > 0 and result["device_reserved_bytes"] > 0
+        print(json.dumps(result, sort_keys=True))
+    return payloads
+
+
+def case_cpu_effects(executable, fixture, directory, cuda):
+    effects_case(executable, fixture, directory, "cpu")
+
+
+def case_cuda_effects(executable, fixture, directory, cuda):
+    cuda_payloads = effects_case(executable, fixture, directory, "cuda")
+    control = directory / "cpu-control"
+    control.mkdir()
+    scene, initial = make_scene(executable, fixture, control, "cpu", "effects")
+    cache = control / "cache"
+    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", "cpu", "--cache", cache,
+            *initial, "--frame-end", 5)
+    blobs = cache / "effects" / "source" / "blobs"
+    cpu_payloads = {path.name: path.read_bytes() for path in blobs.glob("*.flef")}
+    assert cpu_payloads == cuda_payloads, "manufactured static source intervals differ across CPU/CUDA"
+
+
 def case_cuda_lifecycle(executable, fixture, directory, cuda):
     lifecycle_case(executable, fixture, directory, "cuda")
 
@@ -755,7 +800,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

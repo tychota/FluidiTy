@@ -1,0 +1,30 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+struct SurfaceVertex {
+  id:ulong;
+  position:fluidity.cache.v1.Vector3;
+  geometric_velocity:fluidity.cache.v1.Vector3;
+  fluid_velocity:fluidity.cache.v1.Vector3;
+  normal:fluidity.cache.v1.Vector3;
+  age_seconds:double;
+  wetness:double;
+  thickness_m:double;
+  component:ulong;
+  parent_id:ulong;
+  flags:ubyte;
+}
+struct SurfaceTriangle { a:uint; b:uint; c:uint; }
+struct SurfaceVolume { component:ulong; material_m3:double; raw_m3:double; corrected_m3:double; }
+table SurfaceFrame {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  clock:fluidity.cache.v1.Clock (required, id:2);
+  cell_width_m:double (id:3);
+  next_id:ulong (id:4);
+  vertices:[SurfaceVertex] (required, id:5);
+  triangles:[SurfaceTriangle] (required, id:6);
+  volumes:[SurfaceVolume] (required, id:7);
+}
+root_type SurfaceFrame;
+file_identifier "FLMS";
+file_extension "flms";

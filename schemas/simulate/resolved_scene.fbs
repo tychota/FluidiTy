@@ -19,6 +19,7 @@ table StepOptions {
   mass_per_quantum:double = 9.094947017729282e-13 (id:3);
   momentum_per_quantum:double = 9.094947017729282e-13 (id:4);
   pressure_iterations:uint = 256 (id:5);
+  motion_sample_intervals:uint (id:6);
 }
 table HorizontalPlane {
   surface_height_y:double (id:0);
