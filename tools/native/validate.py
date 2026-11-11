@@ -32,7 +32,7 @@ SCHEMA_REQUIRED = {
         "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
-} | {f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings")}
+} | {f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings")}
 FIXTURE_TESTS = {
     "affine_apic.json": "Transfer.LocalAffineFixture",
     "compliant_pressure.json": "Pressure.CompliantFixtureRetainsMeanPressure",

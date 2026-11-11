@@ -182,7 +182,7 @@ physical target volume. Focused split, merge, birth/death and 2h/3h droplet
 hysteresis controls passed; these do not yet publish repaired components or
 droplet points. The full CPU suite passed 557 tests with no skips.
 
-## Open integrated gates
+## Accepted whitewater controls
 
 The accepted motion codec now stores optional whitewater births independently
 of carrier decimation. Tests retain opposing events between stored carrier
@@ -196,8 +196,27 @@ records six identical no-birth source payloads and point payloads across builds.
 The latest full CPU suite passed 562 tests. The preceding birth-codec/source
 checkpoint passed the clean CUDA-enabled suite of 629 tests.
 
-The Simulate observer still needs the production physical source sampler to
-publish nonempty whitewater events. Mesh
+The resolved analytic-sphere control now publishes births from actual accepted
+CPU and CUDA Simulate states. It samples occupied volume on a fixed physical
+grid at each accepted endpoint, uses analytic curvature and the checked carrier,
+and journals events independently of the carrier sample rate. The
+[source receipt](m2-whitewater-source-control-data.json) records 24 births from
+each backend with two retained carrier samples and earlier births at step 1 of
+2. Both process tests verify exact read-only replay. The reported process wall
+times include startup and publication; they are not isolated sampler timings
+or a CPU/device numerical parity claim.
+
+The host frame control reconstructs nonempty persistent foam from those
+accepted events. Focused controls cover birth-time spray, bounded RK2 foam,
+explicit bubble fallback and foam expiry before later carrier reads. `FLWW`
+checkpoints and `FLWC` physical settings round-trip with bounded codecs.
+The full CPU suite passed 572 tests. The preceding source/transport checkpoint
+passed the CUDA-enabled suite of 635 tests.
+
+## Open integrated gates
+
+The breaking-wave physical source sampler and Whitewater stage publication
+remain open. Mesh
 local repair, contact, component lineage and droplet handling remain open.
 Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are

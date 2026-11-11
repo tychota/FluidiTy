@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
+#include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 int Produce(int argc, const std::filesystem::path& path, bool digest) {
   if (argc != 3) {
@@ -52,8 +53,23 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.world_acceleration = {};
   }
   const bool slow_frame = args[5] == "slow";
-  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame;
-  scene.options.motion_sample_intervals = args[5] == "effects" ? 16 : 0;
+  const bool whitewater = args[5] == "whitewater-effects";
+  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater;
+  scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" ? 16 : 0);
+  if (whitewater) {
+    scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
+        .source_options =
+            {
+                .spacing_m = 0.5,
+                .radius_m = 0.5,
+                .kinetic = {0, 1},
+                .trapped_air = {0, 1},
+                .crest = {0, 1},
+                .trapped_air_weight = 0,
+                .crest_weight = 1,
+            },
+    };
+  }
   if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
@@ -83,6 +99,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     state.particles[0].id = 1;
     state.particles[0].tag = 19;
     state.particles[0].world_position = {2.5, 2.5, 2.5};
+    if (whitewater) {
+      state.particles[0].world_velocity.x = 2;
+    }
     state.next_particle_id = 2;
     auto initial = fluidity::EncodeLiquidState3D(state);
     if (!initial.ok()) {
@@ -178,7 +197,25 @@ int CheckpointFixture(const std::filesystem::path& path) {
             << ",\"source_next_child\":" << (state.sources.size() ? state.sources[0].next_child_ordinal : 0) << "}\n";
   return 0;
 }
+int SourceBirthFixture(const std::filesystem::path& path) {
+  const auto source = fluidity::EffectsSource3D::Open(path);
+  if (!source.ok()) {
+    return 2;
+  }
+  const auto frame = source->ReadFrame(1);
+  if (!frame.ok()) {
+    return 3;
+  }
+  const auto& births = frame->motion.whitewater_births;
+  std::cout << "{\"birth_count\":" << births.size() << ",\"sample_count\":" << frame->motion.samples.size()
+            << ",\"first_birth_step\":" << (births.empty() ? 0 : births.front().accepted_step_ordinal)
+            << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
+  return 0;
+}
 int Entry(const std::vector<std::filesystem::path>& args) {
+  if (args.size() == 3 && args[1] == "source-births") {
+    return SourceBirthFixture(args[2]);
+  }
   if (args.size() == 3 && args[1] == "checkpoint") {
     return CheckpointFixture(args[2]);
   }

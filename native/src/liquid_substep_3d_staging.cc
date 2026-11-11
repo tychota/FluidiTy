@@ -204,7 +204,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
       && options.particle_energy_blend <= 1 && std::isfinite(options.maximum_step_duration)
       && options.maximum_step_duration > 0 && std::isfinite(options.minimum_face_mass) && options.minimum_face_mass >= 0
       && options.pressure_solver_options.max_iterations >= 1 && options.pressure_solver_options.max_iterations <= 256
-      && options.motion_sample_intervals <= 64;
+      && options.motion_sample_intervals <= 64 && (!options.whitewater_capture || options.motion_sample_intervals != 0);
   if (!valid_step) {
     return Error(absl::StatusCode::kInvalidArgument);
   }

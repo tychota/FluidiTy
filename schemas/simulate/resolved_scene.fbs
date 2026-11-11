@@ -12,6 +12,17 @@ table Material {
   friction:double (id:5);
   penetration_tolerance:double (id:6);
 }
+struct WhitewaterRampBounds { low:double; high:double; }
+table WhitewaterCapture {
+  source_grid_origin:fluidity.cache.v1.Vector3 (required, id:0);
+  spacing_m:double (id:1);
+  radius_m:double (id:2);
+  kinetic:WhitewaterRampBounds (required, id:3);
+  trapped_air:WhitewaterRampBounds (required, id:4);
+  crest:WhitewaterRampBounds (required, id:5);
+  trapped_air_weight:double (id:6);
+  crest_weight:double (id:7);
+}
 table StepOptions {
   energy_blend:double = 0.6 (id:0);
   maximum_step_duration:double = 0.01 (id:1);
@@ -20,6 +31,7 @@ table StepOptions {
   momentum_per_quantum:double = 9.094947017729282e-13 (id:4);
   pressure_iterations:uint = 256 (id:5);
   motion_sample_intervals:uint (id:6);
+  whitewater_capture:WhitewaterCapture (id:7);
 }
 table HorizontalPlane {
   surface_height_y:double (id:0);

@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects") else []
     return scene, initial
 
 
@@ -777,6 +777,23 @@ def effects_case(executable, fixture, directory, backend):
 
 def case_cpu_effects(executable, fixture, directory, cuda):
     effects_case(executable, fixture, directory, "cpu")
+    whitewater_source_case(executable, fixture, directory, "cpu")
+
+
+def whitewater_source_case(executable, fixture, directory, backend):
+    root = directory / "whitewater-source"
+    root.mkdir()
+    scene, initial = make_scene(executable, fixture, root, backend, "whitewater-effects")
+    cache = root / "cache"
+    args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache, "--backend", backend, *initial]
+    execute(executable, *args, "--frame-end", 1)
+    receipt = json.loads(subprocess.run([str(fixture), "source-births", str(cache)], check=True,
+                                        capture_output=True, encoding="utf-8", timeout=30).stdout)
+    assert receipt["birth_count"] > 0 and receipt["sample_count"] == 2
+    assert 0 < receipt["first_birth_step"] < receipt["last_accepted_step"]
+    before = snapshot(cache)
+    invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial, "--frame", 1, "--substep", 0)
+    assert snapshot(cache) == before, "whitewater source replay must be read-only"
 
 
 def case_cpu_mesh(executable, fixture, directory, cuda):
@@ -822,6 +839,7 @@ def case_cuda_effects(executable, fixture, directory, cuda):
     blobs = cache / "effects" / "source" / "blobs"
     cpu_payloads = {path.name: path.read_bytes() for path in blobs.glob("*.flef")}
     assert cpu_payloads == cuda_payloads, "manufactured static source intervals differ across CPU/CUDA"
+    whitewater_source_case(executable, fixture, directory, "cuda")
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):

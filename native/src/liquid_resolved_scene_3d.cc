@@ -70,6 +70,23 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   if (!options_valid) {
     return Invalid();
   }
+  if (const auto& capture = options.whitewater_capture) {
+    const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
+    if (options.motion_sample_intervals == 0 || sphere == nullptr
+        || !std::holds_alternative<std::monostate>(scene.obstacle)
+        || sphere->radius <= 2 * capture->source_options.spacing_m) {
+      return Invalid();
+    }
+    const auto valid_source = ComputeWhitewaterBirths3D(
+        {},
+        capture->world_source_grid_origin,
+        {.start_time_seconds = 0, .end_time_seconds = 1, .quadrature_time_seconds = 1},
+        capture->source_options
+    );
+    if (!valid_source.ok()) {
+      return valid_source.status();
+    }
+  }
   if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field)) {
     if (!detail::Finite(sphere->world_center) || !detail::Positive(sphere->radius)) {
       return Invalid();
@@ -195,6 +212,21 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   result.options.momentum_per_quantum = options->momentum_per_quantum();
   result.options.pressure_solver_options.max_iterations = options->pressure_iterations();
   result.options.motion_sample_intervals = options->motion_sample_intervals();
+  if (const auto* capture = options->whitewater_capture()) {
+    result.options.whitewater_capture = WhitewaterCaptureSettings3D{
+        .world_source_grid_origin = detail::Unpack(capture->source_grid_origin()),
+        .source_options =
+            {
+                .spacing_m = capture->spacing_m(),
+                .radius_m = capture->radius_m(),
+                .kinetic = {capture->kinetic()->low(), capture->kinetic()->high()},
+                .trapped_air = {capture->trapped_air()->low(), capture->trapped_air()->high()},
+                .crest = {capture->crest()->low(), capture->crest()->high()},
+                .trapped_air_weight = capture->trapped_air_weight(),
+                .crest_weight = capture->crest_weight(),
+            },
+    };
+  }
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
   const auto seed_covariance_scale = field->seed_covariance_scale();
@@ -279,8 +311,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&input.scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
   // Include the optional tables only for the active variants.
-  const auto tables =
-      4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr) + (tank != nullptr);
+  const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
+      + (tank != nullptr) + input.options.whitewater_capture.has_value();
   return detail::Build<wire::ResolvedScene>(
       tables,
       limits,
@@ -298,8 +330,33 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             detail::Canonical(scene.friction_coefficient),
             detail::Canonical(scene.penetration_tolerance)
         );
+        flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
+        if (const auto& capture = options.whitewater_capture) {
+          const auto& source = capture->source_options;
+          const auto origin = detail::PackCanonical(capture->world_source_grid_origin);
+          const wire::WhitewaterRampBounds kinetic(detail::Canonical(source.kinetic.low), source.kinetic.high);
+          const wire::WhitewaterRampBounds trapped_air(
+              detail::Canonical(source.trapped_air.low),
+              source.trapped_air.high
+          );
+          const wire::WhitewaterRampBounds crest(detail::Canonical(source.crest.low), source.crest.high);
+          whitewater = wire::CreateWhitewaterCapture(
+              builder,
+              &origin,
+              source.spacing_m,
+              source.radius_m,
+              &kinetic,
+              &trapped_air,
+              &crest,
+              detail::Canonical(source.trapped_air_weight),
+              detail::Canonical(source.crest_weight)
+          );
+        }
         wire::StepOptionsBuilder settings_builder(builder);
         // Preserve the original v1 bytes when capture is disabled.
+        if (options.whitewater_capture) {
+          settings_builder.add_whitewater_capture(whitewater);
+        }
         if (options.motion_sample_intervals != 0) {
           settings_builder.add_motion_sample_intervals(options.motion_sample_intervals);
         }
