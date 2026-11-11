@@ -68,6 +68,11 @@ def main():
         )
         assert dash_cache.returncode == 0, dash_cache
         assert (root / "--bake").is_dir()
+        single_dash_cache = run(
+            fluidity, "simulate", scene, "--cache", "-h=cache", *initial, "--frame-end=0", cwd=root
+        )
+        assert single_dash_cache.returncode == 0, single_dash_cache
+        assert (root / "-h=cache").is_dir()
         baked = execute(
             fluidity, "simulate", scene, "--cache", cache, *initial, "--frame-end=1"
         )[-1]

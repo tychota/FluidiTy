@@ -84,9 +84,6 @@ absl::Status CheckAttachedValues(std::span<const std::string> option_arguments) 
       continue;
     }
     const auto option_name = argument.substr(0, separator);
-    if (option_name == "--help" || option_name == "-h") {
-      return absl::InvalidArgumentError("help takes no value");
-    }
     if (!option_name.starts_with("--")) {
       continue;
     }
