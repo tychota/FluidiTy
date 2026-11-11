@@ -85,6 +85,45 @@ TEST(LiquidCache3D, Blake3KnownAnswersAndExactByteIdentity) {
       "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
   );
 }
+
+TEST(LiquidCache3D, PointBuilderPreservesPhysicalFieldsAndEquivalentVolumeRadius) {
+  LiquidState3D state;
+  state.particles = Records<LiquidParticleState3D>(1);
+  state.next_particle_id = 2;
+  state.particles[0].id = 1;
+  state.particles[0].tag = 19;
+  state.particles[0].world_position = {-0.0, -2.5, 3.5};
+  state.particles[0].world_velocity = {1, -2, 3};
+  const auto original = EncodeLiquidState3D(state);
+  ASSERT_TRUE(original.ok());
+  auto points = BuildLiquidPointFrame3D(state);
+  ASSERT_TRUE(points.ok()) << points.status();
+  ASSERT_EQ(points->points.size(), 1);
+  const auto& point = points->points[0];
+  EXPECT_EQ(point.id, 1);
+  EXPECT_EQ(point.tag, 19);
+  EXPECT_TRUE(std::signbit(point.world_position.x));
+  EXPECT_EQ(point.world_position.y, -2.5);
+  EXPECT_EQ(point.world_velocity.z, 3);
+  EXPECT_NEAR(point.radius, 0.6203504908994001, 1e-15);
+  EXPECT_EQ(point.volume_ratio, 1);
+  EXPECT_EQ(point.level, 0);
+  const auto after = EncodeLiquidState3D(state);
+  ASSERT_TRUE(after.ok());
+  EXPECT_TRUE(std::ranges::equal(original->values(), after->values()));
+}
+
+TEST(LiquidCache3D, PointBuilderRejectsIncompleteClockBudgetsAndUnrepresentableRadius) {
+  auto state = PopulatedState();
+  LiquidCacheLimits3D limits;
+  limits.maximum_records.particles = 1;
+  EXPECT_EQ(BuildLiquidPointFrame3D(state, limits).status().code(), absl::StatusCode::kResourceExhausted);
+  state.clock.substep_ordinal = 1;
+  EXPECT_EQ(BuildLiquidPointFrame3D(state).status().code(), absl::StatusCode::kInvalidArgument);
+  state.clock.substep_ordinal = 0;
+  state.particles[0].reference_volume = std::numeric_limits<double>::max();
+  EXPECT_EQ(BuildLiquidPointFrame3D(state).status().code(), absl::StatusCode::kOutOfRange);
+}
 TEST(LiquidCache3D, StateRoundTripPreservesEverySemanticFieldAndStableOrder) {
   auto state = PopulatedState();
   auto encoded = EncodeLiquidState3D(state);
