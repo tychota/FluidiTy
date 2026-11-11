@@ -1,5 +1,6 @@
 #include "effects_execution.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
@@ -18,7 +19,9 @@
 #include <sys/resource.h>
 #endif
 
+#include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/surface_stage_3d.h"
+#include "fluidity/host/volumes_stage_3d.h"
 #include "fluidity/host/whitewater_stage_3d.h"
 #include "simulate_job.h"
 
@@ -153,6 +156,29 @@ absl::StatusOr<std::string> RunStage(
   return final_members;
 }
 
+absl::StatusOr<VolumesStage3D> OpenVolumes(const Command& command, LiquidDigest3D build) {
+  if (command.kind == CommandKind::kReplay) {
+    return VolumesStage3D::OpenForReplay(command.cache_directory, command.output_cache_directory, build);
+  }
+  const LiquidCacheLimits3D limits{.maximum_bytes = 65536};
+  const auto bytes = liquid_cache_files_internal::ReadBytes(command.volume_settings_path, limits);
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  const auto settings = DecodeWhitewaterVolumeSettings3D(bytes->values(), limits);
+  if (!settings.ok()) {
+    return settings.status();
+  }
+  const auto canonical = EncodeWhitewaterVolumeSettings3D(*settings, limits);
+  if (!canonical.ok()) {
+    return canonical.status();
+  }
+  if (!std::ranges::equal(bytes->values(), canonical->values())) {
+    return absl::InvalidArgumentError("Volumes settings must be canonical FLVC bytes");
+  }
+  return VolumesStage3D::OpenForPublication(command.cache_directory, command.output_cache_directory, build, *settings);
+}
+
 absl::StatusOr<std::string> RunEffects(const Command& command, SimulateJob& job) {
   const auto build = ExecutableDigest();
   if (!build.ok()) {
@@ -187,6 +213,22 @@ absl::StatusOr<std::string> RunEffects(const Command& command, SimulateJob& job)
       };
     });
   }
+  if (command.stage == CommandStage::kVolumes) {
+    auto stage = OpenVolumes(command, *build);
+    if (!stage.ok()) {
+      return stage.status();
+    }
+    return RunStage(command, job, *stage, "volumes", [](const VolumesStageFrame3D& frame) {
+      return FrameDescription{
+          .clock = frame.clock,
+          .payload_digest = frame.payload_digest,
+          .measurements = ",\"source_stage\":\"whitewater\",\"known_voxels\":" + std::to_string(frame.known_voxels)
+              + ",\"nonzero_voxels\":" + std::to_string(frame.nonzero_voxels)
+              + ",\"foam_inventory_count\":" + Number(frame.foam_inventory_count) + ",\"bubble_inventory_count\":"
+              + Number(frame.bubble_inventory_count) + ",\"gas_inventory_m3\":" + Number(frame.gas_inventory_m3),
+      };
+    });
+  }
   if (command.stage != CommandStage::kWhitewater) {
     return absl::InvalidArgumentError("unsupported derived stage");
   }
@@ -214,7 +256,9 @@ absl::StatusOr<std::string> RunEffects(const Command& command, SimulateJob& job)
 }  // namespace
 
 absl::Status ExecuteEffects(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
-  diagnostic->domain = command.stage == CommandStage::kMesh ? "MESH" : "WHITEWATER";
+  diagnostic->domain = command.stage == CommandStage::kMesh ? "MESH"
+      : command.stage == CommandStage::kWhitewater          ? "WHITEWATER"
+                                                            : "VOLUMES";
   diagnostic->field = "cache";
   diagnostic->cause = "accepted source, physical settings, reconstruction or immutable publication failed";
   SimulateJob job(writer, command.kind == CommandKind::kRun);

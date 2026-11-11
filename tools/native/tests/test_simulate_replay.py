@@ -812,6 +812,28 @@ def whitewater_source_case(executable, fixture, directory, backend):
     points_after = snapshot(points)
     assert all(points_after[path] == value for path, value in immutable_cache_files(points_before).items())
     assert snapshot(cache) == before, "whitewater must leave Simulate data unchanged"
+    volume_settings = root / "volume.flvc"
+    subprocess.run([str(fixture), "volume-settings", str(volume_settings)], check=True, timeout=30)
+    volume = root / "volumes"
+    volume_command = ["run", "--stage", "volumes", "--cache", points, "--output-cache", volume,
+                      "--volume-settings", volume_settings]
+    volume_records = execute(executable, *volume_command, "--frame-end", 1)
+    empty = next(record for record in volume_records if record["event"] == "frame" and record["frame"] == 0)
+    assert empty["known_voxels"] == 24 ** 3 and empty["nonzero_voxels"] == 0
+    density = volume_records[-1]
+    assert density["stage"] == "volumes" and density["nonzero_voxels"] > 0
+    assert math.isclose(density["foam_inventory_count"], result["foam_count"], rel_tol=1e-12)
+    assert math.isclose(density["bubble_inventory_count"], result["bubble_count"], rel_tol=1e-12)
+    assert math.isclose(density["gas_inventory_m3"], result["bubble_count"] * 4 * math.pi / 3 * 0.05 ** 3,
+                        rel_tol=1e-12)
+    volume_before = snapshot(volume)
+    volume_replay = invoke(executable, "replay", "--stage", "volumes", "--cache", points,
+                           "--output-cache", volume, "--frame", 1, "--substep", 0)
+    assert volume_replay["payload_digest"] == density["payload_digest"]
+    assert snapshot(volume) == volume_before
+    volume_resume = execute(executable, *volume_command, "--resume", "--frame-end", 2)[-1]
+    assert volume_resume["restored_prefix_frames"] == 2 and volume_resume["frame"] == 2
+    assert snapshot(points) == points_after, "volumes must leave Whitewater data unchanged"
     (points / "blobs" / (result["payload_digest"] + ".flef")).write_bytes(b"corrupt")
     assert invoke(executable, *replay, success=False)["code"] == "E-WHITEWATER-DATA_LOSS"
 

@@ -247,11 +247,28 @@ the saved blend without importing the extension. This qualifies the mask
 contract for the analytic control. The integrated breaking-wave bake and
 artist workflow inspection are separate and remain open.
 
+## Conservative volume control
+
+`run --stage volumes` reads authenticated Whitewater points and publishes
+conservative foam and bubble densities in a declared box. Each represented
+bubble contributes its physical gas volume. Spray contributes neither density.
+The payload stores the validity mask separately from sparse nonzero values,
+so a known empty frame stays distinct from unknown space. Deposition rejects
+positive support outside the box.
+
+The CPU analytic control used a 24³ box with 0.25 m spacing and a 0.05 m
+physical bubble radius. Frame 0 had 13,824 known voxels and no nonzero values.
+Frame 2 had 24 nonzero voxels, inventories of 40 foam and 40 bubble equivalents,
+and 0.020944 m³ of gas. Its 14,752-byte payload took 0.026 s to produce, with
+5.81 MB peak process RSS. Read-only replay reproduced its exact digest in
+0.0031 s. These are small control measurements. Blender volume export and
+rendering are still open.
+
 ## Open integrated gates
 
 The breaking-wave source sampler and whitewater obstacle collisions remain
 open, as do Mesh local repair, contact, component transitions and droplet
-publication. Volume export/publication, Ocean Boundary and the complete
+publication. Blender volume export, Ocean Boundary and the complete
 Blender breaking-wave workflow are unfinished. The integrated bake and its
 Blender inspection have not run. Full CPU/device numerical qualification
 remains open.

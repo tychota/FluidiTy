@@ -6,6 +6,7 @@
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/whitewater_volume_cache_3d.h"
 int Produce(int argc, const std::filesystem::path& path, bool digest) {
   if (argc != 3) {
     return 1;
@@ -212,7 +213,23 @@ int SourceBirthFixture(const std::filesystem::path& path) {
             << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
   return 0;
 }
+int VolumeSettingsFixture(const std::filesystem::path& path) {
+  const fluidity::WhitewaterVolumeSettings3D settings{
+      .grid = {.origin = {-1, -1, -1}, .spacing_m = 0.25, .extent = {24, 24, 24}},
+      .physical_bubble_radius_m = 0.05,
+  };
+  const auto bytes = fluidity::EncodeWhitewaterVolumeSettings3D(settings);
+  if (!bytes.ok()) {
+    return 2;
+  }
+  std::ofstream output(path, std::ios::binary);
+  output.write(reinterpret_cast<const char*>(bytes->values().data()), bytes->size());
+  return output ? 0 : 3;
+}
 int Entry(const std::vector<std::filesystem::path>& args) {
+  if (args.size() == 3 && args[1] == "volume-settings") {
+    return VolumeSettingsFixture(args[2]);
+  }
   if (args.size() == 3 && args[1] == "source-births") {
     return SourceBirthFixture(args[2]);
   }

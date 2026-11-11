@@ -150,7 +150,7 @@ SCHEMA_CASES = tuple(
         "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
-) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings"))
+) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings", "volume_frame", "volume_settings"))
 CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh"))
 CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects")
 CUDA_EXECUTION_RECEIPT = {
@@ -1267,7 +1267,7 @@ def test_schema_gate_is_required_and_recorded(scenario):
     _, _, output, run, _ = scenario
     run()
     summary = json.loads((output / "summary.json").read_text())
-    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 14}
+    assert summary["evidence"].get("schema") == {"status": "passed", "tests": 16}
     assert (output / "ctest-schema.xml").is_file()
 
 

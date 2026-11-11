@@ -319,7 +319,7 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
   for (std::size_t i = 1; i < arguments.size(); ++i) {
     const std::string_view flag = arguments[i];
     const bool allowed = (flag == "--stage" && (run || replay)) || (flag == "--scene" && (execution || check))
-        || (flag == "--output-cache" && (run || replay))
+        || (flag == "--output-cache" && (run || replay)) || (flag == "--volume-settings" && run)
         || ((flag == "--surface-spacing" || flag == "--surface-sigma") && run)
         || (flag == "--initial-state" && execution) || (flag == "--cache" && (execution || check))
         || (flag == "--backend" && (execution || device)) || (flag == "--device" && (execution || device))
@@ -359,11 +359,15 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
         command.stage = CommandStage::kMesh;
       } else if (value == "whitewater") {
         command.stage = CommandStage::kWhitewater;
+      } else if (value == "volumes") {
+        command.stage = CommandStage::kVolumes;
       } else if (value != "simulate") {
-        return invalid(flag, value, "stage must be simulate, mesh or whitewater");
+        return invalid(flag, value, "stage must be simulate, mesh, whitewater or volumes");
       }
     } else if (flag == "--output-cache") {
       command.output_cache_directory = PathFromUtf8(value);
+    } else if (flag == "--volume-settings") {
+      command.volume_settings_path = PathFromUtf8(value);
     } else if (flag == "--surface-spacing" || flag == "--surface-sigma") {
       // Classic locale keeps the wire CLI independent of the user's language.
       // Qualified Apple libc++ does not provide floating from_chars.
@@ -445,6 +449,14 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
   }
   if (!mesh && (seen.contains("--surface-spacing") || seen.contains("--surface-sigma"))) {
     return invalid("stage", "", "surface settings require --stage mesh");
+  }
+  const bool volume_run = command.stage == CommandStage::kVolumes && run;
+  const bool has_volume_settings = !command.volume_settings_path.empty();
+  if (volume_run && !has_volume_settings) {
+    return invalid("volume-settings", "", "Volumes run requires its canonical FLVC settings");
+  }
+  if (!volume_run && has_volume_settings) {
+    return invalid("volume-settings", "", "option requires a Volumes run");
   }
   if ((run || step) && !derived && command.scene_path.empty()) {
     return invalid("scene", "", "resolved scene is required");

@@ -23,6 +23,7 @@ enum class CommandStage {
   kSimulate,
   kMesh,
   kWhitewater,
+  kVolumes,
 };
 // Parsed process inputs own their paths. Scene paths name the shared FLRS binary,
 // not a second JSON settings format. Frame/substep numbers are unsigned physical
@@ -31,7 +32,8 @@ enum class CommandStage {
 struct Command {
   CommandKind kind = CommandKind::kSchema;
   CommandStage stage = CommandStage::kSimulate;
-  std::filesystem::path output_cache_directory;  // Derived-stage output; cache_directory remains the Simulate source.
+  std::filesystem::path output_cache_directory;  // Derived output; cache_directory names its upstream stage.
+  std::filesystem::path volume_settings_path;  // Canonical FLVC physical box for a Volumes run.
   double surface_spacing_m = 0.0125;
   double surface_sigma_m = 0.025;
   std::filesystem::path scene_path;
