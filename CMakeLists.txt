@@ -55,6 +55,7 @@ add_library(fluidity_native STATIC
     native/src/whitewater_cache_3d.cc
     native/src/whitewater_stage_3d.cc
     native/src/whitewater_volume_cache_3d.cc
+    native/src/ocean_boundary_3d.cc
     native/src/volumes_stage_3d.cc
     native/src/whitewater_volume_3d.cc
     native/src/whitewater_3d.cc
@@ -230,6 +231,7 @@ if(BUILD_TESTING)
     native/tests/test_whitewater_transport_3d.cc
     native/tests/test_whitewater_cache_3d.cc
     native/tests/test_whitewater_volume_cache_3d.cc
+    native/tests/test_ocean_boundary_3d.cc
     native/tests/test_effects_source_3d.cc
     native/tests/test_surface_closest_point_3d.cc
     native/tests/test_surface_reconstruction_3d.cc

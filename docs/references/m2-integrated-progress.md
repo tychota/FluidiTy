@@ -264,6 +264,21 @@ and 0.020944 m³ of gas. Its 14,752-byte payload took 0.026 s to produce, with
 0.0031 s. These are small control measurements. Blender volume export and
 rendering are still open.
 
+## Ocean Boundary analytical controls
+
+The host swell model resolves the finite-depth dispersion root once, then
+samples second-order Stokes elevation and velocity in world coordinates.
+The uniform return current cancels the depth-integrated Stokes drift to
+second order. The model rejects settings where the second elevation harmonic
+exceeds a quarter of the first. The separate absorption primitive uses an
+exponential update with a cubic spatial ramp.
+
+The tests compare against direct finite-depth formulas at the bed and in the
+water column, exercise deep water without overflowing the hyperbolic profiles,
+and check that two half steps match a full step for a frozen relaxation target.
+These tests do not exercise the solver's Waves stage, level control, measured
+reflection, or CPU/CUDA parity.
+
 ## Open integrated gates
 
 The breaking-wave source sampler and whitewater obstacle collisions remain
