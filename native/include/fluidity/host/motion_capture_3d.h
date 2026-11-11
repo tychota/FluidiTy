@@ -4,6 +4,7 @@
 
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/motion_interval_3d.h"
+#include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
 
@@ -11,6 +12,7 @@ struct MotionFrame3D {
   LiquidClock3D first_clock;
   LiquidClock3D last_clock;
   std::vector<LiquidState3D> samples{};  // Owning accepted samples in increasing time/epoch order.
+  std::vector<AcceptedWhitewaterBirth3D> whitewater_births{};  // Accepted step, then signed z/y/x cell order.
 };
 
 // Encodes the initial completed frame as one accepted sample. Returns checked
@@ -38,11 +40,17 @@ class MotionCapture3D {
       std::size_t intervals,
       LiquidCacheLimits3D limits = {}
   );
-  // Accepts strictly later coherent state versions within the open output frame.
-  // rollback must name the exact starting state and discards all provisional
-  // samples. Failed validation leaves the collector unchanged.
-  absl::Status Observe(const LiquidState3D& accepted, bool rollback);
+  // Accepts strictly later coherent state versions with unchanged grid and seed.
+  // Births belong to this accepted step, share a quadrature timestamp within its
+  // time interval, and are ordered by unique signed z/y/x source cell. They are
+  // retained even when no carrier sample is kept. Snapshot and birth bytes share
+  // the configured limit. Rollback requires the exact starting state and no
+  // births, and discards all provisional samples/events. Invalid input returns
+  // InvalidArgument, insufficient capacity ResourceExhausted; no mutation on failure.
+  absl::Status
+  Observe(const LiquidState3D& accepted, bool rollback, std::span<const WhitewaterCellBirth3D> births = {});
   std::size_t sample_count() const;
+  std::size_t birth_count() const;
   // Requires the completed next frame to match the last observed time and epoch.
   // Requires exact state bytes matching the observed completed endpoint and
   // encodes the interval. No record is published by the collector.
@@ -52,12 +60,14 @@ class MotionCapture3D {
   MotionCapture3D(
       LiquidClock3D start,
       UniformMacGeometry3D geometry,
+      std::uint64_t random_seed,
       double end_time,
       std::size_t intervals,
       LiquidCacheLimits3D limits
   );
   LiquidClock3D start_;
   UniformMacGeometry3D geometry_;
+  std::uint64_t random_seed_;
   LiquidClock3D last_observed_;
   double end_time_;
   std::size_t intervals_;
@@ -65,5 +75,6 @@ class MotionCapture3D {
   std::size_t payload_bytes_ = 0;
   LiquidCacheLimits3D limits_;
   std::vector<LiquidCacheBytes3D> samples_;
+  std::vector<AcceptedWhitewaterBirth3D> whitewater_births_;
 };
 }  // namespace fluidity

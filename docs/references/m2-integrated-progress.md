@@ -184,7 +184,20 @@ droplet points. The full CPU suite passed 557 tests with no skips.
 
 ## Open integrated gates
 
-The accepted observer does not yet publish whitewater source events. Mesh
+The accepted motion codec now stores optional whitewater births independently
+of carrier decimation. Tests retain opposing events between stored carrier
+samples, clear them on rollback, reject bad time/order/budgets, and verify
+separate cell remainders with global point IDs. Source weights use occupied
+volume at the supplied quadrature time times potential and accepted duration.
+The source statistics no longer allocate a set for each cell's 26 neighbors.
+Finishing the motion interval reuses retained buffers instead of copying all
+carrier snapshots before serialization. A [compatibility receipt](m2-motion-birth-compat-data.json)
+records six identical no-birth source payloads and point payloads across builds.
+The latest full CPU suite passed 562 tests. The preceding birth-codec/source
+checkpoint passed the clean CUDA-enabled suite of 629 tests.
+
+The Simulate observer still needs the production physical source sampler to
+publish nonempty whitewater events. Mesh
 local repair, contact, component lineage and droplet handling remain open.
 Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are
