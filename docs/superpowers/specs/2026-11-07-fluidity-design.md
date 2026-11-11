@@ -598,8 +598,8 @@ root and per-command help. Current commands operate on canonical FLRS scenes and
 - `fluidity devices` reports CPU availability and CUDA build support. Add `--backend cuda`
   to probe a CUDA device. `fluidity schema` prints the resolved scene schema and defaults.
 
-Conan 2 pins Taywee Args, which the CLI compiles in exception-free mode. The CLI delegates to
-the shared command validation and simulation handlers. Both entry points use the same executable
+Conan 2 pins CLI11. Only the public parser translation unit enables exceptions. The adapter
+converts CLI11 errors to statuses before calling shared command validation and simulation handlers. Both entry points use the same executable
 bytes so resolved scenes, caches and checkpoints share build identity. Blender continues to use
 `fluidity_simulate` with its existing `run --stage`, `check`, `schema`, `step`, `replay` and
 `device-info` syntax. Operational output is protocol-v1 JSON Lines. Errors carry
@@ -675,9 +675,9 @@ Blender's extension, translation, timer and asset APIs provide the integration p
 
 ### 14.3 Language, build and style
 
-Production uses C++20, CUDA on Windows/Linux and a CPU backend on macOS. Initial Blender floor is5.2 LTS. Google C++ style with mandatory braces, `#pragma once`,100 columns; Google Python via ruff. `.h` is portable host/device, `.cuh` requires nvcc, `.cu` kernels, `.cc` host. One `FLUIDITY_HD` definition. No host exceptions: Status/StatusOr; device status bits are decoded at a safe boundary. Abseil is host-only. Prefer CUB/libcu++ to Thrust. No modules, coroutines, production RTTI, intricate metaprogramming or `using namespace`; no production BLAS dependency.
+Production uses C++20, CUDA on Windows/Linux and a CPU backend on macOS. Initial Blender floor is5.2 LTS. Google C++ style with mandatory braces, `#pragma once`,100 columns; Google Python via ruff. `.h` is portable host/device, `.cuh` requires nvcc, `.cu` kernels, `.cc` host. One `FLUIDITY_HD` definition. Checked host APIs use Status/StatusOr. The public CLI parser catches CLI11 exceptions at its boundary. Device status bits are decoded at a safe boundary. Abseil is host-only. Prefer CUB/libcu++ to Thrust. No modules, coroutines, production RTTI, intricate metaprogramming or `using namespace`; no production BLAS dependency.
 
-CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark, Taywee Args for the native CLI and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
+CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark, CLI11 for the native CLI and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
 
 No download of an unlicensed checkpoint or inferred license grants distribution permission. Select the project's own code/documentation license before public release, with third-party notices; this specification does not silently choose a license for the owner. Do not commit proprietary binaries, model weights, personal paths, source PDFs or internal review logs. Keep portable public source evidence and document build instructions.
 
