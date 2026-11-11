@@ -13,6 +13,7 @@
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_explicit_cases.h"
 namespace fluidity {
 namespace {
 constexpr double kInfinity = std::numeric_limits<double>::infinity();
@@ -104,6 +105,48 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   std::ranges::sort(problem.faces, [&](const auto& left, const auto& right) {
     return *grid.FaceSlot(left.face_index) < *grid.FaceSlot(right.face_index);
   });
+}
+
+TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  CudaOperatorMeasurement maximum_measurement{};
+  for (const auto& pressure_case : pressure_test::kExplicitPressureCases) {
+    SCOPED_TRACE(pressure_case.plane_count);
+    SCOPED_TRACE(pressure_case.reversed);
+    const auto fixture = pressure_test::MakeExplicitPressureFixture(pressure_case);
+    const auto system = pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, fixture.cells, fixture.faces);
+    ASSERT_TRUE(system.ok()) << system.status();
+    const auto result = pressure_internal::CudaProjectPreparedMacPressure3D(*system);
+    ASSERT_TRUE(result.ok()) << result.status();
+    const auto& projection = result->projection;
+    ExpectDeviceAndMeasurement(result->measurement);
+    if (result->measurement.kernel_ms >= maximum_measurement.kernel_ms) {
+      maximum_measurement = result->measurement;
+    }
+    EXPECT_GT(projection.diagnostics.iteration_count, 0);
+    EXPECT_LE(projection.diagnostics.max_cell_constraint_defect, 2e-5);
+    EXPECT_LE(projection.diagnostics.max_volume_scaled_residual, 2e-5);
+    ASSERT_EQ(projection.cell_pressures.size(), fixture.cells.size());
+    for (std::size_t cell = 0; cell < fixture.cells.size(); ++cell) {
+      EXPECT_NEAR(projection.cell_pressures[cell], pressure_case.reference_pressure[cell], 2e-5);
+    }
+    const auto oracle_pressure = std::span(pressure_case.reference_pressure).first(fixture.cells.size());
+    const auto oracle = pressure_internal::EvaluateMacPressure3D(*system, oracle_pressure);
+    ASSERT_TRUE(oracle.ok()) << oracle.status();
+    ASSERT_EQ(projection.corrected_face_velocities.size(), fixture.faces.size());
+    double max_face_flux_error = 0.0;
+    for (std::size_t face = 0; face < fixture.faces.size(); ++face) {
+      const double velocity_error =
+          projection.corrected_face_velocities[face] - oracle->corrected_face_velocities[face];
+      max_face_flux_error = std::max(max_face_flux_error, std::abs(fixture.faces[face].open_area * velocity_error));
+    }
+    EXPECT_LE(max_face_flux_error, 5e-6);
+    std::cout << "explicit_graph_cuda planes=" << pressure_case.plane_count << " reversed=" << pressure_case.reversed
+              << " iterations=" << projection.diagnostics.iteration_count
+              << " max_divergence=" << projection.diagnostics.max_cell_constraint_defect
+              << " max_face_flux_error=" << max_face_flux_error << '\n';
+  }
+  Receipt("explicit_coarse_fine_pressure", maximum_measurement);
 }
 
 TEST(CudaMacPressure3D, MixedLinksMatchOracle) {

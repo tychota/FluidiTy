@@ -302,6 +302,7 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
   if (!status.ok()) {
     return status;
   }
+  system.is_explicit_graph_ = true;
   return system;
 }
 

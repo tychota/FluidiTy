@@ -49,6 +49,13 @@ using pressure_internal::arithmetic::SelectGaugesInto;
   } \
   auto name = *name##_result
 
+absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUploadForSystem(
+    const PreparedMacPressureView3D& system,
+    std::span<const MacPressureFace3D> uniform_faces,
+    MacPressureScratch3D& scratch,
+    bool seed_uniform_dirichlet_rest_pressure
+);
+
 struct BorrowedInputs {
   SparseMacGridView3D mac_grid;
   double step_duration;
@@ -449,9 +456,8 @@ absl::Status Evaluate(
 
   return absl::OkStatus();
 }
-absl::StatusOr<MacPressureProjectionView3D> Solve(
-    const BorrowedInputs& inputs,
-    bool seed_uniform_dirichlet_rest_pressure,
+absl::StatusOr<MacPressureProjectionView3D> SolvePrepared(
+    const pressure_internal::PreparedMacPressureUploadView3D& upload,
     MacPressureSolverOptions3D options,
     MacPressureScratch3D& scratch,
     std::span<double> pressures,
@@ -461,21 +467,10 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
     std::span<double> defects,
     std::span<std::size_t> gauges
 ) {
-  const auto upload = pressure_internal::PrepareBoundedMacPressureUpload3D(
-      inputs.mac_grid,
-      inputs.step_duration,
-      inputs.pressure_cells,
-      inputs.pressure_faces,
-      scratch,
-      seed_uniform_dirichlet_rest_pressure
-  );
-  if (!upload.ok()) {
-    return upload.status();
-  }
-  const auto* system = &upload->system;
-  const auto* hierarchy = &upload->hierarchy;
-  const auto* criteria = &upload->stopping;
-  auto base_pressure = upload->initial_pressure;
+  const auto* system = &upload.system;
+  const auto* hierarchy = &upload.hierarchy;
+  const auto* criteria = &upload.stopping;
+  auto base_pressure = upload.initial_pressure;
   std::ranges::copy(system->rhs, rhs.begin());
   std::ranges::copy(system->gauges, gauges.begin());
   MacPressureProjectionView3D result{
@@ -486,7 +481,7 @@ absl::StatusOr<MacPressureProjectionView3D> Solve(
       .cell_constraint_defects = defects,
       .gauge_cell_ordinals = gauges.first(system->gauges.size()),
       .diagnostics = {},
-      .frozen_measurement = upload->frozen_measurement,
+      .frozen_measurement = upload.frozen_measurement,
   };
   const auto evaluate_correction = [&](std::span<const float> correction,
                                        std::size_t iterations) -> absl::StatusOr<MacPressureProjectionView3D> {
@@ -740,52 +735,53 @@ std::size_t MacPressureWorkspace3D::used_bytes() const {
   }
   return used;
 }
-absl::StatusOr<MacPressureProjectionView3D> ProjectMacPressure3D(
-    SparseMacGridView3D grid,
-    double step_duration,
-    const LiquidPressureProblemView3D& problem,
+template <typename PrepareUpload>
+absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectWithPreparation(
+    std::size_t cell_count,
+    std::size_t face_count,
     MacPressureSolverOptions3D options,
-    MacPressureWorkspace3D& workspace
+    PrepareUpload prepare_upload
 ) {
   if (options.max_iterations == 0 || options.max_iterations > 256) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  if (problem.cells.size() > workspace.cell_capacity_ || problem.faces.size() > workspace.face_capacity_
-      || problem.cells.size() > kMaxPressureCells || problem.faces.size() > kMaxPressureFaces) {
+  if (cell_count > cell_capacity_ || face_count > face_capacity_ || cell_count > kMaxPressureCells
+      || face_count > kMaxPressureFaces) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  const std::size_t candidate_bank = 1 - workspace.published_bank_;
-  auto& bank = workspace.projections_[candidate_bank];
+  const std::size_t candidate_bank = 1 - published_bank_;
+  auto& bank = projections_[candidate_bank];
   for (auto* records : {&bank.pressures, &bank.rhs, &bank.residuals, &bank.defects}) {
-    const auto status = records->Resize(problem.cells.size());
+    const auto status = records->Resize(cell_count);
     if (!status.ok()) {
       return status;
     }
   }
-  auto status = bank.velocities.Resize(problem.faces.size());
+  auto status = bank.velocities.Resize(face_count);
   if (!status.ok()) {
     return status;
   }
-  status = bank.gauges.Resize(problem.cells.size());
+  status = bank.gauges.Resize(cell_count);
   if (!status.ok()) {
     return status;
   }
-  MacPressureScratch3D scratch(workspace.scratch_.values());
-  const auto result = Solve(
-      {grid, step_duration, problem.cells, problem.faces},
-      problem.seed_uniform_dirichlet_rest_pressure,
-      options,
-      scratch,
-      bank.pressures.values(),
-      bank.velocities.values(),
-      bank.rhs.values(),
-      bank.residuals.values(),
-      bank.defects.values(),
-      bank.gauges.values()
-  );
-  workspace.scratch_used_bytes_ = scratch.used();
-  const std::size_t projection_used = workspace.used_bytes() - workspace.scratch_used_bytes_;
-  workspace.high_water_bytes_ = std::max(workspace.high_water_bytes_, projection_used + scratch.high_water());
+  MacPressureScratch3D scratch(scratch_.values());
+  const auto upload = prepare_upload(scratch);
+  const auto result = upload.ok() ? SolvePrepared(
+                                        *upload,
+                                        options,
+                                        scratch,
+                                        bank.pressures.values(),
+                                        bank.velocities.values(),
+                                        bank.rhs.values(),
+                                        bank.residuals.values(),
+                                        bank.defects.values(),
+                                        bank.gauges.values()
+                                    )
+                                  : absl::StatusOr<MacPressureProjectionView3D>(upload.status());
+  scratch_used_bytes_ = scratch.used();
+  const std::size_t projection_used = used_bytes() - scratch_used_bytes_;
+  high_water_bytes_ = std::max(high_water_bytes_, projection_used + scratch.high_water());
   if (!result.ok()) {
     return result.status();
   }
@@ -793,26 +789,63 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectMacPressure3D(
   if (!status.ok()) {
     return status;
   }
-  workspace.published_bank_ = candidate_bank;
+  published_bank_ = candidate_bank;
   return result;
 }
-absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_internal::PrepareBoundedMacPressureUpload3D(
+absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectPrepared(
+    const pressure_internal::PreparedMacPressureSystem3D& system,
+    MacPressureSolverOptions3D options
+) {
+  if (!system.is_explicit_graph() || system.cells().empty()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  return ProjectWithPreparation(
+      system.cells().size(),
+      system.links().size(),
+      options,
+      [&](MacPressureScratch3D& scratch) {
+        const PreparedMacPressureView3D prepared{
+            .cell_records = system.cells(),
+            .link_records = system.links(),
+            .rhs = system.integrated_rhs(),
+            .rhs_absolute_terms = system.rhs_absolute_term_sums(),
+            .components = system.component_ordinals(),
+            .gauges = system.gauge_cell_ordinals(),
+        };
+        return PrepareUploadForSystem(prepared, {}, scratch, false);
+      }
+  );
+}
+
+absl::StatusOr<MacPressureProjectionView3D> ProjectMacPressure3D(
     SparseMacGridView3D grid,
     double step_duration,
-    std::span<const MacPressureCell3D> cells,
-    std::span<const MacPressureFace3D> faces,
+    const LiquidPressureProblemView3D& problem,
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace
+) {
+  return workspace
+      .ProjectWithPreparation(problem.cells.size(), problem.faces.size(), options, [&](MacPressureScratch3D& scratch) {
+        return pressure_internal::PrepareBoundedMacPressureUpload3D(
+            grid,
+            step_duration,
+            problem.cells,
+            problem.faces,
+            scratch,
+            problem.seed_uniform_dirichlet_rest_pressure
+        );
+      });
+}
+
+namespace {
+absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUploadForSystem(
+    const PreparedMacPressureView3D& prepared_system,
+    std::span<const MacPressureFace3D> uniform_faces,
     MacPressureScratch3D& scratch,
     bool seed_uniform_dirichlet_rest_pressure
 ) {
-  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
-    return absl::Status(absl::StatusCode::kResourceExhausted, {});
-  }
   MacPressureScratchMark3D publication(scratch);
-  const BorrowedInputs inputs{grid, step_duration, cells, faces};
-  const auto system = Prepare(inputs, scratch);
-  if (!system.ok()) {
-    return system.status();
-  }
+  const auto* system = &prepared_system;
   const auto hierarchy = pressure_internal::BuildBoundedMacPressureHierarchy3D(*system, scratch);
   if (!hierarchy.ok()) {
     return hierarchy.status();
@@ -854,25 +887,25 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
       std::ranges::fill(base_pressure, *rest_pressure);
     }
   }
-  arithmetic::CompensatedSum pressure_cell_volume;
+  pressure_internal::arithmetic::CompensatedSum pressure_cell_volume;
   for (const auto& cell : system->cells()) {
     pressure_cell_volume.Add(cell.fluid_volume);
   }
-  arithmetic::CompensatedSum inward_prescribed_wall_flux;
-  for (std::size_t face_ordinal = 0; face_ordinal < faces.size(); ++face_ordinal) {
+  pressure_internal::arithmetic::CompensatedSum inward_prescribed_wall_flux;
+  for (std::size_t face_ordinal = 0; face_ordinal < uniform_faces.size(); ++face_ordinal) {
     const auto& link = system->links()[face_ordinal];
-    if (!faces[face_ordinal].prescribed_wall_flux.has_value()
+    if (!uniform_faces[face_ordinal].prescribed_wall_flux.has_value()
         || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
       continue;
     }
     // Sum in owned face order using the checked RHS incidence. An internal
     // face has equal and opposite contributions to the two selected cells.
-    arithmetic::ForEachIncidentCell(link, [&](std::size_t, double outward_sign) {
+    pressure_internal::arithmetic::ForEachIncidentCell(link, [&](std::size_t, double outward_sign) {
       inward_prescribed_wall_flux.Add(-outward_sign * link.prescribed_wall_flux);
     });
   }
   publication.KeepAllocations();
-  return PreparedMacPressureUploadView3D{
+  return pressure_internal::PreparedMacPressureUploadView3D{
       .system = *system,
       .hierarchy = *hierarchy,
       .initial_pressure = base_pressure,
@@ -884,5 +917,30 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
               .inward_prescribed_wall_flux_m3_per_s = inward_prescribed_wall_flux.Total(),
           },
   };
+}
+}  // namespace
+
+absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_internal::PrepareBoundedMacPressureUpload3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch,
+    bool seed_uniform_dirichlet_rest_pressure
+) {
+  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratchMark3D publication(scratch);
+  const BorrowedInputs inputs{grid, step_duration, cells, faces};
+  const auto system = Prepare(inputs, scratch);
+  if (!system.ok()) {
+    return system.status();
+  }
+  const auto upload = PrepareUploadForSystem(*system, faces, scratch, seed_uniform_dirichlet_rest_pressure);
+  if (upload.ok()) {
+    publication.KeepAllocations();
+  }
+  return upload;
 }
 }  // namespace fluidity

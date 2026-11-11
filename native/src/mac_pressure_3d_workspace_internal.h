@@ -82,10 +82,10 @@ class MacPressureScratchMark3D {
 struct PreparedMacPressureView3D {
   std::span<const PreparedMacPressureCell3D> cell_records;
   std::span<const FrozenMacPressureLink3D> link_records;
-  std::span<double> rhs;
-  std::span<double> rhs_absolute_terms;
-  std::span<std::size_t> components;
-  std::span<std::size_t> gauges;
+  std::span<const double> rhs;
+  std::span<const double> rhs_absolute_terms;
+  std::span<const std::size_t> components;
+  std::span<const std::size_t> gauges;
   std::span<const PreparedMacPressureCell3D> cells() const {
     return cell_records;
   }
