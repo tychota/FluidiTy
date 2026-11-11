@@ -76,7 +76,11 @@ CheckHandoffInputs(const LiquidHandoffCell3D& cell, const std::optional<LiquidHa
     return absl::InvalidArgumentError("Invalid liquid handoff destination carrier or EOS state");
   }
 
-  CellBounds bounds{.lower = Components(cell.world_lower_corner)};
+  CellBounds bounds{
+      .lower = Components(cell.world_lower_corner),
+      .center = {},
+      .upper = {},
+  };
   for (std::size_t axis = 0; axis < bounds.lower.size(); ++axis) {
     bounds.upper[axis] = bounds.lower[axis] + cell.cell_width;
     bounds.center[axis] = bounds.lower[axis] + cell.cell_width / 2.0;
