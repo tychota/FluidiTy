@@ -138,5 +138,57 @@ TEST(SurfaceReconstruction3D, EnforcesSourceRecordBudgetAndReportsMaterialUnderf
   ASSERT_TRUE(source.ok());
   EXPECT_EQ(ReconstructSurfaceFrame3D(*source, {}, {}, nullptr, {}).status().code(), absl::StatusCode::kOutOfRange);
 }
+
+TEST(SurfaceReconstruction3D, RejectsDisconnectedMaterialBeforeDensityCanBridgeTheGap) {
+  auto seed = Seed();
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  ASSERT_TRUE(particles.ok());
+  ASSERT_TRUE(particles->Resize(2).ok());
+  (*particles)[0] = seed.particles[0];
+  (*particles)[1] = seed.particles[0];
+  (*particles)[1].id = 2;
+  (*particles)[1].world_position.x += 0.21;
+  seed.particles = std::move(*particles);
+  seed.next_particle_id = 3;
+  auto bytes = EncodeMotionSeed3D(seed);
+  ASSERT_TRUE(bytes.ok());
+  auto source = DecodeMotionFrame3D(bytes->values());
+  ASSERT_TRUE(source.ok());
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.1};
+  // The gap is narrower than the Gaussian scale. Do not allocate the render
+  // field or infer connected material from its potentially bridged geometry.
+  const SurfaceReconstructionOptions3D options{.maximum_nodes = 1};
+  const auto result = ReconstructSurfaceFrame3D(*source, scene, {}, nullptr, options);
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_NE(result.status().message().find("material component"), std::string_view::npos);
+}
+
+TEST(SurfaceReconstruction3D, RejectsCoincidentNewComponentInsteadOfReusingSurfaceIds) {
+  auto seed = Seed();
+  auto bytes = EncodeMotionSeed3D(seed);
+  ASSERT_TRUE(bytes.ok());
+  auto initial = DecodeMotionFrame3D(bytes->values());
+  ASSERT_TRUE(initial.ok());
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 1.1};
+  SurfaceReconstructionOptions3D options{.spacing_m = 0.125, .sigma_m = 0.25};
+  auto first = ReconstructSurfaceFrame3D(*initial, scene, {}, nullptr, options);
+  ASSERT_TRUE(first.ok()) << first.status();
+  auto capture = MotionCapture3D::Create(seed, 1.0 / 24, 1);
+  ASSERT_TRUE(capture.ok());
+  seed.particles[0].id = 2;
+  seed.next_particle_id = 3;
+  seed.clock = {.time = 1.0 / 24, .frame_ordinal = 1, .accepted_step_ordinal = 1, .epoch = 1};
+  ASSERT_TRUE(capture->Observe(seed, false).ok());
+  auto interval = capture->Finish(seed);
+  ASSERT_TRUE(interval.ok());
+  auto source = DecodeMotionFrame3D(interval->values());
+  ASSERT_TRUE(source.ok());
+  options.maximum_nodes = 1;
+  const auto result = ReconstructSurfaceFrame3D(*source, scene, {}, &first->frame, options);
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_NE(result.status().message().find("lineage"), std::string_view::npos);
+}
 }  // namespace
 }  // namespace fluidity

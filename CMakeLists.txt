@@ -47,6 +47,8 @@ add_library(fluidity_native STATIC
     native/src/surface_reconstruction_3d.cc
     native/src/surface_settings_3d.cc
     native/src/surface_stage_3d.cc
+    native/src/surface_component_lineage_3d.cc
+    native/src/surface_material_components_3d.cc
     native/src/whitewater_volume_3d.cc
     native/src/whitewater_3d.cc
     native/src/surface_cache_3d.cc
@@ -215,6 +217,8 @@ if(BUILD_TESTING)
   add_executable(fluidity_native_tests
     native/tests/test_surface_settings_3d.cc
     native/tests/test_surface_stage_3d.cc
+    native/tests/test_surface_component_lineage_3d.cc
+    native/tests/test_surface_material_components_3d.cc
     native/tests/test_effects_source_3d.cc
     native/tests/test_surface_closest_point_3d.cc
     native/tests/test_surface_reconstruction_3d.cc

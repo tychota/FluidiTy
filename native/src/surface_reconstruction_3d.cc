@@ -8,6 +8,7 @@
 #include "fluidity/host/motion_carrier_3d.h"
 #include "fluidity/host/surface_closest_point_3d.h"
 #include "fluidity/host/surface_field_3d.h"
+#include "fluidity/host/surface_material_components_3d.h"
 #include "liquid_substep_3d_internal.h"
 
 namespace fluidity {
@@ -19,6 +20,60 @@ bool Safe(const SurfaceMetrics3D& m) {
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
       && a.world_origin.z == b.world_origin.z;
+}
+
+// Render smoothing can bridge a narrow gap, and spatial coincidence is not
+// material ancestry. Check the authoritative union before constructing a
+// density field. Until local repair is supported, accept only one continuing
+// material component, with no replacement by an unrelated component.
+absl::Status CheckSphereUnionContinuity(
+    const MotionFrame3D& source,
+    double sphere_radius_m,
+    const SurfaceFrame3D* previous,
+    std::size_t maximum_particles
+) {
+  const auto current_material =
+      PartitionSurfaceSphereUnion3D(source.samples.back().particles.values(), sphere_radius_m, maximum_particles);
+  if (!current_material.ok()) {
+    return current_material.status();
+  }
+  if (current_material->size() != 1) {
+    return absl::FailedPreconditionError("disconnected material components require separate Mesh geometry");
+  }
+  if (previous == nullptr) {
+    return absl::OkStatus();
+  }
+  if (previous->volumes.size() != 1) {
+    return absl::FailedPreconditionError("material component birth or change requires Mesh lineage");
+  }
+  const auto prior_material =
+      PartitionSurfaceSphereUnion3D(source.samples.front().particles.values(), sphere_radius_m, maximum_particles);
+  if (!prior_material.ok()) {
+    return prior_material.status();
+  }
+  if (prior_material->size() != 1) {
+    return absl::FailedPreconditionError("prior material components do not match the Mesh checkpoint");
+  }
+  const auto prior_component_id = previous->volumes.front().component;
+  if (prior_component_id == std::numeric_limits<std::uint64_t>::max()) {
+    return absl::ResourceExhaustedError("Mesh component identity counter exhausted");
+  }
+  const std::array history{SurfaceComponentHistory3D{
+      .component_id = prior_component_id,
+      .members = prior_material->front().members,
+  }};
+  const std::array material{SurfaceComponentMaterial3D{
+      .members = current_material->front().members,
+      .target_volume_m3 = current_material->front().target_volume_m3,
+  }};
+  const auto lineage = MatchSurfaceComponentLineage3D(history, material, prior_component_id + 1, maximum_particles);
+  if (!lineage.ok()) {
+    return lineage.status();
+  }
+  if (lineage->components.front().component_id != prior_component_id) {
+    return absl::FailedPreconditionError("new material component requires Mesh lineage and fresh vertex IDs");
+  }
+  return absl::OkStatus();
 }
 // Interpolates centred nodal derivatives, giving a continuous offset direction
 // across voxel boundaries rather than an unrelated one-sided cell derivative.
@@ -148,6 +203,17 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     result.frame.mesh.next_id = previous == nullptr ? 1 : previous->mesh.next_id;
     return result;
+  }
+  if (const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
+    const auto continuity = CheckSphereUnionContinuity(
+        source,
+        sphere_union->radius,
+        previous,
+        options.limits.cache.maximum_records.particles
+    );
+    if (!continuity.ok()) {
+      return continuity;
+    }
   }
   std::optional<liquid_step_internal::PreparedIsolatedDrop3D> isolated;
   if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {

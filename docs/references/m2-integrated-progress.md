@@ -173,6 +173,15 @@ one small control; it is not a throughput forecast for the wave workload.
 [Resume receipt](m2-mesh-resume-control-data.json) records individual trials
 and executable hashes. The resumed CPU suite passed 547 tests with no skips.
 
+For Simulate's particle sphere union, material partitioning now uses positive
+sphere overlap before density smoothing. Mesh refuses multiple material
+components and refuses to reuse vertex IDs for a coincident replacement
+component with no shared particle ancestry. The component matcher retains IDs
+deterministically by shared reference volume while preserving each source's
+physical target volume. Focused split, merge, birth/death and 2h/3h droplet
+hysteresis controls passed; these do not yet publish repaired components or
+droplet points. The full CPU suite passed 557 tests with no skips.
+
 ## Open integrated gates
 
 The accepted observer does not yet publish whitewater source events. Mesh
