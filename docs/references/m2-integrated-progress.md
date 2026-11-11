@@ -331,13 +331,27 @@ reached 0.416 in one pixel channel. Relocated native caches reopened without
 the extension. The imported signed volumes agreed with the published Mesh
 volumes within `2e-8` m³. See the [Blender beach control receipt](m2-blender-beach-control-data.json).
 
+The same bake exported foam density, bubble density, gas fraction and an
+explicit known mask to an OpenVDB sequence. The native bridge verifies the
+volume payload, clock and grid against the stage settings before the
+Blender exporter reads it. File metadata names the Volumes execution,
+upstream Whitewater execution and payload digest. Existing carriers and
+the source cache remain untouched. The frame-2 VDB held 16 foam and 48
+bubble equivalents and 0.025133 m³ gas, within `1e-7` relative error after
+float conversion. The frame-0 density grids were empty with 13,824 known
+voxels. The three files were 25–56 kB. The combined blend reopened against
+relative Alembic and OpenVDB paths in a fresh process. Reproduce with
+`tools/blender/verify_m2_volume_playback.py` in Blender 5.2.3. The
+[OpenVDB receipt](m2-blender-beach-volume-data.json) records the file
+hashes and inventories.
+
 ## Open integrated gates
 
 The three-frame stationary beach control uses a single liquid particle.
 Wave-scale source sampling, wetting and topology transitions, droplet
 publication and outlet reflection in the particle solver still need
-qualification. Blender volume export and the full breaking-wave workflow
-remain open. The breaking-wave acceptance bake and inspection have not run.
+qualification. The full breaking-wave workflow, acceptance bake and
+inspection remain open.
 
 The uniform M1 execution plan is still bounded to 1,024 particles, 128 blocks,
 4,096 cells and 24,576 faces. Its small Blender bake does not demonstrate the

@@ -24,6 +24,7 @@
 #include "fluidity/host/surface_cache_3d.h"
 #include "fluidity/host/surface_settings_3d.h"
 #include "fluidity/host/whitewater_cache_3d.h"
+#include "fluidity/host/whitewater_volume_cache_3d.h"
 #include "point_samples.h"
 
 namespace fluidity::blender {
@@ -341,20 +342,98 @@ absl::Status ExportEffects(const fs::path& root, std::uint64_t last_frame, const
   return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write Alembic export identity");
 }
 
+absl::Status InspectVolume(const fs::path& root, std::uint64_t frame) {
+  const auto cache = EffectsCache3D::OpenForInspection(root);
+  if (!cache.ok()) {
+    return cache.status();
+  }
+  const auto& identity = cache->identity();
+  if (identity.stage != EffectsStage3D::kVolumes) {
+    return absl::FailedPreconditionError("expected a Volumes cache");
+  }
+  const auto settings = cache->ReadStageSettings();
+  if (!settings.ok()) {
+    return settings.status();
+  }
+  const auto resolved = DecodeWhitewaterVolumeSettings3D(settings->values());
+  if (!resolved.ok()) {
+    return resolved.status();
+  }
+  const auto committed = ReadDerivedFrame(*cache, frame);
+  if (!committed.ok()) {
+    return committed.status();
+  }
+  const auto decoded = DecodeWhitewaterVolumeFrame3D(committed->payload.values(), resolved->maximum_voxels);
+  if (!decoded.ok()) {
+    return decoded.status();
+  }
+  const auto& volume = decoded->volume;
+  const auto& grid = volume.grid;
+  const auto& expected = resolved->grid;
+  if (decoded->clock != committed->clock || grid.extent != expected.extent || grid.spacing_m != expected.spacing_m
+      || grid.origin.x != expected.origin.x || grid.origin.y != expected.origin.y
+      || grid.origin.z != expected.origin.z) {
+    return absl::DataLossError("volume frame grid or clock differs from its cache");
+  }
+  const auto execution = EffectsExecutionId3D(identity);
+  if (!execution.ok()) {
+    return execution.status();
+  }
+  std::cout << std::setprecision(std::numeric_limits<double>::max_digits10) << "{\"frame\":" << frame
+            << ",\"execution_id\":\"" << LiquidDigestHex3D(*execution).data() << "\",\"source_execution_id\":\""
+            << LiquidDigestHex3D(identity.upstream_execution).data() << "\",\"payload_digest\":\""
+            << LiquidDigestHex3D(committed->payload_digest).data() << "\",\"origin_m\":[" << grid.origin.x << ','
+            << grid.origin.y << ',' << grid.origin.z << "],\"spacing_m\":" << grid.spacing_m << ",\"extent\":["
+            << grid.extent[0] << ',' << grid.extent[1] << ',' << grid.extent[2] << "],\"known_runs\":[";
+  bool first = true;
+  for (std::size_t start = 0; start < volume.validity.size();) {
+    if (volume.validity[start] == 0) {
+      ++start;
+      continue;
+    }
+    std::size_t end = start + 1;
+    while (end < volume.validity.size() && volume.validity[end] != 0) {
+      ++end;
+    }
+    std::cout << (first ? "" : ",") << '[' << start << ',' << end - start << ']';
+    first = false;
+    start = end;
+  }
+  std::cout << "],\"density\":[";
+  first = true;
+  for (std::size_t index = 0; index < volume.validity.size(); ++index) {
+    const double foam = volume.foam_count_per_m3[index];
+    const double bubbles = volume.bubble_count_per_m3[index];
+    const double gas = volume.gas_fraction[index];
+    if (foam != 0 || bubbles != 0 || gas != 0) {
+      std::cout << (first ? "" : ",") << '[' << index << ',' << foam << ',' << bubbles << ',' << gas << ']';
+      first = false;
+    }
+  }
+  std::cout << "]}\n";
+  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write volume inspection record");
+}
+
 absl::Status Run(std::span<const fs::path> args) {
   if (!args.empty() && args[0] == "resolve") {
     return ResolveBlenderScene(args);
   }
   const bool inspect = args.size() == 3 && args[0] == "inspect";
+  const bool inspect_volume = args.size() == 3 && args[0] == "inspect-volume";
   const bool export_points = args.size() == 4 && args[0] == "export";
   const bool export_surface = args.size() == 4 && args[0] == "export-surface";
   const bool export_foam = args.size() == 4 && args[0] == "export-foam";
-  if (!inspect && !export_points && !export_surface && !export_foam) {
-    return absl::InvalidArgumentError("expected inspect, export, export-surface or export-foam with a cache and frame");
+  if (!inspect && !inspect_volume && !export_points && !export_surface && !export_foam) {
+    return absl::InvalidArgumentError(
+        "expected a cache and frame for inspect, inspect-volume, export, export-surface or export-foam"
+    );
   }
   const auto frame = ParseFrame(args[2]);
   if (!frame.ok()) {
     return frame.status();
+  }
+  if (inspect_volume) {
+    return InspectVolume(args[1], *frame);
   }
   if (export_surface || export_foam) {
     return ExportEffects(args[1], *frame, args[3], export_surface);
