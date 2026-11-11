@@ -385,6 +385,15 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   auto upper = lower;
   std::vector<SurfaceMaterialPoint3D> particles;
   double material_volume = 0;
+  const bool reflect_density = beach && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field);
+  const auto add_density_sample = [&](Vec3 position, double volume_m3) {
+    particles.push_back({.position = position, .volume_m3 = volume_m3});
+    const std::array coordinates{position.x, position.y, position.z};
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      lower[axis] = std::min(lower[axis], coordinates[axis]);
+      upper[axis] = std::max(upper[axis], coordinates[axis]);
+    }
+  };
   for (const auto& particle : endpoint.particles.values()) {
     if (particle.side_tag != 0) {
       return absl::UnimplementedError("surface material-side adapter has not qualified");
@@ -394,11 +403,19 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return absl::OutOfRangeError("surface material contribution is unrepresentable");
     }
     material_volume += volume;
-    particles.push_back({.position = particle.world_position, .volume_m3 = volume});
-    const std::array position{particle.world_position.x, particle.world_position.y, particle.world_position.z};
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-      lower[axis] = std::min(lower[axis], position[axis]);
-      upper[axis] = std::max(upper[axis], position[axis]);
+    add_density_sample(particle.world_position, volume);
+    if (reflect_density) {
+      const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, particle.world_position);
+      const Vec3 normal = beach->unit_normal;
+      // The truncated separable filter and trilinear splat have box support.
+      // Reflect only donors whose support can reach the stationary plane.
+      const double reach_m = (4 * options.sigma_m + 1.5 * options.spacing_m)
+          * (std::abs(normal.x) + std::abs(normal.y) + std::abs(normal.z));
+      if (clearance_m >= 0 && clearance_m <= reach_m) {
+        const Vec3 reflected =
+            liquid_step_internal::Add(particle.world_position, liquid_step_internal::Scale(normal, -2 * clearance_m));
+        add_density_sample(reflected, volume);
+      }
     }
   }
   if (!std::isfinite(material_volume)) {

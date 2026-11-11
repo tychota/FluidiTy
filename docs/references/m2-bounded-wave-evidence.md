@@ -26,6 +26,12 @@ Frame zero now partitions material before density smoothing. Each of at most 16 
 
 The separated-component control fits two unit-volume components and rejects overlapping scaffolds. On the original frozen swell, partitioning passes the connectivity guard and reaches reconstruction of a component with 1.875 m³ of material. Its raw surface encloses 1.30507 m³. The next step is a thin-water scaffold with local support fitted to the wet layer and beach, compared with the isotropic reference on the same frozen inputs. The existing geometric correction and topology gates still apply.
 
+## Stationary beach density experiment
+
+The Mesh field reflects each eligible particle's density contribution across the beach plane before filtering and clips the resulting surface against the actual plane. This borrows the boundary-extension idea from [mirrored kernel support in SPH](https://doi.org/10.1007/s40571-021-00403-3). FluidiTy uses it only for the rendering field of a sphere-union scene with a stationary planar obstacle. Reflected contributions do not enter the material target. Surface budgets, intersection checks and the existing vertex correction still apply.
+
+On the frozen partial-column seed at 0.125 m spacing and 0.16 m sigma, the raw enclosed volume rose from 0.992169 to 1.341566 m³. The corrected surface encloses 1.759954 m³ of 1.763927 m³ of material, a relative error of -0.2253%. Frame zero published with 2,878 vertices and 5,752 triangles. The measured Debug CPU frame took 19.50 s with 16.15 MB peak process RSS. Read-only replay reproduced the exact frame-zero payload. Resume rejected frame one with 30 triangle intersections and no boundary, manifold, winding or degeneracy defects. The regular seed still fails at its smaller component, with 0.088769 m³ raw against 0.1875 m³ material.
+
 ## Reproduce the fixed inputs
 
 Use the native fixture from this branch and pass the exact solver executable to bind its digest into the scene. Create a new output directory for each run.
