@@ -204,7 +204,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
       && options.particle_energy_blend <= 1 && std::isfinite(options.maximum_step_duration)
       && options.maximum_step_duration > 0 && std::isfinite(options.minimum_face_mass) && options.minimum_face_mass >= 0
       && options.pressure_solver_options.max_iterations >= 1 && options.pressure_solver_options.max_iterations <= 256
-      && options.motion_sample_intervals <= 64;
+      && options.motion_sample_intervals <= 64 && (!options.whitewater_capture || options.motion_sample_intervals != 0);
   if (!valid_step) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
@@ -302,6 +302,149 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
   }
   return absl::OkStatus();
 }
+absl::StatusOr<OceanInletParticles3D>
+OceanInletParticles3D::Create(const OceanBoundarySettings3D& settings, double density) {
+  OceanInletParticles3D inlet;
+  const auto& swell = settings.swell;
+  inlet.spacing_m_ = settings.inlet_particle_spacing_m;
+  inlet.lower_m_ = {settings.inlet_wall_x_m, swell.still_water_height_m - swell.water_depth_m, settings.inlet_low_z_m};
+  const Vec3 requested_upper_m{
+      settings.inlet_interior_x_m,
+      swell.still_water_height_m + swell.wave_height_m,
+      settings.inlet_high_z_m
+  };
+  const std::array widths_m{
+      requested_upper_m.x - inlet.lower_m_.x,
+      requested_upper_m.y - inlet.lower_m_.y,
+      requested_upper_m.z - inlet.lower_m_.z
+  };
+  constexpr std::size_t kMaximumSites = 4096;
+  std::size_t site_count = 1;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    const double sites = std::floor(widths_m[axis] / inlet.spacing_m_);
+    if (!std::isfinite(sites) || sites < 1 || sites > kMaximumSites / site_count) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    inlet.extent_[axis] = static_cast<std::size_t>(sites);
+    site_count *= inlet.extent_[axis];
+  }
+  inlet.upper_m_ = {
+      inlet.lower_m_.x + inlet.extent_[0] * inlet.spacing_m_,
+      inlet.lower_m_.y + inlet.extent_[1] * inlet.spacing_m_,
+      inlet.lower_m_.z + inlet.extent_[2] * inlet.spacing_m_
+  };
+  if (!Finite(inlet.upper_m_) || inlet.upper_m_.x <= inlet.lower_m_.x || inlet.upper_m_.y <= inlet.lower_m_.y
+      || inlet.upper_m_.z <= inlet.lower_m_.z) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  inlet.particle_volume_m3_ = inlet.spacing_m_ * inlet.spacing_m_ * inlet.spacing_m_;
+  inlet.particle_mass_kg_ = inlet.particle_volume_m3_ * density;
+  if (!std::isnormal(inlet.particle_volume_m3_) || !std::isnormal(inlet.particle_mass_kg_)) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  auto occupied = LiquidRecords3D<std::uint8_t>::Create(site_count);
+  if (!occupied.ok()) {
+    return occupied.status();
+  }
+  STEP_TRY(occupied->Resize(site_count));
+  inlet.occupied_ = std::move(*occupied);
+  auto births = LiquidRecords3D<LiquidParticleState3D>::Create(site_count);
+  if (!births.ok()) {
+    return births.status();
+  }
+  inlet.births_ = std::move(*births);
+  return inlet;
+}
+
+std::size_t OceanInletParticles3D::reserved_bytes() const {
+  return occupied_.capacity() * sizeof(std::uint8_t) + births_.capacity() * sizeof(LiquidParticleState3D);
+}
+
+absl::Status OceanInletParticles3D::Apply(
+    const ResolvedOceanBoundary3D& boundary,
+    const LiquidObstacle3D& obstacle,
+    double time_s,
+    LiquidState3D& trial
+) {
+  std::ranges::fill(occupied_.values(), 0);
+  STEP_TRY(births_.Resize(0));
+  const auto slot = [&](std::size_t x, std::size_t y, std::size_t z) {
+    return (z * extent_[1] + y) * extent_[0] + x;
+  };
+  // Preserve the existing particle order. Only particles in the controlled
+  // strip and above its prescribed surface are retired.
+  std::size_t retained = 0;
+  for (const auto& particle : trial.particles.values()) {
+    const auto position = particle.world_position;
+    if (position.x >= lower_m_.x && position.x < upper_m_.x && position.y >= lower_m_.y && position.y < upper_m_.y
+        && position.z >= lower_m_.z && position.z < upper_m_.z) {
+      const auto sample = boundary.SampleInlet(position, time_s);
+      if (!sample.ok()) {
+        return sample.status();
+      }
+      if (position.y > sample->surface_height_m) {
+        continue;
+      }
+      const auto index = [&](double coordinate, double lower, std::size_t extent) {
+        return std::min(static_cast<std::size_t>((coordinate - lower) / spacing_m_), extent - 1);
+      };
+      occupied_[slot(
+          index(position.x, lower_m_.x, extent_[0]),
+          index(position.y, lower_m_.y, extent_[1]),
+          index(position.z, lower_m_.z, extent_[2])
+      )] = 1;
+    }
+    trial.particles[retained++] = particle;
+  }
+  // Candidate sites are visited in signed-world z/y/x order. Existing wet
+  // particles claim their lattice bin before any new particle is considered.
+  for (std::size_t z = 0; z < extent_[2]; ++z) {
+    for (std::size_t y = 0; y < extent_[1]; ++y) {
+      for (std::size_t x = 0; x < extent_[0]; ++x) {
+        if (occupied_[slot(x, y, z)] != 0) {
+          continue;
+        }
+        const Vec3 position{
+            lower_m_.x + (x + 0.5) * spacing_m_,
+            lower_m_.y + (y + 0.5) * spacing_m_,
+            lower_m_.z + (z + 0.5) * spacing_m_,
+        };
+        if (!(SolidDistance(obstacle, position) > 0)) {
+          continue;
+        }
+        const auto sample = boundary.SampleInlet(position, time_s);
+        if (!sample.ok()) {
+          return sample.status();
+        }
+        if (position.y >= sample->surface_height_m) {
+          continue;
+        }
+        const auto birth = births_.size();
+        STEP_TRY(births_.Resize(birth + 1));
+        births_[birth] = {
+            .world_position = position,
+            .world_velocity = sample->world_velocity_m_per_s,
+            .mass = particle_mass_kg_,
+            .reference_volume = particle_volume_m3_,
+        };
+      }
+    }
+  }
+  if (births_.size() > trial.particles.capacity() - retained) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  if (births_.size() > UINT64_MAX - trial.next_particle_id) {
+    return Error(absl::StatusCode::kOutOfRange);
+  }
+  STEP_TRY(trial.particles.Resize(retained));
+  STEP_TRY(trial.particles.Resize(retained + births_.size()));
+  for (std::size_t birth = 0; birth < births_.size(); ++birth) {
+    births_[birth].id = trial.next_particle_id++;
+    trial.particles[retained + birth] = births_[birth];
+  }
+  return absl::OkStatus();
+}
+
 absl::Status Emit(const LiquidSceneInputs3D& scene, double duration, LiquidState3D& trial) {
   for (std::size_t ordinal = 0; ordinal < scene.sources.size(); ++ordinal) {
     const auto& source = scene.sources[ordinal];

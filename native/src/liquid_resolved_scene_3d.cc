@@ -3,6 +3,7 @@
 
 #include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/whitewater_sphere_source_3d.h"
 #include "liquid_cache_3d_internal.h"
 #include "resolved_scene_generated.h"
 
@@ -69,6 +70,35 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
       && options.motion_sample_intervals <= 64;
   if (!options_valid) {
     return Invalid();
+  }
+  if (options.ocean_boundary) {
+    if (options.ocean_boundary->inlet_particle_spacing_m > 0
+        && !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)) {
+      return Invalid();
+    }
+    const auto boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
+    if (!boundary.ok()) {
+      return boundary.status();
+    }
+  }
+  if (const auto& capture = options.whitewater_capture) {
+    const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field);
+    const bool supported_field = sphere || std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field);
+    const bool supported_obstacle =
+        std::holds_alternative<std::monostate>(scene.obstacle) || IsStationaryWhitewaterBeach3D(scene.obstacle);
+    if (options.motion_sample_intervals == 0 || !supported_field || !supported_obstacle
+        || (sphere && sphere->radius <= 2 * capture->source_options.spacing_m)) {
+      return Invalid();
+    }
+    const auto valid_source = ComputeWhitewaterBirths3D(
+        {},
+        capture->world_source_grid_origin,
+        {.start_time_seconds = 0, .end_time_seconds = 1, .quadrature_time_seconds = 1},
+        capture->source_options
+    );
+    if (!valid_source.ok()) {
+      return valid_source.status();
+    }
   }
   if (const auto* sphere = std::get_if<LiquidAnalyticSphere3D>(&scene.field)) {
     if (!detail::Finite(sphere->world_center) || !detail::Positive(sphere->radius)) {
@@ -195,6 +225,47 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   result.options.momentum_per_quantum = options->momentum_per_quantum();
   result.options.pressure_solver_options.max_iterations = options->pressure_iterations();
   result.options.motion_sample_intervals = options->motion_sample_intervals();
+  if (const auto* capture = options->whitewater_capture()) {
+    result.options.whitewater_capture = WhitewaterCaptureSettings3D{
+        .world_source_grid_origin = detail::Unpack(capture->source_grid_origin()),
+        .source_options =
+            {
+                .spacing_m = capture->spacing_m(),
+                .radius_m = capture->radius_m(),
+                .kinetic = {capture->kinetic()->low(), capture->kinetic()->high()},
+                .trapped_air = {capture->trapped_air()->low(), capture->trapped_air()->high()},
+                .crest = {capture->crest()->low(), capture->crest()->high()},
+                .trapped_air_weight = capture->trapped_air_weight(),
+                .crest_weight = capture->crest_weight(),
+            },
+    };
+  }
+  if (const auto* boundary = options->ocean_boundary()) {
+    if (!AllFieldsPresent(boundary, wire::OceanBoundary::VT_OUTLET_RATE_PER_S)) {
+      return detail::Corrupt();
+    }
+    result.options.ocean_boundary = OceanBoundarySettings3D{
+        .swell =
+            {
+                .still_water_height_m = boundary->still_water_height_m(),
+                .water_depth_m = boundary->water_depth_m(),
+                .wave_height_m = boundary->wave_height_m(),
+                .wave_period_s = boundary->wave_period_s(),
+                .gravity_m_per_s2 = boundary->gravity_m_per_s2(),
+                .propagation_direction = detail::Unpack(boundary->propagation_direction()),
+                .phase_at_world_origin_rad = boundary->phase_at_world_origin_rad(),
+            },
+        .inlet_wall_x_m = boundary->inlet_wall_x_m(),
+        .inlet_interior_x_m = boundary->inlet_interior_x_m(),
+        .outlet_interior_x_m = boundary->outlet_interior_x_m(),
+        .outlet_wall_x_m = boundary->outlet_wall_x_m(),
+        .inlet_rate_per_s = boundary->inlet_rate_per_s(),
+        .outlet_rate_per_s = boundary->outlet_rate_per_s(),
+        .inlet_particle_spacing_m = boundary->inlet_particle_spacing_m(),
+        .inlet_low_z_m = boundary->inlet_low_z_m(),
+        .inlet_high_z_m = boundary->inlet_high_z_m(),
+    };
+  }
   const auto* field = root->field();
   const auto* plane = field->horizontal_plane();
   const auto seed_covariance_scale = field->seed_covariance_scale();
@@ -279,8 +350,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&input.scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
   // Include the optional tables only for the active variants.
-  const auto tables =
-      4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr) + (tank != nullptr);
+  const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
+      + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
       tables,
       limits,
@@ -298,8 +369,60 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             detail::Canonical(scene.friction_coefficient),
             detail::Canonical(scene.penetration_tolerance)
         );
+        flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
+        if (const auto& capture = options.whitewater_capture) {
+          const auto& source = capture->source_options;
+          const auto origin = detail::PackCanonical(capture->world_source_grid_origin);
+          const wire::WhitewaterRampBounds kinetic(detail::Canonical(source.kinetic.low), source.kinetic.high);
+          const wire::WhitewaterRampBounds trapped_air(
+              detail::Canonical(source.trapped_air.low),
+              source.trapped_air.high
+          );
+          const wire::WhitewaterRampBounds crest(detail::Canonical(source.crest.low), source.crest.high);
+          whitewater = wire::CreateWhitewaterCapture(
+              builder,
+              &origin,
+              source.spacing_m,
+              source.radius_m,
+              &kinetic,
+              &trapped_air,
+              &crest,
+              detail::Canonical(source.trapped_air_weight),
+              detail::Canonical(source.crest_weight)
+          );
+        }
+        flatbuffers::Offset<wire::OceanBoundary> ocean;
+        if (const auto& boundary = options.ocean_boundary) {
+          const auto& swell = boundary->swell;
+          const auto direction = detail::PackCanonical(swell.propagation_direction);
+          ocean = wire::CreateOceanBoundary(
+              builder,
+              detail::Canonical(swell.still_water_height_m),
+              swell.water_depth_m,
+              detail::Canonical(swell.wave_height_m),
+              swell.wave_period_s,
+              swell.gravity_m_per_s2,
+              &direction,
+              detail::Canonical(swell.phase_at_world_origin_rad),
+              detail::Canonical(boundary->inlet_wall_x_m),
+              detail::Canonical(boundary->inlet_interior_x_m),
+              detail::Canonical(boundary->outlet_interior_x_m),
+              detail::Canonical(boundary->outlet_wall_x_m),
+              detail::Canonical(boundary->inlet_rate_per_s),
+              detail::Canonical(boundary->outlet_rate_per_s),
+              detail::Canonical(boundary->inlet_particle_spacing_m),
+              detail::Canonical(boundary->inlet_low_z_m),
+              detail::Canonical(boundary->inlet_high_z_m)
+          );
+        }
         wire::StepOptionsBuilder settings_builder(builder);
+        if (options.ocean_boundary) {
+          settings_builder.add_ocean_boundary(ocean);
+        }
         // Preserve the original v1 bytes when capture is disabled.
+        if (options.whitewater_capture) {
+          settings_builder.add_whitewater_capture(whitewater);
+        }
         if (options.motion_sample_intervals != 0) {
           settings_builder.add_motion_sample_intervals(options.motion_sample_intervals);
         }

@@ -1,0 +1,16 @@
+namespace fluidity.effects.v1;
+
+// Physical controls for geometric density/scaffold reconstruction version 1.
+// Operational work and allocation limits are deliberately not identity fields.
+table MeshSettings {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  algorithm_version:uint = 1 (id:2);
+  spacing_m:double = 0.0125 (id:3);
+  sigma_m:double = 0.025 (id:4);
+  maximum_projection_cells:double = 0.25 (id:5);
+  projection_tolerance_cells:double = 0.00001 (id:6);
+}
+root_type MeshSettings;
+file_identifier "FLMC";
+file_extension "flmc";

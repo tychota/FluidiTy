@@ -8,6 +8,8 @@
 #include <variant>
 
 #include "fluidity/host/liquid_step_workspace_3d.h"
+#include "fluidity/host/ocean_boundary_3d.h"
+#include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
 // Finite analytic qualification field: |x-center|-radius in world meters.
@@ -55,6 +57,10 @@ struct LiquidSceneInputs3D {
   double penetration_tolerance = 0;  // m.
   std::span<const LiquidEmissionSource3D> sources;  // Copied at Create; exact committed identity order.
 };
+struct WhitewaterCaptureSettings3D {
+  Vec3 world_source_grid_origin{};
+  WhitewaterSourceOptions3D source_options{};
+};
 struct LiquidStepOptions3D {
   double particle_energy_blend = 0.6;  // e in [0,1]; stored alpha=0.99e, surface beta=e.
   double maximum_step_duration = 0.01;  // Positive seconds.
@@ -67,6 +73,9 @@ struct LiquidStepOptions3D {
   // at least one grows; preparation/copy/growth happen only between attempts.
   LiquidStateCapacities3D capacity_replay_reservations;
   std::uint32_t motion_sample_intervals = 0;  // Zero disables effects capture; otherwise 1..64 accepted-time slots.
+  std::optional<WhitewaterCaptureSettings3D> whitewater_capture{
+  };  // Optional accepted source events; analytic control.
+  std::optional<OceanBoundarySettings3D> ocean_boundary;  // Optional inlet and outlet velocity relaxation.
 };
 enum class LiquidPhysicalStage3D {
   kEmit,
