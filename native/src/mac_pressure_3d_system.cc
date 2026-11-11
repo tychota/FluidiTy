@@ -113,6 +113,55 @@ absl::StatusOr<std::vector<FluxRow>> CorrectFacesAndAccumulatePhysicalDefect(
   }
   return rows;
 }
+
+// Freeze an exterior subface with the same aperture and signed wall-flux
+// arithmetic as the uniform grid. Explicit graphs also require a normal
+// correction scale and representable mobility and conductance products.
+absl::StatusOr<FrozenMacPressureLink3D> FreezeExplicitBoundary(
+    const ExplicitMacPressureBoundaryFace3D& boundary,
+    std::size_t cell_count,
+    double step_duration
+) {
+  if (boundary.cell_ordinal >= cell_count || !IsFinitePositive(boundary.full_face_area)) {
+    return absl::InvalidArgumentError("pressure boundary requires an in-range owner and positive finite area");
+  }
+  MacPressureFace3D face{
+      .face_index = {},
+      .open_area = boundary.open_area,
+      .inverse_density = boundary.inverse_density,
+      .pressure_gradient_distance = boundary.pressure_gradient_distance,
+      .predicted_normal_velocity = boundary.predicted_normal_velocity,
+      .wall_normal_velocity = 0.0,
+      .pressure_link = SealedMacPressureLink3D{},
+      .prescribed_wall_flux = boundary.prescribed_wall_flux,
+  };
+  if (boundary.exterior_pressure.has_value()) {
+    face.pressure_link = DirichletMacPressureLink3D{.exterior_pressure = *boundary.exterior_pressure};
+  }
+  const std::optional<std::size_t> owner = boundary.cell_ordinal;
+  auto link = arithmetic::FreezeLinkFromIncidence(
+      face,
+      boundary.face_slot,
+      boundary.full_face_area,
+      step_duration,
+      boundary.cell_is_tail ? owner : std::nullopt,
+      boundary.cell_is_tail ? std::nullopt : owner
+  );
+  if (!link.ok() || boundary.open_area == 0.0) {
+    return link;
+  }
+  const double step_scaled_mobility = step_duration * boundary.inverse_density;
+  if (!std::isnormal(link->pressure_to_velocity_scale)
+      || !arithmetic::IsRepresentablePressureProduct(step_duration, boundary.inverse_density, step_scaled_mobility)
+      || !arithmetic::IsRepresentablePressureProduct(
+          boundary.open_area,
+          link->pressure_to_velocity_scale,
+          link->conductance
+      )) {
+    return absl::OutOfRangeError("pressure boundary arithmetic is unrepresentable");
+  }
+  return link;
+}
 }  // namespace
 
 std::span<const PreparedMacPressureCell3D> PreparedMacPressureSystem3D::cells() const {
@@ -229,9 +278,11 @@ absl::Status PreparedMacPressureSystem3D::Finalize() {
 absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
     double step_duration,
     std::span<const MacPressureCell3D> pressure_cells,
-    std::span<const ExplicitMacPressureFace3D> pressure_faces
+    std::span<const ExplicitMacPressureFace3D> pressure_faces,
+    std::span<const ExplicitMacPressureBoundaryFace3D> boundary_faces
 ) {
-  if (pressure_cells.size() > kMaxPressureCells || pressure_faces.size() > kMaxPressureFaces) {
+  if (pressure_cells.size() > kMaxPressureCells || pressure_faces.size() > kMaxPressureFaces
+      || boundary_faces.size() > kMaxPressureFaces - pressure_faces.size()) {
     return absl::ResourceExhaustedError("3D pressure graph exceeds cell or face capacity");
   }
   if (pressure_cells.empty()) {
@@ -254,7 +305,7 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
     system.cells_.push_back(*coefficients);
   }
 
-  system.links_.reserve(pressure_faces.size());
+  system.links_.reserve(pressure_faces.size() + boundary_faces.size());
   for (const auto& face : pressure_faces) {
     if (!system.links_.empty() && system.links_.back().face_slot >= face.face_slot) {
       return absl::InvalidArgumentError("pressure graph faces must be in unique owned slot order");
@@ -296,6 +347,25 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
         .prescribed_wall_flux = 0.0,
         .pressure_link = InternalMacPressureLink3D{.pressure_jump = 0.0},
     });
+  }
+
+  std::optional<std::size_t> previous_boundary_slot;
+  for (const auto& boundary : boundary_faces) {
+    if (previous_boundary_slot && *previous_boundary_slot >= boundary.face_slot) {
+      return absl::InvalidArgumentError("pressure boundary faces must be in unique owned slot order");
+    }
+    const auto link = FreezeExplicitBoundary(boundary, pressure_cells.size(), step_duration);
+    if (!link.ok()) {
+      return link.status();
+    }
+    system.links_.push_back(*link);
+    previous_boundary_slot = boundary.face_slot;
+  }
+  if (!boundary_faces.empty()) {
+    std::ranges::sort(system.links_, {}, &FrozenMacPressureLink3D::face_slot);
+    if (std::ranges::adjacent_find(system.links_, {}, &FrozenMacPressureLink3D::face_slot) != system.links_.end()) {
+      return absl::InvalidArgumentError("pressure face slot cannot be shared by interior and boundary faces");
+    }
   }
 
   const auto status = system.Finalize();

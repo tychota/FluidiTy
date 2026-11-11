@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <utility>
 #include <variant>
@@ -45,6 +46,99 @@ std::array<MacPressureFace3D, 6> SealedFacesAtX(std::int32_t x) {
 
 MacPressureCell3D IncompressibleCellAtX(std::int32_t x) {
   return {.cell_index = {x, 0, 0}, .fluid_volume = 1.0, .bulk_modulus = kInfinity};
+}
+
+TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
+  const std::array cells{
+      IncompressibleCellAtX(0),
+      MacPressureCell3D{
+          .cell_index = {2, 0, 0},
+          .fluid_volume = 0.125,
+          .target_divergence = 0.0,
+          .bulk_modulus = kInfinity,
+          .previous_pressure = 0.0,
+      },
+  };
+  const std::array interior{
+      pressure_internal::ExplicitMacPressureFace3D{
+          .face_slot = 1,
+          .tail_cell_ordinal = 0,
+          .head_cell_ordinal = 1,
+          .open_area = 0.25,
+          .inverse_density = 1.0,
+          .pressure_gradient_distance = 0.75,
+          .predicted_normal_velocity = 0.0,
+      },
+  };
+  std::array exterior{
+      pressure_internal::ExplicitMacPressureBoundaryFace3D{
+          .face_slot = 0,
+          .cell_ordinal = 1,
+          .cell_is_tail = false,
+          .full_face_area = 0.25,
+          .open_area = 0.125,
+          .inverse_density = 1.0,
+          .pressure_gradient_distance = 0.25,
+          .predicted_normal_velocity = 0.0,
+          .prescribed_wall_flux = 0.0625,
+          .exterior_pressure = 1.0,
+      },
+      pressure_internal::ExplicitMacPressureBoundaryFace3D{
+          .face_slot = 2,
+          .cell_ordinal = 0,
+          .cell_is_tail = true,
+          .full_face_area = 1.0,
+          .open_area = 0.0,
+          .inverse_density = 0.0,
+          .pressure_gradient_distance = 0.0,
+          .predicted_normal_velocity = 0.0,
+          .prescribed_wall_flux = -0.125,
+          .exterior_pressure = std::nullopt,
+      },
+  };
+
+  const auto prepared = pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, interior, exterior);
+  ASSERT_TRUE(prepared.ok()) << prepared.status();
+  EXPECT_TRUE(prepared->gauge_cell_ordinals().empty());
+  const std::array analytic_pressures{1.75, 1.375};
+  const auto analytic = EvaluateMacPressure3D(*prepared, analytic_pressures);
+  ASSERT_TRUE(analytic.ok()) << analytic.status();
+  EXPECT_NEAR(analytic->diagnostics.max_cell_constraint_defect, 0.0, 1e-12);
+  EXPECT_NEAR(analytic->corrected_face_velocities[0], -1.5, 1e-12);
+  EXPECT_NEAR(analytic->corrected_face_velocities[1], 0.5, 1e-12);
+
+  auto workspace = MacPressureWorkspace3D::Create(cells.size(), interior.size() + exterior.size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto projected = workspace->ProjectPrepared(*prepared);
+  ASSERT_TRUE(projected.ok()) << projected.status();
+  EXPECT_NEAR(projected->cell_pressures[0], analytic_pressures[0], 1e-6);
+  EXPECT_NEAR(projected->cell_pressures[1], analytic_pressures[1], 1e-6);
+  EXPECT_NEAR(projected->frozen_measurement.inward_prescribed_wall_flux_m3_per_s, 0.1875, 1e-12);
+
+  for (auto& face : exterior) {
+    face.cell_is_tail = !face.cell_is_tail;
+    face.prescribed_wall_flux = -face.prescribed_wall_flux;
+  }
+  const auto reversed = pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, interior, exterior);
+  ASSERT_TRUE(reversed.ok()) << reversed.status();
+  const auto reversed_projection = EvaluateMacPressure3D(*reversed, analytic_pressures);
+  ASSERT_TRUE(reversed_projection.ok()) << reversed_projection.status();
+  EXPECT_NEAR(reversed_projection->diagnostics.max_cell_constraint_defect, 0.0, 1e-12);
+  EXPECT_NEAR(reversed_projection->corrected_face_velocities[0], 1.5, 1e-12);
+  EXPECT_NEAR(reversed_projection->corrected_face_velocities[1], 0.5, 1e-12);
+
+  exterior[0].face_slot = 1;
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, interior, exterior).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  exterior[0].face_slot = 0;
+  exterior[0].open_area = exterior[0].full_face_area;
+  EXPECT_EQ(
+      pressure_internal::PrepareExplicitMacPressureSystem3D(1.0, cells, interior, exterior).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_NEAR(projected->cell_pressures[0], analytic_pressures[0], 1e-6);
 }
 
 TEST(MacPressureExplicitGraph3D, BoundedSolverMatchesEdgeAndCornerReferencePressure) {

@@ -46,6 +46,22 @@ struct ExplicitMacPressureFace3D {
   double predicted_normal_velocity;  // m/s.
 };
 
+// An exterior subface names the one incident cell. Missing exterior pressure
+// denotes a sealed face. Areas are in m², mobility in m³/kg, distance in m,
+// velocity in m/s, and prescribed wall flux in m³/s along the positive normal.
+struct ExplicitMacPressureBoundaryFace3D {
+  std::size_t face_slot;
+  std::size_t cell_ordinal;
+  bool cell_is_tail;
+  double full_face_area;
+  double open_area;
+  double inverse_density;
+  double pressure_gradient_distance;
+  double predicted_normal_velocity;
+  double prescribed_wall_flux;
+  std::optional<double> exterior_pressure;  // Pa.
+};
+
 // Owns validated coefficients and topology independently of the original input
 // storage. The following views borrow from this object and follow input order.
 class PreparedMacPressureSystem3D {
@@ -69,7 +85,7 @@ class PreparedMacPressureSystem3D {
   friend absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const MacPressureInputs3D&);
 
   friend absl::StatusOr<PreparedMacPressureSystem3D>
-  PrepareExplicitMacPressureSystem3D(double, std::span<const MacPressureCell3D>, std::span<const ExplicitMacPressureFace3D>);
+  PrepareExplicitMacPressureSystem3D(double, std::span<const MacPressureCell3D>, std::span<const ExplicitMacPressureFace3D>, std::span<const ExplicitMacPressureBoundaryFace3D>);
 
   absl::Status Finalize();
 
@@ -90,10 +106,13 @@ class PreparedMacPressureSystem3D {
 // products that round to zero or a subnormal. Errors carry no system.
 absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const MacPressureInputs3D& inputs);
 
-// Freeze a closed graph with explicit subface ownership. Supply positive
-// finite duration, cells ordered by signed (z,y,x), and distinct subfaces in
-// increasing slot order. The caller certifies geometric coverage, cell
-// volumes and apertures. Each subface has two distinct in-range endpoints.
+// Freeze a graph with explicit subface ownership. Supply positive finite
+// duration, cells ordered by signed (z,y,x), and each face span in increasing
+// slot order. Slots must be distinct across both spans. The caller certifies
+// geometric coverage and measures. Interior subfaces have two distinct
+// in-range endpoints. Exterior subfaces have one in-range endpoint and
+// supply a positive aperture with finite exterior pressure, or a zero
+// aperture when sealed. Nonzero wall flux requires blocked area.
 // Invalid data or ownership returns kInvalidArgument, excessive extents
 // kResourceExhausted, unrepresentable arithmetic kOutOfRange, and an
 // incompatible unanchored component kFailedPrecondition. The pressure to
@@ -101,7 +120,8 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareMacPressureSystem3D(const Mac
 absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
     double step_duration,
     std::span<const MacPressureCell3D> pressure_cells,
-    std::span<const ExplicitMacPressureFace3D> pressure_faces
+    std::span<const ExplicitMacPressureFace3D> pressure_faces,
+    std::span<const ExplicitMacPressureBoundaryFace3D> boundary_faces = {}
 );
 
 // Evaluate all original rows for the supplied finite pressures in Pa, in
