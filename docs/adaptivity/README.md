@@ -105,3 +105,65 @@ These measurements satisfy the M0 2D adaptive-basis evidence item for this singl
 promotion requires 3D interface, edge and corner evidence, multilevel support, physical masking and fallback,
 conservative remap, solver integration, and measured CUDA throughput on the target workload.
 See the [design milestones](../superpowers/specs/2026-11-07-fluidity-design.md#152-milestone-capabilities-not-an-implementation-plan).
+
+## M3 3D coarse–fine qualification
+
+The standalone fixture tests cubic face-normal and quadratic transverse splines on an aligned half-space,
+quadrant and octant, with 2:1 refinement. The half-space's 3D marginal reproduces the existing 2D oracle
+when summed along the extruded axis. The 2D quadratic-normal knot mismatch still rules out that normal
+kernel for this dyadic construction. The same-degree uniform 3D stencil and the native uniform transfer and
+pressure suites provide separate controls.
+
+```powershell
+uv run --offline --project reference --locked --group native python tools/adaptivity/qualify_coarse_fine_3d.py --output out/adaptivity-m3/qualification.json
+uv run --offline --project reference --locked --group native pytest reference/tests/test_coarse_fine_basis.py tools/tests/test_qualify_coarse_fine_basis.py tools/tests/test_qualify_coarse_fine_3d.py -q
+```
+
+Use uv 0.13.7 or later with a populated cache. The JSON records maxima and their query geometry, support
+counts, both pressure orientations, masked defects and limits. A nonfinite transfer metric is recorded as null and fails the gate. The process exits 1 if a gate fails.
+Each topology and dtype has 120 queries per evaluator across all three face components, two cell widths
+(0.5 and 2 m), signed rotation, negative coordinates, and knot and off-knot points. The interface, edge
+and corner had 48, 48 and 44 mixed-support queries, respectively, in each precision. The affine control
+uses a normalized scalar intercept of 0.25 and slopes (0.375, −0.25, 0.5) for each MAC component.
+
+| Arithmetic and stencil | Partition | First moment | Gradient sum | Affine gradient moment | Affine value | Affine gradient |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FP32 adaptive | 1.19e-7 | 5.59e-8 | 2.38e-7 | 2.38e-7 | 2.98e-8 | 1.19e-7 |
+| FP32 uniform | 1.19e-7 | 4.38e-8 | 1.20e-7 | 2.38e-7 | 2.98e-8 | 8.94e-8 |
+| FP64 adaptive | 2.22e-16 | 7.29e-17 | 4.44e-16 | 4.44e-16 | 5.55e-17 | 1.11e-16 |
+| FP64 uniform | 2.22e-16 | 7.98e-17 | 2.23e-16 | 4.44e-16 | 8.33e-17 | 1.67e-16 |
+| FP32 limit | 1e-6 | 1e-6 | 2e-6 | 2e-6 | 1e-6 | 2e-6 |
+| FP64 limit | 1e-12 | 1e-12 | 1e-12 | 1e-12 | 1e-12 | 1e-12 |
+
+Position offsets and gradients use coarse cell units. The sealed finite-volume graph has one 1 m³ coarse
+cell per incident plane and eight 0.125 m³ fine cells. Four 0.25 m² subfaces per plane use 0.75 m normal
+center spacing. Both orientations gave outward coarse flux +0.25 m³/s and aggregate fine flux −0.25 m³/s
+per plane, with zero balance defect. Flipping one fine incidence sign exposed a 0.75 m³/s defect.
+The constant-pressure relative residual uses `max(||A||∞ ||p||∞, 1e-12 m³/s)` and a 1e-6 limit.
+
+| Worst over both orientations | Interface | Edge | Corner |
+| --- | ---: | ---: | ---: |
+| FP32 constant-pressure relative residual | 2.50e-8 | 2.12e-8 | 3.67e-8 |
+| FP32 corrected divergence (s⁻¹) | 1.19e-7 | 4.77e-7 | 4.77e-7 |
+
+The local divergence limit is 1e-6 s⁻¹ for this direct solve. Across all topologies, FP64 corrected
+divergence peaked at 2.22e-15 s⁻¹. Removing the largest weight kept rank 3 and produced a raw partition
+defect of about 0.2893. Restricting the stencil to a plane reduced rank to 2 and produced defects of
+0.2301–0.2374. Both masks require PIC under the fixture policy. Physical fallback and refusal with no
+valid carrier are native integration checks.
+
+Measured on Windows with Python 3.13.18 and NumPy 2.2.6. On the pinned source
+`b009510852e7b306e8abc8ecab9828c7f97a2d52`, a Release MSVC 19.44.35229 CPU build passed all 457 tests, including the 16
+under `MacTransfer3D.*:MacPressure3D.*`. The executable SHA-256 was
+`da65c4ef08be127e67a3be82080e0e786d5b6416fba5193f558cccb20f7cf806`. Reproduce with the
+[Windows native build procedure](../native/README.md#cpu-only-build-on-windows) and run:
+
+```powershell
+& ./out/build/windows-release-cpu/fluidity_native_tests.exe '--gtest_filter=MacTransfer3D.*:MacPressure3D.*'
+```
+
+These bounded cases support moving the cubic-normal candidate into native parity. Carry forward the worst
+edge and corner pressure cases, both orientation signs, the two masks and the incidence corruption
+counterexample. Production qualification still needs physical fallback, multilevel topology, remap,
+F3/F4, and a matched-error wave benchmark. See the
+[M3 plan](../superpowers/plans/2026-11-11-m3-adaptivity-and-band.md) for the M2 integration dependencies.
