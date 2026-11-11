@@ -33,6 +33,7 @@ MAC_PRESSURE_3D_CASES = (
     "CudaMacPressure3D.MixedLinksMatchOracle",
     "CudaMacPressure3D.MultilevelProjectionMatchesCpu",
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
+    "CudaMacPressure3D.ExplicitGraphMatchesEdgeAndCornerReferencePressure",
 )
 BOUNDARY_3D_CASES = (
     "CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle",
@@ -118,6 +119,7 @@ OPERATOR_RECEIPTS = {
     BOUNDARY_3D_CASES[5]: "operator=liquid_open_tank_contact_3d compiled_architecture=1200 kernel_ms=0.375",
     MAC_PRESSURE_3D_CASES[0]: "operator=pressure_3d_mixed compiled_architecture=1200 kernel_ms=0.625",
     MAC_PRESSURE_3D_CASES[1]: "operator=pressure_3d_multilevel compiled_architecture=1200 kernel_ms=1.25",
+    MAC_PRESSURE_3D_CASES[3]: "operator=explicit_coarse_fine_pressure compiled_architecture=1200 kernel_ms=0.875",
     MAC_TRANSFER_3D_CASES[0]: "operator=p2g_3d compiled_architecture=1200 kernel_ms=0.375",
     MAC_TRANSFER_3D_CASES[1]: "operator=g2p_3d compiled_architecture=1200 kernel_ms=0.75",
     "CudaTransfer.DepositAnalyticAndCpuParity": "operator=p2g compiled_architecture=1200 kernel_ms=0.125",
@@ -777,13 +779,13 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "47", "failures": "0", "skipped": "0"}
+    assert gpu_report.attrib == {"name": "gpu", "tests": "48", "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
     assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 47,
+        "tests": 48,
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -814,6 +816,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "pressure_compliance": {"compiled_architecture": 1200, "kernel_ms": 1.0},
             "pressure_3d_mixed": {"compiled_architecture": 1200, "kernel_ms": 0.625},
             "pressure_3d_multilevel": {"compiled_architecture": 1200, "kernel_ms": 1.25},
+            "explicit_coarse_fine_pressure": {"compiled_architecture": 1200, "kernel_ms": 0.875},
         },
         "graph_replay": {
             "compiled_architecture": 1200,
@@ -833,7 +836,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 45,
+            "tests": 46,
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}

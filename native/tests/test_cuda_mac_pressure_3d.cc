@@ -108,6 +108,8 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
 }
 
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  CudaOperatorMeasurement maximum_measurement{};
   for (const auto& pressure_case : pressure_test::kExplicitPressureCases) {
     SCOPED_TRACE(pressure_case.plane_count);
     SCOPED_TRACE(pressure_case.reversed);
@@ -118,7 +120,9 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
     ASSERT_TRUE(result.ok()) << result.status();
     const auto& projection = result->projection;
     ExpectDeviceAndMeasurement(result->measurement);
-    Receipt("explicit_coarse_fine_pressure", result->measurement);
+    if (result->measurement.kernel_ms >= maximum_measurement.kernel_ms) {
+      maximum_measurement = result->measurement;
+    }
     EXPECT_GT(projection.diagnostics.iteration_count, 0);
     EXPECT_LE(projection.diagnostics.max_cell_constraint_defect, 2e-5);
     EXPECT_LE(projection.diagnostics.max_volume_scaled_residual, 2e-5);
@@ -142,6 +146,7 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
               << " max_divergence=" << projection.diagnostics.max_cell_constraint_defect
               << " max_face_flux_error=" << max_face_flux_error << '\n';
   }
+  Receipt("explicit_coarse_fine_pressure", maximum_measurement);
 }
 
 TEST(CudaMacPressure3D, MixedLinksMatchOracle) {
