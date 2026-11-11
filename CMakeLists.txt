@@ -232,6 +232,7 @@ if(BUILD_TESTING)
     native/tests/test_liquid_cache_store_3d.cc
     native/tests/test_liquid_state_3d.cc
     native/tests/test_liquid_resampling_3d.cc
+    native/tests/test_liquid_merge_3d.cc
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
