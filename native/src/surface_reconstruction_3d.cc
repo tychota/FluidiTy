@@ -5,6 +5,7 @@
 #include <limits>
 #include <optional>
 
+#include "absl/strings/str_cat.h"
 #include "fluidity/host/motion_carrier_3d.h"
 #include "fluidity/host/surface_closest_point_3d.h"
 #include "fluidity/host/surface_field_3d.h"
@@ -379,6 +380,16 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       options.maximum_correction_iterations
   );
   if (!scaffold_metrics.ok()) {
+    if (absl::IsFailedPrecondition(scaffold_metrics.status())) {
+      return absl::FailedPreconditionError(absl::StrCat(
+          scaffold_metrics.status().message(),
+          " (raw volume ",
+          raw_metrics->signed_volume,
+          " m^3, material volume ",
+          material_volume,
+          " m^3)"
+      ));
+    }
     return scaffold_metrics.status();
   }
   std::vector<FrozenMotionCarrier3D> carriers;
