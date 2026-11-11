@@ -3,6 +3,7 @@
 #include <blake3.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <tuple>
 
@@ -492,6 +493,40 @@ DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3
   }
   return LiquidCheckpoint3D{std::move(*decoded), *metadata};
 }
+absl::StatusOr<LiquidPointFrame3D> BuildLiquidPointFrame3D(const LiquidState3D& state, LiquidCacheLimits3D limits) {
+  CACHE_TRY(BoundCounts(Counts(state), limits));
+  CACHE_TRY(ValidateLiquidState3D(state));
+  if (state.clock.substep_ordinal != 0) {
+    return Invalid();
+  }
+  LiquidPointFrame3D result;
+  result.clock = state.clock;
+  auto points = LiquidRecords3D<LiquidPoint3D>::Create(state.particles.size());
+  if (!points.ok()) {
+    return points.status();
+  }
+  CACHE_TRY(points->Resize(state.particles.size()));
+  for (std::size_t i = 0; i < state.particles.size(); ++i) {
+    const auto& particle = state.particles[i];
+    // Preserve the original producer's operation order for cache-byte identity.
+    const double radius = std::cbrt(3 * particle.reference_volume * particle.volume_ratio / (4 * std::acos(-1.0)));
+    if (!std::isfinite(radius) || radius <= 0) {
+      return cache_detail::Error(absl::StatusCode::kOutOfRange);
+    }
+    (*points)[i] = {
+        .id = particle.id,
+        .tag = particle.tag,
+        .world_position = particle.world_position,
+        .world_velocity = particle.world_velocity,
+        .radius = radius,
+        .volume_ratio = particle.volume_ratio,
+        .level = 0,
+    };
+  }
+  result.points = std::move(*points);
+  return result;
+}
+
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidPointFrame3D(const LiquidPointFrame3D& frame, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts({frame.points.size(), 0, 0, 0, 0}, limits));

@@ -1,0 +1,19 @@
+include "common.fbs";
+namespace fluidity.effects.v1;
+
+table WhitewaterSettings {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  algorithm_version:uint = 1 (id:2);
+  emission_rate_per_m3_second:double = 1000 (id:3);
+  represented_count_per_point:double = 1 (id:4);
+  classification_radius_m:double = 0.1 (id:5);
+  spray_drag_per_second:double (id:6);
+  bubble_drag_per_second:double (id:7);
+  bubble_buoyancy_scale:double = 1 (id:8);
+  foam_lifetime_seconds:double = 2 (id:9);
+  ambient_velocity:fluidity.cache.v1.Vector3 (required, id:10);
+}
+root_type WhitewaterSettings;
+file_identifier "FLWC";
+file_extension "flwc";

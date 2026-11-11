@@ -84,7 +84,7 @@ def paddle_keys(paddle, frame_end):
         raise SceneError("paddle", "Translate the paddle along world X only.")
 
 
-def scene_inputs(scene, preview=False):
+def legacy_scene_inputs(scene, preview=False):
     """Return a native-author packet using evaluated Blender meters and 24 fps time zero."""
     settings = scene.fluidity
     require_cadence(scene)
@@ -152,6 +152,116 @@ def scene_inputs(scene, preview=False):
         f"{center!r} {half_width!r} {shift * 24 / frame_end!r}",
         str(count),
     ]
+    for z, y, x in product(ranges[2], ranges[1], ranges[0]):
+        lines.append(" ".join(repr((coordinate + 0.5) * cell) for coordinate in (x, y, z)))
+    return "\n".join(lines) + "\n"
+
+
+def linear_motion(obj, frame_end):
+    """Require a static object or fully covered constant location motion."""
+    data = obj.animation_data
+    if not data:
+        return
+    if not data.action or not data.action_slot or data.drivers or data.nla_tracks:
+        raise SceneError("collider", "Use a static collider or linear location animation.")
+    bag = action_get_channelbag_for_slot(data.action, data.action_slot)
+    for curve in bag.fcurves if bag else ():
+        keys = list(curve.keyframe_points)
+        if (
+            curve.data_path != "location"
+            or curve.modifiers
+            or curve.mute
+            or len(keys) != 2
+            or keys[0].co.x > 0
+            or keys[1].co.x < frame_end
+            or keys[0].interpolation != "LINEAR"
+        ):
+            raise SceneError("collider", "Use two linear location keys covering the simulation.")
+
+
+def scene_inputs(scene, preview=False):
+    """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
+    settings = scene.fluidity
+    if settings.boundary_mode == "LEGACY_PADDLE":
+        return legacy_scene_inputs(scene, preview)
+    require_cadence(scene)
+    if scene.unit_settings.scale_length != 1:
+        raise SceneError("units", "Use one Blender unit per meter.")
+    if scene.animation_data:
+        raise SceneError("animation", "Remove animation and drivers from scene settings.")
+    if scene.frame_start != 0 or not 2 <= scene.frame_end <= 240:
+        raise SceneError("range", "Set a frame range starting at 0 and ending from 2 through 240.")
+    if not settings.domain or not settings.liquid or settings.domain == settings.liquid:
+        raise SceneError("roles", "Assign distinct Domain and Initial Liquid objects.")
+    if settings.domain.animation_data or settings.liquid.animation_data:
+        raise SceneError("roles", "Keep the domain and initial liquid static.")
+    using_collider = settings.boundary_mode in {"PLANE", "SLAB"}
+    collider = settings.collider if using_collider else None
+    if using_collider and not collider:
+        raise SceneError("collider", "Assign a collider for the selected boundary model.")
+    if collider and collider in {settings.domain, settings.liquid}:
+        raise SceneError("roles", "Assign a different object to each simulation role.")
+    if collider:
+        linear_motion(collider, scene.frame_end)
+    saved_frame, saved_subframe = scene.frame_current, scene.frame_subframe
+    try:
+        scene.frame_set(0)
+        graph = bpy.context.evaluated_depsgraph_get()
+        domain_low, domain_high = box_bounds(settings.domain, "domain", graph)
+        liquid_low, liquid_high = box_bounds(settings.liquid, "liquid", graph)
+        if collider:
+            collider_low, collider_high = box_bounds(collider, "collider", graph)
+            scene.frame_set(scene.frame_end)
+            end_low, end_high = box_bounds(collider, "collider", graph)
+            shift = tuple(end_low[i] - collider_low[i] for i in range(3))
+            if any(abs(end_high[i] - collider_high[i] - shift[i]) > 1e-6 for i in range(3)):
+                raise SceneError("collider", "Keep collider dimensions fixed during translation.")
+            wall_velocity = tuple(value * 24 / scene.frame_end for value in shift)
+    finally:
+        scene.frame_set(saved_frame, subframe=saved_subframe)
+    if any(
+        a < lo - 1e-6 or b > hi + 1e-6
+        for a, b, lo, hi in zip(liquid_low, liquid_high, domain_low, domain_high, strict=True)
+    ):
+        raise SceneError("liquid", "Place the initial liquid inside the domain.")
+    cell = settings.cell_width
+    low = (liquid_low[0], liquid_low[2], -liquid_high[1])
+    high = (liquid_high[0], liquid_high[2], -liquid_low[1])
+    ranges = [
+        range(math.floor(lo / cell - 0.5) + 1, math.ceil(hi / cell - 0.5)) for lo, hi in zip(low, high, strict=True)
+    ]
+    count = math.prod(map(len, ranges))
+    if not 1 <= count <= 1024:
+        raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
+    gx, gy, gz = scene.gravity if scene.use_gravity else (0, 0, 0)
+    vx, vy, vz = settings.initial_velocity
+    lines = [
+        "FLUIDITY-BLENDER-2",
+        f"{int(preview)} {cell!r}",
+        f"{gx!r} {gz!r} {-gy!r}",
+        f"{settings.density!r} {settings.surface_tension!r} {settings.friction!r}",
+        f"{settings.energy_blend!r} {settings.maximum_step!r} {settings.pressure_iterations}",
+        f"{vx!r} {vz!r} {-vy!r}",
+    ]
+    if settings.boundary_mode == "TANK":
+        lines.extend(
+            ["3", f"{domain_low[0]!r} {domain_high[0]!r} {domain_low[2]!r} {-domain_high[1]!r} {-domain_low[1]!r} 0"]
+        )
+    elif settings.boundary_mode == "FREE":
+        lines.append("0")
+    else:
+        wx, wy, wz = wall_velocity
+        if settings.boundary_mode == "PLANE":
+            if liquid_low[2] < collider_high[2] - 1e-6:
+                raise SceneError("collider", "Place liquid above the plane collider.")
+            lines.extend(["1", f"0 1 0 {collider_high[2]!r} 0 {wx!r} {wz!r} {-wy!r}"])
+        else:
+            if liquid_low[0] <= collider_high[0] and liquid_high[0] >= collider_low[0]:
+                raise SceneError("collider", "Move the slab clear of the initial liquid.")
+            center = (collider_low[0] + collider_high[0]) / 2
+            half_width = (collider_high[0] - collider_low[0]) / 2
+            lines.extend(["2", f"1 0 0 {center!r} {half_width!r} {wx!r} {wz!r} {-wy!r}"])
+    lines.append(str(count))
     for z, y, x in product(ranges[2], ranges[1], ranges[0]):
         lines.append(" ".join(repr((coordinate + 0.5) * cell) for coordinate in (x, y, z)))
     return "\n".join(lines) + "\n"
