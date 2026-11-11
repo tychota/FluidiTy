@@ -21,7 +21,9 @@
   and device when their contents are device-compatible. The `host/` directory is host-only. Use `.cuh` for headers
   that require nvcc, `.cu` for CUDA sources, and `.cc` for host sources.
 - Return `absl::Status` or `absl::StatusOr` from checked host APIs. Keep Abseil and host containers out of device code.
-  Keep production code free of exceptions, RTTI, modules, coroutines, and `using namespace` directives.
+  Keep production code free of RTTI, modules, coroutines, and `using namespace` directives.
+  Keep exceptions disabled except in the public CLI parser adapter, which catches CLI11 errors
+  before returning a status to the rest of the executable.
 - Preserve documented numerical ordering, rounding, signed indices, and ABI layout. Validate extents and aliasing
   before access, and publish numerical outputs only on success.
 

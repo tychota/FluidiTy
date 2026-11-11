@@ -36,10 +36,16 @@ def main():
         ("devices", "--backend", "cpu", "--backend", "cuda"),
         ("devices", "--device", "0"),
         ("inspect", "cache", "--trace"),
+        ("simulate", "scene.flrs", "--cache", "bake", "--trace", "--trace"),
+        ("simulate", "scene.flrs", "--cache", "bake", "--trace=true"),
+        ("devices", "--backend=", "cpu"),
+        ("schema", "--", "--help"),
     ):
         invalid = run(fluidity, *arguments)
         assert invalid.returncode == 2, invalid
-        assert invalid.stderr, invalid
+        assert invalid.stdout == invalid.stderr, invalid
+        error = json.loads(invalid.stderr)
+        assert error["event"] == "error" and error["code"] == "E-CLI-INVALID_ARGUMENT", error
 
     for command, legacy_command in (("schema", "schema"), ("devices", "device-info")):
         public = run(fluidity, command)

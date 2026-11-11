@@ -1,5 +1,5 @@
 find_package(Threads REQUIRED)
-find_package(args 6.4.6 EXACT CONFIG REQUIRED)
+find_package(CLI11 2.7.2 EXACT CONFIG REQUIRED)
 # Embed the exact runtime schema at configure time; reconfigure when it changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs")
@@ -20,10 +20,13 @@ function(fluidity_add_simulate_executable target)
     target_link_libraries(${target} PRIVATE fluidity_cuda_probe fluidity_cuda_operators CUDA::cudart ${CMAKE_DL_LIBS})
   endif()
 endfunction()
+# The adapter translates CLI11 exceptions to Status before dispatch.
+add_library(fluidity_public_cli OBJECT native/cli/public_cli.cc)
+set_property(TARGET fluidity_public_cli PROPERTY FLUIDITY_CLI_EXCEPTIONS ON)
+target_link_libraries(fluidity_public_cli PRIVATE absl::statusor CLI11::CLI11 fluidity_native_options)
 fluidity_add_simulate_executable(fluidity_simulate)
-target_sources(fluidity_simulate PRIVATE native/cli/public_cli.cc)
-target_compile_definitions(fluidity_simulate PRIVATE ARGS_NOEXCEPT FLUIDITY_PUBLIC_CLI)
-target_link_libraries(fluidity_simulate PRIVATE taywee::args)
+target_compile_definitions(fluidity_simulate PRIVATE FLUIDITY_PUBLIC_CLI)
+target_link_libraries(fluidity_simulate PRIVATE fluidity_public_cli)
 
 # Both entry points must hash to the same executable identity for FLRS scenes
 # and existing caches. The executable selects the interface by its filename.
