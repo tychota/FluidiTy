@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,11 @@ import tempfile
 from pathlib import Path
 
 import tomllib
+
+BLENDER_BUILDS = {
+    ("Blender 5.2.3 LTS", "e13b728c6880"): "5.2.3",
+    ("Blender 5.3.0", "02f0899d78e3"): "5.3.0",
+}
 
 
 def main():
@@ -21,8 +27,12 @@ def main():
     args = parser.parse_args()
     blender = args.blender.resolve()
     build = subprocess.check_output([blender, "--version"], encoding="utf-8")
-    if not build.startswith("Blender 5.2.3 LTS") or "build hash: e13b728c6880" not in build:
-        parser.error("Blender 5.2.3 LTS e13b728c6880 is required")
+    banner = build.splitlines()[0]
+    match = re.search(r"^\s*build hash: ([0-9a-f]+)\s*$", build, re.MULTILINE)
+    build_hash = match[1] if match else ""
+    minimum_version = BLENDER_BUILDS.get((banner, build_hash))
+    if minimum_version is None:
+        parser.error(f"Unsupported package builder: {banner} ({build_hash}). Use a build listed in BLENDER_BUILDS.")
     args.output.mkdir(parents=True, exist_ok=False)
     output = args.output.resolve()
     root = Path(__file__).resolve().parents[2]
@@ -33,6 +43,16 @@ def main():
     with tempfile.TemporaryDirectory(dir=output) as temp:
         stage = Path(temp) / "fluidity"
         shutil.copytree(root / "blender" / "fluidity", stage, ignore=shutil.ignore_patterns("__pycache__", "bin"))
+        manifest = stage / "blender_manifest.toml"
+        manifest_text, replacements = re.subn(
+            r'^blender_version_min = "[^"]+"$',
+            f'blender_version_min = "{minimum_version}"',
+            manifest.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        if replacements != 1:
+            raise ValueError("Expected exactly one minimum Blender version in the manifest")
+        manifest.write_text(manifest_text, encoding="utf-8")
         binaries = stage / "bin"
         binaries.mkdir()
         for source, name in ((args.solver, "simulate"), (args.bridge, "blender_bridge")):
@@ -67,6 +87,10 @@ def main():
     artifacts = [package, output / "First Bake.blend", output / "Water Tank.blend", args.solver, args.bridge]
     digests = {item.name: hashlib.file_digest(item.open("rb"), "sha256").hexdigest() for item in artifacts}
     (output / "sha256.json").write_text(json.dumps(digests, indent=2) + "\n", encoding="utf-8")
+    (output / "blender-build.json").write_text(
+        json.dumps({"banner": banner, "build_hash": build_hash, "minimum_version": minimum_version}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(package)
 
 

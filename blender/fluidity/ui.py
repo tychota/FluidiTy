@@ -5,7 +5,7 @@ from typing import ClassVar
 
 import bpy
 
-from . import jobs
+from . import authoring, jobs
 from .preferences import get_preferences
 
 
@@ -122,8 +122,11 @@ class FLUIDITY_PT_fluid(ChildPanel, bpy.types.Panel):
         material = column.column(align=True)
         material.enabled = settings.boundary_mode != "LEGACY_PADDLE"
         row = material.row(align=True)
-        row.prop(settings, "material_preset")
-        row.operator("fluidity.apply_preset", text="", icon="CHECKMARK").preset = settings.material_preset
+        row.label(text="Fluid Preset")
+        preset_name = next(
+            label for key, label, _description in authoring.PRESET_ITEMS if key == settings.material_preset
+        )
+        row.operator_menu_enum("fluidity.apply_preset", "preset", text=preset_name)
         material.prop(settings, "density", text="Density (kg/m³)")
         material.prop(settings, "surface_tension", text="Surface Tension (N/m)")
         for index, label in enumerate(("Velocity X (m/s)", "Velocity Y (m/s)", "Velocity Z (m/s)")):
