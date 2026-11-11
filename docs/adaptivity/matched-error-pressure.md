@@ -67,8 +67,8 @@ The measured source was `bb9938c036ce246817b4c1f8a149c4e30a0f2a17` and the execu
 Configure the Debug CPU preset with the
 [Windows native build procedure](../native/README.md#cpu-only-build-on-windows).
 From the repository root, build and run the benchmark to emit the individual
-elapsedsamplesinJSON.TheCTestlabelrunsthesameerrorgates.Forthe
-Releasemeasurement,usethewindows-release-cpupresetandoutputdirectory.
+elapsed samples in JSON. The CTest label runs the same error gates. For the
+Release measurement, use the `windows-release-cpu` preset and output directory.
 
 ```powershell
 uv run --offline --project reference --locked --group native cmake --build --preset windows-debug-cpu --target fluidity_m3_matched_pressure
