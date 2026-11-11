@@ -69,6 +69,7 @@ add_library(fluidity_native STATIC
   native/src/grid.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
+  native/src/coarse_fine_transfer_3d.cc
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
@@ -233,6 +234,7 @@ if(BUILD_TESTING)
     native/tests/test_build.cc
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
+    native/tests/test_coarse_fine_transfer_3d.cc
     native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
