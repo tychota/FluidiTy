@@ -67,6 +67,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_cache_files_3d.cc
   native/src/liquid_state_3d.cc
   native/src/grid.cc
+  native/src/adaptive_family_change_3d.cc
   native/src/adaptive_mac_topology_3d.cc
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc

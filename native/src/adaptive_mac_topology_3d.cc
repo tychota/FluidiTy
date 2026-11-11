@@ -209,6 +209,7 @@ AdaptiveMacTopology3D::Create(std::span<const AdaptiveMacCellKey3D> leaf_keys, d
     return absl::InvalidArgumentError("adaptive topology requires leaves and a positive finite finest width");
   }
   AdaptiveMacTopology3D result;
+  result.finest_cell_width_ = finest_cell_width;
   result.cells_.reserve(leaf_keys.size());
   std::uint8_t max_width_exponent = 0;
   for (const auto& key : leaf_keys) {

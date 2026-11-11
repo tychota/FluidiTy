@@ -17,3 +17,9 @@ Both translated junction orientations produced 12 fine interior faces and four u
 The error-only stub failed all three original tests. The completed MSVC Debug native executable passed all 536 tests, including four topology tests. The native formatting check passed with clang-format 19.1.5. Independent review also enumerated 1,308 ungraded touching pairs to check that the fine-side probes detect contacts missed by coarse sampling.
 
 The builder accepts an authored bounded set of leaves. Production sparse blocks, adaptive selection, exterior apertures and accepted-step publication are outside this result.
+
+## Sibling changes
+
+Refinement and coarsening now produce unpublished topology and pressure warm-start candidates. Refinement copies the parent's pressure. Coarsening uses a deterministic equal-volume mean. Retained leaves preserve their pressure and expose their old and new ordinals. Missing siblings, a malformed warm start and a 4:1 candidate fail before any committed state changes.
+
+Both focused tests failed against the unimplemented entry points. All six topology tests and 538 full native CPU tests passed with the completed candidate builder. Native formatting passed with clang-format 19.1.5.

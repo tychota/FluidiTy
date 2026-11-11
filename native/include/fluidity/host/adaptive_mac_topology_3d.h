@@ -50,11 +50,16 @@ class AdaptiveMacTopology3D {
 
   // Views borrow this object. Cells are ordered by signed (z,y,x) lower
   // corner. Face slots are the order (normal axis,z,y,x,width exponent).
+  // Width of the common finest lattice in meters.
+  double finest_cell_width() const {
+    return finest_cell_width_;
+  }
   std::span<const AdaptiveMacLeaf3D> cells() const;
   std::span<const AdaptiveMacInteriorFace3D> interior_faces() const;
 
  private:
   AdaptiveMacTopology3D() = default;
+  double finest_cell_width_ = 0;
   std::vector<AdaptiveMacLeaf3D> cells_;
   std::vector<AdaptiveMacInteriorFace3D> interior_faces_;
 };

@@ -10,6 +10,7 @@
 
 #include "../src/mac_pressure_3d_system.h"
 #include "absl/status/status.h"
+#include "fluidity/host/adaptive_family_change_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
@@ -135,6 +136,65 @@ TEST(AdaptiveMacTopology3D, SolvesPressureOnOwnedCoarseFineJunction) {
     EXPECT_NEAR(projection->cell_pressures[cell], reference_pressure[cell] - gauge_pressure, 2e-5);
   }
   EXPECT_LE(projection->diagnostics.max_cell_constraint_defect, 2e-5);
+}
+
+TEST(AdaptiveMacTopology3D, RefinesAndCoarsensFamilyWithPressureWarmStart) {
+  constexpr AdaptiveMacCellKey3D kParent{{-4, -4, -4}, 1};
+  constexpr std::array keys{kParent, AdaptiveMacCellKey3D{{-2, -4, -4}, 1}};
+  const auto committed = AdaptiveMacTopology3D::Create(keys, 0.5);
+  ASSERT_TRUE(committed.ok()) << committed.status();
+  constexpr std::array pressure{7.0, -3.0};
+  const auto refined = PrepareAdaptiveRefinement3D(*committed, pressure, kParent);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_EQ(refined->topology.cells().size(), 9);
+  ASSERT_EQ(refined->retained_leaves.size(), 1);
+  EXPECT_EQ(refined->retained_leaves.front().old_cell_ordinal, 1);
+  EXPECT_DOUBLE_EQ(refined->previous_pressures[refined->retained_leaves.front().new_cell_ordinal], -3.0);
+  EXPECT_EQ(refined->parent_ordinal, 0);
+  for (const auto child : refined->child_ordinals) {
+    EXPECT_DOUBLE_EQ(refined->previous_pressures[child], 7.0);
+    EXPECT_EQ(refined->topology.cells()[child].key.width_exponent, 0);
+  }
+  auto fine_pressure = refined->previous_pressures;
+  for (std::size_t ordinal = 0; ordinal < refined->child_ordinals.size(); ++ordinal) {
+    fine_pressure[refined->child_ordinals[ordinal]] = static_cast<double>(ordinal) - 4.0;
+  }
+  const auto coarsened = PrepareAdaptiveCoarsening3D(refined->topology, fine_pressure, kParent);
+  ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+  ASSERT_EQ(coarsened->topology.cells().size(), 2);
+  EXPECT_EQ(coarsened->previous_pressures, (std::vector<double>{-0.5, -3.0}));
+  EXPECT_EQ(coarsened->child_ordinals, refined->child_ordinals);
+  EXPECT_EQ(committed->cells().size(), 2);
+  EXPECT_EQ(committed->interior_faces().size(), 1);
+}
+
+TEST(AdaptiveMacTopology3D, RejectsUngradedFamilyWithoutChangingCommittedState) {
+  constexpr AdaptiveMacCellKey3D kParent{{0, 0, 0}, 2};
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (int z : {0, 2}) {
+    for (int y : {0, 2}) {
+      for (int x : {0, 2}) {
+        keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 1});
+      }
+    }
+  }
+  keys.push_back({.lower_corner = {4, 0, 0}, .width_exponent = 0});
+  const auto committed = AdaptiveMacTopology3D::Create(keys, 0.5);
+  ASSERT_TRUE(committed.ok()) << committed.status();
+  const std::vector<double> pressure(committed->cells().size(), 1.5);
+  const auto* const cells_before = committed->cells().data();
+  const auto* const faces_before = committed->interior_faces().data();
+  const auto rejected = PrepareAdaptiveCoarsening3D(*committed, pressure, kParent);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(committed->cells().data(), cells_before);
+  EXPECT_EQ(committed->interior_faces().data(), faces_before);
+  EXPECT_EQ(committed->cells().size(), keys.size());
+  EXPECT_EQ(pressure, std::vector<double>(keys.size(), 1.5));
+
+  const auto missing = PrepareAdaptiveCoarsening3D(*committed, pressure, {{8, 0, 0}, 2});
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto bad_pressure = PrepareAdaptiveCoarsening3D(*committed, {}, kParent);
+  EXPECT_EQ(bad_pressure.status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(AdaptiveMacTopology3D, MatchesIndependentPairwiseGeometryWithHoles) {
