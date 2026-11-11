@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 
 #include "fluidity/host/whitewater_3d.h"
 #include "gtest/gtest.h"
@@ -124,6 +125,136 @@ TEST(Whitewater3D, SourceRejectsMissingCarrierUnorderedThresholdsAndDuplicateNei
   auto result = ComputeWhitewaterSource3D(center, std::span(&center, 1), options);
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(result->potential, 0);
+}
+
+TEST(Whitewater3D, RelativeVelocityOverflowIsNotMaskedByZeroKineticEnergy) {
+  const WhitewaterSourceCell3D center{.index = {}, .velocity = {}, .normal = {1, 0, 0}, .curvature_per_m = 0};
+  const WhitewaterSourceCell3D neighbor{
+      .index = {1, 1, 0},
+      .velocity = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), 0},
+      .normal = {1, 0, 0},
+      .curvature_per_m = 0,
+  };
+  const WhitewaterSourceOptions3D options{
+      .spacing_m = 0.1,
+      .radius_m = 0.1,
+      .kinetic = {0, 1},
+      .trapped_air = {0, 1},
+      .crest = {0, 1},
+      .trapped_air_weight = 1,
+      .crest_weight = 1,
+  };
+  EXPECT_EQ(
+      ComputeWhitewaterSource3D(center, std::span(&neighbor, 1), options).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+}
+
+TEST(Whitewater3D, BirthUsesQuadratureOccupancyAndAcceptedDuration) {
+  WhitewaterOccupiedCell3D cell{
+      .sample = {.index = {-1, 2, 0}, .velocity = {2, 0, 0}, .normal = {1, 0, 0}, .curvature_per_m = 3},
+      .occupied_volume_m3 = 0.0625,
+  };
+  const WhitewaterSourceOptions3D options{
+      .spacing_m = 0.5,
+      .radius_m = 0.5,
+      .kinetic = {0, 2},
+      .trapped_air = {0, 1},
+      .crest = {0, 3},
+      .trapped_air_weight = 0,
+      .crest_weight = 2,
+  };
+  const WhitewaterSourceStep3D step{
+      .start_time_seconds = 0.25,
+      .end_time_seconds = 0.375,
+      .quadrature_time_seconds = 0.3125
+  };
+  const auto births = ComputeWhitewaterBirths3D(std::span(&cell, 1), {1, 2, 3}, step, options);
+  ASSERT_TRUE(births.ok()) << births.status();
+  ASSERT_EQ(births->size(), 1);
+  const auto& birth = births->front();
+  EXPECT_EQ(birth.source_cell.x, -1);
+  EXPECT_DOUBLE_EQ(birth.event.time_seconds, 0.3125);
+  EXPECT_DOUBLE_EQ(birth.event.position.x, 0.75);
+  EXPECT_DOUBLE_EQ(birth.event.position.y, 3.25);
+  EXPECT_DOUBLE_EQ(birth.event.velocity.x, 2);
+  EXPECT_DOUBLE_EQ(birth.event.volume_time_m3_seconds, 0.015625);
+  EXPECT_EQ(
+      ComputeWhitewaterBirths3D(std::span(&cell, 1), {}, step, options, 0).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
+  cell.sample.velocity = {};
+  auto still = ComputeWhitewaterBirths3D(std::span(&cell, 1), {}, step, options);
+  ASSERT_TRUE(still.ok());
+  EXPECT_TRUE(still->empty());
+  cell.sample.carrier_valid = false;
+  EXPECT_EQ(
+      ComputeWhitewaterBirths3D(std::span(&cell, 1), {}, step, options).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+TEST(Whitewater3D, CellRemaindersRemainSeparateAcrossIntervalsWithGlobalIds) {
+  std::array births{
+      AcceptedWhitewaterBirth3D{
+          .accepted_step_ordinal = 1,
+          .birth =
+              {
+                  .source_cell = {-2, 0, 0},
+                  .event =
+                      {.time_seconds = 0.01,
+                       .position = {-1, 0, 0},
+                       .velocity = {2, 0, 0},
+                       .normal = {1, 0, 0},
+                       .volume_time_m3_seconds = 0.6},
+              },
+      },
+      AcceptedWhitewaterBirth3D{
+          .accepted_step_ordinal = 1,
+          .birth =
+              {
+                  .source_cell = {1, 0, 0},
+                  .event =
+                      {.time_seconds = 0.01,
+                       .position = {1, 0, 0},
+                       .velocity = {-2, 0, 0},
+                       .normal = {-1, 0, 0},
+                       .volume_time_m3_seconds = 0.6},
+              },
+      },
+  };
+  auto first = EmitWhitewaterBirthsThroughStep3D(births, {}, 2, 1, 1, 10);
+  ASSERT_TRUE(first.ok()) << first.status();
+  EXPECT_TRUE(first->points.empty());
+  ASSERT_EQ(first->checkpoint.remainders.size(), 2);
+  EXPECT_DOUBLE_EQ(first->checkpoint.remainders[0].fractional_count, 0.6);
+  EXPECT_DOUBLE_EQ(first->checkpoint.remainders[1].fractional_count, 0.6);
+  for (auto& birth : births) {
+    birth.accepted_step_ordinal = 3;
+    birth.birth.event.time_seconds = 0.03;
+  }
+  auto second = EmitWhitewaterBirthsThroughStep3D(births, first->checkpoint, 3, 1, 1, 10);
+  ASSERT_TRUE(second.ok()) << second.status();
+  ASSERT_EQ(second->points.size(), 2);
+  EXPECT_EQ(second->points[0].id, 1);
+  EXPECT_EQ(second->points[1].id, 2);
+  EXPECT_DOUBLE_EQ(second->points[0].velocity.x, 2);
+  EXPECT_DOUBLE_EQ(second->points[1].velocity.x, -2);
+  EXPECT_DOUBLE_EQ(second->points[1].birth_time_seconds, 0.03);
+  EXPECT_EQ(second->checkpoint.next_point_id, 3);
+  EXPECT_EQ(second->checkpoint.last_accepted_step_ordinal, 3);
+  EXPECT_NEAR(second->checkpoint.remainders[0].fractional_count, 0.2, 1e-15);
+  EXPECT_NEAR(second->checkpoint.remainders[1].fractional_count, 0.2, 1e-15);
+  EXPECT_EQ(
+      EmitWhitewaterBirthsThroughStep3D(births, first->checkpoint, 3, 1, 1, 1).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
+  EXPECT_EQ(
+      EmitWhitewaterBirthsThroughStep3D(births, second->checkpoint, 4, 1, 1, 10).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(first->checkpoint.next_point_id, 1);
+  EXPECT_DOUBLE_EQ(first->checkpoint.remainders[0].fractional_count, 0.6);
 }
 }  // namespace
 }  // namespace fluidity

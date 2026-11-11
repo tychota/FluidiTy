@@ -1,0 +1,115 @@
+{
+  "blender_build": "e13b728c6880",
+  "surface": "FluidiTySurface",
+  "foam": "FluidiTyFoam",
+  "identities": [
+    {
+      "last_frame": 2,
+      "execution_id": "19a571619d26b6f971b11b35b7a910ca976cc603b9e7091fd4968ac30d804d8a",
+      "source_execution_id": "f6b4612ce9695057b176ebcedc13f21a9233c2d3d93efd0b1b150189218eb0b0"
+    },
+    {
+      "last_frame": 2,
+      "execution_id": "8beef4def18cb2dddb689f1bb00e1f8daeadba8ce204b5e50f45f43a78f22085",
+      "source_execution_id": "f6b4612ce9695057b176ebcedc13f21a9233c2d3d93efd0b1b150189218eb0b0"
+    }
+  ],
+  "archive_sha256": [
+    "9ebb664bf9f2d66ad137a57799cf4bd693879bca97ed5fb0c9da007874482831",
+    "238c2eef41e46e7c0abd1ae01c16d871a55f10bce640768f6efccbb4702322fe"
+  ],
+  "baseline": [
+    {
+      "geometry_sha256": "c29019dce7e00a33a02c72049ae07dc11662b193d452b922d249717ae0bb989b",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 0,
+      "signed_volume_m3": 1.004833464752803
+    },
+    {
+      "geometry_sha256": "7939790d672ed2de384f37ef5ed7f116e81d580f10aafa3a37dbed2ca9ad8755",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 16,
+      "signed_volume_m3": 0.995295186828054
+    },
+    {
+      "geometry_sha256": "7d5a1a8e495c76369c0224f6c2e16fc7986298f02306d3d90a3e735e4fcc584a",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 40,
+      "signed_volume_m3": 0.9950092775482915
+    }
+  ],
+  "initial": [
+    {
+      "geometry_sha256": "c29019dce7e00a33a02c72049ae07dc11662b193d452b922d249717ae0bb989b",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 0,
+      "signed_volume_m3": 1.004833464752803,
+      "maximum_mask_error": 0.0,
+      "nonzero_mask_vertices": 0,
+      "mask_sha256": "61500c53e46ef33f760ff796e11d23991d95614b9934d2942e4d7b4161f6e65f"
+    },
+    {
+      "geometry_sha256": "7939790d672ed2de384f37ef5ed7f116e81d580f10aafa3a37dbed2ca9ad8755",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 16,
+      "signed_volume_m3": 0.995295186828054,
+      "maximum_mask_error": 2.967396635078501e-07,
+      "nonzero_mask_vertices": 314,
+      "mask_sha256": "18c58f5f3fd9b7027ce7716f60105df2880758344017a44e4681b217f02783cf"
+    },
+    {
+      "geometry_sha256": "7d5a1a8e495c76369c0224f6c2e16fc7986298f02306d3d90a3e735e4fcc584a",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 40,
+      "signed_volume_m3": 0.9950092775482915,
+      "maximum_mask_error": 2.998833577017024e-07,
+      "nonzero_mask_vertices": 352,
+      "mask_sha256": "8c28555454ea76982a441e425b66b73d42bb0fb9327c31f1d55df05e1c99b8ab"
+    }
+  ],
+  "edited": [
+    {
+      "geometry_sha256": "c29019dce7e00a33a02c72049ae07dc11662b193d452b922d249717ae0bb989b",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 0,
+      "signed_volume_m3": 1.004833464752803,
+      "maximum_mask_error": 0.0,
+      "nonzero_mask_vertices": 0,
+      "mask_sha256": "61500c53e46ef33f760ff796e11d23991d95614b9934d2942e4d7b4161f6e65f"
+    },
+    {
+      "geometry_sha256": "7939790d672ed2de384f37ef5ed7f116e81d580f10aafa3a37dbed2ca9ad8755",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 16,
+      "signed_volume_m3": 0.995295186828054,
+      "maximum_mask_error": 1.4899390970990467e-07,
+      "nonzero_mask_vertices": 543,
+      "mask_sha256": "811b9c2ed3038971a6f092c9e8a0da3b7a7ddad2c9c34e470a8c91cfe1780a80"
+    },
+    {
+      "geometry_sha256": "7d5a1a8e495c76369c0224f6c2e16fc7986298f02306d3d90a3e735e4fcc584a",
+      "vertices": 866,
+      "triangles": 1728,
+      "foam_points": 40,
+      "signed_volume_m3": 0.9950092775482915,
+      "maximum_mask_error": 1.4574236939512986e-07,
+      "nonzero_mask_vertices": 592,
+      "mask_sha256": "29e51d22d9ee9977771fb7dee02e33fe4d5065f43ffa44e27060866a949a4206"
+    }
+  ],
+  "render": {
+    "maximum_pixel_channel_change": 0.4235294423997402,
+    "resolution": [
+      64,
+      64
+    ]
+  }
+}

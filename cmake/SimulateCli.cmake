@@ -10,7 +10,7 @@ configure_file("${PROJECT_SOURCE_DIR}/cmake/simulate_schema_text.h.in"
   "${FLUIDITY_CACHE_GENERATED_DIR}/simulate_schema_text.h" @ONLY)
 function(fluidity_add_simulate_executable target)
   add_executable(${target}
-    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc)
+    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc native/cli/effects_execution.cc)
   target_include_directories(${target} PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   target_link_libraries(${target} PRIVATE fluidity_native fluidity_native_options
     flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
@@ -70,7 +70,7 @@ if(BUILD_TESTING)
   endif()
   # Ignore inherited PYTHONOPTIMIZE/PYTHONPATH while keeping Unicode paths and
   # diagnostics in UTF-8 explicitly; the driver also rejects direct -O invocation.
-  foreach(case IN ITEMS arguments schema identity inspection cpu_device cpu_execution cpu_replay execution_validation cpu_lifecycle cpu_effects)
+  foreach(case IN ITEMS arguments schema identity inspection cpu_device cpu_execution cpu_replay execution_validation cpu_lifecycle cpu_effects cpu_mesh cpu_ocean)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
@@ -88,7 +88,7 @@ if(BUILD_TESTING)
         --executable $<TARGET_FILE:fluidity_simulate> --fault-executable $<TARGET_FILE:fluidity_simulate_fault_fixture>
         --fixture $<TARGET_FILE:fluidity_simulate_fixture>)
     set_tests_properties(SimulateReliability.InterruptionCampaign PROPERTIES LABELS cuda-reliability TIMEOUT 300)
-    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_lifecycle cuda_effects)
+    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_lifecycle cuda_effects cuda_ocean)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>

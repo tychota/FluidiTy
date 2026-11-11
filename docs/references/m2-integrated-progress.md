@@ -133,14 +133,225 @@ This is a manufactured one-particle control. Contact, component births/deaths,
 droplets and topology events explicitly fail pending qualified adapters; this
 control does not close drop-to-pool, wet-wall, cavity, thin-sheet or wave gates.
 
+## Mesh publication and replay control
+
+`run --stage mesh` consumes only authenticated Simulate source frames whose
+parent point commits exist. The Mesh execution binds source identity, canonical
+physical settings and executable bytes. Its frame manifests bind the source
+payload and the prior Mesh payload. `replay --stage mesh` reconstructs the
+requested prefix and compares exact bytes without changing either cache.
+`run --resume` authenticates the existing prefix, restores the latest checked
+Mesh checkpoint and reconstructs the target frame. A missing dependency of a
+committed frame is corruption; only an absent binary manifest ends the prefix.
+
+The three-frame stationary single-particle control was measured once at two
+grid spacings with a fixed 0.25 m Gaussian scale. Wall time includes source
+authentication, reconstruction, encoding and publication. Peak RSS is the
+process high-water mark. Payload bytes cover all three Mesh frame blobs.
+
+| Spacing | Vertices/frame | Wall time/frame | Peak RSS | Payload bytes |
+| --- | --- | --- | --- | --- |
+| 0.125 m | 866 | 0.293–0.450 s | 7,733,248 bytes | 457,608 |
+| 0.0625 m | 3,830 | 0.827–1.763 s | 12,972,032 bytes | 2,022,600 |
+
+[Measurement receipt](m2-mesh-stage-control-data.json) records executable,
+fixture and resolved-scene hashes, frame timings and exact payload digests.
+The copied binaries and run caches remain under `out/m2/mesh-stage-control-*`.
+Both replay runs reproduced the final payload digest. The process and native
+tests also check unchanged source data, settings/build isolation, cancellation
+before and after manifest commit and reuse of existing bytes and timestamps.
+The full local CPU and CUDA-enabled runs passed 545 and 613 tests respectively
+with no skips. The validator passed 565 Python tests. These are host Mesh
+controls with manufactured geometry, separate from
+the historical fixed-cache experiment and the integrated breaking-wave gate.
+
+At 0.0625 m spacing, resuming from frame 1 to frame 2 took **1.702 s** median
+process wall time with checkpoint restore versus **3.981 s** rebuilding the
+prefix (three trials per executable). All six runs reproduced the same target
+payload digest and preserved the earlier files and timestamps. This measures
+one small control; it is not a throughput forecast for the wave workload.
+[Resume receipt](m2-mesh-resume-control-data.json) records individual trials
+and executable hashes. The resumed CPU suite passed 547 tests with no skips.
+
+For Simulate's particle sphere union, material partitioning now uses positive
+sphere overlap before density smoothing. Mesh refuses multiple material
+components and refuses to reuse vertex IDs for a coincident replacement
+component with no shared particle ancestry. The component matcher retains IDs
+deterministically by shared reference volume while preserving each source's
+physical target volume. Focused split, merge, birth/death and 2h/3h droplet
+hysteresis controls passed; these do not yet publish repaired components or
+droplet points. The full CPU suite passed 557 tests with no skips.
+
+## Accepted whitewater controls
+
+The accepted motion codec now stores optional whitewater births independently
+of carrier decimation. Tests retain opposing events between stored carrier
+samples, clear them on rollback, reject bad time/order/budgets, and verify
+separate cell remainders with global point IDs. Source weights use occupied
+volume at the supplied quadrature time times potential and accepted duration.
+The source statistics no longer allocate a set for each cell's 26 neighbors.
+Finishing the motion interval reuses retained buffers instead of copying all
+carrier snapshots before serialization. A [compatibility receipt](m2-motion-birth-compat-data.json)
+records six identical no-birth source payloads and point payloads across builds.
+The latest full CPU suite passed 562 tests. The preceding birth-codec/source
+checkpoint passed the clean CUDA-enabled suite of 629 tests.
+
+The resolved analytic-sphere control now publishes births from actual accepted
+CPU and CUDA Simulate states. It samples occupied volume on a fixed physical
+grid at each accepted endpoint, uses analytic curvature and the checked carrier,
+and journals events independently of the carrier sample rate. The
+[source receipt](m2-whitewater-source-control-data.json) records 24 births from
+each backend with two retained carrier samples and earlier births at step 1 of
+2. Both process tests verify exact read-only replay. The reported process wall
+times include startup and publication; they are not isolated sampler timings
+or a CPU/device numerical parity claim.
+
+The host frame control reconstructs nonempty persistent foam from those
+accepted events. Focused controls cover birth-time spray, bounded RK2 foam,
+explicit bubble fallback and foam expiry before later carrier reads. `FLWW`
+checkpoints and `FLWC` physical settings round-trip with bounded codecs.
+`run --stage whitewater` now publishes those points under exact source lineage,
+with read-only replay and verified checkpoint resume. Real process tests cover
+CPU and CUDA accepted sources, unchanged upstream bytes/timestamps, and corrupt
+point rejection. Whitewater transport itself runs on the host. The CPU analytic
+control had 40 foam and 40 bubble points at frame 2; that frame took 0.033 s
+end to end and the process peak RSS was 6,676,480 bytes. This is one small
+control, not a breaking-wave throughput measurement. The full suites passed
+572 CPU and 640 CUDA-enabled tests with no skips.
+
+## Blender foam projection control
+
+The analytic control's Mesh and Whitewater caches share the exact Simulate
+source identity. The locked Alembic bridge exports the existing surface and
+foam points to separate native carriers. The signed-volume test caught
+Blender's import winding reversal; the bridge now compensates at export.
+The native M1 point export remained byte-identical in a three-frame control.
+
+Blender 5.2.3 LTS (`e13b728c6880`) read 0, 16 and 40 baked foam points across
+the three frames. The named `fluidity_foam_mask` was exactly zero on the empty
+frame and matched an independent nearest-point calculation within `1.5e-7`
+on the moving frames. Radius, strength and material edits changed the mask
+and left each frame's vertex/index bytes, published cache files/timestamps
+and execution IDs unchanged. Two 64×64 CPU Cycles renders of the same surface
+with mask off/on differed by up to 0.424 in a pixel channel. The relocated
+`.blend` and its two relative Alembic paths reopened in a fresh process with
+the extension and solver absent and no frame handlers.
+
+[Blender receipt](m2-blender-foam-control-data.json) records geometry and
+archive hashes, foam counts, mask comparisons and render response. Run
+`tools/blender/verify_m2_foam_projection.py` in the pinned Blender with
+`--bridge`, `--mesh-cache`, `--whitewater-cache` and a new `--output` directory;
+the control uses the CPU `whitewater-effects` fixture through frame 2 and
+Mesh spacing 0.125 m / sigma 0.25 m. The same script's `--reopen` mode checks
+the saved blend without importing the extension. This qualifies the mask
+contract for the analytic control. The integrated breaking-wave bake and
+artist workflow inspection are separate and remain open.
+
+## Conservative volume control
+
+`run --stage volumes` reads authenticated Whitewater points and publishes
+conservative foam and bubble densities in a declared box. Each represented
+bubble contributes its physical gas volume. Spray contributes neither density.
+The payload stores the validity mask separately from sparse nonzero values,
+so a known empty frame stays distinct from unknown space. Deposition rejects
+positive support outside the box.
+
+The CPU analytic control used a 24³ box with 0.25 m spacing and a 0.05 m
+physical bubble radius. Frame 0 had 13,824 known voxels and no nonzero values.
+Frame 2 had 24 nonzero voxels, inventories of 40 foam and 40 bubble equivalents,
+and 0.020944 m³ of gas. Its 14,752-byte payload took 0.026 s to produce, with
+5.81 MB peak process RSS. Read-only replay reproduced its exact digest in
+0.0031 s. These are small control measurements. Blender volume export and
+rendering are still open.
+
+## Ocean Boundary analytical controls
+
+The host swell model resolves the finite-depth dispersion root once, then
+samples second-order Stokes elevation and velocity in world coordinates.
+The uniform return current cancels the depth-integrated Stokes drift to
+second order. The model rejects settings where the second elevation harmonic
+exceeds a quarter of the first. The separate absorption primitive uses an
+exponential update with a cubic spatial ramp.
+
+The tests compare against direct finite-depth formulas at the bed and in the
+water column, exercise deep water without overflowing the hyperbolic profiles,
+and check that two half steps match a full step for a frozen relaxation target.
+The reference inlet control integrates the mean return flow and independent
+Stokes drift over a 3 m water column for a 1 m wave and 4 s period.
+
+The solver consumes the resolved settings in its Waves stage after the old
+velocity snapshot and acceleration. The low-x zone relaxes toward the swell
+and the high-x zone toward rest. Both backends use the same allocation-free
+host relaxation on the existing predicted velocity staging. Open faces
+requiring continuation receive relaxation after continuation is computed,
+before pressure assembly. The optional scene table is bound to the existing
+cache identity.
+
+A ten-frame analytic solver fixture exercised 20 accepted steps on CPU and
+CUDA. Final particle positions and velocities matched across backends at
+17-digit output precision. Relative to the unforced CPU control, forcing
+changed position by 0.099989 m and velocity by 0.415088 m/s. All 7 cell keys
+and 768 face keys matched and their pressure and velocity matched at the
+FlatBuffers JSON export precision. Both caches replayed frame 9 read-only.
+This fixture has one particle and exercises the inlet velocity path.
+
+Optional inlet level control fills vacant wet sites on a bounded world
+lattice, retires particles above the prescribed surface in the inlet strip,
+and seeds new particles at the analytical velocity. The site volume is the
+cube of the authored spacing. Trial particle changes and IDs are discarded
+on rejection. CPU and CUDA produced identical calm inlet checkpoints through
+frame 10, with two new particles and no duplicate births. A moving-swell
+CPU test checked dry particle retirement and exact rollback after the inlet
+edit. The reference wave still needs source volume and level measurements.
+
+The production outlet relaxation was also tested in a staggered linear
+shallow-water flume. At a gauge 4 m before the start of the 6 m absorption
+zone, the first returning pulse carried 19.49% of incident energy at 2/s
+relaxation, compared with 100% against a closed wall. The 0.05 m grid used a
+0.00625 s timestep and a 1 m still-water depth. This isolates outlet
+reflection from breaking, pressure projection and particle transport.
+
+## Stationary beach contact control
+
+Mesh clips the density field against an inclined stationary halfspace,
+protects contact vertices during bounded volume correction, and removes
+inward continued-carrier velocity near the plane during tracking. Whitewater
+samples the accepted particle sphere union and clips source probes against
+the same halfspace. Transport clamps beach contact and removes inward
+velocity. CPU and CUDA process tests cover Simulate, Mesh, Whitewater and
+Volumes for the control, including exact read-only Whitewater replay.
+
+The three-frame CPU bake retained 813 vertex IDs on both tracked frames,
+with maximum relative volume error 0.259% and frame time 0.228–0.416 s.
+Whitewater frame 2 held 16 foam points and 48 bubbles and took 0.021 s.
+Blender 5.2.3 imported the resulting 0, 10 and 16 foam points and matched the
+nearest-point mask oracle within `7.9e-7`. Projection and material changes
+preserved vertex and index hashes and cache identity. Rendered mask changes
+reached 0.416 in one pixel channel. Relocated native caches reopened without
+the extension. The imported signed volumes agreed with the published Mesh
+volumes within `2e-8` m³. See the [Blender beach control receipt](m2-blender-beach-control-data.json).
+
+The same bake exported foam density, bubble density, gas fraction and an
+explicit known mask to an OpenVDB sequence. The native bridge verifies the
+volume payload, clock and grid against the stage settings before the
+Blender exporter reads it. File metadata names the Volumes execution,
+upstream Whitewater execution and payload digest. Existing carriers and
+the source cache remain untouched. The frame-2 VDB held 16 foam and 48
+bubble equivalents and 0.025133 m³ gas, within `1e-7` relative error after
+float conversion. The frame-0 density grids were empty with 13,824 known
+voxels. The three files were 25–56 kB. The combined blend reopened against
+relative Alembic and OpenVDB paths in a fresh process. Reproduce with
+`tools/blender/verify_m2_volume_playback.py` in Blender 5.2.3. The
+[OpenVDB receipt](m2-blender-beach-volume-data.json) records the file
+hashes and inventories.
+
 ## Open integrated gates
 
-The accepted observer does not yet publish whitewater source events. Mesh stage
-CLI/publication, local repair, droplet handling and production replay are
-unfinished. Whitewater transport/publication,
-volume export/publication, Ocean Boundary and the Blender foam workflow are
-unfinished. No integrated breaking-wave bake or Blender M2 inspection has
-qualified them. Full CPU/device numerical qualification remains open.
+The three-frame stationary beach control uses a single liquid particle.
+Wave-scale source sampling, wetting and topology transitions, droplet
+publication and outlet reflection in the particle solver still need
+qualification. The full breaking-wave workflow, acceptance bake and
+inspection remain open.
 
 The uniform M1 execution plan is still bounded to 1,024 particles, 128 blocks,
 4,096 cells and 24,576 faces. Its small Blender bake does not demonstrate the
