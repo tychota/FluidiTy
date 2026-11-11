@@ -6,6 +6,23 @@ CUDA operators for uniform MAC transfers, pressure and liquid boundary stages, a
 build and fixture directories for every configuration. The
 [toolchain matrix](toolchains.md) records the measured Windows configuration and its recipe revisions.
 
+## Native command line
+
+The default native build produces `fluidity` next to `fluidity_simulate` in the preset build
+directory. Run `fluidity --help` or `fluidity simulate --help` for available options.
+
+```text
+fluidity devices
+fluidity validate scene.flrs
+fluidity simulate scene.flrs --cache bake
+fluidity inspect bake --frame 1
+fluidity replay bake --frame 1 --substep 0
+```
+
+Use a resolved FLRS scene from the same build. Supply `--initial-state initial.flst` when the
+scene requires a separate frame-zero state. Both executables emit versioned JSON Lines during
+operations. The Blender add-on invokes `fluidity_simulate` using its machine interface.
+
 ## Windows prerequisites
 
 - An x64 Visual Studio 2022 Native Tools PowerShell with the MSVC C++ workload and Windows SDK.

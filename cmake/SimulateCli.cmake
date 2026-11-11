@@ -1,4 +1,5 @@
 find_package(Threads REQUIRED)
+find_package(args 6.4.6 EXACT CONFIG REQUIRED)
 # Embed the exact runtime schema at configure time; reconfigure when it changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs")
@@ -20,6 +21,17 @@ function(fluidity_add_simulate_executable target)
   endif()
 endfunction()
 fluidity_add_simulate_executable(fluidity_simulate)
+target_sources(fluidity_simulate PRIVATE native/cli/public_cli.cc)
+target_compile_definitions(fluidity_simulate PRIVATE ARGS_NOEXCEPT FLUIDITY_PUBLIC_CLI)
+target_link_libraries(fluidity_simulate PRIVATE taywee::args)
+
+# Both entry points must hash to the same executable identity for FLRS scenes
+# and existing caches. The executable selects the interface by its filename.
+set(fluidity_cli_executable "$<TARGET_FILE_DIR:fluidity_simulate>/fluidity${CMAKE_EXECUTABLE_SUFFIX}")
+add_custom_target(fluidity ALL
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:fluidity_simulate>" "${fluidity_cli_executable}"
+  DEPENDS fluidity_simulate
+  VERBATIM)
 if(BUILD_TESTING)
   add_executable(fluidity_simulate_cuda_identity_tests
     native/tests/test_simulate_cuda_identity.cc native/cli/simulate_cuda_identity.cc)
@@ -47,6 +59,10 @@ if(BUILD_TESTING)
   endforeach()
   add_executable(fluidity_simulate_fixture native/tests/simulate_fixture.cc)
   target_link_libraries(fluidity_simulate_fixture PRIVATE fluidity_native fluidity_native_options)
+  add_test(NAME SimulateCli.public_interface
+    COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_fluidity_cli.py"
+      "${fluidity_cli_executable}" "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>")
+  set_tests_properties(SimulateCli.public_interface PROPERTIES LABELS cli)
   set(simulate_cuda_option)
   if(FLUIDITY_ENABLE_CUDA)
     set(simulate_cuda_option --cuda)

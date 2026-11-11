@@ -586,7 +586,25 @@ Checkpoint Simulate persistent particles/grid/topology/control/body/source state
 
 ### 14.2 User-facing and file interfaces
 
-CLI: `run --stage`, `check`, `schema`, `step`, `replay --frame --substep`, `device-info`; frame range, resume, preview and trace options use one schema shared with the add-on. Errors carry `E-<DOMAIN>-<NAME>`, object/field and cause; warnings carry documented thresholds and indicate potentially compromised results. Information logs are not warnings. Default scenes have zero warnings.
+The native build exposes `fluidity` for terminal use. Command and option definitions generate
+root and per-command help. Current commands operate on canonical FLRS scenes and native caches.
+
+- `fluidity simulate scene.flrs --cache bake` runs the simulate stage. It accepts frame ranges,
+  resume, preview, backend selection and tracing.
+- `fluidity validate scene.flrs` verifies a resolved scene. `fluidity inspect bake --frame 120`
+  verifies a committed cache frame. Both are read-only.
+- `fluidity step scene.flrs --cache bake` advances one substep without publishing.
+  `fluidity replay bake --frame 120 --substep 0` verifies and replays a cached clock.
+- `fluidity devices` reports CPU availability and CUDA build support. Add `--backend cuda`
+  to probe a CUDA device. `fluidity schema` prints the resolved scene schema and defaults.
+
+Conan 2 pins Taywee Args, which the CLI compiles in exception-free mode. The CLI delegates to
+the shared command validation and simulation handlers. Both entry points use the same executable
+bytes so resolved scenes, caches and checkpoints share build identity. Blender continues to use
+`fluidity_simulate` with its existing `run --stage`, `check`, `schema`, `step`, `replay` and
+`device-info` syntax. Operational output is protocol-v1 JSON Lines. Errors carry
+`E-<DOMAIN>-<NAME>`, object/field and cause. Warnings carry documented thresholds and indicate
+potentially compromised results. Default scenes have zero warnings.
 
 The subprocess writes **versioned JSON Lines protocol only to stdout** and structured logs to stderr. It emits a heartbeat at least 1 Hz, including the last coherently known job progress, without pretending an unfinished GPU step is committed. A stdin `cancel` request stops at a safe boundary and preserves published output; timeout fallback uses platform-appropriate termination. Blender `bpy` calls remain on its main thread, with timer polling of subprocess events and transient job state outside persistent Blender ID data. FlatBuffers defaults are materialized in persisted resolved scene/settings records **and** fingerprints (`ForceDefaults` or equivalent), so changing a later default cannot reinterpret an old cache, numeric field/enum IDs are stable, and `flatc --conform` runs in CI; settings evolution is not inferred from Python dictionaries.
 
@@ -659,7 +677,7 @@ Blender's extension, translation, timer and asset APIs provide the integration p
 
 Production uses C++20, CUDA on Windows/Linux and a CPU backend on macOS. Initial Blender floor is5.2 LTS. Google C++ style with mandatory braces, `#pragma once`,100 columns; Google Python via ruff. `.h` is portable host/device, `.cuh` requires nvcc, `.cu` kernels, `.cc` host. One `FLUIDITY_HD` definition. No host exceptions: Status/StatusOr; device status bits are decoded at a safe boundary. Abseil is host-only. Prefer CUB/libcu++ to Thrust. No modules, coroutines, production RTTI, intricate metaprogramming or `using namespace`; no production BLAS dependency.
 
-CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
+CMake presets, Conan2 and Ninja; clang-format, clang-tidy, cpplint, ruff, pre-commit, warnings-as-errors. Approved dependency families are OpenVDB, Alembic, FlatBuffers, Abseil, CUB/libcu++, GoogleTest/Benchmark, Taywee Args for the native CLI and a selected content hash. The Python reference uses uv with a committed `uv.lock` and Python 3.13. NumPy/SciPy and Lean/mathlib belong to reference/proof tooling, not a runtime BLAS requirement; Lean dependencies are managed by Lake. A candidate inference engine is a separate optional dependency decision after artifact reproduction and terms review. Pin concrete compatible compiler/toolkit/library versions in the plan and CI from actual builds; do not guess a universal version guarantee here.
 
 No download of an unlicensed checkpoint or inferred license grants distribution permission. Select the project's own code/documentation license before public release, with third-party notices; this specification does not silently choose a license for the owner. Do not commit proprietary binaries, model weights, personal paths, source PDFs or internal review logs. Keep portable public source evidence and document build instructions.
 
