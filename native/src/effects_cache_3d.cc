@@ -155,6 +155,18 @@ EffectsCache3D::EffectsCache3D(
     : root_(std::move(root)), identity_(identity), limits_(limits), read_only_(read_only) {
 }
 
+absl::StatusOr<LiquidDigest3D> EffectsExecutionId3D(const EffectsIdentity3D& identity) {
+  if (!ValidIdentity(identity)) {
+    return absl::InvalidArgumentError("invalid effects identity");
+  }
+  std::array<std::uint8_t, 97> bytes{};
+  bytes[0] = static_cast<std::uint8_t>(identity.stage);
+  std::copy(identity.upstream_execution.begin(), identity.upstream_execution.end(), bytes.begin() + 1);
+  std::copy(identity.settings.begin(), identity.settings.end(), bytes.begin() + 33);
+  std::copy(identity.build.begin(), identity.build.end(), bytes.begin() + 65);
+  return detail::DomainDigest("fluidity/effects/execution/v1", bytes);
+}
+
 absl::StatusOr<EffectsCache3D>
 EffectsCache3D::Create(const std::filesystem::path& root, EffectsIdentity3D identity, LiquidCacheLimits3D limits) {
   if (!ValidIdentity(identity)) {
@@ -201,6 +213,63 @@ EffectsCache3D::OpenForInspection(const std::filesystem::path& root, LiquidCache
 
 const EffectsIdentity3D& EffectsCache3D::identity() const {
   return identity_;
+}
+
+absl::Status EffectsCache3D::PublishStageSettings(
+    std::span<const std::uint8_t> settings,
+    LiquidCachePublishControl3D control
+) const {
+  if (read_only_ || identity_.stage == EffectsStage3D::kSource) {
+    return absl::FailedPreconditionError("stage settings publication is not authorized");
+  }
+  if (settings.empty()) {
+    return absl::InvalidArgumentError("stage settings must be nonempty");
+  }
+  if (settings.size() > limits_.maximum_bytes) {
+    return absl::ResourceExhaustedError("stage settings exceed byte limit");
+  }
+  if (LiquidContentDigest3D(settings) != identity_.settings) {
+    return absl::FailedPreconditionError("stage settings differ from the immutable identity");
+  }
+  files::NativeFile lease;
+  EFFECTS_TRY(files::Lease(root_, lease, false));
+  const auto current = ReadRootIdentity(root_, limits_);
+  if (!current.ok()) {
+    return current.status();
+  }
+  if (*current != identity_) {
+    return absl::DataLossError("effects root identity changed");
+  }
+  return files::PublishBytes(
+      root_ / "settings.flec",
+      settings,
+      limits_,
+      control,
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+absl::StatusOr<LiquidCacheBytes3D> EffectsCache3D::ReadStageSettings() const {
+  if (identity_.stage == EffectsStage3D::kSource) {
+    return absl::FailedPreconditionError("source settings belong to resolved Simulate");
+  }
+  files::NativeFile lease;
+  EFFECTS_TRY(files::Lease(root_, lease, false, true));
+  const auto current = ReadRootIdentity(root_, limits_);
+  if (!current.ok()) {
+    return current.status();
+  }
+  if (*current != identity_) {
+    return absl::DataLossError("effects root identity changed");
+  }
+  auto bytes = files::ReadBytes(root_ / "settings.flec", limits_);
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  if (LiquidContentDigest3D(bytes->values()) != identity_.settings) {
+    return absl::DataLossError("stage settings content is corrupt");
+  }
+  return std::move(*bytes);
 }
 
 absl::Status EffectsCache3D::Publish(

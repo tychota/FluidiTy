@@ -17,6 +17,11 @@ struct EffectsIdentity3D {
   LiquidDigest3D build{};  // Exact execution artifact.
   bool operator==(const EffectsIdentity3D&) const = default;
 };
+// Stable execution key: domain-separated BLAKE3 over stage byte followed by
+// upstream/settings/build digests in that order. Domain is ASCII
+// "fluidity/effects/execution/v1" plus NUL. No paths, capacities or process state.
+// Invalid stage or zero digest fields return InvalidArgument; no partial key.
+absl::StatusOr<LiquidDigest3D> EffectsExecutionId3D(const EffectsIdentity3D& identity);
 struct EffectsCommit3D {
   EffectsIdentity3D identity;
   LiquidClock3D clock;
@@ -40,6 +45,19 @@ class EffectsCache3D {
   static absl::StatusOr<EffectsCache3D>
   OpenForInspection(const std::filesystem::path& root, LiquidCacheLimits3D limits = {});
   const EffectsIdentity3D& identity() const;
+  // Stores bounded nonempty canonical Mesh/Whitewater/Volumes settings under
+  // settings.flec, requiring their content digest to equal identity.settings.
+  // Identical replay preserves bytes/mtime; a different configuration or a
+  // read-only/source store returns FailedPrecondition. Source settings belong
+  // to the resolved Simulate parent instead. No-replace durability and native
+  // cancellation/I/O behavior match frame publication.
+  absl::Status PublishStageSettings(std::span<const std::uint8_t> settings, LiquidCachePublishControl3D control = {})
+      const;
+  // Authenticates existing derived-stage settings against the captured identity.
+  // The stage decoder owns semantic validation. Source stores return
+  // FailedPrecondition, missing files NotFound, corrupt content DataLoss, and
+  // excessive byte count ResourceExhausted. Never creates files.
+  absl::StatusOr<LiquidCacheBytes3D> ReadStageSettings() const;
   // Publishes a nonempty bounded payload at a completed clock. Frame zero has zero
   // time, step and epoch and no previous payload. Later frames must name the verified
   // preceding payload and advance time and epoch. Identical replay preserves bytes

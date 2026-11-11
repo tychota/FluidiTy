@@ -103,31 +103,6 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   }
   return result + ']';
 }
-absl::StatusOr<LiquidPointFrame3D> BuildPointFrame(const LiquidState3D& state) {
-  LiquidPointFrame3D result;
-  result.clock = state.clock;
-  auto points = LiquidRecords3D<LiquidPoint3D>::Create(state.particles.size());
-  if (!points.ok()) {
-    return points.status();
-  }
-  EXEC_TRY(points->Resize(state.particles.size()));
-  for (std::size_t i = 0; i < state.particles.size(); ++i) {
-    const auto& particle = state.particles[i];
-    // Equivalent-volume spherical radius in meters, using accepted V0 * J.
-    const double radius = std::cbrt(3 * particle.reference_volume * particle.volume_ratio / (4 * std::acos(-1.0)));
-    (*points)[i] = {
-        .id = particle.id,
-        .tag = particle.tag,
-        .world_position = particle.world_position,
-        .world_velocity = particle.world_velocity,
-        .radius = radius,
-        .volume_ratio = particle.volume_ratio,
-        .level = 0,
-    };
-  }
-  result.points = std::move(*points);
-  return result;
-}
 // Compare regenerated point bytes with the committed manifest for preview or replay.
 // Intermediate frames may lack a publication. Replay requires its final frame.
 absl::Status
@@ -137,7 +112,7 @@ VerifyCommittedPointFrame(const LiquidCache3D& cache, const LiquidState3D& state
     return !require_publication && absl::IsNotFound(committed_frame.status()) ? absl::OkStatus()
                                                                               : committed_frame.status();
   }
-  auto points = BuildPointFrame(state);
+  auto points = BuildLiquidPointFrame3D(state);
   if (!points.ok()) {
     return points.status();
   }
@@ -878,7 +853,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (!publish) {
       EXEC_TRY(VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame));
     }
-    auto points = BuildPointFrame(*state);
+    auto points = BuildLiquidPointFrame3D(*state);
     if (!points.ok()) {
       return points.status();
     }

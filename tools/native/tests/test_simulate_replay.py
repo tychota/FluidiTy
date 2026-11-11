@@ -779,6 +779,37 @@ def case_cpu_effects(executable, fixture, directory, cuda):
     effects_case(executable, fixture, directory, "cpu")
 
 
+def case_cpu_mesh(executable, fixture, directory, cuda):
+    scene, initial = make_scene(executable, fixture, directory, "cpu", "effects")
+    source = directory / "simulate"
+    mesh = directory / "mesh"
+    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--cache", source, *initial,
+            "--frame-end", 2)
+    source_before = snapshot(source)
+    command = ["run", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+               "--surface-spacing", "0.125", "--surface-sigma", "0.25"]
+    result = execute(executable, *command, "--frame-end", 1)[-1]
+    assert result["stage"] == "mesh" and result["backend"] == "cpu" and result["frame"] == 1
+    assert result["vertex_count"] > 0 and result["triangle_count"] > 0
+    assert result["retained_ids"] == result["vertex_count"]
+    assert abs(result["volume_relative_error"]) <= 0.005
+    assert result["frame_wall_seconds"] > 0 and result["peak_process_resident_bytes"] > 0
+    before = snapshot(mesh)
+    replay = invoke(executable, "replay", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+                    "--frame", 1, "--substep", 0)
+    assert replay["payload_digest"] == result["payload_digest"]
+    assert snapshot(mesh) == before, "Mesh replay must be entirely read-only"
+    resumed = execute(executable, *command, "--resume", "--frame-end", 2)[-1]
+    assert resumed["frame"] == 2
+    after = snapshot(mesh)
+    assert all(after[path] == value for path, value in immutable_cache_files(before).items())
+    assert snapshot(source) == source_before, "Mesh must leave source cache unchanged"
+    invoke(executable, *command, "--frame-end", 1, success=False)
+    invalid = invoke(executable, "run", "--stage", "mesh", "--cache", source, "--output-cache", mesh,
+                     "--surface-spacing", "nan", success=False)
+    assert invalid["code"] == "E-CLI-INVALID_ARGUMENT"
+
+
 def case_cuda_effects(executable, fixture, directory, cuda):
     cuda_payloads = effects_case(executable, fixture, directory, "cuda")
     control = directory / "cpu-control"
@@ -800,7 +831,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

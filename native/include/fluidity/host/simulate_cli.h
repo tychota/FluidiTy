@@ -19,12 +19,20 @@ enum class CommandKind {
   kReplay,
   kDeviceInfo
 };
+enum class CommandStage {
+  kSimulate,
+  kMesh,
+};
 // Parsed process inputs own their paths. Scene paths name the shared FLRS binary,
 // not a second JSON settings format. Frame/substep numbers are unsigned physical
 // ordinals, not counts; frame_start/end are inclusive. A missing backend inherits
 // the resolved scene for execution (device-info defaults explicitly to CPU).
 struct Command {
   CommandKind kind = CommandKind::kSchema;
+  CommandStage stage = CommandStage::kSimulate;
+  std::filesystem::path output_cache_directory;  // Derived-stage output; cache_directory remains the Simulate source.
+  double surface_spacing_m = 0.0125;
+  double surface_sigma_m = 0.025;
   std::filesystem::path scene_path;
   std::filesystem::path initial_state_path;  // Optional exact raw FLST upstream, never a checkpoint envelope.
   std::filesystem::path cache_directory;

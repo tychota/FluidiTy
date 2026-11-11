@@ -133,11 +133,42 @@ This is a manufactured one-particle control. Contact, component births/deaths,
 droplets and topology events explicitly fail pending qualified adapters; this
 control does not close drop-to-pool, wet-wall, cavity, thin-sheet or wave gates.
 
+## Mesh publication and replay control
+
+`run --stage mesh` consumes only authenticated Simulate source frames whose
+parent point commits exist. The Mesh execution binds source identity, canonical
+physical settings and executable bytes. Its frame manifests bind the source
+payload and the prior Mesh payload. `replay --stage mesh` reconstructs the
+requested prefix and compares exact bytes without changing either cache.
+`run --resume` currently rebuilds the prefix and reuses identical publications;
+restoring a verified checkpoint without repeating reconstruction is open.
+
+The three-frame stationary single-particle control was measured once at two
+grid spacings with a fixed 0.25 m Gaussian scale. Wall time includes source
+authentication, reconstruction, encoding and publication. Peak RSS is the
+process high-water mark. Payload bytes cover all three Mesh frame blobs.
+
+| Spacing | Vertices/frame | Wall time/frame | Peak RSS | Payload bytes |
+| --- | --- | --- | --- | --- |
+| 0.125 m | 866 | 0.293–0.450 s | 7,733,248 bytes | 457,608 |
+| 0.0625 m | 3,830 | 0.827–1.763 s | 12,972,032 bytes | 2,022,600 |
+
+[Measurement receipt](m2-mesh-stage-control-data.json) records executable,
+fixture and resolved-scene hashes, frame timings and exact payload digests.
+The copied binaries and run caches remain under `out/m2/mesh-stage-control-*`.
+Both replay runs reproduced the final payload digest. The process and native
+tests also check unchanged source data, settings/build isolation, cancellation
+before and after manifest commit and reuse of existing bytes and timestamps.
+The full local CPU and CUDA-enabled runs passed 545 and 613 tests respectively
+with no skips. The validator passed 565 Python tests. These are host Mesh
+controls with manufactured geometry, separate from
+the historical fixed-cache experiment and the integrated breaking-wave gate.
+
 ## Open integrated gates
 
-The accepted observer does not yet publish whitewater source events. Mesh stage
-CLI/publication, local repair, droplet handling and production replay are
-unfinished. Whitewater transport/publication,
+The accepted observer does not yet publish whitewater source events. Mesh
+local repair, contact, component lineage, droplet handling and checkpoint-based
+resume remain open. Whitewater transport/publication,
 volume export/publication, Ocean Boundary and the Blender foam workflow are
 unfinished. No integrated breaking-wave bake or Blender M2 inspection has
 qualified them. Full CPU/device numerical qualification remains open.

@@ -29,7 +29,7 @@ foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_
 endforeach()
 add_custom_target(fluidity_cache_schemas DEPENDS ${cache_generated_headers})
 set(effects_schema_dir "${PROJECT_SOURCE_DIR}/schemas/effects")
-foreach(schema IN ITEMS stage_manifest motion_frame surface_frame)
+foreach(schema IN ITEMS stage_manifest motion_frame surface_frame mesh_settings)
   set(header "${FLUIDITY_CACHE_GENERATED_DIR}/${schema}_generated.h")
   add_custom_command(OUTPUT "${header}"
     COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --cpp --scoped-enums --gen-mutable --reflect-names

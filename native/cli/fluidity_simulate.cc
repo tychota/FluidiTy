@@ -2,7 +2,9 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <locale>
 #include <set>
+#include <sstream>
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
@@ -13,6 +15,7 @@
 #include "fluidity/host/simulate_cli.h"
 #include "frame_manifest_generated.h"
 #include "liquid_state_generated.h"
+#include "mesh_execution.h"
 #include "point_frame_generated.h"
 #include "resolved_scene_generated.h"
 #include "simulate_job.h"
@@ -315,7 +318,9 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
   std::set<std::string_view> seen;
   for (std::size_t i = 1; i < arguments.size(); ++i) {
     const std::string_view flag = arguments[i];
-    const bool allowed = (flag == "--stage" && run) || (flag == "--scene" && (execution || check))
+    const bool allowed = (flag == "--stage" && (run || replay)) || (flag == "--scene" && (execution || check))
+        || (flag == "--output-cache" && (run || replay))
+        || ((flag == "--surface-spacing" || flag == "--surface-sigma") && run)
         || (flag == "--initial-state" && execution) || (flag == "--cache" && (execution || check))
         || (flag == "--backend" && (execution || device)) || (flag == "--device" && (execution || device))
         || (flag == "--frame" && (replay || check)) || (flag == "--substep" && replay)
@@ -350,8 +355,27 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
     }
     const auto& value = arguments[i];
     if (flag == "--stage") {
-      if (value != "simulate") {
-        return invalid(flag, value, "only the simulate stage is supported");
+      if (value == "mesh") {
+        command.stage = CommandStage::kMesh;
+      } else if (value != "simulate") {
+        return invalid(flag, value, "stage must be simulate or mesh");
+      }
+    } else if (flag == "--output-cache") {
+      command.output_cache_directory = PathFromUtf8(value);
+    } else if (flag == "--surface-spacing" || flag == "--surface-sigma") {
+      // Classic locale keeps the wire CLI independent of the user's language.
+      // Qualified Apple libc++ does not provide floating from_chars.
+      std::istringstream input(value);
+      input.imbue(std::locale::classic());
+      double metres = 0;
+      input >> std::noskipws >> metres;
+      if (input.fail() || !input.eof() || !std::isfinite(metres) || metres <= 0) {
+        return invalid(flag, value, "expected a finite positive distance in metres");
+      }
+      if (flag == "--surface-spacing") {
+        command.surface_spacing_m = metres;
+      } else {
+        command.surface_sigma_m = metres;
       }
     } else if (flag == "--scene") {
       command.scene_path = PathFromUtf8(value);
@@ -392,7 +416,32 @@ absl::StatusOr<Command> ParseCommand(std::span<const std::string> arguments, Dia
   if (run && !seen.contains("--stage")) {
     return invalid("stage", "", "run requires --stage simulate");
   }
-  if ((run || step) && command.scene_path.empty()) {
+  const bool mesh = command.stage == CommandStage::kMesh;
+  if (mesh) {
+    if ((!run && !replay) || command.output_cache_directory.empty()) {
+      return invalid("output-cache", "", "Mesh run/replay requires its own output cache");
+    }
+    for (const auto flag :
+         {"--scene",
+          "--initial-state",
+          "--backend",
+          "--device",
+          "--preview",
+          "--trace",
+          "--trace-geometry",
+          "--measure-job"}) {
+      if (seen.contains(flag)) {
+        return invalid(flag, "", "option is not supported for Mesh; source comes from --cache");
+      }
+    }
+    if (replay && command.substep.value_or(0) != 0) {
+      return invalid("substep", "", "Mesh replay requires a completed frame");
+    }
+  } else if (seen.contains("--output-cache") || seen.contains("--surface-spacing")
+             || seen.contains("--surface-sigma")) {
+    return invalid("stage", "", "derived output and surface settings require --stage mesh");
+  }
+  if ((run || step) && !mesh && command.scene_path.empty()) {
     return invalid("scene", "", "resolved scene is required");
   }
   if (execution && command.cache_directory.empty()) {
@@ -497,6 +546,9 @@ absl::Status ProtocolWriter::Error(const absl::Status& status, const Diagnostic&
 absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
   if (diagnostic == nullptr) {
     return absl::InvalidArgumentError("");
+  }
+  if (command.stage == CommandStage::kMesh) {
+    return ExecuteMesh(command, writer, diagnostic);
   }
   if (command.kind == CommandKind::kCheck) {
     return CheckScene(command, writer, diagnostic);
