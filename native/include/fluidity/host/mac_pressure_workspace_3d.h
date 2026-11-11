@@ -10,7 +10,8 @@
 namespace fluidity {
 namespace pressure_internal {
 struct BoundedCudaPressureAccess3D;
-}
+class PreparedMacPressureSystem3D;
+}  // namespace pressure_internal
 // Scalar observations of the original checked pressure system. These
 // observations do not participate in the solve or its stopping decisions.
 struct MacPressureFrozenMeasurement3D {
@@ -64,6 +65,13 @@ class MacPressureWorkspace3D {
   // Strong nothrow reservation: overflow/OOM returns ResourceExhausted without a
   // partial owner. Capacities count cells/faces, not owned full-grid slots.
   static absl::StatusOr<MacPressureWorkspace3D> Create(std::size_t cell_capacity, std::size_t face_capacity);
+  // Project a checked explicit graph with the same numerical and publication
+  // contract as the uniform workspace entry. The system is borrowed for the
+  // call. A uniform prepared system returns InvalidArgument. Errors preserve the preceding publication.
+  absl::StatusOr<MacPressureProjectionView3D> ProjectPrepared(
+      const pressure_internal::PreparedMacPressureSystem3D& system,
+      MacPressureSolverOptions3D options = {}
+  );
   // Exact reservation returned by QueryMacPressureWorkspaceBytes3D.
   MacPressureWorkspaceBytes3D bytes() const {
     return bytes_;
@@ -94,6 +102,13 @@ class MacPressureWorkspace3D {
       const LiquidPressureProblemView3D& problem,
       MacPressureSolverOptions3D options,
       MacPressureWorkspace3D& workspace
+  );
+  template <typename PrepareUpload>
+  absl::StatusOr<MacPressureProjectionView3D> ProjectWithPreparation(
+      std::size_t cell_count,
+      std::size_t face_count,
+      MacPressureSolverOptions3D options,
+      PrepareUpload prepare_upload
   );
   LiquidRecords3D<std::max_align_t> scratch_;
   std::array<ProjectionBank, 2> projections_;

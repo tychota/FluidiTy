@@ -246,19 +246,32 @@ CudaProjectMacPressure3D(const MacPressureInputs3D& inputs, MacPressureSolverOpt
   if (!system.ok()) {
     return system.status();
   }
-  const auto hierarchy = pressure_internal::BuildMacPressureHierarchy3D(*system);
+  return pressure_internal::CudaProjectPreparedMacPressure3D(*system, options);
+}
+
+absl::StatusOr<CudaMacPressureProjection3D> pressure_internal::CudaProjectPreparedMacPressure3D(
+    const PreparedMacPressureSystem3D& system,
+    MacPressureSolverOptions3D options
+) {
+  if (options.max_iterations == 0 || options.max_iterations > 256) {
+    return absl::InvalidArgumentError("pressure iteration budget must be in [1,256]");
+  }
+  if (system.cells().empty()) {
+    return absl::InvalidArgumentError("prepared pressure system requires cells");
+  }
+  const auto hierarchy = pressure_internal::BuildMacPressureHierarchy3D(system);
   if (!hierarchy.ok()) {
     return hierarchy.status();
   }
-  const auto criteria = pressure_internal::MacPressureStoppingCriteria(*system);
+  const auto criteria = pressure_internal::MacPressureStoppingCriteria(system);
   if (!criteria.ok()) {
     return criteria.status();
   }
-  const auto initial = pressure_internal::InitialMacPressure3D(*system);
+  const auto initial = pressure_internal::InitialMacPressure3D(system);
   if (!initial.ok()) {
     return initial.status();
   }
-  const auto upload = PrepareUpload(*system, *hierarchy, *initial);
+  const auto upload = PrepareUpload(system, *hierarchy, *initial);
   PressureDevice3D device{};
   device.cell_count = upload.cells.size();
   device.face_count = upload.links.size();
@@ -288,8 +301,8 @@ CudaProjectMacPressure3D(const MacPressureInputs3D& inputs, MacPressureSolverOpt
   projection.true_residuals.assign(output.begin() + 2 * count, output.begin() + 3 * count);
   projection.cell_constraint_defects.assign(output.begin() + 3 * count, output.begin() + 4 * count);
   projection.corrected_face_velocities.assign(output.begin() + 4 * count, output.end());
-  projection.integrated_rhs.assign(system->integrated_rhs().begin(), system->integrated_rhs().end());
-  projection.gauge_cell_ordinals.assign(system->gauge_cell_ordinals().begin(), system->gauge_cell_ordinals().end());
+  projection.integrated_rhs.assign(system.integrated_rhs().begin(), system.integrated_rhs().end());
+  projection.gauge_cell_ordinals.assign(system.gauge_cell_ordinals().begin(), system.gauge_cell_ordinals().end());
   projection.diagnostics = {
       .iteration_count = state.iterations,
       .multigrid_level_count = hierarchy->levels.size(),

@@ -18,4 +18,13 @@ struct CudaMacPressureProjection3D {
 // match ProjectMacPressure3D; unavailable hardware returns kFailedPrecondition.
 absl::StatusOr<CudaMacPressureProjection3D>
 CudaProjectMacPressure3D(const MacPressureInputs3D& inputs, MacPressureSolverOptions3D options = {});
+namespace pressure_internal {
+class PreparedMacPressureSystem3D;
+
+// Project a checked explicit graph on CUDA device 0. The system is borrowed
+// for the call. Units, numerical limits and error behavior match the uniform
+// CUDA entry point, with results in prepared cell and face order.
+absl::StatusOr<CudaMacPressureProjection3D>
+CudaProjectPreparedMacPressure3D(const PreparedMacPressureSystem3D& system, MacPressureSolverOptions3D options = {});
+}  // namespace pressure_internal
 }  // namespace fluidity

@@ -50,6 +50,10 @@ struct ExplicitMacPressureFace3D {
 // storage. The following views borrow from this object and follow input order.
 class PreparedMacPressureSystem3D {
  public:
+  // True for a checked graph with explicit subface incidence.
+  bool is_explicit_graph() const {
+    return is_explicit_graph_;
+  }
   std::span<const PreparedMacPressureCell3D> cells() const;
   std::span<const FrozenMacPressureLink3D> links() const;
   std::span<const double> integrated_rhs() const;
@@ -69,6 +73,7 @@ class PreparedMacPressureSystem3D {
 
   absl::Status Finalize();
 
+  bool is_explicit_graph_ = false;
   std::vector<PreparedMacPressureCell3D> cells_;
   std::vector<FrozenMacPressureLink3D> links_;
   std::vector<double> integrated_rhs_;
