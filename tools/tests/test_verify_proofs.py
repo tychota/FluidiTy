@@ -194,7 +194,31 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 29
+    assert len(verify.TARGETS) == 33
+
+
+def test_m2_trilinear_volume_contracts_are_exported_and_audited():
+    required = {
+        'Fluidity.trilinear_volume_weight_partition',
+        'Fluidity.trilinear_volume_weight_nonnegative',
+        'Fluidity.trilinear_deposition_conserves_inventory',
+        'Fluidity.trilinear_batch_conserves_inventory',
+    }
+    assert required <= set(verify.TARGETS)
+
+
+@pytest.mark.parametrize('missing', [
+    'Fluidity.trilinear_volume_weight_partition',
+    'Fluidity.trilinear_volume_weight_nonnegative',
+    'Fluidity.trilinear_deposition_conserves_inventory',
+    'Fluidity.trilinear_batch_conserves_inventory',
+])
+def test_m2_volume_missing_closure_fails_audit(missing):
+    output = '\n'.join(
+        f"'{name}' does not depend on any axioms" for name in verify.TARGETS if name != missing
+    )
+    with pytest.raises(ValueError, match='missing target'):
+        verify.audit_axioms(output)
 
 
 def test_axiom_free_closures_are_checked():
