@@ -24,6 +24,7 @@ lake env lean Fluidity/UniformTile.lean
 lake env lean Fluidity/LiquidTransaction.lean
 lake env lean Fluidity/VolumeTransport.lean
 lake env lean Fluidity/Resampling.lean
+lake env lean Fluidity/Merge.lean
 ```
 
 The default build includes typed consumers in `Fluidity.lean`: concrete tensor reconstruction,
@@ -428,7 +429,7 @@ the proof does not authorize clipping or renormalizing an incomplete stencil.
 | `trilinear_deposition_conserves_inventory` | One complete splat preserves its assigned inventory. |
 | `trilinear_batch_conserves_inventory` | Any finite batch, including an empty one, preserves its total. |
 
-The target registry now contains 38 closures. These four targets require the same
+The target registry now contains 42 closures. These four targets require the same
 pinned Lean build, axiom audit, export and independent checker receipt before
 qualification. Proof-tool Python tests check that they cannot be omitted; they
 do not execute the Lean kernel. The native tests separately measure floating
@@ -456,3 +457,27 @@ mixed-row and pure diagonal/off-diagonal cases, including the angular moments
 and the zero quadratic deficit. The fixture exercises the uniform resampling
 algebra. Runtime geometry and phase qualification must independently establish
 unmasked support, affine eligibility and child admissibility.
+
+## F4 merge conservation and rowwise covariance gate
+
+The merge takes the mass-weighted position and velocity and computes the target
+affine row from the child cross moment and the inverse of its positive-definite
+target support. Each velocity row has its own PSD gap between the target
+mass-weighted support and the child covariance. The row energy proof completes
+the child velocity and affine squares at the target affine row, then applies
+that row's PSD gap. This yields the F4 energy bound without a pseudoinverse.
+
+| Audited target | Result |
+| --- | --- |
+| `merge_affine_row_matches_cross_moment` | The mass-weighted target affine spatial moment equals the child cross moment. |
+| `merge_covariance_gate_bounds_row_energy` | The PSD gate bounds the target affine energy by the centered child kinetic plus affine energy for that row. |
+| `merge_preserves_moments_and_bounds_energy` | With total child mass and mass-weighted means, preserves the spatial and velocity first moments and every F2 spatial-momentum entry. The latter preserves angular momentum. The full target energy is bounded by the full child energy. |
+| `merge_preserves_volume_inventories` | With target reference volume equal to its child sum and positive volume denominators, preserves current volume and each constituent volume using J V0 weights. |
+
+The counterstreaming reference fixture uses distinct child rows and support
+matrices. It checks energy 28 before and 17/8 after, angular momentum −6,
+and current constituent volumes 2 and 9 with reference volumes 1 and 3.
+Lowering one target row alone makes its covariance gap indefinite and
+triggers refusal. Geometry and EOS admissibility, phase/body/side matching,
+and conservative floating eigenvalue tolerances require separate runtime
+qualification.

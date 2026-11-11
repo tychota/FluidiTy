@@ -38,6 +38,8 @@ MODULE_TARGETS = {
     'Resampling': ('symmetric_split_moments', 'split_normal_deficit_preserves_angular_momentum',
                    'split_corner_covariance', 'split_uniform_mac_deficits',
                    'split_uniform_mac_energy_deficits'),
+    'Merge': ('merge_affine_row_matches_cross_moment', 'merge_covariance_gate_bounds_row_energy',
+              'merge_preserves_moments_and_bounds_energy', 'merge_preserves_volume_inventories'),
     'VolumeTransport': ('trilinear_volume_weight_partition',
                         'trilinear_volume_weight_nonnegative',
                         'trilinear_deposition_conserves_inventory',

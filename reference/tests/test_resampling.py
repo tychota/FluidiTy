@@ -33,7 +33,6 @@ def test_split_cubic_moments_and_energy():
     assert np.isclose(energy(p,ds)-energy(c,ds/4), p.mass[0]*h*h*np.sum(np.diag(p.affine[0])**2)/32)
 
 
-
 @pytest.mark.parametrize(
     "affine, expected_loss",
     [
@@ -81,6 +80,48 @@ def test_merge_preserves_first_moments_and_volume_weighted_composition():
     assert q.reference_volume[0] == 4 and q.current_volume[0] == 4
     with pytest.raises(ValueError): merge_particles(p, ds, np.zeros_like(target), 9)
     with pytest.raises(ValueError): merge_particles(p, ds, np.tile(np.eye(2), (2,1,1)), 9)
+
+
+def test_merge_counterstreaming_energy_and_constituent_inventory():
+    children = ParticleBatch(
+        [[-1., 0.], [1., 0.]], [1., 1.], [2., 9.], [1., 3.],
+        [[2., -1.], [-2., 1.]], [[[1., 2.], [-3., 1.]], [[2., -1.], [1., -2.]]],
+        [[1., 0.], [0., 1.]], [1, 2],
+    )
+    child_moments = np.array([
+        [np.diag([1., 2.]), np.diag([2., 1.])],
+        [np.diag([2., 1.]), np.diag([1., 2.])],
+    ])
+    target_moments = np.array([np.diag([4., 3.]), np.diag([3., 4.])])
+    merged = merge_particles(children, child_moments, target_moments, 3)
+
+    np.testing.assert_array_equal(merged.mass, [2.])
+    np.testing.assert_array_equal(merged.positions, [[0., 0.]])
+    np.testing.assert_array_equal(merged.velocity, [[0., 0.]])
+    np.testing.assert_array_equal(merged.affine, [[[1 / 8, 1 / 2], [-1 / 2, -3 / 8]]])
+    np.testing.assert_array_equal(merged.current_volume, [11.])
+    np.testing.assert_array_equal(merged.reference_volume, [4.])
+    np.testing.assert_allclose(merged.composition[0] * merged.current_volume[0], [2., 9.])
+
+    def spatial_momentum(batch, moments):
+        return (np.einsum("n,na,nj->aj", batch.mass, batch.velocity, batch.positions)
+                + np.einsum("n,nai,naij->aj", batch.mass, batch.affine, moments))
+
+    def energy(batch, moments):
+        return (np.einsum("n,na,na->", batch.mass, batch.velocity, batch.velocity)
+                + np.einsum("n,nai,naij,naj->", batch.mass, batch.affine, moments, batch.affine)) / 2
+
+    before = spatial_momentum(children, child_moments)
+    after = spatial_momentum(merged, target_moments[None, ...])
+    np.testing.assert_array_equal(after, before)
+    assert after[1, 0] - after[0, 1] == -6.
+    assert energy(children, child_moments) == 28.
+    assert energy(merged, target_moments[None, ...]) == 17 / 8
+
+    # Only the second row fails the covariance gate. Both support matrices stay positive definite.
+    target_moments[1, 0, 0] = 2.
+    with pytest.raises(ValueError, match="dissipative gate"):
+        merge_particles(children, child_moments, target_moments, 3)
 
 
 def test_eos_and_reseed():
