@@ -42,4 +42,28 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
     SolidInteractionCheckpoint3D& checkpoint
 );
 
+struct ElasticBladeGridStep3D {
+  TranslatingSlab3D blade;  // Pose at the start of this attempt.
+  std::uint64_t blade_id;
+  double duration;  // Seconds.
+  double shear_modulus;  // Pascals.
+  double first_lame_parameter;  // Pascals.
+  MacDepositQuantization3D quantization;
+  double minimum_face_mass = 0.0;  // Kilograms.
+  double retained_velocity_fraction = 0.0;
+  double friction_coefficient = 0.0;
+};
+
+// Advances dry elastic particles on the fixed owned grid for a prescribed
+// translating slab. Deposits compatible mass and momentum, adds the explicit
+// stress force, and completes old/new same-side histories for particle
+// acceptance. Faces changing side or entering the slab carry no new-time
+// donor mass. The caller controls the explicit time step. Contact results
+// are in particle order and failure preserves the entire checkpoint.
+absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
+    const SparseMacGrid3D& mac_grid,
+    const ElasticBladeGridStep3D& settings,
+    SolidInteractionCheckpoint3D& checkpoint
+);
+
 }  // namespace fluidity

@@ -1,5 +1,6 @@
 #include "fluidity/host/elastic_blade_deformation_3d.h"
 
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -169,6 +170,116 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
   checkpoint.elastic_particles.swap(candidates);
   ++checkpoint.accepted_step;
   return reactions;
+}
+
+absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
+    const SparseMacGrid3D& mac_grid,
+    const ElasticBladeGridStep3D& settings,
+    SolidInteractionCheckpoint3D& checkpoint
+) {
+  if (!std::isfinite(settings.duration) || settings.duration <= 0.0 || checkpoint.elastic_particles.empty()
+      || checkpoint.elastic_particles.size() != checkpoint.sides.size()) {
+    return absl::InvalidArgumentError("invalid elastic grid step duration or particle state");
+  }
+  if (checkpoint.elastic_particles.size() > kLiquidBoundaryParticleCapacity3D
+      || mac_grid.face_count() > kLiquidBoundaryFaceCapacity3D) {
+    return absl::ResourceExhaustedError("elastic blade grid capacity exceeded");
+  }
+  const auto old_tags = BuildElasticBladeFaceTags3D(mac_grid.view(), settings.blade, 0.0);
+  if (!old_tags.ok()) {
+    return old_tags.status();
+  }
+  const auto new_tags = BuildElasticBladeFaceTags3D(mac_grid.view(), settings.blade, settings.duration);
+  if (!new_tags.ok()) {
+    return new_tags.status();
+  }
+  std::vector<LiquidBoundaryParticle3D> particles;
+  std::vector<Mat3> stresses;
+  particles.reserve(checkpoint.elastic_particles.size());
+  stresses.reserve(checkpoint.elastic_particles.size());
+  for (std::size_t particle_index = 0; particle_index < checkpoint.elastic_particles.size(); ++particle_index) {
+    const auto& particle = checkpoint.elastic_particles[particle_index];
+    const auto& side = checkpoint.sides[particle_index];
+    const bool valid_side = side.side.sign == -1 || side.side.sign == 1;
+    if (particle.particle_id != side.particle_id || side.side.blade_id != settings.blade_id || !valid_side
+        || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0.0) {
+      return absl::InvalidArgumentError("invalid elastic particle affinity or reference volume");
+    }
+    const auto stress = NeoHookeanKirchhoffStress3D(
+        particle.deformation_gradient,
+        settings.shear_modulus,
+        settings.first_lame_parameter
+    );
+    if (!stress.ok()) {
+      return stress.status();
+    }
+    particles.push_back({.transfer = particle.transfer, .side_tag = side.side.sign, .affine_enabled = true});
+    stresses.push_back(*stress);
+  }
+  const auto deposits = DepositCompatibleMacQuanta3D({
+      .mac_grid = mac_grid,
+      .particles = particles,
+      .face_tags = *old_tags,
+      .quantization = settings.quantization,
+  });
+  if (!deposits.ok()) {
+    return deposits.status();
+  }
+  const auto old_grid =
+      NormalizeLiquidMacFaces3D(deposits->face_quanta, settings.quantization, settings.minimum_face_mass);
+  if (!old_grid.ok()) {
+    return old_grid.status();
+  }
+  std::vector<double> stress_force_sums(mac_grid.face_count());
+  for (std::size_t particle_index = 0; particle_index < particles.size(); ++particle_index) {
+    const auto& stress = stresses[particle_index];
+    const std::array stress_rows{stress.x_row, stress.y_row, stress.z_row};
+    const double reference_volume = checkpoint.elastic_particles[particle_index].reference_volume;
+    for (std::size_t axis = 0; axis < stress_rows.size(); ++axis) {
+      const Vec3 stress_row = stress_rows[axis];
+      for (const auto& sample : deposits->compatible_stencils[particle_index][axis]) {
+        if (!sample.compatible) {
+          continue;
+        }
+        const auto gradient = sample.normalized_weight_gradient;
+        const double stress_force_contribution =
+            -reference_volume * ((stress_row.x * gradient.x + stress_row.y * gradient.y) + stress_row.z * gradient.z);
+        auto& stress_force_sum = stress_force_sums[sample.face_slot];
+        stress_force_sum += stress_force_contribution;
+        if (!std::isfinite(stress_force_sum)) {
+          return absl::OutOfRangeError("nonfinite elastic face force");
+        }
+      }
+    }
+  }
+  auto new_velocities = old_grid->face_velocities;
+  auto new_validity = old_grid->validity;
+  for (std::size_t face_slot = 0; face_slot < mac_grid.face_count(); ++face_slot) {
+    const auto old_tag = (*old_tags)[face_slot];
+    const auto new_tag = (*new_tags)[face_slot];
+    if (!new_tag.structurally_eligible || new_tag.side_tag != old_tag.side_tag) {
+      new_validity[face_slot] = LiquidFaceValidity3D::kMissing;
+      continue;
+    }
+    if (new_validity[face_slot] == LiquidFaceValidity3D::kValid) {
+      const double acceleration = stress_force_sums[face_slot] / old_grid->face_masses[face_slot];
+      new_velocities[face_slot] = std::fma(settings.duration, acceleration, new_velocities[face_slot]);
+      if (!std::isfinite(new_velocities[face_slot])) {
+        return absl::OutOfRangeError("nonfinite elastic face velocity");
+      }
+    }
+  }
+  const std::vector<LiquidPrescribedWallSample3D> wall_samples(mac_grid.face_count());
+  return AdvanceElasticBladeParticles3D(
+      mac_grid,
+      settings.blade,
+      settings.blade_id,
+      settings.retained_velocity_fraction,
+      settings.friction_coefficient,
+      {0.0, 0.0, old_grid->face_velocities, old_grid->validity, *old_tags, wall_samples},
+      {settings.duration, settings.duration, new_velocities, new_validity, *new_tags, wall_samples},
+      checkpoint
+  );
 }
 
 }  // namespace fluidity

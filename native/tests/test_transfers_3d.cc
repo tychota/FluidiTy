@@ -503,6 +503,75 @@ TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollaps
   EXPECT_EQ(accepted.sides.front().side.sign, 1);
 }
 
+TEST(MacTransfer3D, ElasticBladeStepBuildsHistoriesAndReplaysUniformTransport) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {0.125, 0.0, 0.0};
+  particle.particle_velocity_slopes = {};
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {},
+  };
+  constexpr Mat3 kIdentity{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  SolidInteractionCheckpoint3D state{
+      .accepted_step = 0,
+      .sides = {{.particle_id = 7, .side = {.blade_id = 17, .sign = 1}}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = kIdentity,
+      }},
+  };
+  const ElasticBladeGridStep3D settings{
+      .blade = blade,
+      .blade_id = 17,
+      .duration = 0.125,
+      .shear_modulus = 2.0,
+      .first_lame_parameter = 1.0,
+      .quantization = {0x1p-40, 0x1p-40, 1},
+  };
+  const auto first = StepElasticBladeGrid3D(*grid, settings, state);
+  ASSERT_TRUE(first.ok()) << first.status();
+  EXPECT_EQ(state.accepted_step, 1);
+  EXPECT_NEAR(
+      state.elastic_particles.front().transfer.trial_world_position.x,
+      particle.trial_world_position.x + 0.015625,
+      1e-9
+  );
+  ExpectNear(state.elastic_particles.front().deformation_gradient, kIdentity);
+  const auto bytes = EncodeSolidInteractionCheckpoint3D(state);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  auto restored = DecodeSolidInteractionCheckpoint3D(*bytes);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto rejected_settings = settings;
+  rejected_settings.quantization.declared_particle_capacity = 0;
+  EXPECT_FALSE(StepElasticBladeGrid3D(*grid, rejected_settings, *restored).ok());
+  const auto after_rejection = EncodeSolidInteractionCheckpoint3D(*restored);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *bytes);
+  ASSERT_TRUE(StepElasticBladeGrid3D(*grid, settings, *restored).ok());
+  ASSERT_TRUE(StepElasticBladeGrid3D(*grid, settings, state).ok());
+  const auto replayed = EncodeSolidInteractionCheckpoint3D(*restored);
+  const auto uninterrupted = EncodeSolidInteractionCheckpoint3D(state);
+  ASSERT_TRUE(replayed.ok() && uninterrupted.ok());
+  EXPECT_EQ(*replayed, *uninterrupted);
+
+  auto stressed = state;
+  stressed.elastic_particles.front().deformation_gradient.x_row.x = 1.01;
+  const auto stressed_step = StepElasticBladeGrid3D(*grid, settings, stressed);
+  ASSERT_TRUE(stressed_step.ok()) << stressed_step.status();
+  EXPECT_LT(stressed.elastic_particles.front().deformation_gradient.x_row.x, 1.01);
+}
+
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
   const auto mac_grid = SparseMacGrid3D::Create(kUnitGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
