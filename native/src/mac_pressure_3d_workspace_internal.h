@@ -166,6 +166,17 @@ BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacP
 // Returns the aligned byte reservation for checked original-system assembly.
 // Includes temporary incidence and gauge reductions. Returns ResourceExhausted
 // if an extent or byte count is unrepresentable. Does not allocate.
+inline constexpr std::size_t kCoupledPressureRestartLength3D = 32;
+inline constexpr std::size_t kCoupledFaceScratchFields3D = 5;
+inline constexpr std::size_t kCoupledCellScratchFields3D = 2;
+
+// Upper bound for coupled buffers, optionally including the original uniform system.
+absl::StatusOr<std::size_t> QueryCoupledMacPressureScratchBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    bool prepare_uniform_system
+);
+
 absl::StatusOr<std::size_t> QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacity, std::size_t face_capacity);
 
 // Freezes the checked uniform pressure coefficients and gauge incidence into

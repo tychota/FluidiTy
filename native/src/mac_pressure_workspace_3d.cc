@@ -631,6 +631,14 @@ bool CountOriginalPressureScratch(ScratchByteCounter& counter, std::size_t cell_
       && counter.Add(cell_capacity, sizeof(FluxRow)) && counter.Add(cell_capacity, sizeof(ComponentBalance));
 }
 
+bool CountCoupledPressureScratch(ScratchByteCounter& counter, std::size_t cell_capacity, std::size_t face_capacity) {
+  using CompensatedSum = pressure_internal::arithmetic::CompensatedSum;
+  return counter.Add(face_capacity, pressure_internal::kCoupledFaceScratchFields3D * sizeof(double))
+      && counter.Add(cell_capacity, pressure_internal::kCoupledCellScratchFields3D * sizeof(double))
+      && counter.Add(cell_capacity, sizeof(CompensatedSum)) && counter.Add(cell_capacity, sizeof(bool))
+      && counter.Add(cell_capacity, 2 * pressure_internal::kCoupledPressureRestartLength3D * sizeof(double));
+}
+
 template <typename T>
 absl::Status Reserve(LiquidRecords3D<T>& records, std::size_t capacity) {
   auto reserved = LiquidRecords3D<T>::Create(capacity);
@@ -650,6 +658,20 @@ pressure_internal::QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacit
   }
   ScratchByteCounter counter;
   if (!CountOriginalPressureScratch(counter, cell_capacity, face_capacity)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return counter.total;
+}
+
+absl::StatusOr<std::size_t> pressure_internal::QueryCoupledMacPressureScratchBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    bool prepare_uniform_system
+) {
+  ScratchByteCounter counter;
+  if (cell_capacity > kMaxPressureCells || face_capacity > kMaxPressureFaces
+      || (prepare_uniform_system && !CountOriginalPressureScratch(counter, cell_capacity, face_capacity))
+      || !CountCoupledPressureScratch(counter, cell_capacity, face_capacity)) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   return counter.total;
@@ -684,6 +706,12 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
   if (!fits) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
+  ScratchByteCounter coupled_counter;
+  if (!CountOriginalPressureScratch(coupled_counter, cell_capacity, face_capacity)
+      || !CountCoupledPressureScratch(coupled_counter, cell_capacity, face_capacity)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  counter.total = std::max(counter.total, coupled_counter.total);
   MacPressureWorkspaceBytes3D result;
   result.scratch_bytes = counter.total;
   constexpr auto limit = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max());
