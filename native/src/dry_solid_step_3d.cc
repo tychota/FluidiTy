@@ -443,13 +443,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;
-    if (hit_granular_floor) {
-      particle.velocity_slopes =
-          FloorProjectedGradient(stored_velocity, particle_gather.fitted_velocity_slopes, settings.floor_friction);
-    } else {
-      particle.velocity_slopes =
-          contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
-    }
+    particle.velocity_slopes = contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
     particle.elastic_deformation = state.elastic_deformation;
     particle.log_plastic_jacobian = state.log_plastic_jacobian;
   }
