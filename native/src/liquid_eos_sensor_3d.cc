@@ -14,6 +14,78 @@ auto CellKey(CellIndex3D cell) {
   return std::tuple{cell.z, cell.y, cell.x};
 }
 
+template <typename Deposit>
+absl::Status ScatterCellTent(
+    UniformMacGeometry3D geometry,
+    std::span<const FrozenLiquidCell3D> cells,
+    Vec3 position,
+    Deposit deposit
+) {
+  const auto origin = geometry.world_origin;
+  const double width = geometry.cell_width;
+  constexpr auto kMinimumCellIndex = std::numeric_limits<std::int32_t>::min();
+  constexpr auto kMaximumCellIndex = std::numeric_limits<std::int32_t>::max();
+  const std::array cell_coordinates{
+      (position.x - origin.x) / width - 0.5,
+      (position.y - origin.y) / width - 0.5,
+      (position.z - origin.z) / width - 0.5,
+  };
+  if (std::ranges::any_of(cell_coordinates, [](double coordinate) {
+        return !std::isfinite(coordinate);
+      })) {
+    return absl::OutOfRangeError("liquid cell sensor lattice coordinate is unrepresentable");
+  }
+  if (std::ranges::any_of(cell_coordinates, [](double coordinate) {
+        return coordinate <= static_cast<double>(kMinimumCellIndex) - 1.0
+            || coordinate >= static_cast<double>(kMaximumCellIndex) + 1.0;
+      })) {
+    return absl::OkStatus();
+  }
+  std::array<std::int64_t, 3> low{};
+  std::array<double, 3> fraction{};
+  for (std::size_t axis = 0; axis < low.size(); ++axis) {
+    const double low_coordinate = std::floor(cell_coordinates[axis]);
+    low[axis] = static_cast<std::int64_t>(low_coordinate);
+    fraction[axis] = cell_coordinates[axis] - low_coordinate;
+  }
+  for (std::size_t corner = 0; corner < 8; ++corner) {
+    const std::array upper{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1};
+    const std::array indices{
+        low[0] + static_cast<std::int64_t>(upper[0]),
+        low[1] + static_cast<std::int64_t>(upper[1]),
+        low[2] + static_cast<std::int64_t>(upper[2]),
+    };
+    if (std::ranges::any_of(indices, [](std::int64_t coordinate) {
+          return coordinate < kMinimumCellIndex || coordinate > kMaximumCellIndex;
+        })) {
+      continue;
+    }
+    const double x_weight = upper[0] ? fraction[0] : 1.0 - fraction[0];
+    const double y_weight = upper[1] ? fraction[1] : 1.0 - fraction[1];
+    const double z_weight = upper[2] ? fraction[2] : 1.0 - fraction[2];
+    if (x_weight == 0.0 || y_weight == 0.0 || z_weight == 0.0) {
+      continue;
+    }
+    const auto key = CellKey({
+        static_cast<std::int32_t>(indices[0]),
+        static_cast<std::int32_t>(indices[1]),
+        static_cast<std::int32_t>(indices[2]),
+    });
+    const auto cell = std::ranges::lower_bound(cells, key, {}, [](const FrozenLiquidCell3D& record) {
+      return CellKey(record.cell_index);
+    });
+    if (cell == cells.end() || CellKey(cell->cell_index) != key) {
+      continue;
+    }
+    const double weight = x_weight * y_weight * z_weight;
+    const auto status = deposit(static_cast<std::size_t>(cell - cells.begin()), weight);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::Status SampleLiquidCellVolumeRatios3D(
@@ -30,87 +102,90 @@ absl::Status SampleLiquidCellVolumeRatios3D(
   if (cells.empty()) {
     return absl::OkStatus();
   }
-  const auto origin = geometry.world_origin;
-  const double width = geometry.cell_width;
-  constexpr auto kMinimumCellIndex = std::numeric_limits<std::int32_t>::min();
-  constexpr auto kMaximumCellIndex = std::numeric_limits<std::int32_t>::max();
   for (const auto& particle : particles) {
     if (particle.side_tag != liquid_side_tag) {
       continue;
     }
-    const auto position = particle.world_position;
-    const std::array cell_coordinates{
-        (position.x - origin.x) / width - 0.5,
-        (position.y - origin.y) / width - 0.5,
-        (position.z - origin.z) / width - 0.5,
-    };
-    if (std::ranges::any_of(cell_coordinates, [](double coordinate) {
-          return !std::isfinite(coordinate);
-        })) {
-      return absl::OutOfRangeError("volume-ratio sensor lattice coordinate is unrepresentable");
+    const auto scattered =
+        ScatterCellTent(geometry, cells, particle.world_position, [&](std::size_t cell, double weight) {
+          const double weighted_reference_volume = weight * particle.reference_volume;
+          auto& sensor = sensors[cell];
+          const double previous_reference_volume = sensor.sampled_reference_volume;
+          const double total_reference_volume = previous_reference_volume + weighted_reference_volume;
+          if (weighted_reference_volume == 0.0 || !std::isfinite(total_reference_volume)) {
+            return absl::OutOfRangeError("weighted sensor reference volume is unrepresentable");
+          }
+          // Interpolate from the heavier sample using the smaller weight ratio.
+          // Taking its complement can erase a light donor with a large J.
+          const double light_fraction =
+              std::min(weighted_reference_volume, previous_reference_volume) / total_reference_volume;
+          const double mean = weighted_reference_volume > previous_reference_volume
+              ? std::lerp(particle.volume_ratio, sensor.mean_volume_ratio, light_fraction)
+              : std::lerp(sensor.mean_volume_ratio, particle.volume_ratio, light_fraction);
+          if ((previous_reference_volume > 0.0 && light_fraction == 0.0) || mean <= 0.0 || !std::isfinite(mean)) {
+            return absl::OutOfRangeError("sensor volume ratio is unrepresentable");
+          }
+          sensor.sampled_reference_volume = total_reference_volume;
+          sensor.mean_volume_ratio = mean;
+          return absl::OkStatus();
+        });
+    if (!scattered.ok()) {
+      return scattered;
     }
-    if (std::ranges::any_of(cell_coordinates, [](double coordinate) {
-          return coordinate <= static_cast<double>(kMinimumCellIndex) - 1.0
-              || coordinate >= static_cast<double>(kMaximumCellIndex) + 1.0;
-        })) {
-      continue;
+  }
+  return absl::OkStatus();
+}
+
+absl::Status SampleLiquidCellCompositionDensity3D(
+    UniformMacGeometry3D geometry,
+    std::span<const FrozenLiquidCell3D> cells,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    double legacy_density,
+    std::span<CellCompositionDensity3D> sensors
+) {
+  if (sensors.size() != cells.size()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  std::ranges::fill(sensors, CellCompositionDensity3D{});
+  std::optional<std::uint64_t> phase;
+  for (const auto& particle : particles) {
+    double particle_density = legacy_density;
+    if (particle.constituent_count != 0) {
+      if (phase && *phase != particle.phase_id) {
+        return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+      }
+      phase = particle.phase_id;
+      particle_density = 0.0;
+      for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+        const auto material = std::ranges::lower_bound(
+            materials,
+            constituent.substance_id,
+            {},
+            &LiquidConstituentMaterial3D::substance_id
+        );
+        if (material == materials.end() || material->substance_id != constituent.substance_id
+            || material->phase_id != particle.phase_id) {
+          return absl::Status(absl::StatusCode::kInvalidArgument, {});
+        }
+        particle_density = std::fma(constituent.volume_fraction, material->density_kg_per_m3, particle_density);
+      }
     }
-    std::array<std::int64_t, 3> low{};
-    std::array<double, 3> fraction{};
-    for (std::size_t axis = 0; axis < low.size(); ++axis) {
-      const double low_coordinate = std::floor(cell_coordinates[axis]);
-      low[axis] = static_cast<std::int64_t>(low_coordinate);
-      fraction[axis] = cell_coordinates[axis] - low_coordinate;
-    }
-    for (std::size_t corner = 0; corner < 8; ++corner) {
-      const std::array upper{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1};
-      const std::array indices{
-          low[0] + static_cast<std::int64_t>(upper[0]),
-          low[1] + static_cast<std::int64_t>(upper[1]),
-          low[2] + static_cast<std::int64_t>(upper[2]),
-      };
-      if (std::ranges::any_of(indices, [](std::int64_t coordinate) {
-            return coordinate < kMinimumCellIndex || coordinate > kMaximumCellIndex;
-          })) {
-        continue;
-      }
-      const double x_weight = upper[0] ? fraction[0] : 1.0 - fraction[0];
-      const double y_weight = upper[1] ? fraction[1] : 1.0 - fraction[1];
-      const double z_weight = upper[2] ? fraction[2] : 1.0 - fraction[2];
-      if (x_weight == 0.0 || y_weight == 0.0 || z_weight == 0.0) {
-        continue;
-      }
-      const auto key = CellKey({
-          static_cast<std::int32_t>(indices[0]),
-          static_cast<std::int32_t>(indices[1]),
-          static_cast<std::int32_t>(indices[2]),
-      });
-      const auto cell = std::ranges::lower_bound(cells, key, {}, [](const FrozenLiquidCell3D& record) {
-        return CellKey(record.cell_index);
-      });
-      if (cell == cells.end() || CellKey(cell->cell_index) != key) {
-        continue;
-      }
-      const double weight = x_weight * y_weight * z_weight;
-      const double weighted_reference_volume = weight * particle.reference_volume;
-      auto& sensor = sensors[static_cast<std::size_t>(cell - cells.begin())];
-      const double previous_reference_volume = sensor.sampled_reference_volume;
-      const double total_reference_volume = previous_reference_volume + weighted_reference_volume;
-      if (weighted_reference_volume == 0.0 || !std::isfinite(total_reference_volume)) {
-        return absl::OutOfRangeError("weighted sensor reference volume is unrepresentable");
-      }
-      // Interpolate from the heavier sample using the smaller weight ratio.
-      // Taking its complement can erase a light donor with a large J.
-      const double light_fraction =
-          std::min(weighted_reference_volume, previous_reference_volume) / total_reference_volume;
-      const double mean = weighted_reference_volume > previous_reference_volume
-          ? std::lerp(particle.volume_ratio, sensor.mean_volume_ratio, light_fraction)
-          : std::lerp(sensor.mean_volume_ratio, particle.volume_ratio, light_fraction);
-      if ((previous_reference_volume > 0.0 && light_fraction == 0.0) || mean <= 0.0 || !std::isfinite(mean)) {
-        return absl::OutOfRangeError("sensor volume ratio is unrepresentable");
-      }
-      sensor.sampled_reference_volume = total_reference_volume;
-      sensor.mean_volume_ratio = mean;
+    const double current_volume = particle.reference_volume * particle.volume_ratio;
+    const auto scattered =
+        ScatterCellTent(geometry, cells, particle.world_position, [&](std::size_t cell, double weight) {
+          const double weighted_volume = weight * current_volume;
+          auto& sensor = sensors[cell];
+          sensor.sampled_volume_m3 += weighted_volume;
+          sensor.sampled_mass_kg = std::fma(weighted_volume, particle_density, sensor.sampled_mass_kg);
+          if (weighted_volume <= 0.0 || !std::isfinite(sensor.sampled_volume_m3)
+              || !std::isfinite(sensor.sampled_mass_kg) || sensor.sampled_mass_kg <= 0.0) {
+            return absl::Status(absl::StatusCode::kOutOfRange, {});
+          }
+          return absl::OkStatus();
+        });
+    if (!scattered.ok()) {
+      return scattered;
     }
   }
   return absl::OkStatus();

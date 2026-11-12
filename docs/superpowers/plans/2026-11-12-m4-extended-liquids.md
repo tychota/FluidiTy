@@ -471,3 +471,11 @@ The point cache now carries an optional stable phase ID and active constituent v
 The real-process CLI fixture published a mixed aqueous point and a separate oil point, then verified the exact inspected IDs and fractions. Seventy-one CPU cache and mixture tests passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidCacheStore3D|LiquidMixture3D'. SimulateCli.inspection and SimulateCli.public_interface passed with the rebuilt fixture. Twenty-two real-device CUDA regressions and clang-format 19.1.5 passed. Receipts use out/m4-inspect-composition.
 
 Inspect currently reports accepted particle fractions. Solver-side mixing and evaluated surface fractions still require integration.
+
+## Miscible density in pressure projection receipt
+
+The shared scheduler now samples density from current-volume-weighted constituent mixtures in selected pressure cells. It uses the existing cell-centered tent and provides sampled density to CPU and CUDA pressure-link assembly. Unsensed cells retain the scene reference density. The local mixture density also supplies the reference density for the configured EOS law and sound speed. The capillary timestep check uses the lighter predictor density when applicable. Active explicit particles from more than one phase fail before pressure assembly until the shared-interface projection is available.
+
+The single-cell fixture verified 1007.5 kg/m³ for equally weighted donors, the resulting inverse density on all six open links, and a Tait rest tangent of 4030 Pa at sound speed 2 m/s. Twenty-six CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'Mixture|Eos|Tait|Drift|SourceRetryAndWholeFrameReplay'. Twenty-two real-device tests passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. The persistent CUDA substep carries the same registered composition as the CPU. clang-format 19.1.5 passed. Receipts use out/m4-mixture-pressure. Negative receipts retain the initial fixture with seven selected cells and the stale CUDA link failure resolved by a clean build.
+
+This qualifies single-phase mixture pressure coefficients. Constituent remap, evaluated surface fractions, and immiscible interface projection remain open.

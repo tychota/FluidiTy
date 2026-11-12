@@ -804,6 +804,21 @@ struct LiquidSubstepScheduler3D::Impl {
     double minimum_predictor_density = scene.liquid_density;
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
+    const bool uses_composition_density = staging.composition_density
+        && std::ranges::any_of(trial.particles.values(), [](const LiquidParticleState3D& particle) {
+                                            return particle.constituent_count != 0;
+                                          });
+    if (uses_composition_density) {
+      STEP_TRY(staging.composition_density->Resize(frozen->cells.size()));
+      STEP_TRY(liquid_step_internal::SampleLiquidCellCompositionDensity3D(
+          grid.geometry(),
+          frozen->cells,
+          trial.particles.values(),
+          scene.constituent_materials,
+          scene.liquid_density,
+          staging.composition_density->values()
+      ));
+    }
     if (staging.drift_sensors) {
       STEP_TRY(staging.drift_sensors->Resize(frozen->cells.size()));
       STEP_TRY(liquid_step_internal::SampleLiquidCellVolumeRatios3D(
@@ -827,6 +842,15 @@ struct LiquidSubstepScheduler3D::Impl {
       double predicted_pressure = found->previous_pressure;
       double tangent_bulk_modulus = scene.bulk_modulus;
       std::optional<double> predicted_density;
+      if (uses_composition_density) {
+        const auto& sensed = (*staging.composition_density)[index];
+        if (sensed.sampled_volume_m3 > 0.0) {
+          predicted_density = sensed.sampled_mass_kg / sensed.sampled_volume_m3;
+          if (!std::isfinite(*predicted_density) || *predicted_density <= 0.0) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+        }
+      }
       if (eos) {
         const auto pressure = liquid_step_internal::AdvectLiquidPressureHistory3D(
             transaction.committed(),
@@ -838,7 +862,9 @@ struct LiquidSubstepScheduler3D::Impl {
           return pressure.status();
         }
         predicted_pressure = *pressure;
-        const auto predictor = EvaluateLiquidEosAtPressure3D(*eos, predicted_pressure);
+        auto local_eos = *eos;
+        local_eos.reference_density = predicted_density.value_or(scene.liquid_density);
+        const auto predictor = EvaluateLiquidEosAtPressure3D(local_eos, predicted_pressure);
         if (!predictor.ok()) {
           return predictor.status();
         }
@@ -861,7 +887,9 @@ struct LiquidSubstepScheduler3D::Impl {
             return Error(absl::StatusCode::kOutOfRange);
           }
         }
-        minimum_predictor_density = std::min(minimum_predictor_density, predictor->density);
+      }
+      if (predicted_density) {
+        minimum_predictor_density = std::min(minimum_predictor_density, *predicted_density);
       }
       staging.pressure_fields[index] = {
           .target_divergence = target_divergence,
@@ -870,7 +898,7 @@ struct LiquidSubstepScheduler3D::Impl {
           .density = predicted_density,
       };
     }
-    if (eos && accepted_measurement.step_start_capillary_bound_seconds) {
+    if ((eos || uses_composition_density) && accepted_measurement.step_start_capillary_bound_seconds) {
       // Freeze used reference density. Tighten its active bound when the
       // pressure operator sees lighter liquid at the advected predictor.
       const double density_scale = std::sqrt(minimum_predictor_density) / std::sqrt(scene.liquid_density);
@@ -1387,7 +1415,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       needs_wetted_piston,
       needs_isolated_drop,
       scene.drift && scene.drift->maximum_rate > 0.0,
-      scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos
+      scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos,
+      !scene.constituent_materials.empty()
   );
   if (!staging.ok()) {
     return staging.status();
@@ -1688,7 +1717,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           impl_->staging.wetted_piston.has_value(),
           impl_->staging.isolated_drop_pressure_faces.has_value(),
           impl_->staging.drift_sensors.has_value(),
-          impl_->staging.drift_pressure_cells.has_value()
+          impl_->staging.drift_pressure_cells.has_value(),
+          impl_->staging.composition_density.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

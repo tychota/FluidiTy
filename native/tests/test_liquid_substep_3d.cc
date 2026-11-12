@@ -134,6 +134,71 @@ TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
   EXPECT_EQ(*new_cell, 1.0);
 }
 
+TEST(LiquidSubstep3D, UsesCurrentVolumeMixtureDensityInPressureLinks) {
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
+  struct Observation {
+    std::size_t mixture_links = 0;
+    bool finite_eos = false;
+  } observation;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &observation;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    constexpr double kExpectedDensity = 1007.5;
+    auto& observed = *static_cast<Observation*>(context);
+    EXPECT_EQ(fields.cells.size(), 1);
+    if (!fields.cells.empty()) {
+      EXPECT_DOUBLE_EQ(fields.cells.front().density.value_or(0.0), kExpectedDensity);
+      if (observed.finite_eos) {
+        EXPECT_DOUBLE_EQ(fields.cells.front().bulk_modulus, 4.0 * kExpectedDensity);
+      }
+    }
+    const auto links = CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+    if (links.ok()) {
+      for (const auto& face : links->faces) {
+        if (face.open_area > 0.0) {
+          EXPECT_DOUBLE_EQ(face.inverse_density, 1.0 / kExpectedDensity);
+          ++observed.mixture_links;
+        }
+      }
+    }
+    return links;
+  };
+  auto initial = Initial(2);
+  initial.particles[0].reference_volume = 0.5;
+  initial.particles[0].volume_ratio = 2.0;
+  initial.particles[0].mass = 1015.0;
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
+  initial.particles[1].reference_volume = 2.0;
+  initial.particles[1].volume_ratio = 0.5;
+  initial.particles[1].mass = 1000.0;
+  initial.particles[1].phase_id = 4;
+  initial.particles[1].constituent_count = 1;
+  initial.particles[1].constituents[0] = {8, 1.0};
+  auto scene = Scene();
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 0.9};
+  scene.world_acceleration = {};
+  scene.constituent_materials = kMaterials;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(observation.mixture_links, 6);
+
+  observation = {.finite_eos = true};
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  auto compliant = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(compliant.ok()) << compliant.status();
+  const auto compliant_status = compliant->AdvanceFrame(0.01);
+  ASSERT_TRUE(compliant_status.ok()) << compliant_status;
+  EXPECT_EQ(observation.mixture_links, 6);
+}
+
 TEST(LiquidSubstep3D, TaitFreezesComplianceAtAdvectedPressureAndRestarts) {
   struct Observation {
     std::size_t cells = 0;

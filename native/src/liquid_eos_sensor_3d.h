@@ -7,6 +7,24 @@
 
 namespace fluidity::liquid_step_internal {
 
+struct CellCompositionDensity3D {
+  double sampled_volume_m3 = 0.0;
+  double sampled_mass_kg = 0.0;
+};
+
+// Samples the additive-volume density law over selected pressure cells.
+// Explicit particles must belong to one phase. Implicit legacy donors use
+// legacy_density. Empty cells leave zero support. Inputs have been validated
+// by the scheduler, and sensors is disjoint scratch in frozen cell order.
+absl::Status SampleLiquidCellCompositionDensity3D(
+    UniformMacGeometry3D geometry,
+    std::span<const FrozenLiquidCell3D> cells,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    double legacy_density,
+    std::span<CellCompositionDensity3D> sensors
+);
+
 struct CellVolumeRatioSensor3D {
   double sampled_reference_volume = 0.0;  // Sum of tent-weighted reference volumes in m³.
   double mean_volume_ratio = 0.0;  // Meaningful only when sampled_reference_volume is positive.
