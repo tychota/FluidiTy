@@ -322,7 +322,9 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
     for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
-      if (deposits[slot].deposited_mass > 0) {
+      // Thin support retains its deposited PIC momentum. The paired
+      // deformation and force operators reconstruct it from stable donors.
+      if (deposits[slot].deposited_mass >= minimum_force_mass) {
         validity[slot] = LiquidFaceValidity3D::kValid;
       }
     }
