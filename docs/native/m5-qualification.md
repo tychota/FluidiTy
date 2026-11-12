@@ -103,6 +103,35 @@ Advection and deformation still use the PIC field and its derivative
 respectively. Surface separation and an independent deformation
 integration experiment remain open.
 
+### Deformation and contact-affine controls
+
+Run these controls independently from commit 6d31b68. Use the ordinary
+dry fixture for the reference nominal step, plus the refined and half-step
+commands below. Keep the stored-velocity blend at zero.
+
+- Deformation control. In TrialDeformation replace (I + dt L) F with
+  (I + dt L + 0.5 dt² L²) F, using the same frozen gathered L, then apply the
+  same constitutive return.
+- Wall-affine control. Keep the original deformation update. In the final
+  dry particle publication retain the fitted x and z slope rows at a floor
+  contact and zero the y row. The pile has no platen. This only tests
+  sensitivity to the affine reset and does not certify an affine Coulomb
+  boundary law.
+
+| h (m) | nominal dt (s) | Original angle | Quadratic update | Retain tangent rows |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 30.161149° | 30.185224° | 23.649397° |
+| 0.0625 | 0.0015625 | 27.803822° | 27.832553° | 23.040349° |
+| 0.075 | 0.0009375 | 37.248475° | 37.265489° | 27.827683° |
+| 0.0625 | 0.00078125 | 32.699841° | 32.722061° | 25.848644° |
+
+Native and CUDA angles matched to six decimal places. The quadratic
+update shifted every angle by less than 0.03° and left the gate outcomes
+unchanged. Tangent-row retention reduced the reference and refined timestep
+shifts to 4.178286° and 2.808295°, with all four angles below 30°. Both
+controls were reverted. The next comparison needs accepted-step
+wall-contact impulse and omitted low-mass stress impulse over the pile.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
