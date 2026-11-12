@@ -165,6 +165,43 @@ discretization. All four extended angles miss the gate.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-stiffer-column
 ```
 
+### Plane-strain yield and lateral elastic response
+
+The material's 30° friction parameter is calibrated to triaxial
+compression. For a manufactured plane-strain path, impose normal
+log compression e < 0 and engineering shear γ, with both lateral
+normal log strains zero. Then normal traction is (λ + 2μ)e,
+shear traction is μγ, and the squared deviator norm is
+μ²[(8/3)e² + 2γ²]. The compressed cone yields when its square root
+equals α(3λ + 2μ)|e|. These expressions give traction angles at
+first yield of 15.9823° for (λ, μ) = (700, 450) Pa and 30.5082°
+for (1280, 160) Pa. Both have the same 1600 Pa longitudinal
+modulus. The native and CUDA constitutive fixture brackets each
+analytic boundary with shear factors 0.999 and 1.001 and checks
+that the plastic volume is preserved on shear return.
+
+The column comparison uses the second Lamé pair and keeps the 30°
+material friction, floor, particle sampling, and timestep schedule.
+
+| h (m) | Nominal dt (s) | Baseline angle at 1.50 s | Altered Lamé pair at 1.50 s |
+|---|---:|---:|---:|
+| 0.075 | 0.001875 | 20.801830° | 20.410013° |
+| 0.075 | 0.0009375 | 28.040080° | 27.797435° |
+| 0.0625 | 0.0015625 | 20.580671° | 20.228874° |
+| 0.0625 | 0.00078125 | 26.585383° | 26.407412° |
+
+Native and CUDA match at the printed precision and pass the
+vertical momentum and late-drift checks. Shifting the manufactured
+plane-strain yield angle by about 14.5°
+changes the late pile angle by less than 0.4° in all four cases.
+All four remain below 30°. The manufactured loading path is useful
+for distinguishing constitutive yield from the assembled pile response.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-plane-strain-moduli
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-plane-strain-moduli
+```
+
 ### Extended settling after a velocity reset
 
 At the original 0.75 s endpoint, clear each particle's translational

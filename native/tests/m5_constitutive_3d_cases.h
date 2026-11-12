@@ -92,6 +92,31 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       || !Near(state.log_plastic_jacobian, 0)) {
     return 9;
   }
+  // Plane strain with only normal compression and shear has lateral stress
+  // set by lambda. The principal log strains are the eigenvalues of its
+  // symmetric 2x2 compression/shear block, plus a zero out-of-plane strain.
+  constexpr double kCompression = 0.01;
+  const double alpha = ::sqrt(2.0 / 3) * 0.4;
+  constexpr double kLambdaValues[]{700, 1280};
+  constexpr double kShearFactors[]{0.999, 1.001};
+  for (const double lambda : kLambdaValues) {
+    const double shear_modulus = (1600 - lambda) / 2;
+    const GranularParameters3D plane_strain{shear_modulus, lambda, 0.5235987755982989, 0};
+    const double cone_scale = (3 * lambda + 2 * shear_modulus) * alpha / shear_modulus;
+    const double yield_shear = kCompression * ::sqrt(0.5 * (cone_scale * cone_scale - 8.0 / 3));
+    for (const double factor : kShearFactors) {
+      const double radius = ::hypot(kCompression, factor * yield_shear);
+      const Vec3 trial{
+          ::exp(0.5 * (-kCompression + radius)),
+          1,
+          ::exp(0.5 * (-kCompression - radius)),
+      };
+      if (!ReturnGranularPrincipal3D(trial, 0, plane_strain, state)
+          || Near(state.elastic_stretches.x, trial.x) != (factor < 1) || !Near(state.log_plastic_jacobian, 0)) {
+        return 10;
+      }
+    }
+  }
   return 0;
 }
 

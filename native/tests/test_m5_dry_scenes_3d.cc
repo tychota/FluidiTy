@@ -103,7 +103,8 @@ bool TestScene(
     double floor_friction = 0.7,
     bool reset_column_velocity = false,
     double granular_modulus_scale = 1,
-    double stored_velocity_decay_rate = 0
+    double stored_velocity_decay_rate = 0,
+    double granular_lambda = 700
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -119,8 +120,8 @@ bool TestScene(
   }
   const DrySolidMaterial3D material = snow ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
                                            : DrySolidMaterial3D(fluidity::GranularParameters3D{
-                                                 700 * granular_modulus_scale,
-                                                 450 * granular_modulus_scale,
+                                                 granular_lambda * granular_modulus_scale,
+                                                 ((1600 - granular_lambda) / 2) * granular_modulus_scale,
                                                  0.5235987755982989,
                                                  0
                                              });
@@ -600,6 +601,16 @@ int main(int argc, char** argv) {
       const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       all_pass = all_pass && reference && refined;
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-plane-strain-moduli") {
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double duration : {width / 40, width / 80}) {
+        const bool pass = TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, 0, 1280);
+        all_pass = all_pass && pass;
+      }
     }
     return all_pass ? 0 : 1;
   }
