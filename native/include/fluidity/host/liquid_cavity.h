@@ -144,4 +144,49 @@ absl::StatusOr<LiquidCavityBoundaryPreparation3D> PrepareLiquidCavityBoundaries3
     std::span<LiquidAirCellPressure3D> air_pressures
 );
 
+struct LiquidCavityStepInputs3D {
+  UniformMacGeometry3D geometry;
+  const LiquidObstacle3D& obstacle;
+  std::span<const CellIndex3D> sampled_cells;
+  std::span<const LiquidCornerDistance3D> corners;
+  std::span<const LiquidCenterDistance3D> centers;
+  std::span<const FaceIndex3D> atmosphere_outlets;
+  LiquidAirComponentSnapshot3D previous_snapshot;
+  std::span<const LiquidCavityLineageState3D> previous_lineage;
+  std::uint64_t next_id;
+  double atmospheric_absolute_pressure;  // Pa.
+  double liquid_density;  // kg/m³.
+  void* initialization_context = nullptr;
+  // Called only for newly detected resolved enclosed components without tracked overlap.
+  absl::StatusOr<LiquidCavityInventory3D> (*initialize)(void*, const LiquidAirComponent3D&) = nullptr;
+};
+
+struct LiquidCavityStepScratch3D {
+  std::span<LiquidAirVolumeCell3D> gas_cells;
+  std::span<std::size_t> labels;
+  std::span<std::size_t> queue;
+  std::span<LiquidAirComponent3D> components;
+  std::span<LiquidAirComponentOverlap3D> overlaps;
+  std::span<std::optional<LiquidCavityInventory3D>> inventories;
+  std::span<LiquidCavityLineageCandidate3D> lineage;
+  std::span<LiquidCavityBoundaryComponent3D> boundary_components;
+  std::span<LiquidAirCellPressure3D> air_pressures;
+};
+
+struct LiquidCavityStepPreparation3D {
+  std::size_t gas_cell_count;
+  std::size_t component_count;
+  LiquidCavityLineageResult3D lineage;
+  LiquidCavityBoundaryPreparation3D boundaries;
+};
+
+// Prepares one candidate from sampled geometry and the prior accepted
+// snapshot. Sample and outlet ordering follows BuildLiquidAirDomain3D.
+// The caller commits the populated gas, labels and lineage only on step
+// acceptance. Scratch is mutually disjoint and disjoint from input storage.
+// Scratch may change on failure. InvalidArgument covers invalid extents or
+// aliasing, ResourceExhausted covers short scratch, and stage errors propagate.
+absl::StatusOr<LiquidCavityStepPreparation3D>
+PrepareLiquidCavityStep3D(const LiquidCavityStepInputs3D& inputs, const LiquidCavityStepScratch3D& scratch);
+
 }  // namespace fluidity

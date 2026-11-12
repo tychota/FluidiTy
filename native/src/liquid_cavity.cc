@@ -419,4 +419,126 @@ absl::StatusOr<LiquidCavityBoundaryPreparation3D> PrepareLiquidCavityBoundaries3
   return result;
 }
 
+absl::StatusOr<LiquidCavityStepPreparation3D>
+PrepareLiquidCavityStep3D(const LiquidCavityStepInputs3D& inputs, const LiquidCavityStepScratch3D& scratch) {
+  if (inputs.previous_snapshot.component_count != inputs.previous_lineage.size()
+      || !PositiveFinite(inputs.atmospheric_absolute_pressure) || !PositiveFinite(inputs.liquid_density)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto alias = CheckWritableViews(
+      {std::as_bytes(scratch.gas_cells),
+       std::as_bytes(scratch.labels),
+       std::as_bytes(scratch.queue),
+       std::as_bytes(scratch.components),
+       std::as_bytes(scratch.overlaps),
+       std::as_bytes(scratch.inventories),
+       std::as_bytes(scratch.lineage),
+       std::as_bytes(scratch.boundary_components),
+       std::as_bytes(scratch.air_pressures)},
+      {std::as_bytes(inputs.sampled_cells),
+       std::as_bytes(inputs.corners),
+       std::as_bytes(inputs.centers),
+       std::as_bytes(inputs.atmosphere_outlets),
+       std::as_bytes(inputs.previous_snapshot.cells),
+       std::as_bytes(inputs.previous_snapshot.labels),
+       std::as_bytes(inputs.previous_lineage),
+       std::as_bytes(std::span(&inputs.obstacle, 1)),
+       std::as_bytes(std::span(&inputs, 1)),
+       std::as_bytes(std::span(&scratch, 1))}
+  );
+  if (!alias.ok()) {
+    return alias;
+  }
+  const auto gas_count = BuildLiquidAirDomain3D(
+      inputs.geometry,
+      inputs.obstacle,
+      inputs.sampled_cells,
+      inputs.corners,
+      inputs.atmosphere_outlets,
+      scratch.gas_cells
+  );
+  if (!gas_count.ok()) {
+    return gas_count.status();
+  }
+  if (*gas_count > scratch.labels.size() || *gas_count > scratch.queue.size()) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  const auto cells = scratch.gas_cells.first(*gas_count);
+  const auto labels = scratch.labels.first(*gas_count);
+  const auto component_count = LabelLiquidAirComponents3D(cells, labels, scratch.queue, scratch.components);
+  if (!component_count.ok()) {
+    return component_count.status();
+  }
+  if (*component_count > scratch.inventories.size() || *component_count > scratch.lineage.size()
+      || *component_count > scratch.boundary_components.size()) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+
+  const LiquidAirComponentSnapshot3D current{cells, labels, *component_count};
+  const auto overlap_count = MeasureLiquidAirComponentOverlaps3D(inputs.previous_snapshot, current, scratch.overlaps);
+  if (!overlap_count.ok()) {
+    return overlap_count.status();
+  }
+  const auto overlaps = scratch.overlaps.first(*overlap_count);
+  const auto inventories = scratch.inventories.first(*component_count);
+  const auto components = scratch.components.first(*component_count);
+  const auto lineage_candidates = scratch.lineage.first(*component_count);
+  std::ranges::fill(inventories, std::nullopt);
+  // The ID-overlap scratch also serves as an incoming-inventory marker until
+  // the lineage stage clears it. Only births need equilibrium initialization.
+  std::ranges::fill(lineage_candidates, LiquidCavityLineageCandidate3D{});
+  for (const auto& overlap : overlaps) {
+    if (inputs.previous_lineage[overlap.previous_component].inventory) {
+      lineage_candidates[overlap.current_component].inherited_id_overlap = overlap.shared_cell_volume;
+    }
+  }
+  for (std::size_t index = 0; index < components.size(); ++index) {
+    const auto& component = components[index];
+    if (component.connectivity != LiquidAirConnectivity3D::kEnclosed
+        || EquivalentRadius(component.gas_volume) / 2.0 < inputs.geometry.cell_width
+        || lineage_candidates[index].inherited_id_overlap > 0.0) {
+      continue;
+    }
+    if (inputs.initialize == nullptr) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+    const auto initial = inputs.initialize(inputs.initialization_context, component);
+    if (!initial.ok()) {
+      return initial.status();
+    }
+    inventories[index] = *initial;
+  }
+  const auto lineage = PrepareLiquidCavityLineage3D(
+      {inputs.previous_lineage, components, overlaps, inventories, inputs.next_id, inputs.geometry.cell_width},
+      lineage_candidates
+  );
+  if (!lineage.ok()) {
+    return lineage.status();
+  }
+  for (std::size_t index = 0; index < inventories.size(); ++index) {
+    inventories[index] = lineage_candidates[index].state.inventory;
+  }
+  const auto boundaries = PrepareLiquidCavityBoundaries3D(
+      {cells,
+       labels,
+       components,
+       inventories,
+       inputs.centers,
+       inputs.atmospheric_absolute_pressure,
+       inputs.liquid_density,
+       inputs.geometry.cell_width},
+      scratch.boundary_components.first(*component_count),
+      scratch.air_pressures
+  );
+  if (!boundaries.ok()) {
+    return boundaries.status();
+  }
+  return LiquidCavityStepPreparation3D{
+      .gas_cell_count = *gas_count,
+      .component_count = *component_count,
+      .lineage = *lineage,
+      .boundaries = *boundaries,
+  };
+}
+
 }  // namespace fluidity

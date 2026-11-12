@@ -10,6 +10,96 @@
 namespace fluidity {
 namespace {
 
+TEST(LiquidCavity3D, PreparesSampledCavityThenRetainsItsInventoryUnderCompression) {
+  constexpr int kHalfExtent = 4;
+  constexpr std::size_t kCellCount = 512;
+  constexpr std::size_t kCornerCount = 729;
+  std::array<CellIndex3D, kCellCount> sampled_cells;
+  std::array<LiquidCornerDistance3D, kCornerCount> corners;
+  std::array<LiquidCenterDistance3D, kCellCount> centers;
+  auto sample = [&](double radius) {
+    std::size_t cell = 0;
+    std::size_t corner = 0;
+    for (int z = -kHalfExtent; z <= kHalfExtent; ++z) {
+      for (int y = -kHalfExtent; y <= kHalfExtent; ++y) {
+        for (int x = -kHalfExtent; x <= kHalfExtent; ++x) {
+          const CellIndex3D index{x, y, z};
+          corners[corner++] = {
+              {x, y, z},
+              radius - std::hypot(static_cast<double>(x), static_cast<double>(y), static_cast<double>(z))
+          };
+          if (x < kHalfExtent && y < kHalfExtent && z < kHalfExtent) {
+            sampled_cells[cell] = index;
+            centers[cell++] = {index, radius - std::hypot(x + 0.5, y + 0.5, z + 0.5)};
+          }
+        }
+      }
+    }
+  };
+  struct Scratch {
+    std::array<LiquidAirVolumeCell3D, kCellCount> gas;
+    std::array<std::size_t, kCellCount> labels;
+    std::array<std::size_t, kCellCount> queue;
+    std::array<LiquidAirComponent3D, 1> components;
+    std::array<LiquidAirComponentOverlap3D, kCellCount> overlaps;
+    std::array<std::optional<LiquidCavityInventory3D>, 1> inventories;
+    std::array<LiquidCavityLineageCandidate3D, 1> lineage;
+    std::array<LiquidCavityBoundaryComponent3D, 1> boundary;
+    std::array<LiquidAirCellPressure3D, kCellCount> pressures;
+    LiquidCavityStepScratch3D View() {
+      return {gas, labels, queue, components, overlaps, inventories, lineage, boundary, pressures};
+    }
+  } first, second;
+  const LiquidObstacle3D obstacle;
+  int initializations = 0;
+  LiquidCavityStepInputs3D inputs{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .obstacle = obstacle,
+      .sampled_cells = sampled_cells,
+      .corners = corners,
+      .centers = centers,
+      .atmosphere_outlets = {},
+      .previous_snapshot = {},
+      .previous_lineage = {},
+      .next_id = 1,
+      .atmospheric_absolute_pressure = 100000.0,
+      .liquid_density = 1000.0,
+      .initialization_context = &initializations,
+      .initialize = [](void* context,
+                       const LiquidAirComponent3D& component) -> absl::StatusOr<LiquidCavityInventory3D> {
+        ++*static_cast<int*>(context);
+        return InitializeSubmergedLiquidCavity3D(component.gas_volume, 100000.0, 4000.0, 0.0);
+      },
+  };
+  sample(3.2);
+  const auto start = PrepareLiquidCavityStep3D(inputs, first.View());
+  ASSERT_TRUE(start.ok()) << start.status();
+  ASSERT_EQ(start->component_count, 1);
+  ASSERT_GT(start->boundaries.air_pressure_count, 0);
+  EXPECT_DOUBLE_EQ(first.pressures.front().gas_gauge_pressure, 4000.0);
+  EXPECT_EQ(first.lineage.front().state.id, 1);
+
+  const std::array previous_lineage{first.lineage.front().state};
+  inputs.previous_snapshot = {
+      std::span(first.gas).first(start->gas_cell_count),
+      std::span(first.labels).first(start->gas_cell_count),
+      1
+  };
+  inputs.previous_lineage = previous_lineage;
+  inputs.next_id = start->lineage.next_id;
+  sample(3.0);
+  const auto compressed = PrepareLiquidCavityStep3D(inputs, second.View());
+  ASSERT_TRUE(compressed.ok()) << compressed.status();
+  EXPECT_EQ(initializations, 1);
+  EXPECT_EQ(second.lineage.front().state.id, 1);
+  EXPECT_EQ(compressed->lineage.next_id, 2);
+  EXPECT_LT(compressed->boundaries.maximum_step_duration, start->boundaries.maximum_step_duration);
+  const double pressure =
+      104000.0 * std::pow(first.components.front().gas_volume / second.components.front().gas_volume, 1.4);
+  ASSERT_GT(compressed->boundaries.air_pressure_count, 0);
+  EXPECT_NEAR(second.pressures.front().gas_gauge_pressure, pressure - 100000.0, 1.0e-8);
+}
+
 TEST(LiquidCavity3D, LineageAssignsSplitMergeBirthAndLossDeterministically) {
   using Connectivity = LiquidAirConnectivity3D;
   const std::array<LiquidCavityLineageState3D, 3> previous{{

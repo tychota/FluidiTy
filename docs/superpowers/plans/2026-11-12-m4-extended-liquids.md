@@ -345,3 +345,11 @@ The shared scheduler accepts an optional host provider evaluated on each attempt
 Fourteen CPU tests passed with ctest --preset windows-debug-cpu -R 'Cavity|ExplicitCapillaryOversize'. The explicit attempt fixture verifies rollback, retry and publication at 17 Pa. Twenty-one real-device tests passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The frame fixture verifies retry, SM120, CPU parity and 17 Pa plus the analytic capillary jump. clang-format 19.1.5 passed. Receipts use out/m4-cavity-scheduler. The initial incremental CUDA build skipped translation units after the public header layout changed and failed in the scheduler tests. Rebuild with cmake --build --preset windows-release-cuda --clean-first --parallel 8 --target fluidity_cuda_operator_tests. The initial CUDA fixture omitted the capillary term in its expected pressure, recorded in the fixture-negative log.
 
 The tests supply gas pressure directly. The production scheduler still needs to build the gas domain, maintain accepted lineage and initialize cavity inventory. Q-CAVITY remains open.
+
+## Sampled cavity step preparation receipt
+
+The host preparation API takes a sampled domain, a prior accepted snapshot and a birth initializer. It clips and labels gas, measures overlap, assigns candidate lineage, and prepares pressure and the radial limit in bounded scratch. Only new resolved enclosed cavities need initialization. Candidate state stays in caller scratch until the caller accepts the step.
+
+An integrated spherical fixture initialized a resolved cavity at 104 kPa absolute, reduced the sampled radius from 3.2 to 3.0 m, and verified the same ID, a single initialization, the polytropic pressure, and a tighter radial limit. Fourteen CPU checks passed with ctest --preset windows-debug-cpu -R Cavity. Seven real-device regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|PreparedCavityBoundaries'. The new preparation function runs on the host. clang-format 19.1.5 passed. Receipts use out/m4-cavity-step and include the initial fixture compile error for the distinct corner index type.
+
+Production still needs to supply the gas sampling domain and atmosphere certificates, own accepted snapshots through retries and replays, and connect this preparation to the scheduler. Q-CAVITY remains open.
