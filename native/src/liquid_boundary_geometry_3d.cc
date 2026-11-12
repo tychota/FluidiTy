@@ -1182,11 +1182,12 @@ absl::StatusOr<double> InternalLiquidCapillaryStepBound3D(
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
   return MeasureGasCell(inputs);
 }
-absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+absl::StatusOr<std::array<double, 8>> boundary_internal::MeasureLiquidCellOctants(
     UniformMacGeometry3D geometry,
     CellIndex3D cell_index,
     const LiquidObstacle3D& obstacle,
-    std::span<const double, 8> liquid_corner_distances
+    std::span<const double, 8> liquid_corner_distances,
+    bool detailed_errors
 ) {
   using boundary_internal::ClipLiquidToTank;
   using boundary_internal::ClippingPolyhedron;
@@ -1199,14 +1200,17 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
       || std::ranges::any_of(liquid_corner_distances, [](double distance) {
            return !std::isfinite(distance);
          })) {
-    return absl::InvalidArgumentError("invalid liquid octant geometry or corner distance");
+    return absl::Status(
+        absl::StatusCode::kInvalidArgument,
+        detailed_errors ? "invalid liquid octant geometry or corner distance" : ""
+    );
   }
   const double cell_volume = width * width * width;
   const double octant_volume = cell_volume / 8.0;
   if (!std::isnormal(width * width) || !std::isnormal(octant_volume)) {
-    return UnrepresentableGeometry(true);
+    return UnrepresentableGeometry(detailed_errors);
   }
-  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, detailed_errors);
   if (!obstacle_status.ok()) {
     return obstacle_status.status();
   }
@@ -1221,17 +1225,17 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
   TankClipBounds tank_bounds;
   if (open_tank) {
     if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
-      return UnrepresentableGeometry(true);
+      return UnrepresentableGeometry(detailed_errors);
     }
     const auto bounds = boundary_internal::LocalTankBounds(query);
     if (!bounds.ok()) {
-      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+      return boundary_internal::ArithmeticStatus(bounds.status(), detailed_errors);
     }
     tank_bounds = *bounds;
   }
   const auto local = boundary_internal::LocalObstacle(query);
   if (!local.ok()) {
-    return boundary_internal::ArithmeticStatus(local.status(), true);
+    return boundary_internal::ArithmeticStatus(local.status(), detailed_errors);
   }
 
   std::array<ClippingVertex, 8> vertices{};
@@ -1287,11 +1291,20 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
   constexpr double kVolumeRoundoff = 64.0 * std::numeric_limits<double>::epsilon();
   for (double& volume : volumes) {
     if (!IsNormalOrZero(volume) || volume < 0.0 || volume / octant_volume > 1.0 + kVolumeRoundoff) {
-      return UnrepresentableGeometry(true);
+      return UnrepresentableGeometry(detailed_errors);
     }
     volume = std::min(volume, octant_volume);
   }
   return volumes;
+}
+
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances
+) {
+  return boundary_internal::MeasureLiquidCellOctants(geometry, cell_index, obstacle, liquid_corner_distances, true);
 }
 
 absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(

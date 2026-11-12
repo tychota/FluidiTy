@@ -2526,6 +2526,43 @@ TEST(LiquidSubstep3D, PositiveViscosityAttemptsAllocateAndFreeNothing) {
   }
 }
 
+TEST(LiquidSubstep3D, ViscosityPhysicalFailuresAllocateAndFreeNothing) {
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (const bool invalid_geometry : {false, true}) {
+    const auto fixture = viscous_tank_test::ViscosityFailure(invalid_geometry);
+    ASSERT_TRUE(fixture.ok()) << fixture.status();
+    auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    scheduler_allocations = 0;
+    scheduler_frees = 0;
+    bool succeeded = false;
+    auto disposition = LiquidAttemptDisposition3D::kFatal;
+    scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+    {
+      const auto result = scheduler->Attempt(duration);
+      succeeded = result.ok();
+      if (succeeded) {
+        disposition = result->disposition;
+      }
+    }
+    _CrtSetAllocHook(scheduler_previous_hook);
+    ASSERT_TRUE(succeeded);
+    EXPECT_EQ(scheduler_allocations, 0u);
+    EXPECT_EQ(scheduler_frees, 0u);
+    EXPECT_EQ(
+        disposition,
+        invalid_geometry ? LiquidAttemptDisposition3D::kFatal : LiquidAttemptDisposition3D::kRetryDt
+    );
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+    EXPECT_EQ(
+        scheduler->diagnostics().failure_code,
+        invalid_geometry ? absl::StatusCode::kUnimplemented : absl::StatusCode::kAborted
+    );
+    ExpectIdenticalSerializedState(fixture->initial, scheduler->committed());
+  }
+}
+
 TEST(LiquidSubstep3D, WettedPistonAttemptsAllocateAndFreeNothing) {
   namespace wet = wetted_piston_pressure_test;
   for (const bool overflow : {false, true}) {

@@ -48,21 +48,30 @@ absl::StatusOr<viscosity_internal::VelocityBlockScratch3D> PrepareCpuVelocityScr
 
 constexpr std::size_t kPressureIterationBudget = 256;
 
+// Standalone calls keep diagnostics. Physical attempts carry inline codes.
+struct CoupledErrors {
+  bool detailed;
+  absl::Status operator()(absl::StatusCode code, absl::string_view message) const {
+    return absl::Status(code, detailed ? message : absl::string_view{});
+  }
+};
+
 // Remap sparse grid slots to compact incident face ordinals for the velocity solve.
-absl::Status RemapStrain(const PreparedMacPressureView3D& system, std::span<MacStrainRow3D> rows) {
+absl::Status
+RemapStrain(const PreparedMacPressureView3D& system, std::span<MacStrainRow3D> rows, CoupledErrors errors) {
   const auto links = system.links();
   for (auto& row : rows) {
     if (row.term_count == 0 || row.term_count > row.terms.size()) {
-      return absl::InvalidArgumentError("invalid coupled strain row extent");
+      return errors(absl::StatusCode::kInvalidArgument, "invalid coupled strain row extent");
     }
     if (!std::isfinite(row.quadrature_weight) || row.quadrature_weight < 0.0 || !std::isfinite(row.prescribed_strain)) {
-      return absl::InvalidArgumentError("invalid coupled strain quadrature");
+      return errors(absl::StatusCode::kInvalidArgument, "invalid coupled strain quadrature");
     }
     for (auto& term : std::span(row.terms).first(row.term_count)) {
       const auto found =
           std::ranges::lower_bound(links, term.face_slot, {}, &pressure_internal::FrozenMacPressureLink3D::face_slot);
       if (found == links.end() || found->face_slot != term.face_slot || !std::isfinite(term.coefficient)) {
-        return absl::InvalidArgumentError("invalid coupled strain face or coefficient");
+        return errors(absl::StatusCode::kInvalidArgument, "invalid coupled strain face or coefficient");
       }
       term.face_slot = static_cast<std::size_t>(found - links.begin());
     }
@@ -78,7 +87,8 @@ absl::Status AccumulateConstraint(
     std::span<const double> velocity,
     bool physical,
     std::span<pressure_internal::arithmetic::CompensatedSum> flux,
-    std::span<double> result
+    std::span<double> result,
+    CoupledErrors errors
 ) {
   const auto cells = system.cells();
   const auto links = system.links();
@@ -96,7 +106,7 @@ absl::Status AccumulateConstraint(
               pressure_difference,
               compliance_flux
           )) {
-        return absl::OutOfRangeError("coupled compliance flux is unrepresentable");
+        return errors(absl::StatusCode::kOutOfRange, "coupled compliance flux is unrepresentable");
       }
       flux[cell].Add(compliance_flux);
     }
@@ -105,7 +115,7 @@ absl::Status AccumulateConstraint(
     const auto& link = links[face];
     const double open_flux = link.open_area * velocity[face];
     if (!pressure_internal::arithmetic::IsRepresentablePressureProduct(link.open_area, velocity[face], open_flux)) {
-      return absl::OutOfRangeError("coupled face flux is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "coupled face flux is unrepresentable");
     }
     pressure_internal::arithmetic::ForEachIncidentCell(link, [&](std::size_t cell, double outward_sign) {
       flux[cell].Add(outward_sign * open_flux);
@@ -117,7 +127,7 @@ absl::Status AccumulateConstraint(
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     result[cell] = flux[cell].Total();
     if (!std::isfinite(result[cell])) {
-      return absl::OutOfRangeError("coupled cell flux is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "coupled cell flux is unrepresentable");
     }
   }
   return absl::OkStatus();
@@ -127,13 +137,13 @@ double Dot(std::span<const double> left, std::span<const double> right) {
   return std::inner_product(left.begin(), left.end(), right.begin(), 0.0);
 }
 
-absl::StatusOr<double> CoupledConstraintNorm(std::span<const double> integrated_fluxes) {
+absl::StatusOr<double> CoupledConstraintNorm(std::span<const double> integrated_fluxes, CoupledErrors errors) {
   double norm = 0.0;
   for (const double flux : integrated_fluxes) {
     norm = std::hypot(norm, flux);
   }
   if (!std::isfinite(norm)) {
-    return absl::OutOfRangeError("coupled residual norm is unrepresentable");
+    return errors(absl::StatusCode::kOutOfRange, "coupled residual norm is unrepresentable");
   }
   return norm;
 }
@@ -145,14 +155,15 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     std::span<double> face_buffers,
     std::size_t max_iterations,
     std::optional<SolveViscousVelocityView3D> solve_velocity_block,
-    pressure_internal::MacPressureScratch3D& scratch
+    pressure_internal::MacPressureScratch3D& scratch,
+    CoupledErrors errors
 ) {
   const auto rows = scratch.Take<MacStrainRow3D>(strain_rows.size());
   if (!rows.ok()) {
     return rows.status();
   }
   std::ranges::copy(strain_rows, rows->begin());
-  const auto remap_status = RemapStrain(system, *rows);
+  const auto remap_status = RemapStrain(system, *rows, errors);
   if (!remap_status.ok()) {
     return remap_status;
   }
@@ -183,7 +194,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     const double step_area = dt * link.open_area;
     inertia[face] = step_area / link.pressure_to_velocity_scale;
     if (!std::isnormal(inertia[face]) || inertia[face] <= 0.0) {
-      return absl::OutOfRangeError("coupled face inertia is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "coupled face inertia is unrepresentable");
     }
     double pressure_lift = 0.0;
     if (const auto* jump = std::get_if<InternalMacPressureLink3D>(&link.pressure_link)) {
@@ -211,7 +222,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     const auto& link = links[face];
     const double effective_conductance = link.conductance * (inertia[face] / velocity_diagonal[face]);
     if (!pressure_internal::arithmetic::IsFinitePositive(effective_conductance)) {
-      return absl::OutOfRangeError("coupled preconditioner conductance is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "coupled preconditioner conductance is unrepresentable");
     }
     pressure_internal::arithmetic::ForEachIncidentCell(link, [&](std::size_t cell, double) {
       pressure_diagonal[cell] += effective_conductance;
@@ -242,7 +253,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
   if (!std::ranges::all_of(base_momentum, [](double value) {
         return std::isfinite(value);
       })) {
-    return absl::OutOfRangeError("coupled base momentum is unrepresentable");
+    return errors(absl::StatusCode::kOutOfRange, "coupled base momentum is unrepresentable");
   }
 
   const auto pinned_buffer = scratch.Take<bool>(cells.size());
@@ -300,11 +311,11 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
       return base_velocity.status();
     }
     const auto base_flux =
-        AccumulateConstraint(system, zero_pressure, base_velocity->velocity, true, flux_sums, residual);
+        AccumulateConstraint(system, zero_pressure, base_velocity->velocity, true, flux_sums, residual, errors);
     if (!base_flux.ok()) {
       return base_flux;
     }
-    const auto base_norm = CoupledConstraintNorm(residual);
+    const auto base_norm = CoupledConstraintNorm(residual, errors);
     if (!base_norm.ok()) {
       return base_norm.status();
     }
@@ -324,11 +335,12 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     if (!velocity.ok()) {
       return velocity.status();
     }
-    const auto physical_flux = AccumulateConstraint(system, pressure, velocity->velocity, true, flux_sums, residual);
+    const auto physical_flux =
+        AccumulateConstraint(system, pressure, velocity->velocity, true, flux_sums, residual, errors);
     if (!physical_flux.ok()) {
       return physical_flux;
     }
-    const auto constraint_norm = CoupledConstraintNorm(residual);
+    const auto constraint_norm = CoupledConstraintNorm(residual, errors);
     if (!constraint_norm.ok()) {
       return constraint_norm.status();
     }
@@ -347,7 +359,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
       const double defect = residual[cell] / cells[cell].fluid_volume;
       if (!std::isfinite(defect)) {
-        return absl::OutOfRangeError("coupled pressure defect is unrepresentable");
+        return errors(absl::StatusCode::kOutOfRange, "coupled pressure defect is unrepresentable");
       }
       max_defect = std::max(max_defect, std::abs(defect));
     }
@@ -400,7 +412,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
         direction[cell] = 0.0;
       } else {
         if (!pressure_internal::arithmetic::IsFinitePositive(pressure_diagonal[cell])) {
-          return absl::OutOfRangeError("coupled preconditioner diagonal is unrepresentable");
+          return errors(absl::StatusCode::kOutOfRange, "coupled preconditioner diagonal is unrepresentable");
         }
         direction[cell] = residual[cell] / pressure_diagonal[cell];
       }
@@ -410,7 +422,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
       return response_velocity.status();
     }
     const auto response_flux =
-        AccumulateConstraint(system, direction, response_velocity->velocity, false, flux_sums, response);
+        AccumulateConstraint(system, direction, response_velocity->velocity, false, flux_sums, response, errors);
     if (!response_flux.ok()) {
       return response_flux;
     }
@@ -430,7 +442,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     }
     const double norm = std::sqrt(Dot(response, response));
     if (!std::isfinite(norm) || norm <= 0.0) {
-      return absl::AbortedError("coupled pressure direction has no usable response");
+      return errors(absl::StatusCode::kAborted, "coupled pressure direction has no usable response");
     }
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
       response[cell] /= norm;
@@ -440,12 +452,12 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
       pressure[cell] -= step * direction[cell];
       if (!std::isfinite(pressure[cell])) {
-        return absl::OutOfRangeError("coupled pressure iterate is unrepresentable");
+        return errors(absl::StatusCode::kOutOfRange, "coupled pressure iterate is unrepresentable");
       }
     }
     ++basis_count;
   }
-  return absl::AbortedError("coupled pressure iteration budget exhausted");
+  return errors(absl::StatusCode::kAborted, "coupled pressure iteration budget exhausted");
 }
 
 absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformWithVelocityView(
@@ -453,7 +465,8 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformWithVelocityVie
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
     std::optional<SolveViscousVelocityView3D> solve_velocity_block,
-    pressure_internal::MacPressureScratch3D& scratch
+    pressure_internal::MacPressureScratch3D& scratch,
+    CoupledErrors errors
 ) {
   const auto system = pressure_internal::PrepareBoundedMacPressureSystem3D(
       inputs.mac_grid,
@@ -488,7 +501,8 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformWithVelocityVie
       *face_buffers,
       options.max_iterations,
       solve_velocity_block,
-      scratch
+      scratch,
+      errors
   );
   if (result.ok()) {
     result->inward_prescribed_wall_flux_m3_per_s = inward_prescribed_wall_flux.Total();
@@ -556,7 +570,9 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectStandaloneUniform(
     return storage.status();
   }
   pressure_internal::MacPressureScratch3D scratch(storage->values());
-  return OwnProjection(ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch));
+  return OwnProjection(
+      ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch, {.detailed = true})
+  );
 }
 
 absl::StatusOr<MacViscousPressureProjectionView3D> ProjectScratchUniform(
@@ -573,7 +589,14 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectScratchUniform(
   if (strain_rows.size() > cell_count * pressure_internal::kMaximumUniformStrainRowsPerCell3D) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  return ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch);
+  return ProjectUniformWithVelocityView(
+      inputs,
+      strain_rows,
+      options,
+      solve_velocity_block,
+      scratch,
+      {.detailed = false}
+  );
 }
 
 pressure_internal::UniformViscousPressureInputs3D BorrowUniformInputs(const MacPressureInputs3D& inputs) {
@@ -668,7 +691,8 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
       *face_buffers,
       kPressureIterationBudget,
       std::nullopt,
-      arena
+      arena,
+      {.detailed = true}
   ));
 }
 }  // namespace pressure_internal

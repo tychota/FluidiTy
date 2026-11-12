@@ -55,6 +55,25 @@ inline absl::StatusOr<FractionalFillFixture> FractionalFill() {
   return fixture;
 }
 
+inline absl::StatusOr<FractionalFillFixture> ViscosityFailure(bool invalid_geometry) {
+  auto fixture = FractionalFill();
+  if (!fixture.ok()) {
+    return fixture.status();
+  }
+  if (invalid_geometry) {
+    auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+    tank.start_low_x = 0.75;
+    for (auto& particle : fixture->initial.particles.values()) {
+      if (particle.world_position.x < 1.0) {
+        particle.world_position.x = 0.875;
+      }
+    }
+  } else {
+    fixture->options.pressure_solver_options.max_iterations = 1;
+  }
+  return fixture;
+}
+
 inline absl::StatusOr<FractionalFillFixture> CartesianCut() {
   auto fixture = FractionalFill();
   if (!fixture.ok()) {

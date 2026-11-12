@@ -4,6 +4,16 @@
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 namespace fluidity::boundary_internal {
+// Partitions the frozen liquid volume into cell octants. Scheduler callers
+// use code-only errors so a rejected physical attempt allocates nothing.
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances,
+    bool detailed_errors
+);
+
 // Owns no storage. The callback fills the first count results in query order
 // and returns a dispatch-level status. Each result has its own arithmetic status.
 struct GeometryBatch {

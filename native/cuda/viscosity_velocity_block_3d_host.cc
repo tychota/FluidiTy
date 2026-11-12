@@ -19,18 +19,24 @@ using cuda_internal::ViscousVelocityFace3D;
 using cuda_internal::ViscousVelocityState3D;
 using cuda_internal::ViscousVelocityTerm3D;
 
-absl::Status CheckVelocityState(const ViscousVelocityState3D& state) {
+absl::Status CheckVelocityState(const ViscousVelocityState3D& state, bool detailed) {
   switch (state.error) {
     case ViscousVelocityError3D::kNone:
       return absl::OkStatus();
     case ViscousVelocityError3D::kRange:
-      return absl::OutOfRangeError("CUDA velocity-block arithmetic is unrepresentable");
+      return absl::Status(
+          absl::StatusCode::kOutOfRange,
+          detailed ? "CUDA velocity-block arithmetic is unrepresentable" : ""
+      );
     case ViscousVelocityError3D::kCurvature:
-      return absl::AbortedError("CUDA velocity-block curvature is not finite and positive");
+      return absl::Status(
+          absl::StatusCode::kAborted,
+          detailed ? "CUDA velocity-block curvature is not finite and positive" : ""
+      );
     case ViscousVelocityError3D::kExhausted:
-      return absl::AbortedError("CUDA velocity-block iteration budget exhausted");
+      return absl::Status(absl::StatusCode::kAborted, detailed ? "CUDA velocity-block iteration budget exhausted" : "");
   }
-  return absl::InternalError("invalid CUDA velocity-block status");
+  return absl::Status(absl::StatusCode::kInternal, detailed ? "invalid CUDA velocity-block status" : "");
 }
 
 absl::Status Execute(
@@ -89,7 +95,7 @@ absl::Status Execute(
   if (!measurement.ok()) {
     return measurement.status();
   }
-  if (auto status = CheckVelocityState(state); !status.ok()) {
+  if (auto status = CheckVelocityState(state, true); !status.ok()) {
     return status;
   }
   if (auto status = runtime.Download(device.velocity, std::span(output.solution.velocity)); !status.ok()) {
@@ -208,9 +214,9 @@ absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> SolveArenaVeloci
   }
   const auto& report = state->pinned.front();
   if (report.compiled_architecture != 1200) {
-    return absl::FailedPreconditionError("CUDA viscous arena requires an SM120 image");
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
-  if (auto status = CheckVelocityState(report); !status.ok()) {
+  if (auto status = CheckVelocityState(report, false); !status.ok()) {
     return status;
   }
   return viscosity_internal::VelocityBlockViewSolution3D{

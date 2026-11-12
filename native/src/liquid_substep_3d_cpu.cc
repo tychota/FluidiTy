@@ -306,18 +306,18 @@ absl::Status PrepareCutViscosityGeometry(
       };
       const auto bounds = boundary_internal::LocalTankBounds(query);
       if (!bounds.ok()) {
-        return boundary_internal::ArithmeticStatus(bounds.status(), true);
+        return boundary_internal::ArithmeticStatus(bounds.status(), false);
       }
       // Tangential MAC face centers use the cell's transverse center. Refuse
       // to use them as fluid samples when that center lies in the solid.
       std::array<double, 3> distances{};
       for (int axis = 0; axis < 3; ++axis) {
         if (bounds->low[axis] >= 0.5 || bounds->high[axis] <= 0.5) {
-          return absl::UnimplementedError("viscous tank cut requires a pressure center inside the tank");
+          return liquid_step_internal::Error(absl::StatusCode::kUnimplemented);
         }
         distances[axis] = (bounds->high[axis] - bounds->low[axis]) * width;
         if (!std::isnormal(1.0 / distances[axis])) {
-          return absl::OutOfRangeError("viscous wall-normal derivative is unrepresentable");
+          return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
         }
       }
       wall_normal_distances[ordinal] = distances;
@@ -330,7 +330,7 @@ absl::Status PrepareCutViscosityGeometry(
     const auto index = cell.cell_index;
     constexpr auto kMaxIndex = std::numeric_limits<std::int32_t>::max();
     if (index.x == kMaxIndex || index.y == kMaxIndex || index.z == kMaxIndex) {
-      return absl::OutOfRangeError("cut viscosity cell has an unrepresentable corner");
+      return liquid_step_internal::Error(absl::StatusCode::kOutOfRange);
     }
     std::array<double, 8> distances{};
     for (int corner = 0; corner < 8; ++corner) {
@@ -344,18 +344,19 @@ absl::Status PrepareCutViscosityGeometry(
         return corner_key(sample.corner_index);
       });
       if (found == geometry.corner_distances.end() || corner_key(found->corner_index) != key) {
-        return absl::FailedPreconditionError("cut viscosity cell lacks its frozen corner samples");
+        return liquid_step_internal::Error(absl::StatusCode::kFailedPrecondition);
       }
       distances[corner] = found->signed_distance;
     }
-    const auto octants = MeasureLiquidCellOctants3D(uniform_grid, index, geometry.obstacle, distances);
+    const auto octants =
+        boundary_internal::MeasureLiquidCellOctants(uniform_grid, index, geometry.obstacle, distances, false);
     if (!octants.ok()) {
       return octants.status();
     }
     const double measured_volume = std::accumulate(octants->begin(), octants->end(), 0.0);
     constexpr double kPartitionRoundoff = 512 * std::numeric_limits<double>::epsilon();
     if (measured_volume <= 0.0 || std::abs(measured_volume / cell.fluid_volume - 1.0) > kPartitionRoundoff) {
-      return absl::FailedPreconditionError("cut strain quadratures differ from the frozen pressure volume");
+      return liquid_step_internal::Error(absl::StatusCode::kFailedPrecondition);
     }
     octant_volumes[ordinal] = *octants;
   }
@@ -390,7 +391,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::Project
     return material.status();
   }
   if (!cell_dynamic_viscosity.empty() && cell_dynamic_viscosity.size() != problem.cells.size()) {
-    return absl::InvalidArgumentError("viscosity coefficients differ from the frozen pressure cells");
+    return liquid_step_internal::Error(absl::StatusCode::kInvalidArgument);
   }
   for (std::size_t index = 0; index < problem.cells.size(); ++index) {
     const auto& cell = problem.cells[index];
@@ -406,7 +407,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::Project
   const bool supports_cut_geometry = std::holds_alternative<std::monostate>(geometry.obstacle)
       || std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle);
   if (uses_cut_geometry && !supports_cut_geometry) {
-    return absl::UnimplementedError("oblique cut solid boundaries require viscous wall strain closure");
+    return liquid_step_internal::Error(absl::StatusCode::kUnimplemented);
   }
   std::span<std::array<double, 8>> octant_volumes;
   std::span<std::array<double, 3>> wall_normal_distances;

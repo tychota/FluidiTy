@@ -1484,6 +1484,29 @@ TEST(CudaLiquidSubstep3D, PositiveViscosityAttemptsAllocateAndFreeNothing) {
   }
 }
 
+TEST(CudaLiquidSubstep3D, ViscosityPhysicalFailuresAllocateAndFreeNothing) {
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (const bool invalid_geometry : {false, true}) {
+    const auto fixture = viscous_tank_test::ViscosityFailure(invalid_geometry);
+    ASSERT_TRUE(fixture.ok()) << fixture.status();
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    const auto expected = invalid_geometry ? LiquidAttemptDisposition3D::kFatal : LiquidAttemptDisposition3D::kRetryDt;
+    MeasuredAttempt(*scheduler, *backend, duration, expected);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+    EXPECT_EQ(
+        scheduler->diagnostics().failure_code,
+        invalid_geometry ? absl::StatusCode::kUnimplemented : absl::StatusCode::kAborted
+    );
+    EXPECT_EQ(scheduler->committed(), fixture->initial);
+  }
+}
+
 TEST(CudaLiquidSubstep3D, ViscousFractionalTankFillMatchesCpuHydrostaticRest) {
   const auto fixture = viscous_tank_test::FractionalFill();
   ASSERT_TRUE(fixture.ok()) << fixture.status();
