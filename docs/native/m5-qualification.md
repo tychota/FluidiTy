@@ -2313,3 +2313,28 @@ respectively, above the 0.16 m limit. The half-step cases miss the
 angle criterion. The cutoff and work-pairing gains remain, with
 vertical residuals below 1e-8 N·s and cut-work mismatch below
 4e-16 J. The gate stays open.
+
+
+The SM120 default dry-scene and transpose oracles also passed for
+`62c447f`. The work residual with mass weighting was 1.82e-12 J.
+
+The accepted-step contact trace samples the same integration without
+inserting step boundaries. By about 0.25 s, all four runs report zero
+swept contacts and zero swept impulse, but the reflected grid has
+already supplied 3.96–4.91 N·s of vertical wall impulse. At about
+0.35 s the fine half-step has still recorded no swept contact, yet its
+grid reaction is 9.09 N·s and its height has rebounded to 0.203 m.
+The nominal fine run has recorded 207 swept contacts and reaches
+0.114 m at the same time. This locates the divergence in the early
+floor response. The next check is whether wall support activates
+only when the solid reaches the floor and whether the same active
+constraint drives the velocity gather and stress transpose.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/floor-contact-affine-bin'
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace $grid $step
+  }
+}
+```
