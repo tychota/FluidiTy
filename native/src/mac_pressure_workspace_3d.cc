@@ -11,6 +11,7 @@
 #include <tuple>
 #include <utility>
 
+#include "fluidity/host/viscosity.h"
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_pressure_3d_workspace_internal.h"
 
@@ -631,9 +632,16 @@ bool CountOriginalPressureScratch(ScratchByteCounter& counter, std::size_t cell_
       && counter.Add(cell_capacity, sizeof(FluxRow)) && counter.Add(cell_capacity, sizeof(ComponentBalance));
 }
 
-bool CountCoupledPressureScratch(ScratchByteCounter& counter, std::size_t cell_capacity, std::size_t face_capacity) {
+bool CountCoupledPressureScratch(
+    ScratchByteCounter& counter,
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    std::size_t strain_row_capacity
+) {
   using CompensatedSum = pressure_internal::arithmetic::CompensatedSum;
-  return counter.Add(face_capacity, pressure_internal::kCoupledFaceScratchFields3D * sizeof(double))
+  return counter.Add(strain_row_capacity, sizeof(MacStrainRow3D), 2)
+      && counter.Add(face_capacity, pressure_internal::kCoupledVelocityScratchFields3D * sizeof(double))
+      && counter.Add(face_capacity, pressure_internal::kCoupledFaceScratchFields3D * sizeof(double))
       && counter.Add(cell_capacity, pressure_internal::kCoupledCellScratchFields3D * sizeof(double))
       && counter.Add(cell_capacity, sizeof(CompensatedSum)) && counter.Add(cell_capacity, sizeof(bool))
       && counter.Add(cell_capacity, 2 * pressure_internal::kCoupledPressureRestartLength3D * sizeof(double));
@@ -666,12 +674,13 @@ pressure_internal::QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacit
 absl::StatusOr<std::size_t> pressure_internal::QueryCoupledMacPressureScratchBytes3D(
     std::size_t cell_capacity,
     std::size_t face_capacity,
+    std::size_t strain_row_capacity,
     bool prepare_uniform_system
 ) {
   ScratchByteCounter counter;
   if (cell_capacity > kMaxPressureCells || face_capacity > kMaxPressureFaces
       || (prepare_uniform_system && !CountOriginalPressureScratch(counter, cell_capacity, face_capacity))
-      || !CountCoupledPressureScratch(counter, cell_capacity, face_capacity)) {
+      || !CountCoupledPressureScratch(counter, cell_capacity, face_capacity, strain_row_capacity)) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   return counter.total;
@@ -708,7 +717,13 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
   }
   ScratchByteCounter coupled_counter;
   if (!CountOriginalPressureScratch(coupled_counter, cell_capacity, face_capacity)
-      || !CountCoupledPressureScratch(coupled_counter, cell_capacity, face_capacity)) {
+      || cell_capacity > std::numeric_limits<std::size_t>::max() / pressure_internal::kMaximumUniformStrainRowsPerCell3D
+      || !CountCoupledPressureScratch(
+          coupled_counter,
+          cell_capacity,
+          face_capacity,
+          cell_capacity * pressure_internal::kMaximumUniformStrainRowsPerCell3D
+      )) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
   counter.total = std::max(counter.total, coupled_counter.total);
