@@ -2540,3 +2540,31 @@ volume change. The coarse nominal case passes while still dilating in
 the floor layer. These observations narrow the remaining search to
 how the shape develops before the final window, including shear
 plasticity and earlier radial transport.
+
+### Impact-to-settling timestep divergence
+
+The contact trace at `b2d03c6` shows all four runs still within
+2.1 mm of each other in maximum height at the first sample near
+0.20 s. By 0.35 s the half-step cases stand higher and spread less
+than their nominal counterparts.
+
+| Native case | Height at 0.35 s | Radius at 0.35 s | Height at 0.50 s | Radius at 0.50 s |
+|---|---:|---:|---:|---:|
+| Coarse | 0.126368 m | 0.117818 m | 0.107442 m | 0.123573 m |
+| Coarse half-step | 0.155805 m | 0.111181 m | 0.128777 m | 0.114983 m |
+| Fine | 0.131607 m | 0.118928 m | 0.115730 m | 0.133786 m |
+| Fine half-step | 0.153225 m | 0.107474 m | 0.135463 m | 0.115883 m |
+
+The trace prints the first accepted time at or after each requested
+sample. The reported times in the table differ by at most 0.000625 s
+within a column. At the 0.35 s sample the fine half-step case has
+0.00780 J of kinetic energy versus 0.05629 J at the nominal step.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/floor-wall-final-bin'
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace $grid $step
+  }
+}
+```
