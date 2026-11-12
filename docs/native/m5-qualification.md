@@ -2405,10 +2405,10 @@ foreach ($case in 'fine', 'fine-half') {
 
 ### Reflected deformation gradient during impact
 
-This control uses the full reflected-grid velocity gradient for the
+Local experiment `380e4cc` uses the full reflected-grid velocity gradient for the
 deformation update over an impact step. Swept particle velocity and
 stored affine velocity still use the Coulomb projection. The previous
-contact split also projected the deformation gradient after impact.
+contact split also projected the deformation gradient after impact. The native and SM120 dry-scene targets passed, including the impact oracle for elastic compression and the bounded donor oracle for force pairing and rollback.
 
 | Native case | 1.5 s angle and radius | 3 s angle and radius |
 |---|---|---|
