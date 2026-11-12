@@ -334,9 +334,10 @@ struct LiquidAdaptivePhysicalExteriorPressure3D {
 // translating halfspace at time zero and the horizontal planar liquid surface.
 struct LiquidAdaptivePhysicalGeometryRequest3D {
   LiquidClock3D accepted_clock;  // Must equal the current committed clock.
-  std::span<const double> target_divergences_s_inv;  // One independent source per canonical leaf.
+  // One independent source per canonical leaf. Certified air requires zero.
+  std::span<const double> target_divergences_s_inv;
   // Empty seals all exteriors. Otherwise supply one optional entry per
-  // canonical global subface slot. Interior slots must be absent.
+  // canonical global subface slot. Interior and omitted air slots must be absent.
   std::span<const std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures{};
 };
 
@@ -484,8 +485,9 @@ class LiquidSubstepScheduler3D {
   // Every such attempt, including retries and restored continuations, requires
   // a clock-bound request with canonical source and exterior fields.
   // The wall pose is derived from the same resolved scene and accepted time.
-  // The geometry requires positive wet volume on every leaf at both interval
-  // endpoints. Unsupported activation, stale requests, and malformed fields
+  // Liquid leaves require positive wet volume throughout the interval. Air
+  // leaves require unchanged certified empty air. Unsupported activation,
+  // stale requests, and malformed fields
   // fail without publishing any trial state. Geometry and an independent
   // graded owner are allocated before the transaction enters its stages.
   absl::StatusOr<LiquidAttemptOutcome3D>

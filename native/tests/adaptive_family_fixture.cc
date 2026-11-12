@@ -320,13 +320,22 @@ absl::Status AdvancePhysical(
   if (!topology.ok()) {
     return topology.status();
   }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto air = std::ranges::find(
+      state.adaptive_cells.values(),
+      LiquidCellOccupancy3D::kAir,
+      &LiquidAdaptiveCellState3D::occupancy
+  );
+  std::optional<std::size_t> air_leaf;
+  if (air != state.adaptive_cells.values().end()) {
+    air_leaf = static_cast<std::size_t>(air - state.adaptive_cells.values().begin());
+  }
   std::vector<std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior;
   std::vector<std::size_t> cut_slots;
   if (!first_frame) {
-    const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
-    if (!ownership.ok()) {
-      return ownership.status();
-    }
     exterior.resize(state.adaptive_faces.size());
     std::size_t outlet_count = 0;
     for (const auto& face : ownership->exterior_faces) {
@@ -354,7 +363,7 @@ absl::Status AdvancePhysical(
     return kPhysicalReplayWall.start_plane_coordinate + time * kPhysicalReplayWall.wall_velocity.y;
   };
   std::vector<double> sources(topology->cells().size());
-  const auto attempt = [&](double duration) {
+  const auto attempt = [&](double duration, double air_source = 0) {
     const auto clock = scheduler.committed().clock;
     const double wall_y = wall_coordinate(clock.time);
     // The normal wall sweeps the bottom of each incident leaf. Tangential
@@ -364,6 +373,9 @@ absl::Status AdvancePhysical(
       if (leaf.key.lower_corner.y == 0) {
         sources[cell] = -kPhysicalReplayWall.wall_velocity.y / (leaf.cell_width - wall_y);
       }
+    }
+    if (air_leaf) {
+      sources[*air_leaf] = air_source;
     }
     return scheduler.AttemptWithAdaptivePhysicalGeometry(
         duration,
@@ -375,6 +387,9 @@ absl::Status AdvancePhysical(
     const auto before = EncodeLiquidState3D(scheduler.committed());
     if (!before.ok()) {
       return before.status();
+    }
+    if (air_leaf && attempt(initial_duration, 1).status().code() != absl::StatusCode::kFailedPrecondition) {
+      return absl::FailedPreconditionError("Physical sparse replay admitted a source in known air");
     }
     scheduler.SetStageFaultHookForTesting({
         .before_stage =
@@ -426,6 +441,30 @@ absl::Status AdvancePhysical(
         return std::abs(scheduler.committed().adaptive_faces[slot].carrier_velocity) > 1e-6;
       })) {
     return absl::FailedPreconditionError("Physical replay did not drive flow through a cut coarse/fine subface");
+  }
+  if (air_leaf) {
+    const auto& published = scheduler.committed();
+    const auto& leaf = published.adaptive_cells[*air_leaf];
+    if (leaf.occupancy != LiquidCellOccupancy3D::kAir || leaf.previous_pressure != 0 || leaf.inventory.mass_kg != 0
+        || leaf.inventory.current_volume_m3 != 0) {
+      return absl::DataLossError("Physical sparse replay changed the certified air leaf");
+    }
+    const auto missing = [&](std::size_t slot) {
+      const auto& face = published.adaptive_faces[slot];
+      return face.validity == LiquidFaceValidity3D::kMissing && face.carrier_velocity == 0;
+    };
+    for (const auto& face : ownership->exterior_faces) {
+      if (face.cell_ordinal == *air_leaf && !missing(face.face_slot)) {
+        return absl::DataLossError("Physical sparse replay revived an omitted air carrier");
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < topology->interior_faces().size(); ++ordinal) {
+      const auto& face = topology->interior_faces()[ordinal];
+      if ((face.tail_cell_ordinal == *air_leaf || face.head_cell_ordinal == *air_leaf)
+          && !missing(ownership->interior_face_slots[ordinal])) {
+        return absl::DataLossError("Physical sparse replay revived a dry wet/air carrier");
+      }
+    }
   }
   return scheduler.FinishFrame();
 }
@@ -545,7 +584,8 @@ absl::Status AdvanceCertifiedQuadraticFamily(
 absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
-  const bool physical = scenario == "physical";
+  const bool physical_air = scenario == "physical-air";
+  const bool physical = physical_air || scenario == "physical";
   const bool width = scenario == "width";
   const bool batch = scenario == "closure";
   const bool merge = scenario == "quadratic-merge";
@@ -590,7 +630,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       return test::PopulateGradedOwnerExchangeFixture3D(state, scene);
     }
     if (physical) {
-      return test::PopulateGradedPhysicalHalfspaceFixture3D(state, scene, kPhysicalReplayWall);
+      return test::PopulateGradedPhysicalHalfspaceFixture3D(state, scene, kPhysicalReplayWall, physical_air);
     }
     if (batch) {
       return test::PopulateGradedRefinementClosureFixture3D(state, scene, true);
@@ -642,9 +682,11 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_tag = persistent
-      ? 26
-      : (quadratic ? (merge ? 25 : 24) : (physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12)))));
+  const std::uint8_t fixture_tag = physical_air
+      ? 27
+      : (persistent
+             ? 26
+             : (quadratic ? (merge ? 25 : 24) : (physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12))))));
   const std::uint8_t fixture_identity[] = {1, 3, fixture_tag};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
@@ -672,9 +714,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells = (quadratic || persistent || overlap)
+    const std::size_t expected_cells = (quadratic || persistent || physical || overlap)
         ? state.adaptive_cells.size()
-        : (exchange ? 8 : (batch ? 19 : (band || physical ? 5 : 12)));
+        : (exchange ? 8 : (batch ? 19 : (band ? 5 : 12)));
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
@@ -959,9 +1001,9 @@ int main(int argc, char** argv) {
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
-      && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "quadratic-split"
-      && scenario != "quadratic-merge" && scenario != "quadratic-persistent" && scenario != "exchange"
-      && scenario != "overlap") {
+      && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "physical-air"
+      && scenario != "quadratic-split" && scenario != "quadratic-merge" && scenario != "quadratic-persistent"
+      && scenario != "exchange" && scenario != "overlap") {
     return 2;
   }
   const std::string_view backend = argv[1];

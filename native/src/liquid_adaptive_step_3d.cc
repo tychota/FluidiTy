@@ -14,6 +14,7 @@
 #include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_eos.h"
 #include "graded_liquid_boundary_geometry_3d.h"
+#include "graded_liquid_sparse_publication_3d.h"
 #include "liquid_substep_3d_internal.h"
 #include "mac_deposit_3d_internal.h"
 #include "mac_pressure_3d_arithmetic.h"
@@ -426,8 +427,10 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   std::vector<AdaptiveMacCellKey3D> keys;
   keys.reserve(initial.adaptive_cells.size());
   for (const auto& cell : initial.adaptive_cells.values()) {
-    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || (!IsEulerian(cell) && cell.inventory.enthalpy_j != 0)) {
-      return absl::UnimplementedError("graded tank requires supported liquid inventory in every leaf");
+    const bool supported_occupancy =
+        cell.occupancy == LiquidCellOccupancy3D::kLiquid || (physical && cell.occupancy == LiquidCellOccupancy3D::kAir);
+    if (!supported_occupancy || (!IsEulerian(cell) && cell.inventory.enthalpy_j != 0)) {
+      return absl::UnimplementedError("graded Simulate requires supported leaf occupancy and inventory");
     }
     if (IsEulerian(cell)
         && (phase_id != 0 || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0
@@ -629,6 +632,7 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
   const std::size_t physical_trial_bytes = physical_trial_
       ? physical_trial_->wet_open_faces.capacity() * sizeof(std::uint8_t)
           + physical_trial_->end_fluid_volumes_m3.capacity() * sizeof(double)
+          + (physical_trial_->sparse_geometry ? physical_trial_->sparse_geometry->reserved_bytes() : 0)
       : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
       + physical_trial_bytes + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
@@ -671,7 +675,7 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       .unit_normal = {0, 1, 0},
       .plane_coordinate_m = surface_height_,
   };
-  const auto start_geometry = FreezeGradedPlanarLiquidGeometry3D(
+  auto start_geometry = FreezeGradedPlanarLiquidGeometry3D(
       topology_,
       accepted.geometry.world_origin,
       *start_halfspace,
@@ -690,27 +694,44 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
   }
 
   PhysicalTrial3D physical{
+      .accepted_clock = accepted.clock,
       .start_wall = start_wall,
       .end_wall = end_wall,
       .wet_open_faces = {},
       .end_fluid_volumes_m3 = {},
+      .sparse_geometry = std::nullopt,
   };
+  bool has_known_air = false;
   physical.end_fluid_volumes_m3.reserve(topology_.cells().size());
   std::vector<GradedLiquidPressureCellFields3D> cells;
   cells.reserve(topology_.cells().size());
   for (std::size_t cell = 0; cell < topology_.cells().size(); ++cell) {
-    const double start_volume_m3 = start_geometry->leaves()[cell].fluid_volume_m3;
-    const double end_volume_m3 = end_geometry->leaves()[cell].fluid_volume_m3;
-    if (start_volume_m3 <= 0 || end_volume_m3 <= 0) {
+    const auto& start_leaf = start_geometry->leaves()[cell];
+    const auto& end_leaf = end_geometry->leaves()[cell];
+    const auto& record = accepted.adaptive_cells[cell];
+    const double target_divergence_s_inv = request.target_divergences_s_inv[cell];
+    physical.end_fluid_volumes_m3.push_back(end_leaf.fluid_volume_m3);
+    if (record.occupancy == LiquidCellOccupancy3D::kAir) {
+      auto empty = record;
+      empty.inventory = {};
+      if (!start_leaf.known_air || !end_leaf.known_air || record != empty || target_divergence_s_inv != 0) {
+        return absl::FailedPreconditionError(
+            "Graded physical trial air requires unchanged empty occupancy and zero source"
+        );
+      }
+      has_known_air = true;
+      cells.push_back({});
+      continue;
+    }
+    if (start_leaf.fluid_volume_m3 <= 0 || end_leaf.fluid_volume_m3 <= 0) {
       return absl::FailedPreconditionError("Graded physical trial requires positive wet volume throughout the sweep");
     }
-    if (accepted.adaptive_cells[cell].inventory.current_volume_m3 > start_volume_m3) {
+    if (record.inventory.current_volume_m3 > start_leaf.fluid_volume_m3) {
       return absl::FailedPreconditionError("Graded physical trial inventory exceeds its initial wet volume");
     }
-    physical.end_fluid_volumes_m3.push_back(end_volume_m3);
     cells.push_back({
-        .target_divergence_s_inv = request.target_divergences_s_inv[cell],
-        .previous_pressure_pa = accepted.adaptive_cells[cell].previous_pressure,
+        .target_divergence_s_inv = target_divergence_s_inv,
+        .previous_pressure_pa = record.previous_pressure,
     });
   }
   for (const auto& particle : accepted.particles.values()) {
@@ -730,18 +751,26 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       const auto& input = *request.exterior_pressures[slot];
       exterior = GradedLiquidPressureExterior3D{.pressure_pa = input.pressure_pa, .distance_m = input.distance_m};
     }
-    physical.wet_open_faces.push_back(start_geometry->subfaces()[slot].wet_open_area_m2 > 0);
+    const bool wet_open = start_geometry->subfaces()[slot].wet_open_area_m2 > 0;
+    if (has_known_air && exterior && !wet_open) {
+      return absl::FailedPreconditionError("Graded physical trial exterior pressure requires a wet aperture");
+    }
+    physical.wet_open_faces.push_back(wet_open);
     faces.push_back({
-        .inverse_density_m3_per_kg = inverse_density,
+        .inverse_density_m3_per_kg = !has_known_air || wet_open ? inverse_density : 0,
         .exterior_pressure = exterior,
     });
   }
-  auto pressure = ComposeGradedPlanarLiquidPressureInputs3D(*start_geometry, cells, faces);
+  const auto domain = has_known_air ? GradedLiquidPressureDomain3D::kKnownAir : GradedLiquidPressureDomain3D::kAllWet;
+  auto pressure = ComposeGradedPlanarLiquidPressureInputs3D(*start_geometry, cells, faces, domain);
   if (!pressure.ok()) {
     return pressure.status();
   }
   pressure_cells_ = std::move(pressure->cells);
   subfaces_ = std::move(pressure->subfaces);
+  if (has_known_air) {
+    physical.sparse_geometry = std::move(*start_geometry);
+  }
   physical_trial_ = std::move(physical);
   return absl::OkStatus();
 }
@@ -1097,6 +1126,8 @@ absl::Status AdaptiveLiquidStep3D::Project(
     MacPressureWorkspace3D& workspace,
     LiquidAcceptedStepMeasurement3D& measurement
 ) {
+  const auto* sparse_geometry =
+      physical_trial_ && physical_trial_->sparse_geometry ? &*physical_trial_->sparse_geometry : nullptr;
   std::optional<LiquidEos3D> eos;
   if (scene.eos) {
     eos = LiquidEos3D{scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law};
@@ -1110,7 +1141,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
   }
   for (std::size_t cell = 0; cell < pressure_cells_.size(); ++cell) {
     auto& pressure_cell = pressure_cells_[cell];
-    if (!eos) {
+    if (!eos && pressure_cell.fluid_volume > 0) {
       pressure_cell.previous_pressure = trial.adaptive_cells[cell].previous_pressure;
     }
     if (IsEulerian(trial.adaptive_cells[cell])) {
@@ -1204,6 +1235,9 @@ absl::Status AdaptiveLiquidStep3D::Project(
     const double potential_difference =
         acceleration.x * displacement.x + acceleration.y * displacement.y + acceleration.z * displacement.z;
     const auto slot = interior_slots_[face];
+    if (sparse_geometry != nullptr && subfaces_[slot].open_area_m2 == 0) {
+      continue;
+    }
     if (!predictor_density_.empty()) {
       const double tail_fraction = tail.cell_width / (tail.cell_width + head.cell_width);
       const double face_density = std::lerp(
@@ -1252,12 +1286,45 @@ absl::Status AdaptiveLiquidStep3D::Project(
       measurement.step_start_capillary_bound_seconds = capillary_bound;
     }
   }
-  const auto graph =
-      pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology_, duration, pressure_cells_, subfaces_);
+  const auto graph = [&]() -> absl::StatusOr<GradedWetPressureSubset3D> {
+    if (sparse_geometry != nullptr) {
+      return PrepareGradedWetPressureSubsetFromInputs3D(
+          *sparse_geometry,
+          trial.adaptive_cells.values(),
+          pressure_cells_,
+          subfaces_
+      );
+    }
+    auto dense = pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology_, duration, pressure_cells_, subfaces_);
+    if (!dense.ok()) {
+      return dense.status();
+    }
+    return GradedWetPressureSubset3D{.system = std::move(*dense), .leaf_ordinals = {}};
+  }();
   if (!graph.ok()) {
     return graph.status();
   }
+  const auto& system = graph->system;
   const auto publish = [&](const auto& projection) -> absl::Status {
+    if (sparse_geometry != nullptr) {
+      for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+        trial.adaptive_faces[slot] = old_faces_[slot];
+        if (subfaces_[slot].open_area_m2 > 0) {
+          trial.adaptive_faces[slot].carrier_velocity = subfaces_[slot].predicted_normal_velocity_m_per_s;
+        }
+      }
+      const auto status = PublishGradedSparsePressure3D(
+          trial,
+          physical_trial_->accepted_clock,
+          *sparse_geometry,
+          *graph,
+          GradedSparsePressureResultView3D{projection.cell_pressures, projection.corrected_face_velocities}
+      );
+      if (status.ok()) {
+        measurement.pressure = projection.diagnostics;
+      }
+      return status;
+    }
     if (projection.cell_pressures.size() != pressure_cells_.size()
         || projection.corrected_face_velocities.size() != subfaces_.size()) {
       return absl::Status(absl::StatusCode::kInternal, {});
@@ -1273,7 +1340,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
     if (update_volume_ratio_) {
       std::ranges::fill(normal_derivatives_, Vec3{});
-      for (const auto& link : graph->links()) {
+      for (const auto& link : system.links()) {
         const double integrated_flux =
             link.open_area * projection.corrected_face_velocities[link.face_slot] + link.prescribed_wall_flux;
         const auto axis = transfer_.faces()[link.face_slot].axis;
@@ -1297,13 +1364,13 @@ absl::Status AdaptiveLiquidStep3D::Project(
     const auto projection = backend.project_adaptive_viscous != nullptr
         ? backend.project_adaptive_viscous(
               backend.context,
-              *graph,
+              system,
               duration,
               strain_rows_,
               options.pressure_solver_options
           )
         : pressure_internal::ProjectPreparedAdaptiveMacViscousPressure3D(
-              *graph,
+              system,
               duration,
               strain_rows_,
               options.pressure_solver_options
@@ -1333,7 +1400,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     measurement.pressure_rhs_l2_m3_per_s = projection->initial_constraint_residual_l2;
     measurement.viscous_max_momentum_residual_kg_m_per_s = projection->max_momentum_residual;
   } else if (backend.project_adaptive != nullptr) {
-    const auto result = backend.project_adaptive(backend.context, *graph, options.pressure_solver_options);
+    const auto result = backend.project_adaptive(backend.context, system, options.pressure_solver_options);
     if (!result.ok()) {
       return result.status();
     }
@@ -1343,8 +1410,8 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
   } else {
     const auto result = backend.project_adaptive_in_arena != nullptr
-        ? backend.project_adaptive_in_arena(backend.context, *graph, options.pressure_solver_options, workspace)
-        : workspace.ProjectPrepared(*graph, options.pressure_solver_options);
+        ? backend.project_adaptive_in_arena(backend.context, system, options.pressure_solver_options, workspace)
+        : workspace.ProjectPrepared(system, options.pressure_solver_options);
     if (!result.ok()) {
       return result.status();
     }
@@ -1354,7 +1421,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
   }
   if (strain_rows_.empty()) {
-    for (const double rhs : graph->integrated_rhs()) {
+    for (const double rhs : system.integrated_rhs()) {
       measurement.pressure_rhs_l2_m3_per_s = std::hypot(measurement.pressure_rhs_l2_m3_per_s, rhs);
     }
   }
@@ -1575,7 +1642,9 @@ absl::Status AdaptiveLiquidStep3D::Update(
   }
   if (physical_trial_) {
     for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
-      if (inventories_[cell].current_volume_m3 > physical_trial_->end_fluid_volumes_m3[cell]) {
+      const double end_volume_m3 = physical_trial_->end_fluid_volumes_m3[cell];
+      if (inventories_[cell].current_volume_m3 > end_volume_m3
+          || (end_volume_m3 == 0 && inventories_[cell].mass_kg != 0)) {
         return absl::AbortedError("Graded physical trial particle inventory exceeds its final wet volume");
       }
     }

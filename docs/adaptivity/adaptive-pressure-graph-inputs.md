@@ -5,7 +5,7 @@ The bounded assembler in `native/src/mac_pressure_3d_system.h` takes an immutabl
 | Input | Order and meaning |
 | --- | --- |
 | Leaf keys | Finest-lattice signed lower corner and dyadic width exponent. Canonical leaf order is signed `(z,y,x)`. |
-| Pressure cells | One row per canonical leaf. Use the leaf lower corner as `cell_index`, positive liquid volume bounded by the geometric volume, source divergence in s⁻¹, bulk modulus in Pa, and previous accepted pressure in Pa. |
+| Pressure cells | Dense staging uses one row per canonical leaf. The solve uses positive-volume rows, with the leaf lower corner as `cell_index`, liquid volume bounded by the geometric volume, source divergence in s⁻¹, bulk modulus in Pa, and previous accepted pressure in Pa. |
 | Pressure subfaces | One physical sample per global slot in `(axis,z,y,x,width exponent)` order, including sealed faces. The graph derives incidence, full area, and two-cell center distance from geometry. |
 | Open and blocked parts | Supply physical aperture in m², face mobility in m³/kg, predicted positive-normal velocity in m/s, and signed integrated wall flux in m³/s. The wall flux is allowed only on the blocked part. |
 | Interior pressure jump | Supply `pressure_jump_pa` in Pa as the equilibrium head pressure minus tail pressure on an open interior subface. |
@@ -38,13 +38,28 @@ pressure distance for an exterior link.
 
 Supply one target divergence per canonical leaf and either an empty exterior
 span to seal all exterior apertures or one optional pressure/distance per
-global slot. Interior entries in that span must be absent. Use the accepted
-leaf's previous pressure and the deposited positive-normal carrier in each
-eligible slot. The bounded physical scheduler uses constant inverse liquid
-density as mobility and requires positive wet volume at both sweep endpoints.
+global slot. Interior and omitted air entries in that span must be absent.
+Use the accepted wet leaf's previous pressure and the deposited
+positive-normal carrier in each eligible slot. The bounded physical scheduler
+uses constant inverse liquid density as mobility. Liquid leaves require
+positive volume at both sweep endpoints. Air leaves must remain certified
+nonsolid and empty with a zero source in the canonical array.
+
+The sparse solve compacts wet rows in canonical order and retains a map from
+each pressure row to its leaf ordinal. Every retained pressure link keeps
+its global face slot. Air-only links are omitted, and dry wet/air links
+carry zero flux. Publication scatters to the dense trial records and clears
+air warm-start pressure and omitted, dry or blocked carriers. A geometrically
+wet face sealed for pressure keeps its qualified zero-velocity carrier for
+particle gather.
+
 The target divergence constrains the pressure solve. Material emission has
-its own inventory accounting. Reapply the clock-bound pressure request after
-restore using the same resolved scene.
+its own inventory accounting. Restore the accepted clock and canonical
+state, recreate the same resolved scene, and reapply the request with the
+attempt duration, canonical sources and optional global-slot exterior
+pressures. Each retry and restored continuation requires its own request.
+The current sparse runtime keeps wet and air membership fixed throughout
+the attempt.
 
 Use the accepted carrier and per-leaf material owner from the same epoch
 when qualifying constituent transport. Current M4 cases cover particle-owned
