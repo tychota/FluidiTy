@@ -117,6 +117,30 @@ absl::StatusOr<LiquidWallContactResult3D> SweepDryWalls(
 
 }  // namespace
 
+Mat3 internal::ProjectStationaryFloorVelocityGradient3D(Vec3 velocity, Mat3 gradient, double friction_coefficient) {
+  if (velocity.y >= 0) {
+    return gradient;
+  }
+  const Vec3 incoming_normal_gradient = gradient.y_row;
+  gradient.y_row = {};
+  if (friction_coefficient == 0) {
+    return gradient;
+  }
+  const double tangent_speed = std::hypot(velocity.x, velocity.z);
+  if (tangent_speed == 0 || friction_coefficient >= tangent_speed / -velocity.y) {
+    return {};
+  }
+  const double tangent_x = velocity.x / tangent_speed;
+  const double tangent_z = velocity.z / tangent_speed;
+  const double reduction_fraction = friction_coefficient * -velocity.y / tangent_speed;
+  const Vec3 tangent_speed_gradient = solid_detail::Combine(gradient.x_row, tangent_x, gradient.z_row, tangent_z);
+  const Vec3 radial_correction =
+      solid_detail::Combine(incoming_normal_gradient, friction_coefficient, tangent_speed_gradient, reduction_fraction);
+  gradient.x_row = solid_detail::Combine(gradient.x_row, 1 - reduction_fraction, radial_correction, tangent_x);
+  gradient.z_row = solid_detail::Combine(gradient.z_row, 1 - reduction_fraction, radial_correction, tangent_z);
+  return gradient;
+}
+
 absl::StatusOr<internal::AcceptedDrySolid3D>
 internal::EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const DrySolidMaterial3D& material) {
   if (!solid_detail::PositiveFinite(particle.mass) || !solid_detail::PositiveFinite(particle.reference_volume)) {
@@ -368,8 +392,21 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     if (!contact.ok()) {
       return contact.status();
     }
-    const Mat3 trial =
-        TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, settings.duration);
+    const bool granular_floor_impact = std::holds_alternative<GranularParameters3D>(material)
+        && !settings.platen.has_value() && contact->contact_fraction.has_value();
+    const double incoming_duration =
+        granular_floor_impact ? settings.duration * *contact->contact_fraction : settings.duration;
+    Mat3 trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, incoming_duration);
+    if (granular_floor_impact) {
+      // Compose the two deformation increments in physical order across impact.
+      const double projected_duration = settings.duration - incoming_duration;
+      const Mat3 projected_gradient = ProjectStationaryFloorVelocityGradient3D(
+          velocity,
+          particle_gather.velocity_gradient,
+          settings.floor_friction
+      );
+      trial = TrialDeformation(trial, projected_gradient, projected_duration);
+    }
     SolidDeformationState3D state{};
     double speed_squared = 0;
     if (!ReturnState(trial, particle.log_plastic_jacobian, material, state)

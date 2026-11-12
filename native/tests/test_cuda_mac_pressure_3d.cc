@@ -334,6 +334,25 @@ TEST(CudaMacPressure3D, MultilevelProjectionMatchesCpu) {
     }
   }
 }
+TEST(CudaMacPressure3D, InteriorMovingWallFluxMatchesHostPhysicalDefect) {
+  auto problem = MakeAffineProblem(0, 1, false);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  auto& cell = problem.cells.front();
+  cell.fluid_volume = 1.0;
+  cell.bulk_modulus = 2.0;
+  cell.previous_pressure = 4.0;
+  cell.integrated_inward_wall_flux = 0.5;
+  const MacPressureInputs3D inputs{*grid, 1.0, problem.cells, problem.faces};
+  const auto result = CudaProjectMacPressure3D(inputs);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_DOUBLE_EQ(result->projection.integrated_rhs.front(), 2.5);
+  EXPECT_DOUBLE_EQ(result->projection.cell_pressures.front(), 5.0);
+  EXPECT_DOUBLE_EQ(result->projection.cell_constraint_defects.front(), 0.0);
+  cell.bulk_modulus = kInfinity;
+  EXPECT_EQ(CudaProjectMacPressure3D(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+}
 TEST(CudaMacPressure3D, RejectsIncompatibleAndUnconverged) {
   auto problem = MakeAffineProblem(-3, 4, false);
   const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());

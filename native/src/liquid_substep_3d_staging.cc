@@ -306,6 +306,7 @@ absl::StatusOr<Staging> Staging::Create(
     STEP_TRY(Reserve(staging.drift_pressure_cells.emplace(), capacities.cells, staging.reserved_bytes));
     STEP_TRY(Reserve(staging.sealed_drift_cells.emplace(), capacities.cells, staging.reserved_bytes));
   }
+  STEP_TRY(Reserve(staging.pressure_cell_scratch, capacities.cells, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));

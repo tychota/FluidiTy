@@ -77,6 +77,7 @@ struct Staging {
   std::optional<LiquidRecords3D<LiquidInternalInterface3D>> phase_crossings;
   std::optional<LiquidRecords3D<MacPressureCell3D>> drift_pressure_cells;
   std::optional<LiquidRecords3D<SealedLiquidDriftCell3D>> sealed_drift_cells;
+  LiquidRecords3D<MacPressureCell3D> pressure_cell_scratch;  // Trial interior wall flux rows.
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;

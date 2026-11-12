@@ -16,6 +16,7 @@ struct PreparedMacPressureCell3D {
   CellIndex3D cell_index;
   double fluid_volume;  // m³.
   double integrated_target_flux;  // V times target divergence, m³/s.
+  double integrated_inward_wall_flux;  // Interior boundary flux, m³/s.
   double compliance;  // V / (K dt), in (m³/s)/Pa, or zero for incompressibility.
   double previous_pressure;  // Pa.
 };

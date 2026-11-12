@@ -102,6 +102,176 @@ TEST(RigidBody3D, PressureTractionUsesWettedAreaAndOffCenterMoment) {
   EXPECT_DOUBLE_EQ(body.force.y, -4.0);
 }
 
+TEST(RigidBody3D, FloatingBoxClipsWetFacesAndUsesExteriorPressureCells) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 0.5,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.5, 0.5},
+      .force = {0.0, -5.0, 0.0},
+  };
+  constexpr std::array cells{
+      CellIndex3D{0, 0, -1},
+      CellIndex3D{0, -1, 0},
+      CellIndex3D{-1, 0, 0},
+      CellIndex3D{0, 0, 0},  // Interior at the bottom and side planes.
+      CellIndex3D{1, 0, 0},
+      CellIndex3D{0, 0, 1},
+  };
+  constexpr std::array pressure{2.5, 5.0, 2.5, 1000.0, 2.5, 2.5};
+  const auto patches =
+      BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, cells);
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  ASSERT_EQ(patches->size(), 5);
+  EXPECT_DOUBLE_EQ((*patches)[0].wetted_area, 0.5);
+  EXPECT_DOUBLE_EQ((*patches)[0].world_centroid.y, 0.25);
+  EXPECT_DOUBLE_EQ((*patches)[2].wetted_area, 1.0);
+  EXPECT_EQ((*patches)[2].pressure_cell_index, 1);
+  const auto loaded = AccumulateRigidBodyPressure3D(body, pressure, 0.0, *patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  EXPECT_DOUBLE_EQ(loaded->force.x, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->force.y, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->force.z, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.x, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.y, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.z, 0.0);
+
+  const auto oriented = BuildOrientedBoxPressurePatches3D(body, {0.5, 0.5, 0.5}, 0.5, {{}, 1.0}, cells);
+  ASSERT_TRUE(oriented.ok()) << oriented.status();
+  ASSERT_EQ(oriented->size(), patches->size());
+  for (std::size_t index = 0; index < patches->size(); ++index) {
+    EXPECT_EQ((*oriented)[index].pressure_cell_index, (*patches)[index].pressure_cell_index);
+    EXPECT_DOUBLE_EQ((*oriented)[index].wetted_area, (*patches)[index].wetted_area);
+  }
+  const auto missing = BuildFloatingBoxPressurePatches3D(
+      body.body_id,
+      {0.0, 0.0, 0.0},
+      {1.0, 1.0, 1.0},
+      0.5,
+      {{}, 1.0},
+      std::span(cells).subspan(1)
+  );
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+  auto duplicate = cells;
+  duplicate[3] = duplicate[2];
+  const auto malformed =
+      BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, duplicate);
+  EXPECT_EQ(malformed.status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(RigidBody3D, OrientedBoxWetPatchesRecoverLiftAndOffCenterTorque) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 2.0, 3.0},
+      .orientation = {.w = std::sqrt(0.9), .vector = {0.0, 0.0, std::sqrt(0.1)}},
+      .linear_velocity = {0.0, 0.25, 0.0},
+      .angular_velocity = {0.0, 0.0, 0.5},
+  };
+  constexpr UniformMacGeometry3D kGrid{{0.0, -2.0, -2.0}, 4.0};
+  constexpr std::array cells{CellIndex3D{-1, 0, 0}, CellIndex3D{0, 0, 0}};
+  constexpr Vec3 kHalfExtent{0.5, 0.5, 0.5};
+  const auto patches = BuildOrientedBoxPressurePatches3D(body, kHalfExtent, 0.4, kGrid, cells);
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  ASSERT_GT(patches->size(), 6);
+  std::vector<RigidPressurePatch3D> streamed;
+  const auto cell_at = [&](std::size_t ordinal) {
+    return cells[ordinal];
+  };
+  const auto visit = VisitOrientedBoxPressurePatches3D(
+      body,
+      kHalfExtent,
+      0.4,
+      kGrid,
+      cells.size(),
+      cell_at,
+      [&](const RigidPressurePatch3D& patch) {
+        streamed.push_back(patch);
+        return absl::OkStatus();
+      }
+  );
+  ASSERT_TRUE(visit.ok()) << visit;
+  ASSERT_EQ(streamed.size(), patches->size());
+  for (std::size_t index = 0; index < streamed.size(); ++index) {
+    EXPECT_EQ(streamed[index].patch_id, (*patches)[index].patch_id);
+    EXPECT_EQ(streamed[index].pressure_cell_index, (*patches)[index].pressure_cell_index);
+    EXPECT_DOUBLE_EQ(streamed[index].wetted_area, (*patches)[index].wetted_area);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.x, (*patches)[index].world_centroid.x);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.y, (*patches)[index].world_centroid.y);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.z, (*patches)[index].world_centroid.z);
+  }
+  const auto visitor_error = VisitOrientedBoxPressurePatches3D(
+      body,
+      kHalfExtent,
+      0.4,
+      kGrid,
+      cells.size(),
+      cell_at,
+      [](const RigidPressurePatch3D&) {
+        return absl::CancelledError();
+      }
+  );
+  EXPECT_EQ(visitor_error.code(), absl::StatusCode::kCancelled);
+  constexpr std::array pressure{8.0, 8.0};
+  const auto loaded = AccumulateRigidBodyPressure3D(body, pressure, 0.0, *patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  // The horizontal section is [-0.3, 0.325] times one meter in z.
+  // Closing the wetted surface with this cap gives the uniform-pressure oracle.
+  EXPECT_NEAR(loaded->force.x, 0.0, 1e-12);
+  EXPECT_NEAR(loaded->force.y, 5.0, 1e-12);
+  EXPECT_NEAR(loaded->force.z, 0.0, 1e-12);
+  EXPECT_NEAR(loaded->torque.z, 0.0625, 1e-12);
+  const auto flux = ComputeRigidBodyInwardWallFlux3D(body, cells.size(), *patches);
+  ASSERT_TRUE(flux.ok()) << flux.status();
+  const double power = 0.25 * loaded->force.y + 0.5 * loaded->torque.z;
+  EXPECT_NEAR(power + 8.0 * ((*flux)[0] + (*flux)[1]), 0.0, 1e-12);
+
+  const auto missing = BuildOrientedBoxPressurePatches3D(body, kHalfExtent, 0.4, kGrid, std::span(cells).first(1));
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+}
+TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {0.25, 0.5, 0.0},
+      .angular_velocity = {0.0, 0.0, 1.0},
+  };
+  const std::array patches{
+      RigidPressurePatch3D{1, body.body_id, 1, 0.5, {0.5, 0.0, 0.0}, {0.0, -1.0, 0.0}},
+      RigidPressurePatch3D{2, body.body_id, 1, 0.25, {0.0, 0.5, 0.0}, {-1.0, 0.0, 0.0}},
+  };
+  const auto fluxes = ComputeRigidBodyInwardWallFlux3D(body, 2, patches);
+  ASSERT_TRUE(fluxes.ok()) << fluxes.status();
+  EXPECT_DOUBLE_EQ((*fluxes)[0], 0.0);
+  EXPECT_DOUBLE_EQ((*fluxes)[1], -0.4375);
+
+  const auto loaded = AccumulateRigidBodyPressure3D(body, std::array{0.0, 8.0}, 0.0, patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  const double body_power = loaded->force.x * body.linear_velocity.x + loaded->force.y * body.linear_velocity.y
+      + loaded->torque.z * body.angular_velocity.z;
+  EXPECT_DOUBLE_EQ(body_power, 3.5);
+  EXPECT_DOUBLE_EQ(body_power + 8.0 * (*fluxes)[1], 0.0);
+  EXPECT_EQ(ComputeRigidBodyInwardWallFlux3D(body, 1, patches).status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(RigidBody3D, FloatingBoxRejectsInteriorHoleWithCompleteOuterEdges) {
+  std::vector<CellIndex3D> cells;
+  for (int z = -1; z <= 3; ++z) {
+    for (int y = -1; y <= 0; ++y) {
+      for (int x = -1; x <= 3; ++x) {
+        if (x == 1 && y == -1 && z == 1) {
+          continue;
+        }
+        cells.push_back({x, y, z});
+      }
+    }
+  }
+  const auto missing = BuildFloatingBoxPressurePatches3D(1, {}, {3, 1, 3}, 0.5, {{}, 1.0}, cells);
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(missing.status().message(), "floating-box wet pressure coverage has missing tiles");
+  const auto dry = BuildFloatingBoxPressurePatches3D(1, {}, {3, 1, 3}, 0.0, {{}, 1.0}, {});
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  EXPECT_TRUE(dry->empty());
+}
 TEST(RigidBody3D, AdvancesRotatedAsymmetricInertiaAndOffCenterForce) {
   const double half_sqrt_two = std::numbers::sqrt2 / 2.0;
   const RigidBody3D initial{

@@ -25,7 +25,7 @@ dry-scene target retains the sand and snow qualification cases.
 | Snow constitutive invariants | Pass | Compression and tension clamps, reconstructed total volume, hardened corotational stress, repeated compaction, and invalid-state output preservation. |
 | Full 3D material state and wave bound | Pass for the tested domain | Rotated and repeated stretches, reflection and singular rejection, isotropic and hardened wave oracles, and rejection of axial and principal-plane loss of ellipticity. Principal-plane checks do not certify ellipticity in every fully oblique direction. The Hessian row bound covers continuous elastic wave speed. The tested discrete acoustic factor is 0.25 for the bounded scenes. |
 | Q-SOLID uncut quadrature | Pass | Analytic affine gradient gives 87.5 W particle power and −87.5 W grid power, with 3.25e-16 scaled residual on both backends versus 1e-6 allowed. This measures uncut stress quadrature and the matching gather derivative. |
-| Q-SAND 30° pile | Open | The nominal reference case reaches 30.161149° at 0.75 s and continues flattening to 20.801830° at 1.5 s. All four grid-width and timestep combinations miss the 30–35° range at the extended endpoint. |
+| Q-SAND 30° pile | Open | The landed Coulomb deformation update reduces late timestep sensitivity. The nominal reference case reaches 32.825896° at 0.75 s and flattens to 29.113507° at 1.5 s. All four grid-width and timestep combinations miss the 30–35° range at the extended endpoint. |
 | Dry snow compaction | Pass | Two resolutions pass a compress–unload cycle. Mean log plastic Jacobian stays below −0.34 after unload. |
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
@@ -622,6 +622,14 @@ late plastic activity. The remaining grid-width sensitivity and
 angles below 30° keep the gate open. Reproduce with 60f221a
 (deformation only) or 1696516 (APIC only) on
 codex/m5-sand-floor-control and the same extended column commands.
+
+PR 89 landed the deformation-only update. Its standalone native
+and CUDA dry solver suites compare the projected gradient against
+central differences of the actual wall solver, covering sliding,
+sticking, frictionless response and separation. The angular and
+plastic activity measurements above remain the extended Q-SAND
+qualification for the landed change. Earlier baseline measurements
+in this report use the original floor deformation update.
 
 ### Floor-supported release and the 30° material oracle
 

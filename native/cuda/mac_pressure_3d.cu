@@ -103,6 +103,7 @@ __device__ bool Evaluate(PressureDevice3D device) {
     }
     Add(operator_rows[i], flux);
     Add(physical_rows[i], -device.cells[i].integrated_target_flux);
+    Add(physical_rows[i], -device.cells[i].integrated_inward_wall_flux);
     if (device.cells[i].compliance > 0.0) {
       const double change = candidate[i] - device.cells[i].previous_pressure;
       if (!Product(device, device.cells[i].compliance, change, flux)) {
