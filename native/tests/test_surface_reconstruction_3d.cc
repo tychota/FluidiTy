@@ -99,6 +99,28 @@ TEST(SurfaceReconstruction3D, PublishesSharedSheetFromTwoParticlePhases) {
   const auto& sheet = *reconstructed->frame.phase_interface;
   EXPECT_EQ(sheet.phase_a, 4);
   EXPECT_EQ(sheet.phase_b, 5);
+  ASSERT_FALSE(sheet.side_compositions.empty());
+  ASSERT_EQ(sheet.side_compositions.size() % 2, 0);
+  bool sampled_interior = false;
+  for (std::size_t record = 0; record < sheet.side_compositions.size(); record += 2) {
+    const auto& water = sheet.side_compositions[record];
+    const auto& oil = sheet.side_compositions[record + 1];
+    EXPECT_EQ(water.vertex_ordinal, oil.vertex_ordinal);
+    sampled_interior |= water.vertex_ordinal >= reconstructed->frame.mesh.vertices.size();
+    ASSERT_EQ(water.constituent_count, 1);
+    ASSERT_EQ(oil.constituent_count, 1);
+    EXPECT_EQ(water.phase_id, 4);
+    EXPECT_EQ(oil.phase_id, 5);
+    EXPECT_EQ(water.constituents[0], (LiquidConstituentFraction3D{8, 1}));
+    EXPECT_EQ(oil.constituents[0], (LiquidConstituentFraction3D{25, 1}));
+  }
+  EXPECT_TRUE(sampled_interior);
+  const auto encoded_sheet = EncodeSurfaceFrame3D(reconstructed->frame);
+  ASSERT_TRUE(encoded_sheet.ok()) << encoded_sheet.status();
+  const auto decoded_sheet = DecodeSurfaceFrame3D(encoded_sheet->values());
+  ASSERT_TRUE(decoded_sheet.ok()) << decoded_sheet.status();
+  ASSERT_TRUE(decoded_sheet->phase_interface);
+  EXPECT_EQ(decoded_sheet->phase_interface->side_compositions.size(), sheet.side_compositions.size());
   EXPECT_FALSE(sheet.triangles.empty());
   EXPECT_NE(std::ranges::find(sheet.exterior_sides, 0), sheet.exterior_sides.end());
   EXPECT_NE(std::ranges::find(sheet.exterior_sides, 1), sheet.exterior_sides.end());

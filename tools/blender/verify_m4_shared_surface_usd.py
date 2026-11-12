@@ -21,7 +21,7 @@ def mesh_object():
     return next(obj for obj in bpy.context.scene.objects if obj.type == "MESH")
 
 
-def verify_surface():
+def verify_surface(require_interface_composition=False):
     obj = mesh_object()
     assert any(mod.type == "MESH_SEQUENCE_CACHE" for mod in obj.modifiers)
     for frame in (0, 1):
@@ -64,6 +64,15 @@ def verify_surface():
             for vertex in vertices:
                 values = tuple(field.data[vertex].value for field in fractions)
                 assert all(abs(a - b) < 1e-6 for a, b in zip(values, expected, strict=True)), values
+        if require_interface_composition:
+            fields = [mesh.attributes[f"fluidity_interface_fraction_{substance}"] for substance in (8, 14, 25)]
+            assert all(field.domain == "POINT" and field.data_type == "FLOAT" for field in fields)
+            for vertex, sides in vertex_sides.items():
+                expected = (0.25, 0.75, 1) if 2 in sides else (0, 0, 0)
+                values = tuple(field.data[vertex].value for field in fields)
+                assert all(abs(a - b) < 1e-6 for a, b in zip(values, expected, strict=True)), values
+            assert any(sides == {2} for sides in vertex_sides.values())
+            print("FRAME", frame, "INTERFACE COMPOSITION", "25/75 aqueous and pure oil")
         print("FRAME", frame, "FACES", dict(counts), "SEAM_EDGES", seam_edges)
     assert not bpy.app.handlers.frame_change_pre and not bpy.app.handlers.frame_change_post
     return obj
@@ -229,10 +238,14 @@ def reopen(blend):
         print("RENDER", label, "DYE_PIXELS", red, "OIL_PIXELS", green)
 
 
+def verify_saved_interface_composition(blend):
+    bpy.ops.wm.open_mainfile(filepath=str(blend))
+    verify_surface(require_interface_composition=True)
+
 if __name__ == "__main__":
     mode, *paths = sys.argv[sys.argv.index("--") + 1:]
     arguments = [Path(path).resolve() for path in paths]
     if mode == "build-attach":
         attach(*arguments, build=True)
     else:
-        {"prepare": prepare, "attach": attach, "reopen": reopen}[mode](*arguments)
+        {"prepare": prepare, "attach": attach, "reopen": reopen, "sides": verify_saved_interface_composition}[mode](*arguments)

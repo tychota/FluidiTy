@@ -26,6 +26,7 @@ table SurfacePhaseInterface {
   exterior_sides:[ubyte] (required, id:2);
   interior_positions:[fluidity.cache.v1.Vector3] (required, id:3);
   triangles:[SurfaceTriangle] (required, id:4);
+  side_compositions:[SurfaceComposition] (id:5);
 }
 table SurfaceFrame {
   schema_version:uint = 1 (id:0);

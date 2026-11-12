@@ -1135,6 +1135,36 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     result.maximum_source_field_distance_m = std::max(result.maximum_source_field_distance_m, std::abs(*distance));
   }
+  if (result.frame.phase_interface) {
+    auto& sheet = *result.frame.phase_interface;
+    const auto exterior_count = result.frame.mesh.vertices.size();
+    std::vector<bool> on_sheet(exterior_count + sheet.interior_positions.size());
+    for (const auto triangle : sheet.triangles) {
+      for (const auto vertex : triangle) {
+        on_sheet[vertex] = true;
+      }
+    }
+    for (std::size_t index = 0; index < on_sheet.size(); ++index) {
+      if (!on_sheet[index]) {
+        continue;
+      }
+      const auto position = index < exterior_count ? result.frame.mesh.vertices[index].position
+                                                   : sheet.interior_positions[index - exterior_count];
+      for (const auto phase : {sheet.phase_a, sheet.phase_b}) {
+        SurfaceVertex3D sample{.position = position};
+        const auto sampled = SampleVertexComposition(sample, endpoint.particles.values(), cell_width_m, phase);
+        if (!sampled.ok()) {
+          return sampled;
+        }
+        sheet.side_compositions.push_back({
+            .vertex_ordinal = static_cast<std::uint32_t>(index),
+            .phase_id = sample.phase_id,
+            .constituent_count = sample.constituent_count,
+            .constituents = sample.constituents,
+        });
+      }
+    }
+  }
   const auto encoded = EncodeSurfaceFrame3D(result.frame, options.limits);
   if (!encoded.ok()) {
     return encoded.status();

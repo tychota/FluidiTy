@@ -68,6 +68,20 @@ TEST(SurfaceCache3D, RoundTripsOneSharedPhaseSheetAndRejectsBrokenIncidence) {
       .interior_positions = {{0.125, 0.125, 0.25}},
       .triangles = {{4, 5, 7}, {5, 6, 7}, {6, 4, 7}},
   };
+  for (const std::uint32_t vertex : {4, 5, 6, 7}) {
+    frame.phase_interface->side_compositions.push_back({
+        .vertex_ordinal = vertex,
+        .phase_id = 4,
+        .constituent_count = 1,
+        .constituents = {{{8, 1}}},
+    });
+    frame.phase_interface->side_compositions.push_back({
+        .vertex_ordinal = vertex,
+        .phase_id = 5,
+        .constituent_count = 1,
+        .constituents = {{{25, 1}}},
+    });
+  }
   const auto bytes = EncodeSurfaceFrame3D(frame);
   ASSERT_TRUE(bytes.ok()) << bytes.status();
   const auto decoded = DecodeSurfaceFrame3D(bytes->values());
@@ -85,6 +99,13 @@ TEST(SurfaceCache3D, RoundTripsOneSharedPhaseSheetAndRejectsBrokenIncidence) {
       DecodeSurfaceFrame3D(bytes->values(), {.maximum_vertices = 7}).status().code(),
       absl::StatusCode::kResourceExhausted
   );
+  ASSERT_EQ(decoded->phase_interface->side_compositions.size(), 8);
+  auto invalid_composition = frame;
+  invalid_composition.phase_interface->side_compositions.pop_back();
+  EXPECT_EQ(EncodeSurfaceFrame3D(invalid_composition).status().code(), absl::StatusCode::kInvalidArgument);
+  invalid_composition = frame;
+  invalid_composition.phase_interface->side_compositions[1].constituents[0].substance_id = 8;
+  EXPECT_EQ(EncodeSurfaceFrame3D(invalid_composition).status().code(), absl::StatusCode::kInvalidArgument);
   auto broken = frame;
   broken.phase_interface->exterior_sides[0] = 1;
   EXPECT_EQ(EncodeSurfaceFrame3D(broken).status().code(), absl::StatusCode::kInvalidArgument);

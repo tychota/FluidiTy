@@ -215,6 +215,7 @@ absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, 
          << "    uniform token subdivisionScheme = \"none\"\n";
   std::set<std::uint64_t> phase_ids;
   std::set<std::uint64_t> substance_ids;
+  std::set<std::uint64_t> interface_substance_ids;
   std::set<std::pair<std::uint64_t, std::uint64_t>> shared_pairs;
   auto status = WriteSurfaceUsdSamples(output, cache, last_frame, "point3f[] points", [&](const SurfaceFrame3D& frame) {
     const char* separator = "";
@@ -242,6 +243,11 @@ absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, 
     if (frame.phase_interface) {
       const auto& sheet = *frame.phase_interface;
       shared_pairs.emplace(sheet.phase_a, sheet.phase_b);
+      for (const auto& sample : sheet.side_compositions) {
+        for (const auto& constituent : std::span(sample.constituents).first(sample.constituent_count)) {
+          interface_substance_ids.insert(constituent.substance_id);
+        }
+      }
       phase_ids.insert(sheet.phase_a);
       phase_ids.insert(sheet.phase_b);
       for (const auto position : sheet.interior_positions) {
@@ -359,6 +365,37 @@ absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, 
           }
           return 0.0;
         });
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (const auto substance : interface_substance_ids) {
+    status = write_attribute(
+        "fluidity_interface_fraction_" + std::to_string(substance),
+        "vertex",
+        [&](const SurfaceFrame3D& frame) {
+          const auto* sheet = frame.phase_interface ? &*frame.phase_interface : nullptr;
+          const auto records = sheet ? std::span<const SurfaceInterfaceComposition3D>(sheet->side_compositions)
+                                     : std::span<const SurfaceInterfaceComposition3D>{};
+          const auto count = frame.mesh.vertices.size() + (sheet ? sheet->interior_positions.size() : 0);
+          std::size_t record = 0;
+          const char* separator = "";
+          for (std::size_t vertex = 0; vertex < count; ++vertex) {
+            double fraction = 0.0;
+            while (record < records.size() && records[record].vertex_ordinal == vertex) {
+              const auto& sample = records[record++];
+              for (const auto& constituent : std::span(sample.constituents).first(sample.constituent_count)) {
+                if (constituent.substance_id == substance) {
+                  fraction = constituent.volume_fraction;
+                }
+              }
+            }
+            output << separator << static_cast<float>(fraction);
+            separator = ", ";
+          }
+          return absl::OkStatus();
+        }
+    );
     if (!status.ok()) {
       return status;
     }

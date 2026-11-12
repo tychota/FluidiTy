@@ -45,6 +45,41 @@ absl::Status ValidatePhaseInterface(const SurfaceFrame3D& frame, SurfaceCacheLim
       return absl::InvalidArgumentError("shared surface index outside vertices");
     }
   }
+  if (!sheet.side_compositions.empty()) {
+    std::vector<bool> on_sheet(vertex_count);
+    for (const auto triangle : sheet.triangles) {
+      for (const auto vertex : triangle) {
+        on_sheet[vertex] = true;
+      }
+    }
+    std::map<std::uint64_t, std::uint64_t> substance_phases;
+    std::size_t record = 0;
+    for (std::size_t ordinal = 0; ordinal < on_sheet.size(); ++ordinal) {
+      if (!on_sheet[ordinal]) {
+        continue;
+      }
+      for (const auto phase : {sheet.phase_a, sheet.phase_b}) {
+        if (record >= sheet.side_compositions.size()) {
+          return absl::InvalidArgumentError("shared surface composition is incomplete");
+        }
+        const auto& entry = sheet.side_compositions[record++];
+        if (entry.vertex_ordinal != ordinal || entry.phase_id != phase || entry.constituent_count == 0
+            || entry.constituent_count > entry.constituents.size()
+            || !ValidLiquidComposition3D(phase, std::span(entry.constituents).first(entry.constituent_count))) {
+          return absl::InvalidArgumentError("invalid shared surface composition");
+        }
+        for (const auto& constituent : std::span(entry.constituents).first(entry.constituent_count)) {
+          const auto [found, inserted] = substance_phases.try_emplace(constituent.substance_id, phase);
+          if (!inserted && found->second != phase) {
+            return absl::InvalidArgumentError("shared surface substance appears in both phases");
+          }
+        }
+      }
+    }
+    if (record != sheet.side_compositions.size()) {
+      return absl::InvalidArgumentError("shared surface composition has unused records");
+    }
+  }
   for (std::uint8_t side = 0; side < 2; ++side) {
     SurfaceMesh3D phase;
     std::vector<std::uint32_t> local_indices(vertex_count, UINT32_MAX);
@@ -209,7 +244,8 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
       + interior_positions.size() * sizeof(cache::v1::Vector3)
       + (frame.phase_interface ? frame.phase_interface->exterior_sides.size() : 0);
   return detail::Build<wire::SurfaceFrame>(
-      2 + (bytes + 511) / 512 + composed_vertices.size() + frame.phase_interface.has_value(),
+      2 + (bytes + 511) / 512 + composed_vertices.size() + frame.phase_interface.has_value()
+          + (frame.phase_interface ? frame.phase_interface->side_compositions.size() : 0),
       limits.cache,
       "FLMS",
       [&](auto& builder) -> absl::StatusOr<flatbuffers::Offset<wire::SurfaceFrame>> {
@@ -235,8 +271,36 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
           const auto sides = builder.CreateVector(sheet.exterior_sides);
           const auto positions = builder.CreateVectorOfStructs(interior_positions);
           const auto shared = builder.CreateVectorOfStructs(shared_triangles);
-          phase_interface =
-              wire::CreateSurfacePhaseInterface(builder, sheet.phase_a, sheet.phase_b, sides, positions, shared);
+          flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wire::SurfaceComposition>>> side_compositions;
+          if (!sheet.side_compositions.empty()) {
+            const auto records = detail::BuildVector<wire::SurfaceComposition>(
+                builder,
+                sheet.side_compositions.size(),
+                [&](std::size_t index) {
+                  const auto& entry = sheet.side_compositions[index];
+                  const auto packed = detail::PackComposition(builder, entry);
+                  return wire::CreateSurfaceComposition(
+                      builder,
+                      entry.vertex_ordinal,
+                      packed.phase_id,
+                      packed.constituents
+                  );
+                }
+            );
+            if (!records.ok()) {
+              return records.status();
+            }
+            side_compositions = *records;
+          }
+          phase_interface = wire::CreateSurfacePhaseInterface(
+              builder,
+              sheet.phase_a,
+              sheet.phase_b,
+              sides,
+              positions,
+              shared,
+              side_compositions
+          );
         }
         const auto clock = detail::Pack(frame.clock);
         return wire::CreateSurfaceFrame(
@@ -326,6 +390,20 @@ absl::StatusOr<SurfaceFrame3D> DecodeSurfaceFrame3D(std::span<const std::uint8_t
     target.exterior_sides.assign(sheet->exterior_sides()->begin(), sheet->exterior_sides()->end());
     for (const auto* position : *sheet->interior_positions()) {
       target.interior_positions.push_back(detail::Unpack(position));
+    }
+    if (const auto* records = sheet->side_compositions()) {
+      const auto vertex_count = frame.mesh.vertices.size() + sheet->interior_positions()->size();
+      if (records->size() > 2 * vertex_count) {
+        return absl::DataLossError("shared surface composition exceeds vertex coverage");
+      }
+      for (const auto* record : *records) {
+        if (!detail::ValidCompositionEncoding(record)) {
+          return absl::DataLossError("invalid shared surface composition record");
+        }
+        SurfaceInterfaceComposition3D entry{.vertex_ordinal = record->vertex_ordinal()};
+        detail::UnpackComposition(record, entry);
+        target.side_compositions.push_back(entry);
+      }
     }
     for (const auto* triangle : *sheet->triangles()) {
       target.triangles.push_back({triangle->a(), triangle->b(), triangle->c()});

@@ -12,6 +12,12 @@ struct SurfaceVolume3D {
   double raw_m3;
   double corrected_m3;  // Must match measured geometry, within 0.5% of material.
 };
+struct SurfaceInterfaceComposition3D {
+  std::uint32_t vertex_ordinal;  // Index in the shared sheet's combined vertex space.
+  std::uint64_t phase_id;
+  std::uint8_t constituent_count;
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents;
+};
 struct SurfacePhaseInterface3D {
   std::uint64_t phase_a = 0;  // Smaller stable phase ID.
   std::uint64_t phase_b = 0;
@@ -19,6 +25,8 @@ struct SurfacePhaseInterface3D {
   std::vector<Vec3> interior_positions;  // World metres, indexed after the exterior vertices.
   // One shared A-to-B sheet. Seam indices address the exterior vertex array directly.
   std::vector<std::array<std::uint32_t, 3>> triangles;
+  // Optional for older payloads. Otherwise exactly A then B per referenced vertex, in ordinal order.
+  std::vector<SurfaceInterfaceComposition3D> side_compositions{};
 };
 struct SurfaceFrame3D {
   LiquidClock3D clock{};
