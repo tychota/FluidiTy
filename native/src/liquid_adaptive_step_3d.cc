@@ -957,7 +957,9 @@ absl::Status AdaptiveLiquidStep3D::Project(
       return status;
     }
   } else {
-    const auto result = workspace.ProjectPrepared(*graph, options.pressure_solver_options);
+    const auto result = backend.project_adaptive_in_arena != nullptr
+        ? backend.project_adaptive_in_arena(backend.context, *graph, options.pressure_solver_options, workspace)
+        : workspace.ProjectPrepared(*graph, options.pressure_solver_options);
     if (!result.ok()) {
       return result.status();
     }

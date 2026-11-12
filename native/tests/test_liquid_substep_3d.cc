@@ -284,6 +284,71 @@ TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateDeepGradedBandFixture3D(state, scene);
+  ASSERT_TRUE(authored.ok()) << authored;
+  auto options = Options();
+  options.capacities = {8, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  LiquidAdaptiveBandRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .leaf = state.adaptive_cells[0].key,
+      .margins = {},
+      .destination_carrier = std::nullopt,
+      .reseed_particle_count = 1,
+  };
+  const auto unavailable = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  EXPECT_EQ(unavailable.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+  request.destination_carrier = LiquidHandoffCarrier3D{.current_density = 2, .volume_ratio = 1};
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band placement")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retired = scheduler->AttemptWithAdaptiveBandPlacement(*rejected->retry_duration, request);
+  ASSERT_TRUE(retired.ok()) << retired.status();
+  ASSERT_EQ(retired->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(scheduler->committed().particles.size(), 7);
+  const auto& actual_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  const auto& expected_inventory = state.adaptive_cells[0].inventory;
+  EXPECT_EQ(actual_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(actual_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(actual_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+
+  EXPECT_EQ(
+      scheduler->AttemptWithAdaptiveBandPlacement(0.005, request).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  request.accepted_epoch = scheduler->committed().clock.epoch;
+  request.margins.particle_support_radius_m = 4;
+  const auto reseeded = scheduler->AttemptWithAdaptiveBandPlacement(0.005, request);
+  ASSERT_TRUE(reseeded.ok()) << reseeded.status();
+  ASSERT_EQ(reseeded->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+  EXPECT_EQ(scheduler->committed().particles.size(), 8);
+  EXPECT_EQ(scheduler->committed().particles[7].id, 9);
+  const auto& reseeded_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  EXPECT_EQ(reseeded_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(reseeded_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(reseeded_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+}
+
 TEST(LiquidSubstep3D, PublishesAdaptiveBandRetirementAndReseed) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

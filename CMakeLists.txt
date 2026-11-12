@@ -109,6 +109,7 @@ add_library(fluidity_native STATIC
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
+  native/src/graded_liquid_boundary_geometry_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
   native/src/mac_pressure_3d_bounded_hierarchy.cc
@@ -345,6 +346,7 @@ if(BUILD_TESTING)
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
+    native/tests/test_graded_liquid_boundary_geometry_3d.cc
     native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_liquid_wall_contact_3d.cc
     native/tests/test_mac_pressure_workspace_3d.cc
@@ -393,6 +395,9 @@ if(BUILD_TESTING)
     target_link_libraries(fluidity_m3_matched_pressure PRIVATE fluidity_cuda_operators CUDA::cudart)
     add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda COMMAND fluidity_m3_matched_pressure --cuda)
     set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
+    add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda_arena COMMAND fluidity_m3_matched_pressure --cuda-arena)
+    set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda_arena
+      PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
   endif()
 
   # Historical-cache research needs an external authenticated archive. Keep it
