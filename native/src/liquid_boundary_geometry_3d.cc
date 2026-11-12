@@ -900,6 +900,136 @@ absl::StatusOr<double> MeasureGasFace(GeometryInput face, const std::array<doubl
   return std::min(gas_area, full_area);
 }
 
+// Each clipped tetrahedron is convex on the selected side of the obstacle.
+// A positive-area gas patch on a shared triangle joins two such pieces.
+absl::Status CertifyGasCellConnectivity(GeometryInput query, bool low_slab_side) {
+  using boundary_internal::CartesianVector;
+  using boundary_internal::CellTetrahedronCorner;
+  using boundary_internal::ClippingPolygon;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ObstacleKind;
+  using boundary_internal::TankClipBounds;
+  constexpr std::size_t kTetrahedra = 6;
+  const double width = query.geometry.cell_width;
+  const bool tank = query.obstacle.kind == ObstacleKind::kOpenTank;
+  TankClipBounds tank_bounds;
+  if (tank) {
+    const auto bounds = boundary_internal::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    tank_bounds = *bounds;
+  }
+  const auto obstacle = boundary_internal::LocalObstacle(query);
+  if (!obstacle.ok()) {
+    return boundary_internal::ArithmeticStatus(obstacle.status(), true);
+  }
+  const auto clip_obstacle = [&](auto piece, auto clip) {
+    if (tank) {
+      for (int axis = 0; axis < 3; ++axis) {
+        if (tank_bounds.low[axis] > 0.0) {
+          CartesianVector normal{};
+          normal[axis] = -1.0;
+          piece = clip(piece, {normal, -tank_bounds.low[axis], false, axis});
+        }
+        if (tank_bounds.high[axis] < 1.0) {
+          CartesianVector normal{};
+          normal[axis] = 1.0;
+          piece = clip(piece, {normal, tank_bounds.high[axis], false, axis});
+        }
+      }
+    } else if (obstacle->present) {
+      if (low_slab_side) {
+        piece = clip(piece, {obstacle->normal, obstacle->low});
+      } else {
+        piece = clip(piece, {boundary_internal::Scale(obstacle->normal, -1.0), -obstacle->high});
+      }
+    }
+    return piece;
+  };
+  const auto clip_polyhedron = [](auto piece, boundary_internal::ClippingPlane plane) {
+    return boundary_internal::ClipPolyhedron(piece, plane);
+  };
+  const auto clip_polygon = [](auto piece, boundary_internal::ClippingPlane plane) {
+    return boundary_internal::ClipPolygon(piece, plane);
+  };
+  std::array<ClippingVertex, 8> vertices{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    for (int axis = 0; axis < 3; ++axis) {
+      vertices[corner].cell_width_position[axis] = static_cast<double>((corner >> axis) & 1);
+    }
+    vertices[corner].liquid_distance = query.corner_distances[corner];
+  }
+  const auto has_gas = [](const ClippingVertex& vertex) {
+    return vertex.liquid_distance < 0.0;
+  };
+  std::array<bool, kTetrahedra> active{};
+  std::size_t active_count = 0;
+  for (std::size_t tetrahedron = 0; tetrahedron < kTetrahedra; ++tetrahedron) {
+    const auto a = vertices[0];
+    const auto b = vertices[CellTetrahedronCorner(tetrahedron, 1)];
+    const auto c = vertices[CellTetrahedronCorner(tetrahedron, 2)];
+    const auto d = vertices[7];
+    if (!has_gas(a) && !has_gas(b) && !has_gas(c) && !has_gas(d)) {
+      continue;
+    }
+    const auto gas = clip_polyhedron(
+        boundary_internal::ClippingPolyhedron{{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}},
+        {{}, 0.0, true}
+    );
+    const double volume = boundary_internal::ComputeClippedVolume(clip_obstacle(gas, clip_polyhedron), width);
+    if (!IsNormalOrZero(volume)) {
+      return UnrepresentableGeometry(true);
+    }
+    if (volume > 0.0) {
+      active[tetrahedron] = true;
+      ++active_count;
+    }
+  }
+  if (active_count == 0) {
+    return UnrepresentableGeometry(true);
+  }
+  std::array<std::size_t, kTetrahedra> queue{};
+  std::array<bool, kTetrahedra> reached{};
+  const auto seed = static_cast<std::size_t>(std::ranges::find(active, true) - active.begin());
+  queue[0] = seed;
+  reached[seed] = true;
+  std::size_t queued = 1;
+  for (std::size_t cursor = 0; cursor < queued; ++cursor) {
+    const std::size_t current = queue[cursor];
+    for (std::size_t neighbor = 0; neighbor < kTetrahedra; ++neighbor) {
+      if (!active[neighbor] || reached[neighbor]) {
+        continue;
+      }
+      for (std::size_t inner_corner = 1; inner_corner < 3; ++inner_corner) {
+        const int shared_corner = CellTetrahedronCorner(current, inner_corner);
+        if (shared_corner != CellTetrahedronCorner(neighbor, 1)
+            && shared_corner != CellTetrahedronCorner(neighbor, 2)) {
+          continue;
+        }
+        const ClippingPolygon triangle{vertices[0], vertices[shared_corner], vertices[7]};
+        if (std::ranges::none_of(triangle, has_gas)) {
+          break;
+        }
+        const auto gas = clip_polygon(triangle, {{}, 0.0, true});
+        const double area = boundary_internal::ComputeClippedArea(clip_obstacle(gas, clip_polygon), width);
+        if (!IsNormalOrZero(area)) {
+          return UnrepresentableGeometry(true);
+        }
+        if (area > 0.0) {
+          reached[neighbor] = true;
+          queue[queued++] = neighbor;
+        }
+        break;
+      }
+    }
+  }
+  if (queued != active_count) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasureInputs3D& inputs) {
   const double width = inputs.geometry.cell_width;
   const double full_volume = width * width * width;
@@ -937,6 +1067,12 @@ absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasur
   const double gas_volume = volume->low_side_liquid_volume + volume->high_side_liquid_volume;
   if (!IsNormalOrZero(gas_volume) || gas_volume / full_volume > 1.0 + 64.0 * std::numeric_limits<double>::epsilon()) {
     return UnrepresentableGeometry(true);
+  }
+  if (gas_volume > 0.0) {
+    const auto connected = CertifyGasCellConnectivity(query, volume->low_side_liquid_volume > 0.0);
+    if (!connected.ok()) {
+      return connected;
+    }
   }
   LiquidAirCellMeasures3D result{.gas_volume = std::min(gas_volume, full_volume)};
   for (int axis = 0; axis < 3; ++axis) {

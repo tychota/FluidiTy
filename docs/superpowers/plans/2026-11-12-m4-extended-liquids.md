@@ -291,3 +291,11 @@ The native gas measurement reuses the liquid geometry tetrahedra and shared face
 Analytic fixtures checked 0.75 m³ gas in a planar cut, equal areas on both sides of a shared face, a simultaneous halfspace cut and an open tank with closed walls. All 32 CPU cavity and boundary geometry checks and the real-device CUDA geometry regression passed. The gas measure itself currently runs on the host. Reproduce with the locked Windows presets and ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle on CUDA. Logs use the out/m4-gas-measures prefix. The initial declaration-order build failure is retained in the declaration-negative logs. clang-format 19.1.5 passed.
 
 Positive gas volume and face aperture alone do not certify one connected gas region inside a cut cell. The geometry-to-component path still needs that certification and exterior classification before it can supply persistent cavity inventories to the scheduler.
+
+## Gas cut-cell connectivity receipt
+
+The host gas measurement now checks the connectedness of positive-volume clipped tetrahedra before returning one gas node for a cell. It uses the same six tetrahedra as liquid geometry, with edges only across positive-area gas patches on a shared triangle. Clipping honors the frozen tank or the applicable solid side. Disconnected positive pieces return FailedPrecondition without publishing measures.
+
+The analytic fixture rejected opposite gas corners and zero-area edge contact, then accepted a positive-area bridge. All 33 CPU boundary and cavity cases and all six real-device CUDA boundary regressions passed. The new connectivity certificate runs on the host. Reproduce under the locked presets with ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D on CUDA. Receipts use the out/m4-gas-connectivity prefix. The initial implicit corner-bit conversion failed the warning-as-error build and is preserved in out/m4-gas-connectivity-cpu-conversion-negative.log. clang-format 19.1.5 passed.
+
+The next dependency is constructing a bounded sampled gas domain, certifying its atmosphere outlets and connecting the cell measures to component labeling. Persistent inventories and scheduler qualification remain open.

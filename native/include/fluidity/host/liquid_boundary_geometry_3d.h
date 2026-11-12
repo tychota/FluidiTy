@@ -53,10 +53,10 @@ struct LiquidAirCellMeasures3D {
 };
 
 // Clips gas volume and face areas with the liquid geometry's tetrahedra
-// and shared face diagonals. Zero plateaus have no gas measure. The areas
-// measure geometric openings and do not certify connectivity within a cell.
-// Invalid geometry or distances return InvalidArgument, gas on both sides
-// of a slab returns FailedPrecondition, and arithmetic range failures return
+// and shared face diagonals. Zero plateaus have no gas measure. Positive
+// gas pieces must connect through positive-area shared tetrahedral faces.
+// Invalid geometry or distances return InvalidArgument, disconnected gas
+// returns FailedPrecondition, and arithmetic range failures return
 // OutOfRange. No allocation or partial measures on failure.
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs);
 

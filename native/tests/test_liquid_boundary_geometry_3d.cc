@@ -103,6 +103,25 @@ TEST(LiquidBoundaryGeometry3D, ClipsGasVolumeAndSharedFaceAreas) {
   EXPECT_EQ(tank->gas_face_areas, (std::array{0.0, 0.0, 0.0, 0.5, 0.0, 0.0}));
 }
 
+TEST(LiquidBoundaryGeometry3D, GasConnectivityRequiresSharedTriangleOpening) {
+  LiquidAirCellMeasureInputs3D inputs{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .cell_index = {0, 0, 0},
+      .obstacle = {},
+      .liquid_corner_distances = {-1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0},
+  };
+  EXPECT_EQ(MeasureLiquidAirCell3D(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+  inputs.liquid_corner_distances[0] = 0.0;
+  inputs.liquid_corner_distances[7] = 0.0;
+  EXPECT_EQ(MeasureLiquidAirCell3D(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+  inputs.liquid_corner_distances[0] = 1.0;
+  const auto connected = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(connected.ok()) << connected.status();
+  EXPECT_GT(connected->gas_volume, 0.0);
+  EXPECT_GT(connected->gas_face_areas[0], 0.0);
+  EXPECT_GT(connected->gas_face_areas[1], 0.0);
+}
+
 TEST(LiquidBoundaryGeometry3D, GasMeasureRejectsSlabSplitAndIgnoresZeroPlateaus) {
   LiquidAirCellMeasureInputs3D inputs{
       .geometry = {{0.0, 0.0, 0.0}, 1.0},
