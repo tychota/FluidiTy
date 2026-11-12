@@ -2065,7 +2065,7 @@ TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
     EXPECT_EQ(measurement->cavity->lineage.next_id, 2);
     EXPECT_DOUBLE_EQ(measurement->cavity->lineage.unmatched_inventory, 0.0);
   }
-  EXPECT_EQ(initializations, 2);
+  EXPECT_EQ(initializations, 1);
 
   LiquidResolvedSceneView3D resolved;
   resolved.scene = scene;

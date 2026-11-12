@@ -1202,6 +1202,9 @@ TEST(CudaLiquidSubstep3D, DiscoveredCavitySurvivesCheckpointResume) {
   ASSERT_TRUE(backend.ok()) << backend.status();
   auto scheduler = LiquidSubstepScheduler3D::Create(*initial, resolved.scene, options, backend->operations());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->committed().clock, LiquidClock3D{});
+  ASSERT_EQ(scheduler->committed().next_cavity_id, 2);
+  ASSERT_GT(scheduler->committed().cavity_gas.size(), 0);
   const auto first = scheduler->AdvanceFrame(0.001);
   ASSERT_TRUE(first.ok()) << first << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
   const auto& measurement = scheduler->diagnostics().accepted_measurement;

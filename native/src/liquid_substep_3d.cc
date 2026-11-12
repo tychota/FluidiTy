@@ -1404,7 +1404,77 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       || (scene.cavity && initial.clock.accepted_step_ordinal != 0 && initial.next_cavity_id == 0)) {
     return Error(absl::StatusCode::kFailedPrecondition);
   }
-  auto transaction = LiquidFrameTransaction3D::Create(initial, capacities, scene.cavity.has_value());
+  std::optional<CavityStepScratch> cavity;
+  std::optional<LiquidState3D> cavity_seed;
+  if (scene.cavity) {
+    if (scene.cavity_provider.prepare || !std::isfinite(scene.cavity->atmospheric_absolute_pressure)
+        || scene.cavity->atmospheric_absolute_pressure <= 0.0
+        || !std::isfinite(scene.cavity->birth_hydrostatic_gauge_pressure)
+        || scene.cavity->birth_hydrostatic_gauge_pressure < 0.0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto cavity_capacity = std::max(capacities.cells, options.capacity_replay_reservations.cells);
+    auto scratch = CavityStepScratch::Create(cavity_capacity);
+    if (!scratch.ok()) {
+      return scratch.status();
+    }
+    if (scratch->reserved_bytes > SIZE_MAX - *reservation_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    cavity = std::move(*scratch);
+    if (initial.next_cavity_id == 0) {
+      const LiquidStateCapacities3D seed_capacities{
+          initial.particles.size(),
+          initial.blocks.size(),
+          initial.cells.size(),
+          initial.faces.size(),
+          initial.sources.size(),
+      };
+      auto seed = CloneLiquidState3D(initial, seed_capacities);
+      if (!seed.ok()) {
+        return seed.status();
+      }
+      auto gas = LiquidRecords3D<LiquidCavityGasState3D>::Create(capacities.cells);
+      auto components = LiquidRecords3D<LiquidCavityComponentState3D>::Create(capacities.cells);
+      if (!gas.ok()) {
+        return gas.status();
+      }
+      if (!components.ok()) {
+        return components.status();
+      }
+      seed->cavity_gas = std::move(*gas);
+      seed->cavity_components = std::move(*components);
+      seed->next_cavity_id = 1;
+      const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, initial.clock.time);
+      // Frame zero has no activated grid. The host field sampler supplies the
+      // initial geometry independently of the physical backend's publication.
+      STEP_TRY(
+          liquid_step_internal::PrepareField(scene.field, obstacle, *seed, *staging, CpuLiquidSubstepBackend3D(), true)
+      );
+      const auto grid = SparseMacGridView3D::Create(initial.geometry, {});
+      if (!grid.ok()) {
+        return grid.status();
+      }
+      const LiquidBoundaryGeometryViewInputs3D samples{
+          .mac_grid = *grid,
+          .cell_indices = staging->candidates.values(),
+          .center_distances = staging->centers.values(),
+          .corner_distances = staging->corners.values(),
+          .obstacle = obstacle,
+          .step_duration = 0.0,
+          .liquid_density = scene.liquid_density,
+          .surface_tension = scene.surface_tension,
+      };
+      std::optional<LiquidCavityStepPreparation3D> measurement;
+      const auto prepared = cavity->Prepare(*scene.cavity, samples, *seed, measurement);
+      if (!prepared.ok()) {
+        return prepared.status();
+      }
+      cavity_seed = std::move(*seed);
+    }
+  }
+  const auto& initial_version = cavity_seed ? *cavity_seed : initial;
+  auto transaction = LiquidFrameTransaction3D::Create(initial_version, capacities, scene.cavity.has_value());
   if (!transaction.ok()) {
     return transaction.status();
   }
@@ -1423,29 +1493,12 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (!impl) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
-  impl->reservation_bytes = *reservation_bytes;
+  impl->reservation_bytes = *reservation_bytes + (cavity ? cavity->reserved_bytes : 0);
+  impl->cavity = std::move(cavity);
   impl->sources = std::move(*sources);
   impl->scene = scene;
   impl->scene.sources = impl->sources.values();
   impl->options = options;
-  if (scene.cavity) {
-    if (scene.cavity_provider.prepare || !std::isfinite(scene.cavity->atmospheric_absolute_pressure)
-        || scene.cavity->atmospheric_absolute_pressure <= 0.0
-        || !std::isfinite(scene.cavity->birth_hydrostatic_gauge_pressure)
-        || scene.cavity->birth_hydrostatic_gauge_pressure < 0.0) {
-      return Error(absl::StatusCode::kInvalidArgument);
-    }
-    const auto cavity_capacity = std::max(capacities.cells, options.capacity_replay_reservations.cells);
-    auto cavity = CavityStepScratch::Create(cavity_capacity);
-    if (!cavity.ok()) {
-      return cavity.status();
-    }
-    if (cavity->reserved_bytes > SIZE_MAX - impl->reservation_bytes) {
-      return Error(absl::StatusCode::kResourceExhausted);
-    }
-    impl->reservation_bytes += cavity->reserved_bytes;
-    impl->cavity = std::move(*cavity);
-  }
   if (options.ocean_boundary) {
     auto ocean_boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
     if (!ocean_boundary.ok()) {
@@ -1467,7 +1520,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       impl->ocean_inlet_particles = std::move(*inlet);
     }
   }
-  STEP_TRY(backend.initialize(backend.context, initial));
+  STEP_TRY(backend.initialize(backend.context, initial_version));
   impl->backend = backend;
   return LiquidSubstepScheduler3D(std::move(impl));
 }

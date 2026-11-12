@@ -25,15 +25,9 @@ TEST(SurfaceReconstruction3D, CachedCavityRetainsAnInwardBoundary) {
   scene.cavity = LiquidSceneCavity3D{.atmospheric_absolute_pressure = 100000.0};
   auto scheduler = LiquidSubstepScheduler3D::Create(*shell, scene, step_options);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-  const auto advanced = scheduler->AdvanceFrame(0.001);
-  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_EQ(scheduler->committed().clock, LiquidClock3D{});
   ASSERT_EQ(scheduler->committed().next_cavity_id, 2);
-  auto seed = CloneLiquidState3D(scheduler->committed(), step_options.capacities);
-  ASSERT_TRUE(seed.ok()) << seed.status();
-  // The quiescent step discovers the cavity in unchanged geometry. Rebase the
-  // accepted sample to seed the surface stage and round-trip the motion wire.
-  seed->clock = {};
-  const auto bytes = EncodeMotionSeed3D(*seed);
+  const auto bytes = EncodeMotionSeed3D(scheduler->committed());
   ASSERT_TRUE(bytes.ok()) << bytes.status();
   const auto motion = DecodeMotionFrame3D(bytes->values());
   ASSERT_TRUE(motion.ok()) << motion.status();

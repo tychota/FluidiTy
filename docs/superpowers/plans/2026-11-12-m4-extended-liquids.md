@@ -415,3 +415,11 @@ Production reconstruction reads resolved cavity IDs from the motion frame. For a
 The CPU fixture discovers a cavity in a quiescent particle shell, rebases that accepted state to frame zero, round-trips the motion wire, and reconstructs and encodes the surface. It retains both signed boundaries and matches the material volume within 0.5 percent. The production simulator built and 22 CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceReconstruction3D|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. clang-format 19.1.5 passed. Receipts use out/m4-cached-cavity-surface.
 
 The fixture rebases the snapshot because the normal frame-zero publication precedes the first cavity discovery. Initial scene discovery and a full deep-tank production qualification are still required for Q-CAVITY.
+
+## Initial cavity snapshot receipt
+
+A fresh cavity-enabled scheduler prepares gas and lineage at the initial obstacle pose before publishing frame zero. It uses the host field sampler and creates the transaction and backend from that initialized state. Restored checkpoints retain their saved snapshot. Capacity replay now restores the already discovered frame-zero cavity without reinitializing its gas.
+
+The surface fixture now encodes the actual committed frame-zero motion seed and reconstructs the cavity without rebasing the clock. Eighteen CPU cavity tests passed with ctest --preset windows-debug-cpu -j 4 -R Cavity. Twenty-two real-device tests passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. The CUDA checkpoint fixture explicitly checks cavity state before the first step. A parallel CUDA run reported resource exhaustion in eight cases. All passed in the serial rerun. Both simulator targets built and clang-format 19.1.5 passed. Receipts use out/m4-initial-cavity.
+
+The initial snapshot must fit the configured initial capacity before stepping. Full deep-tank production reconstruction and Q-CAVITY qualification remain open.

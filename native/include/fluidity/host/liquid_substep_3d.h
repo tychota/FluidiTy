@@ -76,7 +76,8 @@ struct LiquidSceneCavity3D {
   double birth_hydrostatic_gauge_pressure = 0.0;  // Nonnegative Pa for default spherical birth equilibrium.
   void* context = nullptr;
   // Optional certification of atmosphere outlets for the current samples.
-  // The returned span is borrowed until the end of step preparation.
+  // The returned span is borrowed until the end of step preparation. The
+  // initial snapshot uses a zero-duration query at the initial obstacle pose.
   absl::StatusOr<std::span<const FaceIndex3D>> (*atmosphere_outlets)(
       void* context,
       const LiquidBoundaryGeometryViewInputs3D& samples
