@@ -19,11 +19,60 @@ The shared test fixture uses finest width 0.5 m and leaves `((0,0,0),1)` and `((
 
 ## Runtime boundary
 
-Simulate accepts authored, stationary, conforming planar tanks. It freezes the graded leaf topology and canonical face roster for each physical trial. Full geometric apertures connect interior leaves. Stationary wall faces have zero aperture and zero wall flux. Open top faces use ambient pressure at half the incident leaf width. The predictor uses the signed body-potential difference between incident leaf centers divided by their normal spacing, including at coarse/fine interfaces. Source divergence is zero. Use the accepted state to reconstruct keys, incidence and carrier slots, and the resolved scene and trial-start state to reconstruct physical apertures, mobility, predicted velocities, boundary values and previous pressures. The committed face velocity is the corrected result.
+Simulate freezes the graded topology and canonical subface roster for every
+trial. The conforming stationary tank uses full interior apertures, sealed
+stationary walls, and ambient pressure on the open top at half the incident
+leaf width. Its predictor uses the signed body-potential difference between
+incident leaf centers divided by their normal spacing. Its target source
+divergence is zero.
 
-Qualified runtime paths include a closed implicit-liquid Eulerian core with explicit retirement and reseeding, and particle-owned M4 paths for EOS, one miscible phase, and coupled viscosity. The cut aperture, prescribed wall flux, and source divergence fixtures qualify those inputs independently. Conservative nonzero exchange between particle-owned and Eulerian leaves remains open, and current core transport refuses such flux. [Native adaptive band runtime](native-band-runtime.md) · [Graded M4 runtime](graded-m4-runtime.md)
+The translating-halfspace path uses the same signed topology and slot keys.
+Recreate its physical inputs from the resolved time-zero wall, the accepted
+clock and state, and the exact trial duration. At the trial start,
+`FreezeGradedPlanarLiquidGeometry3D` clips each leaf and subface against the
+wall and the horizontal liquid plane. Use the resulting liquid volume, wet-open
+area, wet-solid area, and positive-axis integrated wall flux. The wet-open
+world centroid is available for traction quadrature. Pressure still uses the
+canonical center distance for an interior link and the explicitly supplied
+pressure distance for an exterior link.
 
-The graph admits at most 4,096 pressure cells and 24,576 total subfaces, including sealed entries. The slot limit can bind before the leaf limit. The pressure graph and CUDA solve still allocate per attempt outside persistent arena reservations. See the [graded Simulate runtime receipt](graded-simulate-runtime.md) for rollback, replay and wave-scale limits.
+Supply one target divergence per canonical leaf and either an empty exterior
+span to seal all exterior apertures or one optional pressure/distance per
+global slot. Interior entries in that span must be absent. Use the accepted
+leaf's previous pressure and the deposited positive-normal carrier in each
+eligible slot. The bounded physical scheduler uses constant inverse liquid
+density as mobility and requires positive wet volume at both sweep endpoints.
+The target divergence constrains the pressure solve. Material emission has
+its own inventory accounting. Reapply the clock-bound pressure request after
+restore using the same resolved scene.
+
+Use the accepted carrier and per-leaf material owner from the same epoch
+when qualifying constituent transport. Current M4 cases cover particle-owned
+EOS, one miscible phase and coupled viscosity. The closed implicit Eulerian
+core qualifies explicit retirement and reseeding. Nonzero cross-owner
+exchange needs its own live qualification. [Native adaptive band runtime](native-band-runtime.md)
+· [Graded M4 runtime](graded-m4-runtime.md)
+
+The graph admits at most 4,096 pressure cells and 24,576 total subfaces. The
+slot limit can bind first. The CUDA solve uploads into bounded persistent
+arena scratch and publishes its result on success. The host still assembles
+the explicit graph for a trial. [Graded Simulate runtime](graded-simulate-runtime.md)
+· [Persistent pressure workspace](production-integration.md#persistent-cuda-pressure-workspace)
+
+The moving-wall fixture used exterior pressures of ±0.5 Pa, checked cut wet
+volume to 1e-13 m³, and measured a cut-link speed above 1e-6 m/s. It rejected
+at the acceptance boundary, verified committed host and device state, and
+replayed from a fresh process on both backends. On verified source
+`29cd2811634a038041ab13d376f11163787bd20d`, both backends produced checkpoint
+BLAKE3 `f25b6d060736cab7b073ccfc1092198b3699e2a1584d8e5eb316bc15b9d9e19b`
+and final-state BLAKE3
+`2006123a0de10d395f41b6d0b3b1496faf70536fa7a34c575be58c4810279e37`.
+[Moving-wall scheduler PR](https://github.com/tychota/FluidiTy/pull/143)
+
+```powershell
+cmake --build out/build/physical-trial-cuda --target fluidity_adaptive_family_fixture fluidity_native_tests --parallel 2
+ctest --test-dir out/build/physical-trial-cuda -R 'Adaptive(Physical|Family|Band|Width|Closure)Replay|GradedPhysical|GradedLiquidBoundaryGeometry3D|AdvancesGradedTank' --verbose
+```
 
 ## Verification receipt
 
