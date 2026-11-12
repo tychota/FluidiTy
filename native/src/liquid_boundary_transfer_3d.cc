@@ -1193,8 +1193,10 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       }
       continue;
     }
-    // For the bounded local fit, probe the exact existing QR interpolation
-    // with unit donor vectors. The rank and pivot order depend on geometry.
+    // Construct the row first so the same bounded coefficients drive
+    // both the reconstruction and its force transpose.
+    std::array<double, kDonorCapacity> coefficients{};
+    bool negative_tangent_coefficient = false;
     for (std::size_t index = 0; index < count; ++index) {
       samples[index].velocity = 1;
       const auto basis = FitBoundedLiquidGhostAffineCore3D<kDonorCapacity>(fit_input);
@@ -1202,7 +1204,20 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       if (!basis.ok()) {
         return absl::OutOfRangeError("floor ghost transpose coefficient evaluation failed");
       }
-      const double coefficient = continuation_sign * basis->velocity_at_target;
+      coefficients[index] = continuation_sign * basis->velocity_at_target;
+      negative_tangent_coefficient = negative_tangent_coefficient || coefficients[index] < -1e-12;
+    }
+    if (reflect_normal && anchors[target].axis != FaceNormalAxis::kY && negative_tangent_coefficient) {
+      coefficients.fill(0);
+      for (std::size_t index = 0; index < count; ++index) {
+        if (donors[index] == nearest) {
+          coefficients[index] = 1;
+        }
+      }
+      row.fallback = true;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+      const double coefficient = coefficients[index];
       scattered_force[donors[index]] += coefficient * force[target];
       if (gather_needed) {
         row.terms.push_back({donors[index], coefficient});

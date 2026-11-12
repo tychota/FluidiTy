@@ -616,7 +616,7 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
   // swept velocity still removes inward normal motion.
   const auto& elastic = particle.elastic_deformation;
   const double determinant = elastic.x_row.x * elastic.y_row.y * elastic.z_row.z;
-  const double expected_determinant = compatible_floor ? std::exp(-0.01) : 1.0;
+  const double expected_determinant = compatible_floor ? 0.99 : 1.0;
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
       && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
@@ -1246,6 +1246,9 @@ int main(int argc, char** argv) {
     const bool reference = TestScene(0.075, 0.0009375, false, 0, 2, 0.10, false, 3);
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-bounded-tangent-stiff") {
+    return TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 3, 0, {}, 0.7, false, 8, 0, 700, true) ? 0 : 1;
   }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-motion-retry") {
     return TestScene(

@@ -801,12 +801,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     const bool split_deformation = granular_floor_impact && !compatible_floor;
     const double incoming_duration =
         split_deformation ? settings.duration * *contact->contact_fraction : settings.duration;
-    Mat3 trial = TrialDeformation(
-        particle.elastic_deformation,
-        particle_gather.velocity_gradient,
-        incoming_duration,
-        compatible_floor
-    );
+    Mat3 trial =
+        TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, incoming_duration, false);
     if (split_deformation) {
       // Compose the two deformation increments in physical order across impact.
       const double projected_duration = settings.duration - incoming_duration;
