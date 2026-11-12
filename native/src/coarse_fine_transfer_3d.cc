@@ -9,6 +9,7 @@
 
 #include "absl/status/status.h"
 #include "fluidity/base/coarse_fine_transfer_math_3d.h"
+#include "fluidity/host/adaptive_mac_topology_3d.h"
 
 namespace fluidity {
 namespace {
@@ -81,6 +82,68 @@ EvaluateCoarseFineStencil3D(const CoarseFinePatch3D& patch, FaceNormalAxis face_
     };
   }
   return stencil;
+}
+absl::StatusOr<AdaptiveMacStencilBinding3D> BindAdaptiveMacStencil3D(
+    const AdaptiveMacTopology3D& topology,
+    const AdaptiveMacFaceOwnership3D& ownership,
+    const CoarseFineStencil3D& stencil,
+    CellIndex3D patch_origin_finest,
+    std::uint8_t coarse_width_exponent
+) {
+  if (coarse_width_exponent < 1 || coarse_width_exponent > 30) {
+    return absl::InvalidArgumentError("adaptive transfer patch exponent is out of range");
+  }
+  const std::int64_t coarse_width = std::int64_t{1} << coarse_width_exponent;
+  const std::array origin{patch_origin_finest.x, patch_origin_finest.y, patch_origin_finest.z};
+  for (const auto coordinate : origin) {
+    if (coordinate % coarse_width != 0) {
+      return absl::InvalidArgumentError("adaptive transfer patch origin is not aligned to its coarse width");
+    }
+  }
+  const auto interior_faces = topology.interior_faces();
+  if (topology.cells().empty() || ownership.interior_face_slots.size() != interior_faces.size()) {
+    return absl::InvalidArgumentError("adaptive transfer requires matching topology and face ownership");
+  }
+  const std::size_t face_count = interior_faces.size() + ownership.exterior_faces.size();
+  const auto face_key = [](const auto& face) {
+    const auto& index = face.face_index.lattice_index;
+    return std::tuple{face.face_index.axis, index.z, index.y, index.x, face.width_exponent};
+  };
+  AdaptiveMacStencilBinding3D result;
+  result.row_count_ = stencil.rows().size();
+  for (std::size_t row_ordinal = 0; row_ordinal < stencil.rows().size(); ++row_ordinal) {
+    const auto& row = stencil.rows()[row_ordinal];
+    const auto width_exponent = static_cast<std::uint8_t>(coarse_width_exponent - row.level);
+    const std::int64_t width = std::int64_t{1} << width_exponent;
+    const auto [x, y, z] = row.owner.lattice_index;
+    const std::array patch_indices{x, y, z};
+    std::array<std::int32_t, 3> lower{};
+    for (std::size_t axis = 0; axis < lower.size(); ++axis) {
+      const std::int64_t coordinate = origin[axis] + width * patch_indices[axis];
+      if (coordinate < INT32_MIN || coordinate > INT32_MAX) {
+        return absl::OutOfRangeError("adaptive transfer row exceeds the signed finest lattice");
+      }
+      lower[axis] = static_cast<std::int32_t>(coordinate);
+    }
+    const auto key = std::tuple{row.owner.axis, lower[2], lower[1], lower[0], width_exponent};
+    const auto interior = std::ranges::lower_bound(interior_faces, key, {}, face_key);
+    if (interior != interior_faces.end() && face_key(*interior) == key) {
+      const auto slot = ownership.interior_face_slots[static_cast<std::size_t>(interior - interior_faces.begin())];
+      if (slot >= face_count) {
+        return absl::InvalidArgumentError("adaptive transfer interior slot is outside the face roster");
+      }
+      result.slots_[row_ordinal] = slot;
+      continue;
+    }
+    const auto exterior = std::ranges::lower_bound(ownership.exterior_faces, key, {}, face_key);
+    if (exterior != ownership.exterior_faces.end() && face_key(*exterior) == key) {
+      if (exterior->face_slot >= face_count) {
+        return absl::InvalidArgumentError("adaptive transfer exterior slot is outside the face roster");
+      }
+      result.slots_[row_ordinal] = exterior->face_slot;
+    }
+  }
+  return result;
 }
 absl::StatusOr<CoarseFineMaskDisposition3D>
 ClassifyCoarseFineMask3D(const CoarseFineStencil3D& stencil, std::span<const bool> retained_rows) {
@@ -210,4 +273,52 @@ absl::Status ApplyCoarseFinePicFallback3D(
   return absl::OkStatus();
 }
 
+absl::Status ApplyAdaptiveMacPicFallback3D(
+    const CoarseFineStencil3D& stencil,
+    const AdaptiveMacStencilBinding3D& binding,
+    std::span<const double> face_velocities,
+    std::span<const LiquidFaceValidity3D> face_validity,
+    std::span<const LiquidBoundaryFaceTag3D> face_tags,
+    std::int64_t particle_side_tag,
+    LiquidBoundaryParticleGather3D& gather
+) {
+  const auto rows = stencil.rows();
+  const auto slots = binding.slots();
+  if (slots.size() != rows.size() || face_validity.size() != face_velocities.size()
+      || face_tags.size() != face_velocities.size()) {
+    return absl::InvalidArgumentError("adaptive transfer carrier extents do not match");
+  }
+  std::array<bool, CoarseFineStencil3D::kMaxRows> retained{};
+  std::array<CoarseFinePicCarrierSample3D, CoarseFineStencil3D::kMaxRows> samples{};
+  std::size_t sample_count = 0;
+  for (std::size_t row = 0; row < slots.size(); ++row) {
+    if (!slots[row].has_value()) {
+      continue;
+    }
+    const std::size_t slot = *slots[row];
+    if (slot >= face_velocities.size()) {
+      return absl::InvalidArgumentError("adaptive transfer carrier slot is outside the history");
+    }
+    if (face_validity[slot] > LiquidFaceValidity3D::kLowMass) {
+      return absl::InvalidArgumentError("adaptive transfer carrier validity is unknown");
+    }
+    if (face_validity[slot] == LiquidFaceValidity3D::kMissing || !face_tags[slot].structurally_eligible
+        || face_tags[slot].side_tag != particle_side_tag) {
+      continue;
+    }
+    retained[row] = true;
+    samples[sample_count++] = {
+        .owner = rows[row].owner,
+        .level = rows[row].level,
+        .new_face_velocity = face_velocities[slot],
+        .low_mass = face_validity[slot] == LiquidFaceValidity3D::kLowMass,
+    };
+  }
+  return ApplyCoarseFinePicFallback3D(
+      stencil,
+      std::span(retained).first(rows.size()),
+      std::span(samples).first(sample_count),
+      gather
+  );
+}
 }  // namespace fluidity

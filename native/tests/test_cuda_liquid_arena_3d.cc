@@ -210,6 +210,117 @@ TEST(CudaLiquidArena3D, PublicationRejectAndLeasedStorage) {
   EXPECT_FALSE(arena->PreparePublication(*trial, clock).ok());
   EXPECT_EQ(accepted->identity().clock.epoch, 1);
 }
+TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  constexpr LiquidStateCapacities3D capacity{0, 0, 2, 14, 0};
+  LiquidState3D initial;
+  initial.geometry.cell_width = 0.5;
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(2);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(14);
+  ASSERT_TRUE(cells.ok());
+  ASSERT_TRUE(faces.ok());
+  initial.adaptive_cells = std::move(*cells);
+  initial.adaptive_faces = std::move(*faces);
+  ASSERT_TRUE(initial.adaptive_cells.Resize(2).ok());
+  ASSERT_TRUE(initial.adaptive_faces.Resize(14).ok());
+  initial.adaptive_cells[0] = {
+      .key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1},
+      .inventory =
+          {.mass_kg = 4,
+           .reference_volume_m3 = 0.5,
+           .current_volume_m3 = 0.75,
+           .momentum_kg_m_per_s = {1, -2, 3},
+           .enthalpy_j = -4,
+           .phase_id = 9,
+           .constituent_count = 2,
+           .constituents = {{{11, 0.25}, {21, 0.5}}}},
+      .previous_pressure = -2,
+  };
+  initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
+  initial.adaptive_faces[0] = {
+      .carrier_velocity = -3,
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = 23,
+      .structurally_eligible = false
+  };
+  ASSERT_TRUE(ValidateLiquidState3D(initial).ok());
+  auto uniform_arena = CudaLiquidArena3D::Create(capacity);
+  ASSERT_TRUE(uniform_arena.ok());
+  EXPECT_EQ(uniform_arena->Initialize(initial).code(), absl::StatusCode::kInvalidArgument);
+  auto arena = CudaLiquidArena3D::Create(capacity, 0, SIZE_MAX, false, true);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  ASSERT_TRUE(arena->Initialize(initial).ok());
+  auto old = arena->AcquireCommitted();
+  ASSERT_TRUE(old.ok());
+  const auto old_bytes = PackedBytes(*old);
+  auto output = CloneLiquidState3D(initial, capacity);
+  ASSERT_TRUE(output.ok());
+  ASSERT_TRUE(old->Readback(*output).ok());
+  EXPECT_EQ(*output, initial);
+
+  auto trial = CloneLiquidState3D(initial, capacity);
+  ASSERT_TRUE(trial.ok());
+  trial->adaptive_cells[0].inventory.enthalpy_j += 2;
+  trial->adaptive_faces[0].carrier_velocity = 3;
+  constexpr LiquidClock3D accepted_clock{1, 1, 0, 1, 1};
+  ASSERT_TRUE(trial->adaptive_faces.Resize(13).ok());
+  EXPECT_EQ(arena->PreparePublication(*trial, accepted_clock).code(), absl::StatusCode::kInvalidArgument);
+  ASSERT_TRUE(trial->adaptive_faces.Resize(14).ok());
+  EXPECT_EQ(arena->AcquireCommitted()->identity(), old->identity());
+  ASSERT_TRUE(arena->PreparePublication(*trial, accepted_clock).ok());
+  arena->DiscardPublication();
+  EXPECT_EQ(arena->AcquireCommitted()->identity(), old->identity());
+  ASSERT_TRUE(arena->PreparePublication(*trial, accepted_clock).ok());
+  arena->CommitPublication();
+  auto accepted = arena->AcquireCommitted();
+  ASSERT_TRUE(accepted.ok());
+  EXPECT_EQ(accepted->identity().clock, accepted_clock);
+  ASSERT_TRUE(accepted->Readback(*output).ok());
+  trial->clock = accepted_clock;
+  EXPECT_EQ(*output, *trial);
+  EXPECT_EQ(PackedBytes(*old), old_bytes);
+
+  auto queue = CudaLiquidSnapshotQueue3D::Create(*accepted);
+  ASSERT_TRUE(queue.ok()) << queue.status();
+  auto snapshot = queue->BeginCopy(accepted->identity(), std::move(*accepted));
+  ASSERT_TRUE(snapshot.ok()) << snapshot.status();
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const auto progress = queue->Poll(*snapshot);
+  ASSERT_TRUE(progress.ok()) << progress.status();
+  ASSERT_EQ(*progress, LiquidSnapshotProgress3D::kReady);
+  auto frame = queue->Finish(*snapshot);
+  ASSERT_TRUE(frame.ok()) << frame.status();
+  EXPECT_EQ(*frame->state(), *trial);
+
+  auto grown = capacity;
+  grown.cells += 1;
+  grown.faces += 3;
+  ASSERT_TRUE(arena->PrepareGrowth(grown, *trial).ok());
+  arena->CommitGrowth();
+  auto restored = arena->AcquireCommitted();
+  ASSERT_TRUE(restored.ok());
+  EXPECT_GT(restored->identity().generation, old->identity().generation);
+  ASSERT_TRUE(restored->Readback(*output).ok());
+  EXPECT_EQ(*output, *trial);
+  EXPECT_EQ(PackedBytes(*old), old_bytes);
+
+  const auto restored_identity = restored->identity();
+  const auto restored_bytes = PackedBytes(*restored);
+  auto& calls = cuda_internal::LiquidArenaRuntimeCalls();
+  const auto previous_event_record = calls.event_record;
+  calls.event_record = [](cudaEvent_t event, cudaStream_t stream) {
+    const auto recorded = cudaEventRecord(event, stream);
+    return recorded == cudaSuccess ? cudaErrorUnknown : recorded;
+  };
+  constexpr LiquidClock3D next_clock{2, 2, 0, 2, 2};
+  trial->adaptive_cells[0].inventory.mass_kg += 1;
+  const auto failed = arena->PreparePublication(*trial, next_clock);
+  calls.event_record = previous_event_record;
+  EXPECT_EQ(failed.code(), absl::StatusCode::kInternal);
+  arena->DiscardPublication();
+  EXPECT_EQ(arena->AcquireCommitted()->identity(), restored_identity);
+  EXPECT_EQ(PackedBytes(*restored), restored_bytes);
+}
 TEST(CudaLiquidArena3D, GrowthRollbackAndPeakBudget) {
   ASSERT_NO_FATAL_FAILURE(CheckHardware());
   auto arena = CudaLiquidArena3D::Create(kSmall);

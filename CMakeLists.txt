@@ -77,6 +77,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_isolated_drop_3d.cc
   native/src/liquid_remap_3d.cc
   native/src/liquid_band_handoff_3d.cc
+  native/src/liquid_adaptive_step_3d.cc
   native/src/liquid_substep_3d.cc
   native/src/wetted_piston_3d.cc
   native/src/liquid_substep_3d_cpu.cc
@@ -94,6 +95,7 @@ add_library(fluidity_native STATIC
   native/src/sparse_mac_grid_3d.cc
   native/src/basis.cc
   native/src/coarse_fine_transfer_3d.cc
+  native/src/graded_mac_transfer_3d.cc
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
@@ -329,6 +331,7 @@ if(BUILD_TESTING)
     native/tests/test_fixture_bridge.cc
     native/tests/test_grid_basis.cc
     native/tests/test_coarse_fine_transfer_3d.cc
+    native/tests/test_graded_mac_transfer_3d.cc
     native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc

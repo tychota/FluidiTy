@@ -169,6 +169,8 @@ struct CudaLiquidStateLayout3D {
   std::size_t control_record_byte_offset = 0;
   std::size_t total_state_bytes = 0;
   std::size_t particle_bin_stride_bytes = sizeof(CudaLiquidParticleBin3D);
+  // Cell/face offsets designate graded records in this fixed arena mode.
+  bool adaptive_state = false;
 };
 // Owns a read-only bank through arena growth/destruction. Moving invalidates the
 // old lease. No async completion is inferred: Task 8 must retain this lease until
@@ -223,12 +225,14 @@ class CudaLiquidArena3D {
   // An invalid device ordinal returns InvalidArgument. An absent device or
   // unavailable driver returns Unavailable. A device or image outside CC12.0
   // returns FailedPrecondition. Size overflow or OOM returns ResourceExhausted.
-  // Unexpected CUDA runtime failures return Internal.
+  // Unexpected CUDA runtime failures return Internal. Adaptive mode reserves
+  // graded cell and face records instead of uniform records at the same extents.
   static absl::StatusOr<CudaLiquidArena3D> Create(
       LiquidStateCapacities3D capacities,
       int device_ordinal = 0,
       std::size_t byte_limit = static_cast<std::size_t>(-1),
-      bool measure_job = false
+      bool measure_job = false,
+      bool reserve_adaptive_state = false
   );
   // Same setup, statuses and byte limit as Create, with wet-wall staging
   // reserved at creation and at each growth. Use for CudaComputeWettedPiston3D.
@@ -329,7 +333,8 @@ class CudaLiquidArena3D {
       int device_ordinal,
       std::size_t byte_limit,
       bool measure_job,
-      bool reserve_wetted_piston_scratch
+      bool reserve_wetted_piston_scratch,
+      bool reserve_adaptive_state
   );
   CudaLiquidArena3D();
   std::unique_ptr<Impl> impl_;
