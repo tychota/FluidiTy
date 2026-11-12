@@ -16,7 +16,7 @@ def box(name, center, dimensions):
     return obj
 
 
-def run(bridge, solver, output):
+def run(bridge, solver, output, backend):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
     import fluidity
     from fluidity.scene_inputs import scene_inputs
@@ -70,11 +70,11 @@ def run(bridge, solver, output):
         invalid.write_text(authored.replace(old, replacement, 1), encoding="ascii")
         assert invalid.read_text(encoding="ascii") != authored
         bad_scene, bad_state = output / f"{label}.flrs", output / f"{label}.flst"
-        refused = subprocess.run([bridge, "resolve", solver, "cpu", invalid, bad_scene, bad_state],
+        refused = subprocess.run([bridge, "resolve", solver, backend, invalid, bad_scene, bad_state],
                                  capture_output=True, encoding="utf-8", timeout=30)
         (output / f"{label}.log").write_text(refused.stderr, encoding="utf-8")
         assert refused.returncode != 0 and not bad_scene.exists() and not bad_state.exists()
-    execute("resolve.log", bridge, "resolve", solver, "cpu", packet, resolved, initial)
+    execute("resolve.log", bridge, "resolve", solver, backend, packet, resolved, initial)
     execute("simulate.log", solver, "run", "--stage", "simulate", "--scene", resolved,
             "--initial-state", initial, "--cache", cache, "--frame-end", "1")
     expected = [(4, 8), (4, 14), (5, 25)]
@@ -87,7 +87,7 @@ def run(bridge, solver, output):
     print("PASS Blender-authored sources and one accepted child per emitter")
 
 
-def run_viscous(bridge, solver, output):
+def run_viscous(bridge, solver, output, backend):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
     import fluidity
     from fluidity.scene_inputs import scene_inputs
@@ -127,7 +127,7 @@ def run_viscous(bridge, solver, output):
     assert "\n8 4 1000.0 40.0\n25 5 820.0 120.0\n" in authored
     assert "\n1 3.0\n" in authored
     packet.write_text(authored, encoding="ascii")
-    subprocess.run([bridge, "resolve", solver, "cpu", packet, resolved, initial], check=True, timeout=30)
+    subprocess.run([bridge, "resolve", solver, backend, packet, resolved, initial], check=True, timeout=30)
     cache = output / "simulate"
     command = subprocess.run(
         [solver, "run", "--stage", "simulate", "--scene", resolved, "--initial-state", initial,
@@ -146,7 +146,12 @@ def run_viscous(bridge, solver, output):
 
 if __name__ == "__main__":
     args = sys.argv[sys.argv.index("--") + 1:]
+    backend = "cpu"
+    if args[:1] == ["--backend"]:
+        backend = args[1]
+        assert backend in ("cpu", "cuda")
+        args = args[2:]
     if args[0] == "viscous":
-        run_viscous(*(Path(path).resolve() for path in args[1:]))
+        run_viscous(*(Path(path).resolve() for path in args[1:]), backend)
     else:
-        run(*(Path(path).resolve() for path in args))
+        run(*(Path(path).resolve() for path in args), backend)
