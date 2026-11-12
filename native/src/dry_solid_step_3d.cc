@@ -320,6 +320,23 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
               static_cast<double>(quanta.pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
       };
     }
+    auto deformation_tags = floor_tags;
+    const auto floor_grid = grid.view();
+    for (std::size_t slot = 0; slot < deformation_tags.size(); ++slot) {
+      const auto face = floor_grid.FaceIndex(slot);
+      if (!face.ok()) {
+        return face.status();
+      }
+      if (face->axis == FaceNormalAxis::kY) {
+        const auto anchor = floor_grid.FaceWorldAnchor(*face);
+        if (!anchor.ok()) {
+          return anchor.status();
+        }
+        // The deformation field has zero normal velocity on the wall itself.
+        // Compatible PIC still sees the unprojected incident velocity.
+        deformation_tags[slot].structurally_eligible = anchor->y > 0;
+      }
+    }
     std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
     for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
       // Thin support retains its deposited PIC momentum. The paired
@@ -351,7 +368,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       }
       double wall_force_y = 0;
       for (const auto& sample : *normal_stencil) {
-        if (!floor_tags[sample.face_slot].structurally_eligible) {
+        if (!deformation_tags[sample.face_slot].structurally_eligible) {
           wall_force_y += particles[index].reference_volume
               * solid_detail::Dot(particle_stresses[index].y_row, sample.weight_gradient);
         }
