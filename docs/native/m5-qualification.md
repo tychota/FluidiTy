@@ -3346,3 +3346,31 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Wall-normal velocity clamp with local friction capacity
+
+Keep the wall-face Euler reference and clamp inward velocity on
+normal faces on the plane inside the active contact patch. Add
+the clamp impulse to the signed grid wall budget and to the same
+wall point's normal load for the tangential Coulomb solve. The
+particle sweep still resolves remaining inward motion.
+
+| Native case at 3 s | Angle | Radius | Grid / swept normal impulse |
+|---|---:|---:|---:|
+| Coarse | 37.862132° | 0.179583 m | 65.889 / 3.630 N·s |
+| Coarse half-step | 42.345620° | 0.160159 m | 64.733 / 4.789 N·s |
+| Fine | 33.339651° | 0.184599 m | 66.038 / 3.488 N·s |
+| Fine half-step | 36.760331° | 0.180918 m | 65.284 / 4.229 N·s |
+
+The grid supplies roughly 93–95% of the total normal impulse.
+The fine nominal angle enters range, with its radius still above
+0.16 m. The other angles exceed 35°. Vertical momentum residual
+stays below 1.3e-8 N·s and cut stress work mismatch below 2e-16 J.
+The temporary solver source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-normal-clamp-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
