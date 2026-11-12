@@ -294,8 +294,9 @@ class LiquidSubstepScheduler3D {
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Couples vertical wall flux and body inertia over one frozen pressure solve.
-  // Requires the particle-free, incompressible, zero-surface-tension scene.
-  // The coupled velocity drives both final flux and drift.
+  // Requires the incompressible, zero-surface-tension scene.
+  // The coupled velocity drives final flux, drift and particle contact.
+  // The accepted contact impulse updates the next velocity after pressure.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithCoupledGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
