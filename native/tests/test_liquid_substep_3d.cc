@@ -1277,20 +1277,9 @@ TEST(LiquidSubstep3D, GradedSwellForcesFrozenCanonicalFacesAndRollsBack) {
   LiquidState3D initial;
   LiquidSceneInputs3D scene;
   ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
-  for (std::size_t leaf = 0; leaf < initial.adaptive_cells.size(); ++leaf) {
-    initial.particles[leaf].world_velocity = {};
-    initial.adaptive_cells[leaf].inventory.momentum_kg_m_per_s = {};
-  }
   auto options = Options();
   options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
-  options.ocean_boundary = OceanBoundarySettings3D{
-      .swell = {.still_water_height_m = 1, .water_depth_m = 1, .wave_height_m = 0.05, .wave_period_s = 2},
-      .inlet_wall_x_m = 0,
-      .inlet_interior_x_m = 1.25,
-      .outlet_interior_x_m = 1.375,
-      .outlet_wall_x_m = 1.5,
-      .inlet_rate_per_s = 8,
-  };
+  options.ocean_boundary = test::PrepareGradedSwellFixture3D(initial);
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
