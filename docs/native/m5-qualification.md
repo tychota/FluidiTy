@@ -1777,4 +1777,8 @@ with general moving-interface reconstruction, reciprocal pressure and
 contact through the liquid scheduler, internal snow stress evolution, and
 joint restart through that same execution path.
 
-The resolved mixed input and joint checkpoint changes are in [draft PR 94](https://github.com/tychota/FluidiTy/pull/94).
+The resolved mixed input and joint checkpoint changes landed in
+[PR 94](https://github.com/tychota/FluidiTy/pull/94) at `37dc107`.
+A clean Windows Release CPU build of the standalone PR passed all 81
+selected cache, schema, plastic checkpoint, and CLI regressions. The
+merge into the milestone branch preserved its tested source tree.
