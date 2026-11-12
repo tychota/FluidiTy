@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -10,10 +11,12 @@
 #include "../src/plastic_solid_checkpoint_wire_3d.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/mixed_contact_3d.h"
 #include "fluidity/host/plastic_solid_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
+#include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "fluidity/host/cuda_transfers_3d.h"
 #endif
 
@@ -404,8 +407,117 @@ bool TestPlanarMixedContactDetection() {
       || snow.transfer.trial_world_position.x != 0.3125 || snow.transfer.particle_velocity.x != -2) {
     return false;
   }
-  const auto hit = fluidity::AdvancePlanarMixedContact3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.125, 0.25);
-  return hit.ok() && hit->size() == 1 && hit->front().face_slot == 3
+  // A frozen unit cell with one open outlet must discharge 2 m³/s.
+  // At unit face area this fixes the outlet speed independently of the solver.
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{-1, 0, 0}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  constexpr std::array cells{fluidity::MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1,
+      .target_divergence = 2,
+      .bulk_modulus = std::numeric_limits<double>::infinity(),
+  }};
+  using fluidity::FaceNormalAxis;
+  const fluidity::FaceIndex3D outlet{FaceNormalAxis::kX, {1, 0, 0}};
+  std::array pressure_faces{
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kX, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{
+          .face_index = outlet,
+          .open_area = 1,
+          .inverse_density = 1,
+          .pressure_gradient_distance = 1,
+          .pressure_link = fluidity::DirichletMacPressureLink3D{0},
+      },
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kY, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kY, {0, 1, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kZ, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kZ, {0, 0, 1}}},
+  };
+  for (auto& pressure_face : pressure_faces) {
+    if (pressure_face.open_area == 0) {
+      pressure_face.pressure_link = fluidity::SealedMacPressureLink3D{};
+    }
+  }
+  const auto outlet_slot = grid->FaceSlot(outlet);
+  if (!outlet_slot.ok()) {
+    return false;
+  }
+  std::sort(pressure_faces.begin(), pressure_faces.end(), [&](const auto& first, const auto& second) {
+    return *grid->FaceSlot(first.face_index) < *grid->FaceSlot(second.face_index);
+  });
+  const auto outlet_face = std::find_if(pressure_faces.begin(), pressure_faces.end(), [](const auto& pressure_face) {
+    return pressure_face.open_area > 0;
+  });
+  const auto outlet_ordinal = static_cast<std::size_t>(outlet_face - pressure_faces.begin());
+  const fluidity::MacPressureInputs3D pressure_inputs{*grid, 0.125, cells, pressure_faces};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto projection = fluidity::CudaProjectMacPressure3D(pressure_inputs);
+#else
+  const auto projection = fluidity::ProjectMacPressure3D(pressure_inputs);
+#endif
+  if (!projection.ok()) {
+    std::fprintf(stderr, "M5 pressure-contact fixture: %s\n", projection.status().ToString().c_str());
+    return false;
+  }
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto& pressure = projection->projection;
+#else
+  const auto& pressure = *projection;
+#endif
+  const double outlet_normal_velocity = pressure.corrected_face_velocities[outlet_ordinal];
+  if (std::abs(outlet_normal_velocity - 2) > 1e-12 || std::abs(pressure.cell_pressures.front() - 16) > 1e-12
+      || pressure.diagnostics.max_cell_constraint_defect > 1e-12) {
+    return false;
+  }
+  // The fixture transfers the outlet speed to one liquid particle with unit weight.
+  // Stage that transfer with the mixed advance and publish the two particles together.
+  water.world_velocity.x = 0;
+  const auto advance_pressure_trial = [&](double maximum_path_length
+                                      ) -> absl::StatusOr<std::vector<fluidity::PlanarMixedContactReceipt3D>> {
+    auto trial_water = water;
+    auto trial_snow = snow;
+    trial_water.world_velocity.x = outlet_normal_velocity;
+    const std::array pressure_contributors{
+        contributors[0],
+        fluidity::ContactFaceParticle3D{7, 11, 6, 1, trial_water.world_velocity},
+    };
+    const fluidity::DetectedContactFace3D pressure_pair{*outlet_slot, pressure_contributors, 9, 11, {1, 0, 0}, 0};
+    const auto pressure_contact = fluidity::ReconstructAxisAlignedMixedContactFace3D(
+        {&trial_water, 1},
+        11,
+        {&trial_snow, 1},
+        pressure_pair,
+        0.0625,
+        0.0625
+    );
+    if (!pressure_contact.ok()) {
+      return pressure_contact.status();
+    }
+    auto trial = fluidity::AdvancePlanarMixedContact3D(
+        {&trial_water, 1},
+        11,
+        {&trial_snow, 1},
+        {&*pressure_contact, 1},
+        pressure_inputs.step_duration,
+        maximum_path_length
+    );
+    if (trial.ok()) {
+      water = trial_water;
+      snow = trial_snow;
+    }
+    return trial;
+  };
+  const auto rejected_pressure_trial = advance_pressure_trial(0.10);
+  if (rejected_pressure_trial.status().message() != "planar mixed contact path exceeds motion bound"
+      || water.world_position.x != -0.0625 || water.world_velocity.x != 0
+      || snow.transfer.trial_world_position.x != 0.3125 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  const auto hit = advance_pressure_trial(0.25);
+  return hit.ok() && hit->size() == 1 && hit->front().face_slot == *outlet_slot
       && std::abs(hit->front().contact_fraction - 0.5) < 1e-12
       && std::abs(hit->front().contact.impulse_on_first.x - 6) < 1e-12 && std::abs(water.world_velocity.x - 1) < 1e-12
       && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12 && std::abs(water.world_position.x - 0.125) < 1e-12

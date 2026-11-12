@@ -24,6 +24,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Isolated common-impact mixed advection | Pass on host | Two translating planar interfaces hit halfway through the attempt and both trial positions reach 0.1875 m. An insufficient path-length budget rejects both velocity and position changes. |
 | Particle-derived planar contact fronts | Pass for the bounded axis-aligned model | The fixture reconstructs a 0.25 m gap from liquid and snow particle positions and explicit 0.0625 m offsets, then reaches the analytic impact and post-impact positions. Reversed normal and conflicting tied-front velocity checks pass. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
+| One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -657,6 +658,29 @@ apply each impulse once, preserve nonpenetration over the actual obstacle
 sweep, and account for pressure traction and obstacle work without counting
 the contact reaction again. Where partitioned pressure feedback is used,
 record its lag and added-mass behavior.
+
+The pressure-contact fixture runs the native or CUDA pressure solver on
+the same frozen one-cell problem and then uses the host contact advance.
+The sole outlet has unit area and a required flux of 2 m³/s. With
+dt = 0.125 s, unit mobility, and unit gradient distance, the oracle
+requires 16 Pa and an outlet velocity of 2 m/s. A fixture-only unit-weight
+transfer gives that velocity to one liquid particle. The planar contact
+occurs at half the step, transfers 6 N·s to snow, and gives both bodies
+1 m/s after impact. Final liquid and snow x positions are 0.125 m and
+0.25 m. The absolute tolerance is 1e-12 in each reported quantity's
+units, including the pressure constraint defect in s⁻¹. A 0.10 m path
+bound rejects the trial after projection and leaves the original particle
+positions and velocities intact. The 0.25 m bound accepts the same trial.
+The fixture uses a prescribed outlet and exercises one-way pressure input
+to contact. Production still needs pressure traction feedback and the
+accepted-state transaction below.
+
+Run the fixture with both implementations.
+
+```powershell
+cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests --parallel 6
+ctest --preset windows-release-cuda -R '^M5DryScenes\.' --output-on-failure
+```
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume
