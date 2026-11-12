@@ -13,6 +13,7 @@
 
 #include "../src/mac_pressure_3d_system.h"
 #include "absl/status/status.h"
+#include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
@@ -91,6 +92,13 @@ TEST(MacPressureExplicitGraph3D, BindsPhysicalInputsToCanonicalAdaptiveSubfaces)
       pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, 1.0, cells, subfaces).status().code(),
       absl::StatusCode::kInvalidArgument
   );
+}
+TEST(MacPressureExplicitGraph3D, CheckpointReplaysAcceptedAdaptivePressure) {
+  auto workspace = MacPressureWorkspace3D::Create(2, 14);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::QualifyAdaptivePressureCheckpoint([&](const auto& system) {
+    return workspace->ProjectPrepared(system);
+  });
 }
 TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
   const std::array cells{

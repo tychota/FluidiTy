@@ -55,6 +55,20 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
 }
 
+TEST(LiquidSubstep3D, UniformSchedulerRefusesAdaptiveCheckpointState) {
+  auto state = Initial(0);
+  auto leaves = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(1);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(6);
+  ASSERT_TRUE(leaves.ok()) << leaves.status();
+  ASSERT_TRUE(faces.ok()) << faces.status();
+  state.adaptive_cells = std::move(*leaves);
+  state.adaptive_faces = std::move(*faces);
+  ASSERT_TRUE(state.adaptive_cells.Resize(1).ok());
+  ASSERT_TRUE(state.adaptive_faces.Resize(6).ok());
+  ASSERT_TRUE(ValidateLiquidState3D(state).ok());
+  const auto result = LiquidSubstepScheduler3D::Create(state, Scene(), Options());
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kUnimplemented);
+}
 TEST(LiquidSubstep3D, OceanInletRetiresDryParticleAndDiscardsRejectedBirths) {
   auto seed = Initial(2);
   seed.particles[0].world_position = {2.25, 1.25, 2.25};

@@ -10,6 +10,7 @@
 #include <tuple>
 #include <vector>
 
+#include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
@@ -169,6 +170,14 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
   if (physical_result->measurement.kernel_ms >= maximum_measurement.kernel_ms) {
     maximum_measurement = physical_result->measurement;
   }
+  pressure_test::QualifyAdaptivePressureCheckpoint([](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+    auto projected = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+    if (!projected.ok()) {
+      return projected.status();
+    }
+    EXPECT_EQ(projected->measurement.compiled_architecture, 1200);
+    return std::move(projected->projection);
+  });
   Receipt("explicit_coarse_fine_pressure", maximum_measurement);
 }
 

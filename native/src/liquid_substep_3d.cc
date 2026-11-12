@@ -988,6 +988,9 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     LiquidStepOptions3D options,
     const LiquidSubstepBackend3D& backend
 ) {
+  if (initial.adaptive_cells.size() != 0) {
+    return absl::UnimplementedError("adaptive checkpoint requires a graded liquid scheduler backend");
+  }
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
