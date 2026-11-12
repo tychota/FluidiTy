@@ -374,13 +374,11 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   return result;
 }
 
-namespace {
-
-absl::StatusOr<GradedLiquidPressureInputs3D> ComposePressureInputs(
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields,
-    bool allow_zero_volume
+    GradedLiquidPressureDomain3D domain
 ) {
   const auto leaves = geometry.leaves();
   const auto subfaces = geometry.subfaces();
@@ -394,8 +392,8 @@ absl::StatusOr<GradedLiquidPressureInputs3D> ComposePressureInputs(
     const auto& measured = leaves[ordinal];
     const auto& leaf = topology.cells()[ordinal];
     const auto& fields = cell_fields[ordinal];
-    if (!allow_zero_volume && measured.fluid_volume_m3 == 0) {
-      return absl::FailedPreconditionError("Graded liquid pressure requires positive volume on every leaf");
+    if (measured.fluid_volume_m3 == 0 && (domain != GradedLiquidPressureDomain3D::kKnownAir || !measured.known_air)) {
+      return absl::FailedPreconditionError("Graded liquid pressure requires positive volume or certified air");
     }
     if (!MatchesPressureWidth(measured.world_lower_m, measured.world_upper_m, leaf.cell_width, -1)) {
       return absl::OutOfRangeError("Graded liquid world leaf extent differs from the pressure metric");
@@ -438,16 +436,6 @@ absl::StatusOr<GradedLiquidPressureInputs3D> ComposePressureInputs(
   return GradedLiquidPressureInputs3D{.cells = std::move(cells), .subfaces = std::move(faces)};
 }
 
-}  // namespace
-
-absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
-    const FrozenGradedPlanarLiquidGeometry3D& geometry,
-    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
-    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
-) {
-  return ComposePressureInputs(geometry, cell_fields, subface_fields, false);
-}
-
 absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
@@ -476,7 +464,8 @@ bool EmptyAirInventory(const LiquidRemapInventory3D& inventory) {
 
 bool EmptyDryFaceFields(const pressure_internal::AdaptiveMacPressureSubface3D& face) {
   return face.open_area_m2 == 0 && face.inverse_density_m3_per_kg == 0 && face.predicted_normal_velocity_m_per_s == 0
-      && face.prescribed_wall_flux_m3_per_s == 0 && face.pressure_jump_pa == 0 && !face.exterior_pressure_pa;
+      && face.prescribed_wall_flux_m3_per_s == 0 && face.pressure_jump_pa == 0 && !face.exterior_pressure_pa
+      && face.exterior_pressure_distance_m == 0;
 }
 
 }  // namespace
@@ -487,13 +476,28 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
 ) {
-  const auto leaves = geometry.leaves();
-  if (accepted_leaves.size() != leaves.size()) {
-    return absl::InvalidArgumentError("Accepted leaves must cover the frozen graded geometry");
-  }
-  const auto inputs = ComposePressureInputs(geometry, cell_fields, subface_fields, true);
+  const auto inputs = ComposeGradedPlanarLiquidPressureInputs3D(
+      geometry,
+      cell_fields,
+      subface_fields,
+      GradedLiquidPressureDomain3D::kKnownAir
+  );
   if (!inputs.ok()) {
     return inputs.status();
+  }
+  return PrepareGradedWetPressureSubsetFromInputs3D(geometry, accepted_leaves, inputs->cells, inputs->subfaces);
+}
+
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubsetFromInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
+    std::span<const MacPressureCell3D> cell_inputs,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subface_inputs
+) {
+  const auto leaves = geometry.leaves();
+  if (accepted_leaves.size() != leaves.size() || cell_inputs.size() != leaves.size()
+      || subface_inputs.size() != geometry.subfaces().size()) {
+    return absl::InvalidArgumentError("Sparse pressure inputs must cover the frozen graded geometry");
   }
   const auto& topology = geometry.topology();
   std::vector<std::size_t> leaf_ordinals;
@@ -501,13 +505,18 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
   std::vector<MacPressureCell3D> pressure_cells;
   for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
     const auto& accepted = accepted_leaves[ordinal];
-    const auto& cell = inputs->cells[ordinal];
+    const auto& cell = cell_inputs[ordinal];
     const auto& expected_key = topology.cells()[ordinal].key;
     const auto& accepted_corner = accepted.key.lower_corner;
     const auto& expected_corner = expected_key.lower_corner;
     if (accepted.key.width_exponent != expected_key.width_exponent || accepted_corner.x != expected_corner.x
         || accepted_corner.y != expected_corner.y || accepted_corner.z != expected_corner.z) {
       return absl::InvalidArgumentError("Accepted leaf key differs from the frozen graded geometry");
+    }
+    if (cell.cell_index.x != expected_corner.x || cell.cell_index.y != expected_corner.y
+        || cell.cell_index.z != expected_corner.z
+        || cell.fluid_volume != std::min(leaves[ordinal].fluid_volume_m3, topology.cells()[ordinal].cell_volume)) {
+      return absl::InvalidArgumentError("Sparse pressure cell differs from the composed frozen geometry");
     }
     if (cell.fluid_volume > 0) {
       if (accepted.occupancy != LiquidCellOccupancy3D::kLiquid) {
@@ -541,10 +550,10 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
   for (std::size_t ordinal = 0; ordinal < interior_faces.size(); ++ordinal) {
     const auto& face = interior_faces[ordinal];
     const std::size_t slot = ownership->interior_face_slots[ordinal];
-    const auto& fields = inputs->subfaces[slot];
+    const auto& fields = subface_inputs[slot];
     const auto tail = pressure_ordinals[face.tail_cell_ordinal];
     const auto head = pressure_ordinals[face.head_cell_ordinal];
-    if (fields.exterior_pressure_pa) {
+    if (fields.exterior_pressure_pa || fields.exterior_pressure_distance_m != 0) {
       return absl::InvalidArgumentError("Interior graded subface cannot carry exterior pressure data");
     }
     if (tail && head) {
@@ -581,7 +590,7 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
     }
   }
   for (const auto& face : ownership->exterior_faces) {
-    const auto& fields = inputs->subfaces[face.face_slot];
+    const auto& fields = subface_inputs[face.face_slot];
     const auto row = pressure_ordinals[face.cell_ordinal];
     if (!row) {
       if (geometry.subfaces()[face.face_slot].wet_open_area_m2 != 0 || !EmptyDryFaceFields(fields)) {
@@ -591,8 +600,8 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
       }
       continue;
     }
-    if (fields.pressure_jump_pa != 0) {
-      return absl::InvalidArgumentError("Exterior graded subface cannot carry an interior pressure jump");
+    if (fields.pressure_jump_pa != 0 || (!fields.exterior_pressure_pa && fields.exterior_pressure_distance_m != 0)) {
+      return absl::InvalidArgumentError("Exterior graded subface pressure data conflicts with its boundary type");
     }
     boundary.push_back({
         .face_slot = face.face_slot,

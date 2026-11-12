@@ -386,7 +386,8 @@ PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene
 inline absl::Status PopulateGradedPhysicalHalfspaceFixture3D(
     LiquidState3D& state,
     LiquidSceneInputs3D& scene,
-    TranslatingHalfspace3D wall
+    TranslatingHalfspace3D wall,
+    bool include_air = false
 ) {
   const auto authored = PopulateGradedBandFixture3D(state, scene);
   if (!authored.ok()) {
@@ -401,6 +402,55 @@ inline absl::Status PopulateGradedPhysicalHalfspaceFixture3D(
     inventory.mass_kg = particle.mass;
     inventory.reference_volume_m3 = particle.reference_volume;
     inventory.current_volume_m3 = particle.reference_volume;
+  }
+  if (include_air) {
+    constexpr AdaptiveMacCellKey3D kAir{{0, 2, 0}, 0};
+    std::vector<AdaptiveMacCellKey3D> keys;
+    for (const auto& cell : state.adaptive_cells.values()) {
+      keys.push_back(cell.key);
+    }
+    keys.push_back(kAir);
+    const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+    if (!topology.ok()) {
+      return topology.status();
+    }
+    const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+    if (!ownership.ok()) {
+      return ownership.status();
+    }
+    const std::size_t face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+    auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+    auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+    if (!cells.ok() || !faces.ok() || !cells->Resize(keys.size()).ok() || !faces->Resize(face_count).ok()) {
+      return absl::ResourceExhaustedError("Physical sparse replay fixture storage failed");
+    }
+    std::size_t air_leaf = 0;
+    std::size_t next_wet = 0;
+    for (std::size_t leaf = 0; leaf < keys.size(); ++leaf) {
+      const auto key = topology->cells()[leaf].key;
+      if (key.lower_corner.y == kAir.lower_corner.y) {
+        (*cells)[leaf] = {.key = key, .occupancy = LiquidCellOccupancy3D::kAir, .previous_pressure = 7};
+        air_leaf = leaf;
+      } else {
+        (*cells)[leaf] = state.adaptive_cells[next_wet++];
+      }
+    }
+    for (auto& face : faces->values()) {
+      face.validity = LiquidFaceValidity3D::kValid;
+    }
+    for (const auto& exterior : ownership->exterior_faces) {
+      if (exterior.cell_ordinal == air_leaf) {
+        (*faces)[exterior.face_slot].carrier_velocity = 9;
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < topology->interior_faces().size(); ++ordinal) {
+      const auto& face = topology->interior_faces()[ordinal];
+      if (face.tail_cell_ordinal == air_leaf || face.head_cell_ordinal == air_leaf) {
+        (*faces)[ownership->interior_face_slots[ordinal]].carrier_velocity = -9;
+      }
+    }
+    state.adaptive_cells = std::move(*cells);
+    state.adaptive_faces = std::move(*faces);
   }
   return ValidateLiquidState3D(state);
 }
