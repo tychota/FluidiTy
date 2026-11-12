@@ -36,6 +36,19 @@ Local receipts are `out/graded-rollback-cpu.log`, `out/graded-rollback-cuda.log`
 
 The complete CPU suite passed 677 CTests. The registered CPU and CUDA replay tests exercise the same hard interruption. Full CPU and serial CUDA suite receipts are in `out/graded-runtime-full-cpu-final.log` and `out/graded-runtime-full-cuda-final.log`. The CUDA suite initially used the earlier hydrostatic assertion tolerance. The rebuilt assertion passed on retest in `out/graded-hydrostatic-cuda-build.log`.
 
+## Public CLI motion capture
+
+The bounded CPU control runs the public `fluidity simulate` command on the stationary graded tank through frame two. The resolved scene authenticates a canonical frame-zero FLST supplied with `--initial-state`. The control rejects a same-length mutation before cache creation, verifies the frame-zero checkpoint against the input digest, and reads the published source through `EffectsSource3D`. Every decoded motion sample retains the adaptive leaf and subface records and matches the canonical digest of its accepted state. Complete and intermediate replay verify the published source while preserving cache bytes and modification times.
+
+The Windows Debug CPU receipt contains five leaves, 25 subfaces and five particles. Source frames zero, one and two contain one, three and three samples. The verbose CTest log records the input, frame-two state and source payload digests.
+
+Run from the repository root with a configured CPU build and the locked native tools on PATH.
+
+```powershell
+uv run --offline --project reference --locked --group native cmake --build out/build/graded-cli-cpu --target fluidity_simulate fluidity_simulate_fixture --parallel 2
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/graded-cli-cpu -V -R '^SimulateCli\.(public_interface|cpu_replay|cpu_effects)$'
+```
+
 ## Independent controls
 
 The independent 3D fixture and its 67 Python controls passed. The manufactured pressure benchmark met the same pressure and divergence gates on both layouts. The measured maximum divergence was `5.96e-6 s^-1` uniform and `8.90e-6 s^-1` adaptive against the common `2e-5 s^-1` limit. Debug CPU median projection time was 4.7751 ms uniform and 1.4664 ms adaptive. This benchmark measures the pressure solve on a sealed cube.

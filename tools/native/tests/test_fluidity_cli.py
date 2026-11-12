@@ -16,6 +16,64 @@ def run(executable, *arguments, cwd=None):
     )
 
 
+def graded_effects_case(executable, fixture, root):
+    scene, initial = make_scene(executable, fixture, root, "cpu", "graded-effects")
+    initial_path = Path(initial[1])
+    initial_digest = subprocess.check_output(
+        [fixture, "digest", initial_path], text=True, timeout=30
+    ).strip()
+    tampered = root / "tampered.flst"
+    tampered_bytes = bytearray(initial_path.read_bytes())
+    tampered_bytes[-1] ^= 1
+    tampered.write_bytes(tampered_bytes)
+    refused_cache = root / "refused graded cache"
+    refused = execute(
+        executable, "simulate", scene, "--cache", refused_cache, "--initial-state", tampered,
+        "--frame-end", 2, success=False,
+    )[-1]
+    assert refused["name"] == "DATA_LOSS" and refused["field"] == "initial-state", refused
+    assert not refused_cache.exists()
+
+    cache = root / "graded effects cache"
+    output = execute(executable, "simulate", scene, "--cache", cache, *initial, "--frame-end", 2, "--trace")
+    baked = output[-1]
+    assert baked["frame"] == 2 and baked["particle_count"] == baked["cell_count"] == 5
+    assert baked["face_count"] > 0
+    assert [item["frame"] for item in output if item["event"] == "frame"] == [0, 1, 2]
+
+    before = snapshot(cache)
+    checkpoint = json.loads(subprocess.check_output([fixture, "checkpoint", cache], text=True, timeout=30))
+    assert checkpoint["frame"] == 0 and checkpoint["state_digest"] == initial_digest
+    assert checkpoint["capacities"] == [5, 0, 5, baked["face_count"], 0]
+    traces = {
+        (item["frame"], item["substep"]): item["state_digest"]
+        for item in output if item["event"] == "trace"
+    }
+    traces[0, 0] = initial_digest
+
+    frames = json.loads(subprocess.check_output([fixture, "graded-source", cache], text=True, timeout=30))
+    assert [len(frame["samples"]) for frame in frames] == [1, 3, 3]
+    for ordinal, frame in enumerate(frames):
+        samples = frame["samples"]
+        assert (samples[-1]["frame"], samples[-1]["substep"]) == (ordinal, 0)
+        for sample in samples:
+            assert sample["adaptive_cell_count"] == sample["particle_count"] == 5
+            assert sample["adaptive_face_count"] == baked["face_count"]
+            assert sample["state_digest"] == traces[sample["frame"], sample["substep"]]
+
+    complete = execute(executable, "replay", cache, "--frame", 2, "--substep", 0)[-1]
+    assert complete["read_only"] and complete["state_digest"] == baked["state_digest"]
+    intermediate = execute(executable, "replay", cache, "--frame", 1, "--substep", 1)[-1]
+    assert intermediate["read_only"] and intermediate["state_digest"] == traces[1, 1]
+    assert snapshot(cache) == before, "graded replay changed parent cache or effects source files"
+    print(json.dumps({
+        "graded_initial_state_digest": initial_digest,
+        "graded_state_digest": baked["state_digest"],
+        "graded_source_payload_digests": [frame["payload_digest"] for frame in frames],
+        "graded_samples": [len(frame["samples"]) for frame in frames],
+    }, sort_keys=True))
+
+
 def main():
     fluidity, legacy, fixture = (Path(argument).resolve() for argument in sys.argv[1:])
     help_result = run(fluidity, "--help")
@@ -84,6 +142,7 @@ def main():
         replay = execute(fluidity, "replay", cache, "--frame", 1, "--substep", 0)[-1]
         assert replay["state_digest"] == baked["state_digest"]
         assert snapshot(cache) == before
+        graded_effects_case(fluidity, fixture, root)
 
     print("PASS public_interface")
     return 0

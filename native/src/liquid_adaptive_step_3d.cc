@@ -65,7 +65,7 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
       || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity || scene.cavity_provider.prepare
       || !scene.phase_pairs.empty() || !scene.constituent_materials.empty() || initial.next_cavity_id != 0
       || options.whitewater_capture || !scene.sources.empty() || !std::isinf(scene.bulk_modulus)
-      || scene.target_divergence != 0 || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
+      || scene.target_divergence != 0 || options.ocean_boundary.has_value()
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
   }
