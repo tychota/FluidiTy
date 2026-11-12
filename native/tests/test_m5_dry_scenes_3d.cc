@@ -9,6 +9,7 @@
 #include "../src/dry_solid_step_3d_internal.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/plastic_solid_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
 #include "fluidity/host/cuda_transfers_3d.h"
@@ -327,6 +328,68 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
+bool TestPlasticCheckpointHandoff() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidMaterial3D snow = fluidity::SnowParameters3D{2, 3, 0.025, 0.01, 4};
+  const DrySolidParticle3D accepted{
+      .world_position = {2.25, 2.25, 2.25},
+      .world_velocity = {0.1, 0, 0},
+      .velocity_slopes = {{0.1, -0.02, 0}, {0, 0.05, 0}, {0, 0, -0.1}},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  const auto same_vector = [](fluidity::Vec3 first, fluidity::Vec3 second) {
+    return first.x == second.x && first.y == second.y && first.z == second.z;
+  };
+  const auto same_matrix = [same_vector](Mat3 first, Mat3 second) {
+    return same_vector(first.x_row, second.x_row) && same_vector(first.y_row, second.y_row)
+        && same_vector(first.z_row, second.z_row);
+  };
+  const auto same_particle = [same_vector,
+                              same_matrix](const DrySolidParticle3D& first, const DrySolidParticle3D& second) {
+    return same_vector(first.world_position, second.world_position)
+        && same_vector(first.world_velocity, second.world_velocity)
+        && same_matrix(first.velocity_slopes, second.velocity_slopes) && first.mass == second.mass
+        && first.reference_volume == second.reference_volume
+        && same_matrix(first.elastic_deformation, second.elastic_deformation)
+        && first.log_plastic_jacobian == second.log_plastic_jacobian;
+  };
+  const auto captured = fluidity::CapturePlasticSolidCheckpointParticle3D(7, 9, 11, snow, accepted);
+  if (!captured.ok()) {
+    return false;
+  }
+  auto restored = fluidity::RestoreDrySolidCheckpointParticles3D({&*captured, 1}, 9, 11, snow);
+  if (!restored.ok() || restored->size() != 1 || !same_particle(accepted, restored->front())) {
+    return false;
+  }
+  auto corrupt = *captured;
+  corrupt.log_plastic_jacobian = 1000;
+  if (fluidity::RestoreDrySolidCheckpointParticles3D({&corrupt, 1}, 9, 11, snow).ok()
+      || fluidity::RestoreDrySolidCheckpointParticles3D({&*captured, 1}, 9, 12, snow).ok()) {
+    return false;
+  }
+  const std::array duplicate{*captured, *captured};
+  if (fluidity::RestoreDrySolidCheckpointParticles3D(duplicate, 9, 11, snow).ok()) {
+    return false;
+  }
+  auto uninterrupted = accepted;
+  const DrySolidStep3D step{.duration = 0.01, .acoustic_cfl = 0.25};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto first = fluidity::CudaAdvanceDrySolid3D(*grid, snow, step, {0x1p-42, 0x1p-38, 128}, {&uninterrupted, 1});
+  const auto second = fluidity::CudaAdvanceDrySolid3D(*grid, snow, step, {0x1p-42, 0x1p-38, 128}, *restored);
+#else
+  const auto first = fluidity::AdvanceDrySolid3D(*grid, snow, step, {&uninterrupted, 1});
+  const auto second = fluidity::AdvanceDrySolid3D(*grid, snow, step, *restored);
+#endif
+  return first.ok() && second.ok() && same_particle(uninterrupted, restored->front());
+}
+
 bool TestWallImpulseBudget() {
   constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
@@ -612,9 +675,9 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
-      || !TestStoredResidualMomentum() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
-      || !TestRejectsInadmissibleInitialState()) {
+  if (!TestPlasticCheckpointHandoff() || !TestSandSurfaceFit() || !TestWallImpulseBudget()
+      || !TestStoredVelocityResidual() || !TestStoredResidualMomentum() || !TestUncutStressWork()
+      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

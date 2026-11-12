@@ -16,6 +16,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
 | Isolated face body capacity | Pass | Four sorted distinct body records, accumulation for an existing body at capacity, fifth-body rejection, and range-failure rollback on CPU and CUDA. The host error is ResourceExhausted / E-CONTACT-BODY-CAPACITY. |
+| Plastic checkpoint handoff | Pass for the typed dry payload | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. Every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -550,6 +551,17 @@ M6 commit 11bd9c6 adds an isolated CUDA piston reaction output, reduced
 in particle order and published transactionally with the particle batch.
 Its SM120 fixture matches the CPU impulse and checks rejection rollback.
 Accepted dynamic-body feedback still needs to consume that CUDA output.
+
+M5 provides a typed plastic checkpoint record with stable nonzero particle,
+body and material IDs, the MAC transfer state, reference volume, accepted
+elastic map and log plastic Jacobian. The dry adapter restores records in
+strict particle ID order against a resolved body/material binding. It
+uses the same admissibility and acoustic-state check as the dry step.
+The next dry attempt bins from the accepted world position. The focused
+test restores a compressed snow particle with nonzero APIC fit, advances
+one step, and compares all state fields exactly on each backend.
+This is an in-memory handoff. The FLSI schema, mixed serialization and
+authored snow–water restart still need integration.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same

@@ -109,6 +109,21 @@ absl::StatusOr<LiquidWallContactResult3D> SweepDryWalls(
 
 }  // namespace
 
+absl::StatusOr<internal::AcceptedDrySolid3D>
+internal::EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const DrySolidMaterial3D& material) {
+  if (!solid_detail::PositiveFinite(particle.mass) || !solid_detail::PositiveFinite(particle.reference_volume)) {
+    return absl::InvalidArgumentError("invalid dry particle mass or volume");
+  }
+  AcceptedDrySolid3D accepted{};
+  const double reference_density = particle.mass / particle.reference_volume;
+  if (!ReturnState(particle.elastic_deformation, particle.log_plastic_jacobian, material, accepted.state)
+      || !MatchesAcceptedState(particle, accepted.state)
+      || !AcousticBound(accepted.state, reference_density, material, accepted.wave_speed_squared)) {
+    return absl::FailedPreconditionError("inadmissible dry material state");
+  }
+  return accepted;
+}
+
 absl::Status internal::AccumulateDrySolidStress3D(
     const SparseMacGrid3D& grid,
     Vec3 world_position,
@@ -176,24 +191,19 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<double> face_force(grid.face_count());
   double minimum_particle_mass = std::numeric_limits<double>::infinity();
   for (const auto& particle : particles) {
-    if (!solid_detail::PositiveFinite(particle.mass) || !solid_detail::PositiveFinite(particle.reference_volume)) {
-      return absl::InvalidArgumentError("invalid dry particle mass or volume");
+    const auto accepted = internal::EvaluateAcceptedDrySolid3D(particle, material);
+    if (!accepted.ok()) {
+      return accepted.status();
     }
     minimum_particle_mass = std::min(minimum_particle_mass, particle.mass);
-    SolidDeformationState3D accepted{};
-    double speed_squared = 0;
-    const double reference_density = particle.mass / particle.reference_volume;
-    if (!ReturnState(particle.elastic_deformation, particle.log_plastic_jacobian, material, accepted)
-        || !MatchesAcceptedState(particle, accepted)
-        || !AcousticBound(accepted, reference_density, material, speed_squared)
-        || settings.duration * std::sqrt(speed_squared) > settings.acoustic_cfl * cell_width) {
-      return absl::FailedPreconditionError("inadmissible dry state or acoustic step bound");
+    if (settings.duration * std::sqrt(accepted->wave_speed_squared) > settings.acoustic_cfl * cell_width) {
+      return absl::FailedPreconditionError("dry acoustic step bound");
     }
     const auto stress = internal::AccumulateDrySolidStress3D(
         grid,
         particle.world_position,
         particle.reference_volume,
-        accepted.kirchhoff_stress,
+        accepted->state.kirchhoff_stress,
         face_force
     );
     if (!stress.ok()) {
