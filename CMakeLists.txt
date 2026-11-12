@@ -302,6 +302,7 @@ if(BUILD_TESTING)
   add_executable(fluidity_native_tests
     native/tests/test_surface_settings_3d.cc
     native/tests/test_surface_stage_3d.cc
+    native/tests/test_live_graded_mesh_3d.cc
     native/tests/test_surface_component_lineage_3d.cc
     native/tests/test_surface_material_components_3d.cc
     native/tests/test_whitewater_sphere_source_3d.cc
@@ -516,7 +517,12 @@ if(BUILD_TESTING)
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
     # Keep bounded adaptivity parity separate from the production CUDA validation inventory.
-    add_executable(fluidity_cuda_coarse_fine_tests native/tests/test_cuda_coarse_fine_transfer_3d.cc)
+    add_executable(fluidity_cuda_coarse_fine_tests
+      native/tests/test_cuda_coarse_fine_transfer_3d.cc
+      native/tests/test_live_graded_mesh_3d.cc)
+    target_compile_definitions(fluidity_cuda_coarse_fine_tests PRIVATE
+      FLUIDITY_LIVE_GRADED_MESH_CUDA
+      FLUIDITY_CACHE_SCRATCH_PATH="${CMAKE_CURRENT_BINARY_DIR}/cache-test-scratch")
     target_include_directories(fluidity_cuda_coarse_fine_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/cuda")
     target_link_libraries(fluidity_cuda_coarse_fine_tests
       PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)
