@@ -111,6 +111,7 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
   native/src/graded_liquid_boundary_geometry_3d.cc
+  native/src/graded_liquid_wet_transition_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
   native/src/mac_pressure_3d_bounded_hierarchy.cc
