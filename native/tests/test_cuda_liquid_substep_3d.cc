@@ -1161,6 +1161,37 @@ void CheckRejectedFieldBatch() {
   EXPECT_EQ(DeviceBytes(*after), bytes);
 }
 
+TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
+  auto initial = Initial();
+  initial.particles[0].world_position = {2.5, 2.5, 2.5};
+  initial.particles[1].world_position = {3.5, 2.5, 2.5};
+  initial.particles[0].world_velocity = {0.0, 0.0, 0.125};
+  initial.particles[1].world_velocity = {0.0, 0.0, -0.125};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  scene.world_acceleration = {};
+  scene.dynamic_viscosity = 100.0;
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto before = backend->usage();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+  const auto cpu_status = cpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  ExpectState(cpu->committed(), gpu->committed());
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  EXPECT_LT(std::abs(gpu->committed().particles[0].world_velocity.z), 0.125);
+}
+
 TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   cudaDeviceProp properties{};

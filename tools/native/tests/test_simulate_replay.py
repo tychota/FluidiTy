@@ -481,18 +481,17 @@ def verify_cuda_compatibility_refusals(executable, cache, directory):
         assert {path.relative_to(candidate) for path in candidate.rglob("*") if path.is_dir()} == before_directories
 
 
-def case_cpu_execution(executable, fixture, directory, cuda):
-    execution_case(executable, fixture, directory, "cpu")
+def viscous_execution_case(executable, fixture, directory, backend):
     # Both packets start from the same shear state in an aligned full-cell tank.
     velocity = {}
     for mode in ("viscous-control", "viscous"):
         work = directory / mode
         work.mkdir()
-        scene, initial = make_scene(executable, fixture, work, "cpu", mode)
+        scene, initial = make_scene(executable, fixture, work, backend, mode)
         cache = work / "cache"
-        output = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", "cpu",
+        output = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
                          "--cache", cache, *initial, "--frame-end", 1, "--trace")
-        assert output[-1]["frame"] == 1 and output[-1]["backend"] == "cpu"
+        assert output[-1]["frame"] == 1 and output[-1]["backend"] == backend
         measured = [event["accepted_measurement"] for event in output if event["event"] == "trace"]
         assert measured
         residual_key = "viscous_max_momentum_residual_kg_m_per_s"
@@ -508,12 +507,18 @@ def case_cpu_execution(executable, fixture, directory, cuda):
 
 
 
+def case_cpu_execution(executable, fixture, directory, cuda):
+    execution_case(executable, fixture, directory, "cpu")
+    viscous_execution_case(executable, fixture, directory, "cpu")
+
+
 def case_cpu_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cpu")
 
 
 def case_cuda_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cuda")
+    viscous_execution_case(executable, fixture, directory, "cuda")
 
 
 def case_cuda_replay(executable, fixture, directory, cuda):

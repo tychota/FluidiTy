@@ -4,6 +4,8 @@
 #include "../src/mac_viscous_pressure_3d.h"
 #include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/cuda_viscosity.h"
+#include "liquid_arena_dispatch_3d.h"
+#include "liquid_pressure_stage_3d.h"
 #include "operator_runtime.h"
 #include "viscosity_velocity_block_3d.cuh"
 
@@ -15,6 +17,20 @@ using cuda_internal::ViscousVelocityError3D;
 using cuda_internal::ViscousVelocityFace3D;
 using cuda_internal::ViscousVelocityState3D;
 using cuda_internal::ViscousVelocityTerm3D;
+
+absl::Status CheckVelocityState(const ViscousVelocityState3D& state) {
+  switch (state.error) {
+    case ViscousVelocityError3D::kNone:
+      return absl::OkStatus();
+    case ViscousVelocityError3D::kRange:
+      return absl::OutOfRangeError("CUDA velocity-block arithmetic is unrepresentable");
+    case ViscousVelocityError3D::kCurvature:
+      return absl::AbortedError("CUDA velocity-block curvature is not finite and positive");
+    case ViscousVelocityError3D::kExhausted:
+      return absl::AbortedError("CUDA velocity-block iteration budget exhausted");
+  }
+  return absl::InternalError("invalid CUDA velocity-block status");
+}
 
 absl::Status Execute(
     std::span<const ViscousVelocityFace3D> faces,
@@ -72,15 +88,8 @@ absl::Status Execute(
   if (!measurement.ok()) {
     return measurement.status();
   }
-  switch (state.error) {
-    case ViscousVelocityError3D::kNone:
-      break;
-    case ViscousVelocityError3D::kRange:
-      return absl::OutOfRangeError("CUDA velocity-block arithmetic is unrepresentable");
-    case ViscousVelocityError3D::kCurvature:
-      return absl::AbortedError("CUDA velocity-block curvature is not finite and positive");
-    case ViscousVelocityError3D::kExhausted:
-      return absl::AbortedError("CUDA velocity-block iteration budget exhausted");
+  if (auto status = CheckVelocityState(state); !status.ok()) {
+    return status;
   }
   if (auto status = runtime.Download(device.velocity, std::span(output.solution.velocity)); !status.ok()) {
     return status;
@@ -89,6 +98,114 @@ absl::Status Execute(
   output.solution.max_residual = state.max_residual;
   output.measurement = *measurement;
   return absl::OkStatus();
+}
+
+absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveArenaVelocityBlock(
+    CudaLiquidArena3D& arena,
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  using cuda_internal::CheckedLiquidRange3D;
+  using cuda_internal::CopyLiquidRange3D;
+  using cuda_internal::FinishLiquidDispatch3D;
+  using Range = CudaLiquidRange3D;
+  const auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  const std::size_t face_count = rhs.size();
+  std::size_t term_count = 0;
+  for (const auto& row : prepared->weighted_rows) {
+    term_count += row.term_count;
+  }
+  // The inviscid and viscous pressure paths run exclusively. Borrow their
+  // common pressure ranges before touching pinned staging or the device.
+  auto faces = CheckedLiquidRange3D<ViscousVelocityFace3D>(arena, Range::kPressureLinks, face_count);
+  auto terms = CheckedLiquidRange3D<ViscousVelocityTerm3D>(arena, Range::kPressureCoefficients, term_count);
+  auto offsets = CheckedLiquidRange3D<std::size_t>(arena, Range::kPressureIndices, prepared->weighted_rows.size() + 1);
+  auto scratch = CheckedLiquidRange3D<double>(arena, Range::kPressureCoarseScratch, 5 * face_count);
+  auto state = CheckedLiquidRange3D<ViscousVelocityState3D>(arena, Range::kPressureState, 1);
+  for (const auto& status : {faces.status(), terms.status(), offsets.status(), scratch.status(), state.status()}) {
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (std::size_t face = 0; face < face_count; ++face) {
+    faces->pinned[face] = {
+        .inertia = inputs.face_inertias[face],
+        .diagonal = prepared->diagonal[face],
+        .rhs = rhs[face],
+    };
+  }
+  std::size_t term_index = 0;
+  offsets->pinned[0] = 0;
+  for (std::size_t row_index = 0; row_index < prepared->weighted_rows.size(); ++row_index) {
+    const auto& row = prepared->weighted_rows[row_index];
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      terms->pinned[term_index++] = {
+          .face_slot = term.face_slot,
+          .weighted_coefficient = term.coefficient,
+      };
+    }
+    offsets->pinned[row_index + 1] = term_index;
+  }
+  const ViscousVelocityDevice3D device{
+      .faces = faces->device,
+      .terms = terms->device,
+      .row_offsets = offsets->device,
+      .face_count = face_count,
+      .row_count = prepared->weighted_rows.size(),
+      .max_iterations = options.max_iterations,
+      .max_rhs = prepared->max_rhs,
+      .tolerance = options.relative_tolerance * prepared->max_rhs,
+      .velocity = scratch->device,
+      .residual = scratch->device + face_count,
+      .preconditioned = scratch->device + 2 * face_count,
+      .direction = scratch->device + 3 * face_count,
+      .applied = scratch->device + 4 * face_count,
+      .state = state->device,
+  };
+  if (auto status = CopyLiquidRange3D(arena, *faces, true); !status.ok()) {
+    return status;
+  }
+  if (auto status = CopyLiquidRange3D(arena, *terms, true); !status.ok()) {
+    return status;
+  }
+  if (auto status = CopyLiquidRange3D(arena, *offsets, true); !status.ok()) {
+    return status;
+  }
+  if (auto status = arena.BeginMeasuredDispatch(); !status.ok()) {
+    return status;
+  }
+  if (auto status = arena.RecordRuntimeResult(
+          cuda_internal::LaunchViscousVelocityBlock3D(device, static_cast<cudaStream_t>(arena.stream()))
+      );
+      !status.ok()) {
+    return status;
+  }
+  if (auto status = CopyLiquidRange3D(arena, *state, false); !status.ok()) {
+    return status;
+  }
+  const cuda_internal::LiquidTypedRange3D<double> velocity{scratch->device, scratch->pinned.first(face_count)};
+  if (auto status = CopyLiquidRange3D(arena, velocity, false); !status.ok()) {
+    return status;
+  }
+  if (auto status = FinishLiquidDispatch3D(arena); !status.ok()) {
+    return status;
+  }
+  const auto& report = state->pinned.front();
+  if (report.compiled_architecture != 1200) {
+    return absl::FailedPreconditionError("CUDA viscous arena requires an SM120 image");
+  }
+  if (auto status = CheckVelocityState(report); !status.ok()) {
+    return status;
+  }
+  return MacViscousVelocityBlockSolution3D{
+      .velocity = std::vector<double>(velocity.pinned.begin(), velocity.pinned.end()),
+      .iterations = report.iterations,
+      .max_residual = report.max_residual,
+  };
 }
 
 }  // namespace
@@ -160,6 +277,24 @@ absl::StatusOr<MacViscousPressureProjection3D> CudaProjectMacViscousPressure3D(
           return result.status();
         }
         return std::move(result->solution);
+      }
+  );
+}
+
+absl::StatusOr<MacViscousPressureProjection3D> cuda_internal::ProjectArenaViscousPressure3D(
+    CudaLiquidArena3D& arena,
+    const MacPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options
+) {
+  return pressure_internal::ProjectMacViscousPressureWithVelocitySolver3D(
+      inputs,
+      strain_rows,
+      options,
+      [&](const MacViscousVelocityBlockInputs3D& block,
+          std::span<const double> rhs,
+          MacViscousVelocityBlockOptions3D controls) {
+        return SolveArenaVelocityBlock(arena, block, rhs, controls);
       }
   );
 }
