@@ -178,7 +178,8 @@ absl::StatusOr<FrozenPlanarSnowPressureCell3D> FreezePlanarSnowPressureCell3D(
 // Advances volume from the same
 // regular-cell field. On success both spans receive the candidate state;
 // otherwise neither span changes. Liquid retains its incoming affine enable
-// flag. With a snow layer material, all snow
+// flag. A supplied snow binding must match every particle's body and
+// material IDs and contain snow parameters. With that binding, all snow
 // particles drift and the affine change of normal thickness drives a
 // constitutive return. Pressure contributors must be on the front layer.
 // The caller owns rebinning and acceptance.
@@ -191,7 +192,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     double maximum_path_length,
     MixedPressureProjector3D project,
     std::optional<double> wall_plane_coordinate = std::nullopt,
-    std::optional<SnowParameters3D> snow_layer_material = std::nullopt
+    std::optional<PlasticSolidCheckpointBinding3D> snow_layer_binding = std::nullopt
 );
 
 struct PlanarSnowPressureAttempt3D {
@@ -216,7 +217,7 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
     double maximum_path_length,
     MixedPressureProjector3D project,
     std::optional<double> wall_plane_coordinate = std::nullopt,
-    std::optional<SnowParameters3D> snow_layer_material = std::nullopt
+    std::optional<PlasticSolidCheckpointBinding3D> snow_layer_binding = std::nullopt
 );
 
 struct PlanarSnowPressureFrameSettings3D {
@@ -229,7 +230,8 @@ struct PlanarSnowPressureFrameSettings3D {
   double target_time;  // Absolute frame end in seconds.
   double nominal_step_duration;  // Upper bound in seconds.
   double maximum_path_length;  // Per-step limit in meters.
-  std::optional<SnowParameters3D> snow_layer_material;  // Enables affine normal strain from snow layer motion.
+  std::optional<PlasticSolidCheckpointBinding3D>
+      snow_layer_binding;  // Resolved body and material for affine normal strain.
 };
 
 struct PlanarSnowPressureFrame3D {

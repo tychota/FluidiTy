@@ -1500,6 +1500,20 @@ payload agreement. The liquid-only CLI rejects model 2 before creating a
 cache. The cache fixture feeds the decoded bindings into shared FLSI
 encode and decode and recovers the snow particle's plastic Jacobian.
 
+The planar compaction fixture now passes the decoded model 2 snow binding
+into the pressure frame and uses the same binding for FLSI save and resume.
+The driver validates the particle body and material IDs before projecting.
+A material ID mismatch rejects without advancing either input state.
+Native and CUDA both reproduce the pressure and compaction oracle and the
+byte-identical second-frame replay.
+
+M6's active rotating-box branch at 2ab2983 includes bd06a0f, which stages
+reciprocal CPU particle contact in the production liquid scheduler's
+oriented-box attempt. That accepted-step boundary is relevant to M5's
+scheduler integration. The box-specific impulse update has no plastic
+particle or snow constitutive path. The M5 binding change uses the shared
+FLSI interface and leaves that branch's scheduler files untouched.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

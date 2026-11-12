@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/mixed_contact_3d.h"
 #include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
@@ -662,7 +663,41 @@ bool TestPlanarMixedContactDetection() {
   deformation_settings.target_time = 0.0625;
   deformation_settings.nominal_step_duration = 0.0625;
   deformation_settings.maximum_path_length = 0.25;
-  deformation_settings.snow_layer_material = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
+  const std::array scene_bindings{
+      fluidity::PlasticSolidCheckpointBinding3D{
+          snow.body_id,
+          snow.material_id,
+          fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4}
+      },
+  };
+  const auto scene_bytes = fluidity::EncodeLiquidResolvedScene3D({
+      .geometry = grid->geometry(),
+      .model_version = fluidity::kPlasticBodyResolvedModel3D,
+      .plastic_bodies = scene_bindings,
+  });
+  if (!scene_bytes.ok()) {
+    return false;
+  }
+  const auto resolved_scene = fluidity::DecodeLiquidResolvedScene3D(scene_bytes->values());
+  if (!resolved_scene.ok() || resolved_scene->plastic_bodies.size() != 1) {
+    return false;
+  }
+  const auto checkpoint_bindings = resolved_scene->View().plastic_bodies;
+  deformation_settings.snow_layer_binding = checkpoint_bindings.front();
+  auto wrong_material_settings = deformation_settings;
+  ++wrong_material_settings.snow_layer_binding->material_id;
+  const auto wrong_material = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      single_traction,
+      wrong_material_settings,
+      project
+  );
+  if (wrong_material.status().code() != absl::StatusCode::kInvalidArgument || accepted_liquid.clock.time != 0
+      || deforming_snow[0].log_plastic_jacobian != 0) {
+    return false;
+  }
   const auto compressed_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
       accepted_liquid,
@@ -705,7 +740,7 @@ bool TestPlanarMixedContactDetection() {
   }
   const std::array rear_traction{fluidity::SnowPressureContributor3D{4, 1}};
   auto stale_wall_settings = deformation_settings;
-  stale_wall_settings.snow_layer_material.reset();
+  stale_wall_settings.snow_layer_binding.reset();
   auto stationary_snow = deforming_snow;
   for (auto& particle : stationary_snow) {
     particle.transfer.particle_velocity = {};
@@ -773,7 +808,7 @@ bool TestPlanarMixedContactDetection() {
       return false;
     }
   }
-  high_wall_settings.snow_layer_material.reset();
+  high_wall_settings.snow_layer_binding.reset();
   const auto rejected_high_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
       accepted_liquid,
@@ -822,10 +857,6 @@ bool TestPlanarMixedContactDetection() {
     return false;
   }
 
-  const fluidity::DrySolidMaterial3D checkpoint_snow = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
-  const std::array checkpoint_bindings{
-      fluidity::PlasticSolidCheckpointBinding3D{snow.body_id, snow.material_id, checkpoint_snow},
-  };
   const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved) {
     const fluidity::SolidInteractionCheckpoint3D solid{
         .accepted_step = saved.liquid.clock.accepted_step_ordinal,
