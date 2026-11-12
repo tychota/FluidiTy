@@ -1833,6 +1833,9 @@ The mixed scheduler still needs particle-derived samples, composition
 with the tank and moving obstacle, and reciprocal traction scatter
 using the same geometry.
 
-The sampled geometry and split-cell checks are available for independent
-review in [draft PR 98](https://github.com/tychota/FluidiTy/pull/98),
-based on upstream `b56e06e`.
+The sampled geometry and split-cell checks landed in
+[PR 98](https://github.com/tychota/FluidiTy/pull/98) at `39f9de7`.
+The standalone clean Windows Release CPU build passed all 74 geometry
+and workspace tests. The clean milestone build with upstream adaptive
+pressure and cache changes passed 161 selected native M5, geometry,
+workspace, cache, schema, and CLI tests.
