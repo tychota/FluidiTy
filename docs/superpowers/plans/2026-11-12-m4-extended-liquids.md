@@ -559,3 +559,11 @@ New-Item -ItemType Directory $run
 ```
 
 The bridge has no artist-facing attachment operator for this carrier yet. The fixture validates saved node bindings and evaluated geometry attributes. Rendered shader response, a shared water–oil interface, and the three-source workflow remain open.
+
+## Shared two-phase lattice partition receipt
+
+The two-phase extractor partitions a common piecewise-linear exterior into A-to-air and B-to-air triangles. It clips one A-to-B sheet to the liquid and uses the same indexed seam on all incident sheets. The edge and face keys use the existing six-tetrahedron lattice subdivision. Coincident plane segments and degenerate geometry return errors. The manufactured oblique cut of a sphere closed both phase volumes with opposite uses of the same interface triangles. Each volume had Euler characteristic two and zero open edges, nonmanifold edges or vertices, winding defects, degenerate faces or self-intersections. Their summed volume matched the unpartitioned exterior to 1e-12 m³. The fixture also checked the vertex budget.
+
+Ten CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceMesh3D|EvaluatesAndCachesMixedSurfaceFractions'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-phase-partition. The clean Release build from the preceding candidate passed 23 focused real-device CUDA checks in out/m4-usd-clean-release-cuda-tests.log.
+
+Production integration must sample the existing particle phase field, preserve seam incidence through tracking and volume correction, qualify both closed phases after correction, and carry the shared faces and phase pair through the cache and renderer. This receipt covers the raw lattice partition.

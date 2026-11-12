@@ -34,6 +34,24 @@ bool Finite(Vec3 a) {
   return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
 }
 
+constexpr std::array<std::array<std::size_t, 3>, 8> kCubeCorners{{
+    {0, 0, 0},
+    {1, 0, 0},
+    {0, 1, 0},
+    {1, 1, 0},
+    {0, 0, 1},
+    {1, 0, 1},
+    {0, 1, 1},
+    {1, 1, 1},
+}};
+constexpr std::array<std::array<int, 4>, 6> kCubeTetrahedra{{
+    {0, 1, 3, 7},
+    {0, 3, 2, 7},
+    {0, 2, 6, 7},
+    {0, 6, 4, 7},
+    {0, 4, 5, 7},
+    {0, 5, 1, 7},
+}};
 struct DisjointSet {
   explicit DisjointSet(std::size_t n) : parent(n) {
     std::iota(parent.begin(), parent.end(), 0);
@@ -158,24 +176,6 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
       }
     }
   }
-  constexpr std::array<std::array<std::size_t, 3>, 8> corners{{
-      {0, 0, 0},
-      {1, 0, 0},
-      {0, 1, 0},
-      {1, 1, 0},
-      {0, 0, 1},
-      {1, 0, 1},
-      {0, 1, 1},
-      {1, 1, 1},
-  }};
-  constexpr std::array<std::array<int, 4>, 6> tetrahedra{{
-      {0, 1, 3, 7},
-      {0, 3, 2, 7},
-      {0, 2, 6, 7},
-      {0, 6, 4, 7},
-      {0, 4, 5, 7},
-      {0, 5, 1, 7},
-  }};
   SurfaceMesh3D mesh;
   std::vector<Vec3> field_normals;
   std::map<std::pair<std::size_t, std::size_t>, std::uint32_t> edges;
@@ -186,8 +186,8 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
         std::array<double, 8> values;
         std::array<Vec3, 8> positions;
         std::size_t liquid_count = 0;
-        for (std::size_t corner = 0; corner < corners.size(); ++corner) {
-          const auto offset = corners[corner];
+        for (std::size_t corner = 0; corner < kCubeCorners.size(); ++corner) {
+          const auto offset = kCubeCorners[corner];
           nodes[corner] = node_id(x + offset[0], y + offset[1], z + offset[2]);
           values[corner] = lattice.values[nodes[corner]];
           // Roundoff on either side of a zero node must use the same tie rule;
@@ -230,7 +230,11 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
           edges[key] = index;
           mesh.vertices.push_back({.id = mesh.next_id++, .position = position});
           const auto gradient_at = [&](int corner) {
-            const std::array node{x + corners[corner][0], y + corners[corner][1], z + corners[corner][2]};
+            const std::array node{
+                x + kCubeCorners[corner][0],
+                y + kCubeCorners[corner][1],
+                z + kCubeCorners[corner][2]
+            };
             std::array<double, 3> gradient{};
             for (std::size_t axis = 0; axis < 3; ++axis) {
               auto lower = node;
@@ -254,7 +258,7 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
           );
           return index;
         };
-        for (const auto& tetrahedron : tetrahedra) {
+        for (const auto& tetrahedron : kCubeTetrahedra) {
           std::vector<int> liquid;
           std::vector<int> air;
           for (const int node : tetrahedron) {
@@ -321,6 +325,241 @@ absl::StatusOr<SurfaceMesh3D> ExtractSurfaceMesh3D(const SurfaceLattice3D& latti
   return mesh;
 }
 
+absl::StatusOr<SurfacePartition3D> ExtractSurfacePartition3D(
+    const SurfaceLattice3D& exterior,
+    std::span<const double> phase_distance,
+    std::size_t maximum_vertices
+) {
+  const auto [nx, ny, nz] = exterior.extent;
+  if (!Finite(exterior.origin) || !std::isfinite(exterior.spacing) || exterior.spacing <= 0 || nx < 2 || ny < 2
+      || nz < 2 || maximum_vertices > UINT32_MAX || nx > exterior.values.size() / ny / nz
+      || nx * ny * nz != exterior.values.size() || phase_distance.size() != exterior.values.size()) {
+    return absl::InvalidArgumentError("invalid phase partition lattice");
+  }
+  const auto node_id = [=](std::size_t x, std::size_t y, std::size_t z) {
+    return (x * ny + y) * nz + z;
+  };
+  for (std::size_t x = 0; x < nx; ++x) {
+    for (std::size_t y = 0; y < ny; ++y) {
+      for (std::size_t z = 0; z < nz; ++z) {
+        const auto node = node_id(x, y, z);
+        if (!std::isfinite(exterior.values[node]) || !std::isfinite(phase_distance[node])) {
+          return absl::InvalidArgumentError("phase partition lattice is nonfinite");
+        }
+        const bool boundary = x == 0 || y == 0 || z == 0 || x + 1 == nx || y + 1 == ny || z + 1 == nz;
+        if (boundary && exterior.values[node] <= 0) {
+          return absl::FailedPreconditionError("phase partition reaches the lattice boundary");
+        }
+      }
+    }
+  }
+  const double tie = exterior.spacing * 1e-8;
+  if (tie <= 0) {
+    return absl::OutOfRangeError("phase partition tie offset is unrepresentable");
+  }
+  const auto crossing_fraction = [](double negative_or_positive, double opposite) {
+    const double first = std::abs(negative_or_positive);
+    const double second = std::abs(opposite);
+    if (first > second) {
+      return 1.0 / (1.0 + second / first);
+    }
+    const double ratio = first / second;
+    return ratio / (1.0 + ratio);
+  };
+  SurfacePartition3D partition;
+  // A single-plane crossing belongs to a lattice edge; a seam crossing
+  // belongs to the triangle supporting both planes. Neighboring tetrahedra
+  // and all incident sheets therefore request the same topological key.
+  using CrossingKey = std::pair<int, std::array<std::size_t, 3>>;
+  std::map<CrossingKey, std::uint32_t> crossing_indices;
+  struct Crossing {
+    Vec3 position;
+    unsigned support;
+    double clip_value;
+    int plane;
+  };
+  for (std::size_t x = 0; x + 1 < nx; ++x) {
+    for (std::size_t y = 0; y + 1 < ny; ++y) {
+      for (std::size_t z = 0; z + 1 < nz; ++z) {
+        std::array<std::size_t, 8> nodes;
+        std::array<Vec3, 8> positions;
+        std::array<std::array<double, 8>, 2> values;
+        bool has_liquid = false;
+        for (std::size_t corner = 0; corner < kCubeCorners.size(); ++corner) {
+          const auto offset = kCubeCorners[corner];
+          const auto node = node_id(x + offset[0], y + offset[1], z + offset[2]);
+          nodes[corner] = node;
+          positions[corner] = {
+              exterior.origin.x + (x + offset[0]) * exterior.spacing,
+              exterior.origin.y + (y + offset[1]) * exterior.spacing,
+              exterior.origin.z + (z + offset[2]) * exterior.spacing,
+          };
+          values[0][corner] = exterior.values[node];
+          values[1][corner] = phase_distance[node];
+          for (auto& plane : values) {
+            if (std::abs(plane[corner]) <= tie) {
+              plane[corner] = tie;
+            }
+          }
+          has_liquid |= values[0][corner] < 0;
+        }
+        if (!has_liquid) {
+          continue;
+        }
+        const auto register_crossing = [&](const Crossing& crossing) -> absl::StatusOr<std::uint32_t> {
+          std::array<std::size_t, 3> support{SIZE_MAX, SIZE_MAX, SIZE_MAX};
+          std::size_t count = 0;
+          for (std::size_t corner = 0; corner < nodes.size(); ++corner) {
+            if (crossing.support & (1u << corner)) {
+              if (count == support.size()) {
+                return absl::FailedPreconditionError("phase partition crossing lacks a shared simplex");
+              }
+              support[count++] = nodes[corner];
+            }
+          }
+          std::ranges::sort(support);
+          const CrossingKey key{crossing.clip_value == 0 ? 2 : crossing.plane, support};
+          const auto found = crossing_indices.find(key);
+          if (found != crossing_indices.end()) {
+            return found->second;
+          }
+          if (partition.positions.size() == maximum_vertices) {
+            return absl::ResourceExhaustedError("phase partition vertex budget exceeded");
+          }
+          if (!Finite(crossing.position)) {
+            return absl::OutOfRangeError("phase partition crossing is nonfinite");
+          }
+          const auto index = static_cast<std::uint32_t>(partition.positions.size());
+          crossing_indices.emplace(key, index);
+          partition.positions.push_back(crossing.position);
+          return index;
+        };
+        const auto emit =
+            [&](std::span<const Crossing> polygon, Vec3 outward, SurfacePartitionFace3D type, bool keep_negative
+            ) -> absl::Status {
+          std::array<std::uint32_t, 5> indices;
+          std::size_t count = 0;
+          const auto append = [&](const Crossing& crossing) -> absl::Status {
+            const auto index = register_crossing(crossing);
+            if (!index.ok()) {
+              return index.status();
+            }
+            if (count == 0 || indices[count - 1] != *index) {
+              indices[count++] = *index;
+            }
+            return absl::OkStatus();
+          };
+          for (std::size_t i = 0; i < polygon.size(); ++i) {
+            const auto& a = polygon[i];
+            const auto& b = polygon[(i + 1) % polygon.size()];
+            if (a.clip_value == 0 && b.clip_value == 0) {
+              return absl::FailedPreconditionError("phase and exterior planes share a lattice-face segment");
+            }
+            if ((a.clip_value < 0) != (b.clip_value < 0) && a.clip_value != 0 && b.clip_value != 0) {
+              const double fraction = crossing_fraction(a.clip_value, b.clip_value);
+              const auto status = append({
+                  .position = Add(a.position, Scale(Sub(b.position, a.position), fraction)),
+                  .support = a.support | b.support,
+                  .clip_value = 0,
+                  .plane = 2,
+              });
+              if (!status.ok()) {
+                return status;
+              }
+            }
+            if (b.clip_value == 0 || (b.clip_value < 0) == keep_negative) {
+              const auto status = append(b);
+              if (!status.ok()) {
+                return status;
+              }
+            }
+          }
+          if (count > 1 && indices[0] == indices[count - 1]) {
+            --count;
+          }
+          for (std::size_t i = 1; i + 1 < count; ++i) {
+            std::array triangle{indices[0], indices[i], indices[i + 1]};
+            const auto a = partition.positions[triangle[0]];
+            const auto b = partition.positions[triangle[1]];
+            const auto c = partition.positions[triangle[2]];
+            const double orientation = Dot(Cross(Sub(b, a), Sub(c, a)), outward);
+            if (orientation == 0 || !std::isfinite(orientation)) {
+              return absl::FailedPreconditionError("phase partition has a degenerate triangle");
+            }
+            if (orientation < 0) {
+              std::swap(triangle[1], triangle[2]);
+            }
+            partition.triangles.push_back(triangle);
+            partition.face_types.push_back(type);
+          }
+          return absl::OkStatus();
+        };
+        for (const auto& tetrahedron : kCubeTetrahedra) {
+          for (int plane = 0; plane < 2; ++plane) {
+            std::array<int, 4> negative;
+            std::array<int, 4> positive;
+            std::size_t negative_count = 0;
+            std::size_t positive_count = 0;
+            for (const int corner : tetrahedron) {
+              if (values[plane][corner] < 0) {
+                negative[negative_count++] = corner;
+              } else {
+                positive[positive_count++] = corner;
+              }
+            }
+            if (negative_count == 0 || positive_count == 0) {
+              continue;
+            }
+            Vec3 outward{};
+            for (const int corner : std::span(positive).first(positive_count)) {
+              outward = Add(outward, Scale(Sub(positions[corner], positions[tetrahedron[0]]), 1.0 / positive_count));
+            }
+            for (const int corner : std::span(negative).first(negative_count)) {
+              outward = Sub(outward, Scale(Sub(positions[corner], positions[tetrahedron[0]]), 1.0 / negative_count));
+            }
+            std::array<Crossing, 4> polygon;
+            std::size_t count = 0;
+            const auto intersect_edge = [&](int a, int b) {
+              const double fraction = crossing_fraction(values[plane][a], values[plane][b]);
+              polygon[count++] = {
+                  .position = Add(positions[a], Scale(Sub(positions[b], positions[a]), fraction)),
+                  .support = (1u << a) | (1u << b),
+                  .clip_value = std::lerp(values[1 - plane][a], values[1 - plane][b], fraction),
+                  .plane = plane,
+              };
+            };
+            if (negative_count == 2) {
+              intersect_edge(negative[0], positive[0]);
+              intersect_edge(negative[0], positive[1]);
+              intersect_edge(negative[1], positive[1]);
+              intersect_edge(negative[1], positive[0]);
+            } else {
+              for (const int a : std::span(negative).first(negative_count)) {
+                for (const int b : std::span(positive).first(positive_count)) {
+                  intersect_edge(a, b);
+                }
+              }
+            }
+            const auto crossings = std::span(polygon).first(count);
+            const auto type =
+                plane == 0 ? SurfacePartitionFace3D::kPhaseAToAir : SurfacePartitionFace3D::kPhaseAToPhaseB;
+            const auto first = emit(crossings, outward, type, true);
+            if (!first.ok()) {
+              return first;
+            }
+            if (plane == 0) {
+              const auto second = emit(crossings, outward, SurfacePartitionFace3D::kPhaseBToAir, false);
+              if (!second.ok()) {
+                return second;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return partition;
+}
 absl::StatusOr<SurfaceMetrics3D> MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh) {
   return MeasureSurfaceMesh3D(mesh, nullptr);
 }

@@ -35,6 +35,31 @@ struct SurfaceLattice3D {
   std::array<std::size_t, 3> extent{};
   std::vector<double> values{};  // Negative liquid, x-major then y then z.
 };
+enum class SurfacePartitionFace3D : std::uint8_t {
+  kPhaseAToAir,
+  kPhaseBToAir,
+  kPhaseAToPhaseB,
+};
+
+struct SurfacePartition3D {
+  std::vector<Vec3> positions;  // Shared world-metre vertices for all three face classes.
+  std::vector<std::array<std::uint32_t, 3>> triangles;
+  std::vector<SurfacePartitionFace3D> face_types;  // One orientation label per triangle.
+};
+
+// Partitions the common PL exterior zero set and extracts the phase zero set
+// inside it. Negative phase samples label A. The three sheets share seam
+// vertex indices. Near-zero lattice nodes use a positive symbolic tie;
+// coincident planes on an intersected tetrahedral face fail explicitly.
+// The exterior requires a positive boundary shell. Both sample arrays are
+// finite and use the lattice's x-major ordering. Invalid geometry or extents
+// return InvalidArgument, budget overflow ResourceExhausted, and unresolved
+// or unrepresentable intersections FailedPrecondition or OutOfRange.
+absl::StatusOr<SurfacePartition3D> ExtractSurfacePartition3D(
+    const SurfaceLattice3D& exterior,
+    std::span<const double> phase_distance,
+    std::size_t maximum_vertices
+);
 struct SurfaceMetrics3D {
   double signed_volume = 0;  // m³, local-origin tetrahedron sum.
   double area = 0;  // m².
