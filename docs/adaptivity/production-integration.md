@@ -68,7 +68,25 @@ At a cell center away from boundaries and width transitions, the measured radial
 
 `GradedQuadraticMacTransfer3D` binds the existing FP64 quadratic geometry directly to canonical adaptive face slots. Every tensor node, including a zero-weight tie, requires an interior face with both incident leaves at the particle level, the exact represented anchor displacement, full aperture, and valid same-side carriers. Deposit and gather use the bound rows with the uniform operator's arithmetic. The signed island control matches the uniform sparse operator bit-for-bit for mass, momentum, PIC velocity, FLIP increment, affine slope and gradient. It refuses a mixed-level face and mask, side, low-mass and aperture changes.
 
-Runtime selection and F3/F4 admission still require frozen transfer selection through deposit and both gather histories, conservative binary64 moment and energy bounds, and a topology transaction with complete before-and-after support halos. A single-family edit can leave child stencils extending beyond the refined region.
+The paired quadratic resampling bridge checks the old and proposed canonical
+topologies and aperture/carrier banks at each particle's physical level. F3
+checks the parent on the old coarse bank and each of eight children on the
+new fine bank. F4 checks the inverse support direction and requires a strictly
+positive, outward-rounded covariance gap. Geometry and material admissibility
+are also required from the caller. The bridge publishes detached proposals.
+
+A signed manufactured case refines a central 3 × 3 × 3 patch inside a
+6 × 6 × 6 coarse island (216 old leaves and 405 proposed leaves). It passes
+F3 with zero quadratic energy deficit and absolute momentum error within
+1e-15 kg·m/s, then passes F4 with separately placed fine children. Wrong-level
+support and a missing accepted carrier bank are refused. The production
+transaction still needs to stage the entire halo before changing particle IDs
+and freeze the same transfer selection through P2G and both G2P histories.
+
+```powershell
+cmake --build out/build/resampling-pair-cpu --target fluidity_native_tests --parallel 2
+ctest --test-dir out/build/resampling-pair-cpu -R 'GradedQuadraticMacTransfer3D|LiquidUniform(Split|Merge)3D|GradedMacTransfer3D' --output-on-failure
+```
 
 ## Production band and M2 boundary
 

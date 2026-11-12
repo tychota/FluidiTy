@@ -266,5 +266,118 @@ TEST(GradedQuadraticMacTransfer3D, RefusesFineWidthFaceWithCoarseIncidentLeaf) {
   );
 }
 
+TEST(GradedQuadraticMacTransfer3D, CertifiesPhysicalSplitAndMergeAcrossTwoTopologySnapshots) {
+  const auto coarse_keys = SameLevelKeys();
+  std::vector<AdaptiveMacCellKey3D> fine_keys;
+  for (const auto key : coarse_keys) {
+    const auto lower = key.lower_corner;
+    if (lower.x < -2 || lower.x > 2 || lower.y < -2 || lower.y > 2 || lower.z < -2 || lower.z > 2) {
+      fine_keys.push_back(key);
+      continue;
+    }
+    for (int z = 0; z < 2; ++z) {
+      for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+          fine_keys.push_back({
+              .lower_corner = {lower.x + x, lower.y + y, lower.z + z},
+              .width_exponent = 0,
+          });
+        }
+      }
+    }
+  }
+
+  const auto coarse_topology = AdaptiveMacTopology3D::Create(coarse_keys, 0.5);
+  const auto fine_topology = AdaptiveMacTopology3D::Create(fine_keys, 0.5);
+  ASSERT_TRUE(coarse_topology.ok()) << coarse_topology.status();
+  ASSERT_TRUE(fine_topology.ok()) << fine_topology.status();
+  const auto coarse_transfer = GradedQuadraticMacTransfer3D::Create(*coarse_topology, {});
+  const auto fine_transfer = GradedQuadraticMacTransfer3D::Create(*fine_topology, {});
+  const auto coarse_anchors = GradedMacTransfer3D::Create(*coarse_topology, {});
+  const auto fine_anchors = GradedMacTransfer3D::Create(*fine_topology, {});
+  ASSERT_TRUE(coarse_transfer.ok()) << coarse_transfer.status();
+  ASSERT_TRUE(fine_transfer.ok()) << fine_transfer.status();
+  ASSERT_TRUE(coarse_anchors.ok()) << coarse_anchors.status();
+  ASSERT_TRUE(fine_anchors.ok()) << fine_anchors.status();
+
+  const auto full_areas = [](const GradedMacTransfer3D& transfer) {
+    std::vector<double> areas;
+    for (const auto& face : transfer.faces()) {
+      areas.push_back(face.width_m * face.width_m);
+    }
+    return areas;
+  };
+  const auto coarse_areas = full_areas(*coarse_anchors);
+  const auto fine_areas = full_areas(*fine_anchors);
+  const LiquidAdaptiveFaceState3D carrier{
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = kSide,
+  };
+  std::vector<LiquidAdaptiveFaceState3D> coarse_faces(coarse_areas.size(), carrier);
+  std::vector<LiquidAdaptiveFaceState3D> fine_faces(fine_areas.size(), carrier);
+  const GradedQuadraticMacSupportSnapshot3D coarse{*coarse_transfer, coarse_areas, coarse_faces};
+  const GradedQuadraticMacSupportSnapshot3D fine{*fine_transfer, fine_areas, fine_faces};
+  const LiquidParticleState3D parent{
+      .id = 1,
+      .world_position = {0.5, 0.5, 0.5},
+      .world_velocity = {0.25, -0.125, 0.5},
+      .velocity_slopes = {{0.125, 0.25, 0}, {-0.25, 0.125, 0}, {0, 0.25, -0.125}},
+      .mass = 2,
+      .side_tag = kSide,
+      .pic_initialized = true,
+  };
+  int certified = 0;
+  const auto certify = [](const LiquidParticleState3D&, double, LiquidUniformResamplingBasis3D basis, void* context) {
+    EXPECT_EQ(basis, LiquidUniformResamplingBasis3D::kQuadratic);
+    ++*static_cast<int*>(context);
+    return absl::OkStatus();
+  };
+
+  const auto split = SplitGradedQuadraticLiquidParticle3D(parent, 2, 1, coarse, fine, certify, &certified);
+  ASSERT_TRUE(split.ok()) << split.status();
+  EXPECT_EQ(certified, 9);
+  EXPECT_EQ(split->next_particle_id, 10);
+  EXPECT_EQ(split->kinetic_affine_energy_deficit, 0);
+  double split_mass = 0;
+  double split_reference_volume = 0;
+  Vec3 split_momentum{};
+  for (const auto& child : split->children) {
+    split_mass += child.mass;
+    split_reference_volume += child.reference_volume;
+    split_momentum.x += child.mass * child.world_velocity.x;
+    split_momentum.y += child.mass * child.world_velocity.y;
+    split_momentum.z += child.mass * child.world_velocity.z;
+  }
+  EXPECT_EQ(split_mass, parent.mass);
+  EXPECT_EQ(split_reference_volume, parent.reference_volume);
+  EXPECT_NEAR(split_momentum.x, parent.mass * parent.world_velocity.x, 1e-15);
+  EXPECT_NEAR(split_momentum.y, parent.mass * parent.world_velocity.y, 1e-15);
+  EXPECT_NEAR(split_momentum.z, parent.mass * parent.world_velocity.z, 1e-15);
+
+  auto children = split->children;
+  for (std::size_t ordinal = 0; ordinal < children.size(); ++ordinal) {
+    children[ordinal].world_position = {
+        (ordinal & 1u) == 0 ? 0.25 : 0.75,
+        (ordinal & 2u) == 0 ? 0.25 : 0.75,
+        (ordinal & 4u) == 0 ? 0.25 : 0.75,
+    };
+  }
+  const auto merge = MergeGradedQuadraticLiquidParticles3D(children, 10, 0.5, fine, coarse, certify, &certified);
+  ASSERT_TRUE(merge.ok()) << merge.status();
+  EXPECT_EQ(certified, 18);
+  EXPECT_GT(merge->covariance_gap_lower_bound, 0);
+  EXPECT_EQ(merge->particle.mass, parent.mass);
+  EXPECT_EQ(merge->particle.reference_volume, parent.reference_volume);
+  ExpectBits(merge->particle.world_position, parent.world_position);
+
+  const auto wrong_width = SplitGradedQuadraticLiquidParticle3D(parent, 2, 1, coarse, coarse, certify, &certified);
+  EXPECT_EQ(wrong_width.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(certified, 19);
+  std::fill(coarse_faces.begin(), coarse_faces.end(), LiquidAdaptiveFaceState3D{});
+  const auto unavailable = MergeGradedQuadraticLiquidParticles3D(children, 10, 0.5, fine, coarse, certify, &certified);
+  EXPECT_EQ(unavailable.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(certified, 27);
+}
+
 }  // namespace
 }  // namespace fluidity
