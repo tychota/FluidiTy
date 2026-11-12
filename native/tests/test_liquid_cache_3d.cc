@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "frame_manifest_generated.h"
 #include "gtest/gtest.h"
 #include "liquid_state_generated.h"
@@ -74,6 +75,122 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, ResolvedPlasticBodiesAreVersionedAndCanonical) {
+  std::array bindings{
+      PlasticSolidCheckpointBinding3D{9, 11, SnowParameters3D{1200, 700, 0.025, 0.01, 4}},
+      PlasticSolidCheckpointBinding3D{12, 13, GranularParameters3D{450, 700, 0.5235987755982989, 0}},
+  };
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.plastic_bodies = bindings;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.model_version = kPlasticBodyResolvedModel3D;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_EQ(decoded->model_version, kPlasticBodyResolvedModel3D);
+  const auto view = decoded->View();
+  ASSERT_EQ(view.plastic_bodies.size(), bindings.size());
+  EXPECT_EQ(view.plastic_bodies[0].body_id, 9);
+  EXPECT_EQ(view.plastic_bodies[1].material_id, 13);
+  EXPECT_DOUBLE_EQ(std::get<SnowParameters3D>(view.plastic_bodies[0].material).shear_modulus, 1200);
+  EXPECT_DOUBLE_EQ(std::get<GranularParameters3D>(view.plastic_bodies[1].material).lame_lambda, 700);
+  const auto repeated = EncodeLiquidResolvedScene3D(view);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*repeated), Copy(*encoded));
+  const auto fingerprint = ResolvedSceneFingerprint(view);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+
+  const auto& snow_binding = view.plastic_bodies[0];
+  const DrySolidParticle3D compacted_snow{
+      .world_position = {1, 2, 3},
+      .mass = 300,
+      .reference_volume = 1,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  const auto particle = CapturePlasticSolidCheckpointParticle3D(
+      5,
+      snow_binding.body_id,
+      snow_binding.material_id,
+      snow_binding.material,
+      compacted_snow
+  );
+  ASSERT_TRUE(particle.ok()) << particle.status();
+  const SolidInteractionCheckpoint3D solid{.accepted_step = 0, .plastic_particles = {*particle}};
+  const LiquidState3D liquid;
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(liquid, solid, view.plastic_bodies);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint, view.plastic_bodies);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(restored->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+
+  const auto bound_checkpoint = EncodeResolvedCoupledCheckpoint3D(view, liquid, solid);
+  ASSERT_TRUE(bound_checkpoint.ok()) << bound_checkpoint.status();
+  const auto bound_restored = DecodeResolvedCoupledCheckpoint3D(view, *bound_checkpoint);
+  ASSERT_TRUE(bound_restored.ok()) << bound_restored.status();
+  ASSERT_EQ(bound_restored->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(bound_restored->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+  EXPECT_EQ(
+      DecodeResolvedCoupledCheckpoint3D(view, *checkpoint).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(
+      DecodeCoupledInteractionCheckpoint3D(*bound_checkpoint, view.plastic_bodies).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto resume = Resume();
+  resume.resolved_fingerprint = *fingerprint;
+  resume.execution_id = LiquidExecutionId3D(*fingerprint);
+  const auto restartable = EncodeResolvedCoupledCheckpoint3D(view, liquid, solid, resume, {});
+  ASSERT_TRUE(restartable.ok()) << restartable.status();
+  auto restored_resume = Resume();
+  const auto resumed = DecodeResolvedCoupledCheckpoint3D(view, *restartable, restored_resume, {});
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  EXPECT_EQ(restored_resume, resume);
+  EXPECT_EQ(resumed->liquid, liquid);
+  ASSERT_EQ(resumed->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(resumed->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+
+  EXPECT_FALSE(DecodeResolvedCoupledCheckpoint3D(view, *bound_checkpoint, restored_resume, {}).ok());
+  EXPECT_EQ(restored_resume, resume);
+  auto mismatched_resume = Resume();
+  EXPECT_EQ(
+      EncodeResolvedCoupledCheckpoint3D(view, liquid, solid, mismatched_resume, {}).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  auto alternate_bindings = bindings;
+  std::get<SnowParameters3D>(alternate_bindings[0].material).hardening = 5;
+  auto alternate_scene = scene;
+  alternate_scene.plastic_bodies = alternate_bindings;
+  ASSERT_TRUE(ValidatePlasticSolidCheckpointParticles3D(solid.plastic_particles, alternate_bindings).ok());
+  EXPECT_EQ(
+      DecodeResolvedCoupledCheckpoint3D(alternate_scene, *bound_checkpoint).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  alternate_scene = scene;
+  ++alternate_scene.random_seed;
+  EXPECT_EQ(
+      EncodeResolvedCoupledCheckpoint3D(alternate_scene, liquid, solid).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+
+  auto wrong_version = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableResolvedScene(wrong_version.data())->mutate_model_version(kLiquidOnlyResolvedModel3D));
+  EXPECT_EQ(DecodeLiquidResolvedScene3D(wrong_version).status().code(), absl::StatusCode::kDataLoss);
+  std::swap(bindings[0], bindings[1]);
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  std::swap(bindings[0], bindings[1]);
+  std::get<SnowParameters3D>(bindings[0].material).compression_limit = 1;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.plastic_bodies = {};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ResolvedPhasePairIsCanonicalAndChangesFingerprint) {
   constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
       {8, 4, 1000.0},
@@ -270,6 +387,103 @@ TEST(LiquidCache3D, CheckpointSeparatesResumePlanAndRequiresCompletedFrame) {
   state.clock.substep_ordinal = 1;
   EXPECT_EQ(EncodeLiquidCheckpoint3D(state, Resume()).status().code(), absl::StatusCode::kInvalidArgument);
 }
+
+TEST(LiquidCache3D, AdaptiveCheckpointRestoresAcceptedTopologyAndDiscardsRejectedTrial) {
+  LiquidState3D initial;
+  initial.geometry.cell_width = 0.5;
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(2);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(14);
+  initial.adaptive_cells[0] = {
+      .key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1},
+      .inventory =
+          {.mass_kg = 2,
+           .reference_volume_m3 = 0.5,
+           .current_volume_m3 = 0.75,
+           .momentum_kg_m_per_s = {1, 2, 3},
+           .enthalpy_j = -4,
+           .phase_id = 9,
+           .constituent_count = 2,
+           .constituents = {{{11, 0.25}, {21, 0.5}}}},
+      .previous_pressure = 5,
+  };
+  initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
+  initial.adaptive_faces[0] = {
+      .carrier_velocity = -0.125,
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = 3,
+      .structurally_eligible = false,
+  };
+  auto resume = Resume();
+  resume.capacities = {0, 0, 2, 14, 0};
+  resume.capacity_replay_reservations = {};
+  auto transaction = LiquidFrameTransaction3D::Create(initial, resume.capacities);
+  ASSERT_TRUE(transaction.ok()) << transaction.status();
+  ASSERT_TRUE(transaction->BeginFrame(1).ok());
+  auto rejected = transaction->ResetTrialFromCommitted();
+  ASSERT_TRUE(rejected.ok());
+  (*rejected)->adaptive_cells[0].inventory.mass_kg = 17;
+  (*rejected)->adaptive_cells[1].key.lower_corner.x = 2;
+  (*rejected)->adaptive_faces[0].carrier_velocity = 4;
+  ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kRetryDt, 1).ok());
+  EXPECT_EQ(transaction->committed(), initial);
+
+  for (int step = 0; step < 2; ++step) {
+    auto trial = transaction->ResetTrialFromCommitted();
+    ASSERT_TRUE(trial.ok());
+    (*trial)->adaptive_cells[0].previous_pressure += 1;
+    (*trial)->adaptive_faces[0].carrier_velocity += 0.5;
+    ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 0.5).ok());
+  }
+  ASSERT_TRUE(transaction->FinishFrame().ok());
+  const auto bytes = EncodeLiquidCheckpoint3D(transaction->committed(), resume);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  EXPECT_EQ(wire::GetLiquidState(bytes->values().data())->schema_version(), 2U);
+  const auto restored = DecodeLiquidCheckpoint3D(bytes->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->state, transaction->committed());
+  EXPECT_EQ(restored->resume, resume);
+  const auto repeated = EncodeLiquidCheckpoint3D(restored->state, restored->resume);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*repeated), Copy(*bytes));
+
+  auto resumed = LiquidFrameTransaction3D::Create(restored->state, restored->resume.capacities);
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  for (auto* run : {&*transaction, &*resumed}) {
+    ASSERT_TRUE(run->BeginFrame(2).ok());
+    auto trial = run->ResetTrialFromCommitted();
+    ASSERT_TRUE(trial.ok());
+    (*trial)->adaptive_cells[0].inventory.enthalpy_j -= 0.25;
+    (*trial)->adaptive_cells[1].key.width_exponent = 1;
+    ASSERT_TRUE((*trial)->adaptive_faces.Resize(11).ok());
+    (*trial)->adaptive_faces[0].carrier_velocity -= 0.125;
+    ASSERT_TRUE(run->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 1).ok());
+    ASSERT_TRUE(run->FinishFrame().ok());
+  }
+  const auto uninterrupted = EncodeLiquidCheckpoint3D(transaction->committed(), resume);
+  const auto interrupted = EncodeLiquidCheckpoint3D(resumed->committed(), resume);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(interrupted.ok()) << interrupted.status();
+  EXPECT_EQ(Copy(*uninterrupted), Copy(*interrupted));
+  auto excess = resume;
+  excess.capacities.cells = kMaximumAdaptiveLiquidCells3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  excess = resume;
+  excess.capacity_replay_reservations = resume.capacities;
+  excess.capacity_replay_reservations.faces = kMaximumAdaptiveLiquidFaces3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  auto altered = Copy(*interrupted);
+  wire::GetMutableLiquidState(altered.data())
+      ->mutable_resume()
+      ->mutable_capacities()
+      ->mutate_cells(kMaximumAdaptiveLiquidCells3D + 1);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(altered).status().code(), absl::StatusCode::kDataLoss);
+
+  auto malformed = CloneLiquidState3D(restored->state, resume.capacities);
+  ASSERT_TRUE(malformed.ok());
+  ASSERT_TRUE(malformed->adaptive_faces.Resize(13).ok());
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(*malformed, resume).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, PointAndManifestRoundTripKeepPortableContentReference) {
   LiquidPointFrame3D frame;
   frame.clock = {1, 1, 0, 2, 2};
@@ -1038,6 +1252,31 @@ TEST(LiquidCache3D, InvalidSemanticInputAllocatesNoDecodedOwners) {
   ASSERT_TRUE(encoded.ok());
   auto bytes = Copy(*encoded);
   wire::GetMutableLiquidState(bytes.data())->mutable_particles()->GetMutableObject(0)->mutate_volume_ratio(0);
+  codec_allocations = 0;
+  codec_frees = 0;
+  const auto previous = _CrtSetAllocHook(CodecAllocationHook);
+  absl::StatusCode code;
+  {
+    auto decoded = DecodeLiquidState3D(bytes);
+    code = decoded.status().code();
+  }
+  _CrtSetAllocHook(previous);
+  EXPECT_EQ(code, absl::StatusCode::kDataLoss);
+  EXPECT_EQ(codec_allocations, 0);
+  EXPECT_EQ(codec_frees, 0);
+}
+TEST(LiquidCache3D, InvalidAdaptiveOwnershipAllocatesNoDecodedOwners) {
+  LiquidState3D state;
+  state.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+  state.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+  const auto encoded = EncodeLiquidState3D(state);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  auto bytes = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableLiquidState(bytes.data())
+                  ->mutable_adaptive()
+                  ->mutable_cells()
+                  ->GetMutableObject(0)
+                  ->mutate_width_exponent(31));
   codec_allocations = 0;
   codec_frees = 0;
   const auto previous = _CrtSetAllocHook(CodecAllocationHook);

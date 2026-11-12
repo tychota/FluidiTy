@@ -177,7 +177,7 @@ bool SameLayout(const CudaLiquidStateLayout3D& a, const CudaLiquidStateLayout3D&
       && a.face_records_byte_offset == b.face_records_byte_offset
       && a.source_records_byte_offset == b.source_records_byte_offset
       && a.control_record_byte_offset == b.control_record_byte_offset && a.total_state_bytes == b.total_state_bytes
-      && a.particle_bin_stride_bytes == b.particle_bin_stride_bytes;
+      && a.particle_bin_stride_bytes == b.particle_bin_stride_bytes && a.adaptive_state == b.adaptive_state;
 }
 // Reserved destination capacities are identical. This copies semantic records
 // only; it cannot allocate, fail or alias the source reservation.
@@ -191,6 +191,8 @@ void CopyState(const LiquidState3D& source, LiquidState3D& destination) {
   copy(source.cells, destination.cells);
   copy(source.faces, destination.faces);
   copy(source.sources, destination.sources);
+  copy(source.adaptive_cells, destination.adaptive_cells);
+  copy(source.adaptive_faces, destination.adaptive_faces);
   destination.geometry = source.geometry;
   destination.clock = source.clock;
   destination.random_seed = source.random_seed;
@@ -205,27 +207,39 @@ absl::Status Decode(LiquidSnapshotStorage3D& storage, LiquidSnapshotSlot3D& slot
   if (control.active != slot.active || control.clock != slot.ticket.epoch.clock) {
     return Error(absl::StatusCode::kDataLoss);
   }
-  const auto* bins =
-      reinterpret_cast<const CudaLiquidParticleBin3D*>(slot.pinned + storage.layout.particle_bins_byte_offset);
-  for (std::size_t index = 0; index < slot.active.particles; ++index) {
-    if (bins[index / 32].affine_pic_flags[index % 32] > 3U) {
-      return Error(absl::StatusCode::kDataLoss);
-    }
-  }
-  for (std::size_t index = 0; index < slot.active.faces; ++index) {
-    const auto* flag = slot.pinned + storage.layout.face_records_byte_offset + index * sizeof(LiquidFaceState3D)
-        + offsetof(LiquidFaceState3D, structurally_eligible);
-    const bool false_value = false;
-    const bool true_value = true;
-    if (std::memcmp(flag, &false_value, sizeof(bool)) != 0 && std::memcmp(flag, &true_value, sizeof(bool)) != 0) {
-      return Error(absl::StatusCode::kDataLoss);
-    }
+  const auto encoding = cuda_internal::ValidateLiquidArenaEncoding3D(storage.layout, slot.pinned);
+  if (!encoding.ok()) {
+    return encoding;
   }
   cuda_internal::UnpackLiquidArenaState3D(storage.layout, slot.pinned, slot.decoded);
   if (!ValidateLiquidState3D(slot.decoded).ok()) {
     return Error(absl::StatusCode::kDataLoss);
   }
   return absl::OkStatus();
+}
+// Match the source's fixed arena representation without allocating inactive
+// uniform arrays for an adaptive snapshot.
+absl::StatusOr<LiquidState3D> ReserveSnapshotState(LiquidStateCapacities3D capacity, bool adaptive) {
+  if (!adaptive) {
+    return CloneLiquidState3D(LiquidState3D{}, capacity);
+  }
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(capacity.cells);
+  if (!cells.ok()) {
+    return cells.status();
+  }
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(capacity.faces);
+  if (!faces.ok()) {
+    return faces.status();
+  }
+  capacity.cells = 0;
+  capacity.faces = 0;
+  auto state = CloneLiquidState3D(LiquidState3D{}, capacity);
+  if (!state.ok()) {
+    return state.status();
+  }
+  state->adaptive_cells = std::move(*cells);
+  state->adaptive_faces = std::move(*faces);
+  return state;
 }
 }  // namespace
 CudaLiquidSnapshotQueue3D::CudaLiquidSnapshotQueue3D(CudaLiquidSnapshotQueue3D&& other) noexcept
@@ -309,13 +323,13 @@ absl::StatusOr<CudaLiquidSnapshotQueue3D> CudaLiquidSnapshotQueue3D::Create(cons
     Release(std::exchange(queue.storage_, nullptr));
     return ledger->runtime_failed ? Error(absl::StatusCode::kInternal) : status;
   };
-  auto last = CloneLiquidState3D(LiquidState3D{}, storage.capacities);
+  auto last = ReserveSnapshotState(storage.capacities, storage.layout.adaptive_state);
   if (!last.ok()) {
     return fail(last.status());
   }
   storage.last_valid = std::move(*last);
   for (auto& slot : storage.slots) {
-    auto decoded = CloneLiquidState3D(LiquidState3D{}, storage.capacities);
+    auto decoded = ReserveSnapshotState(storage.capacities, storage.layout.adaptive_state);
     if (!decoded.ok()) {
       return fail(decoded.status());
     }
@@ -384,7 +398,8 @@ CudaLiquidSnapshotQueue3D::BeginCopy(CudaLiquidEpochIdentity3D epoch, CudaLiquid
     }
     slot.ticket = {index, storage.ledger->next_snapshot_reservation++, epoch};
     slot.active = source.storage_->active[source.bank_];
-    slot.logical_output_bytes = cuda_internal::LiquidArenaPhysicalStateBytes3D(slot.active);
+    slot.logical_output_bytes =
+        cuda_internal::LiquidArenaPhysicalStateBytes3D(slot.active, storage.layout.adaptive_state);
     auto& metrics = storage.ledger->metrics;
     metrics.live_snapshot_output_bytes += slot.logical_output_bytes;
     metrics.peak_snapshot_output_bytes =

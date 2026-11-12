@@ -12,6 +12,7 @@
 #include "absl/status/status.h"
 #include "fluidity/host/adaptive_family_change_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/coarse_fine_transfer_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
 
@@ -46,6 +47,61 @@ double AffinePressure(const AdaptiveMacLeaf3D& cell) {
   return (index.x + 2.0 * index.y - 0.5 * index.z) / 16.0 + cell.cell_width * 2.5 / 16.0;
 }
 
+TEST(AdaptiveMacTopology3D, BindsTransferRowsWithoutAliasingSplitCoarseFaces) {
+  const std::array keys{
+      AdaptiveMacCellKey3D{.lower_corner = {-2, 0, 0}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {0, 0, 0}, .width_exponent = 0},
+  };
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  const auto stencil = EvaluateCoarseFineStencil3D(
+      CoarseFinePatch3D{.world_origin = {}, .coarse_cell_width = 1, .fine_side = {}},
+      FaceNormalAxis::kX,
+      {-0.25, 0.5, 0.5}
+  );
+  ASSERT_TRUE(stencil.ok()) << stencil.status();
+  const auto binding = BindAdaptiveMacStencil3D(*topology, *ownership, *stencil, {}, 1);
+  ASSERT_TRUE(binding.ok()) << binding.status();
+  ASSERT_EQ(binding->slots().size(), stencil->rows().size());
+  bool found_owner = false;
+  bool found_split_face = false;
+  for (std::size_t row = 0; row < stencil->rows().size(); ++row) {
+    const auto& key = stencil->rows()[row].owner.lattice_index;
+    if (key.y != 0 || key.z != 0) {
+      continue;
+    }
+    if (key.x == -1) {
+      const auto owner = std::ranges::find_if(ownership->exterior_faces, [](const auto& face) {
+        const auto& lower = face.face_index.lattice_index;
+        return face.face_index.axis == FaceNormalAxis::kX && lower.x == -2 && lower.y == 0 && lower.z == 0;
+      });
+      ASSERT_NE(owner, ownership->exterior_faces.end());
+      EXPECT_EQ(binding->slots()[row], owner->face_slot);
+      found_owner = true;
+    }
+    if (key.x == 0) {
+      EXPECT_FALSE(binding->slots()[row].has_value());
+      found_split_face = true;
+    }
+  }
+  EXPECT_TRUE(found_owner);
+  EXPECT_TRUE(found_split_face);
+
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  const std::vector<double> velocities(face_count, -2.5);
+  const std::vector<LiquidFaceValidity3D> validity(face_count, LiquidFaceValidity3D::kPredicted);
+  const std::vector<LiquidBoundaryFaceTag3D> tags(face_count, {.side_tag = 3, .structurally_eligible = true});
+  LiquidBoundaryParticleGather3D gather;
+  EXPECT_TRUE(ApplyAdaptiveMacPicFallback3D(*stencil, *binding, velocities, validity, tags, 3, gather).ok());
+  EXPECT_DOUBLE_EQ(gather.new_pic_velocity.x, -2.5);
+  EXPECT_TRUE(gather.new_pic_fallback);
+  EXPECT_FALSE(gather.affine_enabled);
+  const auto refused = ApplyAdaptiveMacPicFallback3D(*stencil, *binding, velocities, validity, tags, 4, gather);
+  EXPECT_EQ(refused.code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_DOUBLE_EQ(gather.new_pic_velocity.x, -2.5);
+}
 TEST(AdaptiveMacTopology3D, OwnsSignedEdgeAndCornerSubfaces) {
   for (const std::size_t plane_count : {2, 3}) {
     for (const bool high_side : {false, true}) {

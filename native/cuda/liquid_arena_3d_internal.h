@@ -34,6 +34,7 @@ struct LiquidArenaLedger3D {
   int device_ordinal = 0;
   bool measure_job = false;  // Fixed before any owner or queue is created.
   bool reserve_wetted_piston_scratch = false;  // Kept across growth.
+  bool reserve_adaptive_state = false;  // Fixed across all versions and growth.
   bool runtime_failed = false;  // Job-wide poison; only teardown may drain/release afterward.
 };
 struct LiquidArenaRange3D {
@@ -87,7 +88,7 @@ struct LiquidArenaStorage3D {
 };
 // ABI payload represented by validated active extents. The last particle bin
 // may include unused lanes, but unoccupied bins/records and layout gaps do not count.
-std::size_t LiquidArenaPhysicalStateBytes3D(LiquidStateCapacities3D active);
+std::size_t LiquidArenaPhysicalStateBytes3D(LiquidStateCapacities3D active, bool adaptive);
 // Takes one never-reused ticket. Exhaustion returns OutOfRange and leaves the
 // sentinel unchanged; this helper also makes the integer boundary independently testable.
 absl::StatusOr<std::uint64_t> TakeLiquidArenaGeneration3D(LiquidArenaLedger3D& ledger);
@@ -99,7 +100,10 @@ void PackLiquidArenaState3D(
     const CudaLiquidStateLayout3D& layout,
     std::byte* destination
 );
-// Caller has fenced D2H and verified output capacities. No fallible operations.
+// Check raw flags and adaptive record semantics before writing an output owner.
+// Caller has checked the copied active counts against the source lease.
+absl::Status ValidateLiquidArenaEncoding3D(const CudaLiquidStateLayout3D& layout, const std::byte* source);
+// Caller has fenced D2H, validated the encoding and checked output capacities.
 void UnpackLiquidArenaState3D(
     const CudaLiquidStateLayout3D& layout,
     const std::byte* source,

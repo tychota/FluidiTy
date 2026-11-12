@@ -8,6 +8,7 @@
 #include <tuple>
 
 #include "frame_manifest_generated.h"
+#include "liquid_adaptive_state_internal_3d.h"
 #include "liquid_cache_3d_internal.h"
 #include "liquid_state_generated.h"
 #include "point_frame_generated.h"
@@ -41,8 +42,10 @@ LiquidStateCapacities3D Counts(const LiquidState3D& state) {
   return {
       state.particles.size(),
       state.blocks.size(),
-      std::max(state.cells.size(), state.cavity_gas.size()),
-      state.faces.size(),
+      std::max(
+          {state.cells.size(), state.adaptive_cells.size(), state.cavity_gas.size(), state.cavity_components.size()}
+      ),
+      std::max(state.faces.size(), state.adaptive_faces.size()),
       state.sources.size(),
   };
 }
@@ -50,8 +53,13 @@ LiquidStateCapacities3D Counts(const wire::LiquidState* state) {
   return {
       state->particles()->size(),
       state->blocks()->size(),
-      std::max(state->cells()->size(), state->cavity() ? state->cavity()->gas()->size() : 0U),
-      state->faces()->size(),
+      std::max(
+          {state->cells()->size(),
+           state->adaptive() ? state->adaptive()->cells()->size() : 0U,
+           state->cavity() ? state->cavity()->gas()->size() : 0U,
+           state->cavity() ? state->cavity()->inventories()->size() : 0U}
+      ),
+      std::max(state->faces()->size(), state->adaptive() ? state->adaptive()->faces()->size() : 0U),
       state->sources()->size(),
   };
 }
@@ -81,20 +89,26 @@ absl::StatusOr<LiquidStateCapacities3D> ReadCapacity(const wire::Capacities* cap
       static_cast<std::size_t>(capacity->sources()),
   };
 }
-bool ValidResume(const LiquidResumeMetadata3D& resume, LiquidStateCapacities3D record_counts) {
+bool ValidResume(const LiquidResumeMetadata3D& resume, LiquidStateCapacities3D record_counts, bool adaptive) {
   const auto reserved_capacities = resume.capacities;
   const auto replay_reservations = resume.capacity_replay_reservations;
   const bool replay_reservations_valid = replay_reservations == LiquidStateCapacities3D{}
       || (cache_detail::Fits(reserved_capacities, replay_reservations) && reserved_capacities != replay_reservations);
   constexpr std::size_t maximum = static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(LiquidParticleState3D) / 5;
-  const LiquidStateCapacities3D reservation_count_limits{maximum, maximum, maximum, maximum, maximum};
+  const LiquidStateCapacities3D reservation_count_limits{
+      maximum,
+      maximum,
+      adaptive ? kMaximumAdaptiveLiquidCells3D : maximum,
+      adaptive ? kMaximumAdaptiveLiquidFaces3D : maximum,
+      maximum,
+  };
   const bool execution_id_matches = resume.execution_id == LiquidExecutionId3D(resume.resolved_fingerprint);
   return cache_detail::Fits(record_counts, reserved_capacities) && replay_reservations_valid
       && cache_detail::Fits(reserved_capacities, reservation_count_limits)
       && cache_detail::Fits(replay_reservations, reservation_count_limits) && execution_id_matches;
 }
 absl::StatusOr<LiquidResumeMetadata3D>
-ReadResume(const wire::ResumeMetadata* wire_resume, LiquidStateCapacities3D record_counts) {
+ReadResume(const wire::ResumeMetadata* wire_resume, LiquidStateCapacities3D record_counts, bool adaptive) {
   if (!wire_resume) {
     return cache_detail::Corrupt();
   }
@@ -109,7 +123,7 @@ ReadResume(const wire::ResumeMetadata* wire_resume, LiquidStateCapacities3D reco
       *reserved_capacities,
       *replay_reservations,
   };
-  if (!ValidResume(resume_metadata, record_counts)) {
+  if (!ValidResume(resume_metadata, record_counts, adaptive)) {
     return cache_detail::Corrupt();
   }
   return resume_metadata;
@@ -139,10 +153,87 @@ std::size_t Owner(const wire::LiquidState* state, const wire::Index3* index) {
   }
   return first;
 }
+LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
+  const auto* lower = cell->lower_corner();
+  LiquidAdaptiveCellState3D result{
+      .key = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = cell->width_exponent()},
+      .occupancy = static_cast<LiquidCellOccupancy3D>(cell->occupancy()),
+      .inventory =
+          {
+              .mass_kg = cell->mass_kg(),
+              .reference_volume_m3 = cell->reference_volume_m3(),
+              .current_volume_m3 = cell->current_volume_m3(),
+              .momentum_kg_m_per_s = cache_detail::Unpack(cell->momentum_kg_m_per_s()),
+              .enthalpy_j = cell->enthalpy_j(),
+              .phase_id = cell->phase_id(),
+          },
+      .previous_pressure = cell->previous_pressure(),
+  };
+  if (const auto* constituents = cell->constituents()) {
+    result.inventory.constituent_count = static_cast<std::uint8_t>(constituents->size());
+    for (flatbuffers::uoffset_t index = 0; index < constituents->size(); ++index) {
+      const auto* entry = constituents->Get(index);
+      result.inventory.constituents[index] = {entry->substance_id(), entry->volume_m3()};
+    }
+  }
+  return result;
+}
+
+LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
+  return {
+      .carrier_velocity = face->carrier_velocity(),
+      .validity = static_cast<LiquidFaceValidity3D>(face->validity()),
+      .side_tag = face->side(),
+      .structurally_eligible = face->structurally_eligible(),
+  };
+}
 // Run semantic checks on verified, bounded wire views, before allocating any
 // decoded record owner. Stable particle order is checked for unique IDs, not sorted.
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
+  if ((state->schema_version() == 2) != (state->adaptive() != nullptr)) {
+    return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
+  }
+  if (const auto* adaptive = state->adaptive()) {
+    if (adaptive->cells()->size() > kMaximumAdaptiveLiquidCells3D
+        || adaptive->faces()->size() > kMaximumAdaptiveLiquidFaces3D) {
+      return cache_detail::Error(absl::StatusCode::kResourceExhausted);
+    }
+    if (adaptive->cells()->size() == 0 || state->blocks()->size() != 0 || state->cells()->size() != 0
+        || state->faces()->size() != 0) {
+      return cache_detail::Corrupt();
+    }
+    for (const auto* cell : *adaptive->cells()) {
+      const auto* constituents = cell->constituents();
+      if (constituents && (constituents->size() == 0 || constituents->size() > kMaximumLiquidParticleConstituents3D)) {
+        return cache_detail::Corrupt();
+      }
+    }
+    for (const auto* face : *adaptive->faces()) {
+      if (!cache_detail::ValidBoolean(face, wire::AdaptiveFace::VT_STRUCTURALLY_ELIGIBLE)) {
+        return cache_detail::Corrupt();
+      }
+    }
+    const auto adaptive_status = liquid_state_internal::ValidateAdaptiveRecordView3D({
+        .context = adaptive,
+        .finest_cell_width = state->cell_width(),
+        .cell_count = adaptive->cells()->size(),
+        .face_count = adaptive->faces()->size(),
+        .read_cell =
+            [](const void* context, std::size_t ordinal) {
+              const auto* records = static_cast<const wire::AdaptiveState*>(context);
+              return UnpackAdaptiveCell(records->cells()->Get(static_cast<flatbuffers::uoffset_t>(ordinal)));
+            },
+        .read_face =
+            [](const void* context, std::size_t ordinal) {
+              const auto* records = static_cast<const wire::AdaptiveState*>(context);
+              return UnpackAdaptiveFace(records->faces()->Get(static_cast<flatbuffers::uoffset_t>(ordinal)));
+            },
+    });
+    if (!adaptive_status.ok()) {
+      return cache_detail::Corrupt();
+    }
+  }
   if (!cache_detail::Finite(cache_detail::Unpack(state->world_origin())) || !cache_detail::Positive(state->cell_width())
       || !cache_detail::ValidClock(cache_detail::Unpack(state->clock())) || state->next_particle_id() == 0) {
     return cache_detail::Corrupt();
@@ -248,7 +339,7 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
     if (state->clock()->substep() != 0) {
       return cache_detail::Corrupt();
     }
-    auto resume = ReadResume(state->resume(), Counts(state));
+    auto resume = ReadResume(state->resume(), Counts(state), state->adaptive() != nullptr);
     if (!resume.ok()) {
       return resume.status();
     }
@@ -295,6 +386,10 @@ absl::StatusOr<LiquidState3D> MaterializeState(const wire::LiquidState* state) {
   CACHE_TRY(cache_detail::Materialize(result.sources, state->sources(), [](const auto* source) {
     return LiquidSourceState3D{source->ordinal(), source->next_child(), source->fractional_remainder()};
   }));
+  if (const auto* adaptive = state->adaptive()) {
+    CACHE_TRY(cache_detail::Materialize(result.adaptive_cells, adaptive->cells(), UnpackAdaptiveCell));
+    CACHE_TRY(cache_detail::Materialize(result.adaptive_faces, adaptive->faces(), UnpackAdaptiveFace));
+  }
   if (const auto* cavity = state->cavity()) {
     result.next_cavity_id = cavity->next_id();
     CACHE_TRY(cache_detail::Materialize(result.cavity_gas, cavity->gas(), [](const auto* gas) {
@@ -315,12 +410,14 @@ absl::StatusOr<LiquidCacheBytes3D>
 EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
   CACHE_TRY(ValidateLiquidState3D(state));
-  if (resume && (state.clock.substep_ordinal != 0 || !ValidResume(*resume, Counts(state)))) {
+  if (resume
+      && (state.clock.substep_ordinal != 0 || !ValidResume(*resume, Counts(state), state.adaptive_cells.size() != 0))) {
     return Invalid();
   }
+  const bool adaptive = state.adaptive_cells.size() != 0;
   const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
-      + state.sources.size() + state.cavity_gas.size() + state.cavity_components.size() + (state.next_cavity_id != 0)
-      + 1;
+      + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1)
+      + state.cavity_gas.size() + state.cavity_components.size() + (state.next_cavity_id != 0);
   return cache_detail::Build<wire::LiquidState>(
       table_count,
       limits,
@@ -399,6 +496,64 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
               &packed_replay_reservations
           );
         }
+        flatbuffers::Offset<wire::AdaptiveState> adaptive_state_offset;
+        if (adaptive) {
+          const auto adaptive_cells = cache_detail::BuildVector<wire::AdaptiveCell>(
+              builder,
+              state.adaptive_cells.size(),
+              [&](std::size_t ordinal) {
+                const auto& cell = state.adaptive_cells[ordinal];
+                const auto lower = cell.key.lower_corner;
+                const auto& inventory = cell.inventory;
+                const wire::Index3 index(lower.x, lower.y, lower.z);
+                const auto momentum = cache_detail::Pack(inventory.momentum_kg_m_per_s);
+                flatbuffers::Offset<flatbuffers::Vector<const wire::AdaptiveConstituentVolume*>> constituents;
+                if (inventory.constituent_count > 0) {
+                  std::array<wire::AdaptiveConstituentVolume, kMaximumLiquidParticleConstituents3D> entries;
+                  for (std::size_t constituent = 0; constituent < inventory.constituent_count; ++constituent) {
+                    const auto& entry = inventory.constituents[constituent];
+                    entries[constituent] = wire::AdaptiveConstituentVolume(entry.substance_id, entry.volume_m3);
+                  }
+                  constituents = builder.CreateVectorOfStructs(entries.data(), inventory.constituent_count);
+                }
+                return wire::CreateAdaptiveCell(
+                    builder,
+                    &index,
+                    cell.key.width_exponent,
+                    static_cast<wire::Occupancy>(cell.occupancy),
+                    inventory.mass_kg,
+                    inventory.reference_volume_m3,
+                    inventory.current_volume_m3,
+                    &momentum,
+                    inventory.enthalpy_j,
+                    cell.previous_pressure,
+                    inventory.phase_id,
+                    constituents
+                );
+              }
+          );
+          if (!adaptive_cells.ok()) {
+            return adaptive_cells.status();
+          }
+          const auto adaptive_faces = cache_detail::BuildVector<wire::AdaptiveFace>(
+              builder,
+              state.adaptive_faces.size(),
+              [&](std::size_t ordinal) {
+                const auto& face = state.adaptive_faces[ordinal];
+                return wire::CreateAdaptiveFace(
+                    builder,
+                    face.carrier_velocity,
+                    static_cast<wire::Validity>(face.validity),
+                    face.side_tag,
+                    face.structurally_eligible
+                );
+              }
+          );
+          if (!adaptive_faces.ok()) {
+            return adaptive_faces.status();
+          }
+          adaptive_state_offset = wire::CreateAdaptiveState(builder, *adaptive_cells, *adaptive_faces);
+        }
         flatbuffers::Offset<wire::CavitySnapshot> cavity;
         if (state.next_cavity_id != 0) {
           const auto gas = cache_detail::BuildVector<wire::CavityGasCell>(
@@ -440,7 +595,7 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
         const auto clock = cache_detail::Pack(state.clock);
         return wire::CreateLiquidState(
             builder,
-            1,
+            adaptive ? 2 : 1,
             0,
             &origin,
             state.geometry.cell_width,
@@ -453,7 +608,8 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
             *faces,
             *sources,
             resume_metadata_offset,
-            cavity
+            cavity,
+            adaptive_state_offset
         );
       }
   );
@@ -523,7 +679,7 @@ std::array<char, 65> LiquidDigestHex3D(const LiquidDigest3D& digest) {
   return result;
 }
 absl::StatusOr<std::array<char, 76>> LiquidContentName3D(const LiquidContentReference3D& reference) {
-  constexpr std::array<std::string_view, 4> extensions{".flst", ".flpt", ".flrs", ".flmf"};
+  constexpr std::array<std::string_view, 5> extensions{".flst", ".flpt", ".flrs", ".flmf", ".flsi"};
   const auto kind = static_cast<std::size_t>(reference.kind);
   if (kind >= extensions.size()) {
     return Invalid();
@@ -551,7 +707,7 @@ absl::Status VerifyLiquidContent3D(
     LiquidContentKind3D expected_kind,
     LiquidCacheLimits3D limits
 ) {
-  if (static_cast<std::uint8_t>(expected_kind) > 3 || reference.kind != expected_kind) {
+  if (expected_kind > LiquidContentKind3D::kCoupledState || reference.kind != expected_kind) {
     return Invalid();
   }
   if (bytes.size() > limits.maximum_bytes || bytes.size() >= FLATBUFFERS_MAX_BUFFER_SIZE) {
@@ -566,7 +722,7 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& stat
   return EncodeState(state, nullptr, limits);
 }
 absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits);
+  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
   if (!state.ok()) {
     return state.status();
   }
@@ -579,12 +735,12 @@ EncodeLiquidCheckpoint3D(const LiquidState3D& state, const LiquidResumeMetadata3
 }
 absl::StatusOr<LiquidCheckpoint3D>
 DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits);
+  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
   if (!state.ok()) {
     return state.status();
   }
   CACHE_TRY(ValidateWireState(*state, limits));
-  auto metadata = ReadResume((*state)->resume(), Counts(*state));
+  auto metadata = ReadResume((*state)->resume(), Counts(*state), (*state)->adaptive() != nullptr);
   if (!metadata.ok()) {
     return metadata.status();
   }

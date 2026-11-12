@@ -853,6 +853,7 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
       .update_particles = UpdateParticles,
       .sample_field_batch = SampleWorldBatch,
       .sample_lattice_plane = SampleLatticePlaneBatch,
+      .host_adaptive_pressure = true,
   };
 }
 }  // namespace fluidity

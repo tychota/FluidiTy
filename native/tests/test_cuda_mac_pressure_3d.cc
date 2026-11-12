@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
@@ -215,6 +216,37 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
               << " max_divergence=" << projection.diagnostics.max_cell_constraint_defect
               << " max_face_flux_error=" << max_face_flux_error << '\n';
   }
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto& topology = fixture->topology;
+  const auto& cells = fixture->cells;
+  auto& subfaces = fixture->subfaces;
+  const auto internal_slot = fixture->internal_slot;
+  const auto physical_graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, 1.0, cells, subfaces);
+  ASSERT_TRUE(physical_graph.ok()) << physical_graph.status();
+  const auto physical_result = pressure_internal::CudaProjectPreparedMacPressure3D(*physical_graph);
+  ASSERT_TRUE(physical_result.ok()) << physical_result.status();
+  ExpectDeviceAndMeasurement(physical_result->measurement);
+  const auto& physical_projection = physical_result->projection;
+  ASSERT_EQ(physical_projection.cell_pressures.size(), cells.size());
+  EXPECT_NEAR(physical_projection.cell_pressures[0], 1.28125, 2e-5);
+  EXPECT_NEAR(physical_projection.cell_pressures[1], 1.09375, 2e-5);
+  EXPECT_NEAR(physical_projection.corrected_face_velocities[internal_slot], 0.25, 2e-5);
+  EXPECT_NEAR(physical_projection.corrected_face_velocities[fixture->outlet_slot], 0.375, 2e-5);
+  EXPECT_LE(physical_projection.diagnostics.max_cell_constraint_defect, 2e-5);
+  std::cout << "adaptive_cut_subface_cuda max_divergence=" << physical_projection.diagnostics.max_cell_constraint_defect
+            << '\n';
+  if (physical_result->measurement.kernel_ms >= maximum_measurement.kernel_ms) {
+    maximum_measurement = physical_result->measurement;
+  }
+  pressure_test::QualifyAdaptivePressureCheckpoint([](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+    auto projected = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+    if (!projected.ok()) {
+      return projected.status();
+    }
+    EXPECT_EQ(projected->measurement.compiled_architecture, 1200);
+    return std::move(projected->projection);
+  });
   Receipt("explicit_coarse_fine_pressure", maximum_measurement);
 }
 

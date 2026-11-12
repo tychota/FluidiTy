@@ -9,6 +9,7 @@
 #include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/whitewater_volume_cache_3d.h"
+#include "graded_tank_fixture.h"
 #include "liquid_cavity_scheduler_cases.h"
 int Produce(int argc, const std::filesystem::path& path, bool digest, bool composition) {
   if (argc != 3) {
@@ -211,6 +212,13 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   if (args[5] != "defaults") {
     scene.scene.world_acceleration = {};
   }
+  constexpr std::array kPlasticBodies{
+      fluidity::PlasticSolidCheckpointBinding3D{9, 11, fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4}},
+  };
+  if (args[5] == "plastic-body") {
+    scene.model_version = fluidity::kPlasticBodyResolvedModel3D;
+    scene.plastic_bodies = kPlasticBodies;
+  }
   const bool slow_frame = args[5] == "slow";
   const bool whitewater_beach = args[5] == "whitewater-beach";
   const bool whitewater = args[5] == "whitewater-effects" || whitewater_beach;
@@ -218,6 +226,7 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool ocean = args[5] == "ocean" || ocean_level;
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
+  const bool graded_tank = args[5] == "graded-tank";
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -228,8 +237,8 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.obstacle = fluidity::AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
     scene.scene.liquid_density = 1.0;
   }
-  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean
-      || bounded_wave || shear_tank || mixed_surface || cavity_loss || rigid_tank;
+  const bool initial_particle = graded_tank || args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater
+      || ocean || bounded_wave || shear_tank || mixed_surface || cavity_loss || rigid_tank;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -319,7 +328,14 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.sources = std::span(&source, 1);
   }
   if (initial_particle) {
-    if (bounded_wave) {
+    if (graded_tank) {
+      const auto authored = fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
+      if (!authored.ok()) {
+        std::cerr << authored << '\n';
+        return 3;
+      }
+      scene.geometry = state.geometry;
+    } else if (bounded_wave) {
       const auto authored = SetBoundedWaveScene(scene, state, wave_column_seed);
       if (!authored.ok()) {
         std::cerr << authored << '\n';
@@ -442,6 +458,33 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     }
     upstream.byte_length = initial->size();
     upstream.digest = fluidity::LiquidContentDigest3D(initial->values());
+    scene.upstream = std::span(&upstream, 1);
+  }
+  if (args[5] == "plastic-body") {
+    const fluidity::DrySolidParticle3D snow{
+        .world_position = {1, 2, 3},
+        .mass = 300,
+        .reference_volume = 1,
+        .elastic_deformation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+    };
+    const auto particle = fluidity::CapturePlasticSolidCheckpointParticle3D(1, 9, 11, kPlasticBodies[0].material, snow);
+    if (!particle.ok()) {
+      return 4;
+    }
+    const fluidity::SolidInteractionCheckpoint3D solid{.accepted_step = 0, .plastic_particles = {*particle}};
+    const auto initial = fluidity::EncodeCoupledInteractionCheckpoint3D(state, solid, kPlasticBodies);
+    if (!initial.ok()) {
+      return 4;
+    }
+    auto initial_path = args[2];
+    initial_path += ".flsi";
+    std::ofstream stream(initial_path, std::ios::binary);
+    stream.write(reinterpret_cast<const char*>(initial->data()), initial->size());
+    if (!stream) {
+      return 5;
+    }
+    upstream.byte_length = initial->size();
+    upstream.digest = fluidity::LiquidContentDigest3D(*initial);
     scene.upstream = std::span(&upstream, 1);
   }
   if (args[1] == "wrong-clock" || args[1] == "growth-cache") {

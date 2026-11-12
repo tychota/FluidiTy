@@ -94,6 +94,13 @@ bool TestPlasticCheckpointHandoff() {
       fluidity::PlasticSolidCheckpointBinding3D{9, 11, snow},
       fluidity::PlasticSolidCheckpointBinding3D{12, 13, sand},
   };
+  auto invalid_empty_binding = bindings[0];
+  std::get<fluidity::SnowParameters3D>(invalid_empty_binding.material).compression_limit = 1;
+  if (fluidity::ValidatePlasticSolidCheckpointParticles3D({}, {&invalid_empty_binding, 1}).code()
+      != absl::StatusCode::kInvalidArgument) {
+    std::fprintf(stderr, "Invalid resolved material for an empty snow body was accepted\n");
+    return false;
+  }
   const std::array mixed_records{*sand_record, decoded};
   if (!fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, bindings).ok()) {
     return false;
@@ -143,6 +150,15 @@ bool TestPlasticCheckpointHandoff() {
   flatbuffers::FlatBufferBuilder owning_builder;
   const auto empty_vector = fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, {}, bindings, 0);
   if (!empty_vector.ok() || !empty_vector->IsNull() || owning_builder.GetSize() != 0) {
+    return false;
+  }
+  const std::span<const fluidity::PlasticSolidCheckpointBinding3D> invalid_bindings{&invalid_empty_binding, 1};
+  const auto invalid_empty_encode =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, {}, invalid_bindings, 0);
+  const auto invalid_empty_decode =
+      fluidity::internal::DecodePlasticCheckpointWireVector3D(1, nullptr, invalid_bindings, 0);
+  if (invalid_empty_encode.status().code() != absl::StatusCode::kInvalidArgument
+      || invalid_empty_decode.status().code() != absl::StatusCode::kInvalidArgument || owning_builder.GetSize() != 0) {
     return false;
   }
   const auto encoded_batch =

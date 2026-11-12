@@ -13,6 +13,7 @@
 
 #include "../src/mac_pressure_3d_system.h"
 #include "absl/status/status.h"
+#include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
@@ -48,6 +49,57 @@ MacPressureCell3D IncompressibleCellAtX(std::int32_t x) {
   return {.cell_index = {x, 0, 0}, .fluid_volume = 1.0, .bulk_modulus = kInfinity};
 }
 
+TEST(MacPressureExplicitGraph3D, BindsPhysicalInputsToCanonicalAdaptiveSubfaces) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto& topology = fixture->topology;
+  const auto& cells = fixture->cells;
+  auto& subfaces = fixture->subfaces;
+  const auto internal_slot = fixture->internal_slot;
+  const auto graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, 1.0, cells, subfaces);
+  ASSERT_TRUE(graph.ok()) << graph.status();
+  EXPECT_EQ(graph->links().size(), subfaces.size());
+  EXPECT_DOUBLE_EQ(graph->links()[internal_slot].blocked_area, 0.125);
+  EXPECT_DOUBLE_EQ(graph->links()[internal_slot].prescribed_wall_flux, 0.0625);
+  EXPECT_DOUBLE_EQ(graph->cells()[0].integrated_target_flux, 0.09375);
+  const std::array pressure{1.28125, 1.09375};
+  const auto result = EvaluateMacPressure3D(*graph, pressure);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_NEAR(result->diagnostics.max_cell_constraint_defect, 0, 1e-12);
+
+  auto workspace = MacPressureWorkspace3D::Create(cells.size(), subfaces.size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto projected = workspace->ProjectPrepared(*graph);
+  ASSERT_TRUE(projected.ok()) << projected.status();
+  EXPECT_NEAR(projected->cell_pressures[0], pressure[0], 1e-6);
+  EXPECT_NEAR(projected->cell_pressures[1], pressure[1], 1e-6);
+  EXPECT_NEAR(projected->corrected_face_velocities[internal_slot], 0.25, 1e-6);
+  EXPECT_NEAR(projected->corrected_face_velocities[fixture->outlet_slot], 0.375, 1e-6);
+
+  auto sealed_cells = cells;
+  sealed_cells[0].target_divergence = 0.0625;
+  subfaces[internal_slot].open_area_m2 = 0;
+  const auto sealed = pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, 1, sealed_cells, subfaces);
+  ASSERT_TRUE(sealed.ok()) << sealed.status();
+  ASSERT_EQ(sealed->gauge_cell_ordinals().size(), 1U);
+  EXPECT_EQ(sealed->gauge_cell_ordinals().front(), 0U);
+  const std::array sealed_pressures{0.0, 1.0625};
+  const auto sealed_result = EvaluateMacPressure3D(*sealed, sealed_pressures);
+  ASSERT_TRUE(sealed_result.ok()) << sealed_result.status();
+  EXPECT_NEAR(sealed_result->diagnostics.max_cell_constraint_defect, 0, 1e-12);
+  subfaces[internal_slot].open_area_m2 = 0.5;
+  EXPECT_EQ(
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, 1.0, cells, subfaces).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+TEST(MacPressureExplicitGraph3D, CheckpointReplaysAcceptedAdaptivePressure) {
+  auto workspace = MacPressureWorkspace3D::Create(2, 14);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::QualifyAdaptivePressureCheckpoint([&](const auto& system) {
+    return workspace->ProjectPrepared(system);
+  });
+}
 TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
   const std::array cells{
       IncompressibleCellAtX(0),

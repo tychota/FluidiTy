@@ -10,6 +10,8 @@
 
 namespace fluidity {
 
+inline constexpr std::size_t kMaximumLiquidParticleConstituents3D = 8;
+
 struct LiquidPhasePair3D {
   std::uint64_t phase_a;
   std::uint64_t phase_b;  // Strictly greater than phase_a.
