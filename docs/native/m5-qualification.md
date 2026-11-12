@@ -1806,6 +1806,22 @@ ctest --test-dir out/build/m5-resolved-clean -R '^LiquidBoundaryGeometry3D\.' --
 ctest --test-dir out/build/windows-release-cuda -R '^M5Constitutive\.cuda$' --output-on-failure
 ```
 
-The production freeze still needs particle-derived snow samples, pressure
-flux and traction on the same moving boundary, and connectivity checks
-for cells cut into separate wet regions.
+The common pressure-grid freeze accepts sorted solid corner samples and
+one signed wall-normal velocity per owned face slot. The oblique fixture
+produces two pressure cells with eleven distinct faces. The shared face
+carries one 0.75 m² aperture and 0.2 m/s wall-normal velocity, giving
+0.05 m³/s blocked-area wall flux in the internal pressure link.
+A missing solid corner rejects before publishing frozen geometry.
+The owning and arena-backed SM120 paths return identical cell volumes,
+face slots, apertures, and wall velocities. All 74 native geometry and
+workspace checks and six CUDA boundary checks pass.
+
+```powershell
+ctest --test-dir out/build/m5-resolved-clean -R '^LiquidBoundary(Geometry|Workspace)3D\.' --output-on-failure
+ctest --test-dir out/build/windows-release-cuda -R '^CudaLiquidBoundary3D\.' --output-on-failure
+```
+
+The sampled input currently requires an otherwise unobstructed domain.
+The mixed scheduler still needs particle-derived samples, composition
+with the tank and moving obstacle, connectivity checks for split wet
+regions, and a reciprocal traction scatter using the same geometry.

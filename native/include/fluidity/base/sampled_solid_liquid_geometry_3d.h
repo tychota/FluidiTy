@@ -135,4 +135,37 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
   return result;
 }
 
+FLUIDITY_HD inline bool IsSampledSolidMode(GeometryMode mode) {
+  return mode == GeometryMode::kSampledSolidCell || mode == GeometryMode::kSampledSolidFace;
+}
+
+// Maps the staged samples to the existing freeze query result. A face
+// query supplies the four corners on the low side of the selected axis.
+FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const GeometryInput& input) {
+  const bool is_face = input.mode == GeometryMode::kSampledSolidFace;
+  if (is_face && (input.axis < 0 || input.axis >= 3)) {
+    return Error::kInvalid;
+  }
+  SampledSolidLiquidCell cell{.cell_width = input.geometry.cell_width};
+  for (int corner = 0; corner < 8; ++corner) {
+    cell.liquid_distance[corner] = input.corner_distances[corner];
+    cell.solid_distance[corner] = input.derivative_distances[corner];
+  }
+  const auto measures = MeasureSampledSolidLiquidCell(cell);
+  if (!measures.ok()) {
+    return measures.status();
+  }
+  GeometryOutput result;
+  if (is_face) {
+    result.open_face_area = measures->open_area[2 * input.axis];
+    result.blocked_face_area = cell.cell_width * cell.cell_width - result.open_face_area;
+    if (!IsNormalOrZero(result.blocked_face_area)) {
+      return Error::kRange;
+    }
+  } else {
+    result.high_side_liquid_volume = measures->wet_volume;
+  }
+  return result;
+}
+
 }  // namespace fluidity::boundary_internal

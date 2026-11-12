@@ -1,11 +1,14 @@
 #include <cuda_runtime.h>
 
+#include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "liquid_boundary_3d_bridge.h"
 namespace fluidity::cuda_internal {
 namespace {
 __global__ void
 LiquidBoundaryGeometry3DKernel(const boundary_internal::GeometryInput* input, BoundaryReport3D* output) {
-  const auto result = boundary_internal::ComputeGeometry(*input);
+  const auto result = boundary_internal::IsSampledSolidMode(input->mode)
+      ? boundary_internal::ComputeSampledSolidGeometry(*input)
+      : boundary_internal::ComputeGeometry(*input);
   output->error = result.status();
   if (result.ok()) {
     output->geometry = *result;
@@ -33,7 +36,14 @@ __global__ void LiquidBoundaryGeometryBatch3DKernel(
     output.error = boundary_internal::Error::kInvalid;
     return;
   }
-  const auto result = boundary_internal::ComputeGeometryForMode<kMode>(query);
+  const auto result = [&] {
+    if constexpr (kMode == boundary_internal::GeometryMode::kSampledSolidCell
+                  || kMode == boundary_internal::GeometryMode::kSampledSolidFace) {
+      return boundary_internal::ComputeSampledSolidGeometry(query);
+    } else {
+      return boundary_internal::ComputeGeometryForMode<kMode>(query);
+    }
+  }();
   output.error = result.status();
   if (result.ok()) {
     output.output = *result;
@@ -71,6 +81,14 @@ int LaunchLiquidBoundaryGeometryBatch3D(
       break;
     case GeometryMode::kFace:
       LiquidBoundaryGeometryBatch3DKernel<GeometryMode::kFace>
+          <<<block_count, kThreadsPerBlock, 0, cuda_stream>>>(queries, results, count);
+      break;
+    case GeometryMode::kSampledSolidCell:
+      LiquidBoundaryGeometryBatch3DKernel<GeometryMode::kSampledSolidCell>
+          <<<block_count, kThreadsPerBlock, 0, cuda_stream>>>(queries, results, count);
+      break;
+    case GeometryMode::kSampledSolidFace:
+      LiquidBoundaryGeometryBatch3DKernel<GeometryMode::kSampledSolidFace>
           <<<block_count, kThreadsPerBlock, 0, cuda_stream>>>(queries, results, count);
       break;
     case GeometryMode::kCurvature:

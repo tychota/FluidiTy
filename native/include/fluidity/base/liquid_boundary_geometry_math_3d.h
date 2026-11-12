@@ -77,6 +77,8 @@ enum class GeometryMode {
   kCurvature,
   kCapillary,
   kLink,
+  kSampledSolidCell,
+  kSampledSolidFace,
   kRuntime,  // Template selector only. A staged query always names a concrete mode.
 };
 struct GeometryInput {
@@ -85,7 +87,10 @@ struct GeometryInput {
   CellIndex3D index{};
   Obstacle obstacle{};
   double corner_distances[8]{};  // Physical liquid distances, m; x/y/z corner bits.
-  double derivative_distances[27]{};  // Physical distances, m; 3x3x3 halo, x fastest; eight outer corners unused.
+  // Curvature: 3x3x3 derivative halo in m, x fastest, eight outer corners
+  // unused. Sampled solid cell and face modes use the first eight entries
+  // for solid corner distances in x/y/z corner-bit order.
+  double derivative_distances[27]{};
   int axis = 0;
   double liquid_density = 0;  // kg/m^3.
   double surface_tension = 0;  // N/m.

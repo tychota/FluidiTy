@@ -303,6 +303,11 @@ TEST(LiquidBoundaryGeometry3D, ThinSlabInvisibleToCornersAndSplitCellRefusal) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
 }
+TEST(LiquidBoundaryGeometry3D, SampledSolidFreezeSharesOnePressureFace) {
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
+  cases.SampledSolidFreezeSharesOnePressureFace();
+}
+
 TEST(LiquidBoundaryGeometry3D, SharedFaceHasOneOwnerAndMatchingTriangulation) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();
