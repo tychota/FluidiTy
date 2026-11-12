@@ -1744,10 +1744,24 @@ the scheduler gate. A same-length byte change returns `DATA_LOSS` on
 paths leave the cache unpublished. The `SimulateCli.execution_validation`
 test covers this preflight.
 
-The extended compatible-floor CUDA runs can be invoked separately using
-`FLUIDITY_DRY_QUALIFICATION_CASE=fine`, `coarse`, `coarse-half`, or
-`fine-half` with `FLUIDITY_DRY_QUALIFICATION=1` and
-`FLUIDITY_DRY_COMPATIBLE_FLOOR=1`. Use a fresh process for each case.
+Pass one case name after the extended qualification flag to use a fresh
+process for each CUDA case.
+
+```powershell
+foreach ($case in 'fine', 'coarse', 'coarse-half', 'fine-half') {
+  .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle $case
+}
+```
 The nominal fine case reproduced the native 27.424648-degree final
 angle and 0.223715-degree late drift. The process returned a failed
 qualification because the final angle was outside the 30–35 degree band.
+
+The milestone branch includes upstream `db4636d`, which adds the M6
+rigid-frame path and liquid gather and tank-contact momentum accounting.
+After rebuilding the CLI and fixture, `SimulateCli.rigid_frame`,
+`SimulateCli.cpu_execution`, and `SimulateCli.execution_validation` all
+passed. The integrated rigid path retains the mixed initial-state gate.
+The remaining production evidence is an authored Blender snow–water bake
+with general moving-interface reconstruction, reciprocal pressure and
+contact through the liquid scheduler, internal snow stress evolution, and
+joint restart through that same execution path.
