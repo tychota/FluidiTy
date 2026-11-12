@@ -2020,3 +2020,33 @@ cmake --build $build --target fluidity_simulate fluidity_blender_bridge
 & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $build "$tree/out/authored-repro" cpu
 & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_points.py" -- $tree $build (Resolve-Path out/pr-m5-mixed-cli/out/diagnostic-mixed/cache).Path "$tree/out/verified-mixed-channels.blend"
 ```
+
+
+### Pressure feedback at the authored failure
+
+A temporary native diagnostic on the authored case showed that the
+pressure impulse is nearly independent of timestep over the retries
+from the same state. At t = 0.08984375 s, the maximum pressure rose
+from 193,822 Pa to 387,644 Pa and 775,287 Pa as the trial duration
+halved twice. Maximum wall flux stayed 3.51633 m³/s and the largest
+corner impulse stayed 141.959 N·s. Snow translational kinetic energy
+rose from 284.43 J to about 4,007.26 J when that impulse was staged,
+before the dry advance. The result identifies an unstable lag in the
+pressure and snow velocity feedback that a shorter timestep alone
+cannot resolve in this fixture. The temporary instrumentation was removed.
+
+Draft PR 107 commit `bce5e94` builds the frozen snow pressure mobility
+from the existing reciprocal traction coefficients and the APIC
+mass metric. The native unit-mass cut-cell fixture checks the sign and
+magnitude of the induced flux using independent linear and affine
+impulse work, and checks linear scaling under pressure reversal.
+All 47 selected native geometry and joint snow scheduler tests passed.
+
+```powershell
+cmake --build out/pr-m5-blender-snow/out/build/blender-snow-cpu --target fluidity_native_tests
+ctest --test-dir out/pr-m5-blender-snow/out/build/blender-snow-cpu -R '^(LiquidBoundaryGeometry3D\.|LiquidSubstep3D\.Snow)' --no-tests=error --output-on-failure
+```
+
+The projection still needs to include this mobility in its pressure
+system and apply the resulting snow impulse and liquid velocity in
+the same accepted step. The authored bake remains open.
