@@ -326,6 +326,41 @@ out/m5-impact-split-gradient.patch against 820cde2, rebuild both Release
 scene targets, and run both the grid-phase and half-step commands to
 repeat the control.
 
+### Coulomb-projected post-impact deformation
+
+Extend the normal-only split by differentiating the tangential Coulomb
+projection for the stationary floor. Let u be incoming tangential
+velocity, n be the signed incoming normal velocity, and r = |u|.
+In sliding, the post-impact tangent is (1 + μn/r)u. Differentiate
+both the tangent vector and the scale using the frozen gathered gradient.
+In sticking, use a zero post-impact gradient. The normal row is zero
+in both contacting branches. Twelve directional central differences
+away from branch boundaries checked the sliding, sticking, frictionless
+and separating formulas to 1e-9. The prototype freezes the local branch
+and the impact fraction and retains the existing particle trajectory,
+impulses and APIC slope storage.
+
+| h (m) | nominal dt (s) | Origin (x, z) in cell widths | Normal-only envelope | Coulomb-projected envelope |
+|---|---:|---|---:|---:|
+| 0.075 | 0.001875 | (0, 0) | 31.234535° | 32.825896° |
+| 0.075 | 0.001875 | (0.5, 0) | 31.141341° | 32.524599° |
+| 0.075 | 0.001875 | (0.5, 0.5) | 31.102911° | 32.251450° |
+| 0.0625 | 0.0015625 | (0, 0) | 28.757479° | 30.052977° |
+| 0.0625 | 0.0015625 | (0.5, 0) | 28.127354° | 29.383951° |
+| 0.0625 | 0.0015625 | (0.5, 0.5) | 27.222141° | 28.351919° |
+| 0.075 | 0.0009375 | (0, 0) | 37.701706° | 37.729429° |
+| 0.0625 | 0.00078125 | (0, 0) | 33.075978° | 33.013884° |
+
+Native angles are shown. CUDA agrees within 0.000001° at the printed
+precision. All sixteen runs pass the vertical momentum and drift checks.
+The centered nominal finer case reaches the gate by 0.052977°, while
+both shifted cases miss. The centered coarse half-step case remains above
+35°. This locates an influence on the nominal angle and leaves the
+alignment and timestep sensitivity unresolved. Apply
+out/m5-impact-coulomb-gradient.patch against 4c116dd, rebuild both
+Release scene targets, and run the grid-phase and half-step commands.
+The production solver was restored.
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
