@@ -22,6 +22,10 @@ struct AcceptedDrySolid3D {
 absl::StatusOr<AcceptedDrySolid3D>
 EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const DrySolidMaterial3D& material);
 
+// Recognizes a dry step whose displacement or acoustic bound permits a retry
+// with shorter duration. Other FailedPrecondition errors remain terminal.
+bool DrySolidDurationExceeded3D(const absl::Status& status);
+
 // Differentiates the stationary y-up floor Coulomb velocity map at the
 // incoming world velocity. The input and result gradients are in inverse
 // seconds. Supply finite values and a nonnegative friction coefficient.

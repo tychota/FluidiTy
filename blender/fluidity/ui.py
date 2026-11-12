@@ -167,6 +167,11 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
         column = controls(self.layout, scene)
         if settings.boundary_mode == "LEGACY_PADDLE":
             input_object(column, settings, "paddle", "Animated Paddle")
+        elif settings.boundary_mode == "SNOW_PLATEN":
+            input_object(column, settings, "collider", "Animated Platen")
+            input_object(column, settings, "snow_mound", "Snow Mound Bounds")
+            for field in ("snow_density", "snow_shear", "snow_lambda", "snow_compression", "snow_stretch", "snow_hardening"):
+                column.prop(settings, field)
         elif settings.boundary_mode in {"PLANE", "SLAB"}:
             input_object(column, settings, "collider", "Collider")
             if context.object and context.object.type == "MESH":

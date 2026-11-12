@@ -926,7 +926,11 @@ struct LiquidSubstepScheduler3D::SnowTrial {
           .velocity_y = platen->wall_velocity.y,
       };
     }
-    STEP_TRY(AdvanceDrySolid3D(inputs.solid_grid, inputs.snow, settings, *particles));
+    const auto dry_status = AdvanceDrySolid3D(inputs.solid_grid, inputs.snow, settings, *particles);
+    if (internal::DrySolidDurationExceeded3D(dry_status)) {
+      return absl::AbortedError(dry_status.message());
+    }
+    STEP_TRY(dry_status);
     for (const auto& liquid : trial_liquid.particles.values()) {
       const auto old_particles = committed_liquid.particles.values();
       const auto old_liquid = std::ranges::find(old_particles, liquid.id, &LiquidParticleState3D::id);
