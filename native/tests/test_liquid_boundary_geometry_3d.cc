@@ -4,6 +4,7 @@
 
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
+#include "fluidity/host/plastic_solid_boundary_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
 #include "liquid_boundary_geometry_3d_cases.h"
 namespace fluidity::boundary_test {
@@ -73,6 +74,55 @@ TEST(LiquidBoundaryGeometry3D, SampledSolidFaceWeightsIntegrateAffineWallFlux) {
   const auto open = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {1.0, 1.0, 1.0, 1.0});
   ASSERT_TRUE(open.ok());
   EXPECT_EQ(std::accumulate(open->begin(), open->end(), 0.0), 0.0);
+}
+
+TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
+  const auto grid = *SparseMacGrid3D::Create({{}, 1.0}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  const std::array cells{CellIndex3D{0, 0, 0}};
+  const std::array centers{LiquidCenterDistance3D{{0, 0, 0}, -1}};
+  std::array<LiquidCornerDistance3D, 8> corners{};
+  for (int corner = 0; corner < 8; ++corner) {
+    corners[corner] = {{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1}, -1.0};
+  }
+  const std::array particles{
+      PlasticSolidCheckpointParticle3D{
+          .particle_id = 7,
+          .body_id = 4,
+          .material_id = 1,
+          .transfer =
+              {
+                  .sorted_world_position = {},
+                  .trial_world_position = {},
+                  .particle_mass = 1,
+                  .particle_velocity = {2, 0, 0},
+                  .particle_velocity_slopes = {.x_row = {0, 4, 0}},
+              },
+      },
+  };
+  const auto sampled = SamplePlasticSolidBoundary3D(grid.view(), corners, particles, 4, 0.5);
+  ASSERT_TRUE(sampled.ok()) << sampled.status();
+  EXPECT_DOUBLE_EQ(sampled->corners.values()[0].signed_distance, -0.5);
+  EXPECT_DOUBLE_EQ(sampled->corners.values()[2].wall_velocity.x, 6.0);
+  EXPECT_EQ(sampled->particle_ids.values()[2], 7);
+  const auto frozen = FreezeLiquidBoundaryGeometry3D({
+      .mac_grid = grid,
+      .cell_indices = cells,
+      .center_distances = centers,
+      .corner_distances = corners,
+      .obstacle = {},
+      .step_duration = 0.01,
+      .liquid_density = 1.0,
+      .surface_tension = 0.0,
+      .sampled_solid = sampled->View(),
+  });
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  EXPECT_NEAR(frozen->cells().front().fluid_volume, 1.0 - 0.125 / std::sqrt(6.0), 2e-14);
+  const auto face = std::ranges::find(frozen->faces(), FaceNormalAxis::kX, [](const FrozenLiquidFace3D& f) {
+    return f.face_index.axis;
+  });
+  ASSERT_NE(face, frozen->faces().end());
+  ASSERT_TRUE(face->prescribed_wall_flux.has_value());
 }
 
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
