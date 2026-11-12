@@ -229,6 +229,33 @@ envelope angle in every refined run. Thus an envelope dominated by the
 outermost grains does not explain the Q-SAND discrepancy. The gate still
 uses the original protocol and remains open.
 
+### Stationary floor deformation history
+
+Starting from 476ce05, the experimental sand step gathered a second
+velocity field for the deformation gradient alone. At the stationary
+floor, set the y-normal face on the plane to zero. For faces below the
+plane, use the reflected positive-mass donor with odd parity for y
+velocity and even parity for x and z. Use the original value if the donor
+is unavailable. The cell-centered staggered offset makes the donor
+lattice index −y−1 for tangential faces and −y for normal faces.
+The deposited force, PIC transport, incoming contact velocities,
+stored-velocity reaction and affine fit all use their original fields.
+
+| h (m) | nominal dt (s) | Original envelope | Reflected-gradient envelope | Reflected-gradient surface fit |
+|---|---:|---:|---:|---:|
+| 0.0375 | 0.00078125 | 21.217540° | 21.452741° | 7.454601° |
+| 0.03125 | 0.00078125 | 20.379811° | 17.789592° | 1.773206° |
+| 0.0375 | 0.000390625 | 22.110279° | 21.881091° | 11.492093° |
+| 0.03125 | 0.000390625 | 22.184540° | 20.701303° | 14.766756° |
+
+Native results shown. CUDA agreed within 1e-5° for the reported angles.
+The momentum checks passed and every angle gate still failed. The
+prototype changed the gradient alone, so it does not test the full
+compatible deposit and ghost gather pair or its work budget. The
+experimental source was reverted. The exact local comparison diff is
+in the worktree's out/m5-floor-reflected-gradient.patch. Apply it against
+476ce05 and run the refined-grid commands below to repeat the control.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -294,6 +321,11 @@ M6 commit 2294680 adds isolated rigid pressure traction and torque from
 ordered, certified wet patches and solved liquid pressures. The mixed
 transaction still needs to produce and consume those patches at the
 declared pressure time level.
+
+M6 commit 2627937 also publishes the planar wetted piston pressure load
+with accepted liquid substeps. This establishes an accepted load receipt
+for that geometry. A mixed snow/liquid substep, body-state advance, and
+joint checkpoint still require separate evidence.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
