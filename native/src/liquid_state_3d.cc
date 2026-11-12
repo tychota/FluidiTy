@@ -1,9 +1,12 @@
 #include "fluidity/host/liquid_state_3d.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -162,15 +165,52 @@ absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool adaptive, bo
   return absl::OkStatus();
 }
 using AdaptiveCoordinates = std::array<std::int64_t, 3>;
-using AdaptiveSideCoverage = std::array<unsigned, 6>;
+using AdaptiveSideCoverage = std::array<std::uint8_t, 6>;
 
-AdaptiveCoordinates AdaptiveLowerCorner(const LiquidAdaptiveCellState3D& cell) {
-  const auto corner = cell.key.lower_corner;
+AdaptiveCoordinates AdaptiveLowerCorner(CellIndex3D corner) {
   return {corner.x, corner.y, corner.z};
 }
 
-std::int64_t AdaptiveWidth(const LiquidAdaptiveCellState3D& cell) {
-  return std::int64_t{1} << cell.key.width_exponent;
+std::int64_t AdaptiveWidth(std::uint8_t width_exponent) {
+  return std::int64_t{1} << width_exponent;
+}
+
+auto AdaptiveCornerOrder(const AdaptiveCoordinates& corner) {
+  return std::tuple{corner[2], corner[1], corner[0]};
+}
+
+std::int64_t FloorToAdaptiveWidth(std::int64_t coordinate, std::int64_t width) {
+  const auto remainder = coordinate % width;
+  return coordinate - remainder - (remainder < 0 ? width : 0);
+}
+
+std::optional<std::size_t> FindContainingAdaptiveLeaf(
+    std::span<const AdaptiveMacCellKey3D> keys,
+    const AdaptiveCoordinates& point,
+    std::uint32_t candidate_widths
+) {
+  while (candidate_widths != 0) {
+    const auto exponent = static_cast<std::uint8_t>(std::countr_zero(candidate_widths));
+    candidate_widths &= candidate_widths - 1;
+    const auto width = AdaptiveWidth(exponent);
+    const auto corner = AdaptiveCornerOrder({
+        FloorToAdaptiveWidth(point[0], width),
+        FloorToAdaptiveWidth(point[1], width),
+        FloorToAdaptiveWidth(point[2], width),
+    });
+    const auto key_order = [](const AdaptiveMacCellKey3D& key) {
+      return AdaptiveCornerOrder(AdaptiveLowerCorner(key.lower_corner));
+    };
+    const auto match = std::ranges::lower_bound(keys, corner, {}, key_order);
+    if (match != keys.end() && match->width_exponent == exponent && key_order(*match) == corner) {
+      return static_cast<std::size_t>(match - keys.begin());
+    }
+  }
+  return std::nullopt;
+}
+
+std::uint32_t WidthsAtOrAbove(std::uint32_t occupied_widths, unsigned width_exponent) {
+  return occupied_widths & (std::numeric_limits<std::uint32_t>::max() << width_exponent);
 }
 
 bool IsNonnegativeFinite(double value) {
@@ -178,7 +218,7 @@ bool IsNonnegativeFinite(double value) {
 }
 
 // A 2:1 face covers the whole smaller side and one quarter of the larger.
-unsigned AdaptiveFaceCoverage(
+std::uint8_t AdaptiveFaceCoverage(
     const AdaptiveCoordinates& lower,
     const AdaptiveCoordinates& other_lower,
     std::int64_t width,
@@ -192,11 +232,89 @@ unsigned AdaptiveFaceCoverage(
   const auto second_tangent = (normal_axis + 2) % 3;
   const unsigned first_half = other_lower[first_tangent] - lower[first_tangent] >= other_width ? 1 : 0;
   const unsigned second_half = other_lower[second_tangent] - lower[second_tangent] >= other_width ? 2 : 0;
-  return 1U << (first_half + second_half);
+  return static_cast<std::uint8_t>(1U << (first_half + second_half));
+}
+
+std::optional<std::size_t>
+CountAdaptiveSubfaces(std::span<const AdaptiveMacCellKey3D> active_keys, std::uint32_t occupied_widths) {
+  // Distinct aligned dyadic leaves can overlap only through ancestry.
+  for (const auto& key : active_keys) {
+    const auto coarser_widths = WidthsAtOrAbove(occupied_widths, key.width_exponent + 1U);
+    if (FindContainingAdaptiveLeaf(active_keys, AdaptiveLowerCorner(key.lower_corner), coarser_widths)) {
+      return std::nullopt;
+    }
+  }
+
+  std::array<AdaptiveSideCoverage, kMaximumAdaptiveLiquidCells3D> coverage{};
+  std::size_t subface_count = 0;
+  for (std::size_t cell = 0; cell < active_keys.size(); ++cell) {
+    const auto& key = active_keys[cell];
+    const auto lower = AdaptiveLowerCorner(key.lower_corner);
+    const auto width = AdaptiveWidth(key.width_exponent);
+    const auto same_or_coarser_widths = WidthsAtOrAbove(occupied_widths, key.width_exponent);
+
+    // Search from the finer endpoint. In a tangential axis its interval lies
+    // within the coarser interval. In a touching axis the immediately adjacent
+    // finest cell is in the neighbor. This resolves all face, edge and corner
+    // contacts with one probe per direction, regardless of grading.
+    for (int z = -1; z <= 1; ++z) {
+      for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+          const auto contact_axes = std::abs(x) + std::abs(y) + std::abs(z);
+          if (contact_axes == 0) {
+            continue;
+          }
+          const std::array direction{x, y, z};
+          auto point = lower;
+          for (std::size_t axis = 0; axis < direction.size(); ++axis) {
+            if (direction[axis] < 0) {
+              --point[axis];
+            } else if (direction[axis] > 0) {
+              point[axis] += width;
+            }
+          }
+          const auto neighbor = FindContainingAdaptiveLeaf(active_keys, point, same_or_coarser_widths);
+          if (!neighbor) {
+            continue;
+          }
+          const auto& neighbor_key = active_keys[*neighbor];
+          if (neighbor_key.width_exponent > key.width_exponent + 1U) {
+            return std::nullopt;
+          }
+          // Mixed-width faces appear only from the finer endpoint. Count
+          // equal-width faces once, from the earlier canonical leaf.
+          const bool already_counted = neighbor_key.width_exponent == key.width_exponent && *neighbor < cell;
+          if (contact_axes != 1 || already_counted) {
+            continue;
+          }
+          const auto normal = std::ranges::find_if(direction, [](int sign) {
+            return sign != 0;
+          });
+          const auto axis = static_cast<std::size_t>(normal - direction.begin());
+          const bool high_side = *normal > 0;
+          ++subface_count;
+          coverage[cell][2 * axis + high_side] = 15;
+          coverage[*neighbor][2 * axis + !high_side] |= AdaptiveFaceCoverage(
+              AdaptiveLowerCorner(neighbor_key.lower_corner),
+              lower,
+              AdaptiveWidth(neighbor_key.width_exponent),
+              width,
+              axis
+          );
+        }
+      }
+    }
+  }
+  for (const auto& sides : std::span(coverage).first(active_keys.size())) {
+    for (const auto covered : sides) {
+      subface_count += covered == 0 ? 1 : 4 - std::popcount(covered);
+    }
+  }
+  return subface_count;
 }
 
 // Count exactly the canonical owned subfaces without allocating inside a
-// transaction attempt. Pairwise contacts enforce grading at edges and corners.
+// transaction attempt.
 absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRecordView3D& records) {
   if (records.cell_count == 0) {
     return records.face_count == 0 ? absl::OkStatus() : absl::Status(absl::StatusCode::kInvalidArgument, {});
@@ -204,19 +322,20 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
   if (records.cell_count > kMaximumAdaptiveLiquidCells3D || records.face_count > kMaximumAdaptiveLiquidFaces3D) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  const auto cell_at = [&](std::size_t ordinal) {
-    return records.read_cell(records.context, ordinal);
-  };
+  std::array<AdaptiveMacCellKey3D, kMaximumAdaptiveLiquidCells3D> keys;
+  std::uint32_t occupied_widths = 0;
+  auto prior_upper_z = std::numeric_limits<std::int64_t>::min();
+  bool may_have_contacts = false;
   for (std::size_t ordinal = 0; ordinal < records.cell_count; ++ordinal) {
-    const auto cell = cell_at(ordinal);
+    const auto cell = records.read_cell(records.context, ordinal);
     if (cell.key.width_exponent > 30 || cell.occupancy > LiquidCellOccupancy3D::kSolid
         || cell.material_owner > AdaptiveLiquidMaterialOwner3D::kEulerian
-        || (ordinal > 0
-            && LatticeSortKey(cell_at(ordinal - 1).key.lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
+        || (ordinal > 0 && LatticeSortKey(keys[ordinal - 1].lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const auto width = AdaptiveWidth(cell);
-    for (const auto coordinate : AdaptiveLowerCorner(cell)) {
+    const auto width = AdaptiveWidth(cell.key.width_exponent);
+    const auto lower = AdaptiveLowerCorner(cell.key.lower_corner);
+    for (const auto coordinate : lower) {
       if (coordinate % width != 0) {
         return absl::Status(absl::StatusCode::kInvalidArgument, {});
       }
@@ -237,59 +356,17 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
         || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
+    may_have_contacts |= lower[2] <= prior_upper_z;
+    prior_upper_z = std::max(prior_upper_z, lower[2] + width);
+    keys[ordinal] = cell.key;
+    occupied_widths |= std::uint32_t{1} << cell.key.width_exponent;
   }
 
-  std::array<AdaptiveSideCoverage, kMaximumAdaptiveLiquidCells3D> coverage{};
-  std::size_t subface_count = 0;
-  for (std::size_t first = 0; first < records.cell_count; ++first) {
-    const auto lower = AdaptiveLowerCorner(cell_at(first));
-    const auto width = AdaptiveWidth(cell_at(first));
-    for (std::size_t second = first + 1; second < records.cell_count; ++second) {
-      const auto other_lower = AdaptiveLowerCorner(cell_at(second));
-      if (other_lower[2] > lower[2] + width) {
-        break;
-      }
-      const auto other_width = AdaptiveWidth(cell_at(second));
-      std::size_t contact_count = 0;
-      std::size_t normal_axis = 0;
-      bool tail_is_first = false;
-      bool separated = false;
-      for (std::size_t axis = 0; axis < lower.size(); ++axis) {
-        const auto high = lower[axis] + width;
-        const auto other_high = other_lower[axis] + other_width;
-        const auto overlap = std::min(high, other_high) - std::max(lower[axis], other_lower[axis]);
-        if (overlap < 0) {
-          separated = true;
-          break;
-        }
-        if (overlap == 0) {
-          ++contact_count;
-          normal_axis = axis;
-          tail_is_first = high == other_lower[axis];
-        }
-      }
-      if (separated) {
-        continue;
-      }
-      if (contact_count == 0 || width > 2 * other_width || other_width > 2 * width) {
-        return absl::Status(absl::StatusCode::kInvalidArgument, {});
-      }
-      if (contact_count == 1) {
-        ++subface_count;
-        const auto side = 2 * normal_axis;
-        coverage[first][side + tail_is_first] |=
-            AdaptiveFaceCoverage(lower, other_lower, width, other_width, normal_axis);
-        coverage[second][side + !tail_is_first] |=
-            AdaptiveFaceCoverage(other_lower, lower, other_width, width, normal_axis);
-      }
-    }
-  }
-  for (const auto& sides : std::span(coverage).first(records.cell_count)) {
-    for (const auto covered : sides) {
-      subface_count += covered == 0 ? 1 : 4 - std::popcount(covered);
-    }
-  }
-  if (subface_count != records.face_count) {
+  // Strict separation along z proves that every side is exterior.
+  const auto active_keys = std::span(keys).first(records.cell_count);
+  const auto subface_count =
+      may_have_contacts ? CountAdaptiveSubfaces(active_keys, occupied_widths) : std::optional{6 * records.cell_count};
+  if (!subface_count || *subface_count != records.face_count) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   for (std::size_t ordinal = 0; ordinal < records.face_count; ++ordinal) {
