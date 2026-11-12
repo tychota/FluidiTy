@@ -8,6 +8,8 @@ table Point {
   radius:double (id:4);
   volume_ratio:double = 1 (id:5);
   level:ubyte (id:6);
+  phase_id:ulong = null (id:7);
+  constituents:[ConstituentFraction] (id:8);
 }
 table PointFrame {
   schema_version:uint = 1 (id:0);

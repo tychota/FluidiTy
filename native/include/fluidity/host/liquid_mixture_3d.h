@@ -26,6 +26,10 @@ struct LiquidConstituentFraction3D {
   bool operator==(const LiquidConstituentFraction3D&) const = default;
 };
 
+// Checks a canonical, unit-sum fraction span. Empty means implicit legacy
+// liquid and requires phase ID zero. Active fractions are strictly positive.
+bool ValidLiquidComposition3D(std::uint64_t phase_id, std::span<const LiquidConstituentFraction3D> fractions);
+
 struct LiquidMixture3D {
   std::size_t constituent_count;
   double volume_m3;

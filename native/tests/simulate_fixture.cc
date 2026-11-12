@@ -9,7 +9,7 @@
 #include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/whitewater_volume_cache_3d.h"
-int Produce(int argc, const std::filesystem::path& path, bool digest) {
+int Produce(int argc, const std::filesystem::path& path, bool digest, bool composition) {
   if (argc != 3) {
     return 1;
   }
@@ -24,6 +24,14 @@ int Produce(int argc, const std::filesystem::path& path, bool digest) {
     return 0;
   }
   fluidity::LiquidResolvedSceneView3D scene;
+  constexpr std::array<fluidity::LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  if (composition) {
+    scene.scene.constituent_materials = kMaterials;
+  }
   auto cache = fluidity::LiquidCache3D::Create(path, scene);
   if (!cache.ok()) {
     return 3;
@@ -36,6 +44,26 @@ int Produce(int argc, const std::filesystem::path& path, bool digest) {
   resume.resolved_fingerprint = *fingerprint;
   resume.execution_id = fluidity::LiquidExecutionId3D(*fingerprint);
   fluidity::LiquidState3D state;
+  if (composition) {
+    auto particles = fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(2);
+    if (!particles.ok() || !particles->Resize(2).ok()) {
+      return 5;
+    }
+    (*particles)[0].id = 1;
+    (*particles)[0].phase_id = 4;
+    (*particles)[0].constituent_count = 2;
+    (*particles)[0].constituents[0] = {8, 0.25};
+    (*particles)[0].constituents[1] = {14, 0.75};
+    (*particles)[1].id = 2;
+    (*particles)[1].phase_id = 5;
+    (*particles)[1].constituent_count = 1;
+    (*particles)[1].constituents[0] = {25, 1.0};
+    state.particles = std::move(*particles);
+    state.next_particle_id = 3;
+    resume.capacities.particles = 2;
+    const auto points = fluidity::BuildLiquidPointFrame3D(state);
+    return points.ok() && cache->PublishFrame(*points, &state, &resume).ok() ? 0 : 5;
+  }
   fluidity::LiquidPointFrame3D points;
   return cache->PublishFrame(points, &state, &resume).ok() ? 0 : 5;
 }
@@ -462,7 +490,9 @@ int Entry(const std::vector<std::filesystem::path>& args) {
   if (args.size() >= 2 && (args[1] == "scene" || args[1] == "wrong-clock" || args[1] == "growth-cache")) {
     return SceneFixture(args);
   }
-  return args.size() == 3 ? Produce(static_cast<int>(args.size()), args[2], args[1] == "digest") : 1;
+  return args.size() == 3
+      ? Produce(static_cast<int>(args.size()), args[2], args[1] == "digest", args[1] == "composition")
+      : 1;
 }
 #if defined(_WIN32)
 int wmain(int argc, wchar_t** argv) {

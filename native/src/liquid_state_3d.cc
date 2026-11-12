@@ -151,23 +151,11 @@ absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool cavity_enabl
 }  // namespace
 
 bool ValidLiquidParticleComposition3D(const LiquidParticleState3D& particle) {
-  if (particle.constituent_count == 0) {
-    return particle.phase_id == 0;
-  }
-  if (particle.constituent_count > particle.constituents.size()) {
-    return false;
-  }
-  double sum = 0.0;
-  for (std::size_t index = 0; index < particle.constituent_count; ++index) {
-    const auto& entry = particle.constituents[index];
-    if (!Positive(entry.volume_fraction) || entry.volume_fraction > 1.0
-        || (index > 0 && particle.constituents[index - 1].substance_id >= entry.substance_id)) {
-      return false;
-    }
-    sum += entry.volume_fraction;
-  }
-  constexpr double kTolerance = 8.0 * std::numeric_limits<double>::epsilon();
-  return std::abs(sum - 1.0) <= kTolerance;
+  return particle.constituent_count <= particle.constituents.size()
+      && ValidLiquidComposition3D(
+             particle.phase_id,
+             std::span(particle.constituents).first(particle.constituent_count)
+      );
 }
 
 bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const {

@@ -88,6 +88,18 @@ TEST(LiquidCache3D, ParticleCompositionSurvivesStateAndSourceEncoding) {
   EXPECT_TRUE(decoded->particles[0] == particle);
   EXPECT_EQ(decoded->particles[1].constituent_count, 0);
 
+  const auto points = BuildLiquidPointFrame3D(state);
+  ASSERT_TRUE(points.ok()) << points.status();
+  const auto point_bytes = EncodeLiquidPointFrame3D(*points);
+  ASSERT_TRUE(point_bytes.ok()) << point_bytes.status();
+  const auto decoded_points = DecodeLiquidPointFrame3D(point_bytes->values());
+  ASSERT_TRUE(decoded_points.ok()) << decoded_points.status();
+  EXPECT_EQ(decoded_points->points[0].phase_id, 4);
+  ASSERT_EQ(decoded_points->points[0].constituent_count, 2);
+  EXPECT_EQ(decoded_points->points[0].constituents[0], (LiquidConstituentFraction3D{8, 0.25}));
+  EXPECT_EQ(decoded_points->points[0].constituents[1], (LiquidConstituentFraction3D{14, 0.75}));
+  EXPECT_EQ(decoded_points->points[1].constituent_count, 0);
+
   LiquidEmissionSource3D source;
   source.emitted_particle_template = particle;
   LiquidResolvedSceneView3D scene;

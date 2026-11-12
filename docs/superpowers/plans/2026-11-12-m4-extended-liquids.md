@@ -463,3 +463,11 @@ Resolved scenes now carry an optional, ordered substance registry with stable ID
 The CPU codec fixture round-tripped two aqueous substances and a separate oil phase, verified canonical bytes, and rejected a cross-phase source. The CUDA scheduler fixture rejects a missing registry and then carries registered fractions through real-device advection. Forty-one CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidMixture3D|SourceRetryAndWholeFrameReplay'. Twenty-two serial real-device scheduler and boundary checks passed under windows-release-cuda. Both simulator targets built and clang-format 19.1.5 passed. Receipts use out/m4-constituent-registry.
 
 The registry supplies the material identities and density data. Composition-dependent solver coefficients and published inspect/render fractions remain open.
+
+## Published point composition receipt
+
+The point cache now carries an optional stable phase ID and active constituent volume fractions copied from accepted particle state. Particle and point codecs share the same bounded wire handling. Inspect exposes explicit records in particle order under particle_composition with particle_id, phase_id and substance_id/volume_fraction pairs. Legacy point frames omit the optional fields.
+
+The real-process CLI fixture published a mixed aqueous point and a separate oil point, then verified the exact inspected IDs and fractions. Seventy-one CPU cache and mixture tests passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidCacheStore3D|LiquidMixture3D'. SimulateCli.inspection and SimulateCli.public_interface passed with the rebuilt fixture. Twenty-two real-device CUDA regressions and clang-format 19.1.5 passed. Receipts use out/m4-inspect-composition.
+
+Inspect currently reports accepted particle fractions. Solver-side mixing and evaluated surface fractions still require integration.

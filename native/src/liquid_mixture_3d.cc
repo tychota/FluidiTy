@@ -29,6 +29,23 @@ double SumConstituentVolume(std::span<const LiquidConstituentVolume3D>& remainin
 }
 }  // namespace
 
+bool ValidLiquidComposition3D(std::uint64_t phase_id, std::span<const LiquidConstituentFraction3D> fractions) {
+  if (fractions.empty()) {
+    return phase_id == 0;
+  }
+  double sum = 0.0;
+  for (std::size_t index = 0; index < fractions.size(); ++index) {
+    const auto& entry = fractions[index];
+    if (!std::isfinite(entry.volume_fraction) || entry.volume_fraction <= 0.0 || entry.volume_fraction > 1.0
+        || (index > 0 && fractions[index - 1].substance_id >= entry.substance_id)) {
+      return false;
+    }
+    sum += entry.volume_fraction;
+  }
+  constexpr double kTolerance = 8.0 * std::numeric_limits<double>::epsilon();
+  return std::abs(sum - 1.0) <= kTolerance;
+}
+
 bool ValidLiquidConstituentMaterials3D(std::span<const LiquidConstituentMaterial3D> materials) {
   for (std::size_t index = 0; index < materials.size(); ++index) {
     const auto& material = materials[index];

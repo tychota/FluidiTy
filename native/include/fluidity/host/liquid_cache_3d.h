@@ -64,6 +64,9 @@ struct LiquidPoint3D {
   double radius = 1;  // Positive visualization radius, m.
   double volume_ratio = 1;  // Dimensionless J.
   std::uint8_t level = 0;  // Uniform M1 admits level zero only.
+  std::uint64_t phase_id = 0;  // Stable phase when the active composition prefix is nonempty.
+  std::uint8_t constituent_count = 0;
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
 };
 struct LiquidPointFrame3D {
   LiquidClock3D clock;  // Completed frame (substep zero).

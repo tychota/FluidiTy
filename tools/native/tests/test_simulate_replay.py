@@ -139,6 +139,18 @@ def case_identity(executable, fixture, directory, cuda):
 
 
 def case_inspection(executable, fixture, directory, cuda):
+    composition_cache = directory / "composition-cache"
+    subprocess.run([str(fixture), "composition", str(composition_cache)], check=True, timeout=30)
+    composition = invoke(executable, "check", "--cache", composition_cache, "--frame", "0")
+    assert composition["particle_composition"] == [
+        {"particle_id": 1, "phase_id": 4, "constituents": [
+            {"substance_id": 8, "volume_fraction": 0.25},
+            {"substance_id": 14, "volume_fraction": 0.75},
+        ]},
+        {"particle_id": 2, "phase_id": 5, "constituents": [
+            {"substance_id": 25, "volume_fraction": 1.0},
+        ]},
+    ]
     cache = directory / "résumé 液体"
     subprocess.run([str(fixture), "cache", str(cache)], check=True, capture_output=True, timeout=30)
     before = snapshot(directory)
