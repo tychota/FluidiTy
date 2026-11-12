@@ -29,7 +29,7 @@ CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "S
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
-        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference", "solid_interaction_checkpoint",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 } | {f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings", "volume_frame", "volume_settings")}
