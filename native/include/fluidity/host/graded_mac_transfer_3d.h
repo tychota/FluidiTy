@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -30,6 +31,14 @@ class GradedMacTransfer3D {
   // InvalidArgument for invalid topology or origin, OutOfRange if world
   // geometry cannot be represented, and ResourceExhausted above the state cap.
   static absl::StatusOr<GradedMacTransfer3D> Create(const AdaptiveMacTopology3D& topology, Vec3 world_origin);
+
+  // Optional solid upper X/Z tank planes close the corresponding leaf bounds.
+  static absl::StatusOr<GradedMacTransfer3D>
+  Create(const AdaptiveMacTopology3D& topology, Vec3 world_origin, std::optional<Vec3> solid_upper);
+
+  // Return the canonical leaf ordinal for a finite world position in m.
+  // Missing ownership returns FailedPrecondition.
+  absl::StatusOr<std::size_t> ParticleLeafOrdinal(Vec3 world_position) const;
 
   // One geometry record per canonical global slot. The span borrows this owner.
   std::span<const GradedMacFace3D> faces() const {
@@ -69,6 +78,7 @@ class GradedMacTransfer3D {
   GradedMacTransfer3D() = default;
   absl::StatusOr<double> ParticleSupportWidth(Vec3 world_position) const;
 
+  std::optional<Vec3> solid_upper_;
   std::vector<LeafBox> leaves_;
   std::vector<GradedMacFace3D> faces_;
 };

@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "graded-tank") else []
     return scene, initial
 
 
@@ -485,8 +485,43 @@ def case_cpu_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cpu")
 
 
+def graded_replay_case(executable, fixture, directory, backend):
+    directory.mkdir(exist_ok=True)
+    scene, initial = make_scene(executable, fixture, directory, backend, "graded-tank")
+    uninterrupted_cache = directory / "graded-continuous"
+    resumed_cache = directory / "graded-resumed"
+    run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--trace"]
+    records = execute(executable, *run, "--cache", uninterrupted_cache, *initial, "--frame-end", 11)
+    uninterrupted = records[-1]
+    assert any("accepted_measurement" in record for record in records)
+    frame_ten = execute(executable, *run, "--cache", resumed_cache, *initial, "--frame-end", 10)[-1]
+    checkpoint = json.loads(subprocess.check_output([str(fixture), "checkpoint", str(resumed_cache)], text=True))
+    assert checkpoint["frame"] == 10
+    assert checkpoint["state_digest"] == frame_ten["state_digest"]
+    assert checkpoint["capacities"] == [5, 0, 5, frame_ten["face_count"], 0]
+    # The resumed process has no initial-state argument. The only available
+    # restart state is the authenticated frame-ten checkpoint.
+    resumed = execute(executable, *run, "--cache", resumed_cache, "--resume", "--frame-end", 11)[-1]
+    assert resumed["frame"] == uninterrupted["frame"] == 11
+    assert resumed["state_digest"] == uninterrupted["state_digest"], (resumed, uninterrupted)
+    assert resumed["cell_count"] == 5 and resumed["particle_count"] == 5
+    assert resumed["face_count"] == uninterrupted["face_count"]
+    if backend == "cuda":
+        assert resumed["compiled_architecture"] == 1200, resumed
+    print(json.dumps({"adaptive_checkpoint": checkpoint["state_digest"], "backend": backend,
+                      "frame": resumed["frame"], "state_digest": resumed["state_digest"]}, sort_keys=True))
+
+
+def case_cpu_graded_replay(executable, fixture, directory, cuda):
+    graded_replay_case(executable, fixture, directory, "cpu")
+
+
+def case_cuda_graded_replay(executable, fixture, directory, cuda):
+    graded_replay_case(executable, fixture, directory, "cuda")
+
 def case_cpu_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cpu")
+    graded_replay_case(executable, fixture, directory / "graded", "cpu")
 
 
 def case_cuda_execution(executable, fixture, directory, cuda):
@@ -495,6 +530,7 @@ def case_cuda_execution(executable, fixture, directory, cuda):
 
 def case_cuda_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cuda")
+    graded_replay_case(executable, fixture, directory / "graded", "cuda")
 
 
 def case_execution_validation(executable, fixture, directory, cuda):
@@ -939,7 +975,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

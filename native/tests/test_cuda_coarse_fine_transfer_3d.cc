@@ -10,6 +10,8 @@
 
 #include "coarse_fine_transfer_3d_bridge.h"
 #include "fluidity/host/coarse_fine_transfer_3d.h"
+#include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "graded_tank_fixture.h"
 #include "gtest/gtest.h"
 #include "operator_runtime.h"
 
@@ -66,6 +68,59 @@ std::vector<CoarseFineCudaResult3D> RunKernel(std::span<const CoarseFineCoreQuer
   return run.ok() ? *run : std::vector<CoarseFineCudaResult3D>{};
 }
 
+TEST(CudaAdaptiveSimulate3D, RejectedGradedTrialPreservesDeviceEpoch) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateGradedTankFixture3D(state, scene);
+  ASSERT_TRUE(authored.ok()) << authored;
+  LiquidStepOptions3D options;
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  bool reject = true;
+  scheduler->SetStageFaultHookForTesting({
+      .context = &reject,
+      .before_stage =
+          [](void* context, LiquidPhysicalStage3D stage, double) {
+            auto& pending = *static_cast<bool*>(context);
+            if (pending && stage == LiquidPhysicalStage3D::kAccept) {
+              pending = false;
+              return absl::Status(absl::StatusCode::kAborted, {});
+            }
+            return absl::OkStatus();
+          },
+  });
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto rejected = scheduler->Attempt(0.01);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_EQ(scheduler->committed(), state);
+  auto readback = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  {
+    const auto old = backend->AcquireCommitted();
+    ASSERT_TRUE(old.ok()) << old.status();
+    EXPECT_EQ(old->identity().clock, state.clock);
+    const auto copied = old->Readback(*readback);
+    ASSERT_TRUE(copied.ok()) << copied;
+    EXPECT_EQ(*readback, state);
+  }
+  for (int step = 0; step < 2; ++step) {
+    const auto accepted = scheduler->Attempt(0.005);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  }
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  EXPECT_EQ(epoch->identity().clock, scheduler->committed().clock);
+  const auto copied = epoch->Readback(*readback);
+  ASSERT_TRUE(copied.ok()) << copied;
+  EXPECT_EQ(*readback, scheduler->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
 TEST(CudaCoarseFineTransfer3D, OracleQueriesAndAllOrientationsMatchCpuOnSm120) {
   constexpr Vec3 origin{-4, 2, -3};
   constexpr std::array<std::array<double, 3>, 10> positions{{

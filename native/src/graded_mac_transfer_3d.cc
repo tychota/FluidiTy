@@ -220,7 +220,12 @@ bool FitAllComponents(const ParticleSupport& support, Matrix3D& slopes) {
 
 absl::StatusOr<GradedMacTransfer3D>
 GradedMacTransfer3D::Create(const AdaptiveMacTopology3D& topology, Vec3 world_origin) {
-  if (!Finite(world_origin)) {
+  return Create(topology, world_origin, std::nullopt);
+}
+
+absl::StatusOr<GradedMacTransfer3D>
+GradedMacTransfer3D::Create(const AdaptiveMacTopology3D& topology, Vec3 world_origin, std::optional<Vec3> solid_upper) {
+  if (!Finite(world_origin) || (solid_upper && !Finite(*solid_upper))) {
     return absl::InvalidArgumentError("adaptive transfer world origin must be finite");
   }
   const auto ownership = BuildAdaptiveMacFaceOwnership3D(topology);
@@ -232,6 +237,7 @@ GradedMacTransfer3D::Create(const AdaptiveMacTopology3D& topology, Vec3 world_or
     return absl::ResourceExhaustedError("adaptive transfer face count exceeds the state limit");
   }
   GradedMacTransfer3D transfer;
+  transfer.solid_upper_ = solid_upper;
   transfer.leaves_.reserve(topology.cells().size());
   transfer.faces_.resize(face_count);
   const double finest_width = topology.finest_cell_width();
@@ -290,17 +296,30 @@ GradedMacTransfer3D::Create(const AdaptiveMacTopology3D& topology, Vec3 world_or
   return transfer;
 }
 
-absl::StatusOr<double> GradedMacTransfer3D::ParticleSupportWidth(Vec3 world_position) const {
+absl::StatusOr<std::size_t> GradedMacTransfer3D::ParticleLeafOrdinal(Vec3 world_position) const {
   if (!Finite(world_position)) {
     return absl::InvalidArgumentError("adaptive transfer particle position must be finite");
   }
-  for (const auto& leaf : leaves_) {
-    if (world_position.x >= leaf.lower.x && world_position.x < leaf.upper.x && world_position.y >= leaf.lower.y
-        && world_position.y < leaf.upper.y && world_position.z >= leaf.lower.z && world_position.z < leaf.upper.z) {
-      return leaf.width_m;
+  for (std::size_t ordinal = 0; ordinal < leaves_.size(); ++ordinal) {
+    const auto& leaf = leaves_[ordinal];
+    const bool inside_upper_x = world_position.x < leaf.upper.x
+        || (solid_upper_ && world_position.x == leaf.upper.x && leaf.upper.x == solid_upper_->x);
+    const bool inside_upper_z = world_position.z < leaf.upper.z
+        || (solid_upper_ && world_position.z == leaf.upper.z && leaf.upper.z == solid_upper_->z);
+    if (world_position.x >= leaf.lower.x && inside_upper_x && world_position.y >= leaf.lower.y
+        && world_position.y < leaf.upper.y && world_position.z >= leaf.lower.z && inside_upper_z) {
+      return ordinal;
     }
   }
   return absl::FailedPreconditionError("adaptive transfer particle has no containing leaf");
+}
+
+absl::StatusOr<double> GradedMacTransfer3D::ParticleSupportWidth(Vec3 world_position) const {
+  const auto ordinal = ParticleLeafOrdinal(world_position);
+  if (!ordinal.ok()) {
+    return ordinal.status();
+  }
+  return leaves_[*ordinal].width_m;
 }
 
 absl::StatusOr<std::vector<MacFaceDeposit3D>> GradedMacTransfer3D::Deposit(

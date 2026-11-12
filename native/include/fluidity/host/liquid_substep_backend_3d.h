@@ -223,6 +223,14 @@ struct LiquidSubstepBackend3D {
   // original order and bounded by kLiquidFieldBatchCapacity3D. Internal is
   // fatal; other failures allow scalar replay without publishing partial data.
   SampleFieldBatch* sample_gathered_fields = nullptr;
+  // Selects the requested backend for an owning explicit graded projection.
+  // A device backend supplies a real device solve and never falls back to CPU.
+  absl::StatusOr<MacPressureProjection3D> (*project_adaptive)(
+      void*,
+      const pressure_internal::PreparedMacPressureSystem3D&,
+      MacPressureSolverOptions3D
+  ) = nullptr;
+  bool host_adaptive_pressure = false;
 };
 // CPU operations share the bounded operators and the swept-contact particle update.
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();

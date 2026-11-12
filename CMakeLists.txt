@@ -73,6 +73,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_isolated_drop_3d.cc
   native/src/liquid_remap_3d.cc
   native/src/liquid_band_handoff_3d.cc
+  native/src/liquid_adaptive_step_3d.cc
   native/src/liquid_substep_3d.cc
   native/src/wetted_piston_3d.cc
   native/src/liquid_substep_3d_cpu.cc

@@ -84,10 +84,11 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   std::string result = ClockMembers(state.clock)
       + ",\"state_digest\":" + JsonString(Hex(LiquidContentDigest3D(bytes->values()))) + ",\"particle_count\":"
       + std::to_string(state.particles.size()) + ",\"block_count\":" + std::to_string(state.blocks.size())
-      + ",\"cell_count\":" + std::to_string(state.cells.size()) + ",\"face_count\":"
-      + std::to_string(state.faces.size()) + ",\"next_particle_id\":" + std::to_string(state.next_particle_id)
-      + ",\"attempts\":" + std::to_string(diagnostics.attempts) + ",\"accepted_attempts\":"
-      + std::to_string(diagnostics.accepted_attempts) + ",\"dt_retries\":" + std::to_string(diagnostics.dt_retries)
+      + ",\"cell_count\":" + std::to_string(state.cells.size() + state.adaptive_cells.size())
+      + ",\"face_count\":" + std::to_string(state.faces.size() + state.adaptive_faces.size()) + ",\"next_particle_id\":"
+      + std::to_string(state.next_particle_id) + ",\"attempts\":" + std::to_string(diagnostics.attempts)
+      + ",\"accepted_attempts\":" + std::to_string(diagnostics.accepted_attempts)
+      + ",\"dt_retries\":" + std::to_string(diagnostics.dt_retries)
       + ",\"capacity_replays\":" + std::to_string(diagnostics.capacity_replays) + ",\"source_next_child_ordinals\":[";
   for (std::size_t i = 0; i < state.sources.size(); ++i) {
     if (i != 0) {
@@ -214,7 +215,8 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
   };
   if (!nonnegative(pressure.true_residual_l2) || !nonnegative(measurement.pressure_rhs_l2_m3_per_s)
       || !nonnegative(pressure.max_volume_scaled_residual) || !nonnegative(pressure.max_cell_constraint_defect)
-      || !nonnegative(pressure_volume) || state.cells.values().empty() != (pressure_volume == 0)) {
+      || !nonnegative(pressure_volume)
+      || (state.cells.values().empty() && state.adaptive_cells.values().empty()) != (pressure_volume == 0)) {
     return absl::DataLossError("");
   }
   const auto& piston = measurement.piston_pose;
@@ -707,6 +709,16 @@ absl::StatusOr<std::string> ExecuteCommand(
   if (options.motion_sample_intervals != 0 && command.frame_start > 1) {
     return absl::InvalidArgumentError("effects capture requires a contiguous point-frame range");
   }
+  const bool adaptive_mode = starting_state.adaptive_cells.size() != 0;
+  if (adaptive_mode && !loaded_checkpoint) {
+    resume.capacities = {
+        .particles = starting_state.particles.size(),
+        .blocks = 0,
+        .cells = starting_state.adaptive_cells.size(),
+        .faces = starting_state.adaptive_faces.size(),
+        .sources = starting_state.sources.size(),
+    };
+  }
   options.capacities = resume.capacities;
   options.capacity_replay_reservations = resume.capacity_replay_reservations;
   // The backend must outlive scheduler callbacks; the queue must outlive writer
@@ -736,7 +748,8 @@ absl::StatusOr<std::string> ExecuteCommand(
         options.capacities,
         command.device_index,
         command.measure_job,
-        needs_wetted_piston
+        needs_wetted_piston,
+        adaptive_mode
     );
     if (!backend.ok()) {
       return backend.status();
@@ -930,8 +943,8 @@ absl::StatusOr<std::string> ExecuteCommand(
     resume.capacities = {
         state->particles.capacity(),
         state->blocks.capacity(),
-        state->cells.capacity(),
-        state->faces.capacity(),
+        state->cells.capacity() + state->adaptive_cells.capacity(),
+        state->faces.capacity() + state->adaptive_faces.capacity(),
         state->sources.capacity(),
     };
     if (resume.capacities == resume.capacity_replay_reservations) {
