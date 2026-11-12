@@ -2,8 +2,12 @@
 #include <cmath>
 #include <vector>
 
+#include "../cuda/liquid_pressure_stage_3d.h"
+#include "../src/mac_pressure_3d_workspace_internal.h"
+#include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "fluidity/host/cuda_viscosity.h"
 #include "gtest/gtest.h"
+#include "mac_viscous_traction_cases.h"
 
 namespace fluidity {
 namespace {
@@ -17,6 +21,47 @@ std::array<MacPressureFace3D, 6> SealedFacesAtX(std::int32_t x) {
       {.face_index = {FaceNormalAxis::kZ, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
       {.face_index = {FaceNormalAxis::kZ, {x, 0, 1}}, .pressure_link = SealedMacPressureLink3D{}},
   }};
+}
+
+template <typename Run>
+void ExpectArenaViscousTraction(Run run) {
+  constexpr std::size_t kCellCapacity = 32 * 32;
+  constexpr std::size_t kFaceCapacity = 6 * kCellCapacity;
+  auto device = CudaLiquidArena3D::Create({.blocks = 128, .cells = kCellCapacity, .faces = kFaceCapacity});
+  ASSERT_TRUE(device.ok()) << device.status();
+  auto host =
+      MacPressureWorkspace3D::Create(kCellCapacity, kFaceCapacity, MacPressureWorkspaceMode3D::kCoupledViscosity);
+  ASSERT_TRUE(host.ok()) << host.status();
+  const auto before = device->metrics();
+  const auto project = [&](const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> strain) {
+    pressure_internal::MacPressureScratch3D scratch(pressure_internal::CoupledPressureWorkspaceAccess3D::Storage(*host)
+    );
+    return cuda_internal::ProjectArenaViscousPressure3D(
+        *device,
+        {inputs.mac_grid.view(), inputs.step_duration, inputs.pressure_cells, inputs.pressure_faces},
+        strain,
+        {},
+        scratch
+    );
+  };
+  run(project);
+  const auto after = device->metrics();
+  EXPECT_EQ(after.device_reservations, before.device_reservations);
+  EXPECT_EQ(after.device_frees, before.device_frees);
+  EXPECT_EQ(after.pinned_reservations, before.pinned_reservations);
+  EXPECT_EQ(after.pinned_frees, before.pinned_frees);
+}
+
+TEST(CudaMacViscosity3D, CoupledProjectionRecoversPlanarExtensionTractionAtHighContrast) {
+  ExpectArenaViscousTraction([](const auto& project) {
+    viscous_traction_test::ExpectPlanarExtensionTraction(project);
+  });
+}
+
+TEST(CudaMacViscosity3D, CoupledProjectionRecoversMovingWallCouetteTraction) {
+  ExpectArenaViscousTraction([](const auto& project) {
+    viscous_traction_test::ExpectMovingWallCouetteTraction(project);
+  });
 }
 
 TEST(CudaMacViscosity3D, CoupledProjectionBalancesMomentumAndCompliantFlux) {
