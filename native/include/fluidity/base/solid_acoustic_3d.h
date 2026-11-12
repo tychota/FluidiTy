@@ -18,11 +18,24 @@ PublishAcousticBound(double maximum_row_sum, double reference_density, double& s
   return true;
 }
 
+// Minimize the acoustic 2x2 minor over directions in the two principal axes.
+FLUIDITY_HD inline bool PositivePrincipalPlane(
+    double first_normal,
+    double second_normal,
+    double first_shear,
+    double second_shear,
+    double coupling
+) noexcept {
+  const double normal_geometric_mean = ::sqrt(first_normal) * ::sqrt(second_normal);
+  const double shear_geometric_mean = ::sqrt(first_shear) * ::sqrt(second_shear);
+  return ::fabs(coupling) - shear_geometric_mean < normal_geometric_mean;
+}
+
 }  // namespace solid_detail
 
 // Bounds squared elastic wave speed in m²/s² for the Hencky law at positive elastic stretches.
 // Uses the scaled Hessian in §8.2 and reference density in kg/m³. This is a continuous bound.
-// Invalid or unrepresentable tangents and nonpositive axial modes leave speed_squared unchanged.
+// Rejects invalid or unrepresentable tangents and loss of ellipticity in a principal plane. Failure preserves output.
 FLUIDITY_HD inline bool GranularAcousticBoundSquared3D(
     Vec3 elastic_stretches,
     GranularParameters3D parameters,
@@ -39,10 +52,12 @@ FLUIDITY_HD inline bool GranularAcousticBoundSquared3D(
   const double volumetric_stress = parameters.lame_lambda * detail::Trace(log_stretches);
   const double logs[]{log_stretches.x, log_stretches.y, log_stretches.z};
   double stresses[3]{};
+  double normal_diagonals[3]{};
   double maximum_row_sum = 0;
   for (int axis = 0; axis < 3; ++axis) {
     stresses[axis] = twice_shear_modulus * logs[axis] + volumetric_stress;
     const double normal_diagonal = twice_shear_modulus + parameters.lame_lambda - stresses[axis];
+    normal_diagonals[axis] = normal_diagonal;
     const double row_sum = normal_diagonal + 2 * parameters.lame_lambda;
     if (!detail::PositiveFinite(normal_diagonal) || !detail::PositiveFinite(row_sum)) {
       return false;
@@ -60,7 +75,14 @@ FLUIDITY_HD inline bool GranularAcousticBoundSquared3D(
       const double low_diagonal = high_diagonal * ::exp(-2 * log_ratio);
       const double off_diagonal = low_diagonal - stresses[low];
       const double row_sum = high_diagonal + ::fabs(off_diagonal);
-      if (!detail::PositiveFinite(low_diagonal) || !detail::PositiveFinite(row_sum)) {
+      if (!detail::PositiveFinite(low_diagonal) || !detail::PositiveFinite(row_sum)
+          || !detail::PositivePrincipalPlane(
+              normal_diagonals[first],
+              normal_diagonals[second],
+              low_diagonal,
+              high_diagonal,
+              parameters.lame_lambda + off_diagonal
+          )) {
         return false;
       }
       maximum_row_sum = ::fmax(maximum_row_sum, row_sum);
@@ -71,7 +93,7 @@ FLUIDITY_HD inline bool GranularAcousticBoundSquared3D(
 
 // Bounds squared elastic wave speed in m²/s² for snow, freezing the moduli at the current plastic state.
 // Uses positive elastic stretches and reference density in kg/m³. This is a continuous bound.
-// Invalid or unrepresentable tangents and nonpositive axial modes leave speed_squared unchanged.
+// Rejects invalid or unrepresentable tangents and loss of ellipticity in a principal plane. Failure preserves output.
 FLUIDITY_HD inline bool SnowAcousticBoundSquared3D(
     Vec3 elastic_stretches,
     double log_plastic_jacobian,
@@ -97,8 +119,11 @@ FLUIDITY_HD inline bool SnowAcousticBoundSquared3D(
   const double bulk_diagonal = lame_lambda * jacobian * jacobian;
   const double stretches[]{elastic_stretches.x, elastic_stretches.y, elastic_stretches.z};
   double maximum_row_sum = 0;
-  for (double stretch : stretches) {
+  double normal_diagonals[3]{};
+  for (int axis = 0; axis < 3; ++axis) {
+    const double stretch = stretches[axis];
     const double normal_diagonal = (twice_shear_modulus * stretch) * stretch + bulk_diagonal;
+    normal_diagonals[axis] = normal_diagonal;
     const double row_sum = normal_diagonal + 2 * ::fabs(normal_off_diagonal);
     if (!detail::PositiveFinite(normal_diagonal) || !detail::PositiveFinite(row_sum)) {
       return false;
@@ -113,8 +138,17 @@ FLUIDITY_HD inline bool SnowAcousticBoundSquared3D(
       const double shear_diagonal_factor = twice_shear_modulus * (1 - inverse_sum);
       const double off_diagonal =
           twice_shear_modulus * (larger * inverse_sum) * smaller - lame_lambda * (jacobian - 1) * jacobian;
-      const double row_sum = (shear_diagonal_factor * larger) * larger + ::fabs(off_diagonal);
-      if (!detail::PositiveFinite(shear_diagonal_factor) || !detail::PositiveFinite(row_sum)) {
+      const double high_diagonal = (shear_diagonal_factor * larger) * larger;
+      const double low_diagonal = (shear_diagonal_factor * smaller) * smaller;
+      const double row_sum = high_diagonal + ::fabs(off_diagonal);
+      if (!detail::PositiveFinite(low_diagonal) || !detail::PositiveFinite(row_sum)
+          || !detail::PositivePrincipalPlane(
+              normal_diagonals[first],
+              normal_diagonals[second],
+              low_diagonal,
+              high_diagonal,
+              normal_off_diagonal + off_diagonal
+          )) {
         return false;
       }
       maximum_row_sum = ::fmax(maximum_row_sum, row_sum);

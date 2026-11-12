@@ -7,6 +7,7 @@ namespace fluidity {
 struct SolidDeformationState3D {
   Mat3 elastic_deformation;  // Returned elastic map from reference to spatial coordinates.
   double log_plastic_jacobian;
+  Vec3 elastic_stretches;  // Returned positive stretches in the decomposition order.
   Mat3 kirchhoff_stress;  // World-frame symmetric stress in Pa, for reference-volume deposition.
 };
 
@@ -56,6 +57,32 @@ FLUIDITY_HD inline bool FindPrincipalFrame(Mat3 deformation, PrincipalFrame3D& f
   }
   for (Vec3& column : columns) {
     column = {column.x / scale, column.y / scale, column.z / scale};
+  }
+
+  // Certify orientation before rotating. Jacobi roundoff can otherwise create a
+  // small positive stretch from an exactly rank-deficient matrix.
+  const Vec3 first_column = columns[0];
+  const Vec3 second_column = columns[1];
+  const Vec3 third_column = columns[2];
+  const double positive_terms[]{
+      first_column.x * second_column.y * third_column.z,
+      first_column.y * second_column.z * third_column.x,
+      first_column.z * second_column.x * third_column.y,
+  };
+  const double negative_terms[]{
+      first_column.x * second_column.z * third_column.y,
+      first_column.y * second_column.x * third_column.z,
+      first_column.z * second_column.y * third_column.x,
+  };
+  double scaled_determinant = 0;
+  double determinant_term_sum = 0;
+  for (int index = 0; index < 3; ++index) {
+    scaled_determinant += positive_terms[index] - negative_terms[index];
+    determinant_term_sum += ::fabs(positive_terms[index]) + ::fabs(negative_terms[index]);
+  }
+  constexpr double kDeterminantRelativeError = 1.5e-14;
+  if (scaled_determinant <= kDeterminantRelativeError * determinant_term_sum) {
+    return false;
   }
 
   frame.right[0] = {1, 0, 0};
@@ -150,6 +177,7 @@ FLUIDITY_HD inline bool ReturnDeformation(
   const SolidDeformationState3D candidate{
       .elastic_deformation = Recompose(frame.left, principal.elastic_stretches, frame.right),
       .log_plastic_jacobian = principal.log_plastic_jacobian,
+      .elastic_stretches = principal.elastic_stretches,
       .kirchhoff_stress = Recompose(frame.left, principal.kirchhoff_stress, frame.left),
   };
   const Mat3 deformation = candidate.elastic_deformation;

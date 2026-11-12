@@ -31,6 +31,11 @@ FLUIDITY_HD inline int CheckDeformationCases() {
       || !Near(state.log_plastic_jacobian, ::log(0.84 / jacobian))) {
     return 23;
   }
+  const Mat3 dependent_rows{{-2, 1, -5}, {2, 2, -3}, {2, 5, -11}};
+  if (ReturnSnowDeformation3D(dependent_rows, 0, snow, state)
+      || !Near(state.log_plastic_jacobian, ::log(0.84 / jacobian))) {
+    return 29;
+  }
   const GranularParameters3D sand{
       .shear_modulus = 2,
       .lame_lambda = 3,
@@ -52,6 +57,13 @@ FLUIDITY_HD inline int CheckDeformationCases() {
   }
   if (GranularAcousticBoundSquared3D({2, 2, 2}, sand, 2, acoustic_bound) || !Near(acoustic_bound, 6.5 * ::exp(1.0))) {
     return 27;
+  }
+  // All axial modes are positive, but the x-z acoustic minor at
+  // n=(sqrt(0.75),0,0.5) has negative determinant.
+  const GranularParameters3D oblique_sand{1, 1, 1.5, 0};
+  if (GranularAcousticBoundSquared3D({0.2, 0.1, 2.5}, oblique_sand, 1, acoustic_bound)
+      || !Near(acoustic_bound, 6.5 * ::exp(1.0))) {
+    return 28;
   }
   return 0;
 }
