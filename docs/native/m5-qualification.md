@@ -3870,3 +3870,32 @@ foreach ($bin in 'sand-tangent-moment-bin', 'sand-normal-moment-bin') {
   }
 }
 ```
+
+### Off-diagonal tangential affine feedback
+
+Use the tangential partial moment with the full-stencil scale, but
+clear its diagonal entry on each affected row. Keep the normal
+fallback and the deformation gather unchanged. This isolates the
+off-diagonal feedback from the tangent row's direct extensional
+component. Native and SM120 default dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 30.833997° | 0.174635 m |
+| Coarse half-step | 36.704327° | 0.166946 m |
+| Fine | 28.047715° | 0.165407 m |
+| Fine half-step | 30.156867° | 0.165907 m |
+
+Compared with the full tangential moment, this variant raises all
+four angles and reduces three radii. The coarse half-step angle
+is closer to range than with row clearing, but both coarse
+geometric failures and both fine radius failures remain. Vertical
+momentum residual stays below 6.6e-9 N·s. Source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-offdiagonal-moment-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
