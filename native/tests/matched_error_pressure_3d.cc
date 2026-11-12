@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,6 +17,10 @@
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "mac_pressure_3d_system.h"
+
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+#include "fluidity/host/cuda_mac_pressure_3d.h"
+#endif
 
 namespace fluidity {
 namespace {
@@ -34,16 +40,23 @@ enum class Layout {
   kTwoLevel,
 };
 
+enum class Backend {
+  kCpu,
+  kCuda,
+};
+
 struct BenchmarkCase {
   AdaptiveMacTopology3D topology;
   pressure_internal::PreparedMacPressureSystem3D system;
-  MacPressureWorkspace3D workspace;
+  std::optional<MacPressureWorkspace3D> workspace;
   std::size_t coarse_cells;
   std::size_t mixed_faces;
 };
 
 struct Measurement {
   double elapsed_ms;
+  double cuda_solver_ms;
+  int compiled_architecture;
   double pressure_error_pa;
   double divergence_error_per_s;
   double corrected_velocity_m_per_s;
@@ -59,7 +72,7 @@ double ExactPressure(const AdaptiveMacLeaf3D& cell) {
 
 // Both layouts tile the same sealed cube. In the two-level layout x < 0.5 m
 // uses aligned coarse cells, and the rightmost quarter remains at finest width.
-absl::StatusOr<BenchmarkCase> PrepareCase(Layout layout) {
+absl::StatusOr<BenchmarkCase> PrepareCase(Layout layout, Backend backend) {
   std::vector<AdaptiveMacCellKey3D> keys;
   std::size_t coarse_count = 0;
   for (int z = -4; z < 4; ++z) {
@@ -124,57 +137,64 @@ absl::StatusOr<BenchmarkCase> PrepareCase(Layout layout) {
   if (!system.ok()) {
     return system.status();
   }
-  auto workspace = MacPressureWorkspace3D::Create(cells.size(), faces.size());
-  if (!workspace.ok()) {
-    return workspace.status();
+  std::optional<MacPressureWorkspace3D> workspace;
+  if (backend == Backend::kCpu) {
+    auto created = MacPressureWorkspace3D::Create(cells.size(), faces.size());
+    if (!created.ok()) {
+      return created.status();
+    }
+    workspace.emplace(std::move(*created));
   }
   return BenchmarkCase{
       .topology = std::move(*topology),
       .system = std::move(*system),
-      .workspace = std::move(*workspace),
+      .workspace = std::move(workspace),
       .coarse_cells = coarse_count,
       .mixed_faces = mixed_faces,
   };
 }
 
-absl::StatusOr<Measurement> MeasureProjection(BenchmarkCase& fixture) {
-  const auto start = std::chrono::steady_clock::now();
-  const auto projection = fixture.workspace.ProjectPrepared(fixture.system);
-  const auto stop = std::chrono::steady_clock::now();
-  if (!projection.ok()) {
-    return projection.status();
-  }
+template <typename Projection>
+absl::StatusOr<Measurement> MeasurePhysicalProjection(
+    const BenchmarkCase& fixture,
+    const Projection& projection,
+    double elapsed_ms,
+    double cuda_solver_ms,
+    int compiled_architecture
+) {
   const auto leaves = fixture.topology.cells();
   const auto faces = fixture.topology.interior_faces();
-  if (projection->gauge_cell_ordinals.size() != 1 || projection->diagnostics.iteration_count == 0
-      || projection->cell_pressures.size() != leaves.size()
-      || projection->corrected_face_velocities.size() != faces.size()) {
+  if (projection.gauge_cell_ordinals.size() != 1 || projection.diagnostics.iteration_count == 0
+      || projection.cell_pressures.size() != leaves.size()
+      || projection.corrected_face_velocities.size() != faces.size()) {
     return absl::InternalError("expected a nontrivial zero-start projection on one sealed component");
   }
 
   Measurement measurement{
-      .elapsed_ms = std::chrono::duration<double, std::milli>(stop - start).count(),
+      .elapsed_ms = elapsed_ms,
+      .cuda_solver_ms = cuda_solver_ms,
+      .compiled_architecture = compiled_architecture,
       .pressure_error_pa = 0.0,
       .divergence_error_per_s = 0.0,
       .corrected_velocity_m_per_s = 0.0,
-      .iterations = projection->diagnostics.iteration_count,
+      .iterations = projection.diagnostics.iteration_count,
   };
   // Reconstruct physical divergence from authored areas and corrected velocities
   // in original face order, independently of the solver's stopping diagnostics.
   std::vector<double> corrected_outward_flux(leaves.size(), 0.0);
   for (std::size_t slot = 0; slot < faces.size(); ++slot) {
     const auto& face = faces[slot];
-    const double velocity = projection->corrected_face_velocities[slot];
+    const double velocity = projection.corrected_face_velocities[slot];
     const double flux = face.face_area * velocity;
     corrected_outward_flux[face.tail_cell_ordinal] += flux;
     corrected_outward_flux[face.head_cell_ordinal] -= flux;
     measurement.corrected_velocity_m_per_s = std::max(measurement.corrected_velocity_m_per_s, std::abs(velocity));
   }
 
-  const double exact_gauge = ExactPressure(leaves[projection->gauge_cell_ordinals.front()]);
+  const double exact_gauge = ExactPressure(leaves[projection.gauge_cell_ordinals.front()]);
   for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
     const double exact_gauged_pressure = ExactPressure(leaves[ordinal]) - exact_gauge;
-    const double pressure_error = std::abs(projection->cell_pressures[ordinal] - exact_gauged_pressure);
+    const double pressure_error = std::abs(projection.cell_pressures[ordinal] - exact_gauged_pressure);
     const double divergence = std::abs(corrected_outward_flux[ordinal] / leaves[ordinal].cell_volume);
     if (!std::isfinite(pressure_error) || !std::isfinite(divergence)) {
       return absl::InternalError("manufactured pressure error is nonfinite");
@@ -185,6 +205,44 @@ absl::StatusOr<Measurement> MeasureProjection(BenchmarkCase& fixture) {
   return measurement;
 }
 
+absl::StatusOr<Measurement> MeasureProjection(BenchmarkCase& fixture, Backend backend) {
+  const auto start = std::chrono::steady_clock::now();
+  if (backend == Backend::kCpu) {
+    const auto projection = fixture.workspace->ProjectPrepared(fixture.system);
+    const auto stop = std::chrono::steady_clock::now();
+    if (!projection.ok()) {
+      return projection.status();
+    }
+    return MeasurePhysicalProjection(
+        fixture,
+        *projection,
+        std::chrono::duration<double, std::milli>(stop - start).count(),
+        0.0,
+        0
+    );
+  }
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+  const auto result = pressure_internal::CudaProjectPreparedMacPressure3D(fixture.system);
+  const auto stop = std::chrono::steady_clock::now();
+  if (!result.ok()) {
+    return result.status();
+  }
+  const auto& device = result->measurement;
+  if (device.compiled_architecture <= 0 || !std::isfinite(device.kernel_ms) || device.kernel_ms <= 0) {
+    return absl::FailedPreconditionError("CUDA pressure solve did not report executed device work");
+  }
+  return MeasurePhysicalProjection(
+      fixture,
+      result->projection,
+      std::chrono::duration<double, std::milli>(stop - start).count(),
+      device.kernel_ms,
+      device.compiled_architecture
+  );
+#else
+  return absl::UnimplementedError("the matched pressure benchmark was built without CUDA");
+#endif
+}
+
 bool MeetsErrorBudget(const Measurement& measurement) {
   return measurement.pressure_error_pa <= kPressureErrorLimit
       && measurement.divergence_error_per_s <= kDivergenceErrorLimit;
@@ -192,6 +250,7 @@ bool MeetsErrorBudget(const Measurement& measurement) {
 
 void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurements& measurements) {
   std::array<double, kRepetitions> elapsed{};
+  std::array<double, kRepetitions> cuda_solver{};
   double pressure_error = 0;
   double divergence_error = 0;
   double velocity_error = 0;
@@ -200,6 +259,7 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
   for (std::size_t sample = 0; sample < measurements.size(); ++sample) {
     const auto& measurement = measurements[sample];
     elapsed[sample] = measurement.elapsed_ms;
+    cuda_solver[sample] = measurement.cuda_solver_ms;
     pressure_error = std::max(pressure_error, measurement.pressure_error_pa);
     divergence_error = std::max(divergence_error, measurement.divergence_error_per_s);
     velocity_error = std::max(velocity_error, measurement.corrected_velocity_m_per_s);
@@ -207,6 +267,7 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
     max_iterations = std::max(max_iterations, measurement.iterations);
   }
   std::ranges::sort(elapsed);
+  std::ranges::sort(cuda_solver);
   std::cout << "    {\n"
             << "      \"layout\": \"" << name << "\",\n"
             << "      \"cells\": " << fixture.topology.cells().size() << ",\n"
@@ -218,10 +279,15 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
             << "      \"corrected_velocity_linf_m_per_s\": " << velocity_error << ",\n"
             << "      \"min_iterations\": " << min_iterations << ",\n"
             << "      \"max_iterations\": " << max_iterations << ",\n"
-            << "      \"workspace_reserved_bytes\": " << fixture.workspace.bytes().total_bytes << ",\n"
-            << "      \"workspace_high_water_bytes\": " << fixture.workspace.high_water_bytes() << ",\n"
-            << "      \"median_project_ms\": " << elapsed[elapsed.size() / 2] << ",\n"
-            << "      \"project_ms\": [";
+            << "      \"median_project_ms\": " << elapsed[elapsed.size() / 2] << ",\n";
+  if (fixture.workspace) {
+    std::cout << "      \"workspace_reserved_bytes\": " << fixture.workspace->bytes().total_bytes << ",\n"
+              << "      \"workspace_high_water_bytes\": " << fixture.workspace->high_water_bytes() << ",\n";
+  } else {
+    std::cout << "      \"compiled_architecture\": " << measurements.front().compiled_architecture << ",\n"
+              << "      \"median_cuda_solver_ms\": " << cuda_solver[cuda_solver.size() / 2] << ",\n";
+  }
+  std::cout << "      \"project_ms\": [";
   for (std::size_t sample = 0; sample < measurements.size(); ++sample) {
     if (sample > 0) {
       std::cout << ", ";
@@ -231,18 +297,18 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
   std::cout << "]\n    }";
 }
 
-absl::Status Benchmark() {
-  auto uniform = PrepareCase(Layout::kUniformFinest);
+absl::Status Benchmark(Backend backend) {
+  auto uniform = PrepareCase(Layout::kUniformFinest, backend);
   if (!uniform.ok()) {
     return uniform.status();
   }
-  auto adaptive = PrepareCase(Layout::kTwoLevel);
+  auto adaptive = PrepareCase(Layout::kTwoLevel, backend);
   if (!adaptive.ok()) {
     return adaptive.status();
   }
   const std::array fixtures{&*uniform, &*adaptive};
   for (auto* fixture : fixtures) {
-    const auto warmup = MeasureProjection(*fixture);
+    const auto warmup = MeasureProjection(*fixture, backend);
     if (!warmup.ok()) {
       return warmup.status();
     }
@@ -255,7 +321,7 @@ absl::Status Benchmark() {
   for (std::size_t repeat = 0; repeat < kRepetitions; ++repeat) {
     for (std::size_t slot = 0; slot < fixtures.size(); ++slot) {
       const std::size_t layout = (repeat + slot) % fixtures.size();
-      const auto measurement = MeasureProjection(*fixtures[layout]);
+      const auto measurement = MeasureProjection(*fixtures[layout], backend);
       if (!measurement.ok()) {
         return measurement.status();
       }
@@ -265,6 +331,7 @@ absl::Status Benchmark() {
   const bool passed =
       std::ranges::all_of(measurements[0], MeetsErrorBudget) && std::ranges::all_of(measurements[1], MeetsErrorBudget);
   std::cout << std::setprecision(10) << "{\n  \"benchmark\": \"manufactured_sealed_cube_pressure\",\n"
+            << "  \"backend\": \"" << (backend == Backend::kCpu ? "cpu" : "cuda") << "\",\n"
             << "  \"domain_volume_m3\": " << kDomainVolume << ",\n"
             << "  \"pressure_linf_limit_pa\": " << kPressureErrorLimit << ",\n"
             << "  \"divergence_linf_limit_per_s\": " << kDivergenceErrorLimit << ",\n"
@@ -283,8 +350,12 @@ absl::Status Benchmark() {
 }  // namespace
 }  // namespace fluidity
 
-int main() {
-  const auto status = fluidity::Benchmark();
+int main(int argc, char** argv) {
+  if (argc != 1 && (argc != 2 || std::string_view(argv[1]) != "--cuda")) {
+    return 2;
+  }
+  const auto backend = argc == 1 ? fluidity::Backend::kCpu : fluidity::Backend::kCuda;
+  const auto status = fluidity::Benchmark(backend);
   if (!status.ok()) {
     std::cerr << status << '\n';
     return 1;

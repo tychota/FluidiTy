@@ -101,18 +101,62 @@ compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --
 The interface receipts are `out/m4-graded-traction-cpu.log`,
 `out/m4-graded-traction-cuda.log` and `out/m4-graded-interface-memcheck.log`.
 
+## Follow-up qualification
+
+The merge at `de03198` passed 852 Debug CPU CTests, 28 focused CPU
+cases, nine SM120 adaptive cases, four real-device viscosity regressions,
+CPU and CUDA checkpoint replay, and the pinned Lean and independent
+checker. Compute Sanitizer reported zero errors on graded viscous rollback.
+
+The constituent-viscosity follow-up freezes the existing current-volume
+mixture rule per leaf for the duration of an attempt. On `b3d0f53`,
+the combined main tree passed 27 focused CPU cases and 16 SM120 adaptive
+and CLI cases, including public graded EffectsSource capture and family
+replay. The constituent-viscosity fixture reproduces frame 11 after a fresh
+process resumes from frame 10. The two backends produced identical
+checkpoint and final state digests.
+
+Live family tests cover accepted constant-viscosity refinement and
+coarsening with late rollback. The driven EOS case refines, refuses
+coarsening when the fine exterior flux sum cannot be exactly represented
+on a coarse face, and then resumes on the retained refined topology.
+The miscible family case reuses conservative remap and checks extensive
+constituent volumes against the actual particle rebin in every leaf. The
+uneven sibling control preserves the parent totals and rejects before
+publication because the child inventories need certified resampling.
+
+~~~powershell
+ctest --test-dir <qualified-build> -R '^Adaptive(Family|Band)Replay' -V --output-on-failure --no-tests=error
+~~~
+
 ## Remaining M4 gates
 
-Full graded viscosity qualification still needs the planar-extension and
-Couette traction matrix at ratios 1, 10 and 1000 and the required resolution
-and timestep controls. The current graded tensor path qualifies a constant
-viscosity and stationary geometry. It reserves device velocity workspace,
-and the bounded prepared graph and host orchestration still allocate.
+The full graded planar-extension and Couette matrix needs independently
+fixed traction references at viscosity ratios 1, 10 and 1000, two
+resolutions and smaller timesteps. Apply the spec's 5% normalized RMS
+threshold, fixture maximum and absolute floor. The current graded tensor
+path covers stationary geometry, including constant and miscible
+constituent-dependent viscosity. Moving and cut geometry need the
+physical wall and interface quadratures. The prepared graph and host
+orchestration still allocate.
 
-Immiscible transport needs a phase-resolved geometry and conservative
-material transfer. Trapped-air pressure needs a graded domain that admits
-resolved gas occupancy and supplies gas-side aperture and cavity lineage.
-Adaptive Mesh still needs authoritative occupancy, shared-interface
-geometry, persistent IDs and composition output. Live refine/coarsen,
-moving and cut geometry, band handoff, and the full fixed-cache wave
-remain separate integration and qualification work.
+Graded trapped air needs resolved gas occupancy, liquid–gas apertures on
+the canonical subfaces, and checkpointed component lineage. Graded
+immiscible transport and curved capillary pressure need one authoritative
+phase pair per shared interface, phase-aware conservative transport and
+persistent two-sided Mesh composition. The M3 stationary graded Mesh
+receipt qualifies the single-phase carrier and ID path.
+
+The family path admits exact particle rebinning. General EOS coarsening
+needs conservative storage for exterior flux sums that the current coarse
+face cannot represent. General constituent refinement needs certified
+resampling or material-aware prolongation. Extended-liquid Eulerian
+handoff, automatic topology policy and conservative cross-owner exchange
+remain open.
+
+The fresh M2 column-seed wave still refuses Mesh frame two. Reproduction on
+`de03198` used 0.125 m Mesh spacing and 0.16 m sigma. Simulate published
+frame two. Mesh stopped after frame one because its raw scaffold encloses
+1.32813 m³ against 1.76750 m³ of accepted material. The fixed-cache
+continuation is a separate control. The full fresh reference wave and
+interrupted replay remain open.

@@ -98,10 +98,32 @@ AdvanceFamily(LiquidSubstepScheduler3D& scheduler, double frame_end, bool refine
       || scheduler.committed().adaptive_cells.size() != (refine ? 12U : 5U)) {
     return absl::FailedPreconditionError("family trial did not publish the expected topology");
   }
-  if (scenario == "viscous") {
+  if (scenario == "viscous" || scenario == "miscible") {
     const auto& measurement = scheduler.diagnostics().accepted_measurement;
     if (!measurement || !measurement->viscous_max_momentum_residual_kg_m_per_s) {
       return absl::FailedPreconditionError("accepted family trial did not run the viscous solve");
+    }
+  }
+  if (scenario == "miscible") {
+    const auto& accepted = scheduler.committed();
+    if (accepted.particles.size() != 12) {
+      return absl::FailedPreconditionError("miscible family transaction changed the particle roster");
+    }
+    std::array<double, 2> constituent_volumes_m3{};
+    for (const auto& cell : accepted.adaptive_cells.values()) {
+      const auto& inventory = cell.inventory;
+      if (inventory.phase_id != 4 || inventory.constituent_count != 2 || inventory.constituents[0].substance_id != 8
+          || inventory.constituents[1].substance_id != 14
+          || inventory.constituents[0].volume_m3 + inventory.constituents[1].volume_m3 != inventory.current_volume_m3) {
+        return absl::FailedPreconditionError("miscible family transaction lost constituent inventory");
+      }
+      for (std::size_t substance = 0; substance < constituent_volumes_m3.size(); ++substance) {
+        constituent_volumes_m3[substance] += inventory.constituents[substance].volume_m3;
+      }
+    }
+    // The authored tank holds 1.5 m³, split equally between two stable IDs.
+    if (constituent_volumes_m3 != std::array{0.75, 0.75}) {
+      return absl::FailedPreconditionError("miscible family transaction changed per-substance volumes");
     }
   }
   if (scenario == "eos" && std::ranges::none_of(scheduler.committed().particles.values(), [](const auto& particle) {
@@ -230,11 +252,32 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (scenario == "viscous") {
     scene.dynamic_viscosity = 2.0;
   }
+  if (scenario == "miscible") {
+    static constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 2.0, 1.0}, {14, 4, 2.0, 3.0}}};
+    scene.constituent_materials = kMaterials;
+    for (auto& particle : state.particles.values()) {
+      particle.phase_id = 4;
+      particle.constituent_count = 2;
+      particle.constituents[0] = {8, 0.5};
+      particle.constituents[1] = {14, 0.5};
+    }
+    for (auto& cell : state.adaptive_cells.values()) {
+      auto& inventory = cell.inventory;
+      inventory.phase_id = 4;
+      inventory.constituent_count = 2;
+      inventory.constituents[0] = {8, 0.5 * inventory.current_volume_m3};
+      inventory.constituents[1] = {14, 0.5 * inventory.current_volume_m3};
+    }
+  }
   LiquidResumeMetadata3D resume;
   const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : width ? 13 : 12)};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
     const std::uint8_t extended_identity[]{1, 4, 12, static_cast<std::uint8_t>(scenario == "eos" ? 1 : 2)};
+    resume.resolved_fingerprint = LiquidContentDigest3D(extended_identity);
+  }
+  if (scenario == "miscible") {
+    const std::uint8_t extended_identity[]{1, 4, 12, 3};
     resume.resolved_fingerprint = LiquidContentDigest3D(extended_identity);
   }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
@@ -280,6 +323,42 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 #endif
   LiquidStepOptions3D options;
   options.capacities = kCapacities;
+  if (scenario == "miscible" && mode != "resume") {
+    // Equal and opposite edits preserve the parent inventory but would move substance
+    // between children if prolongation ignored the particles' spatial composition.
+    state.particles[0].constituents[0].volume_fraction = 0.75;
+    state.particles[0].constituents[1].volume_fraction = 0.25;
+    state.particles[1].constituents[0].volume_fraction = 0.25;
+    state.particles[1].constituents[1].volume_fraction = 0.75;
+    auto uneven = LiquidSubstepScheduler3D::Create(state, scene, options);
+    for (std::size_t particle = 0; particle < 2; ++particle) {
+      state.particles[particle].constituents[0].volume_fraction = 0.5;
+      state.particles[particle].constituents[1].volume_fraction = 0.5;
+    }
+    if (!uneven.ok()) {
+      return uneven.status();
+    }
+    const auto before = EncodeLiquidState3D(uneven->committed());
+    if (!before.ok()) {
+      return before.status();
+    }
+    const auto began = uneven->BeginFrame(0.01);
+    if (!began.ok()) {
+      return began;
+    }
+    const auto refused = uneven->AttemptWithAdaptiveFamily(0.01, kParent, true);
+    if (refused.status().code() != absl::StatusCode::kFailedPrecondition
+        || refused.status().message() != "graded family inventory requires certified particle resampling") {
+      return absl::FailedPreconditionError("uneven miscible rebinning did not refuse unrepresentable child inventory");
+    }
+    const auto after = EncodeLiquidState3D(uneven->committed());
+    if (!after.ok()) {
+      return after.status();
+    }
+    if (!std::ranges::equal(before->values(), after->values())) {
+      return absl::FailedPreconditionError("refused miscible rebinning changed accepted state");
+    }
+  }
   auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, operations);
   if (!scheduler.ok()) {
     return scheduler.status();
@@ -370,7 +449,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
-  if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "width") {
+  if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
+      && scenario != "width") {
     return 2;
   }
   const std::string_view backend = argv[1];
