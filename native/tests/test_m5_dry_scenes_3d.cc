@@ -797,6 +797,33 @@ bool TestPlasticCheckpointHandoff() {
       || decode_batch(invalid_state, 2).status().code() != absl::StatusCode::kFailedPrecondition) {
     return false;
   }
+  flatbuffers::FlatBufferBuilder owning_builder;
+  const auto empty_vector = fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, {}, bindings, 0);
+  if (!empty_vector.ok() || !empty_vector->IsNull() || owning_builder.GetSize() != 0) {
+    return false;
+  }
+  const auto encoded_batch =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, mixed_records, bindings, 2);
+  if (!encoded_batch.ok() || encoded_batch->IsNull()) {
+    return false;
+  }
+  const auto staged_size = owning_builder.GetSize();
+  const auto over_capacity =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, mixed_records, bindings, 1);
+  const auto rejected_state =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, invalid_state, bindings, 2);
+  if (over_capacity.status().code() != absl::StatusCode::kResourceExhausted
+      || rejected_state.status().code() != absl::StatusCode::kFailedPrecondition
+      || owning_builder.GetSize() != staged_size) {
+    return false;
+  }
+  owning_builder.Finish(*encoded_batch);
+  const auto* encoded_wire_records = flatbuffers::GetRoot<WireVector>(owning_builder.GetBufferPointer());
+  const auto replay = fluidity::internal::DecodePlasticCheckpointWireVector3D(encoded_wire_records, bindings, 2);
+  if (!replay.ok() || replay->size() != 2 || (*replay)[0].particle_id != 5 || (*replay)[1].particle_id != 7
+      || (*replay)[1].log_plastic_jacobian != accepted.log_plastic_jacobian) {
+    return false;
+  }
   auto uninterrupted = accepted;
   const DrySolidStep3D step{.duration = 0.01, .acoustic_cfl = 0.25};
 #if defined(FLUIDITY_M5_CUDA_SCENES)

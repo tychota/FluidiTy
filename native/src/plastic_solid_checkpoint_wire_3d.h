@@ -55,6 +55,34 @@ inline PlasticSolidCheckpointParticle3D UnpackPlasticSolidCheckpointParticle3D(c
 
 using PlasticCheckpointWireVector3D = flatbuffers::Vector<const solid::v1::PlasticParticle*>;
 
+// Validate a payload before adding its optional vector to the owning builder.
+// An empty payload yields a null offset. Capacity or validation errors leave
+// the builder unchanged. The owner limits the size of the complete envelope.
+inline absl::StatusOr<flatbuffers::Offset<PlasticCheckpointWireVector3D>> EncodePlasticCheckpointWireVector3D(
+    flatbuffers::FlatBufferBuilder& builder,
+    std::span<const PlasticSolidCheckpointParticle3D> records,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings,
+    std::size_t maximum_particle_count
+) {
+  if (records.size() > maximum_particle_count
+      || records.size() >= FLATBUFFERS_MAX_BUFFER_SIZE / sizeof(solid::v1::PlasticParticle)) {
+    return absl::ResourceExhaustedError("plastic checkpoint particle count exceeds capacity");
+  }
+  const auto status = ValidatePlasticSolidCheckpointParticles3D(records, bindings);
+  if (!status.ok()) {
+    return status;
+  }
+  if (records.empty()) {
+    return flatbuffers::Offset<PlasticCheckpointWireVector3D>{};
+  }
+  std::vector<solid::v1::PlasticParticle> wire_records;
+  wire_records.reserve(records.size());
+  for (const auto& record : records) {
+    wire_records.push_back(PackPlasticSolidCheckpointParticle3D(record));
+  }
+  return builder.CreateVectorOfStructs(wire_records.data(), wire_records.size());
+}
+
 // Decode a structurally verified optional vector from the owning FLSI envelope.
 // Check the caller's particle limit before allocating. Validate all resolved
 // body bindings and material states before returning any decoded records.

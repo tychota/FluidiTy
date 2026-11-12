@@ -773,6 +773,14 @@ above capacity, and a malformed late snow record. The remaining
 codec work is to supply the verified field, enforce the envelope
 version and pass scene bindings and the resolved particle limit.
 
+The matching encoder checks capacity and validates the entire payload
+before adding any bytes to the owning builder. An empty payload yields
+an absent field. The round trip preserves the body-interleaved particle
+order and nonzero snow compaction history. A capacity failure or late
+material failure preserves the builder's prior size and leaves the
+previously staged vector readable. The owner still enforces the
+envelope byte limit and schema version.
+
 The shared plastic wire fragment is in
 schemas/simulate/plastic_solid_particle.fbs. A scratch FLSI envelope
 based on M6 ba644ea included that fragment and added the optional
