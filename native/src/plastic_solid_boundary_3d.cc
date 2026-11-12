@@ -240,4 +240,50 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
   return loads;
 }
 
+absl::StatusOr<std::vector<DrySolidParticle3D>> StagePressureLoadedSnowParticles3D(
+    std::span<const PlasticSolidCheckpointParticle3D> accepted,
+    std::uint64_t body_id,
+    std::uint64_t material_id,
+    const SnowParameters3D& snow,
+    double cell_width,
+    std::span<const PlasticSolidPressureImpulse3D> loads
+) {
+  if (!std::isfinite(cell_width) || cell_width <= 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  auto trial = RestoreDrySolidCheckpointParticles3D(accepted, body_id, material_id, snow);
+  if (!trial.ok()) {
+    return trial.status();
+  }
+
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array kSlopeRows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  for (const auto& load : loads) {
+    const auto owner =
+        std::ranges::lower_bound(accepted, load.particle_id, {}, &PlasticSolidCheckpointParticle3D::particle_id);
+    if (owner == accepted.end() || owner->particle_id != load.particle_id || !Finite(load.impulse)
+        || !Finite(load.world_offset)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    auto& particle = (*trial)[static_cast<std::size_t>(owner - accepted.begin())];
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto component = kComponents[axis];
+      const double velocity_increment = (load.impulse.*component) / particle.mass;
+      particle.world_velocity.*component += velocity_increment;
+      auto& slope = particle.velocity_slopes.*kSlopeRows[axis];
+      for (const auto coordinate : kComponents) {
+        // The complete quadratic moment is I/4 in cell coordinates.
+        const double normalized_offset = (load.world_offset.*coordinate) / cell_width;
+        const double slope_increment = (4.0 * (velocity_increment * normalized_offset)) / cell_width;
+        slope.*coordinate += slope_increment;
+      }
+    }
+    const auto& slopes = particle.velocity_slopes;
+    if (!Finite(particle.world_velocity) || !Finite(slopes.x_row) || !Finite(slopes.y_row) || !Finite(slopes.z_row)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+  }
+  return std::move(*trial);
+}
+
 }  // namespace fluidity

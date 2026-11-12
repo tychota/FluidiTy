@@ -55,4 +55,19 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
     double step_duration
 );
 
+// Restores a single snow body's trial particles and adds the staged linear
+// and affine pressure impulses. The subsequent dry step must use complete
+// quadratic MAC support at this cell width. Loads are applied in supplied
+// order. Unknown particle IDs and invalid inputs return InvalidArgument.
+// Nonfinite resulting velocities or slopes return OutOfRange. The accepted
+// records are immutable and failure returns no trial.
+absl::StatusOr<std::vector<DrySolidParticle3D>> StagePressureLoadedSnowParticles3D(
+    std::span<const PlasticSolidCheckpointParticle3D> accepted,
+    std::uint64_t body_id,
+    std::uint64_t material_id,
+    const SnowParameters3D& snow,
+    double cell_width,
+    std::span<const PlasticSolidPressureImpulse3D> loads
+);
+
 }  // namespace fluidity
