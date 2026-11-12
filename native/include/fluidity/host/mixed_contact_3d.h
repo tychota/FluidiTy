@@ -35,6 +35,25 @@ struct PlanarMixedContactFace3D {
   Vec3 second_interface_world_velocity;  // Constant plane velocity in world m/s.
 };
 
+// Reconstructs an axis-aligned planar envelope from contributors on one
+// face. The first body's minimum projection and the second body's maximum
+// projection face each other along the supplied signed Cartesian normal.
+// Nonnegative interface offsets extend the fronts toward each other in
+// meters. The contributors must be ordered by unique ID and match the
+// supplied particle records. The two front velocities come from the face
+// samples. Conflicting normal velocities at tied extrema or missing fronts
+// return FailedPrecondition. Malformed inputs return InvalidArgument.
+// Nonfinite offset arithmetic returns OutOfRange. The result borrows the
+// original contributors. This model assumes locally parallel interfaces.
+absl::StatusOr<PlanarMixedContactFace3D> ReconstructAxisAlignedMixedContactFace3D(
+    std::span<const LiquidParticleState3D> liquid,
+    std::uint64_t liquid_body_id,
+    std::span<const PlasticSolidCheckpointParticle3D> plastic,
+    const DetectedContactFace3D& pair,
+    double first_interface_offset,
+    double second_interface_offset
+);
+
 struct PlanarMixedContactReceipt3D {
   std::size_t face_slot;
   double contact_fraction;  // Earliest hit fraction in [0, 1].

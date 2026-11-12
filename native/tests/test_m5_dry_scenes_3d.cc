@@ -331,12 +331,17 @@ bool TestSandSurfaceFit() {
 }
 
 bool TestPlanarMixedContactDetection() {
-  fluidity::LiquidParticleState3D water{.id = 7, .world_velocity = {2, 0, 0}, .mass = 6};
+  fluidity::LiquidParticleState3D water{
+      .id = 7,
+      .world_position = {-0.0625, 0, 0},
+      .world_velocity = {2, 0, 0},
+      .mass = 6
+  };
   fluidity::PlasticSolidCheckpointParticle3D snow{
       .particle_id = 3,
       .body_id = 9,
       .material_id = 1,
-      .transfer = {.particle_mass = 2, .particle_velocity = {-2, 0, 0}},
+      .transfer = {.trial_world_position = {0.3125, 0, 0}, .particle_mass = 2, .particle_velocity = {-2, 0, 0}},
       .reference_volume = 0.001,
       .elastic_deformation = kIdentity,
   };
@@ -344,13 +349,36 @@ bool TestPlanarMixedContactDetection() {
       fluidity::ContactFaceParticle3D{3, 9, 2, 1, {-2, 0, 0}},
       fluidity::ContactFaceParticle3D{7, 11, 6, 1, {2, 0, 0}},
   };
-  const fluidity::PlanarMixedContactFace3D face{
-      .pair = {3, contributors, 9, 11, {1, 0, 0}, 0},
-      .first_interface_world_position = {0.25, 0, 0},
-      .first_interface_world_velocity = {-2, 0, 0},
-      .second_plane_start_coordinate = 0,
-      .second_interface_world_velocity = {2, 0, 0},
+  const fluidity::DetectedContactFace3D pair{3, contributors, 9, 11, {1, 0, 0}, 0};
+  const auto reconstructed =
+      fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, {&snow, 1}, pair, 0.0625, 0.0625);
+  if (!reconstructed.ok() || reconstructed->first_interface_world_position.x != 0.25
+      || reconstructed->second_plane_start_coordinate != 0) {
+    return false;
+  }
+  const fluidity::DetectedContactFace3D reversed{3, contributors, 11, 9, {-1, 0, 0}, 0};
+  const auto reversed_fronts =
+      fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, {&snow, 1}, reversed, 0.0625, 0.0625);
+  if (!reversed_fronts.ok() || reversed_fronts->first_interface_world_position.x != 0
+      || reversed_fronts->second_plane_start_coordinate != -0.25) {
+    return false;
+  }
+  auto another_snow = snow;
+  another_snow.particle_id = 4;
+  const std::array tied_snow{snow, another_snow};
+  const std::array tied_contributors{
+      contributors[0],
+      fluidity::ContactFaceParticle3D{4, 9, 2, 1, {-1, 0, 0}},
+      contributors[1],
   };
+  const fluidity::DetectedContactFace3D ambiguous{3, tied_contributors, 9, 11, {1, 0, 0}, 0};
+  if (fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, tied_snow, ambiguous, 0.0625, 0.0625)
+          .status()
+          .code()
+      != absl::StatusCode::kFailedPrecondition) {
+    return false;
+  }
+  const auto face = *reconstructed;
   const auto missed = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.03125);
   if (!missed.ok() || !missed->empty() || water.world_velocity.x != 2 || snow.transfer.particle_velocity.x != -2) {
     return false;
@@ -370,20 +398,18 @@ bool TestPlanarMixedContactDetection() {
   if (!endpoint.ok() || endpoint->size() != 1 || endpoint->front().contact_fraction != 1) {
     return false;
   }
-  water.world_position.x = 0;
-  snow.transfer.trial_world_position.x = 0.25;
   const auto rejected_motion =
       fluidity::AdvancePlanarMixedContact3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.125, 0.10);
-  if (rejected_motion.ok() || water.world_position.x != 0 || water.world_velocity.x != 2
-      || snow.transfer.trial_world_position.x != 0.25 || snow.transfer.particle_velocity.x != -2) {
+  if (rejected_motion.ok() || water.world_position.x != -0.0625 || water.world_velocity.x != 2
+      || snow.transfer.trial_world_position.x != 0.3125 || snow.transfer.particle_velocity.x != -2) {
     return false;
   }
   const auto hit = fluidity::AdvancePlanarMixedContact3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.125, 0.25);
   return hit.ok() && hit->size() == 1 && hit->front().face_slot == 3
       && std::abs(hit->front().contact_fraction - 0.5) < 1e-12
       && std::abs(hit->front().contact.impulse_on_first.x - 6) < 1e-12 && std::abs(water.world_velocity.x - 1) < 1e-12
-      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12 && std::abs(water.world_position.x - 0.1875) < 1e-12
-      && std::abs(snow.transfer.trial_world_position.x - 0.1875) < 1e-12 && snow.transfer.sorted_world_position.x == 0;
+      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12 && std::abs(water.world_position.x - 0.125) < 1e-12
+      && std::abs(snow.transfer.trial_world_position.x - 0.25) < 1e-12 && snow.transfer.sorted_world_position.x == 0;
 }
 
 bool TestMixedContactAcceptance() {

@@ -22,6 +22,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Isolated mixed-contact velocity update | Pass on host | Staged face impulses update the actual liquid and plastic stored velocities atomically. The fixture checks combined momentum, untouched liquid volume and snow history, late rejection, successful retry and final-velocity overflow rollback. |
 | Isolated planar mixed contact detection | Pass on host | Certified halfspace sweep admits an analytic interior or endpoint hit, leaves a near miss unchanged, and rejects a later overlapping candidate before publishing any impulse. |
 | Isolated common-impact mixed advection | Pass on host | Two translating planar interfaces hit halfway through the attempt and both trial positions reach 0.1875 m. An insufficient path-length budget rejects both velocity and position changes. |
+| Particle-derived planar contact fronts | Pass for the bounded axis-aligned model | The fixture reconstructs a 0.25 m gap from liquid and snow particle positions and explicit 0.0625 m offsets, then reaches the analytic impact and post-impact positions. Reversed normal and conflicting tied-front velocity checks pass. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
@@ -621,6 +622,18 @@ intersected by a horizontal liquid plane. The supplied hydrostatic
 pressure fixture balances buoyancy and weight. Production fractions,
 moving wall flux, solved traction feedback and mixed replay are separate
 from that geometry test.
+
+The analytic mixed test now reconstructs its planar gap from particle
+records instead of supplying plane coordinates independently. An
+authored signed Cartesian normal selects the opposed extrema of the
+face's contributors. Explicit offsets represent distance from particle
+centers to the local interface. The fixture uses 0.0625 m on both
+sides, yielding the same 0.25 m gap and half-step hit. At the end,
+water is at x = 0.125 m and snow at x = 0.25 m, preserving the sum
+of the two center offsets. Reversed body orientation yields the same
+gap. Tied front samples with conflicting normal velocities reject.
+This is a planar envelope over supplied face contributors. It does
+not derive normals, footprint overlap or general free-surface geometry.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same

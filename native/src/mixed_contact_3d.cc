@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 #include "fluidity/host/liquid_wall_contact_3d.h"
@@ -128,6 +129,108 @@ absl::StatusOr<std::vector<DistinctBodyContact3D>> ApplyMixedContactFaces3D(
     *bindings[index].stored_world_velocity = response->velocity_deltas[index];
   }
   return std::move(response->face_contacts);
+}
+
+absl::StatusOr<PlanarMixedContactFace3D> ReconstructAxisAlignedMixedContactFace3D(
+    std::span<const LiquidParticleState3D> liquid,
+    std::uint64_t liquid_body_id,
+    std::span<const PlasticSolidCheckpointParticle3D> plastic,
+    const DetectedContactFace3D& pair,
+    double first_interface_offset,
+    double second_interface_offset
+) {
+  const bool first_is_liquid = pair.first_body_id == liquid_body_id;
+  const bool second_is_liquid = pair.second_body_id == liquid_body_id;
+  if (liquid_body_id == 0 || pair.first_body_id == 0 || pair.second_body_id == 0 || first_is_liquid == second_is_liquid
+      || !std::isfinite(first_interface_offset) || first_interface_offset < 0 || !std::isfinite(second_interface_offset)
+      || second_interface_offset < 0) {
+    return absl::InvalidArgumentError("invalid planar mixed contact reconstruction");
+  }
+  constexpr double Vec3::* kComponents[]{&Vec3::x, &Vec3::y, &Vec3::z};
+  double Vec3::* normal_component = nullptr;
+  for (const auto component : kComponents) {
+    const double value = pair.normal_toward_first.*component;
+    if (value == 0) {
+      continue;
+    }
+    if (normal_component != nullptr || std::abs(value) != 1) {
+      return absl::InvalidArgumentError("planar mixed contact requires a signed Cartesian normal");
+    }
+    normal_component = component;
+  }
+  if (normal_component == nullptr) {
+    return absl::InvalidArgumentError("zero planar mixed contact normal");
+  }
+  const double sign = pair.normal_toward_first.*normal_component;
+
+  struct FrontSample {
+    Vec3 position;
+    Vec3 velocity;
+    double coordinate;
+    bool ambiguous;
+  };
+  std::optional<FrontSample> first_front;
+  std::optional<FrontSample> second_front;
+  std::uint64_t previous_id = 0;
+  for (const auto& contributor : pair.contributors) {
+    if (contributor.particle_id <= previous_id) {
+      return absl::InvalidArgumentError("invalid planar mixed contact contributor order");
+    }
+    previous_id = contributor.particle_id;
+    const bool first = contributor.body_id == pair.first_body_id;
+    if (!first && contributor.body_id != pair.second_body_id) {
+      continue;
+    }
+
+    Vec3 position{};
+    if (contributor.body_id == liquid_body_id) {
+      const auto particle = std::ranges::find(liquid, contributor.particle_id, &LiquidParticleState3D::id);
+      if (particle == liquid.end() || particle->mass != contributor.mass) {
+        return absl::InvalidArgumentError("liquid reconstruction contributor mismatch");
+      }
+      position = particle->world_position;
+    } else {
+      const auto particle =
+          std::ranges::find(plastic, contributor.particle_id, &PlasticSolidCheckpointParticle3D::particle_id);
+      if (particle == plastic.end() || particle->body_id != contributor.body_id
+          || particle->transfer.particle_mass != contributor.mass) {
+        return absl::InvalidArgumentError("plastic reconstruction contributor mismatch");
+      }
+      position = particle->transfer.trial_world_position;
+    }
+    if (!std::isfinite(contributor.mass) || contributor.mass <= 0 || !std::isfinite(contributor.weight)
+        || contributor.weight <= 0 || contributor.weight > 1) {
+      return absl::InvalidArgumentError("invalid planar mixed contact contributor");
+    }
+    const Vec3 velocity = contributor.world_face_velocity;
+    if (!distinct_contact_detail::Finite(position) || !distinct_contact_detail::Finite(velocity)) {
+      return absl::InvalidArgumentError("nonfinite mixed contact reconstruction sample");
+    }
+    const double coordinate = sign * (position.*normal_component);
+    auto& front = first ? first_front : second_front;
+    if (!front.has_value() || (first ? coordinate < front->coordinate : coordinate > front->coordinate)) {
+      front = FrontSample{position, velocity, coordinate, false};
+    } else if (coordinate == front->coordinate && velocity.*normal_component != front->velocity.*normal_component) {
+      front->ambiguous = true;
+    }
+  }
+  if (!first_front.has_value() || !second_front.has_value() || first_front->ambiguous || second_front->ambiguous) {
+    return absl::FailedPreconditionError("missing or ambiguous planar mixed contact front");
+  }
+  const double first_coordinate = first_front->coordinate - first_interface_offset;
+  const double second_coordinate = second_front->coordinate + second_interface_offset;
+  if (!std::isfinite(first_coordinate) || !std::isfinite(second_coordinate)) {
+    return absl::OutOfRangeError("unrepresentable planar mixed contact interface");
+  }
+  Vec3 first_interface = first_front->position;
+  first_interface.*normal_component = sign * first_coordinate;
+  return PlanarMixedContactFace3D{
+      .pair = pair,
+      .first_interface_world_position = first_interface,
+      .first_interface_world_velocity = first_front->velocity,
+      .second_plane_start_coordinate = second_coordinate,
+      .second_interface_world_velocity = second_front->velocity,
+  };
 }
 
 absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> ApplyPlanarMixedContactFaces3D(
