@@ -164,6 +164,46 @@ wall impulse by less than 0.25%. This checks the aggregate budget and leaves
 the spatial and temporal distribution of floor response as an open
 explanation for the angle sensitivity.
 
+### Sand particle sampling
+
+The original column uses 63 cell-centered particles. Doubling the
+samples per axis gives 504 particles with 0.025 m spacing, the same
+0.15 × 0.35 × 0.15 m initial column, and the same 2.3625 kg total mass.
+The release height, grid, nominal timesteps, floor friction, sand law,
+and measurement times are unchanged.
+
+| h (m) | nominal dt (s) | 63 particles | 504 particles |
+|---|---:|---:|---:|
+| 0.075 | 0.001875 | 30.161149° | 26.727381° |
+| 0.0625 | 0.0015625 | 27.803822° | 23.585775° |
+| 0.075 | 0.0009375 | 37.248475° | 33.443262° |
+| 0.0625 | 0.00078125 | 32.699841° | 28.793882° |
+
+Native Release values shown. Native and CUDA differ by at most 1e-6° at the reported precision across
+the four dense runs. The vertical momentum budget passed in all four.
+Increasing particle sampling lowered the measured angle by 3.43–4.22°
+and left a pronounced timestep effect. The reference nominal angle
+from the 63-particle fixture therefore does not establish sampling
+convergence.
+
+With the same 504 particles, two finer grids were then compared at matched
+timesteps. This keeps the physical sampling and material law fixed.
+
+| h (m) | nominal dt (s) | Native angle | CUDA angle |
+|---|---:|---:|---:|
+| 0.0375 | 0.00078125 | 21.217540° | 21.217540° |
+| 0.03125 | 0.00078125 | 20.379811° | 20.379819° |
+| 0.0375 | 0.000390625 | 22.110279° | 22.110280° |
+| 0.03125 | 0.000390625 | 22.184540° | 22.184549° |
+
+The finer grids reduce the observed timestep shifts to 0.89° and 1.80°,
+respectively. All four angles remain below 30°, while final 0.05 s drift is
+below 0.49° and the vertical momentum budget still passes. The data show a
+settled-angle discrepancy under refinement. They do not establish an
+asymptotic slope. The next physical comparison should isolate the floor
+transfer and the pile shape measurement on a spatially resolved benchmark
+before any material calibration.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -195,6 +235,13 @@ compute-sanitizer --tool memcheck --error-exitcode 1 ./out/build/windows-release
 # Stored-velocity diagnostic at both widths and timesteps. Exit 1 retains the misses.
 & ./out/build/windows-debug-cpu/fluidity_m5_dry_scene_tests.exe --q-sand-stored-blend
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-stored-blend
+
+# Release host and CUDA at matched particle sampling. Both controls report open gates.
+cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-dense-particles
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-particles
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-dense-refined-grid
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-refined-grid
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources

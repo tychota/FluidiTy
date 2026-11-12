@@ -24,7 +24,13 @@ using fluidity::SparseMacGrid3D;
 
 constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-bool TestScene(double width, double duration, bool snow, double particle_energy_blend = 0) {
+bool TestScene(
+    double width,
+    double duration,
+    bool snow,
+    double particle_energy_blend = 0,
+    int particles_per_axis_multiplier = 1
+) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
     for (int y = -1; y <= 4; ++y) {
@@ -41,13 +47,19 @@ bool TestScene(double width, double duration, bool snow, double particle_energy_
       ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
       : DrySolidMaterial3D(fluidity::GranularParameters3D{700, 450, 0.5235987755982989, 0});
   std::vector<DrySolidParticle3D> particles;
-  const double spacing = 0.05;
+  const int horizontal_samples = 3 * particles_per_axis_multiplier;
+  const int vertical_samples = (snow ? 4 : 7) * particles_per_axis_multiplier;
+  const double spacing = 0.05 / particles_per_axis_multiplier;
+  const double horizontal_center = 0.5 * (horizontal_samples - 1);
   const double volume = spacing * spacing * spacing;
-  for (int z = -1; z <= 1; ++z) {
-    for (int y = 0; y < (snow ? 4 : 7); ++y) {
-      for (int x = -1; x <= 1; ++x) {
+  for (int z = 0; z < horizontal_samples; ++z) {
+    for (int y = 0; y < vertical_samples; ++y) {
+      for (int x = 0; x < horizontal_samples; ++x) {
         particles.push_back(
-            {.world_position = {x * spacing, (y + 0.5) * spacing + (snow ? 0.0 : 0.10), z * spacing},
+            {.world_position =
+                 {(x - horizontal_center) * spacing,
+                  (y + 0.5) * spacing + (snow ? 0.0 : 0.10),
+                  (z - horizontal_center) * spacing},
              .mass = 300 * volume,
              .reference_volume = volume,
              .elastic_deformation = kIdentity}
@@ -79,8 +91,14 @@ bool TestScene(double width, double duration, bool snow, double particle_energy_
     }
     fluidity::DrySolidStepBudget3D budget{};
 #if defined(FLUIDITY_M5_CUDA_SCENES)
-    const auto status =
-        fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, particles, &budget);
+    const auto status = fluidity::CudaAdvanceDrySolid3D(
+        *grid,
+        material,
+        settings,
+        {0x1p-42, 0x1p-38, std::max<std::size_t>(128, particles.size())},
+        particles,
+        &budget
+    );
 #else
     const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, particles, &budget);
 #endif
@@ -368,6 +386,20 @@ int main(int argc, char** argv) {
     const bool reference_half = TestScene(0.075, 0.0009375, false, 0.6);
     const bool refined_half = TestScene(0.0625, 0.00078125, false, 0.6);
     return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-particles") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 2);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 2);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 2);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 2);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-refined-grid") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
   }
   if (argc != 1) {
     return 2;
