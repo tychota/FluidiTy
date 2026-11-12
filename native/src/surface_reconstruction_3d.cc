@@ -18,6 +18,10 @@ bool Safe(const SurfaceMetrics3D& m) {
   return m.boundary_edges == 0 && m.nonmanifold_edges == 0 && m.nonmanifold_vertices == 0 && m.orientation_defects == 0
       && m.degenerate_triangles == 0 && m.self_intersections == 0;
 }
+bool MatchesCavityBoundaries(const SurfaceMetrics3D& metrics, std::size_t cavity_count) {
+  return metrics.positive_volume_components == 1 && metrics.negative_volume_components == cavity_count
+      && metrics.components == cavity_count + 1;
+}
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
       && a.world_origin.z == b.world_origin.z;
@@ -172,6 +176,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (sample.particles.size() > std::min(limits.particles, hard_limit)
         || sample.blocks.size() > std::min(limits.blocks, hard_limit)
         || sample.cells.size() > std::min(limits.cells, hard_limit)
+        || sample.cavity_gas.size() > std::min(limits.cells, hard_limit)
+        || sample.cavity_components.size() > std::min(limits.cells, hard_limit)
         || sample.faces.size() > std::min(limits.faces, hard_limit)
         || sample.sources.size() > std::min(limits.sources, hard_limit)) {
       return absl::ResourceExhaustedError("surface source record budget exceeded");
@@ -359,6 +365,22 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return continuity;
     }
   }
+  const auto tracked_cavities = [](const LiquidState3D& state) {
+    std::vector<std::uint64_t> ids;
+    for (const auto& cavity : state.cavity_components.values()) {
+      if (cavity.id != 0) {
+        ids.push_back(cavity.id);
+      }
+    }
+    std::ranges::sort(ids);
+    return ids;
+  };
+  const auto cavity_ids = tracked_cavities(endpoint);
+  if (previous && std::ranges::any_of(source.samples, [&](const LiquidState3D& sample) {
+        return tracked_cavities(sample) != cavity_ids;
+      })) {
+    return absl::FailedPreconditionError("surface cavity topology change requires local repair");
+  }
   std::optional<liquid_step_internal::PreparedIsolatedDrop3D> isolated;
   if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
     auto prepared = liquid_step_internal::PrepareIsolatedDrop3D(
@@ -460,7 +482,12 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           return distance.status();
         }
         auto& value = field->values[(x * extent[1] + y) * extent[2] + z];
-        if (*distance < -2 * endpoint.geometry.cell_width && value >= 0) {
+        if (!cavity_ids.empty()) {
+          // The cached cavity certifies nested topology. Use the complete
+          // Simulate sign field at its interfaces, where smoothing could
+          // bridge the air pocket and discard the inward boundary.
+          value = *distance / options.spacing_m;
+        } else if (*distance < -2 * endpoint.geometry.cell_width && value >= 0) {
           value = -0.5;
           ++result.deep_liquid_fills;
         } else if (*distance > 2 * endpoint.geometry.cell_width && value <= 0) {
@@ -486,7 +513,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   if (!raw_metrics.ok()) {
     return raw_metrics.status();
   }
-  if (!Safe(*raw_metrics) || raw_metrics->signed_volume <= 0 || raw_metrics->components != 1) {
+  if (!Safe(*raw_metrics) || raw_metrics->signed_volume <= 0
+      || !MatchesCavityBoundaries(*raw_metrics, cavity_ids.size())) {
     return absl::FailedPreconditionError("surface requires droplet, component or topology repair");
   }
   result.raw_metrics = *raw_metrics;
@@ -527,6 +555,9 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     return scaffold_metrics.status();
   }
+  if (!MatchesCavityBoundaries(*scaffold_metrics, cavity_ids.size())) {
+    return absl::FailedPreconditionError("surface volume correction changed cavity topology");
+  }
   std::vector<FrozenMotionCarrier3D> carriers;
   for (const auto& sample : source.samples) {
     auto carrier = FrozenMotionCarrier3D::Create(sample, scene, step_options);
@@ -558,7 +589,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (!metrics.ok()) {
       return metrics.status();
     }
-    if (metrics->components != 1 || metrics->euler_characteristic != raw_metrics->euler_characteristic) {
+    if (!MatchesCavityBoundaries(*metrics, cavity_ids.size())
+        || metrics->euler_characteristic != raw_metrics->euler_characteristic) {
       return absl::FailedPreconditionError("surface topology change requires local repair");
     }
     const auto scaffold = SurfaceClosestPoint3D::Create(*raw_mesh, options.limits.maximum_triangles);
@@ -636,6 +668,9 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   );
   if (!corrected.ok()) {
     return corrected.status();
+  }
+  if (!MatchesCavityBoundaries(*corrected, cavity_ids.size())) {
+    return absl::FailedPreconditionError("surface tracking or correction changed cavity topology");
   }
   const auto corrected_contact = mark_contact(result.frame.mesh);
   if (!corrected_contact.ok()) {

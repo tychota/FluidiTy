@@ -407,3 +407,11 @@ Surface measurement now computes local-origin signed volume for each connected b
 Twenty-one CPU mesh, occupancy, cache and reconstruction tests passed with ctest --preset windows-debug-cpu -R 'SurfaceMesh3D|SurfaceOccupancy3D|SurfaceReconstruction3D|SurfaceCache3D'. After adding the reconstruction aggregation, 15 focused CPU checks passed with ctest --preset windows-debug-cpu -R 'SurfaceReconstruction3D.SeedsSeparatedComponents|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. The final build included fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-oriented-surface.
 
 Motion frames already carry the cavity snapshot via accepted FLST states. Production reconstruction still needs to use that snapshot to admit and retain measured cavity boundaries. Q-CAVITY remains open.
+
+## Cached cavity surface reconstruction receipt
+
+Production reconstruction reads resolved cavity IDs from the motion frame. For a cached resolved cavity it samples the complete Simulate sign field through the nested interfaces. Extraction and volume correction require one outward boundary and one inward boundary per resolved cavity. Tracking refuses sampled changes to the cavity ID set.
+
+The CPU fixture discovers a cavity in a quiescent particle shell, rebases that accepted state to frame zero, round-trips the motion wire, and reconstructs and encodes the surface. It retains both signed boundaries and matches the material volume within 0.5 percent. The production simulator built and 22 CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceReconstruction3D|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. clang-format 19.1.5 passed. Receipts use out/m4-cached-cavity-surface.
+
+The fixture rebases the snapshot because the normal frame-zero publication precedes the first cavity discovery. Initial scene discovery and a full deep-tank production qualification are still required for Q-CAVITY.

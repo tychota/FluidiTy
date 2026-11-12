@@ -32,7 +32,10 @@ struct SurfaceReconstructionResult3D {
 // origin. Projection uses a measured, volume-qualified geometric scaffold rather
 // than repeatedly undoing/reapplying the raw field's volume deficit. Uses the
 // complete Simulate field/particles to preserve known signs
-// farther than 2h from the physical interface. Does not infer occupancy from
+// farther than 2h from the physical interface. Cached resolved cavities use
+// the complete source field and require one inward mesh boundary per cavity,
+// one outward boundary, and stable cavity IDs across a tracked interval.
+// Does not infer occupancy from
 // missing samples. Records field discrepancy rather than certifying it.
 // Seed requires one zero-clock sample and no predecessor. Later intervals must
 // match the supplied checked SurfaceFrame clock and preserve raw component count

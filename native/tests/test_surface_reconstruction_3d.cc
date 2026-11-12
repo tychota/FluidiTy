@@ -2,6 +2,7 @@
 
 #include "fluidity/host/surface_reconstruction_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_cavity_scheduler_cases.h"
 
 namespace fluidity {
 namespace {
@@ -14,6 +15,43 @@ LiquidState3D Seed() {
   state.next_particle_id = 2;
   return state;
 }
+TEST(SurfaceReconstruction3D, CachedCavityRetainsAnInwardBoundary) {
+  const auto shell = cavity_test::ParticleShell();
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  const auto step_options = cavity_test::ShellOptions(shell->particles.size());
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  scene.world_acceleration = {};
+  scene.cavity = LiquidSceneCavity3D{.atmospheric_absolute_pressure = 100000.0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(*shell, scene, step_options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0.001);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_EQ(scheduler->committed().next_cavity_id, 2);
+  auto seed = CloneLiquidState3D(scheduler->committed(), step_options.capacities);
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  // The quiescent step discovers the cavity in unchanged geometry. Rebase the
+  // accepted sample to seed the surface stage and round-trip the motion wire.
+  seed->clock = {};
+  const auto bytes = EncodeMotionSeed3D(*seed);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto motion = DecodeMotionFrame3D(bytes->values());
+  ASSERT_TRUE(motion.ok()) << motion.status();
+  const SurfaceReconstructionOptions3D options{.spacing_m = 1.0, .sigma_m = 0.75};
+  const auto reconstructed = ReconstructSurfaceFrame3D(*motion, scene, step_options, nullptr, options);
+  ASSERT_TRUE(reconstructed.ok()) << reconstructed.status();
+  EXPECT_EQ(reconstructed->raw_metrics.positive_volume_components, 1);
+  EXPECT_EQ(reconstructed->raw_metrics.negative_volume_components, 1);
+  EXPECT_EQ(reconstructed->corrected_metrics.positive_volume_components, 1);
+  EXPECT_EQ(reconstructed->corrected_metrics.negative_volume_components, 1);
+  ASSERT_EQ(reconstructed->frame.volumes.size(), 1);
+  EXPECT_NEAR(
+      reconstructed->frame.volumes[0].corrected_m3,
+      static_cast<double>(shell->particles.size()),
+      0.005 * static_cast<double>(shell->particles.size())
+  );
+}
+
 TEST(SurfaceReconstruction3D, ClipsSeedAgainstInclinedStationaryBeach) {
   auto seed = Seed();
   seed.particles[0].world_velocity.x = 2;
