@@ -22,6 +22,17 @@ a checked nothrow arena sized at 4096 bytes plus 512 per child table (two tables
 emission source); the configured byte ceiling bounds that conservative reservation.
 All record families also have a hard ceiling of 2^20.
 
+Resolved scenes with an authored adaptive width plan use FLRS schema version
+2. Scenes with no plan preserve v1 bytes. The plan is part of the resolved
+fingerprint and supplies bounded graded cell and face reservations. Each
+action names the exact accepted clock, a BLAKE3 digest of the canonical FLST
+state, a graded leaf, physical width bounds in metres and a maximum certified
+step duration in seconds. Actions are strictly ordered by accepted epoch.
+The public driver uses these demands for refinement and keeps the same action
+on a reduced timestep retry. It supplies no coarsening halo. Run, resume and
+replay use the same plan and reject stale evidence before attempting the
+physical step.
+
 Physical state persists geometry, clock/epoch, seed and next ID; particle
 ID/tag/position/stored velocity/APIC slopes/affine flag/mass/reference volume/J/side/PIC;
 block indices/generation/activation and inactive ages; cell occupancy and pressure;
