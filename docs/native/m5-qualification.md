@@ -13,11 +13,11 @@ rebuilt and passed native and CUDA tests after integrating main. The
 refreshed milestone branch passed all nine M5 CTest targets after a
 clean Windows Release CUDA rebuild.
 
-The bounded planar solver landed in PR 86 and the shared FLSI
-codec landed in PR 84 after M6's guided-piston and Cutter merges.
-The codec's final five-file diff passed 11 focused native tests
-on the merged M6 runtime. The milestone draft now carries the
-planar restart fixture against that owning codec on main 985a492.
+The bounded planar solver landed in PR 86, the shared FLSI codec in
+PR 84, and the joint replay regression in PR 88. The standalone
+M5PlanarCoupling native and CUDA targets now run the moving-wall,
+pressure, contact, acceptance and FLSI replay fixtures. The milestone
+dry-scene target retains the sand and snow qualification cases.
 
 | Gate | Status | Evidence |
 |---|---|---|
@@ -1016,8 +1016,8 @@ accepted-state transaction below.
 Run the fixture with both implementations.
 
 ```powershell
-cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests --parallel 6
-ctest --preset windows-release-cuda -R '^M5DryScenes\.' --output-on-failure
+cmake --build --preset windows-release-cuda --target fluidity_m5_planar_coupling_tests fluidity_cuda_m5_planar_coupling_tests --parallel 6
+ctest --preset windows-release-cuda -R '^M5PlanarCoupling\.' --output-on-failure
 ```
 
 The reciprocal pressure trial uses one full sealed wall, an incompressible
@@ -1135,12 +1135,12 @@ The two next envelopes match byte for byte on each backend, including
 accepted step and epoch three and frame ordinal two. The Release
 native and CUDA scene suites and FLSI conformance test passed.
 
-In the combined worktree, run the same Release CUDA configuration as
-the other M5 scene tests and select the coupled replay and schema checks.
+The landed fixture runs with the standalone planar targets and the
+owning schema conformance test.
 
 ```powershell
-cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests --parallel 8
-ctest --preset windows-release-cuda -R '^M5DryScenes\.|^LiquidCacheSchema.solid_interaction_checkpoint' --output-on-failure
+cmake --build --preset windows-release-cuda --target fluidity_m5_planar_coupling_tests fluidity_cuda_m5_planar_coupling_tests --parallel 8
+ctest --preset windows-release-cuda -R '^M5PlanarCoupling\.|^LiquidCacheSchema.solid_interaction_checkpoint' --output-on-failure
 ```
 
 Record matched CPU and target CUDA receipts for the authored mound,
