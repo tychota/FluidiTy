@@ -64,4 +64,29 @@ class AdaptiveMacTopology3D {
   std::vector<AdaptiveMacInteriorFace3D> interior_faces_;
 };
 
+// One uncovered geometric subface. The owned leaf is on the low side of
+// the positive normal when cell_is_tail is true. face_area is in m².
+struct AdaptiveMacExteriorFace3D {
+  FaceIndex3D face_index;
+  std::uint8_t width_exponent;
+  std::size_t cell_ordinal;
+  bool cell_is_tail;
+  double face_area;
+  std::size_t face_slot;
+};
+
+struct AdaptiveMacFaceOwnership3D {
+  // Slots parallel AdaptiveMacTopology3D::interior_faces().
+  std::vector<std::size_t> interior_face_slots;
+  // Exterior subfaces in increasing global slot order.
+  std::vector<AdaptiveMacExteriorFace3D> exterior_faces;
+};
+
+// Complete each uncovered leaf side using a full face or the unoccupied
+// quarters of a partially covered coarse face. Assign both classes of faces
+// global slots ordered by (normal axis,z,y,x,width exponent). The input
+// topology supplies all interior contacts. Geometric area does not include
+// physical aperture clipping. A moved-from empty topology is invalid.
+absl::StatusOr<AdaptiveMacFaceOwnership3D> BuildAdaptiveMacFaceOwnership3D(const AdaptiveMacTopology3D& topology);
+
 }  // namespace fluidity
