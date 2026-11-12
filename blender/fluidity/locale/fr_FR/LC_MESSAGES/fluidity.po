@@ -711,3 +711,45 @@ msgstr "Eau"
 msgid "World-space initial liquid velocity in m/s"
 msgstr "Vitesse initiale du liquide dans le repère monde en m/s"
 
+
+msgid "Source Box"
+msgstr "Boîte source"
+
+msgid "Substance ID"
+msgstr "Identifiant de substance"
+
+msgid "Miscibility Phase"
+msgstr "Phase de miscibilité"
+
+msgid "Particles per Second"
+msgstr "Particules par seconde"
+
+msgid "Emitted Particle Volume (m³)"
+msgstr "Volume des particules émises (m³)"
+
+msgid "Edit Liquid Sources"
+msgstr "Modifier les sources de liquide"
+
+msgid "Add Liquid Source"
+msgstr "Ajouter une source de liquide"
+
+msgid "Interactions"
+msgstr "Interactions"
+
+msgid "Phase Interface Tension (N/m)"
+msgstr "Tension interfaciale entre phases (N/m)"
+
+msgid "Give each substance ID one phase and density."
+msgstr "Associez chaque identifiant de substance à une phase et une masse volumique."
+
+msgid "Give each source box positive volume."
+msgstr "Donnez un volume positif à chaque boîte source."
+
+msgid "Assign sources to at most two miscibility phases."
+msgstr "Attribuez les sources à deux phases de miscibilité au maximum."
+
+msgid "Choose a boundary model for the liquid sources."
+msgstr "Choisissez un modèle de limites pour les sources de liquide."
+
+msgid "Assign a distinct box to each liquid source."
+msgstr "Attribuez une boîte distincte à chaque source de liquide."

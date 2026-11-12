@@ -179,10 +179,56 @@ def linear_motion(obj, frame_end):
             raise SceneError("collider", "Use two linear location keys covering the simulation.")
 
 
+def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension):
+    """Build canonical registry, interaction, emitter and seed rows."""
+    materials = {}
+    emitters = []
+    seeds = []
+    for ordinal, (source, (blender_low, blender_high)) in enumerate(zip(sources, bounds, strict=True), 1):
+        material = (source.phase_id, source.density)
+        if materials.setdefault(source.substance_id, material) != material:
+            raise SceneError("liquid", "Give each substance ID one phase and density.")
+        low = (blender_low[0], blender_low[2], -blender_high[1])
+        high = (blender_high[0], blender_high[2], -blender_low[1])
+        widths = tuple(b - a for a, b in zip(low, high, strict=True))
+        cells = tuple(max(1, math.ceil(width / cell)) for width in widths)
+        count = math.prod(cells)
+        if len(seeds) + count > 1024:
+            raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
+        volume = math.prod(widths) / count
+        if not math.isfinite(volume) or volume <= 0:
+            raise SceneError("liquid", "Give each source box positive volume.")
+        for indices in product(*(range(size) for size in cells)):
+            position = tuple(
+                start + (index + 0.5) * width / size
+                for start, index, width, size in zip(low, indices, widths, cells, strict=True)
+            )
+            seeds.append((*position, source.substance_id, volume))
+        if source.emission_rate > 0:
+            center = tuple((a + b) * 0.5 for a, b in zip(low, high, strict=True))
+            emitters.append((
+                ordinal, source.substance_id, source.emission_rate, source.emitted_volume,
+                *center, 0, 0, 0, *initial_velocity,
+            ))
+    phases = sorted({phase for phase, _ in materials.values()})
+    if len(phases) > 2:
+        raise SceneError("liquid", "Assign sources to at most two miscibility phases.")
+    pairs = [(*phases, phase_tension)] if len(phases) == 2 else []
+    rows = [(len(materials), len(pairs), len(emitters))]
+    rows.extend((substance, *material) for substance, material in sorted(materials.items()))
+    rows.extend(pairs)
+    rows.extend(emitters)
+    rows.append((len(seeds),))
+    rows.extend(seeds)
+    return [" ".join(map(repr, row)) for row in rows]
+
 def scene_inputs(scene, preview=False):
     """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
     settings = scene.fluidity
+    sources = settings.liquid_sources
     if settings.boundary_mode == "LEGACY_PADDLE":
+        if sources:
+            raise SceneError("liquid", "Choose a boundary model for the liquid sources.")
         return legacy_scene_inputs(scene, preview)
     require_cadence(scene)
     if scene.unit_settings.scale_length != 1:
@@ -191,15 +237,18 @@ def scene_inputs(scene, preview=False):
         raise SceneError("animation", "Remove animation and drivers from scene settings.")
     if scene.frame_start != 0 or not 2 <= scene.frame_end <= 240:
         raise SceneError("range", "Set a frame range starting at 0 and ending from 2 through 240.")
-    if not settings.domain or not settings.liquid or settings.domain == settings.liquid:
+    liquids = [source.geometry for source in sources] if sources else [settings.liquid]
+    if not settings.domain or any(not obj or obj == settings.domain for obj in liquids):
         raise SceneError("roles", "Assign distinct Domain and Initial Liquid objects.")
-    if settings.domain.animation_data or settings.liquid.animation_data:
+    if len(set(liquids)) != len(liquids):
+        raise SceneError("liquid", "Assign a distinct box to each liquid source.")
+    if settings.domain.animation_data or any(obj.animation_data for obj in liquids):
         raise SceneError("roles", "Keep the domain and initial liquid static.")
     using_collider = settings.boundary_mode in {"PLANE", "SLAB"}
     collider = settings.collider if using_collider else None
     if using_collider and not collider:
         raise SceneError("collider", "Assign a collider for the selected boundary model.")
-    if collider and collider in {settings.domain, settings.liquid}:
+    if collider and collider in {settings.domain, *liquids}:
         raise SceneError("roles", "Assign a different object to each simulation role.")
     if collider:
         linear_motion(collider, scene.frame_end)
@@ -208,7 +257,9 @@ def scene_inputs(scene, preview=False):
         scene.frame_set(0)
         graph = bpy.context.evaluated_depsgraph_get()
         domain_low, domain_high = box_bounds(settings.domain, "domain", graph)
-        liquid_low, liquid_high = box_bounds(settings.liquid, "liquid", graph)
+        liquid_bounds = [box_bounds(obj, "liquid", graph) for obj in liquids]
+        liquid_low = tuple(min(low[axis] for low, _ in liquid_bounds) for axis in range(3))
+        liquid_high = tuple(max(high[axis] for _, high in liquid_bounds) for axis in range(3))
         if collider:
             collider_low, collider_high = box_bounds(collider, "collider", graph)
             scene.frame_set(scene.frame_end)
@@ -231,12 +282,12 @@ def scene_inputs(scene, preview=False):
         range(math.floor(lo / cell - 0.5) + 1, math.ceil(hi / cell - 0.5)) for lo, hi in zip(low, high, strict=True)
     ]
     count = math.prod(map(len, ranges))
-    if not 1 <= count <= 1024:
+    if not sources and not 1 <= count <= 1024:
         raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
     gx, gy, gz = scene.gravity if scene.use_gravity else (0, 0, 0)
     vx, vy, vz = settings.initial_velocity
     lines = [
-        "FLUIDITY-BLENDER-2",
+        "FLUIDITY-BLENDER-3" if sources else "FLUIDITY-BLENDER-2",
         f"{int(preview)} {cell!r}",
         f"{gx!r} {gz!r} {-gy!r}",
         f"{settings.density!r} {settings.surface_tension!r} {settings.friction!r}",
@@ -261,6 +312,9 @@ def scene_inputs(scene, preview=False):
             center = (collider_low[0] + collider_high[0]) / 2
             half_width = (collider_high[0] - collider_low[0]) / 2
             lines.extend(["2", f"1 0 0 {center!r} {half_width!r} {wx!r} {wz!r} {-wy!r}"])
+    if sources:
+        lines.extend(extended_liquid_rows(sources, liquid_bounds, cell, (vx, vz, -vy), settings.phase_tension))
+        return "\n".join(lines) + "\n"
     lines.append(str(count))
     for z, y, x in product(ranges[2], ranges[1], ranges[0]):
         lines.append(" ".join(repr((coordinate + 0.5) * cell) for coordinate in (x, y, z)))

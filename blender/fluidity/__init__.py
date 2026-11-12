@@ -8,6 +8,7 @@ from pathlib import Path
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import (
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -38,7 +39,40 @@ def custom_material(settings, context):
     invalidate_guidance(settings, context)
 
 
+class FluidiTyLiquidSource(PropertyGroup):
+    geometry: PointerProperty(name="Source Box", type=Object)
+    substance_id: IntProperty(name="Substance ID", min=1, default=1)
+    phase_id: IntProperty(name="Miscibility Phase", min=1, default=1)
+    density: FloatProperty(name="Density (kg/m³)", min=1, default=1000)
+    emission_rate: FloatProperty(name="Particles per Second", min=0, default=0)
+    emitted_volume: FloatProperty(name="Emitted Particle Volume (m³)", min=1e-9, default=0.001, precision=6)
+
+
+class FLUIDITY_OT_liquid_source(Operator):
+    bl_idname = "fluidity.liquid_source"
+    bl_label = "Edit Liquid Sources"
+    index: IntProperty(default=-1)
+
+    def execute(self, context):
+        settings = context.scene.fluidity
+        if self.index < 0:
+            if len(settings.liquid_sources) >= 64:
+                return {"CANCELLED"}
+            used_ids = {item.substance_id for item in settings.liquid_sources}
+            source = settings.liquid_sources.add()
+            source.substance_id = next(index for index in range(1, 65) if index not in used_ids)
+        elif self.index < len(settings.liquid_sources):
+            settings.liquid_sources.remove(self.index)
+        else:
+            return {"CANCELLED"}
+        invalidate_guidance(settings, context)
+        return {"FINISHED"}
+
 class FluidiTySettings(PropertyGroup):
+    liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    phase_tension: FloatProperty(
+        name="Phase Interface Tension (N/m)", min=0, default=0, precision=4, update=invalidate_guidance
+    )
     boundary_mode: EnumProperty(
         name="Boundaries",
         description="Choose the actual collision model used by the solver",
@@ -372,6 +406,8 @@ class FLUIDITY_OT_relink(SceneAction, Operator):
 
 
 _CLASSES = (
+    FluidiTyLiquidSource,
+    FLUIDITY_OT_liquid_source,
     FluidiTySettings,
     FLUIDITY_OT_check_scene,
     FLUIDITY_OT_preview,

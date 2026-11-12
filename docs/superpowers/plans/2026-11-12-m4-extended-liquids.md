@@ -608,3 +608,25 @@ New-Item -ItemType Directory $run
 ```
 
 This fixture uses a native seed with three pure-substance particles. Authoring three emitting sources and their interaction in Blender, artist-facing USD attachment, phase topology changes and final qualification remain open.
+
+## Blender-authored three-source scene receipt
+
+Blender source boxes now carry stable substance and miscibility-phase IDs, rest density, and optional center emission with a configured particle volume and rate. The authoring adapter uses deterministic box-local seed quadrature. The Interactions control supplies the pair tension. The v3 packet resolves the registry, pair table, seed compositions and emitter templates into the native scene and state. An emitter with an unknown substance and a reversed pair were rejected before output publication. The single-liquid controls still passed the pinned Blender free, plane, slab and tank bake regressions.
+
+The headless scene authored three boxes through the extension and set the water–oil tension to 0.031 N/m. The CPU solver published three initial particles and one accepted child from each emitter in frame one, with clear and dyed water in phase 4 and oil in phase 5. Production Mesh and USD carried 398 aqueous, 382 oil and 218 shared faces per frame with 54 three-sheet seam edges. The evaluated aqueous patch had both water constituents and zero oil. A fresh factory-startup Blender 5.2.3 process reopened and rendered 433 dye-colored and 748 oil-colored pixels. Removing the dye link yielded zero dye-colored pixels.
+
+With the Release bridge and debug CPU solver built, run the following from the worktree root. Receipts use out/m4-blender-authored-nonzero and out/m4-blender-authored-final. The full debug CPU run on the preceding shared USD candidate passed all 728 cases. clang-format 19.1.5 and git diff --check passed.
+
+```powershell
+$solver = 'out/build/windows-debug-cpu/fluidity_simulate.exe'
+$bridge = 'out/build/windows-release-cuda/fluidity_blender_bridge.exe'
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$run = 'out/m4-authored-source-qualification'
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_liquid_sources.py -- $bridge $solver $run
+& $solver run --stage mesh --cache "$run/simulate" --output-cache "$run/mesh" --surface-spacing 0.25 --surface-sigma 0.25 --frame-end 1
+& $bridge export-surface-usd "$run/mesh" 1 "$run/surface.usda"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- prepare "$run/surface.usda" "$run/render.blend"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- reopen "$run/render.blend"
+```
+
+The headless workflow still invokes the Mesh and USD bridge commands explicitly. Artist-facing surface attachment, broader moving and curved phase qualification, adaptive constituent remap and final acceptance remain open.

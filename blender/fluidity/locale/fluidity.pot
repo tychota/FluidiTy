@@ -711,3 +711,45 @@ msgstr ""
 msgid "World-space initial liquid velocity in m/s"
 msgstr ""
 
+
+msgid "Source Box"
+msgstr ""
+
+msgid "Substance ID"
+msgstr ""
+
+msgid "Miscibility Phase"
+msgstr ""
+
+msgid "Particles per Second"
+msgstr ""
+
+msgid "Emitted Particle Volume (m³)"
+msgstr ""
+
+msgid "Edit Liquid Sources"
+msgstr ""
+
+msgid "Add Liquid Source"
+msgstr ""
+
+msgid "Interactions"
+msgstr ""
+
+msgid "Phase Interface Tension (N/m)"
+msgstr ""
+
+msgid "Give each substance ID one phase and density."
+msgstr ""
+
+msgid "Give each source box positive volume."
+msgstr ""
+
+msgid "Assign sources to at most two miscibility phases."
+msgstr ""
+
+msgid "Choose a boundary model for the liquid sources."
+msgstr ""
+
+msgid "Assign a distinct box to each liquid source."
+msgstr ""
