@@ -4,6 +4,7 @@
 
 #include "fluidity/host/transfers_3d.h"
 #include "liquid_cache_3d_internal.h"
+#include "plastic_solid_checkpoint_wire_3d.h"
 #include "solid_interaction_checkpoint_generated.h"
 
 namespace fluidity {
@@ -82,8 +83,11 @@ absl::Status ValidateCheckpoint(const SolidInteractionCheckpoint3D& state) {
 
 namespace {
 
-absl::StatusOr<std::vector<std::uint8_t>>
-EncodeInteractionCheckpoint(const SolidInteractionCheckpoint3D& state, std::span<const std::uint8_t> liquid_bytes) {
+absl::StatusOr<std::vector<std::uint8_t>> EncodeInteractionCheckpoint(
+    const SolidInteractionCheckpoint3D& state,
+    std::span<const std::uint8_t> liquid_bytes,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+) {
   if (liquid_bytes.size() > kMaximumBytes) {
     return absl::ResourceExhaustedError("liquid payload exceeds coupled checkpoint capacity");
   }
@@ -130,15 +134,30 @@ EncodeInteractionCheckpoint(const SolidInteractionCheckpoint3D& state, std::span
   }
   flatbuffers::FlatBufferBuilder builder;
   builder.ForceDefaults(true);
-  std::vector<std::uint8_t> liquid_payload(liquid_bytes.begin(), liquid_bytes.end());
-  const auto root = wire::CreateSolidInteractionCheckpointDirect(
+  const auto plastic =
+      internal::EncodePlasticCheckpointWireVector3D(builder, state.plastic_particles, bindings, kMaximumRecords);
+  if (!plastic.ok()) {
+    return plastic.status();
+  }
+  const auto body_vector = builder.CreateVectorOfStructs(bodies);
+  const auto side_vector = builder.CreateVectorOfStructs(sides);
+  const auto elastic_vector = elastic_particles.empty()
+      ? flatbuffers::Offset<flatbuffers::Vector<const wire::ElasticParticle*>>{}
+      : builder.CreateVectorOfStructs(elastic_particles);
+  flatbuffers::Offset<flatbuffers::Vector<std::uint8_t>> liquid_vector;
+  if (!liquid_bytes.empty()) {
+    builder.ForceVectorAlignment(liquid_bytes.size(), sizeof(std::uint8_t), 8);
+    liquid_vector = builder.CreateVector(liquid_bytes.data(), liquid_bytes.size());
+  }
+  const auto root = wire::CreateSolidInteractionCheckpoint(
       builder,
-      1,
+      internal::InteractionCheckpointVersionForPlasticPayload3D(state.plastic_particles.size()),
       state.accepted_step,
-      &bodies,
-      &sides,
-      elastic_particles.empty() ? nullptr : &elastic_particles,
-      liquid_payload.empty() ? nullptr : &liquid_payload
+      body_vector,
+      side_vector,
+      elastic_vector,
+      liquid_vector,
+      *plastic
   );
   wire::FinishSizePrefixedSolidInteractionCheckpointBuffer(builder, root);
   if (builder.GetSize() > kMaximumBytes) {
@@ -147,8 +166,11 @@ EncodeInteractionCheckpoint(const SolidInteractionCheckpoint3D& state, std::span
   return std::vector<std::uint8_t>(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
 }
 
-absl::StatusOr<SolidInteractionCheckpoint3D>
-DecodeInteractionCheckpoint(std::span<const std::uint8_t> bytes, LiquidState3D* liquid) {
+absl::StatusOr<SolidInteractionCheckpoint3D> DecodeInteractionCheckpoint(
+    std::span<const std::uint8_t> bytes,
+    LiquidState3D* liquid,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+) {
   if (bytes.size() > kMaximumBytes) {
     return absl::ResourceExhaustedError("solid checkpoint byte capacity exceeded");
   }
@@ -161,8 +183,14 @@ DecodeInteractionCheckpoint(std::span<const std::uint8_t> bytes, LiquidState3D* 
     return absl::InvalidArgumentError("invalid solid checkpoint buffer");
   }
   const auto* root = wire::GetSizePrefixedSolidInteractionCheckpoint(bytes.data());
-  if (root->schema_version() != 1) {
-    return absl::FailedPreconditionError("unsupported solid checkpoint version");
+  auto plastic = internal::DecodePlasticCheckpointWireVector3D(
+      root->schema_version(),
+      root->plastic_particles(),
+      bindings,
+      kMaximumRecords
+  );
+  if (!plastic.ok()) {
+    return plastic.status();
   }
   const auto* elastic_particles = root->elastic_particles();
   if (root->bodies()->size() > kMaximumRecords || root->sides()->size() > kMaximumRecords
@@ -213,6 +241,7 @@ DecodeInteractionCheckpoint(std::span<const std::uint8_t> bytes, LiquidState3D* 
       });
     }
   }
+  result.plastic_particles = std::move(*plastic);
   const auto validation = ValidateCheckpoint(result);
   if (!validation.ok()) {
     return validation;
@@ -236,17 +265,25 @@ DecodeInteractionCheckpoint(std::span<const std::uint8_t> bytes, LiquidState3D* 
 
 }  // namespace
 
-absl::StatusOr<std::vector<std::uint8_t>> EncodeSolidInteractionCheckpoint3D(const SolidInteractionCheckpoint3D& state
+absl::StatusOr<std::vector<std::uint8_t>> EncodeSolidInteractionCheckpoint3D(
+    const SolidInteractionCheckpoint3D& state,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
 ) {
-  return EncodeInteractionCheckpoint(state, {});
+  return EncodeInteractionCheckpoint(state, {}, bindings);
 }
 
-absl::StatusOr<SolidInteractionCheckpoint3D> DecodeSolidInteractionCheckpoint3D(std::span<const std::uint8_t> bytes) {
-  return DecodeInteractionCheckpoint(bytes, nullptr);
+absl::StatusOr<SolidInteractionCheckpoint3D> DecodeSolidInteractionCheckpoint3D(
+    std::span<const std::uint8_t> bytes,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+) {
+  return DecodeInteractionCheckpoint(bytes, nullptr, bindings);
 }
 
-absl::StatusOr<std::vector<std::uint8_t>>
-EncodeCoupledInteractionCheckpoint3D(const LiquidState3D& liquid, const SolidInteractionCheckpoint3D& solid) {
+absl::StatusOr<std::vector<std::uint8_t>> EncodeCoupledInteractionCheckpoint3D(
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+) {
   if (liquid.clock.accepted_step_ordinal != solid.accepted_step) {
     return absl::InvalidArgumentError("coupled checkpoint accepted steps disagree");
   }
@@ -254,13 +291,15 @@ EncodeCoupledInteractionCheckpoint3D(const LiquidState3D& liquid, const SolidInt
   if (!payload.ok()) {
     return payload.status();
   }
-  return EncodeInteractionCheckpoint(solid, payload->values());
+  return EncodeInteractionCheckpoint(solid, payload->values(), bindings);
 }
 
-absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeCoupledInteractionCheckpoint3D(std::span<const std::uint8_t> bytes
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeCoupledInteractionCheckpoint3D(
+    std::span<const std::uint8_t> bytes,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
 ) {
   LiquidState3D liquid;
-  auto solid = DecodeInteractionCheckpoint(bytes, &liquid);
+  auto solid = DecodeInteractionCheckpoint(bytes, &liquid, bindings);
   if (!solid.ok()) {
     return solid.status();
   }
