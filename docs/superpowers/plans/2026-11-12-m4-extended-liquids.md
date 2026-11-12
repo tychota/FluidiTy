@@ -423,3 +423,11 @@ A fresh cavity-enabled scheduler prepares gas and lineage at the initial obstacl
 The surface fixture now encodes the actual committed frame-zero motion seed and reconstructs the cavity without rebasing the clock. Eighteen CPU cavity tests passed with ctest --preset windows-debug-cpu -j 4 -R Cavity. Twenty-two real-device tests passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. The CUDA checkpoint fixture explicitly checks cavity state before the first step. A parallel CUDA run reported resource exhaustion in eight cases. All passed in the serial rerun. Both simulator targets built and clang-format 19.1.5 passed. Receipts use out/m4-initial-cavity.
 
 The initial snapshot must fit the configured initial capacity before stepping. Full deep-tank production reconstruction and Q-CAVITY qualification remain open.
+
+## Deep-tank surface geometry receipt
+
+Production surface reconstruction accepts a stationary open tank with a planar fill. It intersects the full liquid sign field with the five tank walls, derives the material volume from the physical bounds and clamps carrier velocity into the admissible wall halfspaces. The particle band therefore supplies the carrier without turning the unsampled core into air.
+
+An 8 m cube fixture had 296 particles on its boundary band and no particles in the 6 m interior cube. A frame-zero Simulate motion payload reconstructed one outward boundary and no inward shell, with measured volume within 0.5 percent of 512 m³. The separate closed-cavity fixture retained one inward boundary. These establish native production geometry evidence for both Q-CAVITY conditions at frame zero. A 1 m surface lattice failed volume correction after rounding the tank corners. A 0.5 m lattice passed. The coarse failure is preserved in the negative receipt.
+
+The simulator built and 23 CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceReconstruction3D|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. clang-format 19.1.5 passed. Receipts use out/m4-deep-tank-surface. This tank case is stationary and planar. Moving tank contact and complete M4 end-to-end qualification remain outside this receipt.

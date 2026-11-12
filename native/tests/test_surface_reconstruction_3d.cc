@@ -15,6 +15,64 @@ LiquidState3D Seed() {
   state.next_particle_id = 2;
   return state;
 }
+TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
+  constexpr int kWidth = 8;
+  constexpr std::size_t kBandCount = 296;
+  constexpr double kTankVolume = 512.0;
+  LiquidState3D initial;
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(kBandCount);
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(particles->Resize(kBandCount).ok());
+  std::size_t count = 0;
+  for (int z = 0; z < kWidth; ++z) {
+    for (int y = 0; y < kWidth; ++y) {
+      for (int x = 0; x < kWidth; ++x) {
+        if (x == 0 || y == 0 || z == 0 || x == kWidth - 1 || y == kWidth - 1 || z == kWidth - 1) {
+          ASSERT_LT(count, kBandCount);
+          (*particles)[count] = {
+              .id = count + 1,
+              .world_position = {x + 0.5, y + 0.5, z + 0.5},
+          };
+          ++count;
+        }
+      }
+    }
+  }
+  ASSERT_EQ(count, kBandCount);
+  initial.next_particle_id = count + 1;
+  initial.particles = std::move(*particles);
+  const auto step_options = cavity_test::ShellOptions(kBandCount);
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{.world_surface_height_y = kWidth};
+  scene.obstacle = AxisAlignedLiquidTank3D{
+      .start_low_x = 0.0,
+      .high_x = kWidth,
+      .floor_y = 0.0,
+      .low_z = 0.0,
+      .high_z = kWidth,
+      .piston_velocity_x = 0.0,
+  };
+  scene.world_acceleration = {};
+  scene.cavity = LiquidSceneCavity3D{.atmospheric_absolute_pressure = 100000.0};
+  const auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, step_options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->committed().next_cavity_id, 1);
+  const auto encoded = EncodeMotionSeed3D(scheduler->committed());
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto motion = DecodeMotionFrame3D(encoded->values());
+  ASSERT_TRUE(motion.ok()) << motion.status();
+  const SurfaceReconstructionOptions3D options{.spacing_m = 0.5, .sigma_m = 0.5};
+  const auto reconstructed = ReconstructSurfaceFrame3D(*motion, scene, step_options, nullptr, options);
+  ASSERT_TRUE(reconstructed.ok()) << reconstructed.status();
+  EXPECT_EQ(reconstructed->raw_metrics.positive_volume_components, 1);
+  EXPECT_EQ(reconstructed->raw_metrics.negative_volume_components, 0);
+  EXPECT_EQ(reconstructed->corrected_metrics.positive_volume_components, 1);
+  EXPECT_EQ(reconstructed->corrected_metrics.negative_volume_components, 0);
+  ASSERT_EQ(reconstructed->frame.volumes.size(), 1);
+  EXPECT_DOUBLE_EQ(reconstructed->frame.volumes.front().material_m3, kTankVolume);
+  EXPECT_NEAR(reconstructed->corrected_metrics.signed_volume, kTankVolume, 0.005 * kTankVolume);
+}
+
 TEST(SurfaceReconstruction3D, CachedCavityRetainsAnInwardBoundary) {
   const auto shell = cavity_test::ParticleShell();
   ASSERT_TRUE(shell.ok()) << shell.status();

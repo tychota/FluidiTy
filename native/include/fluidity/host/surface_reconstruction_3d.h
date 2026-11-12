@@ -25,7 +25,8 @@ struct SurfaceReconstructionResult3D {
 };
 
 // Connects the density reference, accepted carrier, persistent tracking and
-// measured correction for a closed material component and stationary planar contact.
+// measured correction for a closed material component. Supports stationary
+// halfspace contact and a stationary open tank with a planar liquid field.
 // Frame zero can also seed up to 16 separate sphere-union components, sharing
 // the lattice budget evenly. Nested or intersecting render surfaces fail closed.
 // World lattice bounds snap to fixed spacing; they do not change the query

@@ -141,10 +141,15 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     return absl::InvalidArgumentError("invalid surface source or reconstruction settings");
   }
   const auto* beach = std::get_if<TranslatingHalfspace3D>(&scene.obstacle);
-  if (!std::holds_alternative<std::monostate>(scene.obstacle)
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
+  const bool stationary_tank = tank && tank->piston_velocity_x == 0.0 && plane;
+  if (!std::holds_alternative<std::monostate>(scene.obstacle) && !stationary_tank
       && (beach == nullptr || beach->wall_velocity.x != 0 || beach->wall_velocity.y != 0 || beach->wall_velocity.z != 0
       )) {
-    return absl::UnimplementedError("surface contact requires a stationary halfspace");
+    return absl::UnimplementedError(
+        "surface contact requires a stationary halfspace or a stationary tank with a planar liquid field"
+    );
   }
   if (beach
       && (!std::isfinite(beach->start_plane_coordinate)
@@ -152,17 +157,25 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           || !liquid_step_internal::Finite(beach->unit_normal))) {
     return absl::InvalidArgumentError("surface contact plane is invalid");
   }
+  if (stationary_tank
+      && (!std::isfinite(tank->start_low_x) || !std::isfinite(tank->high_x) || !std::isfinite(tank->floor_y)
+          || !std::isfinite(tank->low_z) || !std::isfinite(tank->high_z)
+          || !std::isfinite(plane->world_surface_height_y) || tank->start_low_x >= tank->high_x
+          || tank->low_z >= tank->high_z || tank->floor_y >= plane->world_surface_height_y)) {
+    return absl::InvalidArgumentError("surface tank bounds are invalid");
+  }
+  const bool has_contact = beach || stationary_tank;
   const auto& endpoint = source.samples.back();
   const double cell_width_m = endpoint.geometry.cell_width;
   // Leave a roundoff margin above the collision plane. An affine signed
   // distance interpolates exactly within the extraction tetrahedra.
   const double contact_margin_m = 1e-9 * cell_width_m;
   const auto mark_contact = [&](SurfaceMesh3D& mesh) -> absl::Status {
-    if (beach) {
+    if (has_contact) {
       for (auto& vertex : mesh.vertices) {
         const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, vertex.position);
         if (!std::isfinite(clearance_m) || clearance_m < 0) {
-          return absl::FailedPreconditionError("surface vertex enters the stationary contact plane");
+          return absl::FailedPreconditionError("surface vertex enters the stationary obstacle");
         }
         vertex.contact = clearance_m <= 0.25 * cell_width_m + contact_margin_m;
       }
@@ -402,6 +415,13 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (!std::isfinite(distance)) {
       return absl::FailedPreconditionError("surface source occupancy is unavailable");
     }
+    if (stationary_tank) {
+      const double clearance = liquid_step_internal::SolidDistance(scene.obstacle, position);
+      if (!std::isfinite(clearance)) {
+        return absl::OutOfRangeError("surface tank clearance is unrepresentable");
+      }
+      return std::max(distance, -clearance);
+    }
     return distance;
   };
   const auto first_position = endpoint.particles[0].world_position;
@@ -442,8 +462,18 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       }
     }
   }
-  if (!std::isfinite(material_volume)) {
+  if (stationary_tank) {
+    // The stationary planar fill defines a physical volume even where the
+    // interface band has no particles in the deep liquid.
+    material_volume = (tank->high_x - tank->start_low_x) * (plane->world_surface_height_y - tank->floor_y)
+        * (tank->high_z - tank->low_z);
+  }
+  if (!std::isfinite(material_volume) || material_volume <= 0.0) {
     return absl::OutOfRangeError("surface material volume overflowed");
+  }
+  if (stationary_tank) {
+    lower = {tank->start_low_x, tank->floor_y, tank->low_z};
+    upper = {tank->high_x, plane->world_surface_height_y, tank->high_z};
   }
   const double padding = 4 * options.sigma_m + 3 * options.spacing_m;
   std::array<std::size_t, 3> extent;
@@ -482,8 +512,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           return distance.status();
         }
         auto& value = field->values[(x * extent[1] + y) * extent[2] + z];
-        if (!cavity_ids.empty()) {
-          // The cached cavity certifies nested topology. Use the complete
+        if (stationary_tank || !cavity_ids.empty()) {
+          // Tank occupancy and cached cavities use the complete
           // Simulate sign field at its interfaces, where smoothing could
           // bridge the air pocket and discard the inward boundary.
           value = *distance / options.spacing_m;
@@ -494,7 +524,7 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           value = 0.5;
           ++result.deep_air_fills;
         }
-        if (beach) {
+        if (has_contact) {
           const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, position);
           const double obstacle_field = (contact_margin_m - clearance_m) / options.spacing_m;
           if (!std::isfinite(obstacle_field)) {
@@ -582,6 +612,24 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
             liquid_step_internal::Add(velocity, liquid_step_internal::Scale(beach->unit_normal, -inward_speed_m_per_s));
       }
     }
+    if (stationary_tank) {
+      const double reach = 0.5 * cell_width_m + contact_margin_m;
+      if (position.x - tank->start_low_x <= reach) {
+        velocity.x = std::max(0.0, velocity.x);
+      }
+      if (tank->high_x - position.x <= reach) {
+        velocity.x = std::min(0.0, velocity.x);
+      }
+      if (position.y - tank->floor_y <= reach) {
+        velocity.y = std::max(0.0, velocity.y);
+      }
+      if (position.z - tank->low_z <= reach) {
+        velocity.z = std::max(0.0, velocity.z);
+      }
+      if (tank->high_z - position.z <= reach) {
+        velocity.z = std::min(0.0, velocity.z);
+      }
+    }
     return velocity;
   };
   if (previous != nullptr) {
@@ -621,8 +669,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           .value = closest->distance_m,
           .gradient = gradient,
           .component = component,
-          .obstacle_distance_m = beach ? liquid_step_internal::SolidDistance(scene.obstacle, position)
-                                       : std::numeric_limits<double>::max(),
+          .obstacle_distance_m = has_contact ? liquid_step_internal::SolidDistance(scene.obstacle, position)
+                                             : std::numeric_limits<double>::max(),
       };
     };
     auto tracked = TrackSurfaceMesh3D(
