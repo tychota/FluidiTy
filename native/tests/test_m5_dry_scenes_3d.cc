@@ -985,7 +985,7 @@ bool TestBoundedFloorDonorFallback() {
       forces,
       {},
       needed,
-      &rows,
+      &rows
   );
   if (!reaction.ok() || *reaction != 0 || forces[*target] != 0 || forces[*donor] != 2 || rows.size() != 1
       || !rows.front().fallback || rows.front().terms.size() != 1 || rows.front().terms.front().donor_slot != *donor
@@ -1004,7 +1004,7 @@ bool TestBoundedFloorDonorFallback() {
       forces,
       {},
       needed,
-      &rows,
+      &rows
   );
   return rejected.status().code() == absl::StatusCode::kFailedPrecondition && forces == prior;
 }
