@@ -1,6 +1,8 @@
 #include <limits>
+#include <numbers>
 #include <numeric>
 
+#include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
 #include "liquid_boundary_geometry_3d_cases.h"
@@ -15,6 +17,57 @@ constexpr auto kOwningLinks = static_cast<
     BuildLiquidPressureLinks3D
 );
 }  // namespace
+
+TEST(LiquidBoundaryGeometry3D, SampledObliqueSolidSharesApertureAcrossCells) {
+  boundary_internal::SampledSolidLiquidCell first{.cell_width = 1.0};
+  boundary_internal::SampledSolidLiquidCell second{.cell_width = 1.0};
+  for (int corner = 0; corner < 8; ++corner) {
+    const double x = corner & 1;
+    const double y = (corner >> 1) & 1;
+    first.liquid_distance[corner] = y - 0.75;
+    second.liquid_distance[corner] = y - 0.75;
+    first.solid_distance[corner] = (x + y - 1.25) / std::numbers::sqrt2;
+    second.solid_distance[corner] = (x + y - 0.25) / std::numbers::sqrt2;
+  }
+  const auto left = boundary_internal::MeasureSampledSolidLiquidCell(first);
+  const auto right = boundary_internal::MeasureSampledSolidLiquidCell(second);
+  ASSERT_TRUE(left.ok());
+  ASSERT_TRUE(right.ok());
+  EXPECT_NEAR(left->wet_volume, 0.125, 2e-14);
+  EXPECT_NEAR(right->wet_volume, 0.71875, 2e-14);
+  EXPECT_NEAR(left->open_area[1], 0.75, 2e-14);
+  EXPECT_EQ(left->open_area[1], right->open_area[0]);
+  EXPECT_NEAR(left->open_area[4], 0.28125, 2e-14);
+  EXPECT_EQ(left->open_area[0], 0.0);
+}
+
+TEST(LiquidBoundaryGeometry3D, SampledSolidCornerKeepsPiecewiseLinearMeasure) {
+  boundary_internal::SampledSolidLiquidCell cell{.cell_width = 2.0};
+  cell.liquid_distance.fill(-1);
+  cell.solid_distance.fill(-1);
+  cell.solid_distance[7] = 1;
+
+  const auto measures = boundary_internal::MeasureSampledSolidLiquidCell(cell);
+  ASSERT_TRUE(measures.ok());
+  EXPECT_NEAR(measures->wet_volume, 1.0, 2e-14);
+  for (int axis = 0; axis < 3; ++axis) {
+    EXPECT_EQ(measures->open_area[2 * axis], 0.0);
+    EXPECT_NEAR(measures->open_area[2 * axis + 1], 1.0, 2e-14);
+  }
+}
+
+TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
+  boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
+  cell.liquid_distance.fill(-1);
+  const auto closed = boundary_internal::MeasureSampledSolidLiquidCell(cell);
+  ASSERT_TRUE(closed.ok());
+  EXPECT_EQ(closed->wet_volume, 0.0);
+  for (const double open_area : closed->open_area) {
+    EXPECT_EQ(open_area, 0.0);
+  }
+  cell.solid_distance[0] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(boundary_internal::MeasureSampledSolidLiquidCell(cell).ok());
+}
 
 TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
@@ -250,6 +303,11 @@ TEST(LiquidBoundaryGeometry3D, ThinSlabInvisibleToCornersAndSplitCellRefusal) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
 }
+TEST(LiquidBoundaryGeometry3D, SampledSolidFreezeSharesOnePressureFace) {
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
+  cases.SampledSolidFreezeSharesOnePressureFace();
+}
+
 TEST(LiquidBoundaryGeometry3D, SharedFaceHasOneOwnerAndMatchingTriangulation) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();

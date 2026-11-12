@@ -26,6 +26,7 @@ struct LiquidBoundaryGeometryViewInputs3D {
   double surface_tension;
   // Finite signed outward curvature in inverse meters, including zero.
   std::optional<double> exact_outward_interface_curvature = std::nullopt;
+  std::optional<SampledSolidBoundary3D> sampled_solid = std::nullopt;
 };
 // Frozen sample values are copied into the geometry region. Grid keys remain a
 // topology borrow, so successful topology preparation also invalidates this view.
