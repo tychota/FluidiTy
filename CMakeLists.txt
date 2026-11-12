@@ -395,6 +395,9 @@ if(BUILD_TESTING)
     target_link_libraries(fluidity_m3_matched_pressure PRIVATE fluidity_cuda_operators CUDA::cudart)
     add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda COMMAND fluidity_m3_matched_pressure --cuda)
     set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
+    add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda_arena COMMAND fluidity_m3_matched_pressure --cuda-arena)
+    set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda_arena
+      PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
   endif()
 
   # Historical-cache research needs an external authenticated archive. Keep it
