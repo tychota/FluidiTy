@@ -1498,10 +1498,13 @@ TEST(CudaLiquidSubstep3D, ViscousCartesianCutPistonMatchesCpuAndPreservesFlux) {
   ASSERT_TRUE(gpu.ok()) << gpu.status();
 
   const auto before = backend->usage();
-  const auto cpu_status = cpu->AdvanceFrame(viscous_tank_test::kStepDuration);
-  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
-  const auto gpu_status = gpu->AdvanceFrame(viscous_tank_test::kStepDuration);
-  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  for (int frame = 0; frame < 2; ++frame) {
+    const auto cpu_status = cpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    const auto gpu_status = gpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  }
+  EXPECT_EQ(gpu->committed().clock.frame_ordinal, 2u);
   const auto after = backend->usage();
   EXPECT_EQ(after.compiled_architecture, 1200);
   EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);

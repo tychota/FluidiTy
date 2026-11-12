@@ -102,6 +102,17 @@ double Dot(std::span<const double> left, std::span<const double> right) {
 
 // Solve on frozen links. Explicit graphs have no closed faces and an empty
 // wall velocity view. Uniform graphs supply one prescribed value per link.
+absl::StatusOr<double> CoupledConstraintNorm(std::span<const double> integrated_fluxes) {
+  double norm = 0.0;
+  for (const double flux : integrated_fluxes) {
+    norm = std::hypot(norm, flux);
+  }
+  if (!std::isfinite(norm)) {
+    return absl::OutOfRangeError("coupled residual norm is unrepresentable");
+  }
+  return norm;
+}
+
 absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     const PreparedMacPressureSystem3D& system,
     double dt,
@@ -211,10 +222,39 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     }
     return solve_velocity_block(velocity_block, momentum, {});
   };
-  std::vector<double> pressure(cells.size());
+  auto initial_pressure = pressure_internal::InitialMacPressure3D(system);
+  if (!initial_pressure.ok()) {
+    return initial_pressure.status();
+  }
+  auto pressure = std::move(*initial_pressure);
+  const bool starts_with_history = std::ranges::any_of(pressure, [](double value) {
+    return value != 0.0;
+  });
+  double original_rhs_norm = 0.0;
+  if (starts_with_history) {
+    // Measure the RHS with the same velocity block at zero pressure. A
+    // converged history is allowed to have a small residual without shrinking
+    // the tolerance or changing the recorded physical forcing scale.
+    const std::vector<double> zero_pressure(cells.size());
+    const auto base_velocity = solve_velocity(zero_pressure, true);
+    if (!base_velocity.ok()) {
+      return base_velocity.status();
+    }
+    const auto base_flux = AccumulateConstraint(system, zero_pressure, base_velocity->velocity, true);
+    if (!base_flux.ok()) {
+      return base_flux.status();
+    }
+    const auto base_norm = CoupledConstraintNorm(*base_flux);
+    if (!base_norm.ok()) {
+      return base_norm.status();
+    }
+    original_rhs_norm = *base_norm;
+    if (original_rhs_norm == 0.0) {
+      std::ranges::fill(pressure, 0.0);
+    }
+  }
   std::vector<std::vector<double>> directions;
   std::vector<std::vector<double>> responses;
-  double initial_residual_norm = 0.0;
   pressure_internal::MacPressureStoppingCriteria3D stopping{};
   for (std::size_t iteration = 0; iteration <= max_iterations; ++iteration) {
     auto velocity = solve_velocity(pressure, true);
@@ -226,16 +266,16 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
       return physical_flux.status();
     }
     auto& residual = *physical_flux;
-    double residual_norm = 0.0;
-    for (const double flux : residual) {
-      residual_norm = std::hypot(residual_norm, flux);
+    const auto constraint_norm = CoupledConstraintNorm(residual);
+    if (!constraint_norm.ok()) {
+      return constraint_norm.status();
     }
-    if (!std::isfinite(residual_norm)) {
-      return absl::OutOfRangeError("coupled residual norm is unrepresentable");
-    }
+    const double residual_norm = *constraint_norm;
     if (iteration == 0) {
-      initial_residual_norm = residual_norm;
-      const auto criteria = pressure_internal::MacPressureStoppingCriteria(initial_residual_norm, links);
+      if (!starts_with_history) {
+        original_rhs_norm = residual_norm;
+      }
+      const auto criteria = pressure_internal::MacPressureStoppingCriteria(original_rhs_norm, links);
       if (!criteria.ok()) {
         return criteria.status();
       }
@@ -264,7 +304,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
           .cell_constraint_defects = std::move(residual),
           .pressure_iterations = iteration,
           .constraint_residual_l2 = residual_norm,
-          .initial_constraint_residual_l2 = initial_residual_norm,
+          .initial_constraint_residual_l2 = original_rhs_norm,
           .max_cell_constraint_defect = max_defect,
           .max_momentum_residual = velocity->max_residual,
       };
