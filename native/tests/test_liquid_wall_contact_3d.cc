@@ -52,6 +52,35 @@ TEST(LiquidWallContact3D, RotatingBoxTransfersOneOffCenterImpulse) {
   EXPECT_DOUBLE_EQ(miss->contact.world_position.x, 1.0);
   EXPECT_DOUBLE_EQ(miss->body_angular_impulse.z, 0.0);
 }
+TEST(LiquidWallContact3D, FixedOrientationResolvesTouchWithTangentialAdvection) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {0.25, 0.5, 0.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 0.25);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  LiquidWallContactInputs3D input{
+      .start_world_position = {0.5, 0.125, 0.0},
+      .stored_world_velocity = body.linear_velocity,
+      .advecting_world_velocity = {0.25, 1.0, 0.0},
+      .step_duration = 0.25,
+  };
+  constexpr Vec3 kHalfExtent{0.5, 1.0, 0.5};
+  const auto tangent = ResolveRotatingBoxContact3D(input, *drift, kHalfExtent, 2.0);
+  ASSERT_TRUE(tangent.ok()) << tangent.status();
+  EXPECT_DOUBLE_EQ(tangent->contact.world_position.x, 0.5625);
+  EXPECT_DOUBLE_EQ(tangent->contact.world_position.y, 0.375);
+  EXPECT_DOUBLE_EQ(tangent->body_impulse.x, 0.0);
+  input.stored_world_velocity.x = -0.25;
+  const auto inward = ResolveRotatingBoxContact3D(input, *drift, kHalfExtent, 2.0);
+  ASSERT_TRUE(inward.ok()) << inward.status();
+  EXPECT_EQ(inward->contact.contact_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(inward->contact.stored_world_velocity.x, 0.25);
+  EXPECT_DOUBLE_EQ(inward->body_impulse.x, -1.0);
+  EXPECT_DOUBLE_EQ(inward->body_angular_impulse.z, 0.125);
+}
 TEST(LiquidWallContact3D, TangentialRotatingEntryCarriesPointWithoutNormalImpulse) {
   const RigidBody3D body{
       .body_id = 1,
