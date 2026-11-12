@@ -401,4 +401,146 @@ absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolid
   return std::move(*loads);
 }
 
+absl::StatusOr<PlasticSolidPressureMobility3D> PlasticSolidPressureMobility3D::Create(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    const PlasticSolidBoundarySamples3D& samples,
+    std::span<const PlasticSolidCheckpointParticle3D> accepted,
+    const LiquidObstacle3D& obstacle
+) {
+  const double duration = geometry.step_duration;
+  const double width = geometry.mac_grid.geometry().cell_width;
+  if (accepted.empty() || !std::isfinite(duration) || duration <= 0) {
+    return absl::InvalidArgumentError("invalid snow pressure mobility inputs");
+  }
+  std::uint64_t previous_id = 0;
+  std::vector<double> inverse_sqrt_masses;
+  inverse_sqrt_masses.reserve(accepted.size());
+  for (const auto& particle : accepted) {
+    const double mass = particle.transfer.particle_mass;
+    if (particle.particle_id <= previous_id || !std::isfinite(mass) || mass <= 0) {
+      return absl::InvalidArgumentError("invalid snow pressure mobility particle");
+    }
+    previous_id = particle.particle_id;
+    inverse_sqrt_masses.push_back(std::sqrt(duration) / std::sqrt(mass));
+  }
+  const auto cell_key = [](const FrozenLiquidCell3D& cell) {
+    return CornerKey({cell.cell_index.x, cell.cell_index.y, cell.cell_index.z});
+  };
+  for (std::size_t index = 1; index < geometry.cells.size(); ++index) {
+    if (cell_key(geometry.cells[index - 1]) >= cell_key(geometry.cells[index])) {
+      return absl::InvalidArgumentError("unordered snow pressure mobility cells");
+    }
+  }
+  const auto cell_at = [&](std::array<std::int32_t, 3> index) {
+    const auto key = CornerKey({index[0], index[1], index[2]});
+    const auto cell = std::ranges::lower_bound(geometry.cells, key, {}, cell_key);
+    return cell != geometry.cells.end() && cell_key(*cell) == key
+        ? static_cast<std::size_t>(cell - geometry.cells.begin())
+        : geometry.cells.size();
+  };
+
+  PlasticSolidPressureMobility3D mobility;
+  mobility.particle_count_ = accepted.size();
+  mobility.cell_count_ = geometry.cells.size();
+  mobility.faces_.reserve(geometry.faces.size());
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  for (const auto& face : geometry.faces) {
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    if (axis >= kComponents.size() || !std::isfinite(face.blocked_area) || face.blocked_area < 0) {
+      return absl::InvalidArgumentError("invalid snow pressure mobility face");
+    }
+    const auto lattice = face.face_index.lattice_index;
+    std::array<std::int32_t, 3> endpoint{lattice.x, lattice.y, lattice.z};
+    Face row{
+        .axis = axis,
+        .tail_cell = mobility.cell_count_,
+        .head_cell = cell_at(endpoint),
+    };
+    if (endpoint[axis] != std::numeric_limits<std::int32_t>::min()) {
+      --endpoint[axis];
+      row.tail_cell = cell_at(endpoint);
+    }
+    if (row.head_cell == mobility.cell_count_ && row.tail_cell == mobility.cell_count_) {
+      return absl::InvalidArgumentError("snow pressure mobility face has no cell");
+    }
+    if (face.blocked_area > 0) {
+      // At 1 Pa and 1 s the numerical impulses are the signed area coefficients.
+      const auto unit = StagePlasticSolidPressureFace3D(geometry.mac_grid, samples, face, 1, 0, 1, obstacle);
+      if (!unit.ok()) {
+        return unit.status();
+      }
+      for (std::size_t index = 0; index < unit->size(); ++index) {
+        const auto& corner = (*unit)[index];
+        const double area = corner.impulse.*kComponents[axis];
+        if (area == 0) {
+          continue;
+        }
+        const auto owner =
+            std::ranges::lower_bound(accepted, corner.particle_id, {}, &PlasticSolidCheckpointParticle3D::particle_id);
+        if (owner == accepted.end() || owner->particle_id != corner.particle_id) {
+          return absl::InvalidArgumentError("unknown snow pressure mobility owner");
+        }
+        const auto owner_index = static_cast<std::size_t>(owner - accepted.begin());
+        const double scale = area * inverse_sqrt_masses[owner_index];
+        const auto offset = corner.world_offset;
+        auto& term = row.corners[index];
+        term.owner = owner_index;
+        term.coefficients = {
+            scale,
+            scale * (2 * (offset.x / width)),
+            scale * (2 * (offset.y / width)),
+            scale * (2 * (offset.z / width)),
+        };
+        if (!std::ranges::all_of(term.coefficients, [](double value) {
+              return std::isfinite(value);
+            })) {
+          return absl::OutOfRangeError("nonfinite snow pressure mobility coefficient");
+        }
+      }
+    }
+    mobility.faces_.push_back(row);
+  }
+  return mobility;
+}
+
+absl::StatusOr<std::vector<double>> PlasticSolidPressureMobility3D::Apply(std::span<const double> pressure_increment
+) const {
+  if (pressure_increment.size() != cell_count_ || !std::ranges::all_of(pressure_increment, [](double value) {
+        return std::isfinite(value);
+      })) {
+    return absl::InvalidArgumentError("invalid snow pressure mobility input");
+  }
+  const auto pressure_at = [&](std::size_t index) {
+    return index == cell_count_ ? 0.0 : pressure_increment[index];
+  };
+  using NormalModes = std::array<double, 4>;
+  std::vector<std::array<NormalModes, 3>> particle_response(particle_count_);
+  for (const auto& face : faces_) {
+    const double pressure_difference = pressure_at(face.tail_cell) - pressure_at(face.head_cell);
+    for (const auto& corner : face.corners) {
+      auto& response = particle_response[corner.owner][face.axis];
+      for (std::size_t mode = 0; mode < response.size(); ++mode) {
+        response[mode] = std::fma(corner.coefficients[mode], pressure_difference, response[mode]);
+      }
+    }
+  }
+
+  std::vector<double> flux;
+  flux.reserve(faces_.size());
+  for (const auto& face : faces_) {
+    double face_flux = 0;
+    for (const auto& corner : face.corners) {
+      const auto& response = particle_response[corner.owner][face.axis];
+      for (std::size_t mode = 0; mode < response.size(); ++mode) {
+        face_flux = std::fma(corner.coefficients[mode], response[mode], face_flux);
+      }
+    }
+    if (!std::isfinite(face_flux)) {
+      return absl::OutOfRangeError("nonfinite snow pressure mobility flux");
+    }
+    flux.push_back(face_flux);
+  }
+  return flux;
+}
+
 }  // namespace fluidity
