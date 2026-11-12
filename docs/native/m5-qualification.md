@@ -2113,7 +2113,12 @@ All twelve native cases meet the drift and momentum checks. The highest
 rate passes three angles but leaves the nominal fine-grid angle at
 28.24°. The coarse half-step angle also approaches the upper limit as
 the decay grows. Uniform damping of the symmetric fit does not establish
-a converged repose result. Both default dry-scene CTest targets passed.
+a converged repose result. Both default dry-scene CTest targets passed. At 32 s⁻¹, the nominal
+fine run accumulated 0.00468208 mean log-plastic-J increase during
+the last 0.05 s. Particles ending within one particle spacing of the
+floor supplied 0.00456823 of that path, or 97.6%. The coarse half-step
+run had only 0.00032122 mean increase. This localizes the remaining
+feedback to the floor layer in the failing fine run.
 
 ```powershell
 $build = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
