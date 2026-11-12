@@ -100,12 +100,13 @@ struct LiquidResolvedSceneView3D {
 struct LiquidResolvedScene3D {
   UniformMacGeometry3D geometry{{0, 0, 0}, 1};
   std::uint64_t random_seed = 0;
-  LiquidSceneInputs3D scene;  // sources remains empty; use View().scene.sources.
+  LiquidSceneInputs3D scene;  // Borrowed arrays remain empty; use View().scene.
   LiquidStepOptions3D options;  // Capacity plans remain zero; read them from checkpoint.
   LiquidBackend3D backend = LiquidBackend3D::kCpu;
   std::uint32_t model_version = 1;
   LiquidDigest3D build_digest{};
   LiquidRecords3D<LiquidEmissionSource3D> sources;
+  LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
   LiquidRecords3D<LiquidUpstreamContent3D> upstream;
   LiquidResolvedSceneView3D View() const;
 };

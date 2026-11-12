@@ -455,3 +455,11 @@ The bounded host transfer deposits f J V0 onto cell centers with a trilinear ten
 Fixtures verified independent weights at all eight cell centers, conservation under unequal reference volume and compression, same-phase mixing to 75 percent clear water and 25 percent dyed water, and a separate oil channel. Twenty CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidMixture3D|LiquidRemap|LiquidEos3D'. The real-device particle-composition regression passed. The grid transfer itself ran on the host. clang-format 19.1.5 passed. Receipts use out/m4-constituent-grid, including the initial fixture's incorrect hand-calculated z weights.
 
 Material registry, scheduler and remap integration, and inspected/rendered composition remain open.
+
+## Resolved liquid constituent registry receipt
+
+Resolved scenes now carry an optional, ordered substance registry with stable IDs, phase membership and positive material densities. The scheduler owns its copy. Native and wire validation reject explicit particles or sources whose substances are missing or belong to a different phase. Legacy implicit particles require no registry.
+
+The CPU codec fixture round-tripped two aqueous substances and a separate oil phase, verified canonical bytes, and rejected a cross-phase source. The CUDA scheduler fixture rejects a missing registry and then carries registered fractions through real-device advection. Forty-one CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidMixture3D|SourceRetryAndWholeFrameReplay'. Twenty-two serial real-device scheduler and boundary checks passed under windows-release-cuda. Both simulator targets built and clang-format 19.1.5 passed. Receipts use out/m4-constituent-registry.
+
+The registry supplies the material identities and density data. Composition-dependent solver coefficients and published inspect/render fractions remain open.

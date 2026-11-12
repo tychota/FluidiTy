@@ -1698,6 +1698,8 @@ TEST(LiquidSubstep3D, SourceRetryAndWholeFrameReplayProduceIdenticalBirths) {
   source.emitted_particle_template.constituents[1] = {14, 0.75};
   auto scene = Scene();
   scene.sources = std::span(&source, 1);
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
+  scene.constituent_materials = kMaterials;
   scene.ambient_pressure = 3;
   scene.surface_tension = 0.1;
   auto options = Options();

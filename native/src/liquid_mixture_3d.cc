@@ -29,6 +29,35 @@ double SumConstituentVolume(std::span<const LiquidConstituentVolume3D>& remainin
 }
 }  // namespace
 
+bool ValidLiquidConstituentMaterials3D(std::span<const LiquidConstituentMaterial3D> materials) {
+  for (std::size_t index = 0; index < materials.size(); ++index) {
+    const auto& material = materials[index];
+    if (!std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0.0
+        || (index > 0 && materials[index - 1].substance_id >= material.substance_id)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool LiquidParticleUsesRegisteredConstituents3D(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidConstituentMaterial3D> materials
+) {
+  if (!ValidLiquidParticleComposition3D(particle)) {
+    return false;
+  }
+  for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+    const auto found =
+        std::ranges::lower_bound(materials, constituent.substance_id, {}, &LiquidConstituentMaterial3D::substance_id);
+    if (found == materials.end() || found->substance_id != constituent.substance_id
+        || found->phase_id != particle.phase_id) {
+      return false;
+    }
+  }
+  return true;
+}
+
 absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
     std::uint64_t phase_id,
     std::span<const LiquidConstituentMaterial3D> materials,
@@ -40,12 +69,8 @@ absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
   if (!disjoint.ok()) {
     return disjoint;
   }
-  for (std::size_t index = 0; index < materials.size(); ++index) {
-    const auto& material = materials[index];
-    if (!std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0.0
-        || (index > 0 && materials[index - 1].substance_id >= material.substance_id)) {
-      return Error(absl::StatusCode::kInvalidArgument);
-    }
+  if (!ValidLiquidConstituentMaterials3D(materials)) {
+    return Error(absl::StatusCode::kInvalidArgument);
   }
   for (std::size_t index = 0; index < contributions.size(); ++index) {
     const auto& contribution = contributions[index];

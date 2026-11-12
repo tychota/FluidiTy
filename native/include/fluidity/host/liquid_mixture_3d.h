@@ -50,6 +50,16 @@ absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
 
 struct LiquidParticleState3D;
 
+// Validates positive finite densities and strictly ordered substance IDs.
+bool ValidLiquidConstituentMaterials3D(std::span<const LiquidConstituentMaterial3D> materials);
+
+// Checks that every active constituent resolves to its particle's phase in
+// a previously validated registry. Implicit legacy particles need no entry.
+bool LiquidParticleUsesRegisteredConstituents3D(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidConstituentMaterial3D> materials
+);
+
 // Deposits f * J * V0 with an eight-point cell-centered linear tent on the
 // supplied MAC lattice. Cells are unique in (z,y,x) order, and materials are
 // unique in substance ID order and belong to phase_id. Implicit particles and

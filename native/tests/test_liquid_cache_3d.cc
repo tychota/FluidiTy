@@ -92,15 +92,30 @@ TEST(LiquidCache3D, ParticleCompositionSurvivesStateAndSourceEncoding) {
   source.emitted_particle_template = particle;
   LiquidResolvedSceneView3D scene;
   scene.scene.sources = std::span(&source, 1);
+  std::array<LiquidConstituentMaterial3D, 3> materials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  scene.scene.constituent_materials = materials;
   const auto resolved = EncodeLiquidResolvedScene3D(scene);
   ASSERT_TRUE(resolved.ok()) << resolved.status();
   const auto loaded = DecodeLiquidResolvedScene3D(resolved->values());
   ASSERT_TRUE(loaded.ok()) << loaded.status();
   ASSERT_EQ(loaded->View().scene.sources.size(), 1);
+  ASSERT_EQ(loaded->View().scene.constituent_materials.size(), 3);
+  EXPECT_EQ(loaded->View().scene.constituent_materials[2].phase_id, 5);
+  EXPECT_DOUBLE_EQ(loaded->View().scene.constituent_materials[2].density_kg_per_m3, 820.0);
+  const auto encoded_again = EncodeLiquidResolvedScene3D(loaded->View());
+  ASSERT_TRUE(encoded_again.ok()) << encoded_again.status();
+  EXPECT_TRUE(std::ranges::equal(resolved->values(), encoded_again->values()));
   EXPECT_TRUE(loaded->View().scene.sources[0].emitted_particle_template == particle);
 
   particle.constituents[1].substance_id = 8;
   EXPECT_EQ(EncodeLiquidState3D(state).status().code(), absl::StatusCode::kInvalidArgument);
+  materials[1].phase_id = 5;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  materials[1].phase_id = 4;
   source.emitted_particle_template.constituents[1].volume_fraction = 0.5;
   EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }

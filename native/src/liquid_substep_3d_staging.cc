@@ -326,7 +326,12 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
       && std::isfinite(scene.dynamic_viscosity) && scene.dynamic_viscosity >= 0.0
       && std::isfinite(scene.surface_tension) && scene.surface_tension >= 0 && std::isfinite(scene.ambient_pressure)
       && std::isfinite(scene.target_divergence) && scene.bulk_modulus > 0;
-  if (!valid_material) {
+  if (!valid_material || !ValidLiquidConstituentMaterials3D(scene.constituent_materials)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (std::ranges::any_of(initial.particles.values(), [&](const LiquidParticleState3D& particle) {
+        return !LiquidParticleUsesRegisteredConstituents3D(particle, scene.constituent_materials);
+      })) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   if (scene.eos) {
@@ -436,7 +441,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
         || !Finite(particle.velocity_slopes.z_row) || !std::isfinite(particle.mass) || particle.mass <= 0
         || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0
         || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
-        || !ValidLiquidParticleComposition3D(particle)
+        || !LiquidParticleUsesRegisteredConstituents3D(particle, scene.constituent_materials)
         || ((tank || (scene.drift && scene.drift->maximum_rate > 0.0)) && particle.side_tag != 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }

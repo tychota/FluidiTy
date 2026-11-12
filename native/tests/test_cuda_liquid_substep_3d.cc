@@ -1496,12 +1496,19 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   initial.particles[0].constituents[0] = {8, 0.25};
   initial.particles[0].constituents[1] = {14, 0.75};
   auto options = Options();
-  auto cpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  auto scene = Scene();
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, options).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
+  scene.constituent_materials = kMaterials;
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(cpu.ok()) << cpu.status();
   ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
   auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
   ASSERT_TRUE(backend.ok()) << backend.status();
-  auto gpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options, backend->operations());
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
   ASSERT_TRUE(gpu.ok()) << gpu.status();
   const auto before = backend->usage();
   const auto wall_start = std::chrono::steady_clock::now();
