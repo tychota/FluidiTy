@@ -124,6 +124,44 @@ TEST(RigidBody3D, OrientedBoxWetPatchesRecoverLiftAndOffCenterTorque) {
   const auto patches = BuildOrientedBoxPressurePatches3D(body, kHalfExtent, 0.4, kGrid, cells);
   ASSERT_TRUE(patches.ok()) << patches.status();
   ASSERT_GT(patches->size(), 6);
+  std::vector<RigidPressurePatch3D> streamed;
+  const auto cell_at = [&](std::size_t ordinal) {
+    return cells[ordinal];
+  };
+  const auto visit = VisitOrientedBoxPressurePatches3D(
+      body,
+      kHalfExtent,
+      0.4,
+      kGrid,
+      cells.size(),
+      cell_at,
+      [&](const RigidPressurePatch3D& patch) {
+        streamed.push_back(patch);
+        return absl::OkStatus();
+      }
+  );
+  ASSERT_TRUE(visit.ok()) << visit;
+  ASSERT_EQ(streamed.size(), patches->size());
+  for (std::size_t index = 0; index < streamed.size(); ++index) {
+    EXPECT_EQ(streamed[index].patch_id, (*patches)[index].patch_id);
+    EXPECT_EQ(streamed[index].pressure_cell_index, (*patches)[index].pressure_cell_index);
+    EXPECT_DOUBLE_EQ(streamed[index].wetted_area, (*patches)[index].wetted_area);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.x, (*patches)[index].world_centroid.x);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.y, (*patches)[index].world_centroid.y);
+    EXPECT_DOUBLE_EQ(streamed[index].world_centroid.z, (*patches)[index].world_centroid.z);
+  }
+  const auto visitor_error = VisitOrientedBoxPressurePatches3D(
+      body,
+      kHalfExtent,
+      0.4,
+      kGrid,
+      cells.size(),
+      cell_at,
+      [](const RigidPressurePatch3D&) {
+        return absl::CancelledError();
+      }
+  );
+  EXPECT_EQ(visitor_error.code(), absl::StatusCode::kCancelled);
   constexpr std::array pressure{8.0, 8.0};
   const auto loaded = AccumulateRigidBodyPressure3D(body, pressure, 0.0, *patches);
   ASSERT_TRUE(loaded.ok()) << loaded.status();

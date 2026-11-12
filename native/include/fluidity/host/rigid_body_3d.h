@@ -93,7 +93,20 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatche
     UniformMacGeometry3D geometry,
     std::span<const CellIndex3D> pressure_cells
 );
-// Streams the same patches without allocation. Callbacks borrow a stable
+// Streams oriented patches without allocation in the same order as the owning
+// builder. The cell accessor must return stable, strictly ordered indices.
+// Stage visitor writes until success because coverage checks can reject late.
+// Arithmetic and validation failures are code-only. Visitor errors propagate.
+absl::Status VisitOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+);
+// Streams the axis-aligned patches without allocation. Callbacks borrow a stable
 // pressure-cell ordering and must stage any writes until success because a
 // later validation or visitor error can reject the visit. Errors are code-only.
 absl::Status VisitFloatingBoxPressurePatches3D(

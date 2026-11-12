@@ -337,9 +337,9 @@ struct WetPolygonMoment {
   Vec3 weighted_centroid{};
 };
 
-absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygon) {
+absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygon, bool bounded) {
   if (polygon.overflow) {
-    return absl::OutOfRangeError("oriented box clipping capacity exceeded");
+    return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "oriented box clipping capacity exceeded");
   }
   WetPolygonMoment result;
   if (polygon.size() < 3) {
@@ -359,7 +359,7 @@ absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygo
     result.weighted_centroid = Add(result.weighted_centroid, Scale(area, centroid));
   }
   if (!std::isfinite(result.area) || !IsFinite(result.weighted_centroid)) {
-    return absl::OutOfRangeError("oriented box patch moment is unrepresentable");
+    return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "oriented box patch moment is unrepresentable");
   }
   return result;
 }
@@ -399,36 +399,28 @@ ClipWetFaceToReceiver(ClippingPolygon face, const PressureReceiverBounds& receiv
   return face;
 }
 
-}  // namespace
-
-absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatches3D(
+absl::Status VisitOrientedBoxPressurePatches(
     const RigidBody3D& body,
     Vec3 body_half_extent,
     double liquid_height,
     UniformMacGeometry3D geometry,
-    std::span<const CellIndex3D> pressure_cells
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit,
+    bool bounded
 ) {
   if (!ValidBody(body) || !IsFinite(body_half_extent) || body_half_extent.x <= 0.0 || body_half_extent.y <= 0.0
       || body_half_extent.z <= 0.0 || !std::isfinite(liquid_height) || !IsFinite(geometry.world_origin)
       || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0.0) {
-    return absl::InvalidArgumentError("invalid oriented box or pressure grid");
+    return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "invalid oriented box or pressure grid");
   }
   const double liquid_level = liquid_height - body.center.y;
   if (!std::isfinite(liquid_level)) {
-    return absl::OutOfRangeError("oriented box liquid level is unrepresentable");
+    return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "oriented box liquid level is unrepresentable");
   }
   const auto center = boundary_internal::CartesianComponents(body.center);
   const auto origin = boundary_internal::CartesianComponents(geometry.world_origin);
-  std::vector<PressureReceiverBounds> receivers;
-  receivers.reserve(pressure_cells.size());
-  for (std::size_t index = 0; index < pressure_cells.size(); ++index) {
-    const auto cell = pressure_cells[index];
-    if (index > 0) {
-      const auto previous = pressure_cells[index - 1];
-      if (std::tie(cell.z, cell.y, cell.x) <= std::tie(previous.z, previous.y, previous.x)) {
-        return absl::InvalidArgumentError("oriented box pressure cells must be strictly ordered");
-      }
-    }
+  const auto receiver_bounds = [&](CellIndex3D cell) -> absl::StatusOr<PressureReceiverBounds> {
     const std::array coordinates{cell.x, cell.y, cell.z};
     PressureReceiverBounds bounds{};
     for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
@@ -442,17 +434,36 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatche
       const auto low = relative_coordinate(lattice_index);
       const auto high = relative_coordinate(lattice_index + 1.0);
       if (!low.ok() || !high.ok() || *low >= *high) {
-        return absl::OutOfRangeError("oriented box pressure cell bounds are unrepresentable");
+        return absl::Status(
+            absl::StatusCode::kOutOfRange,
+            bounded ? "" : "oriented box pressure cell bounds are unrepresentable"
+        );
       }
       bounds.low[axis] = *low;
       bounds.high[axis] = *high;
     }
-    receivers.push_back(bounds);
+    return bounds;
+  };
+  for (std::size_t ordinal = 0; ordinal < pressure_cell_count; ++ordinal) {
+    const auto cell = pressure_cell_at(ordinal);
+    if (ordinal > 0) {
+      const auto previous = pressure_cell_at(ordinal - 1);
+      if (std::tie(cell.z, cell.y, cell.x) <= std::tie(previous.z, previous.y, previous.x)) {
+        return absl::Status(
+            absl::StatusCode::kInvalidArgument,
+            bounded ? "" : "oriented box pressure cells must be strictly ordered"
+        );
+      }
+    }
+    const auto bounds = receiver_bounds(cell);
+    if (!bounds.ok()) {
+      return bounds.status();
+    }
   }
 
   constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
   constexpr std::array<std::array<double, 2>, 4> kCornerSigns{{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
-  std::vector<RigidPressurePatch3D> patches;
+  std::uint64_t next_patch_id = 1;
   for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
     const auto normal_component = kComponents[axis];
     const auto first_tangent = kComponents[(axis + 1) % kComponents.size()];
@@ -471,7 +482,7 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatche
         const Vec3 rotated = Rotate(body.orientation, local);
         const double distance = rotated.y - liquid_level;
         if (!IsFinite(rotated) || !std::isfinite(distance)) {
-          return absl::OutOfRangeError("oriented box vertex is unrepresentable");
+          return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "oriented box vertex is unrepresentable");
         }
         has_wet_vertex |= distance < 0.0;
         face.push_back({boundary_internal::CartesianComponents(rotated), distance});
@@ -480,18 +491,26 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatche
         continue;
       }
       const auto wet_face = boundary_internal::ClipPolygon(face, {{0.0, 1.0, 0.0}, liquid_level, false, 1});
-      const auto expected = MeasureWetPolygon(wet_face);
+      const auto expected = MeasureWetPolygon(wet_face, bounded);
       if (!expected.ok()) {
         return expected.status();
       }
       if (expected->area <= 0.0) {
-        return absl::OutOfRangeError("oriented box wetted face area is unrepresentable");
+        return absl::Status(
+            absl::StatusCode::kOutOfRange,
+            bounded ? "" : "oriented box wetted face area is unrepresentable"
+        );
       }
       double covered_area = 0.0;
-      for (std::size_t ordinal = 0; ordinal < receivers.size(); ++ordinal) {
+      for (std::size_t ordinal = 0; ordinal < pressure_cell_count; ++ordinal) {
+        // Recompute the bounds to preserve face-major ordering without receiver storage.
+        const auto bounds = receiver_bounds(pressure_cell_at(ordinal));
+        if (!bounds.ok()) {
+          return bounds.status();
+        }
         const auto clipped =
-            ClipWetFaceToReceiver(wet_face, receivers[ordinal], boundary_internal::CartesianComponents(outward_normal));
-        const auto moment = MeasureWetPolygon(clipped);
+            ClipWetFaceToReceiver(wet_face, *bounds, boundary_internal::CartesianComponents(outward_normal));
+        const auto moment = MeasureWetPolygon(clipped, bounded);
         if (!moment.ok()) {
           return moment.status();
         }
@@ -500,23 +519,84 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatche
         }
         const Vec3 centroid = Add(body.center, Scale(1.0 / moment->area, moment->weighted_centroid));
         if (!IsFinite(centroid)) {
-          return absl::OutOfRangeError("oriented box pressure centroid is unrepresentable");
+          return absl::Status(
+              absl::StatusCode::kOutOfRange,
+              bounded ? "" : "oriented box pressure centroid is unrepresentable"
+          );
         }
         covered_area += moment->area;
-        patches.push_back({
-            .patch_id = patches.size() + 1,
+        const auto status = visit({
+            .patch_id = next_patch_id++,
             .body_id = body.body_id,
             .pressure_cell_index = ordinal,
             .wetted_area = moment->area,
             .world_centroid = centroid,
             .outward_body_normal = outward_normal,
         });
+        if (!status.ok()) {
+          return status;
+        }
       }
       constexpr double kAreaRoundoff = 256 * std::numeric_limits<double>::epsilon();
       if (!std::isfinite(covered_area) || std::abs(covered_area - expected->area) > kAreaRoundoff * expected->area) {
-        return absl::FailedPreconditionError("oriented box wet surface lacks exterior pressure coverage");
+        return absl::Status(
+            absl::StatusCode::kFailedPrecondition,
+            bounded ? "" : "oriented box wet surface lacks exterior pressure coverage"
+        );
       }
     }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status VisitOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+) {
+  return VisitOrientedBoxPressurePatches(
+      body,
+      body_half_extent,
+      liquid_height,
+      geometry,
+      pressure_cell_count,
+      pressure_cell_at,
+      visit,
+      true
+  );
+}
+
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+) {
+  std::vector<RigidPressurePatch3D> patches;
+  const auto status = VisitOrientedBoxPressurePatches(
+      body,
+      body_half_extent,
+      liquid_height,
+      geometry,
+      pressure_cells.size(),
+      [&](std::size_t ordinal) {
+        return pressure_cells[ordinal];
+      },
+      [&](const RigidPressurePatch3D& patch) {
+        patches.push_back(patch);
+        return absl::OkStatus();
+      },
+      false
+  );
+  if (!status.ok()) {
+    return status;
   }
   return patches;
 }
