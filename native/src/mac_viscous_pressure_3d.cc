@@ -12,12 +12,13 @@
 
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_pressure_3d_multigrid.h"
+#include "mac_pressure_3d_workspace_internal.h"
 #include "viscosity_velocity_block_3d.h"
 
 namespace fluidity {
 namespace {
 
-using pressure_internal::PreparedMacPressureSystem3D;
+using pressure_internal::PreparedMacPressureView3D;
 
 using SolveViscousVelocityView3D = absl::FunctionRef<absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D>(
     const MacViscousVelocityBlockInputs3D&,
@@ -54,7 +55,7 @@ constexpr std::size_t kRestartLength = 32;
 
 // Remap sparse grid slots to compact incident face ordinals for the velocity solve.
 absl::StatusOr<std::vector<MacStrainRow3D>>
-RemapStrain(const PreparedMacPressureSystem3D& system, std::span<const MacStrainRow3D> strain_rows) {
+RemapStrain(const PreparedMacPressureView3D& system, std::span<const MacStrainRow3D> strain_rows) {
   const auto links = system.links();
   std::vector<MacStrainRow3D> rows(strain_rows.begin(), strain_rows.end());
   for (auto& row : rows) {
@@ -79,7 +80,7 @@ RemapStrain(const PreparedMacPressureSystem3D& system, std::span<const MacStrain
 // Apply D and C in integrated flux units. Add the wall and source terms only
 // for the physical candidate, never for a pressure search direction.
 absl::Status AccumulateConstraint(
-    const PreparedMacPressureSystem3D& system,
+    const PreparedMacPressureView3D& system,
     std::span<const double> pressure,
     std::span<const double> velocity,
     bool physical,
@@ -147,7 +148,7 @@ absl::StatusOr<double> CoupledConstraintNorm(std::span<const double> integrated_
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
-    const PreparedMacPressureSystem3D& system,
+    const PreparedMacPressureView3D& system,
     double dt,
     std::span<const MacStrainRow3D> strain_rows,
     std::span<const double> wall_normal_velocities,
@@ -427,7 +428,29 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformWithVelocityView(
   if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
     return absl::InvalidArgumentError("invalid coupled pressure iteration budget");
   }
-  const auto system = pressure_internal::PrepareMacPressureSystem3D(inputs);
+  const auto bytes = pressure_internal::QueryBoundedMacPressureSystemBytes3D(
+      inputs.pressure_cells.size(),
+      inputs.pressure_faces.size()
+  );
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  auto storage = LiquidRecords3D<std::max_align_t>::Create(*bytes / sizeof(std::max_align_t));
+  if (!storage.ok()) {
+    return storage.status();
+  }
+  const auto resize = storage->Resize(storage->capacity());
+  if (!resize.ok()) {
+    return resize;
+  }
+  pressure_internal::MacPressureScratch3D scratch(storage->values());
+  const auto system = pressure_internal::PrepareBoundedMacPressureSystem3D(
+      inputs.mac_grid.view(),
+      inputs.step_duration,
+      inputs.pressure_cells,
+      inputs.pressure_faces,
+      scratch
+  );
   if (!system.ok()) {
     return system.status();
   }
@@ -522,7 +545,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
   }
   CpuVelocityScratch scratch(strain_rows.size(), faces.size());
   return SolveCoupled(
-      *system,
+      BorrowMacPressureSystem3D(*system),
       step_duration,
       strain_rows,
       {},

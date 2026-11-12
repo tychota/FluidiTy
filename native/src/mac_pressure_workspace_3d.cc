@@ -838,14 +838,7 @@ absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectPrepa
       system.links().size(),
       options,
       [&](MacPressureScratch3D& scratch) {
-        const PreparedMacPressureView3D prepared{
-            .cell_records = system.cells(),
-            .link_records = system.links(),
-            .rhs = system.integrated_rhs(),
-            .rhs_absolute_terms = system.rhs_absolute_term_sums(),
-            .components = system.component_ordinals(),
-            .gauges = system.gauge_cell_ordinals(),
-        };
+        const auto prepared = pressure_internal::BorrowMacPressureSystem3D(system);
         return PrepareUploadForSystem(prepared, {}, scratch, false);
       }
   );

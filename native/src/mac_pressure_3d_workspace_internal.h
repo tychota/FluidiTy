@@ -105,6 +105,19 @@ struct PreparedMacPressureView3D {
     return gauges;
   }
 };
+// Borrows an already checked owning pressure system. The view expires with
+// the owning system or when that owner is moved.
+inline PreparedMacPressureView3D BorrowMacPressureSystem3D(const PreparedMacPressureSystem3D& system) {
+  return {
+      .cell_records = system.cells(),
+      .link_records = system.links(),
+      .rhs = system.integrated_rhs(),
+      .rhs_absolute_terms = system.rhs_absolute_term_sums(),
+      .components = system.component_ordinals(),
+      .gauges = system.gauge_cell_ordinals(),
+  };
+}
+
 // Same units/order as MacPressureLevel3D; terminal blocks use flat ranges.
 struct MacPressureLevelView3D {
   std::span<CellIndex3D> coordinates;

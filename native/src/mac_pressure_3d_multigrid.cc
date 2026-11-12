@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "mac_pressure_3d_workspace_internal.h"
 
 namespace fluidity::pressure_internal {
 namespace {
@@ -299,7 +300,9 @@ absl::StatusOr<MacPressureHierarchy3D> BuildMacPressureHierarchy3D(const Prepare
   return hierarchy;
 }
 
-absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system) {
+namespace {
+template <typename System>
+absl::StatusOr<std::vector<double>> InitialMacPressure(const System& system) {
   std::vector<double> pin_previous_pressures(system.cells().size(), 0.0);
   for (const auto pin : system.gauge_cell_ordinals()) {
     pin_previous_pressures[system.component_ordinals()[pin]] = system.cells()[pin].previous_pressure;
@@ -315,6 +318,16 @@ absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressu
     pressures.push_back(pressure);
   }
   return pressures;
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system) {
+  return InitialMacPressure(system);
+}
+
+absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureView3D& system) {
+  return InitialMacPressure(system);
 }
 
 absl::StatusOr<MacPressureStoppingCriteria3D> MacPressureStoppingCriteria(const PreparedMacPressureSystem3D& system) {

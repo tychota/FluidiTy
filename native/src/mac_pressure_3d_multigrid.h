@@ -68,6 +68,10 @@ absl::StatusOr<MacPressureHierarchy3D> BuildMacPressureHierarchy3D(const Prepare
 // pressure only in its unanchored component. Returns kOutOfRange on overflow.
 absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system);
 
+struct PreparedMacPressureView3D;
+// Same warm start for a checked borrowed system.
+absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureView3D& system);
+
 struct MacPressureStoppingCriteria3D {
   double integrated_residual_limit;  // 2e-6 m³/s + 2e-6 ||b||₂.
   double volume_scaled_limit = 2e-5;  // s⁻¹, for both algebraic residual and physical defect.
