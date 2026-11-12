@@ -144,5 +144,41 @@ TEST(GasSubstep3D, ApicPreservesUniformDraftAndAdvectsMarker) {
   EXPECT_EQ(wall->markers[0].world_position.x, outlet_markers[0].world_position.x);
   EXPECT_EQ(wall->markers[0].velocity.x, 0.0);
 }
+
+TEST(GasSubstep3D, UniformDomainOwnsStencilsAndAdvancesAcrossCellBoundary) {
+  GasUniformDomainOptions3D options{
+      .geometry = {{0.0, 0.0, 0.0}, 0.25},
+      .extent = {2, 2, 2},
+      .open_boundary = {true, true, false, false, false, false},
+      .ambient = {.carrier = 1.2, .enthalpy = 354637.5},
+      .ambient_pressure = 101325.0,
+      .initial_velocity = {0.2, 0.0, 0.0},
+  };
+  const auto domain = CreateGasUniformDomain3D(options);
+  ASSERT_TRUE(domain.ok()) << domain.status();
+  ASSERT_EQ(domain->cells.size(), 8);
+  EXPECT_EQ(domain->faces.size(), 36);
+  ASSERT_EQ(domain->markers.size(), 8);
+  EXPECT_EQ(domain->markers[0].world_position.x, 0.125);
+  auto markers = domain->markers;
+  markers[0].world_position.x = 0.24;
+  const std::vector<GasCellSource3D> sources(domain->cells.size());
+  const auto step = AdvanceGasApicSubstep3D(
+      domain->grid,
+      0.1,
+      domain->cells,
+      domain->faces,
+      sources,
+      options.ambient,
+      options.ambient_pressure,
+      {},
+      markers,
+      domain->face_velocities
+  );
+  ASSERT_TRUE(step.ok()) << step.status();
+  ASSERT_EQ(step->markers.size(), 8);
+  EXPECT_NEAR(step->markers[0].world_position.x, 0.26, 1e-14);
+  EXPECT_NEAR(step->gas.cells[0].density.carrier, 1.2, 1e-14);
+}
 }  // namespace
 }  // namespace fluidity

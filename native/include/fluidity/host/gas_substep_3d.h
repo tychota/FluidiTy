@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <span>
 #include <vector>
 
@@ -89,5 +91,29 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
     absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
         project = ProjectMacPressure3D
 );
+
+struct GasUniformDomainOptions3D {
+  UniformMacGeometry3D geometry;
+  std::array<std::int32_t, 3> extent;  // Cell counts in x, y, z order, starting at lattice zero.
+  std::array<bool, 6> open_boundary;  // Low/high x, low/high y, low/high z.
+  GasScalars ambient;  // Initial cell and inflow densities.
+  double ambient_pressure;  // Absolute Pa.
+  Vec3 initial_velocity;  // World m/s before enforcing stationary walls.
+};
+
+struct GasUniformDomain3D {
+  SparseMacGrid3D grid;
+  std::vector<GasCell3D> cells;
+  std::vector<MacPressureFace3D> faces;
+  std::vector<GasApicMarker3D> markers;
+  std::vector<double> face_velocities;  // All owned slots, including the transfer halo.
+};
+
+// Constructs a rectangular fixed domain with the owned quadratic transfer halo,
+// unit-weight markers at cell centers, and zero-gauge open boundaries. Cells and
+// faces are in pressure solver order. Invalid extents, ambient state or velocity
+// return InvalidArgument, domains over 4096 cells return ResourceExhausted, and
+// unrepresentable geometry returns OutOfRange. Errors carry no domain.
+absl::StatusOr<GasUniformDomain3D> CreateGasUniformDomain3D(const GasUniformDomainOptions3D& options);
 
 }  // namespace fluidity
