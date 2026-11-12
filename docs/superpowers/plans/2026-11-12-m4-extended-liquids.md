@@ -630,3 +630,19 @@ $run = 'out/m4-authored-source-qualification'
 ```
 
 The headless workflow still invokes the Mesh and USD bridge commands explicitly. Artist-facing surface attachment, broader moving and curved phase qualification, adaptive constituent remap and final acceptance remain open.
+
+## Artist-facing surface attachment receipt
+
+Import & Export now exposes Attach Surface Cache for a committed Mesh directory. It verifies the cache through the bridge, imports a project-relative native USD carrier, and compares the last evaluated geometry counts against the authenticated bridge receipt before replacing the live binding. Reattaching identical bytes reuses the existing object, mesh and carrier. Relocation and static/animated replacement preserve the object and assigned material. The action restores frame and selection and leaves a working binding in place when validation fails.
+
+Pinned Blender 5.2.3 exercised the public operator against the Blender-authored three-source Mesh cache. Same-cache attach, relocation, animated-to-seed replacement, seed-to-animated replacement, and refusal of a corrupted payload all passed. A fresh factory-startup process reopened the resulting blend with the extension absent, found the shared sheet and material, and measured 433 dye and 748 oil pixels, with zero dye pixels in the control. The bridge built and formatting checks passed. Receipts use out/m4-surface-attachment-static.
+
+```powershell
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$run = 'out/m4-attach-qualification'
+New-Item -ItemType Directory $run
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- attach out/m4-blender-authored-nonzero/mesh out/build/windows-release-cuda "$run/attached.blend"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- reopen "$run/attached.blend"
+```
+
+Mesh generation still uses the separate native stage command. This receipt qualifies public attachment to its committed output.

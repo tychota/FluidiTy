@@ -753,3 +753,33 @@ msgstr ""
 
 msgid "Assign a distinct box to each liquid source."
 msgstr ""
+
+msgid "Attach Surface Cache"
+msgstr ""
+
+msgid "Attach Surface Cache..."
+msgstr ""
+
+msgid "Attach committed Mesh frames with their phase and composition attributes"
+msgstr ""
+
+msgid "Surface attached. Save the project to keep the binding."
+msgstr ""
+
+msgid "The saved Surface binding is not a FluidiTy object."
+msgstr ""
+
+msgid "Restore the FluidiTy Surface cache reader before relinking."
+msgstr ""
+
+msgid "Blender could not open the verified Surface archive."
+msgstr ""
+
+msgid "Blender could not find the native Surface reader."
+msgstr ""
+
+msgid "Blender could not read the last committed Surface sample."
+msgstr ""
+
+msgid "Surface export timed out."
+msgstr ""

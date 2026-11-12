@@ -2,6 +2,7 @@
 
 from collections import Counter, defaultdict
 from pathlib import Path
+import shutil
 import sys
 
 import bpy
@@ -73,6 +74,11 @@ def prepare(archive, blend):
     scene.render.fps = 24
     scene.frame_set(0)
     assert bpy.ops.wm.usd_import(filepath=str(archive)) == {"FINISHED"}
+    prepare_material(blend)
+
+
+def prepare_material(blend):
+    scene = bpy.context.scene
     obj = verify_surface()
     material = bpy.data.materials.new("Water dye and oil phase")
     tree = material.node_tree
@@ -108,6 +114,73 @@ def prepare(archive, blend):
     bpy.ops.wm.save_as_mainfile(filepath=str(blend))
 
 
+def attach(cache, binaries, blend):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
+    import fluidity
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    fluidity.register()
+    fluidity.jobs.BIN_DIR = binaries
+    scene = bpy.context.scene
+    scene.render.fps = 24
+    scene.render.fps_base = 1
+    scene.frame_start, scene.frame_end = 0, 2
+    scene.frame_set(0)
+    bpy.context.preferences.filepaths.save_version = 0
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend))
+    relocated = blend.with_name("relocated-mesh")
+    shutil.copytree(cache, relocated)
+    assert bpy.ops.fluidity.attach_surface(directory=str(cache)) == {"FINISHED"}
+    obj = scene.fluidity.surface_object
+    assert obj == mesh_object()
+    assert scene.frame_current == 0
+    archive = obj["fluidity_surface_archive"]
+    data = obj.data
+    assert archive.startswith("//")
+    assert bpy.ops.fluidity.attach_surface(directory=str(cache)) == {"FINISHED"}
+    assert scene.fluidity.surface_object == obj and obj.data == data
+    assert obj["fluidity_surface_archive"] == archive
+
+    prepare_material(blend)
+    material = obj.data.materials[0]
+    unrelated = bpy.data.objects.new("Artist control", None)
+    scene.collection.objects.link(unrelated)
+    unrelated.select_set(True)
+    bpy.context.view_layer.objects.active = unrelated
+    saved_frame = scene.frame_current
+    assert bpy.ops.fluidity.attach_surface(directory=str(relocated)) == {"FINISHED"}
+    assert scene.fluidity.surface_object == obj and obj.data.materials[0] == material
+    assert obj["fluidity_surface_archive"] != archive and obj["fluidity_surface_archive"].startswith("//")
+    assert scene.frame_current == saved_frame and bpy.context.view_layer.objects.active == unrelated
+    assert unrelated.select_get()
+
+    broken = blend.with_name("broken-mesh")
+    shutil.copytree(cache, broken)
+    next((broken / "blobs").glob("*.flef")).write_bytes(b"invalid")
+    old_carriers = set(broken.glob("FluidiTySurface-*.usda"))
+    bound = obj["fluidity_surface_archive"]
+    try:
+        result = bpy.ops.fluidity.attach_surface(directory=str(broken))
+    except RuntimeError as error:
+        assert "DATA_LOSS" in str(error).upper() or "digest" in str(error).lower(), error
+    else:
+        assert result == {"CANCELLED"}
+    assert scene.fluidity.surface_object == obj and obj.data.materials[0] == material
+    assert obj["fluidity_surface_archive"] == bound
+    assert set(broken.glob("FluidiTySurface-*.usda")) == old_carriers
+    seed_only = blend.with_name("seed-mesh")
+    shutil.copytree(cache, seed_only)
+    (seed_only / "frames" / "00000000000000000001.flem").unlink()
+    assert bpy.ops.fluidity.attach_surface(directory=str(seed_only)) == {"FINISHED"}
+    assert scene.fluidity.surface_object == obj and obj.data.materials[0] == material
+    assert obj["fluidity_surface_last"] == 0
+    assert bpy.ops.fluidity.attach_surface(directory=str(relocated)) == {"FINISHED"}
+    assert scene.fluidity.surface_object == obj and obj.data.materials[0] == material
+    assert obj["fluidity_surface_last"] == 1
+    verify_surface()
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend))
+    print("PASS attach, idempotence, relocation and failed replacement")
+
 def reopen(blend):
     bpy.ops.wm.open_mainfile(filepath=str(blend))
     obj = verify_surface()
@@ -134,4 +207,4 @@ def reopen(blend):
 
 if __name__ == "__main__":
     mode, *paths = sys.argv[sys.argv.index("--") + 1:]
-    {"prepare": prepare, "reopen": reopen}[mode](*(Path(path).resolve() for path in paths))
+    {"prepare": prepare, "attach": attach, "reopen": reopen}[mode](*(Path(path).resolve() for path in paths))

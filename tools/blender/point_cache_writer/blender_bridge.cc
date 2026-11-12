@@ -537,6 +537,20 @@ ExportEffects(const fs::path& root, std::uint64_t last_frame, const fs::path& de
   if (!execution.ok()) {
     return execution.status();
   }
+  std::size_t vertex_count = 0;
+  std::size_t triangle_count = 0;
+  if (usd) {
+    const auto last_surface = ReadSurfaceFrame(*cache, last_frame);
+    if (!last_surface.ok()) {
+      return last_surface.status();
+    }
+    vertex_count = last_surface->mesh.vertices.size();
+    triangle_count = last_surface->mesh.triangles.size();
+    if (last_surface->phase_interface) {
+      vertex_count += last_surface->phase_interface->interior_positions.size();
+      triangle_count += last_surface->phase_interface->triangles.size();
+    }
+  }
   absl::Status written;
   if (surface) {
     const auto resolved = DecodeSurfaceSettings3D(settings->values());
@@ -559,8 +573,12 @@ ExportEffects(const fs::path& root, std::uint64_t last_frame, const fs::path& de
     return written;
   }
   std::cout << "{\"last_frame\":" << last_frame << ",\"execution_id\":\"" << LiquidDigestHex3D(*execution).data()
-            << "\",\"source_execution_id\":\"" << LiquidDigestHex3D(identity.upstream_execution).data() << "\"}\n";
-  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write Alembic export identity");
+            << "\",\"source_execution_id\":\"" << LiquidDigestHex3D(identity.upstream_execution).data() << "\"";
+  if (usd) {
+    std::cout << ",\"vertex_count\":" << vertex_count << ",\"triangle_count\":" << triangle_count;
+  }
+  std::cout << "}\n";
+  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write derived export identity");
 }
 
 absl::Status InspectVolume(const fs::path& root, std::uint64_t frame) {

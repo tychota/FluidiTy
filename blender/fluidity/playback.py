@@ -104,13 +104,13 @@ def inspection(cache, frame):
     return json.loads(jobs.checked("blender_bridge", "inspect", cache, frame))
 
 
-def committed_last(cache):
+def committed_last(cache, manifest_extension="flmf"):
     """Find the last publication record; the bridge subsequently verifies its contents."""
     if not cache.is_dir():
         raise jobs.ToolError("Choose a directory containing a committed FluidiTy cache.")
     frames = [
         int(p.stem)
-        for p in (cache / "frames").glob("*.flmf")
+        for p in (cache / "frames").glob(f"*.{manifest_extension}")
         if len(p.stem) == 20 and p.stem.isascii() and p.stem.isdecimal()
     ]
     if not frames:

@@ -249,6 +249,7 @@ class FLUIDITY_PT_interchange(ChildPanel, bpy.types.Panel):
         column = layout.column()
         column.enabled = not jobs.is_running(context.scene)
         column.operator("fluidity.import_cache", text="Import Cache...", icon="IMPORT")
+        column.operator("fluidity.attach_surface", text="Attach Surface Cache...", icon="MESH_DATA")
         column.operator("fluidity.export_alembic", text="Export Alembic...", icon="EXPORT")
         column.operator("fluidity.export_usd", text="Export USD...", icon="EXPORT")
 

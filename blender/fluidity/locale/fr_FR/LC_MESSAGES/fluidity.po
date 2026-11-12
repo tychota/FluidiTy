@@ -753,3 +753,33 @@ msgstr "Choisissez un modèle de limites pour les sources de liquide."
 
 msgid "Assign a distinct box to each liquid source."
 msgstr "Attribuez une boîte distincte à chaque source de liquide."
+
+msgid "Attach Surface Cache"
+msgstr "Attacher un cache de surface"
+
+msgid "Attach Surface Cache..."
+msgstr "Attacher un cache de surface..."
+
+msgid "Attach committed Mesh frames with their phase and composition attributes"
+msgstr "Attacher les images de maillage publiees avec leurs attributs de phase et de composition"
+
+msgid "Surface attached. Save the project to keep the binding."
+msgstr "Surface attachée. Enregistrez le projet pour conserver la liaison."
+
+msgid "The saved Surface binding is not a FluidiTy object."
+msgstr "La liaison de surface enregistrée ne désigne pas un objet FluidiTy."
+
+msgid "Restore the FluidiTy Surface cache reader before relinking."
+msgstr "Restaurez le lecteur de cache de surface FluidiTy avant de rétablir la liaison."
+
+msgid "Blender could not open the verified Surface archive."
+msgstr "Blender n'a pas pu ouvrir l'archive de surface vérifiée."
+
+msgid "Blender could not find the native Surface reader."
+msgstr "Blender n'a pas trouvé le lecteur natif de surface."
+
+msgid "Blender could not read the last committed Surface sample."
+msgstr "Blender n'a pas pu lire le dernier échantillon de surface publié."
+
+msgid "Surface export timed out."
+msgstr "Le délai d'exportation de la surface a été dépassé."

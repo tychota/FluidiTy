@@ -70,6 +70,8 @@ class FLUIDITY_OT_liquid_source(Operator):
 
 class FluidiTySettings(PropertyGroup):
     liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    surface_object: PointerProperty(type=Object)
+    attached_surface_cache: StringProperty()
     phase_tension: FloatProperty(
         name="Phase Interface Tension (N/m)", min=0, default=0, precision=4, update=invalidate_guidance
     )
