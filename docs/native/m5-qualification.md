@@ -2381,3 +2381,24 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
 
 The contact-local binaries use the same commands from
 `out/pr-m5-sand-affine/out/floor-local-contact-bin`.
+
+
+### Bounded recovery of a missing contact-local donor
+
+The contact-local control now tries a constant, same-component nearest
+donor within four cells if its two-cell affine neighborhood is empty.
+The forward reconstruction and stress transpose use the same unit
+coefficient. The two previously rejecting fine-grid native cases
+both finished through 3 s. The nominal case settled at 26.677083°
+with a 0.193416 m radius. The half-step case reached 26.427206° with
+a 0.205951 m radius. Both missed the original angle and radius checks.
+The work mismatch remained below 4e-16 J and vertical momentum
+residuals stayed below 1.4e-8 N·s. Both default native and SM120
+dry-scene targets passed before the dedicated fallback oracle was added.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/floor-local-contact-bin'
+foreach ($case in 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
