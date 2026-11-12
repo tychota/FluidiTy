@@ -1324,7 +1324,23 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
     const int frames = static_cast<int>(0.0625 / kDt);
-    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+    double projected_wall_flux = 0.0;
+    auto backend = CpuLiquidSubstepBackend3D();
+    backend.context = &projected_wall_flux;
+    backend.project = [](void* context,
+                         SparseMacGridView3D grid,
+                         double duration,
+                         const LiquidPressureProblemView3D& problem,
+                         MacPressureSolverOptions3D options,
+                         MacPressureWorkspace3D& workspace) {
+      auto& flux = *static_cast<double*>(context);
+      flux = 0.0;
+      for (const auto& cell : problem.cells) {
+        flux += cell.integrated_inward_wall_flux;
+      }
+      return CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
+    };
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
     ASSERT_TRUE(scheduler.ok()) << scheduler.status();
 
     constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
@@ -1353,6 +1369,19 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       for (const auto& cell : scheduler->committed().cells.values()) {
         observed_pressure |= std::abs(cell.previous_pressure) > 1e-5;
       }
+      std::vector<CellIndex3D> cells;
+      for (const auto& cell : scheduler->committed().cells.values()) {
+        cells.push_back(cell.cell_index);
+      }
+      auto swept_body = body;
+      swept_body.linear_velocity = attempt->body->linear_velocity;
+      swept_body.angular_velocity = attempt->body->angular_velocity;
+      const auto patches =
+          BuildOrientedBoxPressurePatches3D(swept_body, kHalfExtent, 0.75, scheduler->committed().geometry, cells);
+      ASSERT_TRUE(patches.ok()) << patches.status();
+      const auto flux = ComputeRigidBodyInwardWallFlux3D(swept_body, cells.size(), *patches);
+      ASSERT_TRUE(flux.ok()) << flux.status();
+      EXPECT_NEAR(projected_wall_flux, std::accumulate(flux->begin(), flux->end(), 0.0), 1e-15);
       const auto position = scheduler->committed().particles[0].world_position;
       observed_particle_motion |= std::abs(position.y - initial.particles[0].world_position.y) > 1e-9;
       const auto previous_pose = RigidBodyPose3D{body.center, body.orientation};

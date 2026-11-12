@@ -163,27 +163,22 @@ absl::Status ApplyOrientedBoxFaceSamples(
   return absl::OkStatus();
 }
 
-absl::StatusOr<RigidBodyStep3D> AdvanceOrientedBoxInTank(
-    RigidBody3D loaded_body,
+absl::Status CheckOrientedBoxSweepInTank(
+    const RigidBodyStep3D& step,
     Vec3 body_half_extent,
     const AxisAlignedLiquidTank3D& tank,
-    double step_duration,
     double cell_width
 ) {
-  const auto step = AdvanceRigidBody3D(loaded_body, step_duration);
-  if (!step.ok()) {
-    return step.status();
-  }
   const double radius = std::nextafter(
       std::hypot(body_half_extent.x, body_half_extent.y, body_half_extent.z),
       std::numeric_limits<double>::infinity()
   );
-  const auto travel = RigidBodySweepDistanceBound3D(*step, radius);
+  const auto travel = RigidBodySweepDistanceBound3D(step, radius);
   if (!travel.ok()) {
     return travel.status();
   }
   const double swept_radius = boundary_internal::AddUp(radius, *travel);
-  const auto center = loaded_body.center;
+  const auto center = step.start.center;
   if (!std::isfinite(swept_radius) || *travel > 0.5 * cell_width
       || boundary_internal::AddDown(center.x, -swept_radius) <= tank.start_low_x
       || boundary_internal::AddUp(center.x, swept_radius) >= tank.high_x
@@ -192,7 +187,7 @@ absl::StatusOr<RigidBodyStep3D> AdvanceOrientedBoxInTank(
       || boundary_internal::AddUp(center.z, swept_radius) >= tank.high_z) {
     return Error(absl::StatusCode::kAborted);
   }
-  return *step;
+  return absl::OkStatus();
 }
 // Check the complete owned payload before publishing any reservation or growth.
 absl::StatusOr<std::size_t> ReservationBytes(
@@ -1460,9 +1455,11 @@ struct LiquidSubstepScheduler3D::Impl {
                 torque->z / length
             };
           };
+          const auto world_angular_velocity = [&](const Twist& value) {
+            return RotateRigidBodyVector3D(body.orientation, {value[3] / length, value[4] / length, value[5] / length});
+          };
           const auto set_twist = [&](const Twist& value) -> absl::Status {
-            const auto angular =
-                RotateRigidBodyVector3D(body.orientation, {value[3] / length, value[4] / length, value[5] / length});
+            const auto angular = world_angular_velocity(value);
             if (!angular.ok()) {
               return angular.status();
             }
@@ -1560,6 +1557,22 @@ struct LiquidSubstepScheduler3D::Impl {
               converged &= std::abs(correction[axis]) <= 1e-8 * std::max(1.0, std::abs(speed[axis]));
             }
             if (converged && iteration > 0) {
+              // The verified pressure projection already used this twist.
+              // Carry it through the pose and particle sweep unchanged.
+              auto candidate = *drift;
+              const auto angular = world_angular_velocity(speed);
+              if (!angular.ok()) {
+                return angular.status();
+              }
+              candidate.end.linear_velocity = {speed[0], speed[1], speed[2]};
+              candidate.end.angular_velocity = *angular;
+              const auto pose = SampleRigidBodyPose3D(candidate, 1.0);
+              if (!pose.ok()) {
+                return pose.status();
+              }
+              candidate.end.center = pose->center;
+              candidate.end.orientation = pose->orientation;
+              oriented_box_candidate = candidate;
               break;
             }
             if (iteration == kMaximumCorrections) {
@@ -1815,19 +1828,13 @@ struct LiquidSubstepScheduler3D::Impl {
         }
         *piston_load = *loaded;
       }
-      if (floating_box != nullptr) {
+      if (floating_box != nullptr && !oriented_box_candidate) {
         const auto loaded = load_box(projected_cell_pressures, floating_box->body);
         if (!loaded.ok()) {
           return loaded.status();
         }
         if (oriented_box) {
-          const auto candidate = AdvanceOrientedBoxInTank(
-              *loaded,
-              floating_box->half_extent,
-              *tank_at_step_start,
-              step_duration,
-              grid.geometry().cell_width
-          );
+          const auto candidate = AdvanceRigidBody3D(*loaded, step_duration);
           if (!candidate.ok()) {
             return candidate.status();
           }
@@ -1835,6 +1842,14 @@ struct LiquidSubstepScheduler3D::Impl {
         } else {
           floating_box->body = *loaded;
         }
+      }
+      if (oriented_box_candidate) {
+        STEP_TRY(CheckOrientedBoxSweepInTank(
+            *oriented_box_candidate,
+            floating_box->half_extent,
+            *tank_at_step_start,
+            grid.geometry().cell_width
+        ));
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;
