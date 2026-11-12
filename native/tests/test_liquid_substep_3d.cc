@@ -472,22 +472,14 @@ void PopulateGradedPhysicalTrialFixture(
     LiquidSceneInputs3D& scene,
     double wall_speed_m_per_s = 0.03125
 ) {
-  ASSERT_TRUE(test::PopulateGradedBandFixture3D(state, scene).ok());
-  scene.obstacle = TranslatingHalfspace3D{
-      .unit_normal = {1, 0, 0},
-      .start_plane_coordinate = 0.125,
-      .wall_velocity = {wall_speed_m_per_s, 0, 0},
-  };
-  for (std::size_t cell = 0; cell < state.adaptive_cells.size(); ++cell) {
-    auto& particle = state.particles[cell];
-    auto& inventory = state.adaptive_cells[cell].inventory;
-    particle.mass *= 0.5;
-    particle.reference_volume *= 0.5;
-    inventory.mass_kg = particle.mass;
-    inventory.reference_volume_m3 = particle.reference_volume;
-    inventory.current_volume_m3 = particle.reference_volume;
-  }
-  ASSERT_TRUE(ValidateLiquidState3D(state).ok());
+  ASSERT_TRUE(
+      test::PopulateGradedPhysicalHalfspaceFixture3D(
+          state,
+          scene,
+          {.unit_normal = {1, 0, 0}, .start_plane_coordinate = 0.125, .wall_velocity = {wall_speed_m_per_s, 0, 0}}
+      )
+          .ok()
+  );
 }
 
 TEST(LiquidSubstep3D, ReappliesGradedPhysicalGeometryAcrossRollbackAndFreshReplay) {
