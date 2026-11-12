@@ -8,11 +8,13 @@
 #include <limits>
 #include <set>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_acoustic_cases.h"
 #include "mac_pressure_explicit_cases.h"
 namespace fluidity {
 namespace {
@@ -105,6 +107,20 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   std::ranges::sort(problem.faces, [&](const auto& left, const auto& right) {
     return *grid.FaceSlot(left.face_index) < *grid.FaceSlot(right.face_index);
   });
+}
+
+TEST(CudaMacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerStandingWave([&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+    auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+    if (!result.ok()) {
+      return result.status();
+    }
+    EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+    kernel_milliseconds += result->measurement.kernel_ms;
+    return std::move(result->projection);
+  });
+  RecordProperty("standing_wave_kernel_milliseconds", std::to_string(kernel_milliseconds));
 }
 
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {

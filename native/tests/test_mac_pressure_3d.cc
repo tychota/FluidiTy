@@ -15,12 +15,22 @@
 #include "../src/mac_viscous_pressure_3d.h"
 #include "absl/status/status.h"
 #include "fluidity/host/mac_pressure_3d.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "fluidity/host/viscosity.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_acoustic_cases.h"
 
 namespace fluidity {
 namespace {
+
+TEST(MacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
+  auto workspace = MacPressureWorkspace3D::Create(16, 15);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::ExpectBackwardEulerStandingWave([&](const auto& system) {
+    return workspace->ProjectPrepared(system);
+  });
+}
 
 using pressure_internal::EvaluateMacPressure3D;
 using pressure_internal::PrepareMacPressureSystem3D;
