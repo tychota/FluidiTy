@@ -337,9 +337,14 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
       || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
-      || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
-      || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
+      || options.ocean_boundary.has_value() || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
+  }
+  if (options.motion_sample_intervals != 0
+      && (scene.surface_tension != 0 || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity
+          || scene.cavity_provider.prepare || !scene.phase_pairs.empty() || !scene.constituent_materials.empty()
+          || !std::isinf(scene.bulk_modulus))) {
+    return absl::UnimplementedError("graded motion capture requires the implicit incompressible tank");
   }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
@@ -387,6 +392,11 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   result.subfaces_.resize(initial.adaptive_faces.size());
   const auto leaves = result.topology_.cells();
   if (std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian)) {
+    auto core_transport = AdaptiveLiquidCoreTransportWorkspace3D::Create(leaves.size());
+    if (!core_transport.ok()) {
+      return core_transport.status();
+    }
+    result.core_transport_.emplace(std::move(*core_transport));
     result.core_faces_.resize(initial.adaptive_faces.size());
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
   }
@@ -508,13 +518,14 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
 }
 
 std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
+  const std::size_t core_transport_bytes = core_transport_ ? core_transport_->reserved_bytes() : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
       + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
-      + core_fluxes_.capacity() * sizeof(double);
+      + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes;
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {
@@ -919,13 +930,12 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!material.ok()) {
     return material;
   }
-  if (!core_faces_.empty()) {
+  if (core_transport_) {
     for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
       const auto slot = interior_slots_[face];
       core_fluxes_[face] = subfaces_[slot].open_area_m2 * trial.adaptive_faces[slot].carrier_velocity;
     }
-    const auto core =
-        PrepareAdaptiveLiquidCoreTransport3D(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
+    const auto core = core_transport_->Prepare(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
     if (!core.ok()) {
       return core.status();
     }
