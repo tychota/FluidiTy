@@ -689,17 +689,36 @@ bool TestPlanarMixedContactDetection() {
   const std::array rear_traction{fluidity::SnowPressureContributor3D{4, 1}};
   auto stale_wall_settings = deformation_settings;
   stale_wall_settings.snow_layer_material.reset();
-  const auto rejected_stale_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+  auto stationary_snow = deforming_snow;
+  for (auto& particle : stationary_snow) {
+    particle.transfer.particle_velocity = {};
+  }
+  const auto rejected_stationary_rear = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
       accepted_liquid,
-      deforming_snow,
+      stationary_snow,
       rear_traction,
       stale_wall_settings,
       project
   );
+  if (rejected_stationary_rear.status().message() != "planar snow pressure contributor is off the front layer") {
+    std::fprintf(stderr, "M5 stationary rear traction: %s\n", rejected_stationary_rear.status().ToString().c_str());
+    return false;
+  }
+  auto split_front = deforming_snow;
+  split_front[0].transfer.particle_velocity.x = -3;
+  split_front[1].transfer.trial_world_position.x = -0.875;
+  const auto rejected_stale_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      split_front,
+      single_traction,
+      stale_wall_settings,
+      project
+  );
   if (rejected_stale_wall.status().message() != "planar pressure wall disagrees with the advected snow front"
-      || accepted_liquid.clock.time != 0 || deforming_snow[0].transfer.trial_world_position.x != -0.875
-      || deforming_snow[1].transfer.trial_world_position.x != -1.125) {
+      || accepted_liquid.clock.time != 0 || split_front[0].transfer.trial_world_position.x != -0.875
+      || split_front[1].transfer.trial_world_position.x != -0.875) {
     std::fprintf(stderr, "M5 inconsistent wall pose: %s\n", rejected_stale_wall.status().ToString().c_str());
     return false;
   }
@@ -746,7 +765,7 @@ bool TestPlanarMixedContactDetection() {
       high_wall_settings,
       project
   );
-  if (rejected_high_wall.status().message() != "planar pressure wall disagrees with the advected snow front"
+  if (rejected_high_wall.status().message() != "planar snow pressure contributor is off the front layer"
       || accepted_liquid.clock.time != 0 || high_wall_snow[0].transfer.trial_world_position.x != -0.125
       || high_wall_snow[1].transfer.trial_world_position.x != 0.125) {
     return false;

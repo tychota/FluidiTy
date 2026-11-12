@@ -238,7 +238,9 @@ struct PlanarSnowPressureFrame3D {
 };
 
 // Drives the planar cut-cell scene to a completed frame. Snow records
-// describe one body. Liquid must have no sources or cavity state. Its
+// describe one body. Traction contributors must be on the reconstructed
+// front at the beginning of each step within 1e-10 cell widths.
+// Liquid must have no sources or cavity state. Its
 // existing topology must match the frozen
 // cell and faces. Each accepted step must reconstruct its end wall in
 // that cell and agree with the pressure-driven wall trajectory within

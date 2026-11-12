@@ -1444,6 +1444,15 @@ the initial front speed to -12 m/s. The liquid stays in its pressure
 cell but the snow wall retreats past the low face on the last substep.
 Both backends reject and preserve the input states.
 
+The frame also checks the traction list before each pressure solve. Each
+contributor must lie within 1e-10 cell widths of the signed reconstructed
+front. A stationary rear-only contributor used to pass because it produced
+zero wall displacement. It now rejects before projection. The reflected
+fixture checks the same front requirement from the opposite side. A
+separate fixture starts with two particles tied at the front and applies
+traction to only the retreating particle. The final pose check still
+rejects the split front and preserves both input states.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

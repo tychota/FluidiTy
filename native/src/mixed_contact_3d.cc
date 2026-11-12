@@ -1163,9 +1163,27 @@ absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
   if (!frozen.ok()) {
     return frozen.status();
   }
+  constexpr std::array components{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto wall_component = components[static_cast<std::size_t>(settings.wall_axis)];
+  if (!std::ranges::is_sorted(snow, {}, &PlasticSolidCheckpointParticle3D::particle_id)) {
+    return absl::InvalidArgumentError("planar snow particles must be ordered by nonzero ID");
+  }
   const double wall_normal_sign = settings.wall_on_low_face ? 1 : -1;
   const double wall_tolerance = 1e-10 * grid.geometry().cell_width;
   while (transaction->committed().clock.time < settings.target_time) {
+    const double front_coordinate = frozen->wall_plane_coordinate - settings.surface_offset;
+    for (const auto& contributor : contributors) {
+      const auto particle =
+          std::ranges::lower_bound(snow, contributor.particle_id, {}, &PlasticSolidCheckpointParticle3D::particle_id);
+      if (particle == snow.end() || particle->particle_id != contributor.particle_id) {
+        return absl::InvalidArgumentError("missing planar snow traction particle");
+      }
+      const double contributor_coordinate =
+          wall_normal_sign * (particle->transfer.trial_world_position.*wall_component);
+      if (std::abs(contributor_coordinate - front_coordinate) > wall_tolerance) {
+        return absl::InvalidArgumentError("planar snow pressure contributor is off the front layer");
+      }
+    }
     const double remaining = settings.target_time - transaction->committed().clock.time;
     MacPressureInputs3D inputs{
         grid,
