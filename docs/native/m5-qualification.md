@@ -769,6 +769,16 @@ liquid scheduler. Its attempt is particle-free. Continuous finite-box
 particle contact and the accepted plastic payload remain separate
 dependencies for the snow–water scene.
 
+M6 commit 62ff170 runs its coupled guided-box projection with production
+liquid particles. The solved wall speed drives flux, drift and the
+continuous particle sweep. The CPU scheduler retries when the coupled
+body impulse residual exceeds its bound. M6 commit 78cd5ac adds
+partitioned translation in all three axes for an aligned rigid box.
+These provide production references for accepted pressure and contact
+accounting. The deformable scene still needs a snow-derived moving
+interface, reciprocal traction on its plastic particles, and an atomic
+advance of both material states.
+
 M5 provides a typed plastic checkpoint record with stable nonzero particle,
 body and material IDs, the MAC transfer state, reference volume, accepted
 elastic map and log plastic Jacobian. The dry adapter restores records in
