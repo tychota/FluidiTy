@@ -24,6 +24,7 @@
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_viscous_tank_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
+#include "snow_liquid_scheduler_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
 namespace {
@@ -57,6 +58,26 @@ LiquidSceneInputs3D Scene() {
   scene.obstacle = TranslatingHalfspace3D{{1, 0, 0}, 0, {0.1, 0, 0}};
   return scene;
 }
+TEST(CudaLiquidSubstep3D, SnowTrialPublishesOnlyWithLiquidAcceptance) {
+  auto state = Initial();
+  ASSERT_TRUE(state.particles.Resize(1).ok());
+  state.particles[0].id = 1;
+  state.particles[0].world_velocity = {};
+  state.next_particle_id = 2;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  test::ExpectSnowJointAcceptance(*scheduler, state);
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+  const auto epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  EXPECT_EQ(epoch->identity().clock, scheduler->committed().clock);
+}
+
 double MaximumComponentError(Vec3 reference, Vec3 measured) {
   return std::max({
       std::abs(reference.x - measured.x),
