@@ -577,6 +577,31 @@ out/m5-impact-coulomb-gradient.patch against 4c116dd, rebuild both
 Release scene targets, and run the grid-phase and half-step commands.
 The production solver was restored.
 
+### Coupled Coulomb gradient and APIC slope control
+
+Use the floor projection derivative both in the post-impact
+deformation update and on the stored APIC slope rows. The
+deformation derivative follows the incoming advection velocity,
+while the APIC derivative follows the incoming stored velocity.
+Both use the same Coulomb branch as their respective velocities.
+The pile geometry, material and floor coefficient stay fixed.
+
+| h (m) | Nominal dt (s) | Baseline angle at 1.50 s | Projected slope angle | Late projected fraction |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 20.801830° | 29.083229° | 0.455211640 |
+| 0.0625 | 0.0015625 | 20.580671° | 26.790663° | 0.407275132 |
+| 0.075 | 0.0009375 | 28.040080° | 28.883736° | 0.637063492 |
+| 0.0625 | 0.00078125 | 26.585383° | 26.915365° | 0.598330026 |
+
+Native and CUDA agree at the printed precision and pass the vertical
+momentum and late-drift checks. The control reduces the late plastic
+return fraction to 41–64% of
+particle-time and narrows the late timestep gap to under 0.21° at
+both widths. The grid-width gap remains about 2°, and all angles
+remain below 30°. The milestone branch uses the original solver.
+To reproduce, check out 92df727 on codex/m5-sand-floor-control, rebuild
+the two Release scene targets, and run the extended column commands above.
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
