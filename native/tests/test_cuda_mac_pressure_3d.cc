@@ -8,11 +8,13 @@
 #include <limits>
 #include <set>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
+#include "mac_pressure_acoustic_cases.h"
 #include "mac_pressure_explicit_cases.h"
 namespace fluidity {
 namespace {
@@ -107,6 +109,73 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   });
 }
 
+TEST(CudaMacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialCondition::kStandingWave,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialCondition::kLocalizedPulse,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, WaterHammerValveClosureMatchesAcousticOracle) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialCondition::kValveClosure,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, CompliantPistonConvergesToEosCompression) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectCompliantPistonCompression(
+      [&](const MacPressureInputs3D& inputs) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = CudaProjectMacPressure3D(inputs);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("piston_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   CudaOperatorMeasurement maximum_measurement{};
@@ -174,6 +243,36 @@ TEST(CudaMacPressure3D, MixedLinksMatchOracle) {
     if (fixture.name == "mixed") {
       std::cout << "mixed_max_pressure_error=" << std::setprecision(17) << maximum_pressure_error << '\n';
       Receipt("pressure_3d_mixed", result->measurement);
+      // Keep the operator fixed and shrink every RHS contribution below the
+      // absolute global tolerance. Linear pressure should shrink by the same factor.
+      constexpr double scale = 1e-8;
+      auto weak_cells = fixture.cells;
+      auto weak_faces = fixture.faces;
+      for (auto& cell : weak_cells) {
+        cell.target_divergence *= scale;
+        cell.previous_pressure *= scale;
+      }
+      for (auto& face : weak_faces) {
+        face.predicted_normal_velocity *= scale;
+        face.wall_normal_velocity *= scale;
+        if (face.prescribed_wall_flux) {
+          *face.prescribed_wall_flux *= scale;
+        }
+        if (auto* jump = std::get_if<InternalMacPressureLink3D>(&face.pressure_link)) {
+          jump->pressure_jump *= scale;
+        }
+        if (auto* exterior = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link)) {
+          exterior->exterior_pressure *= scale;
+        }
+      }
+      const MacPressureInputs3D weak_input{fixture.grid, fixture.step_duration, weak_cells, weak_faces};
+      const auto weak = CudaProjectMacPressure3D(weak_input);
+      ASSERT_TRUE(weak.ok()) << weak.status();
+      EXPECT_GT(weak->projection.diagnostics.iteration_count, 0);
+      for (std::size_t index = 0; index < weak_cells.size(); ++index) {
+        const double expected = scale * fixture.expected_projection.cell_pressures[index];
+        EXPECT_NEAR(weak->projection.cell_pressures[index], expected, 5e-3 * std::abs(expected) + 1e-12);
+      }
     }
   }
 }

@@ -1,0 +1,18 @@
+include "common.fbs";
+
+namespace fluidity.solid.v1;
+
+// Fixed v1 record. Resolved material parameters are keyed by material_id.
+struct PlasticParticle {
+  particle_id:ulong;
+  body_id:ulong;
+  material_id:ulong;
+  sorted_position:fluidity.cache.v1.Vector3;
+  position:fluidity.cache.v1.Vector3;
+  mass:double;
+  velocity:fluidity.cache.v1.Vector3;
+  velocity_slopes:fluidity.cache.v1.Matrix3;
+  reference_volume:double;
+  elastic_deformation:fluidity.cache.v1.Matrix3;
+  log_plastic_jacobian:double;
+}

@@ -20,6 +20,9 @@ struct SurfaceVertex3D {
   std::uint64_t parent_id = 0;  // Repair lineage, zero if no parent.
   bool contact = false;  // Excluded from unconstrained volume offsets.
   bool unresolved_sheet = false;  // Excluded from volume offsets until sheet resolution.
+  std::uint64_t phase_id = 0;  // Stable phase when the active composition prefix is nonempty.
+  std::uint8_t constituent_count = 0;
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
 };
 struct SurfaceMesh3D {
   std::vector<SurfaceVertex3D> vertices{};
@@ -32,10 +35,37 @@ struct SurfaceLattice3D {
   std::array<std::size_t, 3> extent{};
   std::vector<double> values{};  // Negative liquid, x-major then y then z.
 };
+enum class SurfacePartitionFace3D : std::uint8_t {
+  kPhaseAToAir,
+  kPhaseBToAir,
+  kPhaseAToPhaseB,
+};
+
+struct SurfacePartition3D {
+  std::vector<Vec3> positions;  // Shared world-metre vertices for all three face classes.
+  std::vector<std::array<std::uint32_t, 3>> triangles;
+  std::vector<SurfacePartitionFace3D> face_types;  // One orientation label per triangle.
+};
+
+// Partitions the common PL exterior zero set and extracts the phase zero set
+// inside it. Negative phase samples label A. The three sheets share seam
+// vertex indices. Near-zero lattice nodes use a positive symbolic tie;
+// coincident planes on an intersected tetrahedral face fail explicitly.
+// The exterior requires a positive boundary shell. Both sample arrays are
+// finite and use the lattice's x-major ordering. Invalid geometry or extents
+// return InvalidArgument, budget overflow ResourceExhausted, and unresolved
+// or unrepresentable intersections FailedPrecondition or OutOfRange.
+absl::StatusOr<SurfacePartition3D> ExtractSurfacePartition3D(
+    const SurfaceLattice3D& exterior,
+    std::span<const double> phase_distance,
+    std::size_t maximum_vertices
+);
 struct SurfaceMetrics3D {
   double signed_volume = 0;  // m³, local-origin tetrahedron sum.
   double area = 0;  // m².
   std::size_t components = 0;
+  std::size_t positive_volume_components = 0;  // Outward-oriented closed boundaries.
+  std::size_t negative_volume_components = 0;  // Inward-oriented closed boundaries.
   std::int64_t euler_characteristic = 0;
   std::size_t boundary_edges = 0;
   std::size_t nonmanifold_edges = 0;

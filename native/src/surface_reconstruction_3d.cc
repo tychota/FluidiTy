@@ -3,20 +3,260 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <optional>
+#include <utility>
 
 #include "absl/strings/str_cat.h"
 #include "fluidity/host/motion_carrier_3d.h"
 #include "fluidity/host/surface_closest_point_3d.h"
 #include "fluidity/host/surface_field_3d.h"
 #include "fluidity/host/surface_material_components_3d.h"
+#include "liquid_eos_sensor_3d.h"
 #include "liquid_substep_3d_internal.h"
+#include "surface_cache_3d_internal.h"
 
 namespace fluidity {
 namespace {
 bool Safe(const SurfaceMetrics3D& m) {
   return m.boundary_edges == 0 && m.nonmanifold_edges == 0 && m.nonmanifold_vertices == 0 && m.orientation_defects == 0
       && m.degenerate_triangles == 0 && m.self_intersections == 0;
+}
+std::vector<std::uint8_t> IncidentExteriorPhases(const SurfaceFrame3D& frame) {
+  std::vector<std::uint8_t> phases(frame.mesh.vertices.size());
+  for (std::size_t face = 0; face < frame.mesh.triangles.size(); ++face) {
+    const auto side = frame.phase_interface->exterior_sides[face];
+    for (const auto vertex : frame.mesh.triangles[face]) {
+      phases[vertex] |= static_cast<std::uint8_t>(1u << side);
+    }
+  }
+  return phases;
+}
+
+double PositionDistance(Vec3 a, Vec3 b) {
+  return std::hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+// Reuse indexed correspondence for unchanged sheets. When the sheet is
+// retessellated, only reciprocal nearest matches with the same incident
+// exterior phase signature can inherit identity. The caller still validates
+// both closed phase boundaries before publication.
+absl::StatusOr<std::vector<std::size_t>> MatchSharedSurfaceVertices(
+    const SurfaceFrame3D& previous,
+    const SurfaceFrame3D& current,
+    std::span<const std::uint8_t> current_phases,
+    const SurfaceMetrics3D& current_exterior,
+    double duration,
+    double cell_width,
+    SurfaceCacheLimits3D limits
+) {
+  const auto& old = previous.mesh.vertices;
+  const auto& now = current.mesh.vertices;
+  std::vector<std::size_t> matches(now.size(), SIZE_MAX);
+  const auto& old_sheet = *previous.phase_interface;
+  const auto& sheet = *current.phase_interface;
+  if (old_sheet.phase_a != sheet.phase_a || old_sheet.phase_b != sheet.phase_b) {
+    return absl::FailedPreconditionError("shared surface phase pair changed without lineage");
+  }
+  if (old.size() == now.size() && previous.mesh.triangles == current.mesh.triangles
+      && old_sheet.exterior_sides == sheet.exterior_sides && old_sheet.triangles == sheet.triangles) {
+    bool indexed = true;
+    for (std::size_t index = 0; index < now.size(); ++index) {
+      indexed &= PositionDistance(old[index].position, now[index].position) <= cell_width;
+    }
+    if (indexed) {
+      std::iota(matches.begin(), matches.end(), std::size_t{0});
+      return matches;
+    }
+  }
+  const auto topology =
+      surface_cache_internal::CheckSharedSurfaceTopology3D(previous, current, current_exterior, limits);
+  if (!topology.ok()) {
+    return topology;
+  }
+  const auto old_phases = IncidentExteriorPhases(previous);
+  const double radius = 0.5 * cell_width;
+  const Vec3 origin = now.front().position;
+  using Bucket = std::array<std::int64_t, 3>;
+  const auto bucket = [&](Vec3 position) -> absl::StatusOr<Bucket> {
+    const std::array coordinates{
+        (position.x - origin.x) / radius,
+        (position.y - origin.y) / radius,
+        (position.z - origin.z) / radius,
+    };
+    Bucket result;
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      if (!std::isfinite(coordinates[axis]) || std::abs(coordinates[axis]) > 0x1p52) {
+        return absl::OutOfRangeError("shared surface correspondence bucket is unrepresentable");
+      }
+      result[axis] = static_cast<std::int64_t>(std::floor(coordinates[axis]));
+    }
+    return result;
+  };
+  std::map<Bucket, std::vector<std::size_t>> new_vertices;
+  for (std::size_t index = 0; index < now.size(); ++index) {
+    const auto key = bucket(now[index].position);
+    if (!key.ok()) {
+      return key.status();
+    }
+    new_vertices[*key].push_back(index);
+  }
+  std::vector<std::size_t> old_to_new(old.size(), SIZE_MAX);
+  std::vector<double> new_distances(now.size(), std::numeric_limits<double>::infinity());
+  for (std::size_t prior = 0; prior < old.size(); ++prior) {
+    const auto& vertex = old[prior];
+    const Vec3 predicted{
+        std::fma(duration, vertex.geometric_velocity.x, vertex.position.x),
+        std::fma(duration, vertex.geometric_velocity.y, vertex.position.y),
+        std::fma(duration, vertex.geometric_velocity.z, vertex.position.z),
+    };
+    const auto key = bucket(predicted);
+    if (!key.ok()) {
+      return key.status();
+    }
+    double nearest = std::numeric_limits<double>::infinity();
+    for (const auto x : {-1, 0, 1}) {
+      for (const auto y : {-1, 0, 1}) {
+        for (const auto z : {-1, 0, 1}) {
+          const auto candidates = new_vertices.find({(*key)[0] + x, (*key)[1] + y, (*key)[2] + z});
+          if (candidates == new_vertices.end()) {
+            continue;
+          }
+          for (const auto index : candidates->second) {
+            if (old_phases[prior] != current_phases[index]) {
+              continue;
+            }
+            const double distance = PositionDistance(predicted, now[index].position);
+            if (distance > radius) {
+              continue;
+            }
+            if (distance < nearest || (distance == nearest && index < old_to_new[prior])) {
+              nearest = distance;
+              old_to_new[prior] = index;
+            }
+            const auto incumbent = matches[index];
+            if (distance < new_distances[index]
+                || (distance == new_distances[index] && old[prior].id < old[incumbent].id)) {
+              new_distances[index] = distance;
+              matches[index] = prior;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (std::size_t index = 0; index < matches.size(); ++index) {
+    if (matches[index] != SIZE_MAX && old_to_new[matches[index]] != index) {
+      matches[index] = SIZE_MAX;
+    }
+  }
+  return matches;
+}
+bool MatchesCavityBoundaries(const SurfaceMetrics3D& metrics, std::size_t cavity_count) {
+  return metrics.positive_volume_components == 1 && metrics.negative_volume_components == cavity_count
+      && metrics.components == cavity_count + 1;
+}
+// Reconstruct a local volume-weighted composition from donors in the nearest
+// particle's phase, or from a phase fixed by the exterior face labels.
+// A radial tent uses a two-cell support, with a nearest
+// explicit donor fallback when the corrected surface leaves that support.
+absl::Status SampleVertexComposition(
+    SurfaceVertex3D& vertex,
+    std::span<const LiquidParticleState3D> particles,
+    double cell_width,
+    std::uint64_t required_phase
+) {
+  const auto distance = [&](const LiquidParticleState3D& particle) {
+    return std::hypot(
+        vertex.position.x - particle.world_position.x,
+        vertex.position.y - particle.world_position.y,
+        vertex.position.z - particle.world_position.z
+    );
+  };
+  const LiquidParticleState3D* nearest = nullptr;
+  double nearest_distance = std::numeric_limits<double>::infinity();
+  for (const auto& particle : particles) {
+    if (required_phase != 0 && particle.phase_id != required_phase) {
+      continue;
+    }
+    const double separation = distance(particle);
+    const bool canonical_tie = nearest && separation == nearest_distance
+        && std::pair{particle.phase_id, particle.id} < std::pair{nearest->phase_id, nearest->id};
+    if (separation < nearest_distance || canonical_tie) {
+      nearest_distance = separation;
+      nearest = &particle;
+    }
+  }
+  if (!nearest) {
+    return absl::OutOfRangeError("surface composition distance is unrepresentable");
+  }
+  if (nearest->constituent_count == 0) {
+    return absl::OkStatus();
+  }
+  vertex.phase_id = nearest->phase_id;
+  std::array<LiquidConstituentVolume3D, kMaximumLiquidParticleConstituents3D> inventory{};
+  std::size_t count = 0;
+
+  for (const auto& particle : particles) {
+    if (particle.constituent_count == 0 || particle.phase_id != nearest->phase_id) {
+      continue;
+    }
+    const double weight = 1.0 - 0.5 * (distance(particle) / cell_width);
+    if (weight <= 0.0) {
+      continue;
+    }
+    const double weighted_volume = weight * (particle.reference_volume * particle.volume_ratio);
+    if (!std::isfinite(weighted_volume) || weighted_volume <= 0.0) {
+      return absl::OutOfRangeError("surface composition donor volume is unrepresentable");
+    }
+    for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+      const auto end = inventory.begin() + static_cast<std::ptrdiff_t>(count);
+      const auto found = std::lower_bound(
+          inventory.begin(),
+          end,
+          constituent.substance_id,
+          [](const LiquidConstituentVolume3D& entry, std::uint64_t id) {
+            return entry.substance_id < id;
+          }
+      );
+      const double volume = weighted_volume * constituent.volume_fraction;
+      if (!std::isfinite(volume) || volume <= 0.0) {
+        return absl::OutOfRangeError("surface constituent contribution is unrepresentable");
+      }
+
+      if (found != end && found->substance_id == constituent.substance_id) {
+        found->volume_m3 += volume;
+      } else {
+        if (count == inventory.size()) {
+          return absl::ResourceExhaustedError("surface vertex constituent capacity exceeded");
+        }
+        std::move_backward(found, end, end + 1);
+        *found = {constituent.substance_id, volume};
+        ++count;
+      }
+    }
+  }
+  if (count == 0) {
+    vertex.constituent_count = nearest->constituent_count;
+    vertex.constituents = nearest->constituents;
+    return absl::OkStatus();
+  }
+  double total_volume = 0.0;
+  for (const auto& entry : std::span(inventory).first(count)) {
+    total_volume += entry.volume_m3;
+  }
+  if (!std::isfinite(total_volume) || total_volume <= 0.0) {
+    return absl::OutOfRangeError("surface constituent total is unrepresentable");
+  }
+  vertex.constituent_count = static_cast<std::uint8_t>(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    vertex.constituents[index] = {inventory[index].substance_id, inventory[index].volume_m3 / total_volume};
+  }
+  if (!ValidLiquidComposition3D(vertex.phase_id, std::span(vertex.constituents).first(count))) {
+    return absl::OutOfRangeError("surface composition normalization failed");
+  }
+  return absl::OkStatus();
 }
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
@@ -137,10 +377,15 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     return absl::InvalidArgumentError("invalid surface source or reconstruction settings");
   }
   const auto* beach = std::get_if<TranslatingHalfspace3D>(&scene.obstacle);
-  if (!std::holds_alternative<std::monostate>(scene.obstacle)
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
+  const bool stationary_tank = tank && tank->piston_velocity_x == 0.0 && plane;
+  if (!std::holds_alternative<std::monostate>(scene.obstacle) && !stationary_tank
       && (beach == nullptr || beach->wall_velocity.x != 0 || beach->wall_velocity.y != 0 || beach->wall_velocity.z != 0
       )) {
-    return absl::UnimplementedError("surface contact requires a stationary halfspace");
+    return absl::UnimplementedError(
+        "surface contact requires a stationary halfspace or a stationary tank with a planar liquid field"
+    );
   }
   if (beach
       && (!std::isfinite(beach->start_plane_coordinate)
@@ -148,17 +393,25 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           || !liquid_step_internal::Finite(beach->unit_normal))) {
     return absl::InvalidArgumentError("surface contact plane is invalid");
   }
+  if (stationary_tank
+      && (!std::isfinite(tank->start_low_x) || !std::isfinite(tank->high_x) || !std::isfinite(tank->floor_y)
+          || !std::isfinite(tank->low_z) || !std::isfinite(tank->high_z)
+          || !std::isfinite(plane->world_surface_height_y) || tank->start_low_x >= tank->high_x
+          || tank->low_z >= tank->high_z || tank->floor_y >= plane->world_surface_height_y)) {
+    return absl::InvalidArgumentError("surface tank bounds are invalid");
+  }
+  const bool has_contact = beach || stationary_tank;
   const auto& endpoint = source.samples.back();
   const double cell_width_m = endpoint.geometry.cell_width;
   // Leave a roundoff margin above the collision plane. An affine signed
   // distance interpolates exactly within the extraction tetrahedra.
   const double contact_margin_m = 1e-9 * cell_width_m;
   const auto mark_contact = [&](SurfaceMesh3D& mesh) -> absl::Status {
-    if (beach) {
+    if (has_contact) {
       for (auto& vertex : mesh.vertices) {
         const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, vertex.position);
         if (!std::isfinite(clearance_m) || clearance_m < 0) {
-          return absl::FailedPreconditionError("surface vertex enters the stationary contact plane");
+          return absl::FailedPreconditionError("surface vertex enters the stationary obstacle");
         }
         vertex.contact = clearance_m <= 0.25 * cell_width_m + contact_margin_m;
       }
@@ -172,6 +425,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (sample.particles.size() > std::min(limits.particles, hard_limit)
         || sample.blocks.size() > std::min(limits.blocks, hard_limit)
         || sample.cells.size() > std::min(limits.cells, hard_limit)
+        || sample.cavity_gas.size() > std::min(limits.cells, hard_limit)
+        || sample.cavity_components.size() > std::min(limits.cells, hard_limit)
         || sample.faces.size() > std::min(limits.faces, hard_limit)
         || sample.sources.size() > std::min(limits.sources, hard_limit)) {
       return absl::ResourceExhaustedError("surface source record budget exceeded");
@@ -230,8 +485,33 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     result.frame.mesh.next_id = previous == nullptr ? 1 : previous->mesh.next_id;
     return result;
   }
+  std::array<std::uint64_t, 2> phase_ids{};
+  bool has_legacy_particles = false;
+  for (const auto& particle : endpoint.particles.values()) {
+    if (particle.constituent_count == 0) {
+      has_legacy_particles = true;
+      continue;
+    }
+    if (phase_ids[0] == 0) {
+      phase_ids[0] = particle.phase_id;
+    } else if (particle.phase_id != phase_ids[0] && phase_ids[1] == 0) {
+      phase_ids[1] = particle.phase_id;
+    } else if (particle.phase_id != phase_ids[0] && particle.phase_id != phase_ids[1]) {
+      return absl::FailedPreconditionError("surface reconstruction requires at most two active explicit phases");
+    }
+  }
+  const LiquidPhasePair3D* phase_pair = nullptr;
+  if (phase_ids[1] != 0) {
+    phase_pair = FindLiquidPhasePair3D(scene.phase_pairs, phase_ids[0], phase_ids[1]);
+    if (!phase_pair || has_legacy_particles || !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)) {
+      return absl::FailedPreconditionError("shared surface requires a configured particle-sphere phase pair");
+    }
+  }
+  if (previous && previous->phase_interface.has_value() != (phase_pair != nullptr)) {
+    return absl::FailedPreconditionError("shared surface phase appearance or disappearance requires lineage");
+  }
   if (const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
-    if (previous == nullptr) {
+    if (previous == nullptr && !phase_pair) {
       const auto partition = PartitionSurfaceSphereUnion3D(
           endpoint.particles.values(),
           sphere_union->radius,
@@ -326,6 +606,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           result.raw_metrics.signed_volume += reconstructed->raw_metrics.signed_volume;
           result.raw_metrics.area += reconstructed->raw_metrics.area;
           result.raw_metrics.components += reconstructed->raw_metrics.components;
+          result.raw_metrics.positive_volume_components += reconstructed->raw_metrics.positive_volume_components;
+          result.raw_metrics.negative_volume_components += reconstructed->raw_metrics.negative_volume_components;
           result.raw_metrics.euler_characteristic += reconstructed->raw_metrics.euler_characteristic;
           result.deep_liquid_fills += reconstructed->deep_liquid_fills;
           result.deep_air_fills += reconstructed->deep_air_fills;
@@ -357,6 +639,22 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return continuity;
     }
   }
+  const auto tracked_cavities = [](const LiquidState3D& state) {
+    std::vector<std::uint64_t> ids;
+    for (const auto& cavity : state.cavity_components.values()) {
+      if (cavity.id != 0) {
+        ids.push_back(cavity.id);
+      }
+    }
+    std::ranges::sort(ids);
+    return ids;
+  };
+  const auto cavity_ids = tracked_cavities(endpoint);
+  if (previous && std::ranges::any_of(source.samples, [&](const LiquidState3D& sample) {
+        return tracked_cavities(sample) != cavity_ids;
+      })) {
+    return absl::FailedPreconditionError("surface cavity topology change requires local repair");
+  }
   std::optional<liquid_step_internal::PreparedIsolatedDrop3D> isolated;
   if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
     auto prepared = liquid_step_internal::PrepareIsolatedDrop3D(
@@ -377,6 +675,13 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     const double distance = liquid_step_internal::FieldDistance(scene.field, endpoint.particles.values(), position);
     if (!std::isfinite(distance)) {
       return absl::FailedPreconditionError("surface source occupancy is unavailable");
+    }
+    if (stationary_tank) {
+      const double clearance = liquid_step_internal::SolidDistance(scene.obstacle, position);
+      if (!std::isfinite(clearance)) {
+        return absl::OutOfRangeError("surface tank clearance is unrepresentable");
+      }
+      return std::max(distance, -clearance);
     }
     return distance;
   };
@@ -418,20 +723,37 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       }
     }
   }
-  if (!std::isfinite(material_volume)) {
+  if (stationary_tank) {
+    // The stationary planar fill defines a physical volume even where the
+    // interface band has no particles in the deep liquid.
+    material_volume = (tank->high_x - tank->start_low_x) * (plane->world_surface_height_y - tank->floor_y)
+        * (tank->high_z - tank->low_z);
+  }
+  if (!std::isfinite(material_volume) || material_volume <= 0.0) {
     return absl::OutOfRangeError("surface material volume overflowed");
   }
+  if (stationary_tank) {
+    lower = {tank->start_low_x, tank->floor_y, tank->low_z};
+    upper = {tank->high_x, plane->world_surface_height_y, tank->high_z};
+  }
   const double padding = 4 * options.sigma_m + 3 * options.spacing_m;
+  std::array<double, 3> lattice_anchor{};
+  if (phase_pair) {
+    // Anchor at the lowest persistent particle ID so a common translation
+    // does not itself create a different triangulation on a fixed grid.
+    const auto anchor = std::ranges::min_element(endpoint.particles.values(), {}, &LiquidParticleState3D::id);
+    lattice_anchor = {anchor->world_position.x, anchor->world_position.y, anchor->world_position.z};
+  }
   std::array<std::size_t, 3> extent;
   for (std::size_t axis = 0; axis < 3; ++axis) {
-    const double minimum_index = std::floor((lower[axis] - padding) / options.spacing_m);
-    const double maximum_index = std::ceil((upper[axis] + padding) / options.spacing_m);
+    const double minimum_index = std::floor((lower[axis] - lattice_anchor[axis] - padding) / options.spacing_m);
+    const double maximum_index = std::ceil((upper[axis] - lattice_anchor[axis] + padding) / options.spacing_m);
     const double nodes = maximum_index - minimum_index + 1;
     if (!std::isfinite(nodes) || nodes < 2 || nodes > options.maximum_nodes || std::abs(minimum_index) > 0x1p52
         || std::abs(maximum_index) > 0x1p52) {
       return absl::ResourceExhaustedError("surface lattice bounds exceed numerical or work limits");
     }
-    lower[axis] = minimum_index * options.spacing_m;
+    lower[axis] = lattice_anchor[axis] + minimum_index * options.spacing_m;
     extent[axis] = static_cast<std::size_t>(nodes);
   }
   auto field = BuildSurfaceDensity3D(
@@ -458,14 +780,19 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           return distance.status();
         }
         auto& value = field->values[(x * extent[1] + y) * extent[2] + z];
-        if (*distance < -2 * endpoint.geometry.cell_width && value >= 0) {
+        if (stationary_tank || !cavity_ids.empty()) {
+          // Tank occupancy and cached cavities use the complete
+          // Simulate sign field at its interfaces, where smoothing could
+          // bridge the air pocket and discard the inward boundary.
+          value = *distance / options.spacing_m;
+        } else if (*distance < -2 * endpoint.geometry.cell_width && value >= 0) {
           value = -0.5;
           ++result.deep_liquid_fills;
         } else if (*distance > 2 * endpoint.geometry.cell_width && value <= 0) {
           value = 0.5;
           ++result.deep_air_fills;
         }
-        if (beach) {
+        if (has_contact) {
           const double clearance_m = liquid_step_internal::SolidDistance(scene.obstacle, position);
           const double obstacle_field = (contact_margin_m - clearance_m) / options.spacing_m;
           if (!std::isfinite(obstacle_field)) {
@@ -476,7 +803,79 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       }
     }
   }
-  auto raw_mesh = ExtractSurfaceMesh3D(*field, options.limits.maximum_vertices);
+  const auto extract = [&]() -> absl::StatusOr<SurfaceMesh3D> {
+    if (!phase_pair) {
+      return ExtractSurfaceMesh3D(*field, options.limits.maximum_vertices);
+    }
+    std::vector<double> phase_distance;
+    phase_distance.reserve(field->values.size());
+    for (std::size_t x = 0; x < extent[0]; ++x) {
+      for (std::size_t y = 0; y < extent[1]; ++y) {
+        for (std::size_t z = 0; z < extent[2]; ++z) {
+          const Vec3 position{
+              field->origin.x + x * field->spacing,
+              field->origin.y + y * field->spacing,
+              field->origin.z + z * field->spacing,
+          };
+          phase_distance.push_back(
+              liquid_step_internal::SampleParticlePhaseField3D(endpoint.particles.values(), *phase_pair, position)
+                  .distance
+          );
+        }
+      }
+    }
+    const auto partition = ExtractSurfacePartition3D(*field, phase_distance, options.limits.maximum_vertices);
+    if (!partition.ok()) {
+      return partition.status();
+    }
+    if (partition->triangles.size() > options.limits.maximum_triangles) {
+      return absl::ResourceExhaustedError("shared surface triangle budget exceeded");
+    }
+    auto& sheet = result.frame.phase_interface.emplace();
+    sheet.phase_a = phase_pair->phase_a;
+    sheet.phase_b = phase_pair->phase_b;
+    SurfaceMesh3D mesh;
+    std::vector<std::uint32_t> indices(partition->positions.size(), UINT32_MAX);
+    for (std::size_t index = 0; index < partition->triangles.size(); ++index) {
+      const auto type = partition->face_types[index];
+      if (type == SurfacePartitionFace3D::kPhaseAToPhaseB) {
+        continue;
+      }
+      auto triangle = partition->triangles[index];
+      for (auto& vertex : triangle) {
+        auto& exterior = indices[vertex];
+        if (exterior == UINT32_MAX) {
+          exterior = static_cast<std::uint32_t>(mesh.vertices.size());
+          const auto position = partition->positions[vertex];
+          const auto normal = FieldNormal(*field, position);
+          if (!normal.ok()) {
+            return normal.status();
+          }
+          mesh.vertices.push_back({.id = mesh.next_id++, .position = position, .normal = *normal});
+        }
+        vertex = exterior;
+      }
+      mesh.triangles.push_back(triangle);
+      sheet.exterior_sides.push_back(type == SurfacePartitionFace3D::kPhaseAToAir ? 0 : 1);
+    }
+    for (std::size_t index = 0; index < partition->triangles.size(); ++index) {
+      if (partition->face_types[index] != SurfacePartitionFace3D::kPhaseAToPhaseB) {
+        continue;
+      }
+      auto triangle = partition->triangles[index];
+      for (auto& vertex : triangle) {
+        auto& shared = indices[vertex];
+        if (shared == UINT32_MAX) {
+          shared = static_cast<std::uint32_t>(mesh.vertices.size() + sheet.interior_positions.size());
+          sheet.interior_positions.push_back(partition->positions[vertex]);
+        }
+        vertex = shared;
+      }
+      sheet.triangles.push_back(triangle);
+    }
+    return mesh;
+  };
+  auto raw_mesh = extract();
   if (!raw_mesh.ok()) {
     return raw_mesh.status();
   }
@@ -484,7 +883,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   if (!raw_metrics.ok()) {
     return raw_metrics.status();
   }
-  if (!Safe(*raw_metrics) || raw_metrics->signed_volume <= 0 || raw_metrics->components != 1) {
+  if (!Safe(*raw_metrics) || raw_metrics->signed_volume <= 0
+      || !MatchesCavityBoundaries(*raw_metrics, cavity_ids.size())) {
     return absl::FailedPreconditionError("surface requires droplet, component or topology repair");
   }
   result.raw_metrics = *raw_metrics;
@@ -525,6 +925,9 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     return scaffold_metrics.status();
   }
+  if (!MatchesCavityBoundaries(*scaffold_metrics, cavity_ids.size())) {
+    return absl::FailedPreconditionError("surface volume correction changed cavity topology");
+  }
   std::vector<FrozenMotionCarrier3D> carriers;
   for (const auto& sample : source.samples) {
     auto carrier = FrozenMotionCarrier3D::Create(sample, scene, step_options);
@@ -549,14 +952,35 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
             liquid_step_internal::Add(velocity, liquid_step_internal::Scale(beach->unit_normal, -inward_speed_m_per_s));
       }
     }
+    if (stationary_tank) {
+      const double reach = 0.5 * cell_width_m + contact_margin_m;
+      if (position.x - tank->start_low_x <= reach) {
+        velocity.x = std::max(0.0, velocity.x);
+      }
+      if (tank->high_x - position.x <= reach) {
+        velocity.x = std::min(0.0, velocity.x);
+      }
+      if (position.y - tank->floor_y <= reach) {
+        velocity.y = std::max(0.0, velocity.y);
+      }
+      if (position.z - tank->low_z <= reach) {
+        velocity.z = std::max(0.0, velocity.z);
+      }
+      if (tank->high_z - position.z <= reach) {
+        velocity.z = std::min(0.0, velocity.z);
+      }
+    }
     return velocity;
   };
-  if (previous != nullptr) {
+  if (phase_pair) {
+    result.frame.mesh = std::move(*raw_mesh);
+  } else if (previous != nullptr) {
     const auto metrics = MeasureSurfaceMesh3D(previous->mesh);
     if (!metrics.ok()) {
       return metrics.status();
     }
-    if (metrics->components != 1 || metrics->euler_characteristic != raw_metrics->euler_characteristic) {
+    if (!MatchesCavityBoundaries(*metrics, cavity_ids.size())
+        || metrics->euler_characteristic != raw_metrics->euler_characteristic) {
       return absl::FailedPreconditionError("surface topology change requires local repair");
     }
     const auto scaffold = SurfaceClosestPoint3D::Create(*raw_mesh, options.limits.maximum_triangles);
@@ -587,8 +1011,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           .value = closest->distance_m,
           .gradient = gradient,
           .component = component,
-          .obstacle_distance_m = beach ? liquid_step_internal::SolidDistance(scene.obstacle, position)
-                                       : std::numeric_limits<double>::max(),
+          .obstacle_distance_m = has_contact ? liquid_step_internal::SolidDistance(scene.obstacle, position)
+                                             : std::numeric_limits<double>::max(),
       };
     };
     auto tracked = TrackSurfaceMesh3D(
@@ -635,12 +1059,57 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   if (!corrected.ok()) {
     return corrected.status();
   }
+  if (!MatchesCavityBoundaries(*corrected, cavity_ids.size())) {
+    return absl::FailedPreconditionError("surface tracking or correction changed cavity topology");
+  }
   const auto corrected_contact = mark_contact(result.frame.mesh);
   if (!corrected_contact.ok()) {
     return corrected_contact;
   }
   result.corrected_metrics = *corrected;
   result.frame.volumes.push_back({component, material_volume, raw_metrics->signed_volume, corrected->signed_volume});
+  std::vector<std::uint8_t> incident_phases;
+  std::vector<std::size_t> shared_matches;
+  if (result.frame.phase_interface) {
+    incident_phases = IncidentExteriorPhases(result.frame);
+    if (previous) {
+      const double duration = source.last_clock.time - source.first_clock.time;
+      auto matches = MatchSharedSurfaceVertices(
+          *previous,
+          result.frame,
+          incident_phases,
+          *corrected,
+          duration,
+          cell_width_m,
+          options.limits
+      );
+      if (!matches.ok()) {
+        return matches.status();
+      }
+      shared_matches = std::move(*matches);
+      result.frame.mesh.next_id = previous->mesh.next_id;
+      for (std::size_t index = 0; index < shared_matches.size(); ++index) {
+        auto& vertex = result.frame.mesh.vertices[index];
+        const auto prior = shared_matches[index];
+        if (prior == SIZE_MAX) {
+          if (result.frame.mesh.next_id == UINT64_MAX) {
+            return absl::OutOfRangeError("shared surface vertex identity exhausted");
+          }
+          vertex.id = result.frame.mesh.next_id++;
+          continue;
+        }
+        const auto& old_vertex = previous->mesh.vertices[prior];
+        vertex.id = old_vertex.id;
+        vertex.age_seconds = old_vertex.age_seconds + duration;
+        vertex.parent_id = old_vertex.parent_id;
+        ++result.retained_ids;
+      }
+    }
+  }
+  const bool has_explicit_composition =
+      std::ranges::any_of(endpoint.particles.values(), [](const LiquidParticleState3D& particle) {
+        return particle.constituent_count != 0;
+      });
   for (std::size_t index = 0; index < result.frame.mesh.vertices.size(); ++index) {
     auto& vertex = result.frame.mesh.vertices[index];
     const auto velocity = sample_carrier(carriers.size() - 1, vertex.position);
@@ -648,8 +1117,27 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return velocity.status();
     }
     vertex.fluid_velocity = *velocity;
-    if (previous != nullptr) {
-      const auto original = previous->mesh.vertices[index].position;
+    vertex.phase_id = 0;
+    vertex.constituent_count = 0;
+    if (has_explicit_composition) {
+      std::uint64_t required_phase = 0;
+      if (!incident_phases.empty()) {
+        const auto& sheet = *result.frame.phase_interface;
+        if (incident_phases[index] == 1) {
+          required_phase = sheet.phase_a;
+        } else if (incident_phases[index] == 2) {
+          required_phase = sheet.phase_b;
+        }
+      }
+      const auto composition =
+          SampleVertexComposition(vertex, endpoint.particles.values(), cell_width_m, required_phase);
+      if (!composition.ok()) {
+        return composition;
+      }
+    }
+    const auto prior = shared_matches.empty() ? index : shared_matches[index];
+    if (previous != nullptr && prior != SIZE_MAX) {
+      const auto original = previous->mesh.vertices[prior].position;
       const double duration = source.last_clock.time - source.first_clock.time;
       vertex.geometric_velocity = {
           (vertex.position.x - original.x) / duration,
@@ -662,6 +1150,36 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return distance.status();
     }
     result.maximum_source_field_distance_m = std::max(result.maximum_source_field_distance_m, std::abs(*distance));
+  }
+  if (result.frame.phase_interface) {
+    auto& sheet = *result.frame.phase_interface;
+    const auto exterior_count = result.frame.mesh.vertices.size();
+    std::vector<bool> on_sheet(exterior_count + sheet.interior_positions.size());
+    for (const auto triangle : sheet.triangles) {
+      for (const auto vertex : triangle) {
+        on_sheet[vertex] = true;
+      }
+    }
+    for (std::size_t index = 0; index < on_sheet.size(); ++index) {
+      if (!on_sheet[index]) {
+        continue;
+      }
+      const auto position = index < exterior_count ? result.frame.mesh.vertices[index].position
+                                                   : sheet.interior_positions[index - exterior_count];
+      for (const auto phase : {sheet.phase_a, sheet.phase_b}) {
+        SurfaceVertex3D sample{.position = position};
+        const auto sampled = SampleVertexComposition(sample, endpoint.particles.values(), cell_width_m, phase);
+        if (!sampled.ok()) {
+          return sampled;
+        }
+        sheet.side_compositions.push_back({
+            .vertex_ordinal = static_cast<std::uint32_t>(index),
+            .phase_id = sample.phase_id,
+            .constituent_count = sample.constituent_count,
+            .constituents = sample.constituents,
+        });
+      }
+    }
   }
   const auto encoded = EncodeSurfaceFrame3D(result.frame, options.limits);
   if (!encoded.ok()) {

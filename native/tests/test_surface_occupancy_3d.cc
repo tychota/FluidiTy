@@ -87,6 +87,8 @@ TEST(SurfaceOccupancy3D, DeepLiquidRemovesFalseInnerSurfaceWithoutMovingExterior
   const auto raw_metrics = MeasureSurfaceMesh3D(*raw);
   ASSERT_TRUE(raw_metrics.ok()) << raw_metrics.status();
   ExpectClosedSurface(*raw_metrics, 2);
+  EXPECT_EQ(raw_metrics->positive_volume_components, 1);
+  EXPECT_EQ(raw_metrics->negative_volume_components, 1);
 
   const auto merged = ApplySurfaceOccupancy3D(band.density, band.OccupancyView(), 4000);
   ASSERT_TRUE(merged.ok()) << merged.status();
@@ -100,6 +102,8 @@ TEST(SurfaceOccupancy3D, DeepLiquidRemovesFalseInnerSurfaceWithoutMovingExterior
   const auto metrics = MeasureSurfaceMesh3D(*mesh);
   ASSERT_TRUE(metrics.ok()) << metrics.status();
   ExpectClosedSurface(*metrics, 1);
+  EXPECT_EQ(metrics->positive_volume_components, 1);
+  EXPECT_EQ(metrics->negative_volume_components, 0);
   EXPECT_GT(metrics->signed_volume, raw_metrics->signed_volume);
 
   std::vector<std::array<double, 3>> raw_exterior;
@@ -129,6 +133,8 @@ TEST(SurfaceOccupancy3D, PreservesClosedCavityWithLiquidToAirOrientation) {
   const auto metrics = MeasureSurfaceMesh3D(*mesh);
   ASSERT_TRUE(metrics.ok()) << metrics.status();
   ExpectClosedSurface(*metrics, 2);
+  EXPECT_EQ(metrics->positive_volume_components, 1);
+  EXPECT_EQ(metrics->negative_volume_components, 1);
 
   std::size_t cavity_vertices = 0;
   std::size_t exterior_vertices = 0;

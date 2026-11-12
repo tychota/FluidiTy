@@ -10,6 +10,7 @@
 namespace fluidity {
 namespace pressure_internal {
 struct BoundedCudaPressureAccess3D;
+struct CoupledPressureWorkspaceAccess3D;
 class PreparedMacPressureSystem3D;
 }  // namespace pressure_internal
 // Scalar observations of the original checked pressure system. These
@@ -46,12 +47,21 @@ struct MacPressureWorkspaceBytes3D {
   std::size_t maximum_level_edges = 0;  // Per level; no level gains edges.
   std::size_t maximum_terminal_factor_entries = 0;  // Sum of block squares <= 32*cell_capacity.
 };
+enum class MacPressureWorkspaceMode3D {
+  kInviscid,
+  kCoupledViscosity,
+};
+
 // Checked conservative reservation for any admitted shape at these capacities.
 // Counts both projection banks, prepared coefficients, hierarchy, factors, PCG,
-// recursive V-cycle, reductions and assembly scratch. Overflow returns inline
+// recursive V-cycle, reductions and assembly scratch. Coupled mode also
+// reserves for the uniform strain and viscosity solve. Overflow returns inline
 // ResourceExhausted. Both zero capacities reserve zero bytes. No allocation.
-absl::StatusOr<MacPressureWorkspaceBytes3D>
-QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_capacity);
+absl::StatusOr<MacPressureWorkspaceBytes3D> QueryMacPressureWorkspaceBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    MacPressureWorkspaceMode3D mode = MacPressureWorkspaceMode3D::kInviscid
+);
 // Single-threaded fixed host owner. Only Create/move/destruction may allocate or
 // free. Every attempted projection, including rejection and result destruction,
 // uses inline status codes and preallocated checked spans. Format detailed
@@ -64,13 +74,30 @@ class MacPressureWorkspace3D {
   MacPressureWorkspace3D& operator=(const MacPressureWorkspace3D&) = delete;
   // Strong nothrow reservation: overflow/OOM returns ResourceExhausted without a
   // partial owner. Capacities count cells/faces, not owned full-grid slots.
-  static absl::StatusOr<MacPressureWorkspace3D> Create(std::size_t cell_capacity, std::size_t face_capacity);
+  static absl::StatusOr<MacPressureWorkspace3D> Create(
+      std::size_t cell_capacity,
+      std::size_t face_capacity,
+      MacPressureWorkspaceMode3D mode = MacPressureWorkspaceMode3D::kInviscid
+  );
   // Project a checked explicit graph with the same numerical and publication
   // contract as the uniform workspace entry. The system is borrowed for the
   // call. A uniform prepared system returns InvalidArgument. Errors preserve the preceding publication.
   absl::StatusOr<MacPressureProjectionView3D> ProjectPrepared(
       const pressure_internal::PreparedMacPressureSystem3D& system,
       MacPressureSolverOptions3D options = {}
+  );
+  struct PhysicalComponents {
+    std::span<const std::size_t> roots;  // Component root for each input cell.
+    std::span<const std::size_t> sealed_roots;  // Unanchored roots in ascending order.
+  };
+  // Validates the uniform problem including physical source and wall-flux
+  // compatibility. Inputs follow the uniform projection contract and are
+  // disjoint from scratch. Results borrow scratch until its next use or owner
+  // move/destruction. Leaves previously published projections intact.
+  absl::StatusOr<PhysicalComponents> ClassifyPhysicalComponents(
+      SparseMacGridView3D grid,
+      double step_duration,
+      const LiquidPressureProblemView3D& problem
   );
   // Exact reservation returned by QueryMacPressureWorkspaceBytes3D.
   MacPressureWorkspaceBytes3D bytes() const {
@@ -87,6 +114,7 @@ class MacPressureWorkspace3D {
  private:
   friend class LiquidStepWorkspace3D;
   friend struct pressure_internal::BoundedCudaPressureAccess3D;
+  friend struct pressure_internal::CoupledPressureWorkspaceAccess3D;
   MacPressureWorkspace3D() = default;
   struct ProjectionBank {
     LiquidRecords3D<double> pressures;
@@ -113,6 +141,7 @@ class MacPressureWorkspace3D {
   LiquidRecords3D<std::max_align_t> scratch_;
   std::array<ProjectionBank, 2> projections_;
   MacPressureWorkspaceBytes3D bytes_;
+  MacPressureWorkspaceMode3D mode_ = MacPressureWorkspaceMode3D::kInviscid;
   std::size_t cell_capacity_ = 0;
   std::size_t face_capacity_ = 0;
   std::size_t published_bank_ = 0;

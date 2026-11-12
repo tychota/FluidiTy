@@ -640,6 +640,12 @@ FLUIDITY_HD inline Value<ObstaclePlanes> LocalObstacle(const GeometryInput& inpu
 }
 // A homogeneous CUDA batch uses a concrete mode so its threads only reserve
 // scratch for that arithmetic. The scalar dispatcher uses the query's mode.
+// Six body-diagonal tetrahedra induce identical diagonals on shared faces.
+FLUIDITY_HD inline constexpr int CellTetrahedronCorner(std::size_t tetrahedron, std::size_t vertex) {
+  constexpr int kCorners[6][4]{{0, 1, 3, 7}, {0, 1, 5, 7}, {0, 2, 3, 7}, {0, 2, 6, 7}, {0, 4, 5, 7}, {0, 4, 6, 7}};
+  return kCorners[tetrahedron][vertex];
+}
+
 template <GeometryMode kMode>
 FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometryForMode(const GeometryInput& input) {
   const GeometryMode mode = kMode == GeometryMode::kRuntime ? input.mode : kMode;
@@ -758,10 +764,13 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeGeometryForMode(const GeometryIn
       }
       vertices[corner].liquid_distance = input.corner_distances[corner];
     }
-    // Six body-diagonal tetrahedra induce identical diagonals on shared faces.
-    constexpr int permutations[6][3]{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
-    for (const auto& permutation : permutations) {
-      const int corners[4]{0, 1 << permutation[0], (1 << permutation[0]) | (1 << permutation[1]), 7};
+    for (std::size_t tetrahedron = 0; tetrahedron < 6; ++tetrahedron) {
+      const int corners[4]{
+          0,
+          CellTetrahedronCorner(tetrahedron, 1),
+          CellTetrahedronCorner(tetrahedron, 2),
+          7,
+      };
       bool negative = false;
       for (int corner : corners) {
         negative = negative || vertices[corner].liquid_distance < 0;
