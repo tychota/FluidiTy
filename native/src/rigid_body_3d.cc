@@ -866,8 +866,30 @@ absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
   if (!start_gap.ok()) {
     return start_gap.status();
   }
+  if (start_gap->gap < -roundoff) {
+    return error(absl::StatusCode::kFailedPrecondition);
+  }
   if (start_gap->gap <= roundoff) {
-    return error(start_gap->gap < -roundoff ? absl::StatusCode::kFailedPrecondition : absl::StatusCode::kAborted);
+    // A point carried to the face by the previous step can start within
+    // roundoff of it. Use the initial wall-relative motion to resolve entry.
+    constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+    Vec3 body_normal{};
+    body_normal.*kComponents[start_gap->axis] = start_gap->sign;
+    const auto world_normal = Rotate(rotation.start.orientation, body_normal);
+    const auto angular_travel = Scale(drift.duration, drift.end.angular_velocity);
+    const auto relative_face_travel = Subtract(relative_travel, Cross(angular_travel, relative_start));
+    const double normal_travel = Dot(world_normal, relative_face_travel);
+    const bool unique_face =
+        start_gap->gap - start_gap->next_gap > 2.0 * roundoff && start_gap->coordinate_magnitude > 2.0 * roundoff;
+    if (!unique_face || !std::isfinite(normal_travel) || normal_travel >= -roundoff) {
+      return error(absl::StatusCode::kAborted);
+    }
+    return std::optional<RigidBoxSweepHit3D>{{
+        .fraction_lower = 0.0,
+        .fraction_upper = 0.0,
+        .body_axis = start_gap->axis,
+        .outward_sign = start_gap->sign,
+    }};
   }
 
   struct Interval {

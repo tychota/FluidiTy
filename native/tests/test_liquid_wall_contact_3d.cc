@@ -33,6 +33,18 @@ TEST(LiquidWallContact3D, RotatingBoxTransfersOneOffCenterImpulse) {
   const Vec3 endpoint = result->contact.world_position;
   EXPECT_NEAR((endpoint.y - endpoint.x) / std::numbers::sqrt2, kHalfExtent.y, 1e-12);
 
+  const auto next_step = AdvanceRigidBody3D(step->end, 0.125);
+  ASSERT_TRUE(next_step.ok()) << next_step.status();
+  const LiquidWallContactInputs3D repeated_input{
+      .start_world_position = endpoint,
+      .stored_world_velocity = result->contact.stored_world_velocity,
+      .step_duration = 0.125,
+  };
+  const auto repeated = ResolveRotatingBoxContact3D(repeated_input, *next_step, kHalfExtent, 2.0);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  ASSERT_TRUE(repeated->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*repeated->contact.contact_fraction, 0.0);
+  EXPECT_LT(repeated->contact.incoming_advecting_relative_normal_speed, 0.0);
   input.start_world_position = {1.0, 0.0, 0.0};
   const auto miss = ResolveRotatingBoxContact3D(input, *step, kHalfExtent, 2.0);
   ASSERT_TRUE(miss.ok()) << miss.status();

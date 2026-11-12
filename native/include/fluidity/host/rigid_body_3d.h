@@ -162,7 +162,7 @@ absl::StatusOr<double> RigidBodySweepDistanceBound3D(const RigidBodyStep3D& step
 
 struct RigidBoxSweepHit3D {
   double fraction_lower;  // All earlier times are exterior.
-  double fraction_upper;  // Interior witness, at most 2^-32 later.
+  double fraction_upper;  // Interior witness at most 2^-32 later, or zero for approaching start contact.
   std::size_t body_axis;  // Outward face axis in the body frame, x/y/z = 0/1/2.
   int outward_sign;  // -1 or +1 along body_axis.
 };
@@ -171,7 +171,8 @@ struct RigidBoxSweepHit3D {
 // rotating box over the rigid drift. Half extents and the initial point are
 // meters, and the world point velocity is m/s. A disengaged result certifies
 // the whole path is exterior. A strictly interior start returns
-// FailedPrecondition. Ambiguous grazing, edge hits, angles above pi/2, and an
+// FailedPrecondition. An approaching, uniquely resolved touching start hits at zero.
+// Ambiguous grazing, edge hits, angles above pi/2, and an
 // exhausted isolation budget request a shorter step with Aborted. Invalid
 // inputs return InvalidArgument and unrepresentable arithmetic OutOfRange.
 absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
