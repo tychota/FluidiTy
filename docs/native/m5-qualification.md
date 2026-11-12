@@ -752,6 +752,34 @@ native/src/dry_solid_step_3d.cc as described above. Rebuild both dry
 scene targets and run the three-second commands. The production
 solver uses the complete affine fit.
 
+### Symmetric and skew affine transfer controls
+
+Repeat the three-second cases with only the symmetric part of the
+granular affine fit, then with only its skew part. For a fitted matrix
+C, store (C + Cᵀ)/2 in the first control and (C - Cᵀ)/2 in the second.
+Make the substitution after the normal slope assignment in the dry
+step. Both controls retain the true gathered deformation gradient,
+pressure-dependent return, and swept floor response.
+
+| h (m) | Symmetric envelope | Skew envelope | Symmetric late dilation | Skew late dilation |
+|---|---:|---:|---:|---:|
+| 0.075 | 23.063512° | 44.406647° | 0.001414746 | 0.000120151 |
+| 0.0625 | 23.065463° | 42.273166° | 0.000862563 | 0.000353422 |
+
+Native values are shown. CUDA agrees within 0.000003° at printed
+precision. Both backends meet the momentum and late-drift checks.
+The symmetric fit reproduces most of the spreading from the complete
+fit. The skew fit finishes within 0.66° of the no-affine result.
+The trace-free control above had spread farther than the complete fit,
+so disabling the isotropic part alone does not account for the response.
+Neither split reaches 30–35°. These controls change the mechanics of
+the affine transfer and serve as diagnostics. The dry solver uses the
+complete fit.
+
+Reproduce from 1df1815 with the corresponding substitution in
+native/src/dry_solid_step_3d.cc. Rebuild both dry-scene targets and run
+the three-second commands above.
+
 ### Vertical grid alignment at the sand floor
 
 Repeat the 504-particle column drop to 1.5 s with nominal step h/80.
