@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import bpy
@@ -157,5 +158,58 @@ if "--" in sys.argv:
         assert json.loads(result.stdout) == impact
         assert impact_output.read_bytes() == impact_replay.read_bytes()
         assert before_impact.read_bytes() == before_impact_bytes
+
+        fluidity.jobs.BIN_DIR = solver.parent
+        settings.bake_cache = str(root / "Artist Bake")
+        settings.preview_cache = str(root / "Artist Preview")
+        cache = Path(settings.bake_cache)
+
+        def poll_until(condition):
+            deadline = time.monotonic() + 15
+            while not condition() and time.monotonic() < deadline:
+                fluidity.jobs.tick()
+                time.sleep(0.01)
+            assert condition(), settings.message
+
+        assert bpy.ops.fluidity.check_scene() == {"FINISHED"}, settings.message
+        assert not cache.exists()
+        assert bpy.ops.fluidity.bake() == {"FINISHED"}, settings.message
+        poll_until(lambda: settings.committed_frame == 1 or not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 1, settings.diagnostic
+        assert bpy.ops.fluidity.cancel() == {"FINISHED"}
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        assert "Cancelled" in settings.message
+        frame_one = fluidity.jobs.cutter_checkpoint(cache, 1)
+        frame_two = fluidity.jobs.cutter_checkpoint(cache, 2)
+        assert frame_one.read_bytes() == before_impact_bytes
+        assert not frame_two.exists()
+
+        project = str(root / "Interrupted Cutter.blend")
+        bpy.ops.wm.save_as_mainfile(filepath=project)
+        bpy.ops.wm.open_mainfile(filepath=project)
+        scene = bpy.context.scene
+        settings = scene.fluidity
+
+        settings.elastic_density = 3
+        assert bpy.ops.fluidity.resume() == {"CANCELLED"}
+        assert "settings changed" in settings.message
+        settings.elastic_density = 2
+        assert bpy.ops.fluidity.resume() == {"FINISHED"}, settings.message
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 2, settings.diagnostic
+        assert frame_one.read_bytes() == before_impact_bytes
+        assert frame_two.read_bytes() == impact_output.read_bytes()
+
+        scene.frame_set(2)
+        assert bpy.ops.fluidity.inspect() == {"FINISHED"}, settings.message
+        assert settings.inspect_frame == 2 and settings.point_count == 3
+        assert "ID 1 | Cutter side +" in settings.point_detail
+        assert "(0.5156, -0.5, 0.5) m" in settings.point_detail
+
+        assert bpy.ops.fluidity.preview() == {"FINISHED"}, settings.message
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 2, settings.diagnostic
+        preview_frame = fluidity.jobs.cutter_checkpoint(Path(settings.preview_cache), 2)
+        assert preview_frame.read_bytes() == frame_two.read_bytes()
 
     print("PASS: Blender Cutter packet, persistent sides, byte-identical restart and accepted impact")

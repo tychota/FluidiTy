@@ -148,14 +148,69 @@ absl::StatusOr<std::string> SceneJson(LiquidResolvedSceneView3D scene) {
   flatbuffers::IterateFlatBuffer(bytes->values().data(), wire::ResolvedSceneTypeTable(), &visitor);
   return visitor.s;
 }
+constexpr LiquidCacheLimits3D kCutterPacketLimits{.maximum_bytes = 128 * 1024};
+constexpr LiquidCacheLimits3D kCutterCheckpointLimits{.maximum_bytes = 1024 * 1024};
+constexpr std::size_t kCutterCheckpointPrefixSize = 2 * sizeof(LiquidDigest3D);
+
+absl::Status InspectCutterFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "cutter";
+  if ((args.size() != 2 && args.size() != 3) || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
+    return absl::InvalidArgumentError("expected cutter-inspect CHECKPOINT [PACKET]");
+  }
+  const auto checkpoint = files::ReadBytes(PathFromUtf8(args[1]), kCutterCheckpointLimits);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  const auto bytes = checkpoint->values();
+  if (bytes.size() <= kCutterCheckpointPrefixSize) {
+    return absl::InvalidArgumentError("invalid Cutter checkpoint framing");
+  }
+  if (args.size() == 3) {
+    const auto packet = files::ReadBytes(PathFromUtf8(args[2]), kCutterPacketLimits);
+    if (!packet.ok()) {
+      return packet.status();
+    }
+    const auto build_digest = ExecutableDigest();
+    if (!build_digest.ok()) {
+      return build_digest.status();
+    }
+    const auto packet_digest = LiquidContentDigest3D(packet->values());
+    if (!std::equal(packet_digest.begin(), packet_digest.end(), bytes.begin())
+        || !std::equal(build_digest->begin(), build_digest->end(), bytes.begin() + packet_digest.size())) {
+      return absl::FailedPreconditionError("Cutter checkpoint belongs to a different scene or executable");
+    }
+  }
+  const auto restored = DecodeSolidInteractionCheckpoint3D(bytes.subspan(kCutterCheckpointPrefixSize));
+  if (!restored.ok()) {
+    return restored.status();
+  }
+  if (restored->sides.empty() || restored->sides.size() != restored->elastic_particles.size()) {
+    return absl::InvalidArgumentError("Cutter checkpoint requires one side per elastic particle");
+  }
+  std::string members = "\"accepted_step\":" + std::to_string(restored->accepted_step) + ",\"points\":[";
+  for (std::size_t index = 0; index < restored->sides.size(); ++index) {
+    const auto& side = restored->sides[index];
+    const auto& particle = restored->elastic_particles[index];
+    if (side.particle_id != particle.particle_id) {
+      return absl::InvalidArgumentError("Cutter checkpoint has mismatched side and particle identities");
+    }
+    if (index != 0) {
+      members += ",";
+    }
+    const auto position = particle.transfer.trial_world_position;
+    members += "{\"id\":" + std::to_string(particle.particle_id) + ",\"side\":" + std::to_string(side.side.sign)
+        + ",\"position\":[" + JsonDouble(position.x) + "," + JsonDouble(position.y) + "," + JsonDouble(position.z)
+        + "]}";
+  }
+  members += "]";
+  return writer.Emit("cutter_inspect", members);
+}
 absl::Status RunCutterFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
   diagnostic.field = "cutter";
   if (args.size() != 4 || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
     return absl::InvalidArgumentError("expected cutter-frame PACKET PREVIOUS_OR_DASH OUTPUT");
   }
-  constexpr LiquidCacheLimits3D kPacketLimits{.maximum_bytes = 128 * 1024};
-  constexpr LiquidCacheLimits3D kCheckpointLimits{.maximum_bytes = 1024 * 1024};
-  const auto packet = files::ReadBytes(PathFromUtf8(args[1]), kPacketLimits);
+  const auto packet = files::ReadBytes(PathFromUtf8(args[1]), kCutterPacketLimits);
   if (!packet.ok()) {
     return packet.status();
   }
@@ -215,7 +270,7 @@ absl::Status RunCutterFrame(std::span<const std::string> args, ProtocolWriter& w
   checkpoint_prefix.insert(checkpoint_prefix.end(), packet_digest.begin(), packet_digest.end());
   checkpoint_prefix.insert(checkpoint_prefix.end(), build_digest->begin(), build_digest->end());
   if (args[2] != "-") {
-    const auto prior = files::ReadBytes(PathFromUtf8(args[2]), kCheckpointLimits);
+    const auto prior = files::ReadBytes(PathFromUtf8(args[2]), kCutterCheckpointLimits);
     if (!prior.ok()) {
       return prior.status();
     }
@@ -253,12 +308,15 @@ absl::Status RunCutterFrame(std::span<const std::string> args, ProtocolWriter& w
   if (!result.ok()) {
     return result.status();
   }
+  if (args[3] == "-") {
+    return writer.Emit("cutter_frame", "\"accepted_step\":" + std::to_string(resolved->checkpoint.accepted_step));
+  }
   const auto checkpoint = EncodeSolidInteractionCheckpoint3D(resolved->checkpoint);
   if (!checkpoint.ok()) {
     return checkpoint.status();
   }
   checkpoint_prefix.insert(checkpoint_prefix.end(), checkpoint->begin(), checkpoint->end());
-  const auto published = files::PublishBytes(PathFromUtf8(args[3]), checkpoint_prefix, kCheckpointLimits, {});
+  const auto published = files::PublishBytes(PathFromUtf8(args[3]), checkpoint_prefix, kCutterCheckpointLimits, {});
   if (!published.ok()) {
     return published;
   }
@@ -753,8 +811,11 @@ int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
 #endif
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
-  if (!public_cli && !arguments.empty() && arguments.front() == "cutter-frame") {
-    const auto status = fluidity::simulate::RunCutterFrame(arguments, writer, diagnostic);
+  if (!public_cli && !arguments.empty()
+      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect")) {
+    const auto status = arguments.front() == "cutter-frame"
+        ? fluidity::simulate::RunCutterFrame(arguments, writer, diagnostic)
+        : fluidity::simulate::InspectCutterFrame(arguments, writer, diagnostic);
     if (status.ok()) {
       return 0;
     }

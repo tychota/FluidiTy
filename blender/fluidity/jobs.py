@@ -26,7 +26,19 @@ def binary(name):
     return path
 
 
-def checked(name, *args, timeout=20):
+def simulate_record(output, returncode, event):
+    try:
+        (record,) = [json.loads(line) for line in output.splitlines()]
+    except ValueError as error:
+        raise ToolError("The solver returned an invalid protocol response.") from error
+    if not isinstance(record, dict) or record.get("protocol_version") != 1:
+        raise ToolError("The solver protocol version is unsupported.")
+    if returncode == 0 and record.get("event") == event:
+        return record
+    raise ToolError(" ".join(str(record.get(key, "")) for key in ("code", "field", "cause")).strip(), record)
+
+
+def checked(name, *args, timeout=20, event="result"):
     result = subprocess.run(
         [binary(name), *map(str, args)],
         capture_output=True,
@@ -37,19 +49,10 @@ def checked(name, *args, timeout=20):
         creationflags=NO_WINDOW,
     )
     if name == "simulate":
-        try:
-            (record,) = [json.loads(line) for line in result.stdout.splitlines()]
-        except ValueError as error:
-            raise ToolError("The solver returned an invalid protocol response.") from error
-        if not isinstance(record, dict) or record.get("protocol_version") != 1:
-            raise ToolError("The solver protocol version is unsupported.")
-        if result.returncode == 0 and record.get("event") == "result":
-            return record
-        raise ToolError(" ".join(str(record.get(key, "")) for key in ("code", "field", "cause")).strip(), record)
+        return simulate_record(result.stdout, result.returncode, event)
     if result.returncode:
         raise ToolError(result.stderr.strip() or "The cache bridge failed.")
     return result.stdout
-
 
 def prepare(packet, backend, directory):
     directory = Path(directory)
@@ -178,6 +181,103 @@ class Job:
         self.files.cleanup()
 
 
+def cutter_checkpoint(cache, frame):
+    return cache / f"cutter-{frame:06d}.chk"
+
+
+def check_cutter(packet):
+    with tempfile.TemporaryDirectory(prefix="fluidity-cutter-check-") as directory:
+        inputs = Path(directory) / "cutter.txt"
+        inputs.write_text(packet, encoding="ascii", newline="\n")
+        checked("simulate", "cutter-frame", inputs, "-", "-", event="cutter_frame")
+
+
+class CutterJob:
+    def __init__(self, scene, cache, packet, last_frame, resume):
+        self.scene = scene
+        self.cache = cache
+        self.inputs = cache / "cutter.txt"
+        self.last_frame = last_frame
+        self.substeps = int(packet.splitlines()[1].split()[-1])
+        self.process = None
+        self.output = None
+        self.terminal = None
+        self.cancelled = False
+        self.started_at = time.monotonic()
+        self.committed_frame = 0
+        binary("simulate")
+        if resume:
+            if not self.inputs.is_file() or self.inputs.read_bytes() != packet.encode("ascii"):
+                raise ToolError("The Cutter settings changed. Choose a fresh Bake cache.")
+            while self.committed_frame < last_frame and cutter_checkpoint(cache, self.committed_frame + 1).is_file():
+                self.committed_frame += 1
+            if self.committed_frame:
+                checkpoint = cutter_checkpoint(cache, self.committed_frame)
+                record = checked("simulate", "cutter-inspect", checkpoint, self.inputs, event="cutter_inspect")
+                if record["accepted_step"] != self.committed_frame * self.substeps:
+                    raise ToolError("The Cutter checkpoint has an unexpected accepted step.")
+        else:
+            cache.mkdir(parents=True)
+            with self.inputs.open("x", encoding="ascii", newline="\n") as stream:
+                stream.write(packet)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def poll(self):
+        settings = self.scene.fluidity
+        settings.elapsed = time.monotonic() - self.started_at
+        settings.heartbeat_age = -1
+        settings.committed_frame = self.committed_frame if self.committed_frame else -1
+        try:
+            if self.process is not None:
+                code = self.process.poll()
+                if code is None:
+                    return False
+                self.output.seek(0)
+                record = simulate_record(self.output.read(131073).decode("utf-8"), code, "cutter_frame")
+                self.output.close()
+                self.output = None
+                self.process = None
+                next_frame = self.committed_frame + 1
+                if record["accepted_step"] != next_frame * self.substeps:
+                    raise ToolError("The Cutter solver returned an unexpected accepted step.")
+                self.committed_frame = next_frame
+                settings.committed_frame = next_frame
+                return False
+            if self.cancelled:
+                self.terminal = {"name": "CANCELLED"}
+                return True
+            if self.committed_frame == self.last_frame:
+                self.terminal = {"event": "result", "frame": self.committed_frame}
+                return True
+            previous = cutter_checkpoint(self.cache, self.committed_frame) if self.committed_frame else "-"
+            output = cutter_checkpoint(self.cache, self.committed_frame + 1)
+            self.output = tempfile.TemporaryFile()
+            self.process = subprocess.Popen(
+                [binary("simulate"), "cutter-frame", self.inputs, previous, output],
+                stdout=self.output,
+                stderr=subprocess.DEVNULL,
+                creationflags=NO_WINDOW,
+            )
+            return False
+        except (OSError, ValueError, subprocess.SubprocessError, ToolError) as error:
+            self.terminal = {"event": "error", "field": "cutter", "cause": str(error)}
+            return True
+
+    def close(self):
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait()
+        if self.output is not None:
+            self.output.close()
+
+
+def start_cutter(scene, cache, packet, last_frame, resume):
+    if is_running(scene):
+        raise ToolError("This scene already has a running job.")
+    _JOBS[scene.as_pointer()] = CutterJob(scene, cache, packet, last_frame, resume)
+
 def is_running(scene):
     return scene.as_pointer() in _JOBS
 
@@ -203,9 +303,14 @@ def tick():
             continue
         record = job.terminal or {}
         settings = job.scene.fluidity
-        if record.get("event") == "result" and job.process.returncode == 0:
+        cutter = isinstance(job, CutterJob)
+        if record.get("event") == "result" and (cutter or job.process.returncode == 0):
             settings.committed_frame = max(settings.committed_frame, record["frame"])
-            settings.message = "Bake complete. Attach the committed points to render."
+            settings.message = (
+                "Cutter bake complete. Inspect a committed frame for particle sides."
+                if cutter
+                else "Bake complete. Attach the committed points to render."
+            )
         elif record.get("name") == "CANCELLED":
             settings.message = "Cancelled. Committed frames are available for Resume."
         elif record.get("event") == "error":
