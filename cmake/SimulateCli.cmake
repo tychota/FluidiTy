@@ -69,6 +69,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_fluidity_cli.py"
       "${fluidity_cli_executable}" "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>")
   set_tests_properties(SimulateCli.public_interface PROPERTIES LABELS cli)
+  add_test(NAME SimulateCli.rigid_frame
+    COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/run_rigid_frame_smoke.py"
+      "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>")
+  set_tests_properties(SimulateCli.rigid_frame PROPERTIES LABELS cli)
   set(simulate_cuda_option)
   if(FLUIDITY_ENABLE_CUDA)
     set(simulate_cuda_option --cuda)
