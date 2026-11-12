@@ -42,6 +42,7 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+  native/src/dry_solid_step_3d.cc
     native/src/effects_source_3d.cc
     native/src/surface_closest_point_3d.cc
     native/src/surface_reconstruction_3d.cc
@@ -123,6 +124,7 @@ if(FLUIDITY_ENABLE_CUDA)
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
   add_library(fluidity_cuda_operators STATIC
+    native/cuda/dry_solid_step_3d_host.cc
     native/cuda/liquid_transfer_stages_3d_host.cc
     native/cuda/liquid_pressure_stage_3d_host.cc
     native/cuda/wetted_piston_3d.cu
@@ -175,11 +177,18 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fluidity_m5_dry_scene_tests native/tests/test_m5_dry_scenes_3d.cc)
+  target_link_libraries(fluidity_m5_dry_scene_tests PRIVATE fluidity_native)
+  add_test(NAME M5DryScenes.native COMMAND fluidity_m5_dry_scene_tests)
   add_executable(fluidity_m5_constitutive_tests native/tests/test_m5_constitutive_3d.cc)
   target_include_directories(fluidity_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
   target_compile_features(fluidity_m5_constitutive_tests PRIVATE cxx_std_20)
   add_test(NAME M5Constitutive.native COMMAND fluidity_m5_constitutive_tests)
   if(FLUIDITY_ENABLE_CUDA)
+    add_executable(fluidity_cuda_m5_dry_scene_tests native/tests/test_m5_dry_scenes_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_dry_scene_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_dry_scene_tests PRIVATE fluidity_cuda_operators)
+    add_test(NAME M5DryScenes.cuda COMMAND fluidity_cuda_m5_dry_scene_tests)
     add_executable(fluidity_cuda_m5_constitutive_tests native/tests/test_cuda_m5_constitutive_3d.cu)
     target_include_directories(fluidity_cuda_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
     target_compile_options(fluidity_cuda_m5_constitutive_tests PRIVATE
