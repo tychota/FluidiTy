@@ -646,6 +646,7 @@ TEST(LiquidSubstep3D, TaitRejectsCandidateOutsideDomainBeforePublication) {
 }
 
 TEST(LiquidSubstep3D, UnsupportedViscousGeometryPreservesCommittedState) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
   const auto initial = Initial();
   auto scene = Scene();
   scene.dynamic_viscosity = 1.0;

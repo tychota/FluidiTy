@@ -33,7 +33,7 @@ struct SurfaceFrame3D {
   double cell_width_m = 0;
   SurfaceMesh3D mesh{};
   std::vector<SurfaceVolume3D> volumes{};
-  std::optional<SurfacePhaseInterface3D> phase_interface;
+  std::optional<SurfacePhaseInterface3D> phase_interface = std::nullopt;
 };
 struct SurfaceCacheLimits3D {
   std::size_t maximum_vertices = 100000;
