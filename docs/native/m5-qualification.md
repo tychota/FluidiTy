@@ -15,6 +15,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Dry snow compaction | Pass | Two resolutions pass a compress–unload cycle. Mean log plastic Jacobian stays below −0.34 after unload. |
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
+| Isolated face body capacity | Pass | Four sorted distinct body records, accumulation for an existing body at capacity, fifth-body rejection, and range-failure rollback on CPU and CUDA. The host error is ResourceExhausted / E-CONTACT-BODY-CAPACITY. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -219,8 +220,9 @@ schema was left unchanged.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
-accepted substep. A face needs separate body velocities and a checked
-four-body capacity, with `E-CONTACT-BODY-CAPACITY` on overflow. The coupled
+accepted substep. The standalone M5 face accumulator keeps separate mass and momentum by body
+ID, and rejects a fifth body with `E-CONTACT-BODY-CAPACITY`. The production
+step still needs to populate and consume those records transactionally. The coupled
 scheduler must resolve contact with signed incoming relative normal speed,
 apply each impulse once, preserve nonpenetration over the actual obstacle
 sweep, and account for pressure traction and obstacle work without counting

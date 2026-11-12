@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../src/dry_solid_step_3d_internal.h"
+#include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
@@ -370,6 +371,10 @@ int main(int argc, char** argv) {
   }
   if (argc != 1) {
     return 2;
+  }
+  const auto capacity = fluidity::ContactFaceDepositStatus(fluidity::ContactFaceDepositStatus3D::kBodyCapacity);
+  if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
+    return 1;
   }
   if (!TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestUncutStressWork()
       || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
