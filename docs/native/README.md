@@ -438,6 +438,14 @@ committed frames. Create a fresh cache to run it under another CUDA environment.
 `--trace` emits accepted-state records (clock, exact state digest, inventories,
 source counters/remainders and attempt/retry counts) from the final schedule of each
 frame. `published:false` distinguishes these from `frame` publication records.
+For resolved-air scenes, accepted traces include a `cavity` object with the
+active cavity count, the radial step bound in seconds, and the gas inventory
+lost to venting, sub-resolution disappearance or unmatched lineage. The
+inventory unit is m³ Pa^(1/1.4). A nonzero loss also produces a
+`cavity_inventory_loss` record in a normal run, carrying the accepted step clock.
+Records are emitted only after the frame settles. Frame-capacity rollback
+discards the tentative loss records.
+
 The `accepted_measurement` object gives the exact accepted duration and the
 step-start capillary bound in seconds, with JSON null when no bound applies.
 It reports the pressure iteration count and the original integrated RHS and true

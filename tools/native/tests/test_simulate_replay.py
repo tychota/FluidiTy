@@ -139,6 +139,18 @@ def case_identity(executable, fixture, directory, cuda):
 
 
 def case_inspection(executable, fixture, directory, cuda):
+    composition_cache = directory / "composition-cache"
+    subprocess.run([str(fixture), "composition", str(composition_cache)], check=True, timeout=30)
+    composition = invoke(executable, "check", "--cache", composition_cache, "--frame", "0")
+    assert composition["particle_composition"] == [
+        {"particle_id": 1, "phase_id": 4, "constituents": [
+            {"substance_id": 8, "volume_fraction": 0.25},
+            {"substance_id": 14, "volume_fraction": 0.75},
+        ]},
+        {"particle_id": 2, "phase_id": 5, "constituents": [
+            {"substance_id": 25, "volume_fraction": 1.0},
+        ]},
+    ]
     cache = directory / "résumé 液体"
     subprocess.run([str(fixture), "cache", str(cache)], check=True, capture_output=True, timeout=30)
     before = snapshot(directory)
@@ -257,7 +269,7 @@ def execute(executable, *args, success=True):
     if success:
         assert process.stderr == "", process.stderr
         assert output[-1]["event"] == "result"
-        events = {"heartbeat", "attempt", "trace", "frame", "result"}
+        events = {"heartbeat", "attempt", "trace", "frame", "cavity_inventory_loss", "result"}
         if "--measure-job" in args:
             events.add("job_measurement")
             assert output[-2]["event"] == "job_measurement" and output[-2]["status"] == "OK"
@@ -272,7 +284,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control", "cavity-loss", "shared-surface") else []
     return scene, initial
 
 
@@ -481,8 +493,85 @@ def verify_cuda_compatibility_refusals(executable, cache, directory):
         assert {path.relative_to(candidate) for path in candidate.rglob("*") if path.is_dir()} == before_directories
 
 
+def viscous_execution_case(executable, fixture, directory, backend):
+    # Both packets start from the same shear state in an aligned full-cell tank.
+    velocity = {}
+    for mode in ("viscous-control", "viscous"):
+        work = directory / mode
+        work.mkdir()
+        scene, initial = make_scene(executable, fixture, work, backend, mode)
+        cache = work / "cache"
+        output = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+                         "--cache", cache, *initial, "--frame-end", 1, "--trace")
+        assert output[-1]["frame"] == 1 and output[-1]["backend"] == backend
+        measured = [event["accepted_measurement"] for event in output if event["event"] == "trace"]
+        assert measured
+        residual_key = "viscous_max_momentum_residual_kg_m_per_s"
+        for measurement in measured:
+            assert (residual_key in measurement) == (mode == "viscous")
+            if mode == "viscous":
+                assert math.isfinite(measurement[residual_key]) and 0.0 <= measurement[residual_key] <= 1e-6
+        point_frame = json.loads(subprocess.run([str(fixture), "first-point-frame", str(cache)],
+                                               capture_output=True, check=True, timeout=30).stdout)
+        assert point_frame["frame"] == 1 and point_frame["particle_count"] == 2
+        velocity[mode] = abs(point_frame["first_velocity"][2])
+    assert velocity["viscous-control"] - velocity["viscous"] > 1e-7, velocity
+
+
+
+def cavity_loss_execution_case(executable, fixture, directory, backend):
+    work = directory / "cavity-loss"
+    work.mkdir()
+    scene, initial = make_scene(executable, fixture, work, backend, "cavity-loss")
+    args = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, *initial, "--frame-end", 1]
+    expected_loss = None
+    for trace in (False, True):
+        cache = work / ("traced" if trace else "ordinary")
+        records = execute(executable, *args, "--cache", cache, *(["--trace"] if trace else []))
+        assert records[-1]["frame"] == 1
+        losses = [record for record in records if record["event"] == "cavity_inventory_loss"]
+        assert len(losses) == 1, losses
+        loss = losses[0]["inventory_loss"]
+        assert math.isfinite(loss["subresolution_inventory"]) and loss["subresolution_inventory"] > 0
+        assert loss["vented_inventory"] == loss["unmatched_inventory"] == 0
+        if trace:
+            traces = [record for record in records if record["event"] == "trace"]
+            assert traces
+            for field in ("frame", "substep", "epoch", "accepted_step", "time_seconds"):
+                assert traces[0][field] == losses[0][field]
+            measured = [record["accepted_measurement"]["cavity"]["inventory_loss"] for record in traces]
+            assert measured and measured[0] == loss == expected_loss
+            assert all(not any(values.values()) for values in measured[1:])
+            before = snapshot(cache)
+            replay = execute(executable, "replay", "--cache", cache, "--frame", 1, "--substep", 0)[-1]
+            assert replay["state_digest"] == records[-1]["state_digest"] and snapshot(cache) == before
+        else:
+            expected_loss = loss
+
+
+def composed_snapshot_case(executable, fixture, directory, backend):
+    work = directory / "composition"
+    work.mkdir()
+    scene, initial = make_scene(executable, fixture, work, backend, "shared-surface")
+    cache = work / "cache"
+    result = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+                     *initial, "--cache", cache, "--frame-end", 1)[-1]
+    assert result["frame"] == 1
+    points = json.loads(subprocess.run([str(fixture), "first-point-frame", str(cache)],
+                                       capture_output=True, check=True, timeout=30).stdout)
+    composition = {point["id"]: point for point in points["composition"]}
+    assert {particle: point["phase_id"] for particle, point in composition.items()} == {1: 4, 2: 4, 3: 5}
+    assert composition[3]["constituents"] == [[25, 1.0]]
+    assert {key for particle in (1, 2) for key, _ in composition[particle]["constituents"]} == {8, 14}
+    before = snapshot(cache)
+    replay = execute(executable, "replay", "--cache", cache, "--frame", 1, "--substep", 0)[-1]
+    assert replay["state_digest"] == result["state_digest"] and snapshot(cache) == before
+
+
 def case_cpu_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cpu")
+    viscous_execution_case(executable, fixture, directory, "cpu")
+    cavity_loss_execution_case(executable, fixture, directory, "cpu")
 
 
 def case_cpu_replay(executable, fixture, directory, cuda):
@@ -491,6 +580,9 @@ def case_cpu_replay(executable, fixture, directory, cuda):
 
 def case_cuda_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cuda")
+    viscous_execution_case(executable, fixture, directory, "cuda")
+    cavity_loss_execution_case(executable, fixture, directory, "cuda")
+    composed_snapshot_case(executable, fixture, directory, "cuda")
 
 
 def case_cuda_replay(executable, fixture, directory, cuda):
@@ -898,8 +990,8 @@ def ocean_case(executable, fixture, directory, backend, mode):
     directory.mkdir()
     scene, initial = make_scene(executable, fixture, directory, backend, mode)
     cache = directory / "cache"
-    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
-            "--cache", cache, *initial, "--frame-end", 10)
+    result = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+            "--cache", cache, *initial, "--frame-end", 10)[-1]
     checkpoint = json.loads(subprocess.run([str(fixture), "checkpoint", str(cache)],
                                           capture_output=True, check=True, timeout=30).stdout)
     expected_particles = 3 if mode == "ocean-level" else 1
@@ -909,26 +1001,29 @@ def ocean_case(executable, fixture, directory, backend, mode):
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial,
            "--frame", 9, "--substep", 0)
     assert snapshot(cache) == before
-    return checkpoint
+    assert result["frame"] == checkpoint["frame"]
+    assert result["state_digest"] == checkpoint["state_digest"]
+    return checkpoint, result
 
 
 def case_cpu_ocean(executable, fixture, directory, cuda):
-    active = ocean_case(executable, fixture, directory / "ocean", "cpu", "ocean")
-    control = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
+    active, _ = ocean_case(executable, fixture, directory / "ocean", "cpu", "ocean")
+    control, _ = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
     assert math.dist(active["first_velocity"], control["first_velocity"]) > 0.001
     assert math.dist(active["first_position"], control["first_position"]) > 0.00001
     ocean_case(executable, fixture, directory / "level", "cpu", "ocean-level")
 
 
 def case_cuda_ocean(executable, fixture, directory, cuda):
-    cpu = ocean_case(executable, fixture, directory / "cpu", "cpu", "ocean")
-    device = ocean_case(executable, fixture, directory / "cuda", "cuda", "ocean")
+    cpu, _ = ocean_case(executable, fixture, directory / "cpu", "cpu", "ocean")
+    device, receipt = ocean_case(executable, fixture, directory / "cuda", "cuda", "ocean")
     assert cpu["accepted_step"] == device["accepted_step"]
     assert math.dist(cpu["first_position"], device["first_position"]) < 1e-10
     assert math.dist(cpu["first_velocity"], device["first_velocity"]) < 1e-9
-    cpu_level = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
-    device_level = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
+    cpu_level, _ = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
+    device_level, _ = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
     assert cpu_level["state_digest"] == device_level["state_digest"]
+    print(json.dumps(receipt, sort_keys=True, allow_nan=False))
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):

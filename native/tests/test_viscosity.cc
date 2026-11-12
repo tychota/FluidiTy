@@ -11,6 +11,7 @@
 
 #include "absl/status/status.h"
 #include "fixture_data.h"
+#include "fluidity/host/sparse_mac_grid_3d.h"
 #include "fluidity/host/viscosity.h"
 #include "gtest/gtest.h"
 
@@ -249,6 +250,341 @@ TEST(Viscosity, TensorCouplesBothFaceOrientationsSymmetrically) {
   EXPECT_NEAR(stiffness[1 * shape->face_velocity_count + 9], -3.0, kTolerance);
 }
 
+TEST(Viscosity, FullCell3DStrainReproducesAffineVelocityAcrossSignedOwners) {
+  const std::array blocks{
+      BlockIndex3D{-1, -1, -1},
+      BlockIndex3D{0, -1, -1},
+      BlockIndex3D{-1, 0, -1},
+      BlockIndex3D{0, 0, -1},
+      BlockIndex3D{-1, -1, 0},
+      BlockIndex3D{0, -1, 0},
+      BlockIndex3D{-1, 0, 0},
+      BlockIndex3D{0, 0, 0},
+  };
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 0.5}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<MacViscosityCell3D> cells;
+  for (const int z : {-1, 0}) {
+    for (const int y : {-1, 0}) {
+      for (const int x : {-1, 0}) {
+        cells.push_back({.cell_index = {x, y, z}, .dynamic_viscosity = 2.0});
+      }
+    }
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), cells);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  ASSERT_EQ(strain->size(), 30);
+  std::array<double, 8> full_octants;
+  full_octants.fill(0.5 * 0.5 * 0.5 / 8.0);
+  const std::vector<std::array<double, 8>> liquid_octant_volumes(cells.size(), full_octants);
+  const auto cut_strain = AssembleCutCellMacStrain3D(grid->view(), cells, liquid_octant_volumes);
+  ASSERT_TRUE(cut_strain.ok()) << cut_strain.status();
+  ASSERT_EQ(cut_strain->size(), strain->size());
+  for (std::size_t row_index = 0; row_index < strain->size(); ++row_index) {
+    const auto& row = (*strain)[row_index];
+    const bool normal = row_index < 24;
+    EXPECT_EQ(row.term_count, normal ? 2 : 4);
+    EXPECT_EQ(row.quadrature_weight, normal ? 0.5 : 1.0);
+    const auto& cut_row = (*cut_strain)[row_index];
+    EXPECT_EQ(cut_row.first_axis, row.first_axis);
+    EXPECT_EQ(cut_row.second_axis, row.second_axis);
+    EXPECT_EQ(cut_row.term_count, row.term_count);
+    EXPECT_EQ(cut_row.quadrature_weight, row.quadrature_weight);
+    for (std::size_t term = 0; term < row.term_count; ++term) {
+      EXPECT_EQ(cut_row.terms[term].face_slot, row.terms[term].face_slot);
+      EXPECT_EQ(cut_row.terms[term].coefficient, row.terms[term].coefficient);
+    }
+    double rotation_control_strain = 0.0;
+    double symmetric_affine_strain = 0.0;
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      const auto face = grid->view().FaceIndex(term.face_slot);
+      ASSERT_TRUE(face.ok()) << face.status();
+      const auto position = grid->FaceWorldAnchor(*face);
+      ASSERT_TRUE(position.ok()) << position.status();
+      const std::array rotation_control_velocity{
+          2.0 * position->x + 3.0 * position->y + 5.0 * position->z,
+          -3.0 * position->x + 7.0 * position->y + 11.0 * position->z,
+          -5.0 * position->x - 11.0 * position->y + 13.0 * position->z,
+      };
+      const std::array symmetric_affine_velocity{
+          2.0 * position->x + 3.0 * position->y + 5.0 * position->z,
+          3.0 * position->x + 7.0 * position->y + 11.0 * position->z,
+          5.0 * position->x + 11.0 * position->y + 13.0 * position->z,
+      };
+      const std::size_t component = static_cast<std::size_t>(face->axis);
+      rotation_control_strain += term.coefficient * rotation_control_velocity[component];
+      symmetric_affine_strain += term.coefficient * symmetric_affine_velocity[component];
+    }
+    constexpr std::array normal_derivatives{2.0, 7.0, 13.0};
+    constexpr std::array<std::array<double, 3>, 3> shear_derivatives{{
+        std::array{0.0, 3.0, 5.0},
+        std::array{0.0, 0.0, 11.0},
+        std::array{0.0, 0.0, 0.0},
+    }};
+    const auto first_axis = static_cast<std::size_t>(row.first_axis);
+    const auto second_axis = static_cast<std::size_t>(row.second_axis);
+    EXPECT_EQ(rotation_control_strain, normal ? normal_derivatives[row_index % 3] : 0.0);
+    EXPECT_EQ(
+        symmetric_affine_strain,
+        normal ? normal_derivatives[row_index % 3] : shear_derivatives[first_axis][second_axis]
+    );
+  }
+}
+
+TEST(Viscosity, FullCell3DStrainUsesHarmonicShearAcrossPhases) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{
+      MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 1.0},
+      MacViscosityCell3D{.cell_index = {1, 0, 0}, .dynamic_viscosity = 1.0},
+      MacViscosityCell3D{.cell_index = {0, 1, 0}, .dynamic_viscosity = 1000.0},
+      MacViscosityCell3D{.cell_index = {1, 1, 0}, .dynamic_viscosity = 1000.0},
+  };
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), cells);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  ASSERT_EQ(strain->size(), 13);
+  const auto& shear = strain->back();
+  ASSERT_EQ(shear.term_count, 4);
+  EXPECT_NEAR(shear.quadrature_weight, 8.0 / 1.001, kTolerance);
+  const double exact_traction = 1.0 / 1.001;
+  double shear_strain = 0.0;
+  for (const auto& term : shear.terms) {
+    const auto face = grid->view().FaceIndex(term.face_slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    const auto position = grid->FaceWorldAnchor(*face);
+    ASSERT_TRUE(position.ok()) << position.status();
+    if (face->axis == FaceNormalAxis::kX) {
+      const double velocity = exact_traction * (std::min(position->y, 1.0) + std::max(position->y - 1.0, 0.0) / 1000.0);
+      shear_strain += term.coefficient * velocity;
+    }
+  }
+  EXPECT_NEAR(shear.quadrature_weight * shear_strain / 2.0, exact_traction, kTolerance);
+}
+
+TEST(Viscosity, CutCell3DStrainWeightsCompleteEdgeWithLiquidVolume) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{
+      MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 2.0},
+      MacViscosityCell3D{.cell_index = {1, 0, 0}, .dynamic_viscosity = 4.0},
+      MacViscosityCell3D{.cell_index = {0, 1, 0}, .dynamic_viscosity = 8.0},
+      MacViscosityCell3D{.cell_index = {1, 1, 0}, .dynamic_viscosity = 16.0},
+  };
+  std::array<std::array<double, 8>, 4> octants{};
+  octants[0][3] = 0.125;
+  octants[1][2] = octants[1][6] = 0.125;
+  octants[2][1] = 0.0625;
+  octants[3][0] = 0.125;
+  const auto rows = AssembleCutCellMacStrain3D(grid->view(), cells, octants);
+  ASSERT_TRUE(rows.ok()) << rows.status();
+  ASSERT_EQ(rows->size(), 13);
+  constexpr std::array kNormalWeights{0.5, 2.0, 1.0, 4.0};
+  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto& row = (*rows)[3 * cell + axis];
+      EXPECT_EQ(row.quadrature_weight, kNormalWeights[cell]);
+      EXPECT_EQ(row.term_count, 2);
+    }
+  }
+  const auto& shear = rows->back();
+  EXPECT_EQ(shear.first_axis, FaceNormalAxis::kX);
+  EXPECT_EQ(shear.second_axis, FaceNormalAxis::kY);
+  EXPECT_EQ(shear.term_count, 4);
+  // Total volume is 9/16 m³. The volume-weighted harmonic viscosity is 4 Pa s.
+  EXPECT_NEAR(shear.quadrature_weight, 9.0, kTolerance);
+
+  auto inviscid_cells = cells;
+  inviscid_cells[3].dynamic_viscosity = 0.0;
+  const auto zero_shear = AssembleCutCellMacStrain3D(grid->view(), inviscid_cells, octants);
+  ASSERT_TRUE(zero_shear.ok()) << zero_shear.status();
+  EXPECT_DOUBLE_EQ(zero_shear->back().quadrature_weight, 0.0);
+  octants[3][1] = octants[3][0];
+  octants[3][0] = 0.0;
+  const auto liquid_only_shear = AssembleCutCellMacStrain3D(grid->view(), inviscid_cells, octants);
+  ASSERT_TRUE(liquid_only_shear.ok()) << liquid_only_shear.status();
+  const double expected_weight = 4.0 * 0.4375 * 0.4375 / (0.125 / 2.0 + 0.25 / 4.0 + 0.0625 / 8.0);
+  EXPECT_NEAR(liquid_only_shear->back().quadrature_weight, expected_weight, kTolerance);
+
+  octants[0][3] = 0.126;
+  EXPECT_EQ(
+      AssembleCutCellMacStrain3D(grid->view(), cells, octants).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
+TEST(Viscosity, CutBoundary3DStrainUsesOwnedPairsAndReproducesAffineVelocity) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<MacViscosityCell3D> cells;
+  std::vector<std::array<double, 8>> octants;
+  for (int z = 0; z < 2; ++z) {
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        cells.push_back({.cell_index = {x, y, z}, .dynamic_viscosity = 2.0});
+        octants.push_back({0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625});
+      }
+    }
+  }
+  std::vector<std::pair<std::size_t, MacPressureFace3D>> ordered_faces;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    std::array<int, 3> end{2, 2, 2};
+    end[axis] = 3;
+    for (int z = 0; z < end[2]; ++z) {
+      for (int y = 0; y < end[1]; ++y) {
+        for (int x = 0; x < end[0]; ++x) {
+          const FaceIndex3D face{static_cast<FaceNormalAxis>(axis), {x, y, z}};
+          const auto slot = grid->view().FaceSlot(face);
+          ASSERT_TRUE(slot.ok()) << slot.status();
+          const std::array coordinate{x, y, z};
+          MacPressureFace3D link{
+              .face_index = face,
+              .open_area = 1.0,
+              .inverse_density = 1.0,
+              .pressure_gradient_distance = 1.0,
+              .predicted_normal_velocity = 0.0,
+              .wall_normal_velocity = 0.0,
+              .pressure_link = InternalMacPressureLink3D{0.0},
+          };
+          if (coordinate[axis] != 1) {
+            link.pressure_link = DirichletMacPressureLink3D{0.0};
+          }
+          ordered_faces.emplace_back(*slot, link);
+        }
+      }
+    }
+  }
+  std::ranges::sort(ordered_faces, {}, &decltype(ordered_faces)::value_type::first);
+  std::vector<MacPressureFace3D> faces;
+  for (const auto& entry : ordered_faces) {
+    faces.push_back(entry.second);
+  }
+  const auto rows = AssembleCutCellMacStrainWithBoundary3D(grid->view(), cells, octants, faces);
+  ASSERT_TRUE(rows.ok()) << rows.status();
+  ASSERT_EQ(rows->size(), 24 + 54);
+  constexpr std::array<std::array<double, 3>, 3> kAffineGradient{{
+      {2.0, 3.0, 5.0},
+      {-1.0, 7.0, 11.0},
+      {1.0, -3.0, 13.0},
+  }};
+  for (const auto& row : *rows) {
+    double affine_strain = 0.0;
+    double rigid_strain = 0.0;
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      const auto face = grid->view().FaceIndex(term.face_slot);
+      ASSERT_TRUE(face.ok()) << face.status();
+      const auto point = grid->FaceWorldAnchor(*face);
+      ASSERT_TRUE(point.ok()) << point.status();
+      const auto component = static_cast<std::size_t>(face->axis);
+      const auto& affine = kAffineGradient[component];
+      affine_strain += term.coefficient * (affine[0] * point->x + affine[1] * point->y + affine[2] * point->z);
+      const std::array rigid{2.0 + point->y, -1.0 - point->x, 3.0};
+      rigid_strain += term.coefficient * rigid[component];
+    }
+    const auto first = static_cast<std::size_t>(row.first_axis);
+    const auto second = static_cast<std::size_t>(row.second_axis);
+    EXPECT_DOUBLE_EQ(affine_strain, 0.5 * (kAffineGradient[first][second] + kAffineGradient[second][first]));
+    EXPECT_DOUBLE_EQ(rigid_strain, 0.0);
+  }
+  for (auto& face : faces) {
+    if (face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == 1) {
+      face.open_area = 0.0;
+      face.pressure_link = SealedMacPressureLink3D{};
+    }
+  }
+  EXPECT_EQ(
+      AssembleCutCellMacStrainWithBoundary3D(grid->view(), cells, octants, faces).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+TEST(Viscosity, FullCell3DStrainRejectsDuplicatesAndMissingFaceOwners) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const MacViscosityCell3D cell{.cell_index = {3, 0, 0}, .dynamic_viscosity = 1.0};
+  const std::array duplicate{cell, cell};
+  EXPECT_EQ(AssembleFullCellMacStrain3D(grid->view(), duplicate).status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(
+      AssembleFullCellMacStrain3D(grid->view(), std::span(&cell, 1)).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+TEST(Viscosity, SolvesSparsePositiveVelocityBlockAndEliminatesPrescribedFaces) {
+  const std::array rows{MacStrainRow3D{
+      .low_cell = {0, 0, 0},
+      .first_axis = FaceNormalAxis::kX,
+      .second_axis = FaceNormalAxis::kX,
+      .terms = {{{.face_slot = 0, .coefficient = 1.0}, {.face_slot = 1, .coefficient = -1.0}}},
+      .term_count = 2,
+      .quadrature_weight = 2.0,
+  }};
+  const std::array inertia{1.0, 3.0, 0.0};
+  const std::array rhs{3.0, 2.0, 0.0};
+  const auto result = SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_EQ(result->velocity.size(), 3);
+  EXPECT_NEAR(result->velocity[0], 2.0, kTolerance);
+  EXPECT_NEAR(result->velocity[1], 1.0, kTolerance);
+  EXPECT_EQ(result->velocity[2], 0.0);
+  EXPECT_LE(result->max_residual, kTolerance);
+
+  const std::array prescribed_inertia{1.0, 0.0, 0.0};
+  const std::array prescribed_rhs{3.0, 0.0, 0.0};
+  const auto reduced = SolveMacViscousVelocityBlock3D({rows, prescribed_inertia, 0.5}, prescribed_rhs);
+  ASSERT_TRUE(reduced.ok()) << reduced.status();
+  EXPECT_NEAR(reduced->velocity[0], 1.5, kTolerance);
+  EXPECT_EQ(reduced->velocity[1], 0.0);
+  EXPECT_EQ(
+      SolveMacViscousVelocityBlock3D({rows, prescribed_inertia, 0.5}, rhs).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs, {.max_iterations = 1}).status().code(),
+      absl::StatusCode::kAborted
+  );
+}
+
+TEST(Viscosity, VelocityBlockMatchesIndependentNormalAndShearMomentum) {
+  const std::array rows{
+      MacStrainRow3D{
+          .low_cell = {0, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kX,
+          .terms = {{{.face_slot = 0, .coefficient = 1.0}, {.face_slot = 1, .coefficient = -1.0}}},
+          .term_count = 2,
+          .quadrature_weight = 2.0,
+      },
+      MacStrainRow3D{
+          .low_cell = {0, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kY,
+          .terms = {{
+              {.face_slot = 0, .coefficient = 0.5},
+              {.face_slot = 1, .coefficient = -0.5},
+              {.face_slot = 2, .coefficient = 0.5},
+              {.face_slot = 3, .coefficient = -0.5},
+          }},
+          .term_count = 4,
+          .quadrature_weight = 8.0,
+      },
+  };
+  const std::array inertia{1.0, 2.0, 3.0, 5.0};
+  constexpr std::array expected_velocity{2.0, -1.0, 3.0, -2.0};
+  // H is diag(inertia) plus the outer products of [1,-1,0,0] and [1,-1,1,-1].
+  const std::array rhs{13.0, -13.0, 17.0, -18.0};
+  const auto result = SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_EQ(result->velocity.size(), expected_velocity.size());
+  for (std::size_t face = 0; face < expected_velocity.size(); ++face) {
+    EXPECT_NEAR(result->velocity[face], expected_velocity[face], kTolerance);
+  }
+  EXPECT_LE(result->max_residual, kTolerance);
+}
+
 TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {
   const TwoFaceCase problem;
   ViscosityResult result(problem.face_velocities.size());
@@ -256,7 +592,7 @@ TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {
   const auto status = ViscousStep(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[0], -89.0 / 111.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[1], -109.0 / 111.0, kTolerance);
 }
@@ -271,16 +607,47 @@ TEST(Viscosity, RejectsExplicitAboveMassScaledLimit) {
   result.ExpectUnchanged();
 }
 
-TEST(Viscosity, PermitsExplicitAtMassScaledLimit) {
+TEST(Viscosity, RoundedBoundCannotAdmitAnUnstableExplicitStep) {
+  const std::array face_velocities{1.0};
+  const std::array face_inertias{7.0};
+  const std::array strain_operator{1.0};
+  const std::array strain_quadrature_weights{1.0};
+  const std::array boundary_strain{0.0};
+  ViscosityInputsView inputs{
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
+      .strain_row_count = 1,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
+      .dt = std::nextafter(14.0, kInfinity),
+      .mode = ViscosityMode::kExplicit,
+      .explicit_stability_margin = 0.0,
+  };
+  ViscosityWorkspace workspace;
+  ViscosityResult rejected(1);
+  EXPECT_EQ(ViscousStep(inputs, rejected.Outputs(), workspace).code(), absl::StatusCode::kFailedPrecondition);
+  rejected.ExpectUnchanged();
+
+  inputs.mode = ViscosityMode::kAuto;
+  ViscosityResult result(1);
+  const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
+  EXPECT_GE(result.diagnostics.spectral_bound, std::nextafter(1.0 / 7.0, kInfinity));
+  EXPECT_NEAR(result.updated_face_velocities[0], 1.0 / 3.0, kTolerance);
+}
+
+TEST(Viscosity, PermitsExplicitBelowCertifiedLimit) {
   const TwoFaceCase problem;
   auto inputs = problem.Inputs();
-  inputs.dt = 0.99 * 2.0 / 110.0;
+  inputs.dt = 0.98 * 2.0 / 101.0;
   ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kExplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[0], 1.0 - 200.0 * inputs.dt, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[1], -1.0 + 2.0 * inputs.dt, kTolerance);
   EXPECT_LT(result.diagnostics.energy_after, result.diagnostics.energy_before);
@@ -381,7 +748,7 @@ TEST(Viscosity, ZeroTimeStepPreservesVelocity) {
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_TRUE(std::ranges::equal(result.updated_face_velocities, problem.face_velocities));
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_EQ(result.diagnostics.energy_before, result.diagnostics.energy_after);
   EXPECT_EQ(result.diagnostics.wall_work, 0.0);
   EXPECT_EQ(result.diagnostics.numerical_dissipation, 0.0);
@@ -409,15 +776,15 @@ TEST(Viscosity, AcceptsOver64StrainRows) {
       .strain_row_count = shape->strain_row_count,
       .strain_quadrature_weights = strain_quadrature_weights,
       .boundary_strain = boundary_strain,
-      .dt = 0.01,
+      .dt = 0.001,
       .mode = ViscosityMode::kExplicit,
   };
   ViscosityResult result(shape->face_velocity_count);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  EXPECT_NEAR(result.updated_face_velocities[28], 1.02, kTolerance);
-  EXPECT_NEAR(result.updated_face_velocities[54], 1.02, kTolerance);
+  EXPECT_NEAR(result.updated_face_velocities[28], 1.002, kTolerance);
+  EXPECT_NEAR(result.updated_face_velocities[54], 1.002, kTolerance);
 }
 
 TEST(Viscosity, RejectsOver64VelocityUnknowns) {
@@ -623,7 +990,8 @@ TEST(Viscosity, RetainsRepresentableStiffnessAndWallLoad) {
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kExplicit);
-  EXPECT_EQ(result.diagnostics.spectral_bound, 0x1p-400);
+  EXPECT_GE(result.diagnostics.spectral_bound, 0x1p-400);
+  EXPECT_NEAR(result.diagnostics.spectral_bound / 0x1p-400, 1.0, kTolerance);
   EXPECT_EQ(result.updated_face_velocities[0], 1.0);
 }
 
@@ -653,7 +1021,8 @@ TEST(Viscosity, ExplicitStepRetainsRepresentableVelocityIncrements) {
     if (!status.ok()) {
       continue;
     }
-    EXPECT_EQ(result.diagnostics.spectral_bound, strain_quadrature_weights[0]);
+    EXPECT_GE(result.diagnostics.spectral_bound, strain_quadrature_weights[0]);
+    EXPECT_NEAR(result.diagnostics.spectral_bound / strain_quadrature_weights[0], 1.0, kTolerance);
     EXPECT_EQ(result.updated_face_velocities[0], 0.0);
     EXPECT_EQ(result.diagnostics.energy_after, 0.0);
     EXPECT_EQ(result.diagnostics.numerical_dissipation, result.diagnostics.energy_before);
