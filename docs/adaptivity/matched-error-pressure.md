@@ -79,3 +79,42 @@ uv run --offline --project reference --locked --group native ctest --test-dir ou
 The recorded executable was built on base
 `ec9ded852b6324afa98ef9e4b622cc6944defa8b`. Its SHA-256 was
 `a3d51de9a6d6ce09a35d3e7491dfc5a28a94eae0416fdf43ca594a4eb49f470e`.
+
+## Public Simulate and Mesh control
+
+The 1.5 × 1 × 1 m stationary tank starts from the same twelve particle IDs,
+positions, velocities, mass, reference volume and current volume in both
+layouts. The uniform control uses the same 0.5 m finest spacing. The graded
+control uses one 1 m leaf and four 0.5 m leaves. Frames 0–2 use the normal
+public Simulate and Mesh stages, authenticated EffectsSource samples, and
+separate read-only replay processes.
+
+The common limits are 1e-9 m particle displacement, 1e-9 m/s particle speed,
+exact represented particle inventories, and 0.5% Mesh volume error. Both
+backends and layouts measured zero speed and displacement, retained all 458
+Mesh IDs, and measured relative volume error 1.1102230246251565e-15. Each
+replay reproduced its own accepted payloads and left the caches byte-identical.
+
+| Backend | Layout | Active cells | Face slots | Simulate + Mesh (s) | Peak CUDA arena bytes |
+| --- | --- | ---: | ---: | ---: | ---: |
+| CPU | Uniform | 12 | 2,112 | 4.880 | |
+| CPU | Graded | 5 | 25 | 4.881 | |
+| SM120 | Uniform | 12 | 2,112 | 5.784 | 113,726,464 |
+| SM120 | Graded | 5 | 25 | 5.315 | 291,584 |
+
+Uniform counts include packed MAC slots. These timings are one observed
+short run per variant with shared host load. The measured scope ends after
+Mesh and drains Simulate's device arena.
+
+```powershell
+cmake --build out/build/matched-runtime --target fluidity_simulate fluidity_simulate_fixture --parallel 2
+$solver = 'out/build/matched-runtime/fluidity_simulate.exe'
+$fixture = 'out/build/matched-runtime/fluidity_simulate_fixture.exe'
+uv run --project reference --locked --group native python tools/adaptivity/qualify_matched_runtime.py --solver $solver --fixture $fixture --backend cpu --output out/matched-public-cpu
+uv run --project reference --locked --group native python tools/adaptivity/qualify_matched_runtime.py --solver $solver --fixture $fixture --backend cuda --output out/matched-public-cuda
+```
+
+Use fresh output directories. Each `receipt.json` records executable and
+input hashes, exact process arguments, limits, device budget and numerical
+results. The reference-wave gate uses the complete pipeline and a matched
+moving-surface reference. [Full-wave qualification](production-integration.md#full-wave)
