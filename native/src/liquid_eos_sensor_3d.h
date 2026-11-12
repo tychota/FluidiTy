@@ -7,6 +7,18 @@
 
 namespace fluidity::liquid_step_internal {
 
+struct PhaseFieldSample {
+  double distance;  // Distance to phase A particles minus distance to phase B particles, in metres.
+  std::size_t nearest_particle;
+};
+
+// Samples the common-radius phase field at a world position. The caller has
+// validated explicit donors in both configured phases. Ties select phase A.
+PhaseFieldSample SampleParticlePhaseField3D(
+    std::span<const LiquidParticleState3D> particles,
+    const LiquidPhasePair3D& pair,
+    Vec3 position
+);
 struct CellCompositionDensity3D {
   double sampled_volume_m3 = 0.0;
   double sampled_mass_kg = 0.0;

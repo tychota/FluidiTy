@@ -59,6 +59,77 @@ TEST(SurfaceReconstruction3D, EvaluatesAndCachesMixedSurfaceFractions) {
   }
 }
 
+TEST(SurfaceReconstruction3D, PublishesSharedSheetFromTwoParticlePhases) {
+  auto seed = Seed();
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(particles->Resize(2).ok());
+  (*particles)[0] = seed.particles[0];
+  (*particles)[0].world_velocity.x = 0.24;
+  (*particles)[0].mass = 1000;
+  (*particles)[0].phase_id = 4;
+  (*particles)[0].constituent_count = 1;
+  (*particles)[0].constituents[0] = {8, 1.0};
+  (*particles)[1] = (*particles)[0];
+  (*particles)[1].id = 2;
+  (*particles)[1].world_position = {2.92, 2.64, 2.57};
+  (*particles)[1].mass = 820;
+  (*particles)[1].phase_id = 5;
+  (*particles)[1].constituents[0] = {25, 1.0};
+  seed.particles = std::move(*particles);
+  seed.next_particle_id = 3;
+  const auto motion_bytes = EncodeMotionSeed3D(seed);
+  ASSERT_TRUE(motion_bytes.ok()) << motion_bytes.status();
+  const auto source = DecodeMotionFrame3D(motion_bytes->values());
+  ASSERT_TRUE(source.ok()) << source.status();
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {25, 5, 820.0}}};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 0.0}}};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{1.1};
+  scene.constituent_materials = kMaterials;
+  scene.phase_pairs = kPairs;
+  scene.world_acceleration = {};
+  LiquidStepOptions3D step;
+  step.capacities = {16, 64, 128, 12288, 1};
+  const SurfaceReconstructionOptions3D options{.spacing_m = 0.25, .sigma_m = 0.25};
+  const auto reconstructed = ReconstructSurfaceFrame3D(*source, scene, step, nullptr, options);
+  ASSERT_TRUE(reconstructed.ok()) << reconstructed.status();
+  ASSERT_TRUE(reconstructed->frame.phase_interface);
+  const auto& sheet = *reconstructed->frame.phase_interface;
+  EXPECT_EQ(sheet.phase_a, 4);
+  EXPECT_EQ(sheet.phase_b, 5);
+  EXPECT_FALSE(sheet.triangles.empty());
+  EXPECT_NE(std::ranges::find(sheet.exterior_sides, 0), sheet.exterior_sides.end());
+  EXPECT_NE(std::ranges::find(sheet.exterior_sides, 1), sheet.exterior_sides.end());
+  EXPECT_NEAR(reconstructed->corrected_metrics.signed_volume, 2.0, 0.01);
+  auto scheduler = LiquidSubstepScheduler3D::Create(seed, scene, step);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto capture = MotionCapture3D::Create(scheduler->committed(), 1.0 / 24, 16);
+  ASSERT_TRUE(capture.ok()) << capture.status();
+  const LiquidProgressObserver3D observer{
+      .context = &*capture,
+      .observe =
+          [](void* context, const LiquidState3D& state, const LiquidStepDiagnostics3D&, bool rollback) {
+            return static_cast<MotionCapture3D*>(context)->Observe(state, rollback);
+          },
+  };
+  const auto advanced = scheduler->AdvanceFrame(1.0 / 24, observer);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  const auto captured = capture->Finish(scheduler->committed());
+  ASSERT_TRUE(captured.ok()) << captured.status();
+  const auto moving = DecodeMotionFrame3D(captured->values());
+  ASSERT_TRUE(moving.ok()) << moving.status();
+  const auto next = ReconstructSurfaceFrame3D(*moving, scene, step, &reconstructed->frame, options);
+  ASSERT_TRUE(next.ok()) << next.status();
+  ASSERT_TRUE(next->frame.phase_interface);
+  EXPECT_EQ(next->frame.phase_interface->triangles, sheet.triangles);
+  EXPECT_EQ(next->retained_ids, reconstructed->frame.mesh.vertices.size());
+  for (std::size_t index = 0; index < next->frame.mesh.vertices.size(); ++index) {
+    const auto& vertex = next->frame.mesh.vertices[index];
+    EXPECT_EQ(vertex.id, reconstructed->frame.mesh.vertices[index].id);
+    EXPECT_NEAR(vertex.geometric_velocity.x, 0.24, 1e-8);
+  }
+}
 TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
   constexpr int kWidth = 8;
   constexpr std::size_t kBandCount = 296;

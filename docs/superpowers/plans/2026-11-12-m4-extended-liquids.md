@@ -575,3 +575,11 @@ The optional Mesh frame record carries an ordered stable phase pair, one label p
 A tetrahedron split by an oblique plane round-tripped byte-for-byte with one interior vertex and one shared seam. Wrong exterior labels, flipped shared winding and an out-of-range index were rejected. The combined vertex budget also refused the fixture on decode. Five focused CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceCache3D|PartitionsTwoClosed|EvaluatesAndCachesMixed'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-shared-surface-cache.
 
 The codec is ready for the production reconstruction to preserve the shared seam through correction and for USD to publish the internal sheet.
+
+## Production shared surface reconstruction receipt
+
+The Mesh reconstruction now samples the same nearest-phase field as pressure projection. It extracts both labeled exterior patches and one shared sheet on a common lattice anchored to the lowest particle ID. Exterior volume correction moves the shared seam indices directly. The cache validator then certifies both closed phase boundaries. The moving path retains exterior IDs when indexed connectivity and phase labels agree and displacement is bounded by one cell width. A change in the anchor, connectivity or phase appearance requires seam lineage and currently refuses the frame.
+
+The production reconstruction fixture advanced two immiscible particle phases through an accepted CPU scheduler frame and rebuilt the phase sheet from its MotionInterval. The sheet retained connectivity, every exterior vertex retained its ID, and geometric velocity matched the prescribed 0.24 m/s translation to 1e-8 m/s. The corrected seed exterior met the 0.5% volume gate, and the encoder validated the closed phase boundaries for both frames. Initial negative receipts show connectivity drift on a fixed world lattice and an invalid manufactured carrier without accepted velocity faces.
+
+The debug CPU simulator built. Six focused CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'PublishesSharedSheet|EvaluatesAndCachesMixed|SurfaceCache3D|PhaseCrossing'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-production-shared. USD publication of the sheet, topology-changing phase tracking and the three-source render gate remain open.

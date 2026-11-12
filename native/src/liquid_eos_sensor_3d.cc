@@ -104,31 +104,6 @@ ExplicitParticleDensity(const LiquidParticleState3D& particle, std::span<const L
   return density;
 }
 
-struct PhaseFieldSample {
-  double distance;
-  std::size_t nearest_particle;
-};
-
-PhaseFieldSample
-SamplePhaseField(std::span<const LiquidParticleState3D> particles, const LiquidPhasePair3D& pair, Vec3 position) {
-  std::array distances{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
-  std::array<std::size_t, 2> nearest{};
-  for (std::size_t index = 0; index < particles.size(); ++index) {
-    const auto& particle = particles[index];
-    const std::size_t phase = particle.phase_id == pair.phase_a ? 0 : 1;
-    const double distance = std::hypot(
-        position.x - particle.world_position.x,
-        position.y - particle.world_position.y,
-        position.z - particle.world_position.z
-    );
-    if (distance < distances[phase]) {
-      distances[phase] = distance;
-      nearest[phase] = index;
-    }
-  }
-  return {distances[0] - distances[1], nearest[distances[0] <= distances[1] ? 0 : 1]};
-}
-
 absl::Status DepositCompositionDensity(
     CellCompositionDensity3D& sensor,
     double weight,
@@ -146,6 +121,29 @@ absl::Status DepositCompositionDensity(
 }
 
 }  // namespace
+
+PhaseFieldSample SampleParticlePhaseField3D(
+    std::span<const LiquidParticleState3D> particles,
+    const LiquidPhasePair3D& pair,
+    Vec3 position
+) {
+  std::array distances{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+  std::array<std::size_t, 2> nearest{};
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& particle = particles[index];
+    const std::size_t phase = particle.phase_id == pair.phase_a ? 0 : 1;
+    const double distance = std::hypot(
+        position.x - particle.world_position.x,
+        position.y - particle.world_position.y,
+        position.z - particle.world_position.z
+    );
+    if (distance < distances[phase]) {
+      distances[phase] = distance;
+      nearest[phase] = index;
+    }
+  }
+  return {distances[0] - distances[1], nearest[distances[0] <= distances[1] ? 0 : 1]};
+}
 
 absl::Status SampleLiquidCellVolumeRatios3D(
     UniformMacGeometry3D geometry,
@@ -254,7 +252,7 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
     if (!position.ok()) {
       return position.status();
     }
-    const auto field = SamplePhaseField(particles, pair, *position);
+    const auto field = SampleParticlePhaseField3D(particles, pair, *position);
     if (!std::isfinite(field.distance)) {
       return absl::Status(absl::StatusCode::kFailedPrecondition, {});
     }
@@ -350,8 +348,11 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
       for (int z = -1; z <= 1; ++z) {
         for (int y = -1; y <= 1; ++y) {
           for (int x = -1; x <= 1; ++x) {
-            const auto field =
-                SamplePhaseField(particles, pair, {position[0] + x * h, position[1] + y * h, position[2] + z * h});
+            const auto field = SampleParticlePhaseField3D(
+                particles,
+                pair,
+                {position[0] + x * h, position[1] + y * h, position[2] + z * h}
+            );
             query.derivative_distances[(z + 1) * 9 + (y + 1) * 3 + x + 1] = field.distance;
           }
         }

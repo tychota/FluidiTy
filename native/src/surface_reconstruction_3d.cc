@@ -11,6 +11,7 @@
 #include "fluidity/host/surface_closest_point_3d.h"
 #include "fluidity/host/surface_field_3d.h"
 #include "fluidity/host/surface_material_components_3d.h"
+#include "liquid_eos_sensor_3d.h"
 #include "liquid_substep_3d_internal.h"
 
 namespace fluidity {
@@ -343,8 +344,33 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     result.frame.mesh.next_id = previous == nullptr ? 1 : previous->mesh.next_id;
     return result;
   }
+  std::array<std::uint64_t, 2> phase_ids{};
+  bool has_legacy_particles = false;
+  for (const auto& particle : endpoint.particles.values()) {
+    if (particle.constituent_count == 0) {
+      has_legacy_particles = true;
+      continue;
+    }
+    if (phase_ids[0] == 0) {
+      phase_ids[0] = particle.phase_id;
+    } else if (particle.phase_id != phase_ids[0] && phase_ids[1] == 0) {
+      phase_ids[1] = particle.phase_id;
+    } else if (particle.phase_id != phase_ids[0] && particle.phase_id != phase_ids[1]) {
+      return absl::FailedPreconditionError("surface reconstruction requires at most two active explicit phases");
+    }
+  }
+  const LiquidPhasePair3D* phase_pair = nullptr;
+  if (phase_ids[1] != 0) {
+    phase_pair = FindLiquidPhasePair3D(scene.phase_pairs, phase_ids[0], phase_ids[1]);
+    if (!phase_pair || has_legacy_particles || !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)) {
+      return absl::FailedPreconditionError("shared surface requires a configured particle-sphere phase pair");
+    }
+  }
+  if (previous && previous->phase_interface.has_value() != (phase_pair != nullptr)) {
+    return absl::FailedPreconditionError("shared surface phase appearance or disappearance requires lineage");
+  }
   if (const auto* sphere_union = std::get_if<LiquidParticleSphereUnion3D>(&scene.field)) {
-    if (previous == nullptr) {
+    if (previous == nullptr && !phase_pair) {
       const auto partition = PartitionSurfaceSphereUnion3D(
           endpoint.particles.values(),
           sphere_union->radius,
@@ -570,16 +596,30 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     upper = {tank->high_x, plane->world_surface_height_y, tank->high_z};
   }
   const double padding = 4 * options.sigma_m + 3 * options.spacing_m;
+  std::array<double, 3> lattice_anchor{};
+  if (phase_pair) {
+    // Anchor at the lowest persistent particle ID so a common translation
+    // does not itself create a different triangulation on a fixed grid.
+    const auto anchor = std::ranges::min_element(endpoint.particles.values(), {}, &LiquidParticleState3D::id);
+    if (previous) {
+      const auto old_particles = source.samples.front().particles.values();
+      const auto old_anchor = std::ranges::min_element(old_particles, {}, &LiquidParticleState3D::id);
+      if (old_anchor == old_particles.end() || old_anchor->id != anchor->id) {
+        return absl::FailedPreconditionError("shared surface lattice anchor changed without seam lineage");
+      }
+    }
+    lattice_anchor = {anchor->world_position.x, anchor->world_position.y, anchor->world_position.z};
+  }
   std::array<std::size_t, 3> extent;
   for (std::size_t axis = 0; axis < 3; ++axis) {
-    const double minimum_index = std::floor((lower[axis] - padding) / options.spacing_m);
-    const double maximum_index = std::ceil((upper[axis] + padding) / options.spacing_m);
+    const double minimum_index = std::floor((lower[axis] - lattice_anchor[axis] - padding) / options.spacing_m);
+    const double maximum_index = std::ceil((upper[axis] - lattice_anchor[axis] + padding) / options.spacing_m);
     const double nodes = maximum_index - minimum_index + 1;
     if (!std::isfinite(nodes) || nodes < 2 || nodes > options.maximum_nodes || std::abs(minimum_index) > 0x1p52
         || std::abs(maximum_index) > 0x1p52) {
       return absl::ResourceExhaustedError("surface lattice bounds exceed numerical or work limits");
     }
-    lower[axis] = minimum_index * options.spacing_m;
+    lower[axis] = lattice_anchor[axis] + minimum_index * options.spacing_m;
     extent[axis] = static_cast<std::size_t>(nodes);
   }
   auto field = BuildSurfaceDensity3D(
@@ -629,7 +669,79 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       }
     }
   }
-  auto raw_mesh = ExtractSurfaceMesh3D(*field, options.limits.maximum_vertices);
+  const auto extract = [&]() -> absl::StatusOr<SurfaceMesh3D> {
+    if (!phase_pair) {
+      return ExtractSurfaceMesh3D(*field, options.limits.maximum_vertices);
+    }
+    std::vector<double> phase_distance;
+    phase_distance.reserve(field->values.size());
+    for (std::size_t x = 0; x < extent[0]; ++x) {
+      for (std::size_t y = 0; y < extent[1]; ++y) {
+        for (std::size_t z = 0; z < extent[2]; ++z) {
+          const Vec3 position{
+              field->origin.x + x * field->spacing,
+              field->origin.y + y * field->spacing,
+              field->origin.z + z * field->spacing,
+          };
+          phase_distance.push_back(
+              liquid_step_internal::SampleParticlePhaseField3D(endpoint.particles.values(), *phase_pair, position)
+                  .distance
+          );
+        }
+      }
+    }
+    const auto partition = ExtractSurfacePartition3D(*field, phase_distance, options.limits.maximum_vertices);
+    if (!partition.ok()) {
+      return partition.status();
+    }
+    if (partition->triangles.size() > options.limits.maximum_triangles) {
+      return absl::ResourceExhaustedError("shared surface triangle budget exceeded");
+    }
+    auto& sheet = result.frame.phase_interface.emplace();
+    sheet.phase_a = phase_pair->phase_a;
+    sheet.phase_b = phase_pair->phase_b;
+    SurfaceMesh3D mesh;
+    std::vector<std::uint32_t> indices(partition->positions.size(), UINT32_MAX);
+    for (std::size_t index = 0; index < partition->triangles.size(); ++index) {
+      const auto type = partition->face_types[index];
+      if (type == SurfacePartitionFace3D::kPhaseAToPhaseB) {
+        continue;
+      }
+      auto triangle = partition->triangles[index];
+      for (auto& vertex : triangle) {
+        auto& exterior = indices[vertex];
+        if (exterior == UINT32_MAX) {
+          exterior = static_cast<std::uint32_t>(mesh.vertices.size());
+          const auto position = partition->positions[vertex];
+          const auto normal = FieldNormal(*field, position);
+          if (!normal.ok()) {
+            return normal.status();
+          }
+          mesh.vertices.push_back({.id = mesh.next_id++, .position = position, .normal = *normal});
+        }
+        vertex = exterior;
+      }
+      mesh.triangles.push_back(triangle);
+      sheet.exterior_sides.push_back(type == SurfacePartitionFace3D::kPhaseAToAir ? 0 : 1);
+    }
+    for (std::size_t index = 0; index < partition->triangles.size(); ++index) {
+      if (partition->face_types[index] != SurfacePartitionFace3D::kPhaseAToPhaseB) {
+        continue;
+      }
+      auto triangle = partition->triangles[index];
+      for (auto& vertex : triangle) {
+        auto& shared = indices[vertex];
+        if (shared == UINT32_MAX) {
+          shared = static_cast<std::uint32_t>(mesh.vertices.size() + sheet.interior_positions.size());
+          sheet.interior_positions.push_back(partition->positions[vertex]);
+        }
+        vertex = shared;
+      }
+      sheet.triangles.push_back(triangle);
+    }
+    return mesh;
+  };
+  auto raw_mesh = extract();
   if (!raw_mesh.ok()) {
     return raw_mesh.status();
   }
@@ -726,7 +838,35 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
     return velocity;
   };
-  if (previous != nullptr) {
+  if (phase_pair) {
+    if (previous) {
+      const auto& old_sheet = *previous->phase_interface;
+      const auto& sheet = *result.frame.phase_interface;
+      if (previous->mesh.triangles != raw_mesh->triangles || previous->mesh.vertices.size() != raw_mesh->vertices.size()
+          || old_sheet.phase_a != sheet.phase_a || old_sheet.phase_b != sheet.phase_b
+          || old_sheet.exterior_sides != sheet.exterior_sides || old_sheet.triangles != sheet.triangles) {
+        return absl::FailedPreconditionError("shared surface connectivity change requires phase seam tracking");
+      }
+      raw_mesh->next_id = previous->mesh.next_id;
+      const double duration = source.last_clock.time - source.first_clock.time;
+      for (std::size_t index = 0; index < raw_mesh->vertices.size(); ++index) {
+        auto& vertex = raw_mesh->vertices[index];
+        const auto& old_vertex = previous->mesh.vertices[index];
+        const Vec3 displacement{
+            vertex.position.x - old_vertex.position.x,
+            vertex.position.y - old_vertex.position.y,
+            vertex.position.z - old_vertex.position.z,
+        };
+        if (std::hypot(displacement.x, displacement.y, displacement.z) > cell_width_m) {
+          return absl::FailedPreconditionError("shared surface identity moved outside its correspondence neighborhood");
+        }
+        vertex.id = old_vertex.id;
+        vertex.age_seconds = old_vertex.age_seconds + duration;
+      }
+      result.retained_ids = raw_mesh->vertices.size();
+    }
+    result.frame.mesh = std::move(*raw_mesh);
+  } else if (previous != nullptr) {
     const auto metrics = MeasureSurfaceMesh3D(previous->mesh);
     if (!metrics.ok()) {
       return metrics.status();
