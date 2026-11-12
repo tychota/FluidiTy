@@ -2,7 +2,7 @@
 
 #include <span>
 
-#include "fluidity/host/liquid_boundary_geometry_3d.h"
+#include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 
 namespace fluidity::liquid_step_internal {
@@ -10,6 +10,9 @@ namespace fluidity::liquid_step_internal {
 struct CellCompositionDensity3D {
   double sampled_volume_m3 = 0.0;
   double sampled_mass_kg = 0.0;
+  double extrapolated_density = 0.0;  // Nearest same-phase density where tent support is empty.
+  double phase_distance = 0.0;  // Difference of nearest phase distances, negative for phase A.
+  std::size_t nearest_particle = 0;  // Same-phase donor for unsensed cells.
 };
 
 // Samples the additive-volume density law over selected pressure cells.
@@ -23,6 +26,20 @@ absl::Status SampleLiquidCellCompositionDensity3D(
     std::span<const LiquidConstituentMaterial3D> materials,
     double legacy_density,
     std::span<CellCompositionDensity3D> sensors
+);
+
+// Prepares phase-local density and certified links for the configured active
+// two-phase pair. Both phases require at least one selected pressure cell.
+// Legacy donors and a third active phase require another interface model.
+// The phase field is the difference of the two particle-sphere union distances
+// for their common support radius. Scratch is in frozen cell and face order.
+absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    const LiquidPhasePair3D& pair,
+    std::span<CellCompositionDensity3D> sensors,
+    std::span<LiquidInternalInterface3D> crossings
 );
 
 struct CellVolumeRatioSensor3D {

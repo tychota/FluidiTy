@@ -1187,6 +1187,47 @@ TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
   );
 }
 
+TEST(CudaLiquidSubstep3D, ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry) {
+  constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 3.0e6}}};
+  auto initial = Initial();
+  initial.particles[0].world_velocity = {};
+  initial.particles[0].mass = 1015.0;
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
+  initial.particles[1].world_position.x += 1.0;
+  initial.particles[1].world_velocity = {};
+  initial.particles[1].mass = 820.0;
+  initial.particles[1].phase_id = 5;
+  initial.particles[1].constituent_count = 1;
+  initial.particles[1].constituents[0] = {25, 1.0};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  scene.world_acceleration = {};
+  scene.constituent_materials = kMaterials;
+  scene.phase_pairs = kPairs;
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+  ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
+  EXPECT_EQ(gpu->diagnostics().dt_retries, 1);
+  EXPECT_EQ(cpu->diagnostics().dt_retries, 1);
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaLiquidSubstep3D, DiscoveredCavitySurvivesCheckpointResume) {
   const auto initial = cavity_test::ParticleShell();
   ASSERT_TRUE(initial.ok()) << initial.status();

@@ -807,20 +807,46 @@ struct LiquidSubstepScheduler3D::Impl {
     double minimum_predictor_density = scene.liquid_density;
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
-    const bool uses_composition_density = staging.composition_density
-        && std::ranges::any_of(trial.particles.values(), [](const LiquidParticleState3D& particle) {
-                                            return particle.constituent_count != 0;
-                                          });
+    const auto particles = trial.particles.values();
+    const auto first_explicit = std::ranges::find_if(particles, [](const LiquidParticleState3D& particle) {
+      return particle.constituent_count != 0;
+    });
+    const bool uses_composition_density = staging.composition_density && first_explicit != particles.end();
+    std::span<const LiquidInternalInterface3D> internal_interfaces;
     if (uses_composition_density) {
       STEP_TRY(staging.composition_density->Resize(frozen->cells.size()));
-      STEP_TRY(liquid_step_internal::SampleLiquidCellCompositionDensity3D(
-          grid.geometry(),
-          frozen->cells,
-          trial.particles.values(),
-          scene.constituent_materials,
-          scene.liquid_density,
-          staging.composition_density->values()
-      ));
+      const auto second_phase = std::ranges::find_if(particles, [&](const LiquidParticleState3D& particle) {
+        return particle.constituent_count != 0 && particle.phase_id != first_explicit->phase_id;
+      });
+      if (second_phase == particles.end()) {
+        STEP_TRY(liquid_step_internal::SampleLiquidCellCompositionDensity3D(
+            grid.geometry(),
+            frozen->cells,
+            particles,
+            scene.constituent_materials,
+            scene.liquid_density,
+            staging.composition_density->values()
+        ));
+      } else {
+        const auto* pair = FindLiquidPhasePair3D(scene.phase_pairs, first_explicit->phase_id, second_phase->phase_id);
+        if (!pair || !staging.phase_crossings || !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
+            || staging.drift_sensors) {
+          return Error(absl::StatusCode::kFailedPrecondition);
+        }
+        STEP_TRY(staging.phase_crossings->Resize(frozen->faces.size()));
+        const auto count = liquid_step_internal::PrepareLiquidPhaseCrossings3D(
+            *frozen,
+            particles,
+            scene.constituent_materials,
+            *pair,
+            staging.composition_density->values(),
+            staging.phase_crossings->values()
+        );
+        if (!count.ok()) {
+          return count.status();
+        }
+        internal_interfaces = staging.phase_crossings->values().first(*count);
+      }
     }
     if (staging.drift_sensors) {
       STEP_TRY(staging.drift_sensors->Resize(frozen->cells.size()));
@@ -852,6 +878,8 @@ struct LiquidSubstepScheduler3D::Impl {
           if (!std::isfinite(*predicted_density) || *predicted_density <= 0.0) {
             return Error(absl::StatusCode::kOutOfRange);
           }
+        } else if (sensed.extrapolated_density > 0.0) {
+          predicted_density = sensed.extrapolated_density;
         }
       }
       if (eos) {
@@ -977,6 +1005,7 @@ struct LiquidSubstepScheduler3D::Impl {
             .ambient_pressure = scene.ambient_pressure,
             .wetted_piston_face_fluxes = wetted_piston_face_fluxes,
             .air_cell_pressures = cavity_boundaries.air_pressures,
+            .internal_interfaces = internal_interfaces,
         },
         boundary
     );
@@ -1419,7 +1448,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       needs_isolated_drop,
       scene.drift && scene.drift->maximum_rate > 0.0,
       scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos,
-      !scene.constituent_materials.empty()
+      !scene.constituent_materials.empty(),
+      !scene.phase_pairs.empty()
   );
   if (!staging.ok()) {
     return staging.status();
@@ -1730,7 +1760,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           impl_->staging.isolated_drop_pressure_faces.has_value(),
           impl_->staging.drift_sensors.has_value(),
           impl_->staging.drift_pressure_cells.has_value(),
-          impl_->staging.composition_density.has_value()
+          impl_->staging.composition_density.has_value(),
+          impl_->staging.phase_crossings.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

@@ -134,6 +134,65 @@ TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
   EXPECT_EQ(*new_cell, 1.0);
 }
 
+TEST(LiquidSubstep3D, DiscoversParticlePhaseCrossingAndRetriesAtItsCapillaryLimit) {
+  constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 3.0e6}}};
+  auto initial = Initial(2);
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
+  initial.particles[0].mass = 1015.0;
+  initial.particles[1].world_position.x += 1.0;
+  initial.particles[1].phase_id = 5;
+  initial.particles[1].constituent_count = 1;
+  initial.particles[1].constituents[0] = {25, 1.0};
+  initial.particles[1].mass = 820.0;
+
+  std::size_t crossings_seen = 0;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &crossings_seen;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    EXPECT_EQ(fields.cells.size(), 2);
+    if (fields.cells.size() == 2) {
+      EXPECT_DOUBLE_EQ(fields.cells[0].density.value_or(0.0), 1015.0);
+      EXPECT_DOUBLE_EQ(fields.cells[1].density.value_or(0.0), 820.0);
+    }
+    EXPECT_EQ(fields.internal_interfaces.size(), 1);
+    for (const auto& crossing : fields.internal_interfaces) {
+      ++*static_cast<std::size_t*>(context);
+      EXPECT_DOUBLE_EQ(crossing.tail_fraction, 0.5);
+      EXPECT_DOUBLE_EQ(crossing.surface_tension, 3.0e6);
+      EXPECT_NEAR(crossing.curvature_tail_to_head, 0.0, 1.0e-13);
+    }
+    return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+  };
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  scene.world_acceleration = {};
+  scene.constituent_materials = kMaterials;
+  scene.phase_pairs = kPairs;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(status.ok()) << status << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_EQ(scheduler->diagnostics().dt_retries, 1);
+  EXPECT_EQ(crossings_seen, 3);
+
+  initial.particles[1].world_position = initial.particles[0].world_position;
+  auto unresolved = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(unresolved.ok()) << unresolved.status();
+  EXPECT_EQ(unresolved->AdvanceFrame(0.01).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(unresolved->committed() == initial);
+}
+
 TEST(LiquidSubstep3D, UsesCurrentVolumeMixtureDensityInPressureLinks) {
   constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
   struct Observation {

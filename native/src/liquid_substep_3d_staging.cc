@@ -270,7 +270,8 @@ absl::StatusOr<Staging> Staging::Create(
     bool needs_isolated_drop,
     bool needs_drift_sensors,
     bool needs_incompressible_drift,
-    bool needs_composition_density
+    bool needs_composition_density,
+    bool needs_phase_crossings
 ) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -288,6 +289,9 @@ absl::StatusOr<Staging> Staging::Create(
   STEP_TRY(Reserve(staging.old_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.new_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.pressure_fields, capacities.cells, staging.reserved_bytes));
+  if (needs_phase_crossings) {
+    STEP_TRY(Reserve(staging.phase_crossings.emplace(), capacities.faces, staging.reserved_bytes));
+  }
   if (needs_composition_density) {
     STEP_TRY(Reserve(staging.composition_density.emplace(), capacities.cells, staging.reserved_bytes));
   }

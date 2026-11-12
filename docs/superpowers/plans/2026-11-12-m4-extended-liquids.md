@@ -503,3 +503,11 @@ The resolved scene now carries one canonical tension record per configured pair 
 The fixture round-tripped the water–oil pair, checked 0.031 N/m and symmetric lookup, and rejected reversed authoring order, an unknown phase and negative tension. Forty-two CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidMixture3D|SharedLiquidInterface'. Twenty-two serial real-device CUDA regressions passed under windows-release-cuda. Both simulator targets built. The production schema exposes liquid_phase_pairs and clang-format 19.1.5 passed. Receipts use out/m4-phase-pairs.
 
 The pair table is ready for phase-field crossing assembly. The scheduler still needs to construct those crossings and use the pair settings in projection.
+
+## Particle-derived two-phase projection receipt
+
+The scheduler now supports an active configured pair in the common-radius particle-union field. The difference of nearest phase distances labels pressure centers and locates each crossing along its center segment. Density uses only same-phase donors, with nearest same-phase extrapolation outside tent support. The existing centered curvature operator evaluates the phase field at the crossing. Shared links apply pair tension and the internal capillary bound. This slice uses the split-viscosity approximation of zero normal viscous jump. A missing pair, a third active phase, legacy donors in the two-phase scene, active drift correction, or a phase with no resolved pressure cell refuses the step.
+
+The planar water–oil fixture verified the shared crossing at one-half of the segment, zero signed curvature, densities of 1015 and 820 kg/m³, and a capillary retry. A co-located unresolved pair left committed state unchanged. The broad CPU scheduler, geometry and mixture suite passed 140 cases before the final guard. Eight focused CPU checks and 23 serial real-device CUDA checks passed after it. CPU and CUDA matched on the particle-derived crossing and retry. Compute Sanitizer reported zero errors on that CUDA case. clang-format 19.1.5 passed. Receipts use out/m4-particle-phase-crossings.
+
+The phase reconstruction and density staging are host-side. Curved, moving and shared render interface qualification, constituent remap, and the full clear/dyed-water and oil workflow remain open.

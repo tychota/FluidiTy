@@ -7,6 +7,9 @@
 #include <numeric>
 #include <tuple>
 
+#include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+#include "liquid_boundary_backend.h"
+
 namespace fluidity::liquid_step_internal {
 namespace {
 
@@ -86,6 +89,62 @@ absl::Status ScatterCellTent(
   return absl::OkStatus();
 }
 
+double
+ExplicitParticleDensity(const LiquidParticleState3D& particle, std::span<const LiquidConstituentMaterial3D> materials) {
+  double density = 0.0;
+  for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+    const auto material =
+        std::ranges::lower_bound(materials, constituent.substance_id, {}, &LiquidConstituentMaterial3D::substance_id);
+    if (material == materials.end() || material->substance_id != constituent.substance_id
+        || material->phase_id != particle.phase_id) {
+      return 0.0;
+    }
+    density = std::fma(constituent.volume_fraction, material->density_kg_per_m3, density);
+  }
+  return density;
+}
+
+struct PhaseFieldSample {
+  double distance;
+  std::size_t nearest_particle;
+};
+
+PhaseFieldSample
+SamplePhaseField(std::span<const LiquidParticleState3D> particles, const LiquidPhasePair3D& pair, Vec3 position) {
+  std::array distances{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+  std::array<std::size_t, 2> nearest{};
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& particle = particles[index];
+    const std::size_t phase = particle.phase_id == pair.phase_a ? 0 : 1;
+    const double distance = std::hypot(
+        position.x - particle.world_position.x,
+        position.y - particle.world_position.y,
+        position.z - particle.world_position.z
+    );
+    if (distance < distances[phase]) {
+      distances[phase] = distance;
+      nearest[phase] = index;
+    }
+  }
+  return {distances[0] - distances[1], nearest[distances[0] <= distances[1] ? 0 : 1]};
+}
+
+absl::Status DepositCompositionDensity(
+    CellCompositionDensity3D& sensor,
+    double weight,
+    double current_volume,
+    double particle_density
+) {
+  const double weighted_volume = weight * current_volume;
+  sensor.sampled_volume_m3 += weighted_volume;
+  sensor.sampled_mass_kg = std::fma(weighted_volume, particle_density, sensor.sampled_mass_kg);
+  if (weighted_volume <= 0.0 || !std::isfinite(sensor.sampled_volume_m3) || !std::isfinite(sensor.sampled_mass_kg)
+      || sensor.sampled_mass_kg <= 0.0) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::Status SampleLiquidCellVolumeRatios3D(
@@ -156,39 +215,162 @@ absl::Status SampleLiquidCellCompositionDensity3D(
         return absl::Status(absl::StatusCode::kFailedPrecondition, {});
       }
       phase = particle.phase_id;
-      particle_density = 0.0;
-      for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
-        const auto material = std::ranges::lower_bound(
-            materials,
-            constituent.substance_id,
-            {},
-            &LiquidConstituentMaterial3D::substance_id
-        );
-        if (material == materials.end() || material->substance_id != constituent.substance_id
-            || material->phase_id != particle.phase_id) {
-          return absl::Status(absl::StatusCode::kInvalidArgument, {});
-        }
-        particle_density = std::fma(constituent.volume_fraction, material->density_kg_per_m3, particle_density);
+      particle_density = ExplicitParticleDensity(particle, materials);
+      if (!std::isfinite(particle_density) || particle_density <= 0.0) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
     const double current_volume = particle.reference_volume * particle.volume_ratio;
     const auto scattered =
         ScatterCellTent(geometry, cells, particle.world_position, [&](std::size_t cell, double weight) {
-          const double weighted_volume = weight * current_volume;
-          auto& sensor = sensors[cell];
-          sensor.sampled_volume_m3 += weighted_volume;
-          sensor.sampled_mass_kg = std::fma(weighted_volume, particle_density, sensor.sampled_mass_kg);
-          if (weighted_volume <= 0.0 || !std::isfinite(sensor.sampled_volume_m3)
-              || !std::isfinite(sensor.sampled_mass_kg) || sensor.sampled_mass_kg <= 0.0) {
-            return absl::Status(absl::StatusCode::kOutOfRange, {});
-          }
-          return absl::OkStatus();
+          return DepositCompositionDensity(sensors[cell], weight, current_volume, particle_density);
         });
     if (!scattered.ok()) {
       return scattered;
     }
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    const LiquidPhasePair3D& pair,
+    std::span<CellCompositionDensity3D> sensors,
+    std::span<LiquidInternalInterface3D> crossings
+) {
+  if (sensors.size() != geometry.cells.size()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  for (const auto& particle : particles) {
+    if (particle.constituent_count == 0 || (particle.phase_id != pair.phase_a && particle.phase_id != pair.phase_b)) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+  }
+  std::size_t phase_a_cell_count = 0;
+  for (std::size_t index = 0; index < sensors.size(); ++index) {
+    const auto position = geometry.mac_grid.CellWorldCenter(geometry.cells[index].cell_index);
+    if (!position.ok()) {
+      return position.status();
+    }
+    const auto field = SamplePhaseField(particles, pair, *position);
+    if (!std::isfinite(field.distance)) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+    sensors[index] = {.phase_distance = field.distance, .nearest_particle = field.nearest_particle};
+    phase_a_cell_count += field.distance <= 0.0;
+  }
+  if (phase_a_cell_count == 0 || phase_a_cell_count == sensors.size()) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  for (const auto& particle : particles) {
+    const double density = ExplicitParticleDensity(particle, materials);
+    if (!std::isfinite(density) || density <= 0.0) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    const double current_volume = particle.reference_volume * particle.volume_ratio;
+    const auto scattered = ScatterCellTent(
+        geometry.mac_grid.geometry(),
+        geometry.cells,
+        particle.world_position,
+        [&](std::size_t cell, double weight) {
+          const bool cell_is_a = sensors[cell].phase_distance <= 0.0;
+          if (cell_is_a != (particle.phase_id == pair.phase_a)) {
+            return absl::OkStatus();
+          }
+          return DepositCompositionDensity(sensors[cell], weight, current_volume, density);
+        }
+    );
+    if (!scattered.ok()) {
+      return scattered;
+    }
+  }
+  for (auto& sensor : sensors) {
+    if (sensor.sampled_volume_m3 == 0.0) {
+      sensor.extrapolated_density = ExplicitParticleDensity(particles[sensor.nearest_particle], materials);
+      if (!std::isfinite(sensor.extrapolated_density) || sensor.extrapolated_density <= 0.0) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+    }
+  }
+
+  const auto find_cell = [&](CellIndex3D index) {
+    const auto key = CellKey(index);
+    const auto found = std::ranges::lower_bound(geometry.cells, key, {}, [](const FrozenLiquidCell3D& cell) {
+      return CellKey(cell.cell_index);
+    });
+    return found != geometry.cells.end() && CellKey(found->cell_index) == key
+        ? static_cast<std::size_t>(found - geometry.cells.begin())
+        : geometry.cells.size();
+  };
+  std::size_t count = 0;
+  for (std::size_t ordinal = 0; ordinal < geometry.faces.size(); ++ordinal) {
+    const auto& face = geometry.faces[ordinal];
+    if (face.open_area <= 0.0) {
+      continue;
+    }
+    const auto lattice = face.face_index.lattice_index;
+    const CellIndex3D head{lattice.x, lattice.y, lattice.z};
+    std::array<std::int32_t, 3> tail{head.x, head.y, head.z};
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    if (tail[axis] == std::numeric_limits<std::int32_t>::min()) {
+      continue;
+    }
+    --tail[axis];
+    const auto head_cell = find_cell(head);
+    const auto tail_cell = find_cell({tail[0], tail[1], tail[2]});
+    if (head_cell == sensors.size() || tail_cell == sensors.size()) {
+      continue;
+    }
+    const double head_distance = sensors[head_cell].phase_distance;
+    const double tail_distance = sensors[tail_cell].phase_distance;
+    if ((head_distance <= 0.0) == (tail_distance <= 0.0)) {
+      continue;
+    }
+    if (count == crossings.size()) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    const double scale = std::max(std::abs(head_distance), std::abs(tail_distance));
+    const double scaled_tail = std::abs(tail_distance) / scale;
+    const double tail_fraction = scaled_tail / (scaled_tail + std::abs(head_distance) / scale);
+    double curvature = 0.0;
+    if (pair.surface_tension > 0.0) {
+      const auto anchor = geometry.mac_grid.FaceWorldAnchor(face.face_index);
+      if (!anchor.ok()) {
+        return anchor.status();
+      }
+      const double h = geometry.mac_grid.geometry().cell_width;
+      std::array position{anchor->x, anchor->y, anchor->z};
+      position[axis] += (tail_fraction - 0.5) * h;
+      boundary_internal::GeometryInput query{
+          .mode = boundary_internal::GeometryMode::kCurvature,
+          .geometry = geometry.mac_grid.geometry(),
+      };
+      for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+          for (int x = -1; x <= 1; ++x) {
+            const auto field =
+                SamplePhaseField(particles, pair, {position[0] + x * h, position[1] + y * h, position[2] + z * h});
+            query.derivative_distances[(z + 1) * 9 + (y + 1) * 3 + x + 1] = field.distance;
+          }
+        }
+      }
+      const auto result = boundary_internal::ComputeGeometry(query);
+      if (!result.ok()) {
+        return boundary_internal::ArithmeticStatus(result.status(), true);
+      }
+      curvature = tail_distance <= 0.0 ? result->interface_curvature : -result->interface_curvature;
+    }
+    crossings[count++] = {
+        .face_ordinal = ordinal,
+        .tail_fraction = tail_fraction,
+        .surface_tension = pair.surface_tension,
+        .curvature_tail_to_head = curvature,
+        .normal_viscous_jump_tail_to_head = 0.0,
+    };
+  }
+  return count;
 }
 
 absl::StatusOr<double> LiquidVolumeDriftRate3D(
