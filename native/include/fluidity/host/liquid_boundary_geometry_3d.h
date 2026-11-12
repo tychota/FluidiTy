@@ -84,7 +84,7 @@ struct SolidCornerDistance3D {
 // order and cover each candidate cell. Wall normal velocities are signed
 // along the positive MAC face axis in m/s and cover all owned face slots.
 // An empty face velocity span selects integration of the corner velocities.
-// Sampled geometry is exclusive with the analytic obstacle variants.
+// A translating analytic halfspace can clip the sampled geometry.
 struct SampledSolidBoundary3D {
   std::span<const SolidCornerDistance3D> corner_distances;
   std::span<const double> face_normal_velocities;

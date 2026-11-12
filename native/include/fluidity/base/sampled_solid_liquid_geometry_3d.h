@@ -355,6 +355,39 @@ FLUIDITY_HD inline bool IsSampledSolidMode(GeometryMode mode) {
   return mode == GeometryMode::kSampledSolidCell || mode == GeometryMode::kSampledSolidFace;
 }
 
+struct SampledSolidAnalyticFace {
+  ClippingPlane fluid_side;  // Open analytic halfspace in transverse face coordinates.
+  double blocked_area;  // m², occupied by the analytic wall.
+  double wall_flux;  // m³/s along the positive face normal.
+};
+
+// Measures the analytic wall independently of the snow. Its area takes
+// priority over any sampled snow on the same portion of the face.
+FLUIDITY_HD inline Value<SampledSolidAnalyticFace>
+MeasureSampledSolidAnalyticFace(const GeometryInput& input, const ObstaclePlanes& local) {
+  auto query = input;
+  query.mode = GeometryMode::kFace;
+  const auto geometry = ComputeGeometry(query);
+  if (!geometry.ok()) {
+    return geometry.status();
+  }
+  SampledSolidAnalyticFace result{
+      .fluid_side = {.normal = {}, .plane_coordinate = -local.high},
+      .blocked_area = geometry->blocked_face_area,
+      .wall_flux = geometry->blocked_face_area * local.velocity[input.axis],
+  };
+  int transverse = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis != input.axis) {
+      result.fluid_side.normal[transverse++] = -local.normal[axis];
+    }
+  }
+  if (!IsNormalOrZero(result.wall_flux)) {
+    return Error::kRange;
+  }
+  return result;
+}
+
 // Maps the staged samples to the existing freeze query result. A face
 // query supplies the four corners on the low side of the selected axis.
 FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const GeometryInput& input) {
@@ -367,7 +400,15 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
     cell.liquid_distance[corner] = is_face ? 0.0 : input.corner_distances[corner];
     cell.solid_distance[corner] = input.derivative_distances[corner];
   }
-  const auto measures = MeasureSampledSolidLiquidCell(cell);
+  const auto local = LocalObstacle(input);
+  if (!local.ok()) {
+    return local.status();
+  }
+  if (input.obstacle.kind != ObstacleKind::kAbsent && input.obstacle.kind != ObstacleKind::kHalfspace) {
+    return Error::kInvalid;
+  }
+  const ClippingPlane analytic_fluid_side{.normal = Scale(local->normal, -1), .plane_coordinate = -local->high};
+  const auto measures = MeasureSampledSolidLiquidCell(cell, local->present ? &analytic_fluid_side : nullptr);
   if (!measures.ok()) {
     return measures.status();
   }
@@ -388,7 +429,19 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
         ++face_corner;
       }
     }
-    const auto weights = MeasureSampledSolidFaceWeights(cell.cell_width, solid_distance);
+    SampledSolidAnalyticFace analytic{};
+    if (local->present) {
+      const auto measured = MeasureSampledSolidAnalyticFace(input, *local);
+      if (!measured.ok()) {
+        return measured.status();
+      }
+      analytic = *measured;
+    }
+    const auto weights = MeasureSampledSolidFaceWeights(
+        cell.cell_width,
+        solid_distance,
+        local->present ? &analytic.fluid_side : nullptr
+    );
     if (!weights.ok()) {
       return weights.status();
     }
@@ -397,7 +450,11 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
       weighted_area += (*weights)[corner];
       result.prescribed_wall_flux += (*weights)[corner] * normal_velocity[corner];
     }
+    result.prescribed_wall_flux += analytic.wall_flux;
+    weighted_area += analytic.blocked_area;
+    const double area_slack = 64 * numeric::numeric_limits<double>::epsilon() * cell.cell_width * cell.cell_width;
     if (!IsNormalOrZero(result.blocked_face_area) || !IsNormalOrZero(result.prescribed_wall_flux)
+        || numeric::abs(result.blocked_face_area - weighted_area) > area_slack
         || (weighted_area > 0 && result.blocked_face_area == 0)) {
       return Error::kRange;
     }

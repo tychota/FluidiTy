@@ -806,8 +806,9 @@ absl::Status FreezeCore(
     return status;
   }
   const auto sampled_solid = inputs.sampled_solid;
+  const bool sampled_halfspace = sampled_solid && std::holds_alternative<TranslatingHalfspace3D>(inputs.obstacle);
   if (sampled_solid) {
-    if (!std::holds_alternative<std::monostate>(inputs.obstacle)
+    if ((!sampled_halfspace && !std::holds_alternative<std::monostate>(inputs.obstacle))
         || (!sampled_solid->face_normal_velocities.empty()
             && sampled_solid->face_normal_velocities.size() != inputs.mac_grid.face_count())
         || !std::ranges::all_of(sampled_solid->face_normal_velocities, [](double velocity) {
@@ -950,6 +951,8 @@ absl::Status FreezeCore(
         query.derivative_distances[corner] = sample->signed_distance;
         if (sampled_solid->face_normal_velocities.empty()) {
           query.corner_distances[corner] = CartesianComponents(sample->wall_velocity)[query.axis];
+        } else if (sampled_halfspace) {
+          query.corner_distances[corner] = sampled_solid->face_normal_velocities[result.faces_[ordinal].face_slot];
         }
       }
     }
@@ -960,7 +963,7 @@ absl::Status FreezeCore(
     frozen_face.open_area = areas.open_face_area;
     frozen_face.blocked_area = areas.blocked_face_area;
     if (sampled_solid) {
-      if (sampled_solid->face_normal_velocities.empty()) {
+      if (sampled_halfspace || sampled_solid->face_normal_velocities.empty()) {
         frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
         frozen_face.prescribed_wall_flux = areas.prescribed_wall_flux;
       } else {
