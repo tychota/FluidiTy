@@ -286,6 +286,18 @@ CudaLiquidArenaMetrics3D CudaLiquidSubstepBackend3D::DrainMetrics() && {
 absl::StatusOr<bool> CudaLiquidSubstepBackend3D::PublicationReady() const {
   return impl_->arena.PublicationReady();
 }
+absl::StatusOr<double> CudaLiquidSubstepBackend3D::UpdateParticlesWithPistonReaction(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  double impulse = 0.0;
+  const auto status = cuda_internal::UpdateLiquidParticles3D(impl_->arena, inputs, trial_particles, &impulse);
+  if (!status.ok()) {
+    return status;
+  }
+  return impulse;
+}
+
 CudaLiquidSubstepUsage3D CudaLiquidSubstepBackend3D::usage() const {
   const auto metrics = impl_->arena.metrics();
   return {

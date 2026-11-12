@@ -71,6 +71,7 @@ absl::StatusOr<LiquidBoundaryGatherView3D> GatherLiquidRun3D(
 absl::Status UpdateLiquidParticles3D(
     CudaLiquidArena3D& arena,
     const LiquidParticleUpdateInputs3D& inputs,
-    std::span<LiquidParticleState3D> trial_particles
+    std::span<LiquidParticleState3D> trial_particles,
+    double* piston_impulse = nullptr
 );
 }  // namespace fluidity::cuda_internal

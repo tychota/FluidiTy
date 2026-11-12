@@ -91,7 +91,7 @@ struct Staging {
   // Keep the restricted old run across workspace reuse for the full and projected gathers.
   std::optional<LiquidRecords3D<LiquidBoundaryParticleGather3D>> isolated_drop_restricted_gathers;
   // Separate owned link copy used by pressure and velocity correction.
-  std::optional<LiquidRecords3D<MacPressureFace3D>> isolated_drop_pressure_faces;
+  std::optional<LiquidRecords3D<MacPressureFace3D>> pressure_face_scratch;
   std::size_t reserved_bytes = 0;
   static absl::StatusOr<Staging> Create(
       LiquidStateCapacities3D capacities,

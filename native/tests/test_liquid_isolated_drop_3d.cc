@@ -393,7 +393,7 @@ TEST(IsolatedDrop3D, PressureLiftsUseTheSignedLatticeAndRejectSubnormalProducts)
   staging.isolated_drop = *fit;
   auto faces = LiquidRecords3D<MacPressureFace3D>::Create(1);
   ASSERT_TRUE(faces.ok()) << faces.status();
-  staging.isolated_drop_pressure_faces.emplace(std::move(*faces));
+  staging.pressure_face_scratch.emplace(std::move(*faces));
 
   constexpr int kHead = -98;
   const double origin_x = -kCellWidth * (kHead - 0.5);

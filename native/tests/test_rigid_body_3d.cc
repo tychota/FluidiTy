@@ -59,6 +59,49 @@ TEST(RigidBody3D, AcceptedInteractionCheckpointRoundTripsLiquidAndPlastic) {
   );
 }
 
+TEST(RigidBody3D, PressureTractionUsesWettedAreaAndOffCenterMoment) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {2.0, 3.0, 4.0},
+      .center = {2.0, 0.0, 0.0},
+      .force = {0.0, -4.0, 0.0},
+  };
+  const std::array pressures{18.0, 14.0};
+  std::array patches{
+      RigidPressurePatch3D{
+          .patch_id = 1,
+          .body_id = 23,
+          .pressure_cell_index = 0,
+          .wetted_area = 0.5,
+          .world_centroid = {3.0, 0.0, 0.0},
+          .outward_body_normal = {0.0, -1.0, 0.0},
+      },
+      RigidPressurePatch3D{
+          .patch_id = 2,
+          .body_id = 23,
+          .pressure_cell_index = 1,
+          .wetted_area = 0.25,
+          .world_centroid = {1.0, 0.0, 0.0},
+          .outward_body_normal = {0.0, -1.0, 0.0},
+      },
+  };
+  const auto loaded = AccumulateRigidBodyPressure3D(body, pressures, 10.0, patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  EXPECT_DOUBLE_EQ(loaded->force.y, 1.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.z, 3.0);
+  const auto step = AdvanceRigidBody3D(*loaded, 0.125);
+  ASSERT_TRUE(step.ok()) << step.status();
+  EXPECT_DOUBLE_EQ(step->end.linear_velocity.y, 0.0625);
+  EXPECT_DOUBLE_EQ(step->end.angular_velocity.z, 0.09375);
+  patches[1].patch_id = 1;
+  EXPECT_EQ(
+      AccumulateRigidBodyPressure3D(body, pressures, 10.0, patches).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_DOUBLE_EQ(body.force.y, -4.0);
+}
+
 TEST(RigidBody3D, AdvancesRotatedAsymmetricInertiaAndOffCenterForce) {
   const double half_sqrt_two = std::numbers::sqrt2 / 2.0;
   const RigidBody3D initial{
