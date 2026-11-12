@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 
 #include "absl/status/statusor.h"
@@ -47,5 +48,35 @@ struct LiquidWallContactResult3D {
 // for excessive overlap, ambiguous slab side or tank closure, and OutOfRange for arithmetic
 // that cannot certify contact or its accepted endpoint. Failure publishes no result.
 absl::StatusOr<LiquidWallContactResult3D> ResolveLiquidWallContact3D(const LiquidWallContactInputs3D& inputs);
+
+// Stable blade ID and incident side in the blade's authored normal convention.
+// Zero ID and zero sign denote an unassigned particle. Assigned signs are +/-1.
+struct ElasticBladeSide3D {
+  std::uint64_t blade_id = 0;
+  int sign = 0;
+};
+
+struct ElasticBladeContact3D {
+  LiquidWallContactResult3D contact;
+  ElasticBladeSide3D side;
+  Vec3 particle_impulse;  // Newton-seconds on stored particle momentum.
+  Vec3 particle_angular_impulse_about_world_origin;  // Newton-meter-seconds.
+  double blade_work;  // Joules transferred from the prescribed moving blade.
+};
+
+// Sweeps one elastic point against a constant-velocity slab and computes a
+// candidate side and reaction for the accepted step. The slab must maintain
+// its authored normal direction for this blade ID. Mass is positive finite
+// kilograms. The reaction on the blade is the opposite of the particle
+// impulse. The advection correction contributes no second impulse.
+// Invalid parameters return InvalidArgument. A different blade, conflicting
+// side, or initially penetrating contact returns FailedPrecondition. An
+// unrepresentable sweep or budget returns OutOfRange. Inputs remain intact.
+absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    double particle_mass,
+    std::uint64_t blade_id,
+    ElasticBladeSide3D committed_side
+);
 
 }  // namespace fluidity
