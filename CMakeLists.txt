@@ -108,6 +108,7 @@ add_library(fluidity_native STATIC
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
+  native/src/graded_liquid_boundary_geometry_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
   native/src/mac_pressure_3d_bounded_hierarchy.cc
@@ -343,6 +344,7 @@ if(BUILD_TESTING)
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
+    native/tests/test_graded_liquid_boundary_geometry_3d.cc
     native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_liquid_wall_contact_3d.cc
     native/tests/test_mac_pressure_workspace_3d.cc
