@@ -2985,3 +2985,34 @@ Use the clean-build and Blender commands from the requalification
 against 873ae68 with build directory `out/build/m5-main-195af13-clean`
 and output directories `out/authored-upstream-195af13-cpu` and
 `out/authored-upstream-195af13-cuda`. Q-SAND remains open.
+
+### Symmetric affine decay with wall-face traction
+
+The zero-phase Euler reference uses the same wall-face solver and
+motion-aware reconstruction. Apply the existing symmetric stored
+affine decay at 8 s⁻¹. The skew part and current-step deformation
+gradient are unchanged.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 37.315521° | 0.171163 m |
+| Coarse half-step | 41.554803° | 0.150835 m |
+| Fine | 32.336228° | 0.183392 m |
+| Fine half-step | 34.583904° | 0.178144 m |
+
+The fine nominal angle enters the acceptance range. Its radius
+still exceeds 0.16 m. Applying the same decay only in the floor
+layer gives 32.138315° / 0.185583 m. Applying it only in the interior
+gives 31.879106° / 0.185418 m. Both locations contribute to the
+observed improvement. The coarse angles remain above 35°. The
+temporary Euler override was restored after compiling.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-decay-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 8 $case all 3
+}
+foreach ($region in 'floor', 'interior') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 8 fine $region 3
+}
+```
