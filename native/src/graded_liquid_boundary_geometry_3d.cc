@@ -338,7 +338,7 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
     return absl::ResourceExhaustedError("Graded liquid subface count exceeds the state limit");
   }
   const double finest_width_m = topology.finest_cell_width();
-  FrozenGradedPlanarLiquidGeometry3D result(topology, step_duration_s);
+  FrozenGradedPlanarLiquidGeometry3D result(topology, world_origin_m, step_duration_s);
   result.leaves_.reserve(topology.cells().size());
   result.subfaces_.resize(face_count);
   for (const auto& leaf : topology.cells()) {

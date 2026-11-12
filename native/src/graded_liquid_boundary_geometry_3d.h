@@ -53,6 +53,10 @@ class FrozenGradedPlanarLiquidGeometry3D {
   const AdaptiveMacTopology3D& topology() const {
     return topology_;
   }
+  // World-space lower corner of finest lattice cell zero, in meters.
+  Vec3 world_origin_m() const {
+    return world_origin_m_;
+  }
   double step_duration_s() const {
     return step_duration_s_;
   }
@@ -66,11 +70,12 @@ class FrozenGradedPlanarLiquidGeometry3D {
       double
   );
 
-  FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, double step_duration_s)
-      : topology_(topology), step_duration_s_(step_duration_s) {
+  FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, Vec3 world_origin_m, double step_duration_s)
+      : topology_(topology), world_origin_m_(world_origin_m), step_duration_s_(step_duration_s) {
   }
 
   AdaptiveMacTopology3D topology_;
+  Vec3 world_origin_m_;
   double step_duration_s_;
   std::vector<FrozenGradedLiquidLeaf3D> leaves_;
   std::vector<FrozenGradedLiquidSubface3D> subfaces_;
