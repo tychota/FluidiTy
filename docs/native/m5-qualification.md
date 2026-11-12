@@ -3374,3 +3374,38 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Wall work through impact and settling
+
+Trace the accepted work of the wall-face Euler reference through
+the existing 1.5 s contact fixture. Grid work is the tangential
+kinetic energy change across the face impulse. Sweep work includes
+both normal and tangential changes in particle kinetic energy.
+The table reports positive amounts of energy removed.
+
+| Native case | Grid at ~0.35 s | Sweep at ~0.35 s | Grid at 1.5 s | Sweep at 1.5 s |
+|---|---:|---:|---:|---:|
+| Coarse | 0.576337 J | 0.646501 J | 0.736930 J | 0.774444 J |
+| Coarse half-step | 0.329062 J | 0.634057 J | 0.448686 J | 0.704807 J |
+| Fine | 0.488061 J | 0.578701 J | 0.650157 J | 0.701022 J |
+| Fine half-step | 0.298457 J | 0.583086 J | 0.423979 J | 0.636900 J |
+
+By 0.35 s, halving the timestep reduces the grid friction work
+magnitude by 43% on coarse and 39% on fine. Sweep work changes
+by less than 2% on each grid at that time. The larger grid loss
+in the nominal runs accompanies a lower final envelope. The work
+depends on both the reaction and incoming tangent velocity, so
+this trace does not isolate which drives the difference.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-energy-bin'
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace $grid $step
+  }
+}
+```
+
+The temporary harness sums the grid work budget at the existing
+trace times. The solver and harness were restored after linking.
+Q-SAND remains open.
