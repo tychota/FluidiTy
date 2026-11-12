@@ -244,6 +244,14 @@ struct LiquidSubstepBackend3D {
       MacPressureSolverOptions3D
   ) = nullptr;
   bool host_adaptive_pressure = false;
+  // Device-backed coupled projection on frozen graded subfaces.
+  absl::StatusOr<MacViscousPressureProjection3D> (*project_adaptive_viscous)(
+      void*,
+      const pressure_internal::PreparedMacPressureSystem3D&,
+      double,
+      std::span<const MacStrainRow3D>,
+      MacPressureSolverOptions3D
+  ) = nullptr;
 };
 // CPU operations share the bounded operators and the swept-contact particle update.
 // Updates trial particles with the CPU tank sweep and returns the axial

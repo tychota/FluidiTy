@@ -1,10 +1,18 @@
 #include "liquid_adaptive_step_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
+#include <tuple>
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+#include "fluidity/host/adaptive_liquid_core_transport_3d.h"
+#include "fluidity/host/liquid_eos.h"
+#include "mac_pressure_3d_arithmetic.h"
+#include "mac_viscous_pressure_3d.h"
 
 namespace fluidity::liquid_step_internal {
 namespace {
@@ -43,11 +51,278 @@ bool IsWall(const AxisAlignedLiquidTank3D& tank, const AdaptiveMacExteriorFace3D
   return false;
 }
 
+void AddNormalComponent(Vec3& derivatives, FaceNormalAxis axis, double derivative) {
+  switch (axis) {
+    case FaceNormalAxis::kX: {
+      derivatives.x += derivative;
+      break;
+    }
+    case FaceNormalAxis::kY: {
+      derivatives.y += derivative;
+      break;
+    }
+    case FaceNormalAxis::kZ: {
+      derivatives.z += derivative;
+      break;
+    }
+  }
+}
+
 Vec3 Difference(Vec3 left, Vec3 right) {
   return {left.x - right.x, left.y - right.y, left.z - right.z};
 }
 
+double Dot(Vec3 first, Vec3 second) {
+  return first.x * second.x + first.y * second.y + first.z * second.z;
+}
+
+Vec3 Cross(Vec3 first, Vec3 second) {
+  return {
+      first.y * second.z - first.z * second.y,
+      first.z * second.x - first.x * second.z,
+      first.x * second.y - first.y * second.x,
+  };
+}
+
+using FaceGradient = std::array<std::array<MacStrainTerm3D, 4>, 3>;
+
+// Select a deterministic local affine stencil. The determinant is measured
+// in units of leaf width cubed. Sealed anchors have prescribed zero velocity.
+absl::StatusOr<FaceGradient>
+FitFaceGradient(std::span<const GradedMacFace3D> faces, Vec3 center, double width, FaceNormalAxis velocity_axis) {
+  struct Anchor {
+    std::size_t slot;
+    Vec3 offset;
+    double squared_distance;
+  };
+  std::vector<Anchor> candidates;
+  constexpr double kRadius = 1.5;
+  for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+    const auto& face = faces[slot];
+    if (face.axis != velocity_axis) {
+      continue;
+    }
+    const Vec3 offset{
+        (face.world_anchor.x - center.x) / width,
+        (face.world_anchor.y - center.y) / width,
+        (face.world_anchor.z - center.z) / width,
+    };
+    if (std::max({std::abs(offset.x), std::abs(offset.y), std::abs(offset.z)}) <= kRadius) {
+      candidates.push_back({slot, offset, Dot(offset, offset)});
+    }
+  }
+  std::ranges::sort(candidates, [](const auto& first, const auto& second) {
+    return std::tie(first.squared_distance, first.slot) < std::tie(second.squared_distance, second.slot);
+  });
+  if (candidates.size() < 4) {
+    return absl::FailedPreconditionError("graded viscosity has fewer than four local face anchors");
+  }
+  constexpr double kMinimumRankMeasure = 1e-4;
+  const auto base = candidates.front();
+  const auto first = std::ranges::find_if(candidates, [&](const auto& candidate) {
+    const auto offset = Difference(candidate.offset, base.offset);
+    return Dot(offset, offset) >= kMinimumRankMeasure;
+  });
+  if (first == candidates.end()) {
+    return absl::FailedPreconditionError("graded viscosity face anchors are coincident");
+  }
+  const auto first_offset = Difference(first->offset, base.offset);
+  const auto second = std::ranges::find_if(candidates, [&](const auto& candidate) {
+    const auto cross = Cross(first_offset, Difference(candidate.offset, base.offset));
+    return Dot(cross, cross) >= kMinimumRankMeasure;
+  });
+  if (second == candidates.end()) {
+    return absl::FailedPreconditionError("graded viscosity face anchors are collinear");
+  }
+  const auto second_offset = Difference(second->offset, base.offset);
+  const auto normal = Cross(first_offset, second_offset);
+  const auto third = std::ranges::find_if(candidates, [&](const auto& candidate) {
+    return std::abs(Dot(normal, Difference(candidate.offset, base.offset))) >= kMinimumRankMeasure;
+  });
+  if (third == candidates.end()) {
+    return absl::FailedPreconditionError("graded viscosity face anchors are coplanar");
+  }
+  const auto third_offset = Difference(third->offset, base.offset);
+  const double inverse_determinant_per_meter = (1.0 / Dot(normal, third_offset)) / width;
+  const std::array columns{Cross(second_offset, third_offset), Cross(third_offset, first_offset), normal};
+  const std::array slots{first->slot, second->slot, third->slot};
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  FaceGradient result{};
+  for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+    auto& terms = result[axis];
+    terms[0] = {base.slot, 0.0};
+    for (std::size_t column = 0; column < columns.size(); ++column) {
+      const double coefficient = NormalComponent(columns[column], axes[axis]) * inverse_determinant_per_meter;
+      terms[column + 1] = {slots[column], coefficient};
+      terms[0].coefficient -= coefficient;
+    }
+  }
+  return result;
+}
+
+// Combine finite-volume normal rows with symmetric shear rows from affine
+// gradients at the owned staggered anchors. Zero wall velocities are lifted
+// by omitting sealed coefficients.
+absl::Status AppendViscousRows(
+    const AdaptiveMacLeaf3D& leaf,
+    Vec3 center,
+    double viscosity,
+    std::span<const GradedMacFace3D> faces,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
+    const std::array<MacStrainRow3D, 3>& normal_rows,
+    std::vector<MacStrainRow3D>& rows
+) {
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  std::array<FaceGradient, 3> gradients{};
+  for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+    const auto gradient = FitFaceGradient(faces, center, leaf.cell_width, axes[axis]);
+    if (!gradient.ok()) {
+      return gradient.status();
+    }
+    gradients[axis] = *gradient;
+  }
+  const auto add_terms = [&](MacStrainRow3D& row, const auto& terms, double scale) {
+    for (const auto& term : terms) {
+      if (term.coefficient != 0.0 && subfaces[term.face_slot].open_area_m2 > 0.0) {
+        row.terms[row.term_count] = {term.face_slot, scale * term.coefficient};
+        ++row.term_count;
+      }
+    }
+  };
+  for (std::size_t first = 0; first < axes.size(); ++first) {
+    for (std::size_t second = first; second < axes.size(); ++second) {
+      if (first == second) {
+        if (normal_rows[first].term_count != 0) {
+          rows.push_back(normal_rows[first]);
+        }
+        continue;
+      }
+      const double quadrature_weight = 4.0 * viscosity * leaf.cell_volume;
+      if (!std::isnormal(quadrature_weight)) {
+        return absl::OutOfRangeError("graded viscous strain quadrature is unrepresentable");
+      }
+      MacStrainRow3D row{
+          .low_cell = leaf.key.lower_corner,
+          .first_axis = axes[first],
+          .second_axis = axes[second],
+          .terms = {},
+          .term_count = 0,
+          .quadrature_weight = quadrature_weight,
+      };
+      add_terms(row, gradients[first][second], 0.5);
+      add_terms(row, gradients[second][first], 0.5);
+      if (row.term_count != 0) {
+        rows.push_back(row);
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
+    const AdaptiveMacTopology3D& topology,
+    Vec3 world_origin,
+    double dynamic_viscosity,
+    std::span<const GradedMacFace3D> faces,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces
+) {
+  if (faces.size() != subfaces.size() || !std::isfinite(dynamic_viscosity) || dynamic_viscosity <= 0.0) {
+    return absl::InvalidArgumentError("graded viscosity needs one physical record per face and positive viscosity");
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto interior = topology.interior_faces();
+  if (faces.size() != interior.size() + ownership->exterior_faces.size()) {
+    return absl::InvalidArgumentError("graded strain face extent does not match canonical ownership");
+  }
+  const auto leaves = topology.cells();
+  std::vector<std::array<MacStrainRow3D, 3>> normal_rows(leaves.size());
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
+    const auto& leaf = leaves[cell];
+    const double weight = 2.0 * dynamic_viscosity * leaf.cell_volume;
+    if (!std::isnormal(weight)) {
+      return absl::OutOfRangeError("graded normal strain quadrature is unrepresentable");
+    }
+    for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+      normal_rows[cell][axis] = {
+          .low_cell = leaf.key.lower_corner,
+          .first_axis = axes[axis],
+          .second_axis = axes[axis],
+          .terms = {},
+          .term_count = 0,
+          .quadrature_weight = weight,
+      };
+    }
+  }
+  // The three normal rows sum to the pressure operator's finite-volume
+  // divergence. A 2:1 leaf side contributes at most four owned subfaces.
+  const auto add_normal = [&](std::size_t cell, std::size_t slot, FaceNormalAxis axis, double area, double sign) {
+    auto& row = normal_rows[cell][static_cast<std::size_t>(axis)];
+    const double open_area = subfaces[slot].open_area_m2;
+    if (!std::isfinite(open_area) || open_area < 0.0 || open_area > area || faces[slot].axis != axis) {
+      return absl::InvalidArgumentError("graded strain face geometry does not match its open subface");
+    }
+    if (open_area == 0.0) {
+      return absl::OkStatus();
+    }
+    const double coefficient = sign * open_area / leaves[cell].cell_volume;
+    if (row.term_count == row.terms.size() || !std::isnormal(coefficient)) {
+      return absl::OutOfRangeError("graded normal strain coefficient or extent is unrepresentable");
+    }
+    row.terms[row.term_count++] = {slot, coefficient};
+    return absl::OkStatus();
+  };
+  for (std::size_t face = 0; face < interior.size(); ++face) {
+    const auto& link = interior[face];
+    const auto slot = ownership->interior_face_slots[face];
+    const auto tail = add_normal(link.tail_cell_ordinal, slot, link.face_index.axis, link.face_area, 1.0);
+    if (!tail.ok()) {
+      return tail;
+    }
+    const auto head = add_normal(link.head_cell_ordinal, slot, link.face_index.axis, link.face_area, -1.0);
+    if (!head.ok()) {
+      return head;
+    }
+  }
+  for (const auto& link : ownership->exterior_faces) {
+    const auto status = add_normal(
+        link.cell_ordinal,
+        link.face_slot,
+        link.face_index.axis,
+        link.face_area,
+        link.cell_is_tail ? 1.0 : -1.0
+    );
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  std::vector<MacStrainRow3D> rows;
+  rows.reserve(6 * leaves.size());
+  const double finest_width = topology.finest_cell_width();
+  for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
+    const auto& leaf = leaves[cell];
+    const auto lower = leaf.key.lower_corner;
+    const double half_width = leaf.cell_width / 2.0;
+    const Vec3 center{
+        std::fma(lower.x, finest_width, world_origin.x) + half_width,
+        std::fma(lower.y, finest_width, world_origin.y) + half_width,
+        std::fma(lower.z, finest_width, world_origin.z) + half_width,
+    };
+    const auto status = AppendViscousRows(leaf, center, dynamic_viscosity, faces, subfaces, normal_rows[cell], rows);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  if (rows.empty()) {
+    return absl::FailedPreconditionError("graded viscosity has no open strain support");
+  }
+  return rows;
+}
 
 AdaptiveLiquidStep3D::AdaptiveLiquidStep3D(AdaptiveMacTopology3D topology, GradedMacTransfer3D transfer)
     : topology_(std::move(topology)), transfer_(std::move(transfer)) {
@@ -60,28 +335,35 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
 ) {
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
-  if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.surface_tension != 0
-      || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity || scene.cavity_provider.prepare
-      || !scene.phase_pairs.empty() || !scene.constituent_materials.empty() || initial.next_cavity_id != 0
-      || options.whitewater_capture || !scene.sources.empty() || !std::isinf(scene.bulk_modulus)
-      || scene.target_divergence != 0 || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
+  if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
+      || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
+      || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
   }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
   }
+  const auto phase_id = initial.particles[0].phase_id;
   for (const auto& particle : initial.particles.values()) {
-    if (particle.phase_id != 0 || particle.constituent_count != 0) {
-      return absl::UnimplementedError("graded tank transfer requires implicit liquid particles");
+    if (particle.phase_id != phase_id) {
+      return absl::UnimplementedError("graded tank requires one miscible phase");
+    }
+    if (!LiquidParticleUsesRegisteredConstituents3D(particle, scene.constituent_materials)) {
+      return absl::InvalidArgumentError("graded particle composition is absent from the material registry");
     }
   }
   std::vector<AdaptiveMacCellKey3D> keys;
   keys.reserve(initial.adaptive_cells.size());
   for (const auto& cell : initial.adaptive_cells.values()) {
-    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || (!IsEulerian(cell) && cell.inventory.enthalpy_j != 0)
-        || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0) {
-      return absl::UnimplementedError("graded tank requires a single implicit liquid");
+    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || (!IsEulerian(cell) && cell.inventory.enthalpy_j != 0)) {
+      return absl::UnimplementedError("graded tank requires supported liquid inventory in every leaf");
+    }
+    if (IsEulerian(cell)
+        && (phase_id != 0 || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0
+            || std::isfinite(scene.bulk_modulus) || scene.eos || scene.dynamic_viscosity > 0
+            || scene.surface_tension > 0)) {
+      return absl::UnimplementedError("graded extended liquids require particle-owned material");
     }
     keys.push_back(cell.key);
   }
@@ -100,6 +382,7 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     return ownership.status();
   }
   result.interior_slots_ = ownership->interior_face_slots;
+  result.exterior_faces_ = ownership->exterior_faces;
   result.surface_height_ = plane->world_surface_height_y;
   result.subfaces_.resize(initial.adaptive_faces.size());
   const auto leaves = result.topology_.cells();
@@ -113,6 +396,20 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
   }
   result.pressure_cells_.resize(leaves.size());
+  result.update_volume_ratio_ = std::isfinite(scene.bulk_modulus) || scene.eos.has_value();
+  if (result.update_volume_ratio_) {
+    result.normal_derivatives_.resize(leaves.size());
+  }
+  if (scene.eos) {
+    result.pressure_history_.resize(leaves.size());
+  }
+  if (scene.eos || phase_id != 0) {
+    result.predictor_density_.resize(leaves.size());
+    result.reference_density_.resize(leaves.size());
+  }
+  if (phase_id != 0) {
+    result.constituent_sums_.resize(leaves.size());
+  }
   const auto origin = initial.geometry.world_origin;
   const double finest_width = initial.geometry.cell_width;
   for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
@@ -181,6 +478,19 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
         .exterior_pressure_pa = scene.ambient_pressure,
     };
   }
+  if (scene.dynamic_viscosity > 0.0) {
+    auto rows = AssembleGradedViscousStrainRows3D(
+        result.topology_,
+        origin,
+        scene.dynamic_viscosity,
+        result.transfer_.faces(),
+        result.subfaces_
+    );
+    if (!rows.ok()) {
+      return rows.status();
+    }
+    result.strain_rows_ = std::move(*rows);
+  }
   result.old_faces_.resize(initial.adaptive_faces.size());
   result.gathered_.resize(initial.particles.size());
   result.distances_.resize(initial.particles.size());
@@ -243,6 +553,71 @@ absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const Liq
   return absl::OkStatus();
 }
 
+// Backtrace the accepted leaf pressure using a bounded one-ring upwind
+// interpolant. Each coarse side averages its donors by their owned subface
+// areas. Sealed sides and missing donors keep the receiving leaf's pressure.
+absl::Status AdaptiveLiquidStep3D::AdvectPressureHistory(const LiquidState3D& state, double duration) {
+  std::ranges::fill(pressure_history_, PressureHistory3D{});
+  const auto leaves = topology_.cells();
+  const auto accumulate_velocity = [&](std::size_t cell, std::size_t slot, FaceNormalAxis axis) {
+    const auto& carrier = state.adaptive_faces[slot];
+    if (carrier.validity != LiquidFaceValidity3D::kValid && carrier.validity != LiquidFaceValidity3D::kPredicted) {
+      return;
+    }
+    const double width = leaves[cell].cell_width;
+    const double area_weight = subfaces_[slot].open_area_m2 / (2.0 * width * width);
+    AddNormalComponent(pressure_history_[cell].centered_velocity, axis, area_weight * carrier.carrier_velocity);
+  };
+  const auto interior_faces = topology_.interior_faces();
+  for (std::size_t face = 0; face < interior_faces.size(); ++face) {
+    const auto& link = interior_faces[face];
+    const auto slot = interior_slots_[face];
+    accumulate_velocity(link.tail_cell_ordinal, slot, link.face_index.axis);
+    accumulate_velocity(link.head_cell_ordinal, slot, link.face_index.axis);
+  }
+  for (const auto& link : exterior_faces_) {
+    accumulate_velocity(link.cell_ordinal, link.face_slot, link.face_index.axis);
+  }
+  for (const auto& link : interior_faces) {
+    const auto accumulate_donor = [&](std::size_t cell, std::size_t donor, double outward_sign) -> absl::Status {
+      auto& history = pressure_history_[cell];
+      const double outward_velocity = outward_sign * NormalComponent(history.centered_velocity, link.face_index.axis);
+      if (outward_velocity >= 0.0) {
+        return absl::OkStatus();
+      }
+      const double width = leaves[cell].cell_width;
+      const double side_fraction = link.face_area / (width * width);
+      const double donor_weight = side_fraction * (-duration * outward_velocity / link.cell_center_distance);
+      history.donor_weight += donor_weight;
+      if (!std::isfinite(history.donor_weight) || history.donor_weight > 1.0) {
+        return absl::AbortedError("graded pressure backtrace exceeds the adjacent leaf support");
+      }
+      if (donor_weight > 0.0) {
+        history.donor_pressure = std::lerp(
+            history.donor_pressure,
+            state.adaptive_cells[donor].previous_pressure,
+            donor_weight / history.donor_weight
+        );
+      }
+      return absl::OkStatus();
+    };
+    const auto tail = accumulate_donor(link.tail_cell_ordinal, link.head_cell_ordinal, 1.0);
+    if (!tail.ok()) {
+      return tail;
+    }
+    const auto head = accumulate_donor(link.head_cell_ordinal, link.tail_cell_ordinal, -1.0);
+    if (!head.ok()) {
+      return head;
+    }
+  }
+  for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
+    const auto& history = pressure_history_[cell];
+    pressure_cells_[cell].previous_pressure =
+        std::lerp(state.adaptive_cells[cell].previous_pressure, history.donor_pressure, history.donor_weight);
+  }
+  return absl::OkStatus();
+}
+
 absl::Status AdaptiveLiquidStep3D::Project(
     LiquidState3D& trial,
     double duration,
@@ -252,10 +627,50 @@ absl::Status AdaptiveLiquidStep3D::Project(
     MacPressureWorkspace3D& workspace,
     LiquidAcceptedStepMeasurement3D& measurement
 ) {
+  std::optional<LiquidEos3D> eos;
+  if (scene.eos) {
+    eos = LiquidEos3D{scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law};
+    const auto advected = AdvectPressureHistory(trial, duration);
+    if (!advected.ok()) {
+      return advected;
+    }
+  }
   for (std::size_t cell = 0; cell < pressure_cells_.size(); ++cell) {
-    pressure_cells_[cell].previous_pressure = trial.adaptive_cells[cell].previous_pressure;
+    auto& pressure_cell = pressure_cells_[cell];
+    if (!eos) {
+      pressure_cell.previous_pressure = trial.adaptive_cells[cell].previous_pressure;
+    }
     if (IsEulerian(trial.adaptive_cells[cell])) {
-      pressure_cells_[cell].fluid_volume = trial.adaptive_cells[cell].inventory.current_volume_m3;
+      pressure_cell.fluid_volume = trial.adaptive_cells[cell].inventory.current_volume_m3;
+    }
+    if (predictor_density_.empty()) {
+      continue;
+    }
+    const auto& inventory = trial.adaptive_cells[cell].inventory;
+    double density = scene.liquid_density;
+    if (inventory.constituent_count != 0) {
+      std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> fractions{};
+      const auto mixture = MixLiquidConstituentVolumes3D(
+          inventory.phase_id,
+          scene.constituent_materials,
+          std::span(inventory.constituents).first(inventory.constituent_count),
+          fractions
+      );
+      if (!mixture.ok()) {
+        return mixture.status();
+      }
+      density = mixture->density_kg_per_m3;
+    }
+    reference_density_[cell] = density;
+    predictor_density_[cell] = density;
+    if (eos) {
+      eos->reference_density = density;
+      const auto predictor = EvaluateLiquidEosAtPressure3D(*eos, pressure_cell.previous_pressure);
+      if (!predictor.ok()) {
+        return predictor.status();
+      }
+      pressure_cell.bulk_modulus = predictor->bulk_modulus;
+      predictor_density_[cell] = predictor->density;
     }
   }
   for (std::size_t face = 0; face < subfaces_.size(); ++face) {
@@ -286,8 +701,53 @@ absl::Status AdaptiveLiquidStep3D::Project(
     const double potential_difference =
         acceleration.x * displacement.x + acceleration.y * displacement.y + acceleration.z * displacement.z;
     const auto slot = interior_slots_[face];
+    if (!predictor_density_.empty()) {
+      const double tail_fraction = tail.cell_width / (tail.cell_width + head.cell_width);
+      const double face_density = std::lerp(
+          predictor_density_[interior.head_cell_ordinal],
+          predictor_density_[interior.tail_cell_ordinal],
+          tail_fraction
+      );
+      subfaces_[slot].inverse_density_m3_per_kg = 1.0 / face_density;
+    }
     subfaces_[slot].predicted_normal_velocity_m_per_s =
         old_faces_[slot].carrier_velocity + duration * potential_difference / NormalComponent(displacement, axis);
+  }
+  if (!predictor_density_.empty()) {
+    for (const auto& exterior : exterior_faces_) {
+      auto& subface = subfaces_[exterior.face_slot];
+      if (subface.open_area_m2 > 0) {
+        subface.inverse_density_m3_per_kg = 1.0 / predictor_density_[exterior.cell_ordinal];
+      }
+    }
+  }
+  if (scene.surface_tension > 0.0) {
+    double capillary_bound = std::numeric_limits<double>::infinity();
+    for (const auto& exterior : exterior_faces_) {
+      const auto& subface = subfaces_[exterior.face_slot];
+      if (subface.open_area_m2 == 0.0) {
+        continue;
+      }
+      const boundary_internal::GeometryInput input{
+          .mode = boundary_internal::GeometryMode::kCapillary,
+          .geometry = {trial.geometry.world_origin, leaves[exterior.cell_ordinal].cell_width},
+          .liquid_density =
+              predictor_density_.empty() ? scene.liquid_density : predictor_density_[exterior.cell_ordinal],
+          .surface_tension = scene.surface_tension,
+      };
+      const auto limit = boundary_internal::ComputeGeometry(input);
+      if (!limit.ok()) {
+        return absl::OutOfRangeError("graded surface capillary bound is unrepresentable");
+      }
+      capillary_bound = std::min(capillary_bound, (*limit).capillary_step_bound);
+    }
+    if (std::isfinite(capillary_bound)) {
+      if (duration > capillary_bound) {
+        return absl::AbortedError("graded step exceeds the exposed-leaf capillary bound");
+      }
+      // The authored horizontal surface is planar, so its pressure lift is zero.
+      measurement.step_start_capillary_bound_seconds = capillary_bound;
+    }
   }
   const auto graph =
       pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology_, duration, pressure_cells_, subfaces_);
@@ -299,6 +759,27 @@ absl::Status AdaptiveLiquidStep3D::Project(
         || projection.corrected_face_velocities.size() != subfaces_.size()) {
       return absl::Status(absl::StatusCode::kInternal, {});
     }
+    if (eos) {
+      for (std::size_t cell = 0; cell < projection.cell_pressures.size(); ++cell) {
+        eos->reference_density = reference_density_[cell];
+        const auto accepted = EvaluateLiquidEosAtPressure3D(*eos, projection.cell_pressures[cell]);
+        if (!accepted.ok()) {
+          return accepted.status();
+        }
+      }
+    }
+    if (update_volume_ratio_) {
+      std::ranges::fill(normal_derivatives_, Vec3{});
+      for (const auto& link : graph->links()) {
+        const double integrated_flux =
+            link.open_area * projection.corrected_face_velocities[link.face_slot] + link.prescribed_wall_flux;
+        const auto axis = transfer_.faces()[link.face_slot].axis;
+        pressure_internal::arithmetic::ForEachIncidentCell(link, [&](std::size_t cell, double sign) {
+          const double derivative = sign * integrated_flux / pressure_cells_[cell].fluid_volume;
+          AddNormalComponent(normal_derivatives_[cell], axis, derivative);
+        });
+      }
+    }
     for (std::size_t cell = 0; cell < pressure_cells_.size(); ++cell) {
       trial.adaptive_cells[cell].previous_pressure = projection.cell_pressures[cell];
     }
@@ -309,7 +790,46 @@ absl::Status AdaptiveLiquidStep3D::Project(
     measurement.pressure = projection.diagnostics;
     return absl::OkStatus();
   };
-  if (backend.project_adaptive != nullptr) {
+  if (!strain_rows_.empty()) {
+    const auto projection = backend.project_adaptive_viscous != nullptr
+        ? backend.project_adaptive_viscous(
+              backend.context,
+              *graph,
+              duration,
+              strain_rows_,
+              options.pressure_solver_options
+          )
+        : pressure_internal::ProjectPreparedAdaptiveMacViscousPressure3D(
+              *graph,
+              duration,
+              strain_rows_,
+              options.pressure_solver_options
+          );
+    if (!projection.ok()) {
+      return projection.status();
+    }
+    struct ProjectionView {
+      std::span<const double> cell_pressures;
+      std::span<const double> corrected_face_velocities;
+      MacPressureDiagnostics3D diagnostics;
+    };
+    const auto status = publish(ProjectionView{
+        .cell_pressures = projection->cell_pressures,
+        .corrected_face_velocities = projection->face_velocities,
+        .diagnostics =
+            {
+                .iteration_count = projection->pressure_iterations,
+                .true_residual_l2 = projection->constraint_residual_l2,
+                .max_volume_scaled_residual = projection->max_cell_constraint_defect,
+                .max_cell_constraint_defect = projection->max_cell_constraint_defect,
+            },
+    });
+    if (!status.ok()) {
+      return status;
+    }
+    measurement.pressure_rhs_l2_m3_per_s = projection->initial_constraint_residual_l2;
+    measurement.viscous_max_momentum_residual_kg_m_per_s = projection->max_momentum_residual;
+  } else if (backend.project_adaptive != nullptr) {
     const auto result = backend.project_adaptive(backend.context, *graph, options.pressure_solver_options);
     if (!result.ok()) {
       return result.status();
@@ -328,8 +848,10 @@ absl::Status AdaptiveLiquidStep3D::Project(
       return status;
     }
   }
-  for (const double rhs : graph->integrated_rhs()) {
-    measurement.pressure_rhs_l2_m3_per_s = std::hypot(measurement.pressure_rhs_l2_m3_per_s, rhs);
+  if (strain_rows_.empty()) {
+    for (const double rhs : graph->integrated_rhs()) {
+      measurement.pressure_rhs_l2_m3_per_s = std::hypot(measurement.pressure_rhs_l2_m3_per_s, rhs);
+    }
   }
   for (const auto& cell : pressure_cells_) {
     measurement.step_start_pressure_cell_volume_m3 += cell.fluid_volume;
@@ -358,6 +880,18 @@ absl::Status AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial) {
         .old_pic_fallback = !before->affine_enabled,
         .new_pic_fallback = !after->affine_enabled,
     };
+    if (update_volume_ratio_) {
+      const auto leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
+      if (!leaf.ok()) {
+        return leaf.status();
+      }
+      const auto derivatives = normal_derivatives_[*leaf];
+      gathered_[ordinal].velocity_gradient = {
+          .x_row = {derivatives.x, 0.0, 0.0},
+          .y_row = {0.0, derivatives.y, 0.0},
+          .z_row = {0.0, 0.0, derivatives.z},
+      };
+    }
     distances_[ordinal] = particle.world_position.y - surface_height_;
   }
   return absl::OkStatus();
@@ -418,6 +952,7 @@ absl::Status AdaptiveLiquidStep3D::Update(
 
 absl::Status AdaptiveLiquidStep3D::AccumulateInventories(const LiquidState3D& state) {
   std::ranges::fill(inventories_, LiquidRemapInventory3D{});
+  std::ranges::fill(constituent_sums_, liquid_remap_internal::ConstituentSums{});
   for (const auto& particle : state.particles.values()) {
     const auto leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
     if (!leaf.ok()) {
@@ -429,12 +964,29 @@ absl::Status AdaptiveLiquidStep3D::AccumulateInventories(const LiquidState3D& st
     auto& inventory = inventories_[*leaf];
     inventory.mass_kg += particle.mass;
     inventory.reference_volume_m3 += particle.reference_volume;
-    inventory.current_volume_m3 += particle.reference_volume * particle.volume_ratio;
+    const double particle_volume = particle.reference_volume * particle.volume_ratio;
+    inventory.current_volume_m3 += particle_volume;
+    if (particle.constituent_count != 0) {
+      inventory.phase_id = particle.phase_id;
+      for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+        const auto status =
+            constituent_sums_[*leaf].Add(constituent.substance_id, constituent.volume_fraction * particle_volume);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+    }
     inventory.momentum_kg_m_per_s.x += particle.mass * particle.world_velocity.x;
     inventory.momentum_kg_m_per_s.y += particle.mass * particle.world_velocity.y;
     inventory.momentum_kg_m_per_s.z += particle.mass * particle.world_velocity.z;
   }
   for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+    if (!constituent_sums_.empty()) {
+      const auto status = constituent_sums_[cell].Store(inventories_[cell]);
+      if (!status.ok()) {
+        return status;
+      }
+    }
     if (inventories_[cell].current_volume_m3 > topology_.cells()[cell].cell_volume) {
       return absl::Status(absl::StatusCode::kAborted, {});
     }

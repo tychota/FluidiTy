@@ -40,4 +40,13 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectArenaViscousPressure3D
     MacPressureSolverOptions3D options,
     pressure_internal::MacPressureScratch3D& scratch
 );
+// Uses the same persistent device ranges for the coupled graded solve.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectArenaAdaptiveViscousPressure3D(
+    CudaLiquidArena3D& arena,
+    const pressure_internal::PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options
+);
+
 }  // namespace fluidity::cuda_internal

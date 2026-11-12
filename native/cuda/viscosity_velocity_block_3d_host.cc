@@ -320,4 +320,25 @@ absl::StatusOr<MacViscousPressureProjectionView3D> cuda_internal::ProjectArenaVi
   );
 }
 
+absl::StatusOr<MacViscousPressureProjection3D> cuda_internal::ProjectArenaAdaptiveViscousPressure3D(
+    CudaLiquidArena3D& arena,
+    const pressure_internal::PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options
+) {
+  return pressure_internal::ProjectPreparedAdaptiveMacViscousPressureWithVelocityView3D(
+      system,
+      step_duration,
+      strain_rows,
+      options,
+      [&](const MacViscousVelocityBlockInputs3D& block,
+          std::span<const double> rhs,
+          MacViscousVelocityBlockOptions3D controls,
+          pressure_internal::MacPressureScratch3D& host_scratch) {
+        return SolveArenaVelocityBlock(arena, block, rhs, controls, host_scratch);
+      }
+  );
+}
+
 }  // namespace fluidity
