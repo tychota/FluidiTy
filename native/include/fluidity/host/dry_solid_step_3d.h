@@ -45,6 +45,8 @@ struct DrySolidStepBudget3D {
   double grid_wall_impulse_y = 0;  // Signed impulse from normal grid constraints on solid, N s.
   Vec3 wall_impulse_on_particles{};  // World impulse from the stored-velocity sweep on solid, N s.
   std::size_t particle_wall_contacts = 0;  // Count of swept particle contacts.
+  std::size_t granular_projected_particles = 0;  // Granular trials changed by the return above relative roundoff.
+  std::size_t granular_plastic_volume_changes = 0;  // Granular returns changing log plastic volume above roundoff.
 };
 
 // Advances a single dry body on a fixed uniform MAC layout with complete quadratic supports.

@@ -157,6 +157,9 @@ bool TestScene(
   const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
   constexpr double kDegreesPerRadian = 57.29577951308232;
   double early_envelope_angle = 0;
+  double late_projection_particle_seconds = 0;
+  double late_plastic_volume_particle_seconds = 0;
+  double late_particle_seconds = 0;
   double reset_impulse_y = 0;
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
@@ -270,6 +273,11 @@ bool TestScene(
           reset_impulse_y
       );
     }
+    if (extended_column && t >= 0.75) {
+      late_projection_particle_seconds += step_duration * budget.granular_projected_particles;
+      late_plastic_volume_particle_seconds += step_duration * budget.granular_plastic_volume_changes;
+      late_particle_seconds += step_duration * particles.size();
+    }
     total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
     total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
     total_budget.omitted_stress_work += budget.omitted_stress_work;
@@ -329,6 +337,13 @@ bool TestScene(
   }
   if (snow) {
     return mean_log_plastic > -0.48 && mean_log_plastic < -0.34 && maximum_height > 0.11 && maximum_height < 0.15;
+  }
+  if (late_particle_seconds > 0) {
+    std::printf(
+        "sand late projected fraction=%.9f plastic volume change fraction=%.9f\n",
+        late_projection_particle_seconds / late_particle_seconds,
+        late_plastic_volume_particle_seconds / late_particle_seconds
+    );
   }
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
   const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
@@ -395,7 +410,8 @@ bool TestWallImpulseBudget() {
 #endif
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
-      && budget.grid_wall_impulse_y == 0;
+      && budget.grid_wall_impulse_y == 0 && budget.granular_projected_particles == 0
+      && budget.granular_plastic_volume_changes == 0;
 }
 
 bool TestStoredVelocityResidual() {
@@ -475,14 +491,19 @@ bool TestRollbackOnUnsupportedDestination() {
   };
   const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
   const DrySolidStep3D settings{.duration = 0.4, .acoustic_cfl = 0.25};
-  fluidity::DrySolidStepBudget3D budget{.particle_wall_contacts = 42};
+  fluidity::DrySolidStepBudget3D budget{
+      .particle_wall_contacts = 42,
+      .granular_projected_particles = 17,
+      .granular_plastic_volume_changes = 9,
+  };
 #if defined(FLUIDITY_M5_CUDA_SCENES)
   const auto status =
       fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1}, &budget);
 #else
   const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
-  if (budget.particle_wall_contacts != 42 || status.code() != absl::StatusCode::kFailedPrecondition
+  if (budget.particle_wall_contacts != 42 || budget.granular_projected_particles != 17
+      || budget.granular_plastic_volume_changes != 9 || status.code() != absl::StatusCode::kFailedPrecondition
       || particle.world_position.x != 2.4 || particle.world_velocity.x != 1 || particle.log_plastic_jacobian != 0) {
     std::fprintf(
         stderr,

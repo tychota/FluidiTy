@@ -44,21 +44,29 @@ bool ReturnState(
   return ReturnSnowDeformation3D(trial, previous_log_plastic_jacobian, std::get<SnowParameters3D>(material), state);
 }
 
-bool MatchesAcceptedState(const DrySolidParticle3D& particle, const SolidDeformationState3D& returned) {
-  constexpr double kReturnTolerance = 1e-12;
+constexpr double kReturnTolerance = 1e-12;
+
+bool MatchesPlasticVolume(double log_plastic_jacobian, const SolidDeformationState3D& returned) {
+  const double plastic_scale = std::max(1.0, std::abs(log_plastic_jacobian));
+  return std::abs(log_plastic_jacobian - returned.log_plastic_jacobian) <= kReturnTolerance * plastic_scale;
+}
+
+bool MatchesDeformationState(
+    Mat3 elastic_deformation,
+    double log_plastic_jacobian,
+    const SolidDeformationState3D& returned
+) {
   double map_scale = 0;
   double maximum_difference = 0;
   for (const auto row : kRows) {
     for (const auto component : kComponents) {
-      const double input = (particle.elastic_deformation.*row).*component;
+      const double input = (elastic_deformation.*row).*component;
       const double output = (returned.elastic_deformation.*row).*component;
       map_scale = std::max(map_scale, std::abs(input));
       maximum_difference = std::max(maximum_difference, std::abs(input - output));
     }
   }
-  const double plastic_scale = std::max(1.0, std::abs(particle.log_plastic_jacobian));
-  return maximum_difference <= kReturnTolerance * map_scale
-      && std::abs(particle.log_plastic_jacobian - returned.log_plastic_jacobian) <= kReturnTolerance * plastic_scale;
+  return maximum_difference <= kReturnTolerance * map_scale && MatchesPlasticVolume(log_plastic_jacobian, returned);
 }
 
 bool AcousticBound(
@@ -117,7 +125,7 @@ internal::EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const D
   AcceptedDrySolid3D accepted{};
   const double reference_density = particle.mass / particle.reference_volume;
   if (!ReturnState(particle.elastic_deformation, particle.log_plastic_jacobian, material, accepted.state)
-      || !MatchesAcceptedState(particle, accepted.state)
+      || !MatchesDeformationState(particle.elastic_deformation, particle.log_plastic_jacobian, accepted.state)
       || !AcousticBound(accepted.state, reference_density, material, accepted.wave_speed_squared)) {
     return absl::FailedPreconditionError("inadmissible dry material state");
   }
@@ -390,6 +398,14 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       trial_budget.wall_impulse_on_particles =
           solid_detail::Combine(trial_budget.wall_impulse_on_particles, 1, wall_velocity_change, particle.mass);
       ++trial_budget.particle_wall_contacts;
+    }
+    if (budget != nullptr && std::holds_alternative<GranularParameters3D>(material)) {
+      if (!MatchesDeformationState(trial, particle.log_plastic_jacobian, state)) {
+        ++trial_budget.granular_projected_particles;
+      }
+      if (!MatchesPlasticVolume(particle.log_plastic_jacobian, state)) {
+        ++trial_budget.granular_plastic_volume_changes;
+      }
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;

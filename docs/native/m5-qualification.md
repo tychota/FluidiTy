@@ -139,6 +139,29 @@ stays in range over a longer window at both timesteps.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-column-long-settle
 ```
 
+### Plastic return activity during extended settling
+
+Count a granular return if its accepted elastic map or log plastic
+volume differs from the elastic trial beyond the existing 1e-12
+relative state comparison. Count changes to log plastic volume
+separately. The fractions weight each count by the actual step
+duration and divide by total particle-seconds from 0.75 to 1.50 s.
+
+| h (m) | Nominal dt (s) | Projected fraction | Plastic volume change fraction |
+|---|---:|---:|---:|
+| 0.075 | 0.001875 | 1.000000000 | 0.362751323 |
+| 0.075 | 0.0009375 | 1.000000000 | 0.255079365 |
+| 0.0625 | 0.0015625 | 0.984656085 | 0.362797619 |
+| 0.0625 | 0.00078125 | 1.000000000 | 0.277777778 |
+
+Native and CUDA give identical printed fractions and reproduce the
+original extended angles. Granular returns continue during over
+98% of the sampled particle-time even while the late angular drift
+and momentum checks pass. Changes in plastic volume account for
+25.5–36.3% of the particle-time. These counts measure activity and
+do not measure plastic strain magnitude. Run the extended column
+commands above to reproduce them.
+
 ### Elastic stiffness during extended settling
 
 Multiply both granular Lamé moduli by four, from (700, 450) Pa to
