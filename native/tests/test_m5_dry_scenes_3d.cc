@@ -154,11 +154,16 @@ bool TestScene(
   const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
   constexpr double kDegreesPerRadian = 57.29577951308232;
   double early_envelope_angle = 0;
+  const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
   for (double t = 0; t < time; ++step) {
-    const double phase_end =
+    double phase_end =
         snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < settling_sample_time ? settling_sample_time : time);
+    if (extended_column && t < 0.75) {
+      // Replay the original two sampling boundaries before extending the run.
+      phase_end = t < 0.70 ? 0.70 : 0.75;
+    }
     const double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
     DrySolidStep3D settings{
         .duration = next_time - t,
@@ -224,14 +229,22 @@ bool TestScene(
       );
       return false;
     }
-    if (!snow && t < settling_sample_time && next_time == settling_sample_time) {
+    const bool late_drift_sample = !snow && t < settling_sample_time && next_time == settling_sample_time;
+    const bool original_endpoint = extended_column && t < 0.75 && next_time == 0.75;
+    if (late_drift_sample || original_endpoint) {
       double height = 0;
       double radius = 0;
       for (const auto& particle : particles) {
         height = std::fmax(height, particle.world_position.y);
         radius = std::fmax(radius, std::hypot(particle.world_position.x, particle.world_position.z));
       }
-      early_envelope_angle = kDegreesPerRadian * std::atan2(height, radius);
+      const double angle = kDegreesPerRadian * std::atan2(height, radius);
+      if (late_drift_sample) {
+        early_envelope_angle = angle;
+      }
+      if (original_endpoint) {
+        std::printf("sand envelope at 0.75 s=%.6f\n", angle);
+      }
     }
     total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
     total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
@@ -943,6 +956,13 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-column-long-settle") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 1, 0.10, false, 1.5);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 1, 0.10, false, 1.5);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-grid-phase") {
     bool all_pass = true;
     for (const double width : {0.075, 0.0625}) {

@@ -11,7 +11,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Snow constitutive invariants | Pass | Compression and tension clamps, reconstructed total volume, hardened corotational stress, repeated compaction, and invalid-state output preservation. |
 | Full 3D material state and wave bound | Pass for the tested domain | Rotated and repeated stretches, reflection and singular rejection, isotropic and hardened wave oracles, and rejection of axial and principal-plane loss of ellipticity. Principal-plane checks do not certify ellipticity in every fully oblique direction. The Hessian row bound covers continuous elastic wave speed. The tested discrete acoustic factor is 0.25 for the bounded scenes. |
 | Q-SOLID uncut quadrature | Pass | Analytic affine gradient gives 87.5 W particle power and −87.5 W grid power, with 3.25e-16 scaled residual on both backends versus 1e-6 allowed. This measures uncut stress quadrature and the matching gather derivative. |
-| Q-SAND 30° pile | Reference case passes; finer-grid check open | The reference case settles at 30.161149°, inside the required 30–35° interval. The predeclared finer case settles at 27.803822° on both backends. The measured resolution sensitivity is 2.357327°. The finer case remains a failing qualification command. |
+| Q-SAND 30° pile | Open | The nominal reference case reaches 30.161149° at 0.75 s and continues flattening to 20.801830° at 1.5 s. All four grid-width and timestep combinations miss the 30–35° range at the extended endpoint. |
 | Dry snow compaction | Pass | Two resolutions pass a compress–unload cycle. Mean log plastic Jacobian stays below −0.34 after unload. |
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
@@ -89,6 +89,34 @@ The fixture exposes this as a separate command with exit 1 when either
 case misses the existing window. Next isolate the per-step PIC velocity
 replacement and the elastic update from the spatial quadrature, before
 changing the material parameters or angle estimator.
+
+### Extended settling of the original sand column
+
+The extended runs use the original 63 particles, centered grid, drop,
+material, and floor. They preserve the split steps at 0.70 and 0.75 s
+and reproduce all four original angles at 0.75 s. Continue from that
+state to 1.50 s and retain the same 0.05 s drift window and momentum gate.
+
+| h (m) | nominal dt (s) | Angle at 0.75 s | Angle at 1.50 s | Last 0.05 s drift | Final kinetic energy (J) |
+|---|---:|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 30.161149° | 20.801830° | 0.500147° | 0.000180 |
+| 0.0625 | 0.0015625 | 27.803822° | 20.580671° | 0.399749° | 0.000227 |
+| 0.075 | 0.0009375 | 37.248475° | 28.040080° | 0.362457° | 0.000208 |
+| 0.0625 | 0.00078125 | 32.699841° | 26.585383° | 0.302212° | 0.000300 |
+
+Native and CUDA angles and drift match to six decimal places. Both
+diagnostic commands return 1. Each angle falls by 6.11–9.36° between
+the two endpoints even though
+all cases pass the last-window drift and vertical momentum checks.
+The nominal reference angle at 0.75 s is a transient pass. The local
+drift and low kinetic energy at 1.50 s coexist with substantial
+longer-horizon shape change. Qualification needs evidence that the pile
+stays in range over a longer window at both timesteps.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-column-long-settle
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-column-long-settle
+```
 
 ### Horizontal grid alignment
 
