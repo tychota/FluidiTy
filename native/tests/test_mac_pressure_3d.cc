@@ -275,6 +275,135 @@ TEST(MacPressure3D, CoupledViscosityRecoversPlanarExtensionTractionAtHighContras
   }
 }
 
+TEST(MacPressure3D, CoupledViscosityRecoversMovingWallCouetteTraction) {
+  constexpr double kStressScale = 2.0;
+  for (const int resolution : {16, 32}) {
+    SCOPED_TRACE(resolution);
+    const double width = 1.0 / resolution;
+    const double volume = width * width * width;
+    for (const double step_duration : {0.005, 0.0025}) {
+      SCOPED_TRACE(step_duration);
+      for (const double viscosity_ratio : {1.0, 10.0, 1000.0}) {
+        SCOPED_TRACE(viscosity_ratio);
+        // An x-invariant strip uses exact inlet/outlet traces in place of periodic links.
+        auto problem = MakeRectangularAffineProblem(0, {2, resolution, 1}, false);
+        const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, width}, problem.blocks, problem.blocks.size());
+        ASSERT_TRUE(grid.ok()) << grid.status();
+        SortFaces(problem, *grid);
+        const double expected_shear = 2.0 / (1.0 + 1.0 / viscosity_ratio);
+        std::vector<MacViscosityCell3D> material;
+        for (auto& cell : problem.cells) {
+          cell.fluid_volume = volume;
+          const double viscosity = cell.cell_index.y < resolution / 2 ? 1.0 : viscosity_ratio;
+          material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = viscosity});
+        }
+        for (auto& face : problem.faces) {
+          const auto position = grid->FaceWorldAnchor(face.face_index);
+          ASSERT_TRUE(position.ok()) << position.status();
+          double velocity = 0.0;
+          if (face.face_index.axis == FaceNormalAxis::kX) {
+            velocity =
+                expected_shear * (std::min(position->y, 0.5) + std::max(position->y - 0.5, 0.0) / viscosity_ratio);
+          }
+          if (face.open_area == 0.0) {
+            face.wall_normal_velocity = velocity;
+          } else {
+            face.open_area = width * width;
+            face.pressure_gradient_distance = width;
+            face.predicted_normal_velocity = velocity;
+          }
+        }
+        auto strain = AssembleFullCellMacStrain3D(grid->view(), material);
+        ASSERT_TRUE(strain.ok()) << strain.status();
+        for (const bool upper_wall : {false, true}) {
+          const int wall_cell_y = upper_wall ? resolution - 1 : 0;
+          const auto slot = grid->FaceSlot({FaceNormalAxis::kX, {1, wall_cell_y, 0}});
+          ASSERT_TRUE(slot.ok()) << slot.status();
+          const auto row = MakeMacTangentialWallStrain3D(
+              {1, wall_cell_y, 0},
+              FaceNormalAxis::kX,
+              FaceNormalAxis::kY,
+              *slot,
+              width,
+              upper_wall ? viscosity_ratio : 1.0,
+              upper_wall ? 1.0 : 0.0,
+              upper_wall
+          );
+          ASSERT_TRUE(row.ok()) << row.status();
+          strain->push_back(*row);
+        }
+        // The prescribed inlet and outlet also carry the analytic shear
+        // traction. Half-cell rows balance the transverse momentum there.
+        for (const bool right_boundary : {false, true}) {
+          const int boundary_cell_x = right_boundary ? 1 : 0;
+          for (int y_face = 1; y_face < resolution; ++y_face) {
+            const double viscosity_low = y_face - 1 < resolution / 2 ? 1.0 : viscosity_ratio;
+            const double viscosity_high = y_face < resolution / 2 ? 1.0 : viscosity_ratio;
+            const double viscosity = 2.0 / (1.0 / viscosity_low + 1.0 / viscosity_high);
+            const auto slot = grid->FaceSlot({FaceNormalAxis::kY, {boundary_cell_x, y_face, 0}});
+            ASSERT_TRUE(slot.ok()) << slot.status();
+            const auto row = MakeMacTangentialWallStrain3D(
+                {boundary_cell_x, y_face, 0},
+                FaceNormalAxis::kY,
+                FaceNormalAxis::kX,
+                *slot,
+                width,
+                viscosity,
+                0.0,
+                right_boundary,
+                expected_shear / viscosity
+            );
+            ASSERT_TRUE(row.ok()) << row.status();
+            strain->push_back(*row);
+          }
+        }
+        const auto projection =
+            ProjectMacViscousPressure3D({*grid, step_duration, problem.cells, problem.faces}, *strain);
+        ASSERT_TRUE(projection.ok()) << projection.status();
+        std::vector<double> face_velocity(grid->face_count());
+        for (std::size_t face = 0; face < problem.faces.size(); ++face) {
+          const auto slot = grid->FaceSlot(problem.faces[face].face_index);
+          ASSERT_TRUE(slot.ok()) << slot.status();
+          face_velocity[*slot] = projection->face_velocities[face];
+        }
+        double max_normal_error = 0.0;
+        for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+          const auto& normal_row = (*strain)[3 * cell + 1];
+          const auto& low = normal_row.terms[0];
+          const auto& high = normal_row.terms[1];
+          const double normal_strain =
+              low.coefficient * face_velocity[low.face_slot] + high.coefficient * face_velocity[high.face_slot];
+          const double traction_error =
+              (2.0 * material[cell].dynamic_viscosity * normal_strain - projection->cell_pressures[cell])
+              / kStressScale;
+          max_normal_error = std::max(max_normal_error, std::abs(traction_error));
+        }
+        double max_shear_error = 0.0;
+        std::size_t shear_samples = 0;
+        for (const auto& row : *strain) {
+          if (row.first_axis != FaceNormalAxis::kX || row.second_axis != FaceNormalAxis::kY) {
+            continue;
+          }
+          double shear = row.prescribed_strain;
+          for (const auto& term : std::span(row.terms).first(row.term_count)) {
+            shear += term.coefficient * face_velocity[term.face_slot];
+          }
+          const double strain_volume = row.term_count == 1 ? 0.5 * volume : volume;
+          const double traction = row.quadrature_weight * shear / (2.0 * strain_volume);
+          max_shear_error = std::max(max_shear_error, std::abs(traction - expected_shear) / kStressScale);
+          ++shear_samples;
+        }
+        ASSERT_EQ(shear_samples, static_cast<std::size_t>(3 * resolution - 1));
+        EXPECT_LE(max_normal_error, 0.05);
+        EXPECT_LE(max_shear_error, 0.05);
+        std::cout << "couette resolution=" << resolution << " dt=" << step_duration
+                  << " viscosity_ratio=" << viscosity_ratio << " normal_max=" << max_normal_error
+                  << " tangential_max=" << max_shear_error << '\n';
+      }
+    }
+  }
+}
+
 TEST(MacPressure3D, CoupledViscosityPreservesMovingWallFluxAndOrientedJumps) {
   auto problem = MakeAffineProblem(0, 2, false);
   const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());

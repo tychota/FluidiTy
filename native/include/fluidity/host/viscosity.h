@@ -59,8 +59,9 @@ struct MacStrainRow3D {
   FaceNormalAxis first_axis;
   FaceNormalAxis second_axis;  // Equal to first_axis for normal strain.
   std::array<MacStrainTerm3D, 4> terms;
-  std::size_t term_count;  // First two terms for normal strain, all four for shear.
-  double quadrature_weight;  // 2μh³ for normal strain, 4μ_edge h³ for shear, in kg m²/s.
+  std::size_t term_count;  // Number of active terms, from one to four.
+  double quadrature_weight;  // Viscous strain quadrature, in kg m²/s, including shear multiplicity.
+  double prescribed_strain = 0.0;  // Additive strain from boundary data, in s⁻¹.
 };
 
 // Assembles full-cell symmetric-gradient rows on a uniform 3D MAC layout.
@@ -75,6 +76,25 @@ struct MacStrainRow3D {
 // or indices. Errors carry no rows.
 absl::StatusOr<std::vector<MacStrainRow3D>>
 AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells);
+
+// Builds one half-cell shear row for a flat, grid-aligned wall.
+// The normal velocity derivative along the tangent is prescribed in s⁻¹. The face slot carries the tangential
+// component at h/2 from the wall. Wall speed is signed along that component,
+// in m/s. The positive-side wall is above the sample along wall_normal_axis.
+// The caller verifies geometry and face ownership. Invalid axes, spacing,
+// viscosity or speed return kInvalidArgument. Unrepresentable strain or
+// quadrature returns kOutOfRange. Errors carry no row.
+absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
+    CellIndex3D adjacent_cell,
+    FaceNormalAxis tangential_axis,
+    FaceNormalAxis wall_normal_axis,
+    std::size_t tangential_face_slot,
+    double cell_width,
+    double dynamic_viscosity,
+    double wall_tangential_velocity,
+    bool positive_side_wall,
+    double wall_normal_velocity_tangential_derivative = 0.0
+);
 
 struct MacViscousVelocityBlockInputs3D {
   std::span<const MacStrainRow3D> strain_rows;

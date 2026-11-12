@@ -26,10 +26,10 @@ RemapStrain(const PreparedMacPressureSystem3D& system, std::span<const MacStrain
   const auto links = system.links();
   std::vector<MacStrainRow3D> rows(strain_rows.begin(), strain_rows.end());
   for (auto& row : rows) {
-    if (row.term_count != 2 && row.term_count != 4) {
+    if (row.term_count == 0 || row.term_count > row.terms.size()) {
       return absl::InvalidArgumentError("invalid coupled strain row extent");
     }
-    if (!std::isfinite(row.quadrature_weight) || row.quadrature_weight < 0.0) {
+    if (!std::isfinite(row.quadrature_weight) || row.quadrature_weight < 0.0 || !std::isfinite(row.prescribed_strain)) {
       return absl::InvalidArgumentError("invalid coupled strain quadrature");
     }
     for (auto& term : std::span(row.terms).first(row.term_count)) {
@@ -171,7 +171,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
       continue;
     }
     const auto terms = std::span(row.terms).first(row.term_count);
-    double prescribed_strain = 0.0;
+    double prescribed_strain = row.prescribed_strain;
     for (const auto& term : terms) {
       if (inertia[term.face_slot] == 0.0) {
         prescribed_strain += term.coefficient * inputs.pressure_faces[term.face_slot].wall_normal_velocity;

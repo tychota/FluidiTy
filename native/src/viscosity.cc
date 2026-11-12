@@ -807,6 +807,45 @@ AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const Mac
   return rows;
 }
 
+absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
+    CellIndex3D adjacent_cell,
+    FaceNormalAxis tangential_axis,
+    FaceNormalAxis wall_normal_axis,
+    std::size_t tangential_face_slot,
+    double cell_width,
+    double dynamic_viscosity,
+    double wall_tangential_velocity,
+    bool positive_side_wall,
+    double wall_normal_velocity_tangential_derivative
+) {
+  if (tangential_axis > FaceNormalAxis::kZ || wall_normal_axis > FaceNormalAxis::kZ
+      || tangential_axis == wall_normal_axis) {
+    return absl::InvalidArgumentError("wall strain requires distinct Cartesian axes");
+  }
+  if (!std::isfinite(cell_width) || cell_width <= 0.0 || !std::isfinite(dynamic_viscosity) || dynamic_viscosity < 0.0
+      || !std::isfinite(wall_tangential_velocity) || !std::isfinite(wall_normal_velocity_tangential_derivative)) {
+    return absl::InvalidArgumentError("wall strain has invalid physical data");
+  }
+  // D_nt includes half the tangential velocity derivative, over h/2.
+  const double coefficient = (positive_side_wall ? -1.0 : 1.0) / cell_width;
+  const double prescribed_strain =
+      0.5 * wall_normal_velocity_tangential_derivative - coefficient * wall_tangential_velocity;
+  const double weight = StrainWeight3D(dynamic_viscosity, cell_width, 1);
+  if (!std::isnormal(coefficient) || !std::isfinite(prescribed_strain)
+      || (dynamic_viscosity > 0.0 && !std::isnormal(weight))) {
+    return absl::OutOfRangeError("wall strain or quadrature is unrepresentable");
+  }
+  return MacStrainRow3D{
+      .low_cell = adjacent_cell,
+      .first_axis = std::min(tangential_axis, wall_normal_axis),
+      .second_axis = std::max(tangential_axis, wall_normal_axis),
+      .terms = {{{.face_slot = tangential_face_slot, .coefficient = coefficient}}},
+      .term_count = 1,
+      .quadrature_weight = weight,
+      .prescribed_strain = prescribed_strain,
+  };
+}
+
 absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,
@@ -838,7 +877,7 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
   std::vector<MacStrainRow3D> weighted_rows(inputs.strain_rows.begin(), inputs.strain_rows.end());
   const double sqrt_step = std::sqrt(inputs.step_duration);
   for (auto& row : weighted_rows) {
-    if ((row.term_count != 2 && row.term_count != 4) || !std::isfinite(row.quadrature_weight)
+    if (row.term_count == 0 || row.term_count > row.terms.size() || !std::isfinite(row.quadrature_weight)
         || row.quadrature_weight < 0.0) {
       return absl::InvalidArgumentError("invalid strain row extent or weight");
     }
