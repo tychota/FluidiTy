@@ -62,6 +62,7 @@ struct RigidBoxContact3D {
   LiquidWallContactResult3D contact;
   Vec3 body_impulse;  // Opposite of the stored particle momentum change, N s.
   Vec3 body_angular_impulse;  // About the box center at impact, N m s.
+  Vec3 tank_impulse_on_particle{};  // World N s from the stationary tank's stored-velocity correction.
 };
 
 // Sweeps the proposed point path against a finite translating box, with no
