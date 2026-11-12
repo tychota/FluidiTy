@@ -189,8 +189,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool ocean = args[5] == "ocean" || ocean_level;
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
+  const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool initial_particle =
-      args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean || bounded_wave;
+      args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean || bounded_wave || shear_tank;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -240,11 +241,15 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         .start_plane_coordinate = 0.125,
         .wall_velocity = {},
     };
+  } else if (shear_tank) {
+    scene.scene.field = fluidity::LiquidHorizontalPlaneSurface3D{3.0};
+    scene.scene.obstacle = fluidity::AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+    scene.scene.dynamic_viscosity = args[5] == "viscous" ? 100.0 : 0.0;
   } else if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
   if (args[5] != "defaults") {
-    scene.options.maximum_step_duration = slow_frame ? 1e-6 : 0.03;
+    scene.options.maximum_step_duration = slow_frame ? 1e-6 : (shear_tank ? 0.01 : 0.03);
   }
   fluidity::LiquidState3D state;
   state.random_seed = scene.random_seed;
@@ -268,6 +273,18 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         std::cerr << authored << '\n';
         return 3;
       }
+    } else if (shear_tank) {
+      state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(2);
+      if (!state.particles.Resize(2).ok()) {
+        return 3;
+      }
+      for (std::size_t particle = 0; particle < 2; ++particle) {
+        state.particles[particle].id = particle + 1;
+        state.particles[particle].world_position = {2.5 + static_cast<double>(particle), 2.5, 2.5};
+        state.particles[particle].world_velocity.z = particle == 0 ? 0.125 : -0.125;
+        state.particles[particle].pic_initialized = true;
+      }
+      state.next_particle_id = 3;
     } else {
       state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
       if (!state.particles.Resize(1).ok()) {
@@ -336,6 +353,22 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   stream.write(reinterpret_cast<const char*>(bytes->values().data()), bytes->size());
   return stream ? 0 : 7;
 }
+int FirstPointFrameFixture(const std::filesystem::path& path) {
+  const auto cache = fluidity::LiquidCache3D::OpenForInspection(path);
+  if (!cache.ok()) {
+    return 1;
+  }
+  const auto frame = cache->ReadCommittedFrame(1);
+  if (!frame.ok() || frame->points.points.size() == 0) {
+    return 2;
+  }
+  const auto& velocity = frame->points.points[0].world_velocity;
+  std::cout.precision(17);
+  std::cout << "{\"frame\":1,\"particle_count\":" << frame->points.points.size() << ",\"first_velocity\":["
+            << velocity.x << ',' << velocity.y << ',' << velocity.z << "]}\n";
+  return 0;
+}
+
 int CheckpointFixture(const std::filesystem::path& path) {
   auto inspection = fluidity::LiquidCache3D::OpenForInspection(path);
   if (!inspection.ok()) {
@@ -419,6 +452,9 @@ int Entry(const std::vector<std::filesystem::path>& args) {
   }
   if (args.size() == 3 && args[1] == "source-births") {
     return SourceBirthFixture(args[2]);
+  }
+  if (args.size() == 3 && args[1] == "first-point-frame") {
+    return FirstPointFrameFixture(args[2]);
   }
   if (args.size() == 3 && args[1] == "checkpoint") {
     return CheckpointFixture(args[2]);

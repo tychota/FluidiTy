@@ -2,6 +2,7 @@
 
 #include "fluidity/base/liquid_regular_cell_transport_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
+#include "fluidity/host/viscosity.h"
 #include "fluidity/host/wetted_piston_3d.h"
 
 namespace fluidity {
@@ -175,6 +176,16 @@ struct LiquidSubstepBackend3D {
       MacPressureSolverOptions3D options,
       MacPressureWorkspace3D& workspace
   );
+  // Optional coupled projection for supported strain geometry. On failure,
+  // the scheduler rejects the attempt without publishing state.
+  using ProjectViscous = absl::StatusOr<MacViscousPressureProjection3D>(
+      void* context,
+      SparseMacGridView3D grid,
+      double step_duration,
+      const LiquidPressureProblemView3D& problem,
+      double dynamic_viscosity,
+      MacPressureSolverOptions3D options
+  );
   using Gather = absl::StatusOr<LiquidBoundaryGatherView3D>(
       void* context,
       const LiquidBoundaryGatherViewInputs3D& inputs,
@@ -208,6 +219,7 @@ struct LiquidSubstepBackend3D {
   WettedPiston* wetted_piston = nullptr;  // Required for a translating low-x piston.
   BuildLinks* links = nullptr;
   Project* project = nullptr;
+  ProjectViscous* project_viscous = nullptr;
   Gather* gather = nullptr;
   UpdateParticles* update_particles = nullptr;
   SampleFieldBatch* sample_field_batch = nullptr;

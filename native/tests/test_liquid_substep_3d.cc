@@ -55,6 +55,59 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
 }
 
+TEST(LiquidSubstep3D, SchedulerConsumesResolvedViscosityOnFullCells) {
+  auto initial = Initial(2);
+  initial.particles[0].world_position = {2.5, 2.5, 2.5};
+  initial.particles[1].world_position = {3.5, 2.5, 2.5};
+  initial.particles[0].world_velocity = {0.0, 0.0, 0.125};
+  initial.particles[1].world_velocity = {0.0, 0.0, -0.125};
+  LiquidResolvedSceneView3D request;
+  request.scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  request.scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  request.scene.world_acceleration = {};
+  request.scene.dynamic_viscosity = 100.0;
+  const auto encoded = EncodeLiquidResolvedScene3D(request);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto resolved = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  auto scene = resolved->View().scene;
+  auto viscous = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(viscous.ok()) << viscous.status();
+  const auto advanced = viscous->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  scene.dynamic_viscosity = 0.0;
+  auto inviscid = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(inviscid.ok()) << inviscid.status();
+  const auto inviscid_advanced = inviscid->AdvanceFrame(0.01);
+  ASSERT_TRUE(inviscid_advanced.ok()) << inviscid_advanced;
+  EXPECT_GT(
+      std::abs(inviscid->committed().particles[0].world_velocity.z)
+          - std::abs(viscous->committed().particles[0].world_velocity.z),
+      1e-7
+  );
+}
+
+TEST(LiquidSubstep3D, UnsupportedViscousGeometryPreservesCommittedState) {
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.dynamic_viscosity = 1.0;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.project_viscous = nullptr;
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend).status().code(),
+      absl::StatusCode::kUnimplemented
+  );
+
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto attempt = scheduler->Attempt(0.01);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kUnimplemented);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, OceanInletRetiresDryParticleAndDiscardsRejectedBirths) {
   auto seed = Initial(2);
   seed.particles[0].world_position = {2.25, 1.25, 2.25};

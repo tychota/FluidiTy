@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
@@ -271,6 +272,46 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
   }
   return absl::OkStatus();
 }
+// Full-cell strain plus interior shear supplies natural tangential slip
+// at static walls. Moving no-slip wall rows and cut quadratures are separate.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
+    void*,
+    SparseMacGridView3D grid,
+    double step_duration,
+    const LiquidPressureProblemView3D& problem,
+    double dynamic_viscosity,
+    MacPressureSolverOptions3D options
+) {
+  const double width = grid.geometry().cell_width;
+  const double full_area = width * width;
+  const double full_volume = full_area * width;
+  std::vector<MacViscosityCell3D> material;
+  material.reserve(problem.cells.size());
+  for (const auto& cell : problem.cells) {
+    // The cut-volume accumulator sums tetrahedra even for full cells.
+    constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
+    if (std::abs(cell.fluid_volume / full_volume - 1.0) > kFullCellRoundoff) {
+      return absl::UnimplementedError("viscous substep requires full-cell strain quadratures");
+    }
+    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = dynamic_viscosity});
+  }
+  for (const auto& face : problem.faces) {
+    if (face.open_area != 0.0 && face.open_area != full_area) {
+      return absl::UnimplementedError("viscous substep requires full-area or sealed faces");
+    }
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid, material);
+  if (!strain.ok()) {
+    return strain.status();
+  }
+  const auto blocks = grid.active_block_indices();
+  const auto owning_grid = SparseMacGrid3D::Create(grid.geometry(), blocks, blocks.size());
+  if (!owning_grid.ok()) {
+    return owning_grid.status();
+  }
+  return ProjectMacViscousPressure3D({*owning_grid, step_duration, problem.cells, problem.faces}, *strain, options);
+}
+
 }  // namespace
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
   return {
@@ -400,6 +441,7 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
              MacPressureWorkspace3D& workspace) {
             return ProjectMacPressure3D(grid, step_duration, problem, options, workspace);
           },
+      .project_viscous = ProjectFullCellViscosity,
       .gather =
           [](void*, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return GatherLiquidBoundaryParticles3D(inputs, workspace);

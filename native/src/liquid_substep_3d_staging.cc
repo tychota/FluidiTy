@@ -195,6 +195,7 @@ absl::StatusOr<Staging> Staging::Create(
 absl::Status
 ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options) {
   const bool valid_material = std::isnormal(scene.liquid_density) && scene.liquid_density > 0
+      && std::isfinite(scene.dynamic_viscosity) && scene.dynamic_viscosity >= 0.0
       && std::isfinite(scene.surface_tension) && scene.surface_tension >= 0 && std::isfinite(scene.ambient_pressure)
       && std::isfinite(scene.target_divergence) && scene.bulk_modulus > 0;
   if (!valid_material) {

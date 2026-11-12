@@ -370,6 +370,23 @@ TEST(LiquidCache3D, ResolvedHorizontalPlaneRequiresTankAndMaterializedPayloads) 
   EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidCache3D, ResolvedViscosityRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.dynamic_viscosity = 12.5;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_DOUBLE_EQ(decoded->View().scene.dynamic_viscosity, 12.5);
+  const auto fingerprint = ResolvedSceneFingerprint(decoded->View());
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*baseline, *fingerprint);
+  scene.scene.dynamic_viscosity = -1.0;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ResolvedDefaultsMaterializeAndRoundTrip) {
   LiquidResolvedSceneView3D scene;
   auto encoded = EncodeLiquidResolvedScene3D(scene);

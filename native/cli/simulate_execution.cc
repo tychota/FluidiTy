@@ -217,6 +217,12 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       || !nonnegative(pressure_volume) || state.cells.values().empty() != (pressure_volume == 0)) {
     return absl::DataLossError("");
   }
+  const auto viscous_residual = measurement.viscous_max_momentum_residual_kg_m_per_s;
+  if (viscous_residual && !nonnegative(*viscous_residual)) {
+    return absl::DataLossError("");
+  }
+  const std::string viscous_member =
+      viscous_residual ? ",\"viscous_max_momentum_residual_kg_m_per_s\":" + Number(*viscous_residual) : "";
   const auto& piston = measurement.piston_pose;
   const double inward_flux = measurement.step_start_inward_piston_flux_m3_per_s;
   if (!std::isfinite(inward_flux) || (!piston && inward_flux != 0)
@@ -232,8 +238,8 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       + ",\"pressure_max_volume_scaled_residual_per_s\":" + Number(pressure.max_volume_scaled_residual)
       + ",\"pressure_max_constraint_defect_per_s\":" + Number(pressure.max_cell_constraint_defect)
       + ",\"step_start_pressure_cell_volume_m3\":" + Number(pressure_volume)
-      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux)
-      + ",\"step_start_piston_low_x_m\":" + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + '}';
+      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux) + ",\"step_start_piston_low_x_m\":"
+      + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + viscous_member + '}';
 }
 std::string GeometryMembers(const LiquidState3D& state) {
   std::string members = "\"geometry\":{\"particles\":[";

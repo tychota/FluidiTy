@@ -131,6 +131,9 @@ struct MacViscousPressureProjection3D {
   std::vector<double> face_velocities;  // m/s, in incident pressure face order.
   std::vector<double> cell_constraint_defects;  // Outward flux minus source plus compliance, divided by volume, s⁻¹.
   std::size_t pressure_iterations;
+  double constraint_residual_l2;  // L2 norm of the integrated constraint residual, m³/s.
+  double initial_constraint_residual_l2;  // Coupled pressure RHS norm at zero pressure, m³/s.
+  double max_cell_constraint_defect;  // Maximum absolute volume-scaled defect, s⁻¹.
   double max_momentum_residual;  // Maximum true inner momentum residual, kg m/s.
 };
 
@@ -144,8 +147,11 @@ struct MacViscousPressureProjection3D {
 // volume-scaled constraint check on all original cells pass. Invalid strain data
 // returns kInvalidArgument, nonfinite arithmetic kOutOfRange, and nonconvergence
 // kAborted. Propagates pressure preparation errors.
-absl::StatusOr<MacViscousPressureProjection3D>
-ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> strain_rows);
+absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options = {}
+);
 
 enum class ViscosityMode {
   kAuto,

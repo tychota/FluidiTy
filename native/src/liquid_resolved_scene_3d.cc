@@ -57,9 +57,9 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   const auto& scene = input.scene;
   const auto& options = input.options;
   const bool material_valid = std::isnormal(scene.liquid_density) && scene.liquid_density > 0
-      && detail::Nonnegative(scene.surface_tension) && std::isfinite(scene.ambient_pressure) && scene.bulk_modulus > 0
-      && std::isfinite(scene.target_divergence) && detail::Nonnegative(scene.friction_coefficient)
-      && detail::Nonnegative(scene.penetration_tolerance);
+      && detail::Nonnegative(scene.dynamic_viscosity) && detail::Nonnegative(scene.surface_tension)
+      && std::isfinite(scene.ambient_pressure) && scene.bulk_modulus > 0 && std::isfinite(scene.target_divergence)
+      && detail::Nonnegative(scene.friction_coefficient) && detail::Nonnegative(scene.penetration_tolerance);
   if (!material_valid || !detail::Finite(scene.world_acceleration)) {
     return Invalid();
   }
@@ -211,6 +211,7 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   result.scene.world_acceleration = detail::Unpack(root->acceleration());
   const auto* material = root->material();
   result.scene.liquid_density = material->density();
+  result.scene.dynamic_viscosity = material->dynamic_viscosity().value_or(0.0);
   result.scene.surface_tension = material->surface_tension();
   result.scene.ambient_pressure = material->ambient_pressure();
   result.scene.bulk_modulus = material->bulk_modulus();
@@ -359,6 +360,10 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::ResolvedScene>> {
         const auto& scene = input.scene;
         const auto& options = input.options;
+        flatbuffers::Optional<double> dynamic_viscosity;
+        if (scene.dynamic_viscosity > 0.0) {
+          dynamic_viscosity = scene.dynamic_viscosity;
+        }
         const auto material = wire::CreateMaterial(
             builder,
             scene.liquid_density,
@@ -367,7 +372,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             scene.bulk_modulus,
             detail::Canonical(scene.target_divergence),
             detail::Canonical(scene.friction_coefficient),
-            detail::Canonical(scene.penetration_tolerance)
+            detail::Canonical(scene.penetration_tolerance),
+            dynamic_viscosity
         );
         flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
         if (const auto& capture = options.whitewater_capture) {

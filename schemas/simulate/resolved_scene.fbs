@@ -11,6 +11,7 @@ table Material {
   target_divergence:double (id:4);
   friction:double (id:5);
   penetration_tolerance:double (id:6);
+  dynamic_viscosity:double = null (id:7);
 }
 struct WhitewaterRampBounds { low:double; high:double; }
 table WhitewaterCapture {

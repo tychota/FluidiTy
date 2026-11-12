@@ -79,7 +79,7 @@ auto FaceKey(FaceIndex3D index) {
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
       && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus)
-      && scene.surface_tension == 0;
+      && scene.surface_tension == 0 && scene.dynamic_viscosity == 0;
 }
 
 // Continue projected changes only when the new donors are a strict subset of
@@ -651,35 +651,77 @@ struct LiquidSubstepScheduler3D::Impl {
     if (!links->cells.empty()) {
       auto pressure_problem = *links;
       pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
-      const auto projection = backend.project(
-          backend.context,
-          grid,
-          step_duration,
-          pressure_problem,
-          options.pressure_solver_options,
-          workspace.pressure()
-      );
-      if (!projection.ok()) {
-        return projection.status();
+      std::optional<MacViscousPressureProjection3D> viscous_projection;
+      std::span<const double> projected_cell_pressures;
+      std::span<const double> projected_face_velocities;
+      MacPressureDiagnostics3D pressure_diagnostics;
+      MacPressureFrozenMeasurement3D frozen_measurement;
+      if (scene.dynamic_viscosity == 0.0) {
+        const auto projection = backend.project(
+            backend.context,
+            grid,
+            step_duration,
+            pressure_problem,
+            options.pressure_solver_options,
+            workspace.pressure()
+        );
+        if (!projection.ok()) {
+          return projection.status();
+        }
+        projected_cell_pressures = projection->cell_pressures;
+        projected_face_velocities = projection->corrected_face_velocities;
+        pressure_diagnostics = projection->diagnostics;
+        frozen_measurement = projection->frozen_measurement;
+      } else {
+        auto result = backend.project_viscous(
+            backend.context,
+            grid,
+            step_duration,
+            pressure_problem,
+            scene.dynamic_viscosity,
+            options.pressure_solver_options
+        );
+        if (!result.ok()) {
+          return result.status();
+        }
+        viscous_projection.emplace(std::move(*result));
+        const auto& coupled = *viscous_projection;
+        accepted_measurement.viscous_max_momentum_residual_kg_m_per_s = coupled.max_momentum_residual;
+        projected_cell_pressures = coupled.cell_pressures;
+        projected_face_velocities = coupled.face_velocities;
+        pressure_diagnostics = {
+            .iteration_count = coupled.pressure_iterations,
+            .true_residual_l2 = coupled.constraint_residual_l2,
+            .max_volume_scaled_residual = coupled.max_cell_constraint_defect,
+            .max_cell_constraint_defect = coupled.max_cell_constraint_defect,
+        };
+        frozen_measurement.integrated_rhs_l2_m3_per_s = coupled.initial_constraint_residual_l2;
+        for (const auto& cell : pressure_problem.cells) {
+          frozen_measurement.pressure_cell_volume_m3 += cell.fluid_volume;
+        }
       }
-      diagnostics.pressure_diagnostics = projection->diagnostics;
-      accepted_measurement.pressure = projection->diagnostics;
-      accepted_measurement.pressure_rhs_l2_m3_per_s = projection->frozen_measurement.integrated_rhs_l2_m3_per_s;
-      accepted_measurement.step_start_pressure_cell_volume_m3 = projection->frozen_measurement.pressure_cell_volume_m3;
+      if (projected_cell_pressures.size() != frozen->cells.size()
+          || projected_face_velocities.size() != frozen->faces.size()) {
+        return absl::InternalError("pressure projection extents do not match frozen geometry");
+      }
+      diagnostics.pressure_diagnostics = pressure_diagnostics;
+      accepted_measurement.pressure = pressure_diagnostics;
+      accepted_measurement.pressure_rhs_l2_m3_per_s = frozen_measurement.integrated_rhs_l2_m3_per_s;
+      accepted_measurement.step_start_pressure_cell_volume_m3 = frozen_measurement.pressure_cell_volume_m3;
       if (accepted_measurement.piston_pose.has_value()) {
         accepted_measurement.step_start_inward_piston_flux_m3_per_s =
-            projection->frozen_measurement.inward_prescribed_wall_flux_m3_per_s;
+            frozen_measurement.inward_prescribed_wall_flux_m3_per_s;
       }
       for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
         trial.cells[index] = {
             frozen->cells[index].cell_index,
             LiquidCellOccupancy3D::kLiquid,
-            projection->cell_pressures[index],
+            projected_cell_pressures[index],
         };
       }
       for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
         const auto slot = frozen->faces[index].face_slot;
-        staging.new_velocities[slot] = projection->corrected_face_velocities[index];
+        staging.new_velocities[slot] = projected_face_velocities[index];
         if (staging.validity[slot] == LiquidFaceValidity3D::kMissing && frozen->faces[index].open_area > 0) {
           staging.validity[slot] = LiquidFaceValidity3D::kPredicted;
         }
@@ -997,6 +1039,12 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));
+  if (scene.dynamic_viscosity > 0.0 && !backend.project_viscous) {
+    return absl::UnimplementedError("backend does not support coupled viscosity");
+  }
+  if (scene.dynamic_viscosity > 0.0 && needs_wetted_piston) {
+    return absl::UnimplementedError("viscous projection requires certified moving-wall quadratures");
+  }
   const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);
   if (!bytes.ok()) {
     return bytes.status();

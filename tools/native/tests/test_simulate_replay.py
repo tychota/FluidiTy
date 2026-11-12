@@ -272,7 +272,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control") else []
     return scene, initial
 
 
@@ -483,6 +483,29 @@ def verify_cuda_compatibility_refusals(executable, cache, directory):
 
 def case_cpu_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cpu")
+    # Both packets start from the same shear state in an aligned full-cell tank.
+    velocity = {}
+    for mode in ("viscous-control", "viscous"):
+        work = directory / mode
+        work.mkdir()
+        scene, initial = make_scene(executable, fixture, work, "cpu", mode)
+        cache = work / "cache"
+        output = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", "cpu",
+                         "--cache", cache, *initial, "--frame-end", 1, "--trace")
+        assert output[-1]["frame"] == 1 and output[-1]["backend"] == "cpu"
+        measured = [event["accepted_measurement"] for event in output if event["event"] == "trace"]
+        assert measured
+        residual_key = "viscous_max_momentum_residual_kg_m_per_s"
+        for measurement in measured:
+            assert (residual_key in measurement) == (mode == "viscous")
+            if mode == "viscous":
+                assert math.isfinite(measurement[residual_key]) and 0.0 <= measurement[residual_key] <= 1e-6
+        point_frame = json.loads(subprocess.run([str(fixture), "first-point-frame", str(cache)],
+                                               capture_output=True, check=True, timeout=30).stdout)
+        assert point_frame["frame"] == 1 and point_frame["particle_count"] == 2
+        velocity[mode] = abs(point_frame["first_velocity"][2])
+    assert velocity["viscous-control"] - velocity["viscous"] > 1e-7, velocity
+
 
 
 def case_cpu_replay(executable, fixture, directory, cuda):

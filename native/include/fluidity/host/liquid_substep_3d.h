@@ -49,6 +49,7 @@ struct LiquidSceneInputs3D {
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
   Vec3 world_acceleration{0, -9.81, 0};  // m/s^2, applied once after the old snapshot.
   double liquid_density = 1000;  // kg/m^3.
+  double dynamic_viscosity = 0;  // Pa s. Zero disables grid viscosity.
   double surface_tension = 0;  // N/m.
   double ambient_pressure = 0;  // Pa, gauge.
   double bulk_modulus = std::numeric_limits<double>::infinity();  // Pa.
@@ -124,6 +125,7 @@ struct LiquidAcceptedStepMeasurement3D {
   double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
   std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
   MacPressureDiagnostics3D pressure;
+  std::optional<double> viscous_max_momentum_residual_kg_m_per_s;  // Present after a coupled viscosity solve.
   double pressure_rhs_l2_m3_per_s = 0;  // L2 norm of the original integrated RHS, including gauge rows.
   double step_start_pressure_cell_volume_m3 = 0;  // Frozen liquid volume in center-selected pressure cells.
   // Compensated sum of explicit one-sided piston wall flux in owned face order.
