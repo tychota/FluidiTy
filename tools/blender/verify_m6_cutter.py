@@ -143,8 +143,19 @@ if "--" in sys.argv:
         before_impact = root / "Before impact.chk"
         assert run("-", before_impact).returncode == 0
         before_impact_bytes = before_impact.read_bytes()
-        result = run(before_impact, rejected)
-        assert result.returncode != 0 and b"full-rank velocity continuation" in result.stderr, result.stderr
-        assert not rejected.exists() and before_impact.read_bytes() == before_impact_bytes
+        impact_output = root / "Impact.chk"
+        impact_replay = root / "Impact replay.chk"
+        result = run(before_impact, impact_output)
+        assert result.returncode == 0, result.stderr
+        impact = json.loads(result.stdout)
+        assert impact["particle_impulse"] == [1.5, 0, 0], impact
+        assert impact["blade_work"] == 1.125, impact
+        assert impact["sides"] == first_frame["sides"]
+        assert abs(impact["cut_work"]) <= 1e-6
+        result = run(before_impact, impact_replay)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == impact
+        assert impact_output.read_bytes() == impact_replay.read_bytes()
+        assert before_impact.read_bytes() == before_impact_bytes
 
-    print("PASS: Blender Cutter packet, persistent sides, byte-identical restart and rejected impact")
+    print("PASS: Blender Cutter packet, persistent sides, byte-identical restart and accepted impact")
