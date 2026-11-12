@@ -51,6 +51,14 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    8,400 faces and 1,024 particles with identical output. It adds 50,352 bytes
    to the frozen owner in that fixture. [Transfer index](https://github.com/tychota/FluidiTy/pull/114)
 
+### Actual graded support moments
+
+`GradedMacTransfer3D::MeasureSupportMoments` measures partition, weighted mean and centered covariance from the canonical radial gather support. The same affine pivot test reports rank for each velocity component. The witness also records positive geometric support removed by masks and support at other face widths.
+
+At a cell center away from boundaries and width transitions, the measured radial stencil has 28 positive samples per velocity row. In leaf-width-squared units, the binary64 normal and transverse covariances agree with `167/396` and `76/165` within `1e-15`. The affine field reproduces despite the mismatch with the quadratic variance `1/4` and cubic-normal variance `1/3`. A signed coarse/fine fixture also reproduces its affine field and reports the width transition.
+
+`CheckUniformResamplingSupport` refuses the radial stencil, including an accidental binary64 moment match, because uniform split and merge require the complete unmasked tensor support. The checked witness leaves split and merge disabled.
+
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.
