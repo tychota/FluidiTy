@@ -31,8 +31,9 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    reset them on veto, and apply deterministic 2:1 closure at faces, edges and
    corners before preparing a family candidate. The frozen topology now
    computes the minimum refinement closure in canonical leaf order and checks
-   the proposed cell count before remap. The remaining transaction must apply
-   all selected families and publish their combined inventory and face changes.
+   the proposed cell count before remap. The bounded scheduler can apply the
+   complete refinement closure in one trial when each family can be exactly
+   rebinned.
    Qualify interrupted versus
    uninterrupted policy decisions and ensure a rejected trial cannot earn age.
 2. Extend remap from exact particle rebinning to certified split and merge.
@@ -161,5 +162,28 @@ ctest --test-dir out/build/width-scheduler-cuda -V -R '^AdaptiveWidthReplay.cuda
 ```
 
 The caller still supplies the physical, camera, particle support and
-movement evidence. Automatic scene evaluation, multi-family grading closure,
-and resampling for families that cannot be exactly rebinned remain open.
+movement evidence. Automatic scene evaluation, multi-family coarsening, and
+resampling for families that cannot be exactly rebinned remain open.
+
+## Atomic refinement closure
+
+A width request can refine the selected parent and all coarser neighbors
+required by 2:1 grading. The scheduler remaps the closure coarsest first into
+temporary state, and publishes the resulting topology, inventory, pressure
+warm starts and signed subfaces in one physical acceptance. If any family
+requires resampling, the complete preparation refuses before consuming a
+trial. This bounded implementation constructs temporary family candidates
+and remains subject to the existing leaf and subface caps.
+
+A five-leaf planar control requests the smaller parent next to a coarser
+leaf. Both families publish together as 19 leaves. The CUDA fixture checks
+the device bank immediately after a late rejection and after acceptance.
+CPU and SM120 resumed the same checkpoint BLAKE3
+`bae5857e532ca09ad59e773f3d23d081e1354c66f7820c0f16be24a612c989ed`
+and produced final state
+`14865d96ba661a0ad99e0babe3860932d4637871e2d025fd452bd4ae302b4913`.
+
+```powershell
+ctest --test-dir out/build/batch-cpu -V -R 'GradedRefinementFamilies|AdaptiveClosureReplay.cpu' --no-tests=error
+ctest --test-dir out/build/batch-cuda -V -R '^AdaptiveClosureReplay.cuda$' --no-tests=error
+```

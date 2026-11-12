@@ -421,6 +421,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu width)
   set_tests_properties(AdaptiveWidthReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveClosureReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu closure)
+  set_tests_properties(AdaptiveClosureReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(fluidity_adaptive_family_fixture PRIVATE FLUIDITY_ADAPTIVE_FIXTURE_CUDA)
     target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_cuda_operators CUDA::cudart)
@@ -442,6 +446,10 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda width)
     set_tests_properties(AdaptiveWidthReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveClosureReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda closure)
+    set_tests_properties(AdaptiveClosureReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
   endif()
 
   if(FLUIDITY_ENABLE_CUDA)

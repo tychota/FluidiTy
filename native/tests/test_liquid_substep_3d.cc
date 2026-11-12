@@ -132,6 +132,65 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, PublishesRequiredGradedRefinementFamiliesAtomically) {
+  constexpr std::array requested{AdaptiveMacCellKey3D{.lower_corner = {4, 0, 0}, .width_exponent = 1}};
+  for (const bool exact_child_coverage : {false, true}) {
+    SCOPED_TRACE(exact_child_coverage);
+    LiquidState3D state;
+    LiquidSceneInputs3D scene;
+    const auto authored = test::PopulateGradedRefinementClosureFixture3D(state, scene, exact_child_coverage);
+    ASSERT_TRUE(authored.ok()) << authored;
+    auto options = Options();
+    options.capacities = {19, 0, 19, 160, 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    if (!exact_child_coverage) {
+      const auto refused = scheduler->AttemptWithAdaptiveRefinementClosure(0.01, requested);
+      EXPECT_EQ(refused.status().code(), absl::StatusCode::kFailedPrecondition);
+      EXPECT_EQ(refused.status().message(), "graded family inventory requires certified particle resampling");
+      EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+      ExpectIdenticalSerializedState(state, scheduler->committed());
+      continue;
+    }
+    scheduler->SetStageFaultHookForTesting({
+        .context = nullptr,
+        .before_stage =
+            [](void*, LiquidPhysicalStage3D stage, double) {
+              return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject complete grading closure")
+                                                             : absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler->AttemptWithAdaptiveRefinementClosure(0.01, requested);
+    ASSERT_TRUE(rejected.ok()) << rejected.status();
+    ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+    ASSERT_EQ(rejected->retry_duration, 0.005);
+    ExpectIdenticalSerializedState(state, scheduler->committed());
+    scheduler->SetStageFaultHookForTesting({});
+    const auto accepted = scheduler->AttemptWithAdaptiveRefinementClosure(*rejected->retry_duration, requested);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+    EXPECT_EQ(scheduler->committed().adaptive_cells.size(), 19);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            scheduler->committed().adaptive_cells.values(),
+            [](const auto& leaf) {
+              return leaf.key.width_exponent == 0;
+            }
+        ),
+        8
+    );
+    const auto particles = scheduler->committed().particles.values();
+    ASSERT_EQ(particles.size(), state.particles.size());
+    for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+      EXPECT_EQ(particles[ordinal].id, state.particles[ordinal].id);
+      EXPECT_DOUBLE_EQ(particles[ordinal].mass, state.particles[ordinal].mass);
+      EXPECT_DOUBLE_EQ(particles[ordinal].reference_volume, state.particles[ordinal].reference_volume);
+      EXPECT_DOUBLE_EQ(particles[ordinal].volume_ratio, state.particles[ordinal].volume_ratio);
+    }
+  }
+}
+
 TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
