@@ -6,12 +6,14 @@
 #include <optional>
 #include <span>
 #include <variant>
+#include <vector>
 
 #include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
+#include "fluidity/host/plastic_solid_checkpoint_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
 #include "fluidity/host/whitewater_3d.h"
 
@@ -256,6 +258,22 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct LiquidSnowStepInputs3D {
+  const SparseMacGrid3D& solid_grid;  // Uniform complete-support MAC layout.
+  std::span<const PlasticSolidCheckpointParticle3D> accepted_particles;
+  std::uint64_t body_id;
+  std::uint64_t material_id;
+  SnowParameters3D snow;
+  DrySolidStep3D solid_step;  // Attempt duration replaces solid_step.duration.
+  double support_radius;  // Common sphere-union support radius in metres.
+};
+
+struct LiquidSnowAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  // Present only on shared acceptance and ordered by the original particle IDs.
+  std::optional<std::vector<PlasticSolidCheckpointParticle3D>> accepted_snow;
+};
+
 struct TankPressureLoad3D {
   Vec3 force{};  // World N exerted by the stationary tank on the liquid.
   Vec3 torque{};  // World N m about the world origin, exerted on the liquid.
@@ -398,6 +416,12 @@ class LiquidSubstepScheduler3D {
   // after drift. Supports the oriented CPU box without surface tension.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithCoupledOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Attempts one uniform sampled snow and liquid substep. Uses a frozen
+  // sphere-union wall and the host snow transfer with complete support.
+  // Rejects intersecting particle sweeps and publishes the snow candidate
+  // only after the liquid transaction accepts. The original snow records
+  // remain immutable. Analytic obstacle composition is unsupported.
+  absl::StatusOr<LiquidSnowAttempt3D> AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& snow);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -425,6 +449,7 @@ class LiquidSubstepScheduler3D {
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);
+  struct SnowTrial;
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -432,7 +457,8 @@ class LiquidSubstepScheduler3D {
       bool dynamic_piston = false,
       bool coupled_piston = false,
       const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
-      FloatingBoxTrial* floating_box = nullptr
+      FloatingBoxTrial* floating_box = nullptr,
+      SnowTrial* snow = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

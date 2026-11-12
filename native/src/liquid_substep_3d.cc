@@ -10,6 +10,7 @@
 #include <tuple>
 
 #include "absl/cleanup/cleanup.h"
+#include "fluidity/host/plastic_solid_boundary_3d.h"
 #include "fluidity/host/small_solve.h"
 #include "liquid_adaptive_step_3d.h"
 #include "liquid_boundary_backend.h"
@@ -894,6 +895,89 @@ struct CavityStepScratch {
 };
 
 }  // namespace
+struct LiquidSubstepScheduler3D::SnowTrial {
+  const LiquidSnowStepInputs3D& inputs;
+  std::vector<PlasticSolidCheckpointParticle3D> candidate;
+
+  absl::Status Advance(
+      double duration,
+      std::span<const PlasticSolidPressureImpulse3D> loads,
+      const LiquidState3D& committed_liquid,
+      const LiquidState3D& trial_liquid
+  ) {
+    auto particles = StagePressureLoadedSnowParticles3D(
+        inputs.accepted_particles,
+        inputs.body_id,
+        inputs.material_id,
+        inputs.snow,
+        inputs.solid_grid.geometry().cell_width,
+        loads
+    );
+    if (!particles.ok()) {
+      return particles.status();
+    }
+    auto settings = inputs.solid_step;
+    settings.duration = duration;
+    STEP_TRY(AdvanceDrySolid3D(inputs.solid_grid, inputs.snow, settings, *particles));
+    for (const auto& liquid : trial_liquid.particles.values()) {
+      const auto old_particles = committed_liquid.particles.values();
+      const auto old_liquid = std::ranges::find(old_particles, liquid.id, &LiquidParticleState3D::id);
+      const auto start_liquid = old_liquid == old_particles.end() ? liquid.world_position : old_liquid->world_position;
+      for (std::size_t i = 0; i < particles->size(); ++i) {
+        const auto old = inputs.accepted_particles[i].transfer.sorted_world_position;
+        const auto next = (*particles)[i].world_position;
+        const Vec3 start{start_liquid.x - old.x, start_liquid.y - old.y, start_liquid.z - old.z};
+        const Vec3 end{
+            liquid.world_position.x - next.x,
+            liquid.world_position.y - next.y,
+            liquid.world_position.z - next.z
+        };
+        const Vec3 sweep{end.x - start.x, end.y - start.y, end.z - start.z};
+        const double distance = std::hypot(start.x, start.y, start.z);
+        const double length = std::hypot(sweep.x, sweep.y, sweep.z);
+        if (!std::isfinite(distance) || !std::isfinite(length)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+        if (distance < inputs.support_radius) {
+          return Error(absl::StatusCode::kFailedPrecondition);
+        }
+        if (length == 0) {
+          continue;
+        }
+        const Vec3 direction{sweep.x / length, sweep.y / length, sweep.z / length};
+        const double along =
+            std::clamp(-(start.x * direction.x + start.y * direction.y + start.z * direction.z), 0.0, length);
+        const double closest = std::hypot(
+            std::fma(along, direction.x, start.x),
+            std::fma(along, direction.y, start.y),
+            std::fma(along, direction.z, start.z)
+        );
+        if (!std::isfinite(closest)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+        if (closest < inputs.support_radius) {
+          return Error(absl::StatusCode::kAborted);
+        }
+      }
+    }
+    candidate.reserve(particles->size());
+    for (std::size_t i = 0; i < particles->size(); ++i) {
+      const auto record = CapturePlasticSolidCheckpointParticle3D(
+          inputs.accepted_particles[i].particle_id,
+          inputs.body_id,
+          inputs.material_id,
+          inputs.snow,
+          (*particles)[i]
+      );
+      if (!record.ok()) {
+        return record.status();
+      }
+      candidate.push_back(*record);
+    }
+    return absl::OkStatus();
+  }
+};
+
 struct LiquidSubstepScheduler3D::Impl {
   LiquidFrameTransaction3D transaction;
   LiquidStepWorkspace3D workspace;
@@ -971,7 +1055,8 @@ struct LiquidSubstepScheduler3D::Impl {
       bool dynamic_piston,
       bool coupled_piston,
       const LiquidPistonReactionUpdate3D* update_with_reaction,
-      FloatingBoxTrial* floating_box
+      FloatingBoxTrial* floating_box,
+      SnowTrial* snow
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
@@ -1126,6 +1211,21 @@ struct LiquidSubstepScheduler3D::Impl {
         exact_curvature = outward_curvature;
       }
     }
+    std::optional<PlasticSolidBoundarySamples3D> snow_samples;
+    LiquidRecords3D<PlasticSolidPressureImpulse3D> snow_loads;
+    if (snow != nullptr) {
+      auto samples = SamplePlasticSolidBoundary3D(
+          grid,
+          staging.corners.values(),
+          snow->inputs.accepted_particles,
+          snow->inputs.body_id,
+          snow->inputs.support_radius
+      );
+      if (!samples.ok()) {
+        return samples.status();
+      }
+      snow_samples = std::move(*samples);
+    }
     const LiquidBoundaryGeometryViewInputs3D geometry_inputs{
         .mac_grid = grid,
         .cell_indices = staging.candidates.values(),
@@ -1136,6 +1236,7 @@ struct LiquidSubstepScheduler3D::Impl {
         .liquid_density = scene.liquid_density,
         .surface_tension = scene.surface_tension,
         .exact_outward_interface_curvature = exact_curvature,
+        .sampled_solid = snow_samples ? std::optional{snow_samples->View()} : std::nullopt,
     };
     LiquidStepCavityBoundaries3D cavity_boundaries;
     if (cavity || scene.cavity_provider.prepare) {
@@ -1998,6 +2099,13 @@ struct LiquidSubstepScheduler3D::Impl {
           || projected_face_velocities.size() != pressure_problem.faces.size()) {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
       }
+      if (snow_samples) {
+        auto staged = StagePlasticSolidPressureLoads3D(*frozen, *snow_samples, projected_cell_pressures, 0.0);
+        if (!staged.ok()) {
+          return staged.status();
+        }
+        snow_loads = std::move(*staged);
+      }
       if (eos) {
         for (const double pressure : projected_cell_pressures) {
           const auto accepted_eos = EvaluateLiquidEosAtPressure3D(*eos, pressure);
@@ -2583,6 +2691,9 @@ struct LiquidSubstepScheduler3D::Impl {
       body.force = {};
       body.torque = {};
     }
+    if (snow != nullptr) {
+      STEP_TRY(snow->Advance(step_duration, snow_loads.values(), transaction.committed(), trial));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
   }
@@ -3061,6 +3172,33 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
   };
 }
 
+absl::StatusOr<LiquidSnowAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& inputs) {
+  const auto& impl = *impl_;
+  if (impl.adaptive || !std::holds_alternative<std::monostate>(impl.scene.obstacle) || impl.cavity
+      || impl.scene.cavity_provider.prepare) {
+    return absl::UnimplementedError("sampled snow requires uniform liquid without an analytic obstacle or cavity");
+  }
+  const auto liquid_geometry = committed().geometry;
+  const auto solid_geometry = inputs.solid_grid.geometry();
+  if (inputs.accepted_particles.empty() || liquid_geometry.cell_width != solid_geometry.cell_width
+      || liquid_geometry.world_origin.x != solid_geometry.world_origin.x
+      || liquid_geometry.world_origin.y != solid_geometry.world_origin.y
+      || liquid_geometry.world_origin.z != solid_geometry.world_origin.z) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  SnowTrial snow{.inputs = inputs, .candidate = {}};
+  const auto outcome = AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, &snow);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  LiquidSnowAttempt3D result{.outcome = *outcome, .accepted_snow = std::nullopt};
+  if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
+    result.accepted_snow = std::move(snow.candidate);
+  }
+  return result;
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     double step_duration,
     LiquidWorkPhaseObserver3D work_phase,
@@ -3068,7 +3206,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     bool dynamic_piston,
     bool coupled_piston,
     const LiquidPistonReactionUpdate3D* update_with_reaction,
-    FloatingBoxTrial* floating_box
+    FloatingBoxTrial* floating_box,
+    SnowTrial* snow
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
@@ -3108,7 +3247,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
                                     dynamic_piston,
                                     coupled_piston,
                                     update_with_reaction,
-                                    floating_box
+                                    floating_box,
+                                    snow
                                 );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
