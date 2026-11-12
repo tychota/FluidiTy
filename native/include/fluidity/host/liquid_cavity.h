@@ -1,6 +1,11 @@
 #pragma once
 
+#include <limits>
+#include <optional>
+#include <span>
+
 #include "absl/status/statusor.h"
+#include "fluidity/host/liquid_air_components.h"
 
 namespace fluidity {
 
@@ -44,6 +49,42 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
     double surface_tension,
     double liquid_curvature,
     double cell_width
+);
+
+struct LiquidCavityBoundaryInputs3D {
+  std::span<const LiquidAirVolumeCell3D> gas_cells;  // Sorted gas nodes from the sampled domain.
+  std::span<const std::size_t> labels;  // Component index for each gas cell.
+  std::span<const LiquidAirComponent3D> components;
+  std::span<const std::optional<LiquidCavityInventory3D>> inventories;  // Matched by component.
+  std::span<const LiquidCenterDistance3D> center_distances;  // Frozen pressure sample order (z,y,x).
+  double atmospheric_absolute_pressure;  // Pa.
+  double liquid_density;  // kg/m³.
+  double cell_width;  // m.
+};
+
+struct LiquidCavityBoundaryComponent3D {
+  bool active = false;
+  double gas_gauge_pressure = 0.0;  // Pa before capillarity.
+};
+
+struct LiquidCavityBoundaryPreparation3D {
+  std::size_t air_pressure_count = 0;
+  std::size_t active_cavity_count = 0;
+  std::size_t subresolution_inventory_count = 0;
+  double maximum_step_duration = std::numeric_limits<double>::infinity();  // s.
+};
+
+// Prepares the gas-only pressure lift and minimum radial step bound for
+// enclosed, resolved components with matched inventories. Unclassified
+// and vented components supply no override. Emits only air centers present
+// in the frozen pressure samples. Scratch spans are disjoint from all inputs
+// and each other. InvalidArgument covers invalid inputs, ResourceExhausted
+// covers insufficient pressure output, and cavity arithmetic errors propagate.
+// Scratch may change on failure. No partially prepared result is returned.
+absl::StatusOr<LiquidCavityBoundaryPreparation3D> PrepareLiquidCavityBoundaries3D(
+    const LiquidCavityBoundaryInputs3D& inputs,
+    std::span<LiquidCavityBoundaryComponent3D> component_scratch,
+    std::span<LiquidAirCellPressure3D> air_pressures
 );
 
 }  // namespace fluidity

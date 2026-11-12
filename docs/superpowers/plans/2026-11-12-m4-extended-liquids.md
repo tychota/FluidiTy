@@ -307,3 +307,11 @@ The bounded host adapter converts ordered corner samples and a frozen obstacle i
 An independent eight-cell fixture used a single positive lattice corner. Twenty-four equal tetrahedral corner cuts produced 0.5 m³ in one enclosed component. Cropping the last cell left 0.375 m³ and an unclassified frontier. Certifying one of its open outer faces changed the classification to vented, while the same declaration on the intact interior face was rejected. All 34 CPU cavity and boundary geometry cases and the real-device CUDA boundary regression passed. Reproduce with the locked Windows presets and ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle on CUDA. Receipts use the out/m4-sampled-air-domain prefix. clang-format 19.1.5 passed.
 
 The scheduler must still supply a sampled domain with certified atmosphere outlets, persist inventories across accepted topology changes, and feed resulting pressure and timestep bounds into the normal path.
+
+## Cavity pressure and timestep preparation receipt
+
+The host adapter consumes labeled gas cells and component-aligned inventories. Resolved enclosed components with inventories supply gauge pressure at matching air-side pressure centers and contribute to the minimum radial timestep bound. The boundary link adds the signed capillary jump once. The adapter reports subresolution inventories and rejects malformed labels.
+
+The CPU fixture checked polytropic pressure and the radial bound against independent calculations, excluded liquid centers and inactive components, and rejected short output and orphaned labels. The locked Windows presets passed eight CPU checks with ctest -R 'LiquidCavity3D|CavityGasPressure' and one real-device CUDA regression with ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. Receipts use the out/m4-cavity-boundaries prefix. clang-format 19.1.5 passed. Independent review checked component eligibility, ordered output, capillary routing and aliasing.
+
+The adapter accepts caller-aligned inventories. Persistent matching across accepted steps, scheduler inputs and publication, and Q-CAVITY remain open.

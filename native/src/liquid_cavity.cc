@@ -1,7 +1,11 @@
 #include "fluidity/host/liquid_cavity.h"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <tuple>
+
+#include "fluidity/host/views.h"
 
 namespace fluidity {
 namespace {
@@ -45,13 +49,13 @@ absl::StatusOr<LiquidCavityInventory3D> InitializeSubmergedLiquidCavity3D(
 ) {
   if (!PositiveFinite(volume) || !PositiveFinite(atmospheric_absolute_pressure)
       || !NonnegativeFinite(hydrostatic_gauge_pressure) || !NonnegativeFinite(surface_tension)) {
-    return absl::InvalidArgumentError("invalid submerged liquid cavity data");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   const double liquid_absolute_pressure = atmospheric_absolute_pressure + hydrostatic_gauge_pressure;
   const double curvature_magnitude = 2.0 / EquivalentRadius(volume);
   const double initial_absolute_pressure = std::fma(surface_tension, curvature_magnitude, liquid_absolute_pressure);
   if (!PositiveFinite(initial_absolute_pressure)) {
-    return absl::OutOfRangeError("initial liquid cavity pressure is unrepresentable");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return LiquidCavityInventory3D{
       .initial_volume = volume,
@@ -71,7 +75,7 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
   if (!PositiveFinite(inventory.initial_volume) || !PositiveFinite(inventory.initial_absolute_pressure)
       || !PositiveFinite(volume) || !PositiveFinite(atmospheric_absolute_pressure) || !PositiveFinite(liquid_density)
       || !NonnegativeFinite(surface_tension) || !std::isfinite(liquid_curvature) || !PositiveFinite(cell_width)) {
-    return absl::InvalidArgumentError("invalid liquid cavity state data");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   double absolute_pressure;
   double gauge_pressure;
@@ -91,12 +95,12 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
   }
   const double boundary_gauge_pressure = std::fma(surface_tension, liquid_curvature, gauge_pressure);
   if (!PositiveFinite(absolute_pressure) || !std::isfinite(boundary_gauge_pressure)) {
-    return absl::OutOfRangeError("liquid cavity pressure is unrepresentable");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   const double equivalent_radius = EquivalentRadius(volume);
   const double maximum_step_duration = RadialStepLimit(equivalent_radius, liquid_density, absolute_pressure);
   if (!PositiveFinite(maximum_step_duration)) {
-    return absl::OutOfRangeError("liquid cavity timestep is unrepresentable");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return LiquidCavityPressureState3D{
       .absolute_pressure = absolute_pressure,
@@ -106,6 +110,122 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
       .maximum_step_duration = maximum_step_duration,
       .resolved = equivalent_radius / 2.0 >= cell_width,
   };
+}
+
+absl::StatusOr<LiquidCavityBoundaryPreparation3D> PrepareLiquidCavityBoundaries3D(
+    const LiquidCavityBoundaryInputs3D& inputs,
+    std::span<LiquidCavityBoundaryComponent3D> component_scratch,
+    std::span<LiquidAirCellPressure3D> air_pressures
+) {
+  const auto invalid = [] {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  };
+  if (inputs.gas_cells.size() != inputs.labels.size() || inputs.components.size() != inputs.inventories.size()
+      || component_scratch.size() != inputs.components.size() || !PositiveFinite(inputs.atmospheric_absolute_pressure)
+      || !PositiveFinite(inputs.liquid_density) || !PositiveFinite(inputs.cell_width)) {
+    return invalid();
+  }
+  const auto component_bytes = std::as_bytes(component_scratch);
+  const auto pressure_bytes = std::as_bytes(air_pressures);
+  if (ByteViewsOverlap(component_bytes, pressure_bytes)) {
+    return invalid();
+  }
+  for (const auto source : {
+           std::as_bytes(inputs.gas_cells),
+           std::as_bytes(inputs.labels),
+           std::as_bytes(inputs.components),
+           std::as_bytes(inputs.inventories),
+           std::as_bytes(inputs.center_distances),
+           std::as_bytes(std::span(&inputs, 1)),
+       }) {
+    if (ByteViewsOverlap(source, component_bytes) || ByteViewsOverlap(source, pressure_bytes)) {
+      return invalid();
+    }
+  }
+  const auto key = [](CellIndex3D cell) {
+    return std::tuple{cell.z, cell.y, cell.x};
+  };
+  std::size_t next_component = 0;
+  for (std::size_t index = 0; index < inputs.gas_cells.size(); ++index) {
+    const auto& gas = inputs.gas_cells[index];
+    const auto label = inputs.labels[index];
+    if (label >= inputs.components.size() || !PositiveFinite(gas.gas_volume)
+        || (index > 0 && key(inputs.gas_cells[index - 1].cell_index) >= key(gas.cell_index))) {
+      return invalid();
+    }
+    if (label < next_component) {
+      continue;
+    }
+    if (label != next_component || key(gas.cell_index) != key(inputs.components[label].first_cell)) {
+      return invalid();
+    }
+    ++next_component;
+  }
+  if (next_component != inputs.components.size()) {
+    return invalid();
+  }
+  for (std::size_t index = 0; index < inputs.center_distances.size(); ++index) {
+    const auto& center = inputs.center_distances[index];
+    if (!std::isfinite(center.signed_distance)
+        || (index > 0 && key(inputs.center_distances[index - 1].cell_index) >= key(center.cell_index))) {
+      return invalid();
+    }
+  }
+
+  LiquidCavityBoundaryPreparation3D result;
+  for (std::size_t index = 0; index < inputs.components.size(); ++index) {
+    auto& output = component_scratch[index];
+    output = {};
+    const auto& component = inputs.components[index];
+    if (component.connectivity > LiquidAirConnectivity3D::kVented || !PositiveFinite(component.gas_volume)) {
+      return invalid();
+    }
+    if (component.connectivity != LiquidAirConnectivity3D::kEnclosed || !inputs.inventories[index]) {
+      continue;
+    }
+    if (EquivalentRadius(component.gas_volume) / 2.0 < inputs.cell_width) {
+      ++result.subresolution_inventory_count;
+      continue;
+    }
+    const auto state = EvaluateLiquidCavity3D(
+        *inputs.inventories[index],
+        component.gas_volume,
+        inputs.atmospheric_absolute_pressure,
+        inputs.liquid_density,
+        0.0,
+        0.0,
+        inputs.cell_width
+    );
+    if (!state.ok()) {
+      return state.status();
+    }
+    output = {.active = true, .gas_gauge_pressure = state->gas_gauge_pressure};
+    result.maximum_step_duration = std::min(result.maximum_step_duration, state->maximum_step_duration);
+    ++result.active_cavity_count;
+  }
+
+  // Merge the ordered gas records and frozen pressure center samples.
+  std::size_t center = 0;
+  for (std::size_t index = 0; index < inputs.gas_cells.size(); ++index) {
+    const auto& component = component_scratch[inputs.labels[index]];
+    if (!component.active) {
+      continue;
+    }
+    const auto cell = inputs.gas_cells[index].cell_index;
+    const auto cell_key = key(cell);
+    while (center < inputs.center_distances.size() && key(inputs.center_distances[center].cell_index) < cell_key) {
+      ++center;
+    }
+    if (center == inputs.center_distances.size() || key(inputs.center_distances[center].cell_index) != cell_key
+        || inputs.center_distances[center].signed_distance < 0.0) {
+      continue;
+    }
+    if (result.air_pressure_count == air_pressures.size()) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    air_pressures[result.air_pressure_count++] = {cell, component.gas_gauge_pressure};
+  }
+  return result;
 }
 
 }  // namespace fluidity

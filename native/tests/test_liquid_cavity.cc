@@ -127,6 +127,73 @@ TEST(LiquidCavity3D, AirConnectivityDoesNotWrapSignedCoordinates) {
   EXPECT_EQ(components[1].connectivity, LiquidAirConnectivity3D::kVented);
 }
 
+TEST(LiquidCavity3D, PreparedBoundariesUseOnlyResolvedEnclosedInventories) {
+  using Connectivity = LiquidAirConnectivity3D;
+  const std::array gas_cells{
+      LiquidAirVolumeCell3D{.cell_index = {-2, 0, 0}, .gas_volume = 0.5},
+      LiquidAirVolumeCell3D{.cell_index = {-1, 0, 0}, .gas_volume = 0.5},
+      LiquidAirVolumeCell3D{.cell_index = {0, 0, 0}, .gas_volume = 0.01},
+      LiquidAirVolumeCell3D{.cell_index = {1, 0, 0}, .gas_volume = 1.0},
+      LiquidAirVolumeCell3D{.cell_index = {2, 0, 0}, .gas_volume = 1.0},
+      LiquidAirVolumeCell3D{.cell_index = {3, 0, 0}, .gas_volume = 1.0},
+  };
+  std::array<std::size_t, 6> component_labels{0, 0, 1, 2, 3, 4};
+  const std::array components{
+      LiquidAirComponent3D{{-2, 0, 0}, 1.0, Connectivity::kEnclosed},
+      LiquidAirComponent3D{{0, 0, 0}, 0.01, Connectivity::kEnclosed},
+      LiquidAirComponent3D{{1, 0, 0}, 1.0, Connectivity::kVented},
+      LiquidAirComponent3D{{2, 0, 0}, 1.0, Connectivity::kUnclassified},
+      LiquidAirComponent3D{{3, 0, 0}, 1.0, Connectivity::kEnclosed},
+  };
+  const std::array<std::optional<LiquidCavityInventory3D>, 5> inventories{
+      LiquidCavityInventory3D{2.0, 100000.0},
+      LiquidCavityInventory3D{0.01, 100000.0},
+      LiquidCavityInventory3D{1.0, 110000.0},
+      LiquidCavityInventory3D{1.0, 110000.0},
+      std::nullopt,
+  };
+  const std::array centers{
+      LiquidCenterDistance3D{{-2, 0, 0}, -0.1},
+      LiquidCenterDistance3D{{-1, 0, 0}, 0.1},
+      LiquidCenterDistance3D{{0, 0, 0}, 0.1},
+      LiquidCenterDistance3D{{1, 0, 0}, 0.1},
+      LiquidCenterDistance3D{{2, 0, 0}, 0.1},
+      LiquidCenterDistance3D{{3, 0, 0}, 0.1},
+  };
+  const LiquidCavityBoundaryInputs3D inputs{
+      .gas_cells = gas_cells,
+      .labels = component_labels,
+      .components = components,
+      .inventories = inventories,
+      .center_distances = centers,
+      .atmospheric_absolute_pressure = 100000.0,
+      .liquid_density = 1000.0,
+      .cell_width = 0.25,
+  };
+  std::array<LiquidCavityBoundaryComponent3D, 5> scratch;
+  std::array<LiquidAirCellPressure3D, 1> air_pressures;
+  const auto result = PrepareLiquidCavityBoundaries3D(inputs, scratch, air_pressures);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->active_cavity_count, 1U);
+  EXPECT_EQ(result->subresolution_inventory_count, 1U);
+  ASSERT_EQ(result->air_pressure_count, 1U);
+  EXPECT_EQ(air_pressures[0].cell_index.x, -1);
+  const double expected_absolute = 100000.0 * std::pow(2.0, 1.4);
+  EXPECT_NEAR(air_pressures[0].gas_gauge_pressure, expected_absolute - 100000.0, 1e-8);
+  const double expected_radius = std::cbrt(3.0 / (4.0 * std::numbers::pi));
+  EXPECT_NEAR(
+      result->maximum_step_duration,
+      0.5 * expected_radius / std::sqrt(4.2 * expected_absolute / 1000.0),
+      1e-15
+  );
+  EXPECT_EQ(PrepareLiquidCavityBoundaries3D(inputs, scratch, {}).status().code(), absl::StatusCode::kResourceExhausted);
+  component_labels.back() = 0;
+  EXPECT_EQ(
+      PrepareLiquidCavityBoundaries3D(inputs, scratch, air_pressures).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(LiquidCavity3D, SubmergedSphereBalancesHydrostaticPressureAndSignedCurvature) {
   constexpr double kRadius = 0.25;
   constexpr double kVolume = 4.0 * std::numbers::pi * kRadius * kRadius * kRadius / 3.0;
