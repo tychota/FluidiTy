@@ -132,6 +132,11 @@ struct MacPressureHierarchyView3D {
 // hierarchy spans expire on arena rewind/reuse or backing-owner destruction.
 absl::StatusOr<MacPressureHierarchyView3D>
 BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacPressureScratch3D& scratch);
+// Returns the aligned byte reservation for checked original-system assembly.
+// Includes temporary incidence and gauge reductions. Returns ResourceExhausted
+// if an extent or byte count is unrepresentable. Does not allocate.
+absl::StatusOr<std::size_t> QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacity, std::size_t face_capacity);
+
 // Freezes the checked uniform pressure coefficients and gauge incidence into
 // the caller's arena without constructing a hierarchy. Input ordering, units,
 // and status categories match ProjectMacPressure3D. Success appends borrowed

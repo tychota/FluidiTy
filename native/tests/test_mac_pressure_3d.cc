@@ -747,11 +747,18 @@ TEST(MacPressure3D, BoundedOriginalSystemMatchesOwningAndPreservesArenaOnFailure
   SortFaces(problem, *grid);
   const auto owning = PrepareMacPressureSystem3D({*grid, 1.0, problem.cells, problem.faces});
   ASSERT_TRUE(owning.ok()) << owning.status();
-  std::array<std::max_align_t, 1024> backing{};
-  pressure_internal::MacPressureScratch3D scratch(backing);
-  const auto sentinel = scratch.Take<double>(1);
+  const auto bytes =
+      pressure_internal::QueryBoundedMacPressureSystemBytes3D(problem.cells.size(), problem.faces.size());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  ASSERT_EQ(*bytes % sizeof(std::max_align_t), 0u);
+  auto backing = LiquidRecords3D<std::max_align_t>::Create(*bytes / sizeof(std::max_align_t) + 1);
+  ASSERT_TRUE(backing.ok()) << backing.status();
+  ASSERT_TRUE(backing->Resize(backing->capacity()).ok());
+  pressure_internal::MacPressureScratch3D scratch(backing->values());
+  const auto sentinel = scratch.Take<std::max_align_t>(1);
   ASSERT_TRUE(sentinel.ok()) << sentinel.status();
-  sentinel->front() = 43.0;
+  auto sentinel_bytes = std::as_writable_bytes(*sentinel);
+  sentinel_bytes.front() = std::byte{43};
   const auto entry_cursor = scratch.used();
 
   const auto rejected = pressure_internal::PrepareBoundedMacPressureSystem3D(
@@ -763,13 +770,13 @@ TEST(MacPressure3D, BoundedOriginalSystemMatchesOwningAndPreservesArenaOnFailure
   );
   EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
   EXPECT_EQ(scratch.used(), entry_cursor);
-  EXPECT_DOUBLE_EQ(sentinel->front(), 43.0);
+  EXPECT_EQ(sentinel_bytes.front(), std::byte{43});
 
   const auto borrowed =
       pressure_internal::PrepareBoundedMacPressureSystem3D(grid->view(), 1.0, problem.cells, problem.faces, scratch);
   ASSERT_TRUE(borrowed.ok()) << borrowed.status();
   EXPECT_GT(scratch.used(), entry_cursor);
-  EXPECT_DOUBLE_EQ(sentinel->front(), 43.0);
+  EXPECT_EQ(sentinel_bytes.front(), std::byte{43});
   EXPECT_TRUE(std::ranges::equal(borrowed->integrated_rhs(), owning->integrated_rhs()));
   EXPECT_TRUE(std::ranges::equal(borrowed->rhs_absolute_term_sums(), owning->rhs_absolute_term_sums()));
   EXPECT_TRUE(std::ranges::equal(borrowed->component_ordinals(), owning->component_ordinals()));

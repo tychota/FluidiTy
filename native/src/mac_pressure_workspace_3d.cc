@@ -624,6 +624,13 @@ class ScratchByteCounter {
   }
   std::size_t total = 0;
 };
+bool CountOriginalPressureScratch(ScratchByteCounter& counter, std::size_t cell_capacity, std::size_t face_capacity) {
+  return counter.Add(cell_capacity, sizeof(PreparedMacPressureCell3D))
+      && counter.Add(face_capacity, sizeof(FrozenMacPressureLink3D)) && counter.Add(cell_capacity, sizeof(double), 2)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 2) && counter.Add(cell_capacity, 6 * sizeof(std::size_t))
+      && counter.Add(cell_capacity, sizeof(FluxRow)) && counter.Add(cell_capacity, sizeof(ComponentBalance));
+}
+
 template <typename T>
 absl::Status Reserve(LiquidRecords3D<T>& records, std::size_t capacity) {
   auto reserved = LiquidRecords3D<T>::Create(capacity);
@@ -636,6 +643,18 @@ absl::Status Reserve(LiquidRecords3D<T>& records, std::size_t capacity) {
 #undef FLUIDITY_PRESSURE_TAKE
 }  // namespace
 
+absl::StatusOr<std::size_t>
+pressure_internal::QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacity, std::size_t face_capacity) {
+  if (cell_capacity > kMaxPressureCells || face_capacity > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  ScratchByteCounter counter;
+  if (!CountOriginalPressureScratch(counter, cell_capacity, face_capacity)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return counter.total;
+}
+
 absl::StatusOr<MacPressureWorkspaceBytes3D>
 QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_capacity) {
   if (cell_capacity == 0 && face_capacity == 0) {
@@ -643,9 +662,8 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
   }
   ScratchByteCounter counter;
   const auto level_capacity = kMaximumPressureLevels3D;
-  const bool fits = counter.Add(cell_capacity, sizeof(PreparedMacPressureCell3D))
-      && counter.Add(face_capacity, sizeof(FrozenMacPressureLink3D)) && counter.Add(cell_capacity, sizeof(double), 2)
-      && counter.Add(cell_capacity, sizeof(std::size_t), 4)
+  const bool fits = CountOriginalPressureScratch(counter, cell_capacity, face_capacity)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 2)
       && counter.Add(level_capacity, sizeof(MacPressureLevelView3D))
       && counter.Add(cell_capacity, sizeof(CellIndex3D), level_capacity)
       && counter.Add(cell_capacity, sizeof(double), 2 * level_capacity)
@@ -655,9 +673,6 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
       && counter.Add(face_capacity, 2 * sizeof(MacPressureNeighbor3D), level_capacity)
       && counter.Add(cell_capacity, sizeof(std::size_t), 2) && counter.Add(1, sizeof(std::size_t))
       && counter.Add(cell_capacity, 32 * sizeof(double))
-      // Assembly temporaries: incident duplicates, compensated RHS and balances.
-      && counter.Add(cell_capacity, 6 * sizeof(std::size_t)) && counter.Add(cell_capacity, sizeof(FluxRow))
-      && counter.Add(cell_capacity, sizeof(ComponentBalance))
       // Coarsening order, CSR cursor and terminal inverse permutation.
       && counter.Add(cell_capacity, sizeof(std::size_t), 3) && counter.Add(1, sizeof(std::size_t))
       && counter.Add(face_capacity, sizeof(std::size_t))
