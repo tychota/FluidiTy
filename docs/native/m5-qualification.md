@@ -2640,3 +2640,27 @@ foreach ($bin in 'sand-supported-friction-bin', 'sand-contact-friction-transfer-
   }
 }
 ```
+
+### Isolated mass-weighted wall friction
+
+Local sand experiment `2de5756` solves the stationary tangential
+impulse in the diagonal grid mobility metric. For contact velocity
+`u`, positive tangent mobility `D`, and Coulomb impulse cap `c`,
+it minimizes `u·j + 0.5 j·D j` over `||j|| <= c`. Sticking cancels
+the tangent velocity. In sliding, the scalar multiplier on the
+Coulomb disk shifts both diagonal mobilities.
+
+The independent oracle uses tangent velocity (3, 4) m/s and
+mobilities (2, 4) kg⁻¹. It checks sticking impulse (−1.5, −1) N·s,
+sliding impulse (−0.75, −2/3) N·s and sliding kinetic work
+−3.465277777777778 J to 1e-12 in fixture units. It also covers zero
+friction and rejects zero mobility. The native and SM120 dry-scene
+targets both passed. Both execute this friction oracle on the host.
+This test verifies the contact solve given a normal load. Grid
+traction gather and transpose scatter into the sand step are pending.
+
+```powershell
+$b = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
+cmake --build $b --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+ctest --test-dir $b -R '^M5DryScenes\.' --no-tests=error --output-on-failure
+```
