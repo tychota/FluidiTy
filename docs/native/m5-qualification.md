@@ -2910,3 +2910,32 @@ foreach ($grid in 'fine', 'coarse') {
 These temporary harnesses use the existing fixture's grid-origin
 parameter or its particle multiplier of two. The solver and harness
 sources were restored after linking. Neither control qualifies Q-SAND.
+
+### Wall-compatible affine extension
+
+At the zero-phase Euler reference, replace the compatible-floor
+post-contact affine projection with the fitted grid slope and set
+the normal row's two tangential derivatives to zero. The resulting
+affine normal velocity vanishes along the contact plane. This
+control keeps the fitted tangential rows and off-plane normal
+derivative. It leaves the current-step traction and deformation
+updates in place. Both native and SM120 dry-scene targets passed.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 28.348113° | 0.202630 m |
+| Coarse half-step | 37.963739° | 0.171778 m |
+| Fine | 28.657890° | 0.210721 m |
+| Fine half-step | 31.797157° | 0.200325 m |
+
+All four radii increase compared with the Coulomb-projected affine
+reference. Coarse nominal late drift also exceeds 2° at 2.184878°.
+Cut stress work mismatch stays below 3.5e-16 J and vertical momentum
+residual below 1.8e-8 N·s. Source was restored after compiling.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-affine-extension-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
