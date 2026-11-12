@@ -3976,3 +3976,36 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Affine row clearing through the impact window
+
+Trace the component-wise candidate `eb8877c` through the existing
+1.5 s contact fixture. Count each row cleared by fallback, and sum
+its fitted slope norm times the step duration before clearing.
+The latter is a dimensionless accumulated norm over all particles.
+
+| Native case through ~0.35 s | Steps | Cleared x / y / z rows | Removed x / y / z norm sums |
+|---|---:|---|---|
+| Coarse | 187 | 2870 / 0 / 2870 | 3.369 / 0 / 3.364 |
+| Coarse half-step | 374 | 5067 / 0 / 5067 | 1.937 / 0 / 1.936 |
+| Fine | 224 | 3429 / 37 / 3433 | 4.010 / 0.210 / 4.007 |
+| Fine half-step | 448 | 6217 / 252 / 6217 | 2.363 / 0.321 / 2.361 |
+
+Per step and per particle, the cleared tangent fraction is about
+21–24% in every case. Normal clearing is rare on fine and absent
+on coarse in this window. The integrated tangent slope norm removed
+falls by 41–43% at the half-step, despite a comparable fraction of
+rows being cleared. This diagnostic measures affine feedback and
+does not change the current-step deformation gradient.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-trace-bin'
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace $grid $step
+  }
+}
+```
+
+The temporary budget instrumentation was restored after linking.
+The 3 s column matrix remains the qualification reference.
