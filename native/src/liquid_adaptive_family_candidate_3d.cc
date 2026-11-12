@@ -12,6 +12,7 @@
 #include "absl/status/status.h"
 #include "fluidity/host/adaptive_liquid_remap_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
+#include "liquid_remap_3d_internal.h"
 
 namespace fluidity::liquid_step_internal {
 namespace {
@@ -129,6 +130,10 @@ LiquidRemapStencil3D ParentStencil(
 
 absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const GradedMacTransfer3D& transfer) {
   std::vector<LiquidRemapInventory3D> binned(state.adaptive_cells.size());
+  std::vector<liquid_remap_internal::ConstituentSums> constituent_sums;
+  if (state.particles[0].phase_id != 0) {
+    constituent_sums.resize(binned.size());
+  }
   for (const auto& particle : state.particles.values()) {
     const auto leaf = transfer.ParticleLeafOrdinal(particle.world_position);
     if (!leaf.ok()) {
@@ -137,12 +142,30 @@ absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const Gra
     auto& inventory = binned[*leaf];
     inventory.mass_kg += particle.mass;
     inventory.reference_volume_m3 += particle.reference_volume;
-    inventory.current_volume_m3 += particle.reference_volume * particle.volume_ratio;
+    const double particle_volume = particle.reference_volume * particle.volume_ratio;
+    inventory.current_volume_m3 += particle_volume;
+    if (particle.constituent_count != 0) {
+      inventory.phase_id = particle.phase_id;
+      const auto constituents = std::span(particle.constituents).first(particle.constituent_count);
+      for (const auto& constituent : constituents) {
+        const auto added =
+            constituent_sums[*leaf].Add(constituent.substance_id, constituent.volume_fraction * particle_volume);
+        if (!added.ok()) {
+          return added;
+        }
+      }
+    }
     inventory.momentum_kg_m_per_s.x += particle.mass * particle.world_velocity.x;
     inventory.momentum_kg_m_per_s.y += particle.mass * particle.world_velocity.y;
     inventory.momentum_kg_m_per_s.z += particle.mass * particle.world_velocity.z;
   }
   for (std::size_t cell = 0; cell < binned.size(); ++cell) {
+    if (!constituent_sums.empty()) {
+      const auto stored = constituent_sums[cell].Store(binned[cell]);
+      if (!stored.ok()) {
+        return stored;
+      }
+    }
     auto particle_owned = state.adaptive_cells[cell];
     particle_owned.inventory = binned[cell];
     if (particle_owned != state.adaptive_cells[cell]) {
@@ -201,21 +224,25 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidFamilyCandidate3D(
   keys.reserve(committed.adaptive_cells.size());
   inventories.reserve(committed.adaptive_cells.size());
   pressures_pa.reserve(committed.adaptive_cells.size());
+  const auto phase_id = committed.particles[0].phase_id;
   for (const auto& cell : committed.adaptive_cells.values()) {
     if (cell.material_owner != AdaptiveLiquidMaterialOwner3D::kParticles) {
       return absl::UnimplementedError("graded family change has no Eulerian liquid carrier");
     }
     if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || cell.inventory.enthalpy_j != 0
-        || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0) {
-      return absl::UnimplementedError("graded family change requires implicit liquid leaves");
+        || (cell.inventory.phase_id != 0 && cell.inventory.phase_id != phase_id)) {
+      return absl::UnimplementedError("graded family change requires leaves from one miscible liquid phase");
     }
     keys.push_back(cell.key);
     inventories.push_back(cell.inventory);
     pressures_pa.push_back(cell.previous_pressure);
   }
   for (const auto& particle : committed.particles.values()) {
-    if (particle.phase_id != 0 || particle.constituent_count != 0) {
-      return absl::UnimplementedError("graded family change requires implicit liquid particles");
+    if (particle.phase_id != phase_id) {
+      return absl::UnimplementedError("graded family change requires particles from one miscible liquid phase");
+    }
+    if (!LiquidParticleUsesRegisteredConstituents3D(particle, scene.constituent_materials)) {
+      return absl::InvalidArgumentError("graded family particle composition is absent from the material registry");
     }
   }
 
