@@ -238,6 +238,62 @@ TEST(LiquidSubstep3D, GuidedPistonCommitsPressureAndParticleReactionTogether) {
       1e-12
   );
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.x, wet::kPistonSpeed);
+
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto accepted_body = *attempt->loaded_piston;
+  const SolidInteractionCheckpoint3D contact_solid{
+      .accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+      .bodies = {{accepted_body, {piston.center, piston.orientation}}},
+      .sides = {},
+  };
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), contact_solid);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.bodies.size(), 1);
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options(), backend);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  ASSERT_TRUE(replay->BeginFrame(2.0 * wet::kDuration).ok());
+  replay->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto rejected = replay->AttemptWithDynamicPlanarPiston(wet::kDuration, restored->solid.bodies.front().body);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(rejected->loaded_piston.has_value());
+  const auto after_rejection = EncodeCoupledInteractionCheckpoint3D(replay->committed(), restored->solid);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *checkpoint);
+  replay->SetStageFaultHookForTesting({});
+
+  const auto uninterrupted = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, accepted_body);
+  const auto replayed =
+      replay->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, restored->solid.bodies.front().body);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(uninterrupted->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+  ASSERT_TRUE(replayed->loaded_piston.has_value()) << replay->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.x, accepted_body.linear_velocity.x);
+  const RigidBodyPose3D prior_pose{accepted_body.center, accepted_body.orientation};
+  const auto expected_bytes = EncodeCoupledInteractionCheckpoint3D(
+      scheduler->committed(),
+      {.accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+       .bodies = {{*uninterrupted->loaded_piston, prior_pose}},
+       .sides = {}}
+  );
+  const auto replayed_bytes = EncodeCoupledInteractionCheckpoint3D(
+      replay->committed(),
+      {.accepted_step = replay->committed().clock.accepted_step_ordinal,
+       .bodies = {{*replayed->loaded_piston, prior_pose}},
+       .sides = {}}
+  );
+  ASSERT_TRUE(expected_bytes.ok()) << expected_bytes.status();
+  ASSERT_TRUE(replayed_bytes.ok()) << replayed_bytes.status();
+  EXPECT_EQ(*expected_bytes, *replayed_bytes);
 }
 
 TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
