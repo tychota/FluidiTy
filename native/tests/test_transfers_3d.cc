@@ -595,6 +595,96 @@ TEST(MacTransfer3D, ElasticBladeStepBuildsHistoriesAndReplaysUniformTransport) {
   EXPECT_LT(stressed.elastic_particles.front().deformation_gradient.x_row.x, 1.01);
 }
 
+TEST(MacTransfer3D, MovingBladeSceneRetainsSideAndReplaysAtTwoTimesteps) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {};
+  particle.particle_velocity_slopes = {};
+  constexpr Mat3 kIdentity{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  particle.trial_world_position.x = 9.0;
+  particle.sorted_world_position = particle.trial_world_position;
+  auto supporting_particle = particle;
+  supporting_particle.trial_world_position.x = 10.5;
+  supporting_particle.sorted_world_position = supporting_particle.trial_world_position;
+  SolidInteractionCheckpoint3D initial{
+      .accepted_step = 0,
+      .sides = {{.particle_id = 7, .side = {.blade_id = 17, .sign = 1}}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = kIdentity,
+      }},
+  };
+  initial.sides.push_back({.particle_id = 8, .side = {.blade_id = 17, .sign = 1}});
+  initial.elastic_particles.push_back({
+      .particle_id = 8,
+      .body_id = 23,
+      .transfer = supporting_particle,
+      .reference_volume = 0.25,
+      .deformation_gradient = kIdentity,
+  });
+  for (const double duration : {0.125, 0.0625}) {
+    SCOPED_TRACE(duration);
+    ElasticBladeGridStep3D settings{
+        .blade =
+            {
+                .unit_normal = {1.0, 0.0, 0.0},
+                .start_center_coordinate = 8.8125,
+                .half_width = 0.125,
+                .wall_velocity = {0.5, 0.0, 0.0},
+            },
+        .blade_id = 17,
+        .duration = duration,
+        .shear_modulus = 2.0,
+        .first_lame_parameter = 1.0,
+        .quantization = {0x1p-40, 0x1p-40, 2},
+    };
+    auto state = initial;
+    double blade_work = 0.0;
+    double normal_impulse = 0.0;
+    const int steps = duration == 0.125 ? 1 : 2;
+    std::vector<std::uint8_t> halfway_checkpoint;
+    for (int step = 0; step < steps; ++step) {
+      const auto result = StepElasticBladeGrid3D(*grid, settings, state);
+      ASSERT_TRUE(result.ok()) << result.status();
+      ASSERT_EQ(result->contacts.size(), 2);
+      const auto& contact = result->contacts.front();
+      blade_work += contact.blade_work;
+      normal_impulse += contact.particle_impulse.x;
+      EXPECT_EQ(state.sides.front().side.sign, 1);
+      EXPECT_NEAR(result->cut_work, 0.0, 1e-10);
+      if (steps == 2 && step == 0) {
+        const auto encoded = EncodeSolidInteractionCheckpoint3D(state);
+        ASSERT_TRUE(encoded.ok()) << encoded.status();
+        halfway_checkpoint = *encoded;
+      }
+      if (steps == 2 && step == 1) {
+        auto restarted = DecodeSolidInteractionCheckpoint3D(halfway_checkpoint);
+        ASSERT_TRUE(restarted.ok()) << restarted.status();
+        const auto replay = StepElasticBladeGrid3D(*grid, settings, *restarted);
+        ASSERT_TRUE(replay.ok()) << replay.status();
+        const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(*restarted);
+        const auto accepted_bytes = EncodeSolidInteractionCheckpoint3D(state);
+        ASSERT_TRUE(replay_bytes.ok() && accepted_bytes.ok());
+        EXPECT_EQ(*replay_bytes, *accepted_bytes);
+        EXPECT_DOUBLE_EQ(replay->contacts.front().blade_work, contact.blade_work);
+      }
+      settings.blade.start_center_coordinate += 0.5 * duration;
+    }
+    const auto final = state.elastic_particles.front().transfer.trial_world_position;
+    EXPECT_NEAR(final.x, 9.0, 1e-9);
+    EXPECT_NEAR(normal_impulse, 1.0, 1e-9);
+    EXPECT_NEAR(blade_work, 0.5, 1e-9);
+  }
+}
+
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
   const auto mac_grid = SparseMacGrid3D::Create(kUnitGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
