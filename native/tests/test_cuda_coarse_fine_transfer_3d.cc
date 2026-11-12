@@ -11,8 +11,10 @@
 #include "coarse_fine_transfer_3d_bridge.h"
 #include "fluidity/host/coarse_fine_transfer_3d.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "graded_tank_fixture.h"
 #include "gtest/gtest.h"
+#include "mac_pressure_explicit_cases.h"
 #include "operator_runtime.h"
 
 namespace fluidity {
@@ -172,6 +174,30 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleTrialPreservesDeviceEpoch) {
 
 TEST(CudaAdaptiveSimulate3D, RejectedGradedCapillaryTrialPreservesDeviceEpoch) {
   ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kCapillary);
+}
+
+TEST(CudaAdaptiveSimulate3D, AdaptiveInterfacePressureJumpPreservesOwnedFlux) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  for (const double jump_pa : {0.5, -0.5}) {
+    SCOPED_TRACE(jump_pa);
+    fixture->subfaces[fixture->internal_slot].pressure_jump_pa = jump_pa;
+    const auto graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+        fixture->topology,
+        1.0,
+        fixture->cells,
+        fixture->subfaces
+    );
+    ASSERT_TRUE(graph.ok()) << graph.status();
+    const auto result = pressure_internal::CudaProjectPreparedMacPressure3D(*graph, {});
+    ASSERT_TRUE(result.ok()) << result.status();
+    EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+    EXPECT_NEAR(result->projection.cell_pressures[0], 1.28125 - jump_pa, 2e-5);
+    EXPECT_NEAR(result->projection.cell_pressures[1], 1.09375, 2e-5);
+    EXPECT_NEAR(result->projection.corrected_face_velocities[fixture->internal_slot], 0.25, 2e-5);
+    EXPECT_NEAR(result->projection.corrected_face_velocities[fixture->outlet_slot], 0.375, 2e-5);
+    EXPECT_LE(result->projection.diagnostics.max_cell_constraint_defect, 2e-5);
+  }
 }
 
 TEST(CudaCoarseFineTransfer3D, OracleQueriesAndAllOrientationsMatchCpuOnSm120) {

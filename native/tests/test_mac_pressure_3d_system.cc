@@ -100,6 +100,46 @@ TEST(MacPressureExplicitGraph3D, CheckpointReplaysAcceptedAdaptivePressure) {
     return workspace->ProjectPrepared(system);
   });
 }
+TEST(MacPressureExplicitGraph3D, AdaptiveInterfacePressureJumpChangesPressureWithoutDoubleFlux) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto workspace = MacPressureWorkspace3D::Create(fixture->cells.size(), fixture->subfaces.size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  for (const double jump_pa : {0.5, -0.5}) {
+    SCOPED_TRACE(jump_pa);
+    fixture->subfaces[fixture->internal_slot].pressure_jump_pa = jump_pa;
+    const auto graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+        fixture->topology,
+        1.0,
+        fixture->cells,
+        fixture->subfaces
+    );
+    ASSERT_TRUE(graph.ok()) << graph.status();
+    const auto projection = workspace->ProjectPrepared(*graph);
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    EXPECT_NEAR(projection->cell_pressures[0], 1.28125 - jump_pa, 1e-6);
+    EXPECT_NEAR(projection->cell_pressures[1], 1.09375, 1e-6);
+    EXPECT_NEAR(projection->corrected_face_velocities[fixture->internal_slot], 0.25, 1e-6);
+    EXPECT_NEAR(projection->corrected_face_velocities[fixture->outlet_slot], 0.375, 1e-6);
+    EXPECT_NEAR(projection->diagnostics.max_cell_constraint_defect, 0.0, 1e-6);
+  }
+  fixture->subfaces[fixture->internal_slot].open_area_m2 = 0.0;
+  EXPECT_EQ(
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(fixture->topology, 1.0, fixture->cells, fixture->subfaces)
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  fixture->subfaces[fixture->internal_slot].pressure_jump_pa = 0.0;
+  fixture->subfaces[fixture->outlet_slot].pressure_jump_pa = 0.5;
+  EXPECT_EQ(
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(fixture->topology, 1.0, fixture->cells, fixture->subfaces)
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
   const std::array cells{
       IncompressibleCellAtX(0),
