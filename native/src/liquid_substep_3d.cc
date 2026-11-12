@@ -3070,6 +3070,10 @@ struct LiquidSubstepScheduler3D::AdaptiveStateTrial {
   std::size_t accepted_reservation_bytes;
 };
 
+struct LiquidSubstepScheduler3D::AdaptivePhysicalTrial {
+  liquid_step_internal::AdaptiveLiquidStep3D owner;
+};
+
 struct LiquidSubstepScheduler3D::AdaptiveWidthAgeTrial {
   std::array<std::size_t, 8> siblings{};
   double eligible_duration_s = 0;
@@ -3196,7 +3200,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
 ) {
   const auto& state = committed();
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
-  if (!impl_->adaptive || plane == nullptr || request.accepted_epoch != state.clock.epoch) {
+  if (!impl_->adaptive || plane == nullptr || !std::holds_alternative<AxisAlignedLiquidTank3D>(impl_->scene.obstacle)
+      || request.accepted_epoch != state.clock.epoch) {
     return absl::FailedPreconditionError("band placement requires the committed graded planar epoch");
   }
   if (!impl_->frame_active || !std::isfinite(step_duration) || step_duration <= 0
@@ -3264,6 +3269,33 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
   return Error(absl::StatusCode::kInternal);
 }
 
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptivePhysicalGeometry(
+    double step_duration,
+    const LiquidAdaptivePhysicalGeometryRequest3D& request
+) {
+  auto& impl = *impl_;
+  if (!impl.adaptive || !std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)) {
+    return absl::FailedPreconditionError("Graded physical request requires an admitted halfspace scheduler");
+  }
+  if (request.accepted_clock != committed().clock) {
+    return absl::FailedPreconditionError("Graded physical request does not match the committed clock");
+  }
+  if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
+      || step_duration > impl.target_time - committed().clock.time) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  auto owner = liquid_step_internal::AdaptiveLiquidStep3D::Create(committed(), impl.scene, impl.options);
+  if (!owner.ok()) {
+    return owner.status();
+  }
+  STEP_TRY(owner->PreparePhysicalTrial(committed(), step_duration, impl.scene, request));
+  if (owner->reserved_bytes() > static_cast<std::size_t>(PTRDIFF_MAX) - impl.reservation_bytes) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  AdaptivePhysicalTrial trial{std::move(*owner)};
+  return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, nullptr, nullptr, &trial);
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandRetirement(
     double step_duration,
     AdaptiveMacCellKey3D leaf,
@@ -3299,8 +3331,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
     absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare
 ) {
   auto& impl = *impl_;
-  if (!impl.adaptive) {
-    return absl::FailedPreconditionError("adaptive state replacement requires a graded scheduler");
+  if (!impl.adaptive || std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)) {
+    return absl::FailedPreconditionError("adaptive state replacement requires a graded tank scheduler");
   }
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
@@ -3563,9 +3595,14 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     FloatingBoxTrial* floating_box,
     SnowTrial* snow,
     AdaptiveStateTrial* adaptive_replacement,
-    const AdaptiveWidthAgeTrial* adaptive_age
+    const AdaptiveWidthAgeTrial* adaptive_age,
+    AdaptivePhysicalTrial* adaptive_physical
 ) {
   auto& impl = *impl_;
+  if (impl.adaptive && std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)
+      && adaptive_physical == nullptr) {
+    return absl::FailedPreconditionError("graded physical halfspace requires an explicit request for every attempt");
+  }
   if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
     return absl::UnimplementedError("graded Simulate does not support coupled rigid trials");
   }
@@ -3604,8 +3641,13 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto* adaptive_owner =
-      adaptive_replacement != nullptr ? &adaptive_replacement->owner : (impl.adaptive ? &*impl.adaptive : nullptr);
+  auto* adaptive_owner = impl.adaptive ? &*impl.adaptive : nullptr;
+  if (adaptive_replacement != nullptr) {
+    adaptive_owner = &adaptive_replacement->owner;
+  }
+  if (adaptive_physical != nullptr) {
+    adaptive_owner = &adaptive_physical->owner;
+  }
   auto status = adaptive_owner != nullptr
       ? impl.ExecuteAdaptive(*adaptive_owner, step_duration, **trial, accepted_measurement, work_phase)
       : impl.Execute(
@@ -3693,6 +3735,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
     std::optional<LiquidSnowStepInputs3D> snow_inputs,
     std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
 ) {
+  if (impl_->adaptive && std::holds_alternative<TranslatingHalfspace3D>(impl_->scene.obstacle)) {
+    return absl::FailedPreconditionError("graded physical halfspace requires explicit per-attempt requests");
+  }
   STEP_TRY(BeginFrame(target));
   std::vector<PlasticSolidCheckpointParticle3D> frame_start_snow;
   if (snow_inputs) {

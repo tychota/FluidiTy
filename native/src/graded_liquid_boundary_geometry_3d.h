@@ -109,6 +109,19 @@ struct GradedLiquidPressureSubfaceFields3D {
   std::optional<GradedLiquidPressureExterior3D> exterior_pressure = std::nullopt;
 };
 
+struct GradedLiquidPressureInputs3D {
+  std::vector<MacPressureCell3D> cells;
+  std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces;
+};
+
+// Compose canonical pressure input rows without solving. This lets a scheduler
+// freeze aperture and wall terms before adding its trial predictor velocities.
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
 // Compose explicit pressure fields with frozen physical measures and canonical
 // tail/head incidence. Fields cover every frozen leaf and global face slot.
 // A zero-volume leaf returns FailedPrecondition. World extents incompatible
