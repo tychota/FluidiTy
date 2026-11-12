@@ -88,6 +88,19 @@ TEST(AdaptiveMacTopology3D, BindsTransferRowsWithoutAliasingSplitCoarseFaces) {
   }
   EXPECT_TRUE(found_owner);
   EXPECT_TRUE(found_split_face);
+
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  const std::vector<double> velocities(face_count, -2.5);
+  const std::vector<LiquidFaceValidity3D> validity(face_count, LiquidFaceValidity3D::kPredicted);
+  const std::vector<LiquidBoundaryFaceTag3D> tags(face_count, {.side_tag = 3, .structurally_eligible = true});
+  LiquidBoundaryParticleGather3D gather;
+  EXPECT_TRUE(ApplyAdaptiveMacPicFallback3D(*stencil, *binding, velocities, validity, tags, 3, gather).ok());
+  EXPECT_DOUBLE_EQ(gather.new_pic_velocity.x, -2.5);
+  EXPECT_TRUE(gather.new_pic_fallback);
+  EXPECT_FALSE(gather.affine_enabled);
+  const auto refused = ApplyAdaptiveMacPicFallback3D(*stencil, *binding, velocities, validity, tags, 4, gather);
+  EXPECT_EQ(refused.code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_DOUBLE_EQ(gather.new_pic_velocity.x, -2.5);
 }
 TEST(AdaptiveMacTopology3D, OwnsSignedEdgeAndCornerSubfaces) {
   for (const std::size_t plane_count : {2, 3}) {

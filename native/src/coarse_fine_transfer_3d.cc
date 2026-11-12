@@ -273,4 +273,52 @@ absl::Status ApplyCoarseFinePicFallback3D(
   return absl::OkStatus();
 }
 
+absl::Status ApplyAdaptiveMacPicFallback3D(
+    const CoarseFineStencil3D& stencil,
+    const AdaptiveMacStencilBinding3D& binding,
+    std::span<const double> face_velocities,
+    std::span<const LiquidFaceValidity3D> face_validity,
+    std::span<const LiquidBoundaryFaceTag3D> face_tags,
+    std::int64_t particle_side_tag,
+    LiquidBoundaryParticleGather3D& gather
+) {
+  const auto rows = stencil.rows();
+  const auto slots = binding.slots();
+  if (slots.size() != rows.size() || face_validity.size() != face_velocities.size()
+      || face_tags.size() != face_velocities.size()) {
+    return absl::InvalidArgumentError("adaptive transfer carrier extents do not match");
+  }
+  std::array<bool, CoarseFineStencil3D::kMaxRows> retained{};
+  std::array<CoarseFinePicCarrierSample3D, CoarseFineStencil3D::kMaxRows> samples{};
+  std::size_t sample_count = 0;
+  for (std::size_t row = 0; row < slots.size(); ++row) {
+    if (!slots[row].has_value()) {
+      continue;
+    }
+    const std::size_t slot = *slots[row];
+    if (slot >= face_velocities.size()) {
+      return absl::InvalidArgumentError("adaptive transfer carrier slot is outside the history");
+    }
+    if (face_validity[slot] > LiquidFaceValidity3D::kLowMass) {
+      return absl::InvalidArgumentError("adaptive transfer carrier validity is unknown");
+    }
+    if (face_validity[slot] == LiquidFaceValidity3D::kMissing || !face_tags[slot].structurally_eligible
+        || face_tags[slot].side_tag != particle_side_tag) {
+      continue;
+    }
+    retained[row] = true;
+    samples[sample_count++] = {
+        .owner = rows[row].owner,
+        .level = rows[row].level,
+        .new_face_velocity = face_velocities[slot],
+        .low_mass = face_validity[slot] == LiquidFaceValidity3D::kLowMass,
+    };
+  }
+  return ApplyCoarseFinePicFallback3D(
+      stencil,
+      std::span(retained).first(rows.size()),
+      std::span(samples).first(sample_count),
+      gather
+  );
+}
 }  // namespace fluidity

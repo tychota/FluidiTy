@@ -134,4 +134,19 @@ absl::Status ApplyCoarseFinePicFallback3D(
     LiquidBoundaryParticleGather3D& gather
 );
 
+// Apply the existing PIC fallback to a bound component using certified
+// positive-normal velocities in m/s. All carrier spans use global slot order.
+// Missing, structurally ineligible or different-side faces are excluded.
+// Low-mass carriers must supply a certified finite velocity. Complete support
+// and an empty mask return FailedPrecondition. Bad span extents or slots
+// return InvalidArgument. Failure preserves gather.
+absl::Status ApplyAdaptiveMacPicFallback3D(
+    const CoarseFineStencil3D& stencil,
+    const AdaptiveMacStencilBinding3D& binding,
+    std::span<const double> face_velocities,
+    std::span<const LiquidFaceValidity3D> face_validity,
+    std::span<const LiquidBoundaryFaceTag3D> face_tags,
+    std::int64_t particle_side_tag,
+    LiquidBoundaryParticleGather3D& gather
+);
 }  // namespace fluidity
