@@ -3724,3 +3724,32 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
 & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-bounded-tangent-stiff
 & "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
 ```
+
+### Positive-weight tangent reconstruction
+
+Starting at `abf860b`, replace the unit nearest-donor row with the
+positive part of the original affine-fit coefficients, normalized
+to sum to one. Apply the same weights in the gather and stress
+transpose. This retains multiple donors without negative weights
+or a change to the Euler deformation update. Native and SM120
+dry-scene targets pass their default tests.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.450470° | 0.167837 m |
+| Coarse half-step | 41.833675° | 0.149897 m |
+| Fine | 32.123629° | 0.161057 m |
+| Fine half-step | 38.839351° | 0.149937 m |
+
+The fine nominal radius misses the bound by 1.057 mm. The other
+three cases retain their prior failed geometric checks. Vertical
+momentum residual stays below 1.2e-8 N·s and cut stress work
+mismatch below 3.2e-16 J. The source was restored after linking,
+leaving the nearest-donor experiment at `abf860b`.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-positive-tangent-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
