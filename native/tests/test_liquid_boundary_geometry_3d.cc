@@ -79,7 +79,15 @@ TEST(LiquidBoundaryGeometry3D, SampledSolidFaceWeightsIntegrateAffineWallFlux) {
 TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
   const auto grid = *SparseMacGrid3D::Create({{}, 1.0}, std::array{BlockIndex3D{0, 0, 0}}, 1);
   const std::array cells{CellIndex3D{0, 0, 0}};
-  const std::array centers{LiquidCenterDistance3D{{0, 0, 0}, -1}};
+  const std::array centers{
+      LiquidCenterDistance3D{{0, 0, -1}, 1},
+      LiquidCenterDistance3D{{0, -1, 0}, 1},
+      LiquidCenterDistance3D{{-1, 0, 0}, 1},
+      LiquidCenterDistance3D{{0, 0, 0}, -1},
+      LiquidCenterDistance3D{{1, 0, 0}, 1},
+      LiquidCenterDistance3D{{0, 1, 0}, 1},
+      LiquidCenterDistance3D{{0, 0, 1}, 1},
+  };
   std::array<LiquidCornerDistance3D, 8> corners{};
   for (int corner = 0; corner < 8; ++corner) {
     corners[corner] = {{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1}, -1.0};
@@ -136,6 +144,33 @@ TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
   }
   EXPECT_NEAR(impulse, 0.08 * face->blocked_area, 2e-14);
   EXPECT_NEAR(pressure_work, 0.08 * *face->prescribed_wall_flux, 2e-14);
+  const std::array fields{LiquidPressureCellFields3D{0, std::numeric_limits<double>::infinity(), 0}};
+  const std::vector<double> predicted_velocities(frozen->faces().size(), 0);
+  const auto links = BuildLiquidPressureLinks3D(*frozen, {fields, predicted_velocities, 0});
+  ASSERT_TRUE(links.ok()) << links.status();
+  const auto projected = ProjectMacPressure3D({grid, 0.01, links->cells, links->faces});
+  ASSERT_TRUE(projected.ok()) << projected.status();
+  ASSERT_EQ(projected->cell_pressures.size(), 1);
+  const FrozenLiquidBoundaryGeometryView3D geometry{
+      .mac_grid = grid.view(),
+      .cells = frozen->cells(),
+      .faces = frozen->faces(),
+      .step_duration = 0.01,
+  };
+  const auto batch = StagePlasticSolidPressureLoads3D(geometry, *sampled, projected->cell_pressures, 0);
+  ASSERT_TRUE(batch.ok()) << batch.status();
+  ASSERT_EQ(batch->size(), 12);
+  double batch_work = 0;
+  for (const auto& load : batch->values()) {
+    EXPECT_EQ(load.particle_id, 7);
+    batch_work += load.impulse.x * (2.0 + 4.0 * load.world_offset.y);
+  }
+  EXPECT_LT(batch_work, 0);
+  EXPECT_NEAR(batch_work, -0.01 * projected->cell_pressures[0] * *face->prescribed_wall_flux, 2e-12);
+  EXPECT_EQ(
+      StagePlasticSolidPressureLoads3D(geometry, *sampled, {}, 0).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
   auto stale_face = *face;
   stale_face.prescribed_wall_flux = *stale_face.prescribed_wall_flux + 0.1;
   EXPECT_EQ(
