@@ -43,6 +43,7 @@ find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
     native/src/contact_face_bodies_3d.cc
+    native/src/mixed_contact_3d.cc
     native/src/dry_solid_step_3d.cc
     native/src/plastic_solid_checkpoint_3d.cc
     native/src/effects_source_3d.cc
@@ -190,6 +191,11 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fluidity_m5_dry_scene_tests native/tests/test_m5_dry_scenes_3d.cc)
+  target_link_libraries(fluidity_m5_dry_scene_tests PRIVATE fluidity_native flatbuffers::flatbuffers)
+  add_dependencies(fluidity_m5_dry_scene_tests fluidity_cache_schemas)
+  target_include_directories(fluidity_m5_dry_scene_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+  add_test(NAME M5DryScenes.native COMMAND fluidity_m5_dry_scene_tests)
   add_executable(fluidity_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
   target_link_libraries(fluidity_m5_plastic_checkpoint_tests PRIVATE fluidity_native flatbuffers::flatbuffers)
   add_dependencies(fluidity_m5_plastic_checkpoint_tests fluidity_cache_schemas)
@@ -206,6 +212,12 @@ if(BUILD_TESTING)
   target_compile_features(fluidity_m5_constitutive_tests PRIVATE cxx_std_20)
   add_test(NAME M5Constitutive.native COMMAND fluidity_m5_constitutive_tests)
   if(FLUIDITY_ENABLE_CUDA)
+    add_executable(fluidity_cuda_m5_dry_scene_tests native/tests/test_m5_dry_scenes_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_dry_scene_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_dry_scene_tests PRIVATE fluidity_cuda_operators flatbuffers::flatbuffers)
+    add_dependencies(fluidity_cuda_m5_dry_scene_tests fluidity_cache_schemas)
+    target_include_directories(fluidity_cuda_m5_dry_scene_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+    add_test(NAME M5DryScenes.cuda COMMAND fluidity_cuda_m5_dry_scene_tests)
     add_executable(fluidity_cuda_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
     target_compile_definitions(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
     target_link_libraries(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE fluidity_cuda_operators flatbuffers::flatbuffers)

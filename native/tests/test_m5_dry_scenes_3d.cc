@@ -1,0 +1,1689 @@
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <span>
+#include <string_view>
+#include <vector>
+
+#include "../src/dry_solid_step_3d_internal.h"
+#include "../src/plastic_solid_checkpoint_wire_3d.h"
+#include "fluidity/host/contact_face_bodies_3d.h"
+#include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/mac_pressure_3d.h"
+#include "fluidity/host/mixed_contact_3d.h"
+#include "fluidity/host/plastic_solid_checkpoint_3d.h"
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+#include "fluidity/host/cuda_dry_solid_step_3d.h"
+#include "fluidity/host/cuda_mac_pressure_3d.h"
+#include "fluidity/host/cuda_transfers_3d.h"
+#endif
+
+namespace {
+
+using fluidity::BlockIndex3D;
+using fluidity::DrySolidMaterial3D;
+using fluidity::DrySolidParticle3D;
+using fluidity::DrySolidStep3D;
+using fluidity::Mat3;
+using fluidity::SparseMacGrid3D;
+
+constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+struct SandSurfaceSlopes {
+  double minimum_degrees = 90;
+  double maximum_degrees = -90;
+  int size = 0;
+};
+
+// Fit each quadrant's free surface independently. Use actual sample radii to
+// avoid a bin-center bias. The quadrant spread describes sampling uncertainty.
+SandSurfaceSlopes FitSandSurface(std::span<const DrySolidParticle3D> particles, double maximum_radius) {
+  struct SurfaceSample {
+    double radius = 0;
+    double height = -1;
+  };
+  constexpr int kBinCount = 6;
+  constexpr double kStart = 0.15;
+  constexpr double kEnd = 0.85;
+  constexpr double kDegreesPerRadian = 57.29577951308232;
+  std::array<std::array<SurfaceSample, kBinCount>, 4> quadrants{};
+  for (const auto& particle : particles) {
+    const auto position = particle.world_position;
+    const double radius = std::hypot(position.x, position.z);
+    const double fraction = radius / maximum_radius;
+    if (fraction < kStart || fraction >= kEnd) {
+      continue;
+    }
+    const int quadrant = (position.x < 0 ? 1 : 0) + (position.z < 0 ? 2 : 0);
+    const int bin = std::min(kBinCount - 1, static_cast<int>((fraction - kStart) * kBinCount / (kEnd - kStart)));
+    auto& sample = quadrants[quadrant][bin];
+    if (position.y > sample.height) {
+      sample = {.radius = radius, .height = position.y};
+    }
+  }
+
+  SandSurfaceSlopes slopes{};
+  for (const auto& quadrant : quadrants) {
+    int sample_count = 0;
+    double radius_sum = 0;
+    double height_sum = 0;
+    double radius_squared_sum = 0;
+    double radius_height_sum = 0;
+    for (const auto& sample : quadrant) {
+      if (sample.height >= 0) {
+        ++sample_count;
+        radius_sum += sample.radius;
+        height_sum += sample.height;
+        radius_squared_sum += sample.radius * sample.radius;
+        radius_height_sum += sample.radius * sample.height;
+      }
+    }
+    if (sample_count < 4) {
+      continue;
+    }
+    const double radius_variation = sample_count * radius_squared_sum - radius_sum * radius_sum;
+    if (radius_variation > 0) {
+      const double slope = (sample_count * radius_height_sum - radius_sum * height_sum) / radius_variation;
+      const double degrees = -kDegreesPerRadian * std::atan(slope);
+      slopes.minimum_degrees = std::min(slopes.minimum_degrees, degrees);
+      slopes.maximum_degrees = std::max(slopes.maximum_degrees, degrees);
+      ++slopes.size;
+    }
+  }
+  return slopes;
+}
+
+bool TestScene(
+    double width,
+    double duration,
+    bool snow,
+    double particle_energy_blend = 0,
+    int particles_per_axis_multiplier = 1,
+    double sand_release_height = 0.10,
+    bool release_cone = false,
+    double sand_end_time = 0.75,
+    int quantized_mass_bits = 0,
+    fluidity::Vec3 grid_origin = {},
+    double floor_friction = 0.7,
+    bool reset_column_velocity = false,
+    double granular_modulus_scale = 1,
+    double stored_velocity_decay_rate = 0
+) {
+  std::vector<BlockIndex3D> blocks;
+  for (int z = -2; z <= 2; ++z) {
+    for (int y = -1; y <= 4; ++y) {
+      for (int x = -3; x <= 3; ++x) {
+        blocks.push_back({x, y, z});
+      }
+    }
+  }
+  const auto grid = SparseMacGrid3D::Create({grid_origin, width}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidMaterial3D material = snow ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
+                                           : DrySolidMaterial3D(fluidity::GranularParameters3D{
+                                                 700 * granular_modulus_scale,
+                                                 450 * granular_modulus_scale,
+                                                 0.5235987755982989,
+                                                 0
+                                             });
+  std::vector<DrySolidParticle3D> particles;
+  constexpr double kConeRadius = 0.175;
+  const int horizontal_samples = release_cone ? 15 : 3 * particles_per_axis_multiplier;
+  const int vertical_samples = (snow ? 4 : 7) * particles_per_axis_multiplier;
+  const double spacing = 0.05 / particles_per_axis_multiplier;
+  const double horizontal_center = 0.5 * (horizontal_samples - 1);
+  const double volume = spacing * spacing * spacing;
+  for (int z = 0; z < horizontal_samples; ++z) {
+    for (int y = 0; y < (release_cone ? 7 : vertical_samples); ++y) {
+      for (int x = 0; x < horizontal_samples; ++x) {
+        const double world_x = (x - horizontal_center) * spacing;
+        const double world_z = (z - horizontal_center) * spacing;
+        const double height_above_base = (y + 0.5) * spacing;
+        if (release_cone && height_above_base + std::hypot(world_x, world_z) > kConeRadius) {
+          continue;
+        }
+        particles.push_back(
+            {.world_position = {world_x, height_above_base + (snow ? 0.0 : sand_release_height), world_z},
+             .mass = 300 * volume,
+             .reference_volume = volume,
+             .elastic_deformation = kIdentity}
+        );
+      }
+    }
+  }
+  if (release_cone) {
+    std::printf("45-degree cone samples=%zu mass_kg=%.9f\n", particles.size(), particles.size() * 300 * volume);
+  }
+  const double time = snow ? 0.45 : sand_end_time;
+  const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
+  constexpr double kDegreesPerRadian = 57.29577951308232;
+  double early_envelope_angle = 0;
+  double reset_impulse_y = 0;
+  const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
+  fluidity::DrySolidStepBudget3D total_budget{};
+  int step = 0;
+  for (double t = 0; t < time; ++step) {
+    double phase_end =
+        snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < settling_sample_time ? settling_sample_time : time);
+    if (extended_column && t < 0.75) {
+      // Replay the original two sampling boundaries before extending the run.
+      phase_end = t < 0.70 ? 0.70 : 0.75;
+    }
+    const double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
+    const double step_duration = next_time - t;
+    const double step_energy_blend = stored_velocity_decay_rate > 0
+        ? std::min(1.0, std::exp(-stored_velocity_decay_rate * step_duration) / 0.99)
+        : particle_energy_blend;
+    DrySolidStep3D settings{
+        .duration = step_duration,
+        .gravity_y = snow ? 0.0 : -9.81,
+        .floor_friction = floor_friction,
+        .acoustic_cfl = 0.25,
+        .particle_energy_blend = step_energy_blend,
+    };
+    if (snow && t < 0.35) {
+      const double speed = t < 0.23 ? -0.4 : 0.5;
+      const double position = t < 0.23 ? 0.21 - 0.4 * t : 0.118 + 0.5 * (t - 0.23);
+      settings.platen = fluidity::DrySolidPlaten3D{.start_y = position, .velocity_y = speed};
+    }
+    fluidity::DrySolidStepBudget3D budget{};
+    const int mass_bits = quantized_mass_bits == 0 ? 42 : quantized_mass_bits;
+    const fluidity::MacDepositQuantization3D quantization{
+        std::ldexp(1.0, -mass_bits),
+        std::ldexp(1.0, 4 - mass_bits),
+        std::max<std::size_t>(128, particles.size()),
+    };
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+    const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, quantization, particles, &budget);
+#else
+    const auto quantized_deposit = [quantization](
+                                       const SparseMacGrid3D& layout,
+                                       std::span<const fluidity::MacTransferParticle3D> points,
+                                       std::span<fluidity::MacFaceDeposit3D> faces
+                                   ) {
+      std::vector<fluidity::MacFaceDepositQuanta3D> quanta(faces.size());
+      const auto deposited = fluidity::DepositMacQuanta3D(layout, points, quantization, quanta);
+      if (!deposited.ok()) {
+        return deposited;
+      }
+      for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+        faces[slot] = {
+            .deposited_mass = static_cast<double>(quanta[slot].mass_quanta_sum) * quantization.mass_per_quantum,
+            .deposited_pure_momentum =
+                static_cast<double>(quanta[slot].pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
+        };
+      }
+      return absl::OkStatus();
+    };
+    const auto status = quantized_mass_bits == 0
+        ? fluidity::AdvanceDrySolid3D(*grid, material, settings, particles, &budget)
+        : fluidity::internal::AdvanceDrySolidWithTransfers3D(
+              *grid,
+              material,
+              settings,
+              particles,
+              quantized_deposit,
+              fluidity::GatherMac3D,
+              &budget
+          );
+#endif
+    if (!status.ok()) {
+      std::fprintf(
+          stderr,
+          "dry scene %s h=%.3f step %d: %s\n",
+          snow ? "snow" : "sand",
+          width,
+          step,
+          status.ToString().c_str()
+      );
+      return false;
+    }
+    const bool late_drift_sample = !snow && t < settling_sample_time && next_time == settling_sample_time;
+    const bool original_endpoint = extended_column && t < 0.75 && next_time == 0.75;
+    if (late_drift_sample || original_endpoint) {
+      double height = 0;
+      double radius = 0;
+      for (const auto& particle : particles) {
+        height = std::fmax(height, particle.world_position.y);
+        radius = std::fmax(radius, std::hypot(particle.world_position.x, particle.world_position.z));
+      }
+      const double angle = kDegreesPerRadian * std::atan2(height, radius);
+      if (late_drift_sample) {
+        early_envelope_angle = angle;
+      }
+      if (original_endpoint) {
+        std::printf("sand envelope at 0.75 s=%.6f\n", angle);
+      }
+    }
+    if (original_endpoint && reset_column_velocity) {
+      double removed_kinetic_energy = 0;
+      for (auto& particle : particles) {
+        const auto velocity = particle.world_velocity;
+        reset_impulse_y -= particle.mass * velocity.y;
+        removed_kinetic_energy +=
+            0.5 * particle.mass * (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+        particle.world_velocity = {};
+        particle.velocity_slopes = {};
+      }
+      std::printf(
+          "sand reset at 0.75 s removed kinetic_J=%.9g applied vertical impulse_Ns=%.9g\n",
+          removed_kinetic_energy,
+          reset_impulse_y
+      );
+    }
+    total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
+    total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
+    total_budget.omitted_stress_work += budget.omitted_stress_work;
+    total_budget.grid_wall_impulse_y += budget.grid_wall_impulse_y;
+    total_budget.wall_impulse_on_particles.y += budget.wall_impulse_on_particles.y;
+    total_budget.particle_wall_contacts += budget.particle_wall_contacts;
+    t = next_time;
+  }
+  double maximum_height = 0;
+  double maximum_radius = 0;
+  double log_plastic_sum = 0;
+  double kinetic_energy = 0;
+  double final_momentum_y = 0;
+  for (const auto& particle : particles) {
+    if (particle.world_position.y < 0 || particle.mass != 300 * volume || particle.reference_volume != volume
+        || !std::isfinite(particle.log_plastic_jacobian)) {
+      return false;
+    }
+    maximum_height = std::fmax(maximum_height, particle.world_position.y);
+    maximum_radius = std::fmax(maximum_radius, std::hypot(particle.world_position.x, particle.world_position.z));
+    log_plastic_sum += particle.log_plastic_jacobian;
+    const auto v = particle.world_velocity;
+    final_momentum_y += particle.mass * v.y;
+    kinetic_energy += 0.5 * particle.mass * (v.x * v.x + v.y * v.y + v.z * v.z);
+  }
+  const double mean_log_plastic = log_plastic_sum / particles.size();
+  std::printf(
+      "%s h=%.4f dt=%.8f height=%.6f radius=%.6f mean_log_Jpl=%.6f kinetic_J=%.6f\n",
+      snow ? "snow" : "sand",
+      width,
+      duration,
+      maximum_height,
+      maximum_radius,
+      mean_log_plastic,
+      kinetic_energy
+  );
+  std::printf(
+      "budget proposed_stress_Ns=%.9f omitted_stress_Ns=%.9f omitted_work_J=%.9g "
+      "grid_wall_y_Ns=%.9f particle_wall_y_Ns=%.9f contacts=%zu\n",
+      total_budget.proposed_stress_impulse_l1,
+      total_budget.omitted_stress_impulse_l1,
+      total_budget.omitted_stress_work,
+      total_budget.grid_wall_impulse_y,
+      total_budget.wall_impulse_on_particles.y,
+      total_budget.particle_wall_contacts
+  );
+  const double gravity_impulse_y = (snow ? 0.0 : -9.81) * (300 * volume * particles.size()) * time;
+  const double vertical_residual = final_momentum_y - reset_impulse_y - gravity_impulse_y
+      - total_budget.grid_wall_impulse_y - total_budget.wall_impulse_on_particles.y;
+  std::printf("vertical momentum residual_Ns=%.9g\n", vertical_residual);
+  constexpr double kMomentumRoundoffTolerance = 1e-6;
+  if (std::abs(vertical_residual) > total_budget.omitted_stress_impulse_l1 + kMomentumRoundoffTolerance) {
+    return false;
+  }
+  if (total_budget.omitted_stress_impulse_l1 > total_budget.proposed_stress_impulse_l1) {
+    return false;
+  }
+  if (snow) {
+    return mean_log_plastic > -0.48 && mean_log_plastic < -0.34 && maximum_height > 0.11 && maximum_height < 0.15;
+  }
+  const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
+  const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
+  std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
+  if (particles_per_axis_multiplier > 1 && maximum_radius > 0) {
+    const auto slopes = FitSandSurface(particles, maximum_radius);
+    if (slopes.size > 0) {
+      std::printf(
+          "sand surface slope range_degrees=[%.6f,%.6f] quadrants=%d\n",
+          slopes.minimum_degrees,
+          slopes.maximum_degrees,
+          slopes.size
+      );
+    } else {
+      std::printf("sand surface slope unresolved: fewer than four occupied radial bins per quadrant\n");
+    }
+  }
+  if (release_cone) {
+    return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && kinetic_energy < 0.01;
+  }
+  return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && maximum_radius > 0.10
+      && maximum_radius < 0.16 && kinetic_energy < 0.01;
+}
+
+bool TestSandSurfaceFit() {
+  std::vector<DrySolidParticle3D> particles;
+  for (double sign_x : {-1.0, 1.0}) {
+    for (double sign_z : {-1.0, 1.0}) {
+      for (int bin = 0; bin < 6; ++bin) {
+        const double radius = 0.15 + (bin + 0.5) * 0.70 / 6;
+        const double component = radius / std::sqrt(2.0);
+        const double height = (1 - radius) / std::sqrt(3.0);
+        particles.push_back({.world_position = {sign_x * component, height, sign_z * component}});
+        particles.push_back({.world_position = {sign_x * component, 0, sign_z * component}});
+      }
+    }
+  }
+  const auto slopes = FitSandSurface(particles, 1);
+  return slopes.size == 4 && std::abs(slopes.minimum_degrees - 30) < 1e-11
+      && std::abs(slopes.maximum_degrees - 30) < 1e-11;
+}
+
+bool TestPlanarMixedContactDetection() {
+  fluidity::LiquidParticleState3D water{
+      .id = 7,
+      .world_position = {-0.0625, 0, 0},
+      .world_velocity = {2, 0, 0},
+      .mass = 6
+  };
+  fluidity::PlasticSolidCheckpointParticle3D snow{
+      .particle_id = 3,
+      .body_id = 9,
+      .material_id = 1,
+      .transfer = {.trial_world_position = {0.3125, 0, 0}, .particle_mass = 2, .particle_velocity = {-2, 0, 0}},
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{3, 9, 2, 1, {-2, 0, 0}},
+      fluidity::ContactFaceParticle3D{7, 11, 6, 1, {2, 0, 0}},
+  };
+  const fluidity::DetectedContactFace3D pair{3, contributors, 9, 11, {1, 0, 0}, 0};
+  const auto reconstructed =
+      fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, {&snow, 1}, pair, 0.0625, 0.0625);
+  if (!reconstructed.ok() || reconstructed->first_interface_world_position.x != 0.25
+      || reconstructed->second_plane_start_coordinate != 0) {
+    return false;
+  }
+  const fluidity::DetectedContactFace3D reversed{3, contributors, 11, 9, {-1, 0, 0}, 0};
+  const auto reversed_fronts =
+      fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, {&snow, 1}, reversed, 0.0625, 0.0625);
+  if (!reversed_fronts.ok() || reversed_fronts->first_interface_world_position.x != 0
+      || reversed_fronts->second_plane_start_coordinate != -0.25) {
+    return false;
+  }
+  auto another_snow = snow;
+  another_snow.particle_id = 4;
+  const std::array tied_snow{snow, another_snow};
+  const std::array tied_contributors{
+      contributors[0],
+      fluidity::ContactFaceParticle3D{4, 9, 2, 1, {-1, 0, 0}},
+      contributors[1],
+  };
+  const fluidity::DetectedContactFace3D ambiguous{3, tied_contributors, 9, 11, {1, 0, 0}, 0};
+  if (fluidity::ReconstructAxisAlignedMixedContactFace3D({&water, 1}, 11, tied_snow, ambiguous, 0.0625, 0.0625)
+          .status()
+          .code()
+      != absl::StatusCode::kFailedPrecondition) {
+    return false;
+  }
+  const auto face = *reconstructed;
+  const auto missed = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.03125);
+  if (!missed.ok() || !missed->empty() || water.world_velocity.x != 2 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto invalid = face;
+  invalid.pair.face_slot = 6;
+  invalid.first_interface_world_position.x = -0.25;
+  const std::array late_overlap{face, invalid};
+  const auto rejected = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, late_overlap, 0.125);
+  if (rejected.ok() || water.world_velocity.x != 2 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto endpoint_water = water;
+  auto endpoint_snow = snow;
+  const auto endpoint =
+      fluidity::ApplyPlanarMixedContactFaces3D({&endpoint_water, 1}, 11, {&endpoint_snow, 1}, {&face, 1}, 0.0625);
+  if (!endpoint.ok() || endpoint->size() != 1 || endpoint->front().contact_fraction != 1) {
+    return false;
+  }
+  const auto rejected_motion =
+      fluidity::AdvancePlanarMixedContact3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.125, 0.10);
+  if (rejected_motion.ok() || water.world_position.x != -0.0625 || water.world_velocity.x != 2
+      || snow.transfer.trial_world_position.x != 0.3125 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  // A frozen unit cell with one open outlet must discharge 2 m³/s.
+  // At unit face area this fixes the outlet speed independently of the solver.
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{-1, 0, 0}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  constexpr std::array cells{fluidity::MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1,
+      .target_divergence = 2,
+      .bulk_modulus = std::numeric_limits<double>::infinity(),
+  }};
+  using fluidity::FaceNormalAxis;
+  const fluidity::FaceIndex3D outlet{FaceNormalAxis::kX, {1, 0, 0}};
+  std::array pressure_faces{
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kX, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{
+          .face_index = outlet,
+          .open_area = 1,
+          .inverse_density = 1,
+          .pressure_gradient_distance = 1,
+          .pressure_link = fluidity::DirichletMacPressureLink3D{0},
+      },
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kY, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kY, {0, 1, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kZ, {0, 0, 0}}},
+      fluidity::MacPressureFace3D{.face_index = {FaceNormalAxis::kZ, {0, 0, 1}}},
+  };
+  for (auto& pressure_face : pressure_faces) {
+    if (pressure_face.open_area == 0) {
+      pressure_face.pressure_link = fluidity::SealedMacPressureLink3D{};
+    }
+  }
+  const auto outlet_slot = grid->FaceSlot(outlet);
+  if (!outlet_slot.ok()) {
+    return false;
+  }
+  std::sort(pressure_faces.begin(), pressure_faces.end(), [&](const auto& first, const auto& second) {
+    return *grid->FaceSlot(first.face_index) < *grid->FaceSlot(second.face_index);
+  });
+  const auto outlet_face = std::find_if(pressure_faces.begin(), pressure_faces.end(), [](const auto& pressure_face) {
+    return pressure_face.open_area > 0;
+  });
+  const auto outlet_ordinal = static_cast<std::size_t>(outlet_face - pressure_faces.begin());
+  const fluidity::MacPressureInputs3D pressure_inputs{*grid, 0.125, cells, pressure_faces};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto projection = fluidity::CudaProjectMacPressure3D(pressure_inputs);
+#else
+  const auto projection = fluidity::ProjectMacPressure3D(pressure_inputs);
+#endif
+  if (!projection.ok()) {
+    std::fprintf(stderr, "M5 pressure-contact fixture: %s\n", projection.status().ToString().c_str());
+    return false;
+  }
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto& pressure = projection->projection;
+#else
+  const auto& pressure = *projection;
+#endif
+  const double outlet_normal_velocity = pressure.corrected_face_velocities[outlet_ordinal];
+  if (std::abs(outlet_normal_velocity - 2) > 1e-12 || std::abs(pressure.cell_pressures.front() - 16) > 1e-12
+      || pressure.diagnostics.max_cell_constraint_defect > 1e-12) {
+    return false;
+  }
+  const auto project =
+      +[](const fluidity::MacPressureInputs3D& inputs) -> absl::StatusOr<fluidity::MacPressureProjection3D> {
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+    auto projected = fluidity::CudaProjectMacPressure3D(inputs);
+    if (!projected.ok()) {
+      return projected.status();
+    }
+    return std::move(projected->projection);
+#else
+    return fluidity::ProjectMacPressure3D(inputs);
+#endif
+  };
+  auto reciprocal_cells = cells;
+  reciprocal_cells.front().target_divergence = 0;
+  const auto low_wall = std::find_if(pressure_faces.begin(), pressure_faces.end(), [](const auto& pressure_face) {
+    return pressure_face.face_index.axis == FaceNormalAxis::kX && pressure_face.face_index.lattice_index.x == 0;
+  });
+  if (low_wall == pressure_faces.end()) {
+    return false;
+  }
+  const auto low_wall_ordinal = static_cast<std::size_t>(low_wall - pressure_faces.begin());
+  const fluidity::MacPressureInputs3D reciprocal_inputs{*grid, 0.125, reciprocal_cells, pressure_faces};
+  const auto light_snow =
+      fluidity::SolvePlanarSnowPressureTrial3D(reciprocal_inputs, low_wall_ordinal, 0.25, 10, project);
+  if (!light_snow.ok() || std::abs(light_snow->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(light_snow->liquid_projection.cell_pressures.front() - 16) > 1e-12
+      || std::abs(light_snow->liquid_projection.corrected_face_velocities[outlet_ordinal] - 2) > 1e-12
+      || light_snow->liquid_projection.diagnostics.max_cell_constraint_defect > 1e-12
+      || std::abs(light_snow->pressure_impulse_on_snow + 2) > 1e-12
+      || std::abs(light_snow->pressure_work_on_snow + 4) > 1e-12 || low_wall->wall_normal_velocity != 0) {
+    return false;
+  }
+  auto reflected_faces = pressure_faces;
+  auto& reflected_outlet = reflected_faces[low_wall_ordinal];
+  auto& reflected_wall = reflected_faces[outlet_ordinal];
+  reflected_outlet = *outlet_face;
+  reflected_outlet.face_index = low_wall->face_index;
+  reflected_wall = *low_wall;
+  reflected_wall.face_index = outlet;
+  const fluidity::MacPressureInputs3D reflected_inputs{*grid, 0.125, reciprocal_cells, reflected_faces};
+  const auto reflected = fluidity::SolvePlanarSnowPressureTrial3D(reflected_inputs, outlet_ordinal, 2, -3, project);
+  if (!reflected.ok() || std::abs(reflected->solved_wall_normal_velocity + 2) > 1e-12
+      || std::abs(reflected->pressure_impulse_on_snow - 2) > 1e-12
+      || std::abs(reflected->pressure_work_on_snow + 4) > 1e-12
+      || std::abs(reflected->liquid_projection.corrected_face_velocities[low_wall_ordinal] + 2) > 1e-12
+      || fluidity::SolvePlanarSnowPressureTrial3D(reciprocal_inputs, outlet_ordinal, 2, 3, project).status().code()
+          != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
+  std::array connected_cells{reciprocal_cells.front(), reciprocal_cells.front()};
+  connected_cells.back().cell_index.x = 1;
+  std::vector connected_faces(pressure_faces.begin(), pressure_faces.end());
+  connected_faces[outlet_ordinal].pressure_link = fluidity::InternalMacPressureLink3D{0};
+  auto far_outlet = *outlet_face;
+  far_outlet.face_index.lattice_index.x = 2;
+  connected_faces.push_back(far_outlet);
+  for (const auto axis : {FaceNormalAxis::kY, FaceNormalAxis::kZ}) {
+    for (const int side : {0, 1}) {
+      connected_faces.push_back({
+          .face_index = {axis, {1, axis == FaceNormalAxis::kY ? side : 0, axis == FaceNormalAxis::kZ ? side : 0}},
+          .pressure_link = fluidity::SealedMacPressureLink3D{},
+      });
+    }
+  }
+  std::sort(connected_faces.begin(), connected_faces.end(), [&](const auto& first, const auto& second) {
+    return *grid->FaceSlot(first.face_index) < *grid->FaceSlot(second.face_index);
+  });
+  const auto x_face_ordinal = [&](int x) {
+    const auto face = std::find_if(connected_faces.begin(), connected_faces.end(), [x](const auto& candidate) {
+      return candidate.face_index.axis == FaceNormalAxis::kX && candidate.face_index.lattice_index.x == x;
+    });
+    return static_cast<std::size_t>(face - connected_faces.begin());
+  };
+  const auto connected_low = x_face_ordinal(0);
+  const auto connected_middle = x_face_ordinal(1);
+  const auto connected_high = x_face_ordinal(2);
+  const fluidity::MacPressureInputs3D connected_inputs{*grid, 0.125, connected_cells, connected_faces};
+  const auto connected = fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_low, 2, 4, project);
+  constexpr double kConnectedTolerance = 2e-6;
+  if (!connected.ok() || std::abs(connected->solved_wall_normal_velocity - 2) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.cell_pressures[0] - 32) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.cell_pressures[1] - 16) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.corrected_face_velocities[connected_middle] - 2) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.corrected_face_velocities[connected_high] - 2) > kConnectedTolerance
+      || std::abs(connected->pressure_impulse_on_snow + 4) > kConnectedTolerance) {
+    return false;
+  }
+  auto crossing_snow = snow;
+  crossing_snow.transfer.trial_world_position = {-1.125, 0.25, 0.25};
+  crossing_snow.transfer.particle_velocity = {4, 0, 0};
+  std::array crossing_liquid{water, water};
+  crossing_liquid[0].world_position = {-0.125, 0.25, 0.25};
+  crossing_liquid[0].world_velocity = {};
+  crossing_liquid[0].volume_ratio = 0.95;
+  crossing_liquid[1].id = 8;
+  crossing_liquid[1].world_position = {0.875, 0.25, 0.25};
+  const std::array crossing_contributors{fluidity::SnowPressureContributor3D{3, 1}};
+  const auto escaped = fluidity::AdvancePlanarSnowPressure3D(
+      connected_inputs,
+      connected_low,
+      crossing_contributors,
+      crossing_liquid,
+      {&crossing_snow, 1},
+      0.3,
+      project
+  );
+  if (escaped.status().message() != "planar pressure liquid transport leaves adjacent pressure support"
+      || crossing_liquid[0].world_position.x != -0.125 || crossing_liquid[0].world_velocity.x != 0
+      || crossing_liquid[1].world_position.x != 0.875 || crossing_snow.transfer.trial_world_position.x != -1.125
+      || crossing_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  const auto crossing = fluidity::AdvancePlanarSnowPressure3D(
+      connected_inputs,
+      connected_low,
+      crossing_contributors,
+      {crossing_liquid.data(), 1},
+      {&crossing_snow, 1},
+      0.3,
+      project
+  );
+  if (!crossing.ok() || std::abs(crossing_liquid[0].world_position.x - 0.125) > kConnectedTolerance
+      || std::abs(crossing_liquid[0].world_velocity.x - 2) > kConnectedTolerance
+      || std::abs(crossing_liquid[0].volume_ratio - 0.95) > kConnectedTolerance
+      || std::abs(crossing_snow.transfer.trial_world_position.x + 0.875) > kConnectedTolerance
+      || std::abs(crossing_snow.transfer.particle_velocity.x - 2) > kConnectedTolerance) {
+    return false;
+  }
+  connected_faces[connected_low] = far_outlet;
+  connected_faces[connected_low].face_index = low_wall->face_index;
+  connected_faces[connected_high] = *low_wall;
+  connected_faces[connected_high].face_index = far_outlet.face_index;
+  const auto reverse_connected =
+      fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_high, 2, -4, project);
+  if (!reverse_connected.ok() || std::abs(reverse_connected->solved_wall_normal_velocity + 2) > kConnectedTolerance
+      || std::abs(reverse_connected->liquid_projection.cell_pressures[0] - 16) > kConnectedTolerance
+      || std::abs(reverse_connected->liquid_projection.cell_pressures[1] - 32) > kConnectedTolerance
+      || std::abs(reverse_connected->pressure_impulse_on_snow - 4) > kConnectedTolerance) {
+    return false;
+  }
+  connected_faces[connected_middle].open_area = 0;
+  connected_faces[connected_middle].pressure_link = fluidity::SealedMacPressureLink3D{};
+  if (fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_middle, 2, 4, project).status().code()
+      != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
+  std::array pressure_snow{snow, snow, snow};
+  pressure_snow[0].transfer.particle_mass = 0.125;
+  pressure_snow[0].transfer.particle_velocity = {12, 2, 3};
+  pressure_snow[1].particle_id = 4;
+  pressure_snow[1].transfer.particle_mass = 0.0625;
+  pressure_snow[1].transfer.particle_velocity = {16, 4, 5};
+  pressure_snow[2].particle_id = 5;
+  pressure_snow[2].body_id = 17;
+  const std::array traction{
+      fluidity::SnowPressureContributor3D{3, 0.5},
+      fluidity::SnowPressureContributor3D{4, 0.5},
+  };
+  const auto rejected_traction =
+      fluidity::ApplyPlanarSnowPressure3D(reciprocal_inputs, outlet_ordinal, traction, pressure_snow, project);
+  if (rejected_traction.status().code() != absl::StatusCode::kInvalidArgument
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[1].transfer.particle_velocity.x != 16) {
+    return false;
+  }
+  auto invalid_traction = traction;
+  invalid_traction[1].particle_id = 5;
+  const auto wrong_body = fluidity::ApplyPlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      invalid_traction,
+      pressure_snow,
+      project
+  );
+  if (wrong_body.status().code() != absl::StatusCode::kInvalidArgument
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[2].transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto closed_faces = pressure_faces;
+  auto& closed_outlet = closed_faces[outlet_ordinal];
+  closed_outlet.open_area = 0;
+  closed_outlet.pressure_link = fluidity::SealedMacPressureLink3D{};
+  const fluidity::MacPressureInputs3D closed_inputs{*grid, 0.125, reciprocal_cells, closed_faces};
+  const auto failed_probe =
+      fluidity::ApplyPlanarSnowPressure3D(closed_inputs, low_wall_ordinal, traction, pressure_snow, project);
+  if (failed_probe.status().code() != absl::StatusCode::kFailedPrecondition
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[1].transfer.particle_velocity.x != 16) {
+    return false;
+  }
+  const auto applied_traction =
+      fluidity::ApplyPlanarSnowPressure3D(reciprocal_inputs, low_wall_ordinal, traction, pressure_snow, project);
+  const double first_velocity = pressure_snow[0].transfer.particle_velocity.x;
+  const double second_velocity = pressure_snow[1].transfer.particle_velocity.x;
+  const double transferred_momentum = 0.125 * (first_velocity - 12) + 0.0625 * (second_velocity - 16);
+  if (!applied_traction.ok() || std::abs(first_velocity - 4) > 1e-12 || std::abs(second_velocity) > 1e-12
+      || std::abs(transferred_momentum - applied_traction->pressure_impulse_on_snow) > 1e-12
+      || std::abs(applied_traction->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(applied_traction->pressure_work_on_snow + 4) > 1e-12
+      || pressure_snow[0].transfer.particle_velocity.y != 2 || pressure_snow[1].transfer.particle_velocity.z != 5
+      || pressure_snow[2].transfer.particle_velocity.x != -2
+      || pressure_snow[1].transfer.trial_world_position.x != snow.transfer.trial_world_position.x
+      || pressure_snow[1].log_plastic_jacobian != snow.log_plastic_jacobian) {
+    return false;
+  }
+  auto advected_water = water;
+  advected_water.world_position = {-0.75, 0.25, 0.25};
+  advected_water.world_velocity = {};
+  advected_water.volume_ratio = 0.95;
+  auto advected_snow = snow;
+  advected_snow.transfer.trial_world_position = {-1.125, 0.25, 0.25};
+  advected_snow.transfer.particle_velocity = {3, 3, 0};
+  const std::array single_traction{fluidity::SnowPressureContributor3D{3, 1}};
+  const auto rejected_advection = fluidity::AdvancePlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      single_traction,
+      {&advected_water, 1},
+      {&advected_snow, 1},
+      0.3,
+      project
+  );
+  if (rejected_advection.status().message() != "planar mixed contact path exceeds motion bound"
+      || advected_water.world_position.x != -0.75 || advected_water.world_velocity.x != 0
+      || advected_water.volume_ratio != 0.95 || advected_snow.transfer.trial_world_position.x != -1.125
+      || advected_snow.transfer.particle_velocity.x != 3) {
+    return false;
+  }
+  advected_snow.transfer.particle_velocity.y = 0;
+  const auto accepted_advection = fluidity::AdvancePlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      single_traction,
+      {&advected_water, 1},
+      {&advected_snow, 1},
+      0.3,
+      project
+  );
+  if (!accepted_advection.ok() || std::abs(advected_water.world_position.x + 0.5) > 1e-12
+      || std::abs(advected_snow.transfer.trial_world_position.x + 0.875) > 1e-12
+      || std::abs(advected_water.world_velocity.x - 2) > 1e-12
+      || std::abs(advected_snow.transfer.particle_velocity.x - 2) > 1e-12
+      || std::abs(advected_water.volume_ratio - 0.95) > 1e-12 || advected_snow.transfer.sorted_world_position.x != 0) {
+    return false;
+  }
+  auto moving_snow = snow;
+  moving_snow.transfer.particle_mass = 0.375;
+  moving_snow.transfer.trial_world_position = {-0.875, 0.25, 0.25};
+  moving_snow.transfer.particle_velocity = {4, 0, 0};
+  auto moving_liquid = water;
+  moving_liquid.world_position = {-0.5, 0.25, 0.25};
+  moving_liquid.volume_ratio = 0.95;
+  const auto freeze = [&] {
+    return fluidity::FreezePlanarSnowPressureCell3D(
+        *grid,
+        {0, 0, 0},
+        FaceNormalAxis::kX,
+        true,
+        {&moving_snow, 1},
+        0.125,
+        1,
+        0
+    );
+  };
+  const auto first_frozen = freeze();
+  if (!first_frozen.ok()) {
+    std::fprintf(stderr, "M5 moving snow first_frozen: %s\n", first_frozen.status().ToString().c_str());
+    return false;
+  }
+  if (first_frozen->wall_plane_coordinate != -0.75 || first_frozen->cell.fluid_volume != 0.75) {
+    return false;
+  }
+  const fluidity::MacPressureInputs3D first_cut_inputs{
+      *grid,
+      0.125,
+      {&first_frozen->cell, 1},
+      first_frozen->faces,
+  };
+  const auto first_cut = fluidity::AdvancePlanarSnowPressure3D(
+      first_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  if (!first_cut.ok()) {
+    std::fprintf(stderr, "M5 moving snow first_cut: %s\n", first_cut.status().ToString().c_str());
+    return false;
+  }
+  if (std::abs(first_cut->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(first_cut->liquid_projection.cell_pressures.front() - 6) > 1e-12
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.625) > 1e-12
+      || std::abs(moving_liquid.world_position.x + 0.25) > 1e-12) {
+    return false;
+  }
+  const auto second_frozen = freeze();
+  if (!second_frozen.ok()) {
+    std::fprintf(stderr, "M5 moving snow second_frozen: %s\n", second_frozen.status().ToString().c_str());
+    return false;
+  }
+  if (std::abs(second_frozen->wall_plane_coordinate + 0.5) > 1e-12
+      || std::abs(second_frozen->cell.fluid_volume - 0.5) > 1e-12) {
+    return false;
+  }
+  const fluidity::MacPressureInputs3D second_cut_inputs{
+      *grid,
+      0.125,
+      {&second_frozen->cell, 1},
+      second_frozen->faces,
+  };
+  const auto inconsistent = fluidity::AdvancePlanarSnowPressure3D(
+      second_cut_inputs,
+      second_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      -0.625
+  );
+  if (inconsistent.status().code() != absl::StatusCode::kInvalidArgument
+      || std::abs(moving_liquid.world_position.x + 0.25) > 1e-12
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.625) > 1e-12) {
+    return false;
+  }
+  const auto second_cut = fluidity::AdvancePlanarSnowPressure3D(
+      second_cut_inputs,
+      second_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      second_frozen->wall_plane_coordinate
+  );
+  if (!second_cut.ok()) {
+    std::fprintf(stderr, "M5 moving snow second_cut: %s\n", second_cut.status().ToString().c_str());
+    return false;
+  }
+  constexpr double kMovingWallTolerance = 2e-7;
+  if (std::abs(second_cut->solved_wall_normal_velocity - 1.2) > kMovingWallTolerance
+      || std::abs(second_cut->liquid_projection.cell_pressures.front() - 2.4) > kMovingWallTolerance
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.475) > kMovingWallTolerance
+      || std::abs(moving_liquid.world_position.x + 0.1) > kMovingWallTolerance
+      || std::abs(moving_liquid.volume_ratio - 0.95) > kMovingWallTolerance) {
+    return false;
+  }
+  fluidity::LiquidState3D accepted_liquid;
+  accepted_liquid.geometry = grid->geometry();
+  accepted_liquid.next_particle_id = 8;
+  const auto prepare = []<typename Record>(fluidity::LiquidRecords3D<Record>& records, std::size_t count) {
+    auto allocated = fluidity::LiquidRecords3D<Record>::Create(count);
+    if (!allocated.ok() || !allocated->Resize(count).ok()) {
+      return false;
+    }
+    records = std::move(*allocated);
+    return true;
+  };
+  if (!prepare(accepted_liquid.particles, 1) || !prepare(accepted_liquid.blocks, 1)
+      || !prepare(accepted_liquid.cells, 1) || !prepare(accepted_liquid.faces, first_frozen->faces.size())) {
+    return false;
+  }
+  accepted_liquid.particles[0] = water;
+  accepted_liquid.particles[0].world_position = {-0.5, 0.25, 0.25};
+  accepted_liquid.particles[0].world_velocity = {};
+  accepted_liquid.particles[0].volume_ratio = 0.95;
+  accepted_liquid.cells[0].cell_index = first_frozen->cell.cell_index;
+  for (std::size_t ordinal = 0; ordinal < first_frozen->faces.size(); ++ordinal) {
+    const auto index = first_frozen->faces[ordinal].face_index;
+    const auto slot = grid->FaceSlot(index);
+    if (!slot.ok()) {
+      return false;
+    }
+    accepted_liquid.faces[ordinal].face_index = index;
+    accepted_liquid.faces[ordinal].face_slot = *slot;
+  }
+  auto transaction = fluidity::LiquidFrameTransaction3D::Create(accepted_liquid, {1, 1, 1, 6});
+  if (!transaction.ok() || !transaction->BeginFrame(0.125).ok()) {
+    return false;
+  }
+  auto committed_snow = moving_snow;
+  committed_snow.transfer.trial_world_position.x = -0.875;
+  committed_snow.transfer.particle_velocity = {4, 0, 0};
+  const auto rejected_attempt = fluidity::AttemptPlanarSnowPressureStep3D(
+      *transaction,
+      first_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&committed_snow, 1},
+      0.20,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  if (!rejected_attempt.ok() || rejected_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kRetryDt
+      || rejected_attempt->outcome.retry_duration != 0.0625 || rejected_attempt->pressure.has_value()
+      || transaction->committed() != accepted_liquid || committed_snow.transfer.trial_world_position.x != -0.875
+      || committed_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  auto half_cut_inputs = first_cut_inputs;
+  half_cut_inputs.step_duration = *rejected_attempt->outcome.retry_duration;
+  const auto accepted_attempt = fluidity::AttemptPlanarSnowPressureStep3D(
+      *transaction,
+      half_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&committed_snow, 1},
+      0.20,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  const auto& committed = transaction->committed();
+  if (!accepted_attempt.ok() || accepted_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kAccepted
+      || !accepted_attempt->pressure.has_value() || committed.clock.time != 0.0625
+      || committed.clock.accepted_step_ordinal != 1 || committed.clock.epoch != 1
+      || std::abs(committed.cells[0].previous_pressure - 12) > 1e-12
+      || std::abs(committed.faces[first_frozen->wall_face_ordinal].carrier_velocity - 2) > 1e-12
+      || std::abs(committed.particles[0].world_position.x + 0.375) > 1e-12
+      || std::abs(committed_snow.transfer.trial_world_position.x + 0.75) > 1e-12
+      || std::abs(committed_snow.transfer.particle_velocity.x - 2) > 1e-12) {
+    return false;
+  }
+  auto frame_snow = committed_snow;
+  frame_snow.transfer.trial_world_position.x = -0.875;
+  frame_snow.transfer.particle_velocity.x = 4;
+  fluidity::PlanarSnowPressureFrameSettings3D frame_settings{
+      .wall_cell = {0, 0, 0},
+      .wall_axis = FaceNormalAxis::kX,
+      .wall_on_low_face = true,
+      .surface_offset = 0.125,
+      .inverse_liquid_density = 1,
+      .outlet_pressure = 0,
+      .target_time = 0.125,
+      .nominal_step_duration = 0.125,
+      .maximum_path_length = 0.20,
+  };
+  const auto frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&frame_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (!frame.ok()) {
+    std::fprintf(stderr, "M5 moving snow frame: %s\n", frame.status().ToString().c_str());
+    return false;
+  }
+  const auto& frame_clock = frame->liquid.clock;
+  constexpr double kFrameTolerance = 2e-6;
+  if (frame->rejected_attempts != 1 || frame_clock.time != 0.125 || frame_clock.frame_ordinal != 1
+      || frame_clock.substep_ordinal != 0 || frame_clock.accepted_step_ordinal != 2 || frame_clock.epoch != 2
+      || std::abs(frame->liquid.cells[0].previous_pressure - 60.0 / 11.0) > kFrameTolerance
+      || std::abs(frame->liquid.particles[0].world_position.x - (-0.375 + 0.75 / 11.0)) > kFrameTolerance
+      || std::abs(frame->snow[0].transfer.trial_world_position.x - (-0.75 + 0.75 / 11.0)) > kFrameTolerance
+      || std::abs(frame->snow[0].transfer.particle_velocity.x - 12.0 / 11.0) > kFrameTolerance) {
+    return false;
+  }
+  frame_settings.maximum_path_length = 0.01;
+  const auto exhausted = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&frame_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (exhausted.status().code() != absl::StatusCode::kFailedPrecondition || accepted_liquid.clock.time != 0
+      || accepted_liquid.particles[0].world_position.x != -0.5 || frame_snow.transfer.trial_world_position.x != -0.875
+      || frame_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  // The fixture transfers the outlet speed to one liquid particle with unit weight.
+  // Stage that transfer with the mixed advance and publish the two particles together.
+  water.world_velocity.x = 0;
+  const auto advance_pressure_trial = [&](double maximum_path_length
+                                      ) -> absl::StatusOr<std::vector<fluidity::PlanarMixedContactReceipt3D>> {
+    auto trial_water = water;
+    auto trial_snow = snow;
+    trial_water.world_velocity.x = outlet_normal_velocity;
+    const std::array pressure_contributors{
+        contributors[0],
+        fluidity::ContactFaceParticle3D{7, 11, 6, 1, trial_water.world_velocity},
+    };
+    const fluidity::DetectedContactFace3D pressure_pair{*outlet_slot, pressure_contributors, 9, 11, {1, 0, 0}, 0};
+    const auto pressure_contact = fluidity::ReconstructAxisAlignedMixedContactFace3D(
+        {&trial_water, 1},
+        11,
+        {&trial_snow, 1},
+        pressure_pair,
+        0.0625,
+        0.0625
+    );
+    if (!pressure_contact.ok()) {
+      return pressure_contact.status();
+    }
+    auto trial = fluidity::AdvancePlanarMixedContact3D(
+        {&trial_water, 1},
+        11,
+        {&trial_snow, 1},
+        {&*pressure_contact, 1},
+        pressure_inputs.step_duration,
+        maximum_path_length
+    );
+    if (trial.ok()) {
+      water = trial_water;
+      snow = trial_snow;
+    }
+    return trial;
+  };
+  const auto rejected_pressure_trial = advance_pressure_trial(0.10);
+  if (rejected_pressure_trial.status().message() != "planar mixed contact path exceeds motion bound"
+      || water.world_position.x != -0.0625 || water.world_velocity.x != 0
+      || snow.transfer.trial_world_position.x != 0.3125 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  const auto hit = advance_pressure_trial(0.25);
+  return hit.ok() && hit->size() == 1 && hit->front().face_slot == *outlet_slot
+      && std::abs(hit->front().contact_fraction - 0.5) < 1e-12
+      && std::abs(hit->front().contact.impulse_on_first.x - 6) < 1e-12 && std::abs(water.world_velocity.x - 1) < 1e-12
+      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12 && std::abs(water.world_position.x - 0.125) < 1e-12
+      && std::abs(snow.transfer.trial_world_position.x - 0.25) < 1e-12 && snow.transfer.sorted_world_position.x == 0;
+}
+
+bool TestMixedContactAcceptance() {
+  fluidity::LiquidParticleState3D water{
+      .id = 7,
+      .world_position = {2, 3, 4},
+      .world_velocity = {2, 0, 0},
+      .mass = 6,
+      .volume_ratio = 0.95,
+  };
+  fluidity::PlasticSolidCheckpointParticle3D snow{
+      .particle_id = 3,
+      .body_id = 9,
+      .material_id = 1,
+      .transfer =
+          {
+              .trial_world_position = {1, 2, 3},
+              .particle_mass = 2,
+              .particle_velocity = {-2, 3, 0},
+          },
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{3, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{7, 11, 6, 0.5, {2, 0, 0}},
+  };
+  std::array faces{
+      fluidity::DetectedContactFace3D{3, contributors, 9, 11, {1, 0, 0}, 0.25},
+      fluidity::DetectedContactFace3D{6, contributors, 9, 99, {1, 0, 0}, 0.25},
+  };
+  water.world_velocity.z = -0.0;
+  if (!fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {}).ok()
+      || !std::signbit(water.world_velocity.z)) {
+    return false;
+  }
+  auto extreme_water = water;
+  extreme_water.world_velocity.x = -1.7e308;
+  auto extreme_snow = snow;
+  auto extreme_contributors = contributors;
+  extreme_contributors[0].world_face_velocity = {-4e307, 0, 0};
+  extreme_contributors[1].world_face_velocity = {4e307, 0, 0};
+  const fluidity::DetectedContactFace3D extreme_face{3, extreme_contributors, 9, 11, {1, 0, 0}, 0};
+  const auto overflow =
+      fluidity::ApplyMixedContactFaces3D({&extreme_water, 1}, 11, {&extreme_snow, 1}, {&extreme_face, 1});
+  if (overflow.status().code() != absl::StatusCode::kOutOfRange
+      || overflow.status().message() != "unrepresentable stored mixed-contact velocity"
+      || extreme_water.world_velocity.x != -1.7e308
+      || extreme_snow.transfer.particle_velocity.x != snow.transfer.particle_velocity.x) {
+    return false;
+  }
+  const auto old_water = water;
+  const auto old_snow = snow;
+  if (fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, faces).ok() || !(water == old_water)
+      || snow.transfer.particle_velocity.x != old_snow.transfer.particle_velocity.x
+      || snow.transfer.particle_velocity.y != old_snow.transfer.particle_velocity.y) {
+    return false;
+  }
+  faces[1].second_body_id = 11;
+  const auto accepted = fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, faces);
+  return accepted.ok() && accepted->size() == 2 && std::abs(water.world_velocity.x - 1) < 1e-12
+      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12
+      && std::abs(6 * water.world_velocity.y + 2 * snow.transfer.particle_velocity.y - 6) < 1e-12
+      && water.world_position.x == old_water.world_position.x && water.volume_ratio == old_water.volume_ratio
+      && snow.log_plastic_jacobian == old_snow.log_plastic_jacobian
+      && snow.transfer.trial_world_position.x == old_snow.transfer.trial_world_position.x;
+}
+
+bool TestContactFaceBatch() {
+  constexpr std::array particles{
+      fluidity::ContactParticleIdentity3D{1, 9, 2},
+      fluidity::ContactParticleIdentity3D{2, 11, 6},
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{1, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{2, 11, 6, 0.5, {2, 0, 0}},
+  };
+  const std::array faces{
+      fluidity::DetectedContactFace3D{3, contributors, 9, 11, {1, 0, 0}, 0.25},
+      fluidity::DetectedContactFace3D{6, contributors, 9, 11, {1, 0, 0}, 0.25},
+  };
+  const auto batch = fluidity::StageContactFaceBatch3D(particles, faces);
+  if (!batch.ok() || batch->face_contacts.size() != 2 || batch->velocity_deltas.size() != 2
+      || std::abs(batch->velocity_deltas[0].x - 3) > 1e-12 || std::abs(batch->velocity_deltas[1].x + 1) > 1e-12
+      || std::abs(2 * batch->velocity_deltas[0].y + 6 * batch->velocity_deltas[1].y) > 1e-12) {
+    return false;
+  }
+  auto invalid = faces;
+  invalid[1].second_body_id = 99;
+  if (fluidity::StageContactFaceBatch3D(particles, invalid).ok()) {
+    return false;
+  }
+  invalid = faces;
+  invalid[1].face_slot = invalid[0].face_slot;
+  if (fluidity::StageContactFaceBatch3D(particles, invalid).ok()) {
+    return false;
+  }
+  auto excessive = contributors;
+  excessive[0].weight = 0.75;
+  invalid = faces;
+  invalid[1].contributors = excessive;
+  return !fluidity::StageContactFaceBatch3D(particles, invalid).ok();
+}
+
+bool TestContactFaceParticleScatter() {
+  constexpr std::array particles{
+      fluidity::ContactFaceParticle3D{1, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{2, 9, 4, 0.25, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{3, 11, 6, 1, {2, 0, 0}},
+      fluidity::ContactFaceParticle3D{4, 13, 1, 1, {9, 0, 0}},
+  };
+  const auto scattered = fluidity::ResolveContactFaceParticles3D(particles, 9, 11, {1, 0, 0}, 0.25);
+  if (!scattered.ok() || scattered->velocity_deltas.size() != particles.size()) {
+    return false;
+  }
+  const auto& deltas = scattered->velocity_deltas;
+  const double impulse_x = 2 * deltas[0].x + 4 * deltas[1].x;
+  const double impulse_y = 2 * deltas[0].y + 4 * deltas[1].y;
+  if (std::abs(impulse_x - 6) > 1e-12 || std::abs(impulse_y + 1.5) > 1e-12
+      || std::abs(impulse_x + 6 * deltas[2].x) > 1e-12 || std::abs(impulse_y + 6 * deltas[2].y) > 1e-12
+      || deltas[3].x != 0 || deltas[3].y != 0) {
+    return false;
+  }
+  auto invalid = particles;
+  invalid.back().particle_id = 3;
+  return !fluidity::ResolveContactFaceParticles3D(invalid, 9, 11, {1, 0, 0}, 0.25).ok();
+}
+
+bool TestPlasticCheckpointHandoff() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidMaterial3D snow = fluidity::SnowParameters3D{2, 3, 0.025, 0.01, 4};
+  const DrySolidParticle3D accepted{
+      .world_position = {2.25, 2.25, 2.25},
+      .world_velocity = {0.1, 0, 0},
+      .velocity_slopes = {{0.1, -0.02, 0}, {0, 0.05, 0}, {0, 0, -0.1}},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  const auto same_vector = [](fluidity::Vec3 first, fluidity::Vec3 second) {
+    return first.x == second.x && first.y == second.y && first.z == second.z;
+  };
+  const auto same_matrix = [same_vector](Mat3 first, Mat3 second) {
+    return same_vector(first.x_row, second.x_row) && same_vector(first.y_row, second.y_row)
+        && same_vector(first.z_row, second.z_row);
+  };
+  const auto same_particle = [same_vector,
+                              same_matrix](const DrySolidParticle3D& first, const DrySolidParticle3D& second) {
+    return same_vector(first.world_position, second.world_position)
+        && same_vector(first.world_velocity, second.world_velocity)
+        && same_matrix(first.velocity_slopes, second.velocity_slopes) && first.mass == second.mass
+        && first.reference_volume == second.reference_volume
+        && same_matrix(first.elastic_deformation, second.elastic_deformation)
+        && first.log_plastic_jacobian == second.log_plastic_jacobian;
+  };
+  const auto captured = fluidity::CapturePlasticSolidCheckpointParticle3D(7, 9, 11, snow, accepted);
+  if (!captured.ok()) {
+    return false;
+  }
+  const auto packed = fluidity::internal::PackPlasticSolidCheckpointParticle3D(*captured);
+  flatbuffers::FlatBufferBuilder builder;
+  builder.Finish(builder.CreateVectorOfStructs(&packed, 1));
+  using WireVector = fluidity::internal::PlasticCheckpointWireVector3D;
+  const auto* wire_records = flatbuffers::GetRoot<WireVector>(builder.GetBufferPointer());
+  if (wire_records->size() != 1) {
+    return false;
+  }
+  const auto decoded = fluidity::internal::UnpackPlasticSolidCheckpointParticle3D(*wire_records->Get(0));
+  if (decoded.particle_id != 7 || decoded.body_id != 9 || decoded.material_id != 11
+      || !same_vector(decoded.transfer.sorted_world_position, accepted.world_position)) {
+    return false;
+  }
+  auto restored = fluidity::RestoreDrySolidCheckpointParticles3D({&decoded, 1}, 9, 11, snow);
+  if (!restored.ok() || restored->size() != 1 || !same_particle(accepted, restored->front())) {
+    return false;
+  }
+  auto corrupt = *captured;
+  corrupt.log_plastic_jacobian = 1000;
+  if (fluidity::RestoreDrySolidCheckpointParticles3D({&corrupt, 1}, 9, 11, snow).ok()
+      || fluidity::RestoreDrySolidCheckpointParticles3D({&*captured, 1}, 9, 12, snow).ok()) {
+    return false;
+  }
+  const std::array duplicate{*captured, *captured};
+  if (fluidity::RestoreDrySolidCheckpointParticles3D(duplicate, 9, 11, snow).ok()) {
+    return false;
+  }
+  const DrySolidMaterial3D sand = fluidity::GranularParameters3D{2, 3, 0.5235987755982989, 0};
+  auto sand_particle = accepted;
+  sand_particle.elastic_deformation = kIdentity;
+  sand_particle.log_plastic_jacobian = 0;
+  const auto sand_record = fluidity::CapturePlasticSolidCheckpointParticle3D(5, 12, 13, sand, sand_particle);
+  if (!sand_record.ok()) {
+    return false;
+  }
+  const std::array bindings{
+      fluidity::PlasticSolidCheckpointBinding3D{9, 11, snow},
+      fluidity::PlasticSolidCheckpointBinding3D{12, 13, sand},
+  };
+  const std::array mixed_records{*sand_record, decoded};
+  if (!fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, bindings).ok()) {
+    return false;
+  }
+  const std::array reversed_bindings{bindings[1], bindings[0]};
+  const std::array invalid_state{*sand_record, corrupt};
+  auto duplicate_id = decoded;
+  duplicate_id.particle_id = sand_record->particle_id;
+  const std::array duplicate_ids{*sand_record, duplicate_id};
+  if (fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, reversed_bindings).code()
+          != absl::StatusCode::kInvalidArgument
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, {&bindings[1], 1}).code()
+          != absl::StatusCode::kInvalidArgument
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(invalid_state, bindings).code()
+          != absl::StatusCode::kFailedPrecondition
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(duplicate_ids, bindings).code()
+          != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
+  const auto decode_batch = [&](const std::array<fluidity::PlasticSolidCheckpointParticle3D, 2>& records,
+                                std::size_t maximum_particle_count,
+                                std::uint32_t schema_version = 2) {
+    const std::array wire_batch{
+        fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[0]),
+        fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[1]),
+    };
+    flatbuffers::FlatBufferBuilder batch_builder;
+    batch_builder.Finish(batch_builder.CreateVectorOfStructs(wire_batch.data(), wire_batch.size()));
+    const auto* batch = flatbuffers::GetRoot<WireVector>(batch_builder.GetBufferPointer());
+    return fluidity::internal::DecodePlasticCheckpointWireVector3D(
+        schema_version,
+        batch,
+        bindings,
+        maximum_particle_count
+    );
+  };
+  const auto decoded_batch = decode_batch(mixed_records, 2);
+  const auto absent = fluidity::internal::DecodePlasticCheckpointWireVector3D(1, nullptr, bindings, 0);
+  if (!decoded_batch.ok() || decoded_batch->size() != 2 || (*decoded_batch)[0].particle_id != 5
+      || (*decoded_batch)[1].particle_id != 7 || !absent.ok() || !absent->empty()
+      || decode_batch(mixed_records, 1).status().code() != absl::StatusCode::kResourceExhausted
+      || decode_batch(invalid_state, 2).status().code() != absl::StatusCode::kFailedPrecondition
+      || decode_batch(mixed_records, 2, 1).status().code() != absl::StatusCode::kInvalidArgument
+      || decode_batch(mixed_records, 2, 3).status().code() != absl::StatusCode::kFailedPrecondition) {
+    return false;
+  }
+  flatbuffers::FlatBufferBuilder owning_builder;
+  const auto empty_vector = fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, {}, bindings, 0);
+  if (!empty_vector.ok() || !empty_vector->IsNull() || owning_builder.GetSize() != 0) {
+    return false;
+  }
+  const auto encoded_batch =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, mixed_records, bindings, 2);
+  if (!encoded_batch.ok() || encoded_batch->IsNull()) {
+    return false;
+  }
+  const auto staged_size = owning_builder.GetSize();
+  const auto over_capacity =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, mixed_records, bindings, 1);
+  const auto rejected_state =
+      fluidity::internal::EncodePlasticCheckpointWireVector3D(owning_builder, invalid_state, bindings, 2);
+  if (over_capacity.status().code() != absl::StatusCode::kResourceExhausted
+      || rejected_state.status().code() != absl::StatusCode::kFailedPrecondition
+      || owning_builder.GetSize() != staged_size) {
+    return false;
+  }
+  owning_builder.Finish(*encoded_batch);
+  const auto* encoded_wire_records = flatbuffers::GetRoot<WireVector>(owning_builder.GetBufferPointer());
+  static_assert(fluidity::internal::InteractionCheckpointVersionForPlasticPayload3D(0) == 1);
+  const auto replay = fluidity::internal::DecodePlasticCheckpointWireVector3D(
+      fluidity::internal::InteractionCheckpointVersionForPlasticPayload3D(mixed_records.size()),
+      encoded_wire_records,
+      bindings,
+      2
+  );
+  if (!replay.ok() || replay->size() != 2 || (*replay)[0].particle_id != 5 || (*replay)[1].particle_id != 7
+      || (*replay)[1].log_plastic_jacobian != accepted.log_plastic_jacobian) {
+    return false;
+  }
+  auto uninterrupted = accepted;
+  const DrySolidStep3D step{.duration = 0.01, .acoustic_cfl = 0.25};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto first = fluidity::CudaAdvanceDrySolid3D(*grid, snow, step, {0x1p-42, 0x1p-38, 128}, {&uninterrupted, 1});
+  const auto second = fluidity::CudaAdvanceDrySolid3D(*grid, snow, step, {0x1p-42, 0x1p-38, 128}, *restored);
+#else
+  const auto first = fluidity::AdvanceDrySolid3D(*grid, snow, step, {&uninterrupted, 1});
+  const auto second = fluidity::AdvanceDrySolid3D(*grid, snow, step, *restored);
+#endif
+  return first.ok() && second.ok() && same_particle(uninterrupted, restored->front());
+}
+
+bool TestWallImpulseBudget() {
+  constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  DrySolidParticle3D particle{
+      .world_position = {2.25, 0, 2.25},
+      .world_velocity = {1, -1, 0},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+  };
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.01, .floor_friction = 0.5, .acoustic_cfl = 0.25};
+  fluidity::DrySolidStepBudget3D budget{};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status =
+      fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1}, &budget);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
+#endif
+  return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
+      && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
+      && budget.grid_wall_impulse_y == 0;
+}
+
+bool TestStoredVelocityResidual() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidParticle3D first{
+      .world_position = {2.25, 2.25, 2.25},
+      .world_velocity = {1, 0, 0},
+      .mass = 1000,
+      .reference_volume = 1,
+      .elastic_deformation = kIdentity,
+  };
+  std::array particles{first, first, first, first};
+  particles[1].world_velocity.x = -1;
+  particles[3].world_velocity.x = -1;
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.01, .acoustic_cfl = 0.25, .particle_energy_blend = 0.6};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, particles);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, particles);
+#endif
+  return status.ok() && std::abs(particles[0].world_velocity.x - 0.594) < 1e-12
+      && std::abs(particles[1].world_velocity.x + 0.594) < 1e-12 && particles[0].world_position.x == 2.25
+      && particles[1].world_position.x == 2.25;
+}
+
+bool TestStoredResidualMomentum() {
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}, BlockIndex3D{1, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidParticle3D first{
+      .world_position = {1.75, 2.25, 2.25},
+      .world_velocity = {1, 0, 0},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+  };
+  std::array particles{first, first, first, first, first};
+  particles.back().world_position.x = 2.5001;
+  particles.back().world_velocity.x = -1;
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.01, .acoustic_cfl = 0.25, .particle_energy_blend = 0.6};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, particles);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, particles);
+#endif
+  double momentum_x = 0;
+  for (const auto& particle : particles) {
+    momentum_x += particle.mass * particle.world_velocity.x;
+  }
+  if (!status.ok() || std::abs(momentum_x - 3) > 1e-9) {
+    std::fprintf(stderr, "stored residual momentum %.12g N s, %s\n", momentum_x, status.ToString().c_str());
+    return false;
+  }
+  return true;
+}
+
+bool TestRollbackOnUnsupportedDestination() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  DrySolidParticle3D particle{
+      .world_position = {2.4, 2, 2},
+      .world_velocity = {1, 0, 0},
+      .mass = 1000,
+      .reference_volume = 1,
+      .elastic_deformation = kIdentity
+  };
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.4, .acoustic_cfl = 0.25};
+  fluidity::DrySolidStepBudget3D budget{.particle_wall_contacts = 42};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status =
+      fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1}, &budget);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
+#endif
+  if (budget.particle_wall_contacts != 42 || status.code() != absl::StatusCode::kFailedPrecondition
+      || particle.world_position.x != 2.4 || particle.world_velocity.x != 1 || particle.log_plastic_jacobian != 0) {
+    std::fprintf(
+        stderr,
+        "unsupported destination rollback failed: %s x=%.6f\n",
+        status.ToString().c_str(),
+        particle.world_position.x
+    );
+    return false;
+  }
+  return true;
+}
+
+bool TestRejectsInadmissibleInitialState() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const Mat3 overcompressed{{0.8, 0, 0}, {0, 0.8, 0}, {0, 0, 0.8}};
+  DrySolidParticle3D particle{
+      .world_position = {2, 2, 2},
+      .mass = 1000,
+      .reference_volume = 1,
+      .elastic_deformation = overcompressed
+  };
+  const DrySolidMaterial3D material = fluidity::SnowParameters3D{2, 3, 0.025, 0.01, 4};
+  const DrySolidStep3D settings{.duration = 0.01, .acoustic_cfl = 0.25};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status =
+      fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1});
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1});
+#endif
+  if (status.code() != absl::StatusCode::kFailedPrecondition || particle.elastic_deformation.y_row.y != 0.8
+      || particle.log_plastic_jacobian != 0) {
+    std::fprintf(stderr, "inadmissible initial state was not preserved: %s\n", status.ToString().c_str());
+    return false;
+  }
+  return true;
+}
+
+bool TestUncutStressWork() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const fluidity::Vec3 position{2.2, 2.3, 2.4};
+  constexpr Mat3 stress{{10, 2, 3}, {2, 20, 4}, {3, 4, -30}};
+  constexpr Mat3 gradient{{3, 2, 1}, {1, 4, 2}, {2, 3, -1}};
+  constexpr double volume = 0.5;
+  const auto view = grid->view();
+  std::vector<double> forces(view.face_count());
+  const auto deposited = fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, forces);
+  if (!deposited.ok()) {
+    return false;
+  }
+  std::vector<double> velocities(view.face_count());
+  double grid_power = 0;
+  const fluidity::Vec3 rows[]{gradient.x_row, gradient.y_row, gradient.z_row};
+  for (std::size_t slot = 0; slot < view.face_count(); ++slot) {
+    const auto face = view.FaceIndex(slot);
+    if (!face.ok()) {
+      return false;
+    }
+    const auto anchor = view.FaceWorldAnchor(*face);
+    if (!anchor.ok()) {
+      return false;
+    }
+    const auto row = rows[static_cast<int>(face->axis)];
+    velocities[slot] = row.x * anchor->x + row.y * anchor->y + row.z * anchor->z;
+    grid_power += velocities[slot] * forces[slot];
+  }
+  const fluidity::MacTransferParticle3D particle{.sorted_world_position = position, .trial_world_position = position};
+  fluidity::MacParticleGatherResult3D result{};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  fluidity::CudaOperatorMeasurement measurement{};
+  const auto gathered =
+      fluidity::CudaGatherMac3D(*grid, {&particle, 1}, velocities, velocities, {&result, 1}, measurement);
+#else
+  const auto gathered = fluidity::GatherMac3D(*grid, {&particle, 1}, velocities, velocities, {&result, 1});
+#endif
+  if (!gathered.ok()) {
+    return false;
+  }
+  const auto measured = result.velocity_gradient;
+  const double particle_power = volume
+      * (10 * measured.x_row.x + 2 * measured.x_row.y + 3 * measured.x_row.z + 2 * measured.y_row.x
+         + 20 * measured.y_row.y + 4 * measured.y_row.z + 3 * measured.z_row.x + 4 * measured.z_row.y
+         - 30 * measured.z_row.z);
+  constexpr double kExpectedPower = 87.5;
+  const double scaled_error = std::abs(grid_power + particle_power) / kExpectedPower;
+  std::printf(
+      "uncut stress work grid_W=%.12f particle_W=%.12f scaled_residual=%.3g\n",
+      grid_power,
+      particle_power,
+      scaled_error
+  );
+  return scaled_error <= 1e-6 && std::abs(particle_power - kExpectedPower) <= 1e-6 * kExpectedPower;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-reset-column-velocity") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-friction") {
+    bool all_pass = true;
+    for (const double floor_friction : {0.0, 10.0}) {
+      std::printf("sand floor friction coefficient=%.1f\n", floor_friction);
+      const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
+      const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
+      all_pass = all_pass && reference && refined;
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-time-scaled-retention") {
+    const double decay_rate = -std::log(0.594) / 0.001875;
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double duration : {width / 40, width / 80}) {
+        const bool pass = TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, decay_rate);
+        all_pass = all_pass && pass;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-stiffer-column") {
+    constexpr double kModulusScale = 4;
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double duration : {width / 40, width / 80}) {
+        const bool pass = TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, kModulusScale);
+        all_pass = all_pass && pass;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-column-long-settle") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 1, 0.10, false, 1.5);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 1, 0.10, false, 1.5);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-grid-phase") {
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const fluidity::Vec3 phase : {fluidity::Vec3{}, {0.5, 0, 0}, {0.5, 0, 0.5}}) {
+        std::printf("sand grid origin in cell widths x=%.1f z=%.1f\n", phase.x, phase.z);
+        const bool pass =
+            TestScene(width, width / 40, false, 0, 1, 0.10, false, 0.75, 0, {phase.x * width, 0, phase.z * width});
+        all_pass = all_pass && pass;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-refined") {
+    return TestScene(0.0625, 0.0015625, false) ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-half-step") {
+    const bool reference = TestScene(0.075, 0.0009375, false);
+    const bool refined = TestScene(0.0625, 0.00078125, false);
+    return reference && refined ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-stored-blend") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0.6);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0.6);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0.6);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0.6);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-particles") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 2);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 2);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 2);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 2);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-refined-grid") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-release") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-release") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0, true);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0, true);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0, true);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0, true);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-long-settle") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0, true, 1.5);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0, true, 1.5);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0, true, 1.5);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0, true, 1.5);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-stored-only") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0.6, 2, 0, true);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0.6, 2, 0, true);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0.6, 2, 0, true);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0.6, 2, 0, true);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-quantization") {
+    const bool standard = TestScene(0.03125, 0.00078125, false, 0.6, 2, 0, true, 0.75, 42);
+    const bool fine_quanta = TestScene(0.03125, 0.00078125, false, 0.6, 2, 0, true, 0.75, 50);
+    return standard && fine_quanta ? 0 : 1;
+  }
+  if (argc != 1) {
+    return 2;
+  }
+  const auto capacity = fluidity::ContactFaceDepositStatus(fluidity::ContactFaceDepositStatus3D::kBodyCapacity);
+  if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
+    return 1;
+  }
+  if (!TestPlanarMixedContactDetection() || !TestMixedContactAcceptance() || !TestContactFaceBatch()
+      || !TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit()
+      || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
+      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+    return 1;
+  }
+  const bool coarse_sand = TestScene(0.075, 0.001875, false);
+  const bool coarse_snow = TestScene(0.1, 0.0025, true);
+  const bool fine_snow = TestScene(0.075, 0.001875, true);
+  return coarse_sand && coarse_snow && fine_snow ? 0 : 1;
+}

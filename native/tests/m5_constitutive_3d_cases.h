@@ -81,6 +81,17 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       || !Near(state.kirchhoff_stress.x, before.kirchhoff_stress.x)) {
     return 8;
   }
+  // The cohesionless 30-degree law matches the triaxial compression ratio
+  // (1 + sin(30 degrees)) / (1 - sin(30 degrees)) = 3. These trial
+  // stretches give stresses (-5, -1, -1) Pa with the moduli above.
+  auto cohesionless_sand = sand;
+  cohesionless_sand.cohesion_log_strain = 0;
+  const Vec3 triaxial_trial{::exp(-11.0 / 13), ::exp(2.0 / 13), ::exp(2.0 / 13)};
+  if (!ReturnGranularPrincipal3D(triaxial_trial, 0, cohesionless_sand, state) || !Near(state.kirchhoff_stress.x, -4.2)
+      || !Near(state.kirchhoff_stress.y, -1.4) || !Near(state.kirchhoff_stress.z, -1.4)
+      || !Near(state.log_plastic_jacobian, 0)) {
+    return 9;
+  }
   return 0;
 }
 
