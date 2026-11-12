@@ -706,6 +706,144 @@ TEST(LiquidSubstep3D, GradedPersistentQuadraticBasisUsesTheAdmittedRosterCapacit
   );
 }
 
+TEST(LiquidSubstep3D, GradedCertifiedFamilyPreservesNonzeroQuadraticAffineMomentum) {
+  LiquidState3D source;
+  LiquidSceneInputs3D scene;
+  const auto fixture = test::PopulateQuadraticFamilyReplayFixture3D(source, scene, false);
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto parent_id = fixture->source_ids[0];
+  auto& parent = source.particles[parent_id - 1];
+  parent.quadratic_adaptive_transfer = true;
+  parent.velocity_slopes = {{0, 0.125, 0}, {0, 0, -0.0625}, {0.25, 0, 0}};
+  const auto before = EncodeLiquidState3D(source);
+  ASSERT_TRUE(before.ok()) << before.status();
+  auto fine = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+      source,
+      scene,
+      fixture->kCapacities,
+      fixture->closure,
+      fixture->kParent,
+      parent_id
+  );
+  ASSERT_TRUE(fine.ok()) << fine.status();
+  EXPECT_EQ(fine->adaptive_cells.size(), 314);
+  EXPECT_EQ(fine->next_particle_id, source.next_particle_id + 8);
+
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : fine->adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, fine->geometry.cell_width);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto transfer = GradedMacTransfer3D::Create(*topology, fine->geometry.world_origin);
+  ASSERT_TRUE(transfer.ok()) << transfer.status();
+  std::array<std::uint64_t, 8> children{};
+  for (std::size_t ordinal = 0; ordinal < children.size(); ++ordinal) {
+    auto& child = fine->particles[parent_id - 1 + ordinal];
+    children[ordinal] = child.id;
+    ASSERT_EQ(child.id, source.next_particle_id + ordinal);
+    const auto leaf = transfer->ParticleLeafOrdinal(child.world_position);
+    ASSERT_TRUE(leaf.ok()) << leaf.status();
+    const auto& inventory = fine->adaptive_cells[*leaf].inventory;
+    EXPECT_EQ(inventory.mass_kg, child.mass);
+    EXPECT_EQ(inventory.reference_volume_m3, child.reference_volume);
+    EXPECT_NE(inventory.momentum_kg_m_per_s.x, 0);
+    EXPECT_EQ(inventory.momentum_kg_m_per_s.x, child.mass * child.world_velocity.x);
+    EXPECT_EQ(inventory.momentum_kg_m_per_s.y, child.mass * child.world_velocity.y);
+    EXPECT_EQ(inventory.momentum_kg_m_per_s.z, child.mass * child.world_velocity.z);
+    // Move the children to dyadic positions inside their own leaves for
+    // the independent strictly positive F4 covariance gate.
+    child.world_position = {
+        (ordinal & 1u) == 0 ? 0.25 : 0.75,
+        (ordinal & 2u) == 0 ? 0.25 : 0.75,
+        (ordinal & 4u) == 0 ? 0.25 : 0.75,
+    };
+    child.world_velocity = {
+        (ordinal & 2u) == 0 ? -0.03125 : 0.03125,
+        (ordinal & 4u) == 0 ? 0.015625 : -0.015625,
+        (ordinal & 1u) == 0 ? -0.0625 : 0.0625,
+    };
+    fine->adaptive_cells[*leaf].inventory.momentum_kg_m_per_s = {
+        child.mass * child.world_velocity.x,
+        child.mass * child.world_velocity.y,
+        child.mass * child.world_velocity.z,
+    };
+  }
+  const auto coarse = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *fine,
+      scene,
+      fixture->kCapacities,
+      fixture->closure,
+      fixture->kParent,
+      children
+  );
+  ASSERT_TRUE(coarse.ok()) << coarse.status();
+  EXPECT_EQ(coarse->adaptive_cells, source.adaptive_cells);
+  const auto& merged = coarse->particles[parent_id - 1];
+  EXPECT_TRUE(merged.quadratic_adaptive_transfer);
+  EXPECT_EQ(merged.world_velocity.x, 0);
+  EXPECT_EQ(merged.world_velocity.y, 0);
+  EXPECT_EQ(merged.world_velocity.z, 0);
+  EXPECT_NE(merged.velocity_slopes.x_row.y, 0);
+
+  auto options = Options();
+  options.capacities = fixture->kCapacities;
+  auto scheduler = LiquidSubstepScheduler3D::Create(source, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.001).ok());
+  const LiquidAdaptiveQuadraticSplitRequest3D split_request{
+      .accepted_epoch = source.clock.epoch,
+      .exact_refinement_closure = fixture->closure,
+      .split_parent = fixture->kParent,
+      .source_particle_id = parent_id,
+  };
+  const auto accepted = scheduler->AttemptWithAdaptiveQuadraticSplit(0.001, split_request);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted)
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  EXPECT_EQ(scheduler->committed().adaptive_cells.size(), 314);
+
+  auto fine_scheduler = LiquidSubstepScheduler3D::Create(*fine, scene, options);
+  ASSERT_TRUE(fine_scheduler.ok()) << fine_scheduler.status();
+  ASSERT_TRUE(fine_scheduler->BeginFrame(0.001).ok());
+  const LiquidAdaptiveQuadraticMergeRequest3D merge_request{
+      .accepted_epoch = fine->clock.epoch,
+      .exact_coarsening_halo = fixture->closure,
+      .merge_parent = fixture->kParent,
+      .source_particle_ids = children,
+  };
+  const auto merged_trial = fine_scheduler->AttemptWithAdaptiveQuadraticMerge(0.001, merge_request);
+  ASSERT_TRUE(merged_trial.ok()) << merged_trial.status();
+  ASSERT_EQ(merged_trial->disposition, LiquidAttemptDisposition3D::kAccepted)
+      << fine_scheduler->diagnostics().failure_code << " stage "
+      << static_cast<int>(fine_scheduler->diagnostics().failed_stage);
+  ASSERT_TRUE(fine_scheduler->FinishFrame().ok());
+  EXPECT_EQ(fine_scheduler->committed().adaptive_cells.size(), 125);
+
+  auto incompatible = CloneLiquidState3D(source, options.capacities);
+  ASSERT_TRUE(incompatible.ok()) << incompatible.status();
+  auto other_particles = incompatible->particles.values();
+  const auto retained = std::ranges::find_if(other_particles, [](const auto& particle) {
+    const auto position = particle.world_position;
+    return position.x == 1.25 && position.y == 0.25 && position.z == 0.25;
+  });
+  ASSERT_NE(retained, other_particles.end());
+  retained->quadratic_adaptive_transfer = true;
+  retained->velocity_slopes.x_row.y = 0.25;
+  auto refused = LiquidSubstepScheduler3D::Create(*incompatible, scene, options);
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  ASSERT_TRUE(refused->BeginFrame(0.001).ok());
+  const auto changed_width = refused->AttemptWithAdaptiveQuadraticSplit(0.001, split_request);
+  EXPECT_TRUE(absl::IsFailedPrecondition(changed_width.status()));
+  EXPECT_EQ(refused->diagnostics().attempts, 0);
+  ExpectIdenticalSerializedState(refused->committed(), *incompatible);
+
+  const auto after = EncodeLiquidState3D(source);
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_TRUE(std::ranges::equal(before->values(), after->values()));
+}
+
 TEST(LiquidSubstep3D, GradedCertifiedQuadraticSplitRefusesIneligibleOldCarriersBeforeTrial) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

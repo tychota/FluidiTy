@@ -326,6 +326,67 @@ TEST(CudaAdaptiveSimulate3D, GradedExplicitQuadraticRejectionPreservesDeviceEpoc
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
+TEST(CudaAdaptiveSimulate3D, PublishesNonzeroAffineF3AndPreservesRejectedDeviceEpoch) {
+  LiquidState3D source;
+  LiquidSceneInputs3D scene;
+  const auto fixture = test::PopulateQuadraticFamilyReplayFixture3D(source, scene, false);
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto parent_id = fixture->source_ids[0];
+  auto& parent = source.particles[parent_id - 1];
+  parent.quadratic_adaptive_transfer = true;
+  parent.velocity_slopes = {{0, 0.125, 0}, {0, 0, -0.0625}, {0.25, 0, 0}};
+  LiquidStepOptions3D options;
+  options.capacities = fixture->kCapacities;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(source, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(source, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  const LiquidAdaptiveQuadraticSplitRequest3D request{
+      .accepted_epoch = source.clock.epoch,
+      .exact_refinement_closure = fixture->closure,
+      .split_parent = fixture->kParent,
+      .source_particle_id = parent_id,
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(0.001).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject affine split")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveQuadraticSplit(0.001, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt)
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, source);
+    EXPECT_EQ(scheduler->committed(), source);
+  }
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = scheduler->AttemptWithAdaptiveQuadraticSplit(*rejected->retry_duration, request);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted)
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  const auto epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  ASSERT_TRUE(epoch->Readback(*readback).ok());
+  EXPECT_EQ(*readback, scheduler->committed());
+  EXPECT_EQ(readback->adaptive_cells.size(), 314);
+  EXPECT_EQ(
+      std::ranges::count_if(readback->particles.values(), &LiquidParticleState3D::quadratic_adaptive_transfer),
+      8
+  );
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaAdaptiveSimulate3D, PublishesLiveFamilyAndPreservesRejectedDeviceEpoch) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
