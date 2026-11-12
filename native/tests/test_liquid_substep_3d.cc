@@ -1253,6 +1253,30 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxProductionGatherReplaysTrajectory) {
   ASSERT_TRUE(replayed.ok()) << replayed.status();
   EXPECT_EQ(*replayed, final);
 }
+Vec3 StoredLiquidMomentum(std::span<const LiquidParticleState3D> particles) {
+  Vec3 momentum{};
+  for (const auto& particle : particles) {
+    momentum.x += particle.mass * particle.world_velocity.x;
+    momentum.y += particle.mass * particle.world_velocity.y;
+    momentum.z += particle.mass * particle.world_velocity.z;
+  }
+  return momentum;
+}
+
+void ExpectStoredLiquidMomentumBudget(
+    Vec3 initial_momentum,
+    std::span<const LiquidParticleState3D> particles,
+    const OrientedFloatingBoxLoads3D& loads
+) {
+  const auto final_momentum = StoredLiquidMomentum(particles);
+  for (const auto axis : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    const double measured_change = final_momentum.*axis - initial_momentum.*axis;
+    const double recorded_change =
+        loads.liquid_gather_impulse.*axis + loads.tank_particle_impulse.*axis - loads.particle_impulse.*axis;
+    EXPECT_NEAR(measured_change, recorded_change, 1e-12);
+  }
+}
+
 TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
@@ -1283,11 +1307,18 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
       SCOPED_TRACE(frame);
+      const auto initial_momentum = StoredLiquidMomentum(scheduler->committed().particles.values());
       ASSERT_TRUE(scheduler->BeginFrame(frame * kDt).ok());
       const auto attempt = scheduler->AttemptWithOrientedFloatingBox(kDt, body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ExpectStoredLiquidMomentumBudget(
+          initial_momentum,
+          scheduler->committed().particles.values(),
+          *attempt->oriented_loads
+      );
       EXPECT_NEAR(attempt->body->center.y, body.center.y + kDt * attempt->body->linear_velocity.y, 1e-14);
       EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
       for (const auto& cell : scheduler->committed().cells.values()) {
@@ -1378,6 +1409,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
       SCOPED_TRACE(frame);
+      const auto initial_momentum = StoredLiquidMomentum(scheduler->committed().particles.values());
       ASSERT_TRUE(scheduler->BeginFrame(frame * kDt).ok());
       const auto attempt = scheduler->AttemptWithCoupledOrientedFloatingBox(kDt, body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
@@ -1398,6 +1430,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
           kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
           5e-14
       );
+      ExpectStoredLiquidMomentumBudget(initial_momentum, scheduler->committed().particles.values(), loads);
       EXPECT_NEAR(attempt->body->center.y, body.center.y + kDt * attempt->body->linear_velocity.y, 1e-14);
       EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
       for (const auto& cell : scheduler->committed().cells.values()) {
@@ -1585,17 +1618,21 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxCommitsParticleReactionWithLiquid) {
 TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
-  auto initial = Initial();
+  auto initial = Initial(2);
   initial.particles[0].world_position = {0.4375, 0.3125, 0.5};
   initial.particles[0].mass = 2.0;
+  initial.particles[1].world_position = {1.8125, 0.5, 1.5};
+  initial.particles[1].mass = 2.0;
   auto backend = CpuLiquidSubstepBackend3D();
   backend.gather = [](void*,
-                      const LiquidBoundaryGatherViewInputs3D&,
+                      const LiquidBoundaryGatherViewInputs3D& inputs,
                       LiquidBoundaryWorkspace3D&) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
     static constexpr std::array gathered{
         LiquidBoundaryParticleGather3D{.new_pic_velocity = {0.0, 0.75, 0.0}},
+        LiquidBoundaryParticleGather3D{.new_pic_velocity = {1.0, 0.0, 0.0}},
     };
-    return LiquidBoundaryGatherView3D{.particles = gathered};
+    const bool near_tank = inputs.particles.front().transfer.trial_world_position.x > 1.0;
+    return LiquidBoundaryGatherView3D{.particles = std::span(gathered).subspan(near_tank ? 1 : 0, 1)};
   };
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
@@ -1647,6 +1684,16 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
   EXPECT_DOUBLE_EQ(loads.pressure_torque.z, 0.0);
   EXPECT_DOUBLE_EQ(loads.particle_impulse.y, 1.5);
   EXPECT_DOUBLE_EQ(loads.particle_angular_impulse.z, -0.09375);
+  EXPECT_DOUBLE_EQ(loads.liquid_gather_impulse.y, 1.5);
+  EXPECT_DOUBLE_EQ(loads.tank_particle_impulse.y, 0.0);
+  EXPECT_DOUBLE_EQ(loads.liquid_gather_impulse.x, 2.0);
+  EXPECT_DOUBLE_EQ(loads.tank_particle_impulse.x, -2.0);
+  EXPECT_DOUBLE_EQ(loads.particle_impulse.x, 0.0);
+  ExpectStoredLiquidMomentumBudget(
+      StoredLiquidMomentum(initial.particles.values()),
+      scheduler->committed().particles.values(),
+      loads
+  );
   EXPECT_DOUBLE_EQ(accepted->body->angular_velocity.z, -0.046875);
   EXPECT_DOUBLE_EQ(accepted->body->linear_velocity.y, 0.75);
   EXPECT_DOUBLE_EQ(accepted->body->center.y, body.center.y);
@@ -1661,6 +1708,9 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
   const auto replayed = attempt_box(*replay, kDt, restored->solid.bodies.front().body);
   ASSERT_TRUE(replayed.ok()) << replayed.status();
   ASSERT_TRUE(replayed->body.has_value());
+  ASSERT_TRUE(replayed->oriented_loads.has_value());
+  EXPECT_DOUBLE_EQ(replayed->oriented_loads->liquid_gather_impulse.y, loads.liquid_gather_impulse.y);
+  EXPECT_DOUBLE_EQ(replayed->oriented_loads->tank_particle_impulse.x, loads.tank_particle_impulse.x);
   const auto replay_bytes = encode(replay->committed(), *replayed->body);
   const auto accepted_bytes = encode(scheduler->committed(), *accepted->body);
   ASSERT_TRUE(replay_bytes.ok() && accepted_bytes.ok());

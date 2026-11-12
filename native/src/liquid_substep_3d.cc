@@ -2154,6 +2154,8 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       floating_box->oriented_loads->particle_impulse = impulse->linear;
       floating_box->oriented_loads->particle_angular_impulse = impulse->angular;
+      floating_box->oriented_loads->liquid_gather_impulse = impulse->liquid_gather_impulse;
+      floating_box->oriented_loads->tank_particle_impulse = impulse->tank_particle_impulse;
       auto& body = oriented_box_candidate->end;
       body.linear_velocity = liquid_step_internal::Add(
           body.linear_velocity,

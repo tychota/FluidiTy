@@ -263,6 +263,8 @@ struct OrientedFloatingBoxLoads3D {
   Vec3 pressure_torque{};  // World N m about the frozen box center.
   Vec3 particle_impulse{};  // World N s on the box.
   Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
+  Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
 };
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;

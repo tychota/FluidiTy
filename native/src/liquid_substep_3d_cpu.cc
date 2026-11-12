@@ -337,6 +337,20 @@ absl::Status UpdateParticle(
     impulse.linear = liquid_step_internal::Add(impulse.linear, resolved->body_impulse);
     if (box_reaction->drift != nullptr) {
       impulse.angular = liquid_step_internal::Add(impulse.angular, resolved->body_angular_impulse);
+      const auto previous_velocity = particle.world_velocity;
+      const Vec3 gather_velocity_change{
+          stored.x - previous_velocity.x,
+          stored.y - previous_velocity.y,
+          stored.z - previous_velocity.z,
+      };
+      const auto gather_impulse = liquid_step_internal::Scale(gather_velocity_change, particle.mass);
+      impulse.liquid_gather_impulse = liquid_step_internal::Add(impulse.liquid_gather_impulse, gather_impulse);
+      impulse.tank_particle_impulse =
+          liquid_step_internal::Add(impulse.tank_particle_impulse, resolved->tank_impulse_on_particle);
+      if (!liquid_step_internal::Finite(impulse.liquid_gather_impulse)
+          || !liquid_step_internal::Finite(impulse.tank_particle_impulse)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
     }
     if (!liquid_step_internal::Finite(impulse.linear) || !liquid_step_internal::Finite(impulse.angular)) {
       return Error(absl::StatusCode::kOutOfRange);
