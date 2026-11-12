@@ -3571,3 +3571,35 @@ column gate remains open.
 
 The temporary entry point sets the existing particle multiplier to
 two in the 0.050 m case. Both sources were restored after linking.
+
+### Overall stiffness with wall-face traction
+
+Multiply both Lamé moduli by four on the zero-phase Euler
+wall-face path. Keep the Lamé ratio, 30° friction angle, density,
+release geometry, grid widths, timesteps and 3 s endpoint.
+
+| Native case at 3 s | Reference angle / radius | Fourfold stiffness angle / radius |
+|---|---|---|
+| Coarse | 35.932364° / 0.178563 m | 33.796743° / 0.173991 m |
+| Coarse half-step | 41.107594° / 0.153975 m | 39.062128° / 0.159451 m |
+| Fine | 29.704868° / 0.200837 m | 31.313130° / 0.179120 m |
+| Fine half-step | 34.345649° / 0.179405 m | 35.939279° / 0.166313 m |
+
+Both nominal angles enter the target band. Both radii remain
+above 0.16 m. The fine half-step radius improves by 0.013092 m
+and the angle moves above 35°. All four runs finish at their
+original timesteps with vertical momentum residual below
+1.7e-8 N·s. The material calibration and original acceptance
+matrix remain unchanged.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-stiffer-bin'
+foreach ($grid in 'fine', 'coarse') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-stiffer $grid $step
+  }
+}
+```
+
+The temporary entry point sets the existing modulus multiplier
+to four. Both sources were restored after linking.
