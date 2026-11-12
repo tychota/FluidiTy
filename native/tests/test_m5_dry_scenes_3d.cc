@@ -107,7 +107,8 @@ bool TestScene(
     int quantized_mass_bits = 0,
     fluidity::Vec3 grid_origin = {},
     double floor_friction = 0.7,
-    bool reset_column_velocity = false
+    bool reset_column_velocity = false,
+    double granular_modulus_scale = 1
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -121,9 +122,13 @@ bool TestScene(
   if (!grid.ok()) {
     return false;
   }
-  const DrySolidMaterial3D material = snow
-      ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
-      : DrySolidMaterial3D(fluidity::GranularParameters3D{700, 450, 0.5235987755982989, 0});
+  const DrySolidMaterial3D material = snow ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
+                                           : DrySolidMaterial3D(fluidity::GranularParameters3D{
+                                                 700 * granular_modulus_scale,
+                                                 450 * granular_modulus_scale,
+                                                 0.5235987755982989,
+                                                 0
+                                             });
   std::vector<DrySolidParticle3D> particles;
   constexpr double kConeRadius = 0.175;
   const int horizontal_samples = release_cone ? 15 : 3 * particles_per_axis_multiplier;
@@ -1080,6 +1085,17 @@ int main(int argc, char** argv) {
       const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       all_pass = all_pass && reference && refined;
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-stiffer-column") {
+    constexpr double kModulusScale = 4;
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double duration : {width / 40, width / 80}) {
+        const bool pass = TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, kModulusScale);
+        all_pass = all_pass && pass;
+      }
     }
     return all_pass ? 0 : 1;
   }

@@ -118,6 +118,32 @@ stays in range over a longer window at both timesteps.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-column-long-settle
 ```
 
+### Elastic stiffness during extended settling
+
+Multiply both granular Lamé moduli by four, from (700, 450) Pa to
+(2800, 1800) Pa. Keep the 30° friction angle, cohesion, particle mass,
+geometry, gravity, floor friction and timestep schedule fixed. The dry
+solver continues to check its normal acoustic and motion limits.
+
+| h (m) | Nominal dt (s) | Baseline angle at 1.50 s | Stiffer angle at 0.75 s | Stiffer angle at 1.50 s |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 20.801830° | 27.169714° | 18.733064° |
+| 0.075 | 0.0009375 | 28.040080° | 33.323242° | 26.064333° |
+| 0.0625 | 0.0015625 | 20.580671° | 26.186834° | 18.925497° |
+| 0.0625 | 0.00078125 | 26.585383° | 30.406358° | 24.891280° |
+
+Native and CUDA angles and drift match to six decimal places. All runs
+pass the momentum and late-drift checks. The stiffer pile is 1.65–2.07°
+flatter at the extended endpoint.
+The mean log plastic volume decreases in every comparison. A stiffer
+elastic response alone does not recover the repose angle in this
+discretization. All four extended angles miss the gate.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-stiffer-column
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-stiffer-column
+```
+
 ### Extended settling after a velocity reset
 
 At the original 0.75 s endpoint, clear each particle's translational
