@@ -230,7 +230,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool matched_uniform = args[5] == "matched-uniform-tank";
   const bool matched_tank = matched_uniform || args[5] == "matched-graded-tank";
-  const bool graded_effects = args[5] == "graded-effects" || matched_tank;
+  const bool width_stale = args[5] == "graded-width-stale";
+  const bool graded_width = args[5] == "graded-width" || width_stale;
+  const bool graded_effects = args[5] == "graded-effects" || matched_tank || graded_width;
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
   const bool graded_viscous = args[5] == "graded-viscous";
@@ -328,6 +330,7 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   fluidity::LiquidState3D state;
   state.random_seed = scene.random_seed;
   fluidity::LiquidUpstreamContent3D upstream;
+  fluidity::LiquidAdaptiveWidthAction3D width_action;
   fluidity::LiquidEmissionSource3D source;
   const bool exhaust_particle_capacity = args[5] == "capacity-failure";
   if (args[5] == "source" || args[5] == "boundary" || exhaust_particle_capacity) {
@@ -342,8 +345,10 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   }
   if (initial_particle) {
     if (graded_tank) {
-      const auto authored = matched_tank ? fluidity::test::PopulateGradedFamilyFixture3D(state, scene.scene)
-                                         : fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
+      const auto authored = graded_width
+          ? fluidity::test::PopulateGradedRefinementClosureFixture3D(state, scene.scene, true)
+          : matched_tank ? fluidity::test::PopulateGradedFamilyFixture3D(state, scene.scene)
+                         : fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
       if (!authored.ok()) {
         std::cerr << authored << '\n';
         return 3;
@@ -489,6 +494,19 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     upstream.byte_length = initial->size();
     upstream.digest = fluidity::LiquidContentDigest3D(initial->values());
     scene.upstream = std::span(&upstream, 1);
+    if (graded_width) {
+      width_action.accepted_clock = state.clock;
+      width_action.accepted_state_digest = upstream.digest;
+      if (width_stale) {
+        width_action.accepted_state_digest[0] ^= 1;
+      }
+      width_action.leaf = {.lower_corner = {4, 0, 0}, .width_exponent = 1};
+      width_action.demand.maximum_width = 0.5;
+      width_action.maximum_step_duration_s = 0.005;
+      scene.adaptive_width_actions = std::span(&width_action, 1);
+      scene.adaptive_width_cell_capacity = 19;
+      scene.adaptive_width_face_capacity = 160;
+    }
   }
   if (args[5] == "plastic-body") {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};

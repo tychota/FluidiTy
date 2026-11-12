@@ -1045,6 +1045,45 @@ TEST(LiquidCache3D, ResolvedFingerprintChangesWithSettingsAndExactUpstreamConten
     EXPECT_NE(LiquidExecutionId3D(*fingerprint), LiquidExecutionId3D(*baseline)) << change;
   }
 }
+TEST(LiquidCache3D, AuthenticatesCanonicalAdaptiveWidthActions) {
+  LiquidResolvedSceneView3D scene;
+  scene.scene.field = LiquidHorizontalPlaneSurface3D{1};
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{0, 2, 0, 0, 1, 0};
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  LiquidAdaptiveWidthAction3D action{
+      .leaf = {.lower_corner = {0, 0, 0}, .width_exponent = 1},
+      .demand = {.maximum_width = 0.5},
+      .maximum_step_duration_s = 0.005,
+  };
+  action.accepted_state_digest[0] = 1;
+  scene.adaptive_width_actions = std::span(&action, 1);
+  scene.adaptive_width_cell_capacity = 19;
+  scene.adaptive_width_face_capacity = 160;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_EQ(decoded->adaptive_width_actions.size(), 1);
+  EXPECT_EQ(decoded->adaptive_width_actions[0].accepted_state_digest, action.accepted_state_digest);
+  EXPECT_EQ(decoded->adaptive_width_actions[0].leaf.width_exponent, action.leaf.width_exponent);
+  const auto lower = decoded->adaptive_width_actions[0].leaf.lower_corner;
+  EXPECT_EQ(lower.x, action.leaf.lower_corner.x);
+  EXPECT_EQ(lower.y, action.leaf.lower_corner.y);
+  EXPECT_EQ(lower.z, action.leaf.lower_corner.z);
+  EXPECT_DOUBLE_EQ(decoded->adaptive_width_actions[0].demand.maximum_width, 0.5);
+  EXPECT_EQ(decoded->adaptive_width_face_capacity, 160);
+  EXPECT_EQ(Copy(*encoded), Copy(*EncodeLiquidResolvedScene3D(decoded->View())));
+  const auto planned = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(planned.ok()) << planned.status();
+  EXPECT_NE(*baseline, *planned);
+  action.accepted_state_digest[0] = 2;
+  EXPECT_NE(*planned, *ResolvedSceneFingerprint(scene));
+  const std::array repeated{action, action};
+  scene.adaptive_width_actions = repeated;
+  EXPECT_TRUE(absl::IsInvalidArgument(EncodeLiquidResolvedScene3D(scene).status()));
+}
+
 TEST(LiquidCache3D, CanonicalResolvedBytesMatchIndependentFlatcGolden) {
   std::ifstream file(FLUIDITY_CACHE_GOLDEN_PATH);
   std::string hex;

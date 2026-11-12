@@ -251,6 +251,69 @@ TEST(LiquidSubstep3D, PublishesRequiredGradedRefinementFamiliesAtomically) {
   }
 }
 
+TEST(LiquidSubstep3D, GradedWidthFrameReusesAcceptedEvidenceAfterLateRetry) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedRefinementClosureFixture3D(state, scene, true).ok());
+  LiquidStepOptions3D options;
+  options.capacities = {19, 0, 19, 160, 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  bool reject = true;
+  scheduler->SetStageFaultHookForTesting({
+      .context = &reject,
+      .before_stage =
+          [](void* context, LiquidPhysicalStage3D stage, double) {
+            auto& should_reject = *static_cast<bool*>(context);
+            if (stage == LiquidPhysicalStage3D::kAccept && should_reject) {
+              should_reject = false;
+              return absl::AbortedError("reject first width action");
+            }
+            return absl::OkStatus();
+          },
+  });
+  std::vector<LiquidAttemptMeasurement3D> attempts;
+  const LiquidProgressObserver3D observer{
+      .context = &attempts,
+      .observe_attempt =
+          [](void* context, const LiquidAttemptMeasurement3D& attempt) {
+            static_cast<std::vector<LiquidAttemptMeasurement3D>*>(context)->push_back(attempt);
+          },
+  };
+  std::size_t calls_at_initial_epoch = 0;
+  const auto advanced = scheduler->AdvanceFrameWithAdaptiveWidth(
+      0.01,
+      [&](const LiquidState3D& accepted) -> absl::StatusOr<std::optional<LiquidAdaptiveWidthTrial3D>> {
+        if (accepted.clock.epoch != state.clock.epoch) {
+          return std::nullopt;
+        }
+        ++calls_at_initial_epoch;
+        EXPECT_EQ(accepted, state);
+        return LiquidAdaptiveWidthTrial3D{
+            .request =
+                {
+                    .accepted_epoch = accepted.clock.epoch,
+                    .leaf = {.lower_corner = {4, 0, 0}, .width_exponent = 1},
+                    .demand = {.maximum_width = 0.5},
+                    .parent_and_halo = {},
+                    .complete_halo = false,
+                    .hysteresis_duration_s = 1,
+                },
+            .maximum_step_duration_s = 0.005,
+        };
+      },
+      observer
+  );
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_GE(attempts.size(), 2);
+  EXPECT_EQ(calls_at_initial_epoch, 2);
+  EXPECT_EQ(attempts[0].disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_EQ(attempts[1].disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_DOUBLE_EQ(attempts[0].attempted_dt_seconds, 0.005);
+  EXPECT_DOUBLE_EQ(attempts[1].attempted_dt_seconds, 0.0025);
+  EXPECT_EQ(scheduler->committed().adaptive_cells.size(), 19);
+}
+
 TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
