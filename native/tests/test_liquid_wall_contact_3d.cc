@@ -1,5 +1,45 @@
+#include <cmath>
+#include <numbers>
+
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity::boundary_test {
+TEST(LiquidWallContact3D, RotatingBoxTransfersOneOffCenterImpulse) {
+  const RigidBody3D body{
+      .body_id = 17,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .orientation = {.w = std::cos(std::numbers::pi / 8.0), .vector = {0.0, 0.0, -std::sin(std::numbers::pi / 8.0)}},
+      .angular_velocity = {0.0, 0.0, std::numbers::pi / 2.0},
+  };
+  const auto step = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(step.ok()) << step.status();
+  constexpr Vec3 kHalfExtent{0.9, 0.1, 0.1};
+  LiquidWallContactInputs3D input{
+      .start_world_position = {0.75, 0.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto result = ResolveRotatingBoxContact3D(input, *step, kHalfExtent, 2.0);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_TRUE(result->contact.contact_fraction.has_value());
+  const double normal_x = 2.0 / 15.0;
+  const double normal_y = std::sqrt(1.0 - normal_x * normal_x);
+  const double normal_wall_speed = 0.75 * (std::numbers::pi / 2.0) * normal_y;
+  EXPECT_NEAR(result->contact.outward_normal.x, normal_x, 1e-9);
+  EXPECT_NEAR(result->contact.outward_normal.y, normal_y, 1e-9);
+  EXPECT_NEAR(result->body_impulse.x, -2.0 * normal_wall_speed * normal_x, 1e-9);
+  EXPECT_NEAR(result->body_impulse.y, -2.0 * normal_wall_speed * normal_y, 1e-9);
+  EXPECT_NEAR(result->body_angular_impulse.z, 0.75 * result->body_impulse.y, 1e-9);
+  EXPECT_DOUBLE_EQ(result->body_impulse.y, -2.0 * result->contact.stored_world_velocity.y);
+  const Vec3 endpoint = result->contact.world_position;
+  EXPECT_NEAR((endpoint.y - endpoint.x) / std::numbers::sqrt2, kHalfExtent.y, 1e-12);
+
+  input.start_world_position = {1.0, 0.0, 0.0};
+  const auto miss = ResolveRotatingBoxContact3D(input, *step, kHalfExtent, 2.0);
+  ASSERT_TRUE(miss.ok()) << miss.status();
+  EXPECT_FALSE(miss->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(miss->contact.world_position.x, 1.0);
+  EXPECT_DOUBLE_EQ(miss->body_angular_impulse.z, 0.0);
+}
 TEST(LiquidWallContact3D, FiniteBoxDetectsCrossingAndReturnsOneBodyReaction) {
   const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
   const LiquidWallContactInputs3D input{
