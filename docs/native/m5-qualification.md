@@ -2257,3 +2257,28 @@ Use the isolated `codex/m5-sand-affine` commits and the same two-horizon
 commands from the preceding section. The weighted binaries are in
 `out/pr-m5-sand-affine/out/floor-mass-weighted-bin`. The native cutoff
 binary is in `out/pr-m5-sand-affine/out/floor-supported-bin`.
+
+
+### Odd normal reflection at the stationary plane
+
+Local commit `87a20c9` fixes the normal deformation sample at the floor
+plane and reflects below-floor normal samples with odd parity. The
+paired stress transfer uses the same sign and donor coefficients.
+The fixture retains the incident PIC velocity for swept Coulomb
+contact. The native analytic slip oracle passed with the reflected
+simple-shear rotation and unchanged linear impulse.
+
+| Case | Reflected at 1.5 s | Reflected at 3 s |
+|---|---:|---:|
+| Coarse | 35.259118° | 33.916100° |
+| Coarse half-step | 43.117606° | 42.088767° |
+| Fine | 32.534357° | 32.979313° |
+| Fine half-step | 38.747054° | 29.627498° |
+
+All eight native runs finished. The vertical momentum residual stayed
+below 8e-9 N·s and cut work mismatch below 4e-16 J. The nominal fine
+case remained in range at both horizons, but the half-step cases did
+not. The preceding wall-plane-only control at `24f888b` changed
+reaction allocation without passing the matching tags to the
+deformation gather. Its angle results do not establish the effect of
+a wall-plane-only constraint and are excluded from this comparison.
