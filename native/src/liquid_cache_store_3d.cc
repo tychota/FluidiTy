@@ -155,7 +155,9 @@ absl::Status CheckpointMatches(
     const LiquidResumeMetadata3D& resume,
     const LiquidPointFrame3D& points,
     const LiquidResolvedScene3D& scene,
-    const LiquidDigest3D& fingerprint
+    const LiquidDigest3D& fingerprint,
+    const SolidInteractionCheckpoint3D* solid,
+    LiquidCacheLimits3D limits
 ) {
   STORE_TRY(Job(resume.resolved_fingerprint, resume.execution_id, fingerprint));
   if (state.clock != points.clock || state.clock.frame_ordinal % 10 != 0
@@ -165,6 +167,29 @@ absl::Status CheckpointMatches(
   }
   if (state.clock.frame_ordinal == 0 && state.clock != LiquidClock3D{}) {
     return Failure(absl::StatusCode::kInvalidArgument);
+  }
+  if (scene.model_version == kPlasticBodyResolvedModel3D
+      && std::ranges::any_of(points.points.values(), [](const LiquidPoint3D& point) {
+           return (point.id & kSnowPointIdBit) != 0;
+         })) {
+    if (solid == nullptr) {
+      return Failure(absl::StatusCode::kInvalidArgument);
+    }
+    const auto expected = BuildCoupledPointFrame3D(state, *solid, limits);
+    if (!expected.ok()) {
+      return expected.status();
+    }
+    const auto expected_bytes = EncodeLiquidPointFrame3D(*expected, limits);
+    const auto actual_bytes = EncodeLiquidPointFrame3D(points, limits);
+    if (!expected_bytes.ok()) {
+      return expected_bytes.status();
+    }
+    if (!actual_bytes.ok()) {
+      return actual_bytes.status();
+    }
+    return std::ranges::equal(expected_bytes->values(), actual_bytes->values())
+        ? absl::OkStatus()
+        : Failure(absl::StatusCode::kInvalidArgument);
   }
   // Ordinary frames can export a subset. Require it to preserve physical order
   // and every shared field, without inventing a radius from the physical state.
@@ -372,7 +397,15 @@ absl::StatusOr<LiquidCheckpoint3D> ReadCheckpointRecord(
   if (!checkpoint.ok()) {
     return checkpoint.status();
   }
-  const auto valid = CheckpointMatches(checkpoint->state, checkpoint->resume, frame->points, scene, fingerprint);
+  const auto valid = CheckpointMatches(
+      checkpoint->state,
+      checkpoint->resume,
+      frame->points,
+      scene,
+      fingerprint,
+      checkpoint->solid ? &*checkpoint->solid : nullptr,
+      limits
+  );
   if (!valid.ok() || checkpoint->state.clock != reference.clock) {
     return Failure(absl::StatusCode::kDataLoss);
   }
@@ -517,13 +550,14 @@ absl::Status PublishCheckpointRecord(
     const LiquidResolvedScene3D& scene,
     const LiquidDigest3D& fingerprint,
     LiquidCacheLimits3D limits,
-    LiquidCachePublishControl3D control
+    LiquidCachePublishControl3D control,
+    const SolidInteractionCheckpoint3D* solid
 ) {
   auto frame = ReadVerifiedPointFrame(root, state.clock.frame_ordinal, fingerprint, limits);
   if (!frame.ok()) {
     return frame.status();
   }
-  STORE_TRY(CheckpointMatches(state, resume, frame->points, scene, fingerprint));
+  STORE_TRY(CheckpointMatches(state, resume, frame->points, scene, fingerprint, solid, limits));
   auto manifest_bytes = ReadBytes(FramePath(root, state.clock.frame_ordinal), limits);
   if (!manifest_bytes.ok()) {
     return manifest_bytes.status();
@@ -710,7 +744,7 @@ absl::Status LiquidCache3D::PublishFrame(
   }
   LiquidCacheBytes3D checkpoint_bytes;
   if (needs_checkpoint) {
-    STORE_TRY(CheckpointMatches(*checkpoint, *resume, points, *scene, fingerprint_));
+    STORE_TRY(CheckpointMatches(*checkpoint, *resume, points, *scene, fingerprint_, solid, limits_));
     auto encoded = EncodeStoreCheckpoint(*scene, *checkpoint, *resume, solid, limits_);
     if (!encoded.ok()) {
       return encoded.status();
@@ -790,7 +824,8 @@ absl::Status LiquidCache3D::PublishFrame(
         *scene,
         fingerprint_,
         limits_,
-        control
+        control,
+        solid
     );
   }
   return absl::OkStatus();
@@ -831,7 +866,8 @@ absl::Status LiquidCache3D::PublishCheckpoint(
       *scene,
       fingerprint_,
       limits_,
-      control
+      control,
+      solid
   );
 }
 absl::StatusOr<LiquidCheckpoint3D> LiquidCache3D::ReadCheckpoint(std::uint64_t maximum_frame_ordinal) const {
