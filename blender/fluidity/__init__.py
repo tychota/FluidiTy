@@ -105,6 +105,16 @@ class FluidiTySettings(PropertyGroup):
         description="Animated box defining the elastic cutting slab",
         update=invalidate_guidance,
     )
+    rigid_box: PointerProperty(
+        name="Rigid Box",
+        type=Object,
+        description="Box driven by liquid pressure and particle contact",
+        update=invalidate_guidance,
+    )
+    rigid_mass: FloatProperty(
+        name="Rigid Mass (kg)", default=1, min=1e-9, update=invalidate_guidance
+    )
+    rigid_substeps: IntProperty(name="Rigid Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
     elastic_solid: PointerProperty(
         name="Elastic Solid",
         type=Object,

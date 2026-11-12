@@ -1,0 +1,71 @@
+"""Verify the authored Blender rigid box packet and frame-zero transform."""
+
+import math
+from pathlib import Path
+import sys
+
+import bpy
+from mathutils import Quaternion, Vector
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
+
+import fluidity  # noqa: E402
+from fluidity.scene_inputs import SceneError, rigid_scene_packets, scene_inputs  # noqa: E402
+
+
+fluidity.register()
+assert bpy.ops.fluidity.create_setup() == {"FINISHED"}
+scene = bpy.context.scene
+settings = scene.fluidity
+scene.frame_end = 4
+settings.backend = "cpu"
+settings.friction = 0
+settings.surface_tension = 0
+settings.boundary_mode = "TANK"
+settings.planar_fill = True
+settings.fill_height = 0.75
+settings.domain = fluidity.authoring.box("Tank", (1, -1, 1), (1.75, 1.75, 1.75))
+source = settings.liquid_sources.add()
+source.geometry = fluidity.authoring.box("Initial water", (0.375, -0.375, 0.375), (0.25, 0.25, 0.25))
+box = fluidity.authoring.box("Float", (0.5, -0.5, 0.625), (0.25, 0.5, 0.375))
+box.rotation_euler.y = 0.4
+assert bpy.ops.fluidity.assign_role(role="rigid_box") == {"FINISHED"}
+assert settings.rigid_box == box
+settings.rigid_mass = 0.5
+settings.rigid_substeps = 8
+
+scene.frame_set(2, subframe=0.25)
+liquid, rigid = rigid_scene_packets(scene)
+assert (scene.frame_current, scene.frame_subframe) == (2, 0.25)
+assert liquid.startswith("FLUIDITY-BLENDER-4\n")
+version, *values = rigid.split()
+assert version == "FLUIDITY-RIGID-1"
+substeps, mass, ix, iy, iz, ex, ey, ez, x, y, z, qw, qx, qy, qz, *velocities = map(float, values)
+assert (substeps, mass) == (8, 0.5)
+assert all(abs(actual - expected) < 1e-7 for actual, expected in zip((ex, ey, ez), (0.125, 0.25, 0.1875)))
+assert (x, y, z) == (0.5, 0.625, 0.5)
+assert math.isclose(ix, mass * (ey**2 + ez**2) / 3)
+assert math.isclose(iy, mass * (ex**2 + ez**2) / 3)
+assert math.isclose(iz, mass * (ex**2 + ey**2) / 3)
+assert abs(math.hypot(qw, qx, qy, qz) - 1) < 1e-15
+assert velocities == [0] * 6
+for axis in (Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))):
+    world = box.rotation_euler.to_quaternion() @ axis
+    assert (Quaternion((qw, qx, qy, qz)) @ axis - Vector((world.x, world.z, -world.y))).length < 1e-6
+
+try:
+    scene_inputs(scene)
+except SceneError as error:
+    assert error.args[0] == "rigid_box"
+else:
+    raise AssertionError("Ordinary liquid bake accepted a driven box")
+
+box.keyframe_insert(data_path="location", frame=0)
+try:
+    rigid_scene_packets(scene)
+except SceneError as error:
+    assert error.args[0] == "rigid_box"
+else:
+    raise AssertionError("Driven box accepted conflicting transform animation")
+
+print("PASS authored rigid box, native pose and inertia, and transform conflicts")

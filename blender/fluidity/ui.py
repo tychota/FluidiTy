@@ -178,6 +178,15 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
             column.prop(settings, "friction")
         else:
             column.label(text="Free Space", icon="INFO")
+        if settings.boundary_mode == "TANK":
+            rigid_row = column.row()
+            rigid_row.alert = settings.issue_field == "rigid_box"
+            rigid_row.prop(settings, "rigid_box")
+            if context.object and context.object.type == "MESH":
+                column.operator("fluidity.assign_role", text="Use Selected as Rigid Box").role = "rigid_box"
+            if settings.rigid_box:
+                column.prop(settings, "rigid_mass")
+                column.prop(settings, "rigid_substeps")
         cutter_row = column.row()
         cutter_row.alert = settings.issue_field == "cutter"
         cutter_row.prop(settings, "cutter")
