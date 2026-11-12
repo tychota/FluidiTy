@@ -56,7 +56,8 @@ def checked(name, *args, timeout=20, event="result"):
 
 def prepare(packet, backend, directory):
     directory = Path(directory)
-    inputs, scene, state = (directory / name for name in ("scene.txt", "scene.flrs", "state.flst"))
+    state_name = "state.flsi" if packet.startswith("FLUIDITY-BLENDER-5\n") else "state.flst"
+    inputs, scene, state = (directory / name for name in ("scene.txt", "scene.flrs", state_name))
     inputs.write_text(packet, encoding="ascii")
     checked("blender_bridge", "resolve", binary("simulate"), backend, inputs, scene, state)
     return scene, state
