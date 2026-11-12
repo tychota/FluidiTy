@@ -229,8 +229,14 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
   const bool mixed_surface = args[5] == "mixed-surface" || shared_surface;
+  const bool rigid_tank = args[5] == "rigid-tank";
+  if (rigid_tank) {
+    scene.scene.field = fluidity::LiquidHorizontalPlaneSurface3D{0.75};
+    scene.scene.obstacle = fluidity::AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
+    scene.scene.liquid_density = 1.0;
+  }
   const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean
-      || bounded_wave || shear_tank || mixed_surface || cavity_loss;
+      || bounded_wave || shear_tank || mixed_surface || cavity_loss || rigid_tank;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -298,7 +304,7 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.dynamic_viscosity = args[5] == "viscous" ? 100.0 : 0.0;
   } else if (shared_surface) {
     scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
-  } else if (initial_particle) {
+  } else if (initial_particle && !rigid_tank) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
   if (args[5] != "defaults") {
@@ -392,6 +398,23 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         state.particles[particle].pic_initialized = true;
       }
       state.next_particle_id = 3;
+    } else if (rigid_tank) {
+      constexpr std::array positions{
+          fluidity::Vec3{0.375, 0.1875, 0.375},
+          fluidity::Vec3{1.375, 0.375, 0.375},
+          fluidity::Vec3{0.375, 0.375, 1.375},
+          fluidity::Vec3{1.375, 0.375, 1.375},
+      };
+      auto records = fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(positions.size());
+      if (!records.ok() || !records->Resize(positions.size()).ok()) {
+        return 3;
+      }
+      state.particles = std::move(*records);
+      for (std::size_t index = 0; index < positions.size(); ++index) {
+        state.particles[index].id = index + 1;
+        state.particles[index].world_position = positions[index];
+      }
+      state.next_particle_id = positions.size() + 1;
     } else {
       state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
       if (!state.particles.Resize(1).ok()) {

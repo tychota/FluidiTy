@@ -1,5 +1,145 @@
+#include <cmath>
+#include <numbers>
+
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity::boundary_test {
+TEST(LiquidWallContact3D, RotatingBoxTransfersOneOffCenterImpulse) {
+  const RigidBody3D body{
+      .body_id = 17,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .orientation = {.w = std::cos(std::numbers::pi / 8.0), .vector = {0.0, 0.0, -std::sin(std::numbers::pi / 8.0)}},
+      .angular_velocity = {0.0, 0.0, std::numbers::pi / 2.0},
+  };
+  const auto step = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(step.ok()) << step.status();
+  constexpr Vec3 kHalfExtent{0.9, 0.1, 0.1};
+  LiquidWallContactInputs3D input{
+      .start_world_position = {0.75, 0.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto result = ResolveRotatingBoxContact3D(input, *step, kHalfExtent, 2.0);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_TRUE(result->contact.contact_fraction.has_value());
+  const double normal_x = 2.0 / 15.0;
+  const double normal_y = std::sqrt(1.0 - normal_x * normal_x);
+  const double normal_wall_speed = 0.75 * (std::numbers::pi / 2.0) * normal_y;
+  EXPECT_NEAR(result->contact.outward_normal.x, normal_x, 1e-9);
+  EXPECT_NEAR(result->contact.outward_normal.y, normal_y, 1e-9);
+  EXPECT_NEAR(result->body_impulse.x, -2.0 * normal_wall_speed * normal_x, 1e-9);
+  EXPECT_NEAR(result->body_impulse.y, -2.0 * normal_wall_speed * normal_y, 1e-9);
+  EXPECT_NEAR(result->body_angular_impulse.z, 0.75 * result->body_impulse.y, 1e-9);
+  EXPECT_DOUBLE_EQ(result->body_impulse.y, -2.0 * result->contact.stored_world_velocity.y);
+  const Vec3 endpoint = result->contact.world_position;
+  EXPECT_NEAR((endpoint.y - endpoint.x) / std::numbers::sqrt2, kHalfExtent.y, 1e-12);
+
+  const auto next_step = AdvanceRigidBody3D(step->end, 0.125);
+  ASSERT_TRUE(next_step.ok()) << next_step.status();
+  const LiquidWallContactInputs3D repeated_input{
+      .start_world_position = endpoint,
+      .stored_world_velocity = result->contact.stored_world_velocity,
+      .step_duration = 0.125,
+  };
+  const auto repeated = ResolveRotatingBoxContact3D(repeated_input, *next_step, kHalfExtent, 2.0);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  ASSERT_TRUE(repeated->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*repeated->contact.contact_fraction, 0.0);
+  EXPECT_LT(repeated->contact.incoming_advecting_relative_normal_speed, 0.0);
+  input.start_world_position = {1.0, 0.0, 0.0};
+  const auto miss = ResolveRotatingBoxContact3D(input, *step, kHalfExtent, 2.0);
+  ASSERT_TRUE(miss.ok()) << miss.status();
+  EXPECT_FALSE(miss->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(miss->contact.world_position.x, 1.0);
+  EXPECT_DOUBLE_EQ(miss->body_angular_impulse.z, 0.0);
+}
+TEST(LiquidWallContact3D, FixedOrientationResolvesTouchWithTangentialAdvection) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {0.25, 0.5, 0.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 0.25);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  LiquidWallContactInputs3D input{
+      .start_world_position = {0.5, 0.125, 0.0},
+      .stored_world_velocity = body.linear_velocity,
+      .advecting_world_velocity = {0.25, 1.0, 0.0},
+      .step_duration = 0.25,
+  };
+  constexpr Vec3 kHalfExtent{0.5, 1.0, 0.5};
+  const auto tangent = ResolveRotatingBoxContact3D(input, *drift, kHalfExtent, 2.0);
+  ASSERT_TRUE(tangent.ok()) << tangent.status();
+  EXPECT_DOUBLE_EQ(tangent->contact.world_position.x, 0.5625);
+  EXPECT_DOUBLE_EQ(tangent->contact.world_position.y, 0.375);
+  EXPECT_DOUBLE_EQ(tangent->body_impulse.x, 0.0);
+  input.stored_world_velocity.x = -0.25;
+  const auto inward = ResolveRotatingBoxContact3D(input, *drift, kHalfExtent, 2.0);
+  ASSERT_TRUE(inward.ok()) << inward.status();
+  EXPECT_EQ(inward->contact.contact_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(inward->contact.stored_world_velocity.x, 0.25);
+  EXPECT_DOUBLE_EQ(inward->body_impulse.x, -1.0);
+  EXPECT_DOUBLE_EQ(inward->body_angular_impulse.z, 0.125);
+}
+TEST(LiquidWallContact3D, TangentialRotatingEntryCarriesPointWithoutNormalImpulse) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, 1.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 0.25);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  const LiquidWallContactInputs3D input{
+      .start_world_position = {0.5, 0.0, 0.0},
+      .step_duration = 0.25,
+  };
+  const auto result = ResolveRotatingBoxContact3D(input, *drift, {0.5, 1.0, 0.5}, 1.0);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_TRUE(result->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*result->contact.contact_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(result->body_impulse.x, 0.0);
+  EXPECT_DOUBLE_EQ(result->body_angular_impulse.z, 0.0);
+  const auto endpoint = result->contact.world_position;
+  EXPECT_NEAR(std::cos(0.25) * endpoint.x + std::sin(0.25) * endpoint.y, 0.5, 1e-14);
+}
+TEST(LiquidWallContact3D, RotatingBoxInTankSeparatesReactionsAndRetriesCompetingHits) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, 0.1},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  constexpr Vec3 kExtent{0.5, 0.5, 0.5};
+  LiquidWallContactInputs3D input{
+      .start_world_position = {2.5, 0.0, 0.0},
+      .stored_world_velocity = {1.0, 0.0, 0.0},
+      .advecting_world_velocity = {1.0, 0.0, 0.0},
+      .obstacle = AxisAlignedLiquidTank3D{-3.0, 3.0, -3.0, -3.0, 3.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto tank_only = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  ASSERT_TRUE(tank_only.ok()) << tank_only.status();
+  EXPECT_DOUBLE_EQ(tank_only->contact.world_position.x, 3.0);
+  EXPECT_DOUBLE_EQ(tank_only->body_impulse.x, 0.0);
+  EXPECT_DOUBLE_EQ(tank_only->tank_impulse_on_particle.x, -1.0);
+  EXPECT_DOUBLE_EQ(tank_only->body_angular_impulse.z, 0.0);
+
+  input.start_world_position = {-2.0, 0.125, 0.0};
+  input.stored_world_velocity = {3.0, 0.0, 0.0};
+  input.advecting_world_velocity = input.stored_world_velocity;
+  const auto box_only = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  ASSERT_TRUE(box_only.ok()) << box_only.status();
+  EXPECT_GT(box_only->body_impulse.x, 0.0);
+  EXPECT_NE(box_only->body_angular_impulse.z, 0.0);
+
+  input.stored_world_velocity = {6.0, 0.0, 0.0};
+  input.advecting_world_velocity = input.stored_world_velocity;
+  const auto competing = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  EXPECT_EQ(competing.status().code(), absl::StatusCode::kAborted);
+}
 TEST(LiquidWallContact3D, FiniteBoxDetectsCrossingAndReturnsOneBodyReaction) {
   const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
   const LiquidWallContactInputs3D input{

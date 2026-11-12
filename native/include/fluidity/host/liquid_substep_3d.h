@@ -256,10 +256,21 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct OrientedFloatingBoxLoads3D {
+  Vec3 external_force{};  // World N, supplied at step start.
+  Vec3 external_torque{};  // World N m about the box center.
+  Vec3 pressure_force{};  // World N on the frozen wet surface.
+  Vec3 pressure_torque{};  // World N m about the frozen box center.
+  Vec3 particle_impulse{};  // World N s on the box.
+  Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
+  Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+};
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;
   std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
-  std::optional<double> added_mass_kg;  // Measured for an accepted coupled attempt.
+  std::optional<double> added_mass_kg;  // Measured for an accepted guided coupled attempt.
+  std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
 // All attempts, including rejection/status destruction, allocate and free nothing.
@@ -365,6 +376,16 @@ class LiquidSubstepScheduler3D {
   // neither liquid state nor a candidate body.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithOrientedFloatingBoxPressure(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Advances the pressure-driven oriented box and its particle contact in
+  // one trial. The pressure kick sets the swept drift. Reciprocal contact
+  // impulses change the accepted velocities for the next step.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Couples the six rigid velocity components to the frozen incompressible
+  // liquid pressure response. Contact impulses update the accepted twist
+  // after drift. Supports the oriented CPU box without surface tension.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -377,7 +398,8 @@ class LiquidSubstepScheduler3D {
     kVerticalGuide,
     kTranslation,
     kCoupledVerticalGuide,
-    kOrientedPressure
+    kOrientedPressure,
+    kCoupledOrientedPressure
   };
   struct FloatingBoxTrial {
     RigidBody3D body;
@@ -387,6 +409,7 @@ class LiquidSubstepScheduler3D {
     bool coupled;
     bool vertical_guide;
     std::optional<double> added_mass_kg;
+    std::optional<OrientedFloatingBoxLoads3D> oriented_loads;
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);

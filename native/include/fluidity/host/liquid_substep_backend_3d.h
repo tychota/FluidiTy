@@ -263,5 +263,20 @@ absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
     std::span<LiquidParticleState3D> trial_particles
 );
 
+struct LiquidBoxImpulse3D {
+  Vec3 linear{};  // World N s.
+  Vec3 angular{};  // World N m s about the body center at each impact.
+  Vec3 liquid_gather_impulse{};  // World N s, stored momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+};
+
+// Updates trial particles against the prescribed rotating drift in a
+// stationary tank. The caller discards the trial on failure.
+absl::StatusOr<LiquidBoxImpulse3D> UpdateCpuLiquidParticlesWithRotatingBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 half_extent,
+    std::span<LiquidParticleState3D> trial_particles
+);
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

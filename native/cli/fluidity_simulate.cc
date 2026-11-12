@@ -10,6 +10,7 @@
 
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "blake3.h"
+#include "blender_resolve.h"
 #include "checkpoint_reference_generated.h"
 #include "effects_execution.h"
 #include "flatbuffers/minireflect.h"
@@ -147,6 +148,45 @@ absl::StatusOr<std::string> SceneJson(LiquidResolvedSceneView3D scene) {
   SceneJsonVisitor visitor;
   flatbuffers::IterateFlatBuffer(bytes->values().data(), wire::ResolvedSceneTypeTable(), &visitor);
   return visitor.s;
+}
+absl::Status RunRigidBoxFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "rigid_box";
+  const bool inspect = args.front() == "rigid-inspect";
+  if (args.size() != (inspect ? 5 : 6) || !std::all_of(args.begin(), args.end(), ValidUtf8)
+      || (inspect && args[4] == "-")) {
+    return absl::InvalidArgumentError(
+        "expected rigid-frame SCENE INITIAL_OR_DASH PACKET PREVIOUS_OR_DASH OUTPUT_OR_DASH"
+    );
+  }
+  Command liquid;
+  liquid.scene_path = PathFromUtf8(args[1]);
+  if (args[2] != "-") {
+    liquid.initial_state_path = PathFromUtf8(args[2]);
+  }
+  return ExecuteRigidBoxFrame(
+      liquid,
+      PathFromUtf8(args[3]),
+      args[4] == "-" ? std::filesystem::path{} : PathFromUtf8(args[4]),
+      inspect || args[5] == "-" ? std::filesystem::path{} : PathFromUtf8(args[5]),
+      writer,
+      inspect
+  );
+}
+absl::Status RunBlenderResolve(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "scene";
+  if (args.size() != 5 || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
+    return absl::InvalidArgumentError("expected blender-resolve EXECUTABLE PACKET SCENE STATE");
+  }
+  const std::array paths{
+      std::filesystem::path{"resolve"},
+      PathFromUtf8(args[1]),
+      std::filesystem::path{"cpu"},
+      PathFromUtf8(args[2]),
+      PathFromUtf8(args[3]),
+      PathFromUtf8(args[4]),
+  };
+  const auto status = blender::ResolveBlenderScene(paths);
+  return status.ok() ? writer.Emit("blender_resolved", "") : status;
 }
 constexpr LiquidCacheLimits3D kCutterPacketLimits{.maximum_bytes = 128 * 1024};
 constexpr LiquidCacheLimits3D kCutterCheckpointLimits{.maximum_bytes = 1024 * 1024};
@@ -834,9 +874,14 @@ int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
   if (!public_cli && !arguments.empty()
-      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect")) {
+      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect"
+          || arguments.front() == "rigid-frame" || arguments.front() == "rigid-inspect"
+          || arguments.front() == "blender-resolve")) {
     const auto status = arguments.front() == "cutter-frame"
         ? fluidity::simulate::RunCutterFrame(arguments, writer, diagnostic)
+        : arguments.front() == "blender-resolve" ? fluidity::simulate::RunBlenderResolve(arguments, writer, diagnostic)
+        : arguments.front() == "rigid-frame" || arguments.front() == "rigid-inspect"
+        ? fluidity::simulate::RunRigidBoxFrame(arguments, writer, diagnostic)
         : fluidity::simulate::InspectCutterFrame(arguments, writer, diagnostic);
     if (status.ok()) {
       return 0;

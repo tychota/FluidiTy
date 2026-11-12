@@ -8,12 +8,14 @@ file(READ "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs" simulate_r
 string(REPLACE "include \"common.fbs\";" "" simulate_resolved_schema "${simulate_resolved_schema}")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/simulate_schema_text.h.in"
   "${FLUIDITY_CACHE_GENERATED_DIR}/simulate_schema_text.h" @ONLY)
+add_library(fluidity_blender_resolve STATIC native/cli/blender_resolve.cc)
+target_link_libraries(fluidity_blender_resolve PRIVATE fluidity_native fluidity_native_options)
 function(fluidity_add_simulate_executable target)
   add_executable(${target}
     native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc native/cli/effects_execution.cc)
   target_include_directories(${target} PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   target_link_libraries(${target} PRIVATE fluidity_native fluidity_native_options
-    flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
+    fluidity_blender_resolve flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(${target} PRIVATE FLUIDITY_SIMULATE_CUDA=1)
     target_sources(${target} PRIVATE native/cli/simulate_cuda_compatibility.cc native/cli/simulate_cuda_identity.cc)
@@ -67,6 +69,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_fluidity_cli.py"
       "${fluidity_cli_executable}" "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>")
   set_tests_properties(SimulateCli.public_interface PROPERTIES LABELS cli)
+  add_test(NAME SimulateCli.rigid_frame
+    COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/run_rigid_frame_smoke.py"
+      "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>")
+  set_tests_properties(SimulateCli.rigid_frame PROPERTIES LABELS cli)
   set(simulate_cuda_option)
   if(FLUIDITY_ENABLE_CUDA)
     set(simulate_cuda_option --cuda)

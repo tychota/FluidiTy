@@ -7,6 +7,7 @@
 #include "absl/status/statusor.h"
 #include "fluidity/base/liquid_boundary_transfer_types_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 
 namespace fluidity {
 
@@ -60,7 +61,8 @@ struct TranslatingContactBox3D {
 struct RigidBoxContact3D {
   LiquidWallContactResult3D contact;
   Vec3 body_impulse;  // Opposite of the stored particle momentum change, N s.
-  Vec3 body_angular_impulse;  // About the translating box center at impact, N m s.
+  Vec3 body_angular_impulse;  // About the box center at impact, N m s.
+  Vec3 tank_impulse_on_particle{};  // World N s from the stationary tank's stored-velocity correction.
 };
 
 // Sweeps the proposed point path against a finite translating box, with no
@@ -75,6 +77,29 @@ absl::StatusOr<RigidBoxContact3D> ResolveTranslatingBoxContact3D(
     const LiquidWallContactInputs3D& inputs,
     const TranslatingContactBox3D& box,
     double mass
+);
+// Resolves the first certified rotating-box entry. The proposed point sweep
+// is linear and the obstacle input must be empty. The step durations must
+// match. Positive mass is in kg. Applies friction to each velocity at
+// impact, counts the stored-momentum change once, and follows the selected
+// moving support plane for the remainder. The returned advecting velocity
+// is instantaneous at impact. Ambiguous contact or endpoint certification
+// requests a smaller step with Aborted. Initial overlap returns
+// FailedPrecondition. Failure publishes no candidate.
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass
+);
+// Resolves a rotating box and a stationary, frictionless open tank. Returns
+// only the box reaction. Competing impacts or an uncertified corrected path
+// return Aborted so the caller can retry at a smaller duration.
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxInTankContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass
 );
 // Stable blade ID and incident side in the blade's authored normal convention.
 // Zero ID and zero sign denote an unassigned particle. Assigned signs are +/-1.
