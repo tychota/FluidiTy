@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include "fixture_data.h"
@@ -489,6 +490,19 @@ class GeometryCases {
       crossings[0].curvature_tail_to_head = -crossings[0].curvature_tail_to_head;
       crossings[0].normal_viscous_jump_tail_to_head = -crossings[0].normal_viscous_jump_tail_to_head;
     }
+    const auto bound = InternalLiquidCapillaryStepBound3D(1000.0, 800.0, grid.geometry().cell_width, 0.5);
+    ASSERT_TRUE(bound.ok()) << bound.status();
+    const double h = grid.geometry().cell_width;
+    EXPECT_DOUBLE_EQ(*bound, std::sqrt(1800.0 * h * h * h / (2.0 * std::numbers::pi)));
+    const auto at_limit = Freeze(grid, samples, {}, 0.0, *bound);
+    ASSERT_TRUE(at_limit.ok()) << at_limit.status();
+    EXPECT_TRUE(links_(*at_limit, fields).ok());
+    const auto above_limit = Freeze(grid, samples, {}, 0.0, std::nextafter(*bound, kInfinity));
+    ASSERT_TRUE(above_limit.ok()) << above_limit.status();
+    EXPECT_EQ(links_(*above_limit, fields).status().code(), absl::StatusCode::kAborted);
+    crossings[0].surface_tension = 0.0;
+    EXPECT_TRUE(links_(*above_limit, fields).ok());
+
     cells[0].density.reset();
     EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
     cells[0].density = 1000.0;

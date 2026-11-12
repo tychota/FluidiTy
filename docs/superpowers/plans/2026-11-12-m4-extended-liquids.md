@@ -487,3 +487,11 @@ The production CPU and CUDA link builders accept a certified internal phase cros
 The two-cell fixture measured mobility 1/850 m³/kg in both orientations, pressure differences of -2 and +2 Pa, and zero corrected interface velocity. Thirty-four CPU checks passed with ctest --preset windows-debug-cpu -j 1 -R 'LiquidBoundaryGeometry3D|Mixture'. Twenty-two real-device CUDA checks passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Five Python multiphase oracle checks passed. Compute Sanitizer reported zero errors on CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. clang-format 19.1.5 passed. Receipts use out/m4-shared-interface.
 
 The caller supplies crossing geometry and stresses. Production phase-field construction, pair settings, the internal capillary timestep bound and shared render geometry still need integration.
+
+## Internal capillary timestep receipt
+
+The internal liquid crossing applies the two-density capillary limit sqrt((rho_tail + rho_head) h³ / (4 pi sigma)). Scaled FP64 arithmetic avoids overflow or underflow in the squared limit. The link builder accepts the limit itself and returns retryable Aborted above it. Zero surface tension imposes no capillary limit.
+
+The shared CPU/CUDA fixture verified both density orientations, acceptance at the bound, rejection at the next representable duration, and the zero-tension path. The CPU range fixture checked density-sum overflow and a thin-cell limit with a representable square root. Forty-seven CPU checks passed with ctest --preset windows-debug-cpu -j 1 -R 'LiquidBoundaryGeometry3D|Cavity'. Twenty-two serial real-device regressions passed under windows-release-cuda. Compute Sanitizer reported zero errors on CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. clang-format 19.1.5 passed. Receipts use out/m4-internal-capillary.
+
+The scheduler still needs to generate internal crossings from phase fields and resolved pair settings. The current pressure builder enforces the bound once those crossings are supplied.

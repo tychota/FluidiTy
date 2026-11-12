@@ -660,10 +660,19 @@ absl::Status LinksCore(
             bounded ? "" : "Internal interface requires two open liquid endpoints"
         );
       }
+      const double tail_density = *fields.cells[tail_found].density;
+      const double head_density = *fields.cells[head_found].density;
+      const auto capillary_bound =
+          InternalLiquidCapillaryStepBound3D(tail_density, head_density, h, crossing->surface_tension);
+      if (!capillary_bound.ok()) {
+        return capillary_bound.status();
+      }
+      if (geometry.step_duration > *capillary_bound) {
+        return absl::Status(absl::StatusCode::kAborted, bounded ? "" : "Step exceeds internal capillary bound");
+      }
       // Each phase contributes its density times its share of the distance.
       // The resulting resistance acts once on this shared pressure link.
-      const double face_density =
-          std::lerp(*fields.cells[head_found].density, *fields.cells[tail_found].density, crossing->tail_fraction);
+      const double face_density = std::lerp(head_density, tail_density, crossing->tail_fraction);
       const double inverse_density = 1.0 / face_density;
       const double pressure_jump = std::fma(
           -crossing->surface_tension,
@@ -1135,6 +1144,40 @@ absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasur
 }
 
 }  // namespace
+
+absl::StatusOr<double> InternalLiquidCapillaryStepBound3D(
+    double tail_density,
+    double head_density,
+    double cell_width,
+    double surface_tension
+) {
+  if (!IsPositiveFinite(tail_density) || !IsPositiveFinite(head_density) || !IsPositiveFinite(cell_width)
+      || !std::isfinite(surface_tension) || surface_tension < 0.0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  if (surface_tension == 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  // Scale before forming the density sum and h³. The square of the limit
+  // can exceed the FP64 range even when the limit itself is representable.
+  const double larger_density = std::max(tail_density, head_density);
+  const double density_ratio = std::min(tail_density, head_density) / larger_density;
+  int density_exponent;
+  int width_exponent;
+  int tension_exponent;
+  const double scaled_density = std::frexp(larger_density, &density_exponent) * (1.0 + density_ratio);
+  const double scaled_width = std::frexp(cell_width, &width_exponent);
+  const double scaled_tension = std::frexp(surface_tension, &tension_exponent);
+  const double scaled_square =
+      scaled_density * scaled_width * scaled_width * scaled_width / (4.0 * std::numbers::pi * scaled_tension);
+  const int square_exponent = density_exponent + 3 * width_exponent - tension_exponent;
+  const double bound = std::scalbn(std::sqrt(std::scalbn(scaled_square, square_exponent % 2)), square_exponent / 2);
+  if (!IsPositiveFinite(bound)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return bound;
+}
 
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
   return MeasureGasCell(inputs);

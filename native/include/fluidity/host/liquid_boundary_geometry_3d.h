@@ -108,6 +108,13 @@ struct LiquidAirCellPressure3D {
   CellIndex3D cell_index;  // Air-side center on the signed lattice.
   double gas_gauge_pressure;  // Pa before the liquid-side capillary lift.
 };
+// Computes sqrt((tail_density + head_density) * h³ / (4 pi sigma)) in
+// seconds. Densities are positive kg/m³, h is positive metres and sigma is
+// nonnegative N/m. Zero sigma returns infinity. Invalid inputs return
+// InvalidArgument and an unrepresentable positive limit returns OutOfRange.
+absl::StatusOr<double>
+InternalLiquidCapillaryStepBound3D(double tail_density, double head_density, double cell_width, double surface_tension);
+
 struct LiquidInternalInterface3D {
   std::size_t face_ordinal;  // Index into the exact frozen face order.
   double tail_fraction;  // Fraction of the center-to-center segment in the tail phase, in [0,1].
@@ -210,7 +217,9 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 
 // Builds the exact incident face union with full frozen apertures and wall flux.
 // Air links use theta in [0.05,1] and gas gauge pressure + sigma*curvature once; internal
-// jumps are zero. Curvature and capillary dt were checked during geometry freeze.
+// jumps are zero unless an internal phase crossing is supplied. Air curvature
+// and its capillary limit were checked during geometry freeze. An internal
+// crossing whose capillary limit is below the frozen duration returns Aborted.
 // Open internal mobility is the reciprocal of the midpoint density of the two
 // liquid cells. Air links use the adjacent liquid density. An absent predictor
 // density uses the frozen reference density. Open mobility must be normal.

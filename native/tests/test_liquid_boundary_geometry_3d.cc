@@ -143,6 +143,20 @@ TEST(LiquidBoundaryGeometry3D, CavityGasPressureAddsSignedCapillaryJumpOnce) {
   cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
 }
 
+TEST(LiquidBoundaryGeometry3D, InternalCapillaryBoundScalesBeforeSquaring) {
+  const double maximum = std::numeric_limits<double>::max();
+  const auto large_density = InternalLiquidCapillaryStepBound3D(maximum, maximum, 1.0, 0.5);
+  ASSERT_TRUE(large_density.ok()) << large_density.status();
+  EXPECT_DOUBLE_EQ(*large_density, std::sqrt(maximum / std::numbers::pi));
+  const auto thin_cell = InternalLiquidCapillaryStepBound3D(1.0, 1.0, 1.0e-200, 1.0);
+  ASSERT_TRUE(thin_cell.ok()) << thin_cell.status();
+  EXPECT_NEAR(*thin_cell / 1.0e-300, std::sqrt(0.5 / std::numbers::pi), 1.0e-15);
+  const auto no_tension = InternalLiquidCapillaryStepBound3D(1.0, 1.0, 1.0, 0.0);
+  ASSERT_TRUE(no_tension.ok()) << no_tension.status();
+  EXPECT_EQ(*no_tension, std::numeric_limits<double>::infinity());
+  EXPECT_EQ(InternalLiquidCapillaryStepBound3D(0.0, 1.0, 1.0, 1.0).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidBoundaryGeometry3D, SharedLiquidInterfaceUsesSeriesResistanceAndOneJump) {
   GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
   cases.SharedLiquidInterfaceUsesSeriesResistanceAndOneJump();
