@@ -1052,7 +1052,6 @@ struct LiquidSubstepScheduler3D::Impl {
         );
       }
       pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
-      std::optional<MacViscousPressureProjection3D> viscous_projection;
       std::span<const double> projected_cell_pressures;
       std::span<const double> projected_face_velocities;
       MacPressureDiagnostics3D pressure_diagnostics;
@@ -1112,8 +1111,7 @@ struct LiquidSubstepScheduler3D::Impl {
         if (!result.ok()) {
           return result.status();
         }
-        viscous_projection.emplace(std::move(*result));
-        const auto& coupled = *viscous_projection;
+        const auto& coupled = *result;
         accepted_measurement.viscous_max_momentum_residual_kg_m_per_s = coupled.max_momentum_residual;
         projected_cell_pressures = coupled.cell_pressures;
         projected_face_velocities = coupled.face_velocities;

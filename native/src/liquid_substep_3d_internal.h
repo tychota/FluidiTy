@@ -9,14 +9,14 @@ inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
 using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<
-    MacViscousPressureProjection3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, MacPressureWorkspace3D&)>;
+    MacViscousPressureProjectionView3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, MacPressureWorkspace3D&)>;
 
 // Builds strain rows from the same geometry as pressure, then runs the
 // coupled backend. Admits full cells and connected cut free surfaces. A
 // Cartesian tank can also cut solid cells when pressure centers stay within
 // the solid-free box. Normal differences use the actual wall distance.
 // Unsupported solid cuts return Unimplemented. Errors carry no projection.
-absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformViscosity(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformViscosity(
     const LiquidBoundaryGeometryViewInputs3D& geometry,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,

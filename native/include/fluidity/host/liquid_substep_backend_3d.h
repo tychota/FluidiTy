@@ -178,7 +178,7 @@ struct LiquidSubstepBackend3D {
   );
   // Optional coupled projection for supported strain geometry. On failure,
   // the scheduler rejects the attempt without publishing state.
-  using ProjectViscous = absl::StatusOr<MacViscousPressureProjection3D>(
+  using ProjectViscous = absl::StatusOr<MacViscousPressureProjectionView3D>(
       void* context,
       const LiquidBoundaryGeometryViewInputs3D& geometry,
       const LiquidPressureProblemView3D& problem,

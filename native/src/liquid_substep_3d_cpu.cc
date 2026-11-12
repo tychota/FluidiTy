@@ -368,7 +368,7 @@ absl::StatusOr<CutViscosityGeometry> PrepareCutViscosityGeometry(
 }
 }  // namespace
 
-absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUniformViscosity(
+absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::ProjectUniformViscosity(
     const LiquidBoundaryGeometryViewInputs3D& geometry,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,

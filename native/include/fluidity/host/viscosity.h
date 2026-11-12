@@ -167,6 +167,20 @@ struct MacViscousPressureProjection3D {
   double inward_prescribed_wall_flux_m3_per_s = 0;  // Explicit geometry flux into the pressure domain.
 };
 
+// Borrowed projection consumed before pressure workspace reuse or destruction.
+struct MacViscousPressureProjectionView3D {
+  std::span<const double> cell_pressures;  // Pa, in pressure cell order.
+  std::span<const double> face_velocities;  // m/s, in incident pressure face order.
+  std::span<const double>
+      cell_constraint_defects;  // Outward flux minus source plus compliance, divided by volume, s⁻¹.
+  std::size_t pressure_iterations;
+  double constraint_residual_l2;  // L2 norm of the integrated constraint residual, m³/s.
+  double initial_constraint_residual_l2;  // Coupled pressure RHS norm at zero pressure, m³/s.
+  double max_cell_constraint_defect;  // Maximum absolute volume-scaled defect, s⁻¹.
+  double max_momentum_residual;  // Maximum true inner momentum residual, kg m/s.
+  double inward_prescribed_wall_flux_m3_per_s = 0;  // Explicit geometry flux into the pressure domain.
+};
+
 // Solves the coupled backward-Euler viscosity and compliant pressure equations on CPU.
 // Supply the same ordered cells and incident faces as ProjectMacPressure3D, with strain
 // quadratures certified for that geometry. Every strain term must name an incident

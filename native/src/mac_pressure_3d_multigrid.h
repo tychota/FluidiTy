@@ -64,13 +64,18 @@ struct MacPressureHierarchy3D {
 // An error publishes no hierarchy.
 absl::StatusOr<MacPressureHierarchy3D> BuildMacPressureHierarchy3D(const PreparedMacPressureSystem3D& system);
 
-// Initialize FP64 pressure from previous pressure, subtracting the prior pin
-// pressure only in its unanchored component. Returns kOutOfRange on overflow.
-absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system);
-
 struct PreparedMacPressureView3D;
-// Same warm start for a checked borrowed system.
-absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureView3D& system);
+// Fill one pressure per cell in Pa, subtracting the prior pin pressure only
+// within its unanchored component. Both disjoint spans have one slot per
+// cell. On overflow returns kOutOfRange and the scratch contents are invalid.
+absl::Status InitializeMacPressure3D(
+    const PreparedMacPressureView3D& system,
+    std::span<double> pin_previous_pressures,
+    std::span<double> pressures
+);
+
+// Owning warm-start adapter for the standalone pressure path.
+absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system);
 
 struct MacPressureStoppingCriteria3D {
   double integrated_residual_limit;  // 2e-6 m³/s + 2e-6 ||b||₂.

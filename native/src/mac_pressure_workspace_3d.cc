@@ -939,16 +939,9 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
     if (!pin_result.ok()) {
       return pin_result.status();
     }
-    auto pin_previous_pressures = *pin_result;
-    for (const auto pin : system->gauges) {
-      pin_previous_pressures[system->components[pin]] = system->cell_records[pin].previous_pressure;
-    }
-    for (std::size_t cell = 0; cell < base_pressure.size(); ++cell) {
-      base_pressure[cell] =
-          system->cell_records[cell].previous_pressure - pin_previous_pressures[system->components[cell]];
-      if (!std::isfinite(base_pressure[cell])) {
-        return absl::Status(absl::StatusCode::kOutOfRange, {});
-      }
+    const auto initialized = pressure_internal::InitializeMacPressure3D(*system, *pin_result, base_pressure);
+    if (!initialized.ok()) {
+      return initialized;
     }
   }
   if (seed_uniform_dirichlet_rest_pressure) {

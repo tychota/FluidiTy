@@ -300,34 +300,34 @@ absl::StatusOr<MacPressureHierarchy3D> BuildMacPressureHierarchy3D(const Prepare
   return hierarchy;
 }
 
-namespace {
-template <typename System>
-absl::StatusOr<std::vector<double>> InitialMacPressure(const System& system) {
-  std::vector<double> pin_previous_pressures(system.cells().size(), 0.0);
+absl::Status InitializeMacPressure3D(
+    const PreparedMacPressureView3D& system,
+    std::span<double> pin_previous_pressures,
+    std::span<double> pressures
+) {
+  std::ranges::fill(pin_previous_pressures, 0.0);
   for (const auto pin : system.gauge_cell_ordinals()) {
     pin_previous_pressures[system.component_ordinals()[pin]] = system.cells()[pin].previous_pressure;
   }
-  std::vector<double> pressures;
-  pressures.reserve(system.cells().size());
   for (std::size_t cell = 0; cell < system.cells().size(); ++cell) {
     const double pressure =
         system.cells()[cell].previous_pressure - pin_previous_pressures[system.component_ordinals()[cell]];
     if (!std::isfinite(pressure)) {
-      return absl::OutOfRangeError("gauge-shifted previous pressure is unrepresentable");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    pressures.push_back(pressure);
+    pressures[cell] = pressure;
   }
-  return pressures;
+  return absl::OkStatus();
 }
-
-}  // namespace
 
 absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system) {
-  return InitialMacPressure(system);
-}
-
-absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureView3D& system) {
-  return InitialMacPressure(system);
+  std::vector<double> pins(system.cells().size());
+  std::vector<double> pressures(system.cells().size());
+  const auto status = InitializeMacPressure3D(BorrowMacPressureSystem3D(system), pins, pressures);
+  if (!status.ok()) {
+    return status;
+  }
+  return pressures;
 }
 
 absl::StatusOr<MacPressureStoppingCriteria3D> MacPressureStoppingCriteria(const PreparedMacPressureSystem3D& system) {

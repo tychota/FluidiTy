@@ -281,7 +281,7 @@ absl::StatusOr<MacViscousPressureProjection3D> CudaProjectMacViscousPressure3D(
   );
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> cuda_internal::ProjectArenaViscousPressure3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> cuda_internal::ProjectArenaViscousPressure3D(
     CudaLiquidArena3D& arena,
     const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,

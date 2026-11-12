@@ -35,16 +35,16 @@ struct UniformViscousPressureInputs3D {
   std::span<const MacPressureFace3D> pressure_faces;
 };
 
-// Borrows the reserved original-system arena and keeps the existing owning
-// result. The caller must finish all earlier pressure scratch borrows first.
-// Failures leave any previously published pressure projection intact.
-absl::StatusOr<MacViscousPressureProjection3D> ProjectWorkspaceMacViscousPressure3D(
+// Borrows the reserved pressure arena. Consume the projection before any
+// other pressure scratch use. Earlier scratch borrows expire when this starts.
+// Failures leave any published inviscid projection bank intact.
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressure3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
     MacPressureWorkspace3D& workspace
 );
-absl::StatusOr<MacViscousPressureProjection3D> ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,

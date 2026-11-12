@@ -168,7 +168,7 @@ BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacP
 // if an extent or byte count is unrepresentable. Does not allocate.
 inline constexpr std::size_t kCoupledPressureRestartLength3D = 32;
 inline constexpr std::size_t kCoupledFaceScratchFields3D = 5;
-inline constexpr std::size_t kCoupledCellScratchFields3D = 2;
+inline constexpr std::size_t kCoupledCellScratchFields3D = 4;
 inline constexpr std::size_t kCoupledVelocityScratchFields3D = 6;
 // Three normal and at most four edge quadratures for each of three shear planes.
 inline constexpr std::size_t kMaximumUniformStrainRowsPerCell3D = 15;

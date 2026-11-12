@@ -142,7 +142,7 @@ absl::StatusOr<double> CoupledConstraintNorm(std::span<const double> integrated_
   return norm;
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
+absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
     const PreparedMacPressureView3D& system,
     double dt,
     std::span<const MacStrainRow3D> strain_rows,
@@ -173,6 +173,8 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
   }
   const auto pressure_diagonal = cell_buffers->first(cells.size());
   const auto zero_pressure = cell_buffers->subspan(cells.size(), cells.size());
+  const auto pressure = cell_buffers->subspan(2 * cells.size(), cells.size());
+  const auto residual = cell_buffers->subspan(3 * cells.size(), cells.size());
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     pressure_diagonal[cell] = cells[cell].compliance;
   }
@@ -279,11 +281,11 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     }
     return viscosity_internal::SolveVelocityBlockWithScratch3D(velocity_block, momentum, {}, cpu_scratch);
   };
-  auto initial_pressure = pressure_internal::InitialMacPressure3D(system);
-  if (!initial_pressure.ok()) {
-    return initial_pressure.status();
+  const auto initialized = pressure_internal::InitializeMacPressure3D(system, zero_pressure, pressure);
+  if (!initialized.ok()) {
+    return initialized;
   }
-  auto pressure = std::move(*initial_pressure);
+  std::ranges::fill(zero_pressure, 0.0);
   const bool starts_with_history = std::ranges::any_of(pressure, [](double value) {
     return value != 0.0;
   });
@@ -292,7 +294,6 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     return flux_buffer.status();
   }
   const auto flux_sums = *flux_buffer;
-  std::vector<double> residual(cells.size());
   double original_rhs_norm = 0.0;
   if (starts_with_history) {
     // Measure the RHS with the same velocity block at zero pressure. A
@@ -358,16 +359,18 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
       for (std::size_t cell = 0; cell < cells.size(); ++cell) {
         residual[cell] /= cells[cell].fluid_volume;
       }
-      std::vector<double> accepted_velocity(velocity->velocity.begin(), velocity->velocity.end());
+      // The preconditioner diagonal is dead after convergence.
+      const auto accepted_velocity = velocity_diagonal;
+      std::ranges::copy(velocity->velocity, accepted_velocity.begin());
       for (std::size_t face = 0; face < links.size(); ++face) {
         if (inertia[face] == 0.0) {
           accepted_velocity[face] = wall_normal_velocities[face];
         }
       }
-      return MacViscousPressureProjection3D{
-          .cell_pressures = std::move(pressure),
-          .face_velocities = std::move(accepted_velocity),
-          .cell_constraint_defects = std::move(residual),
+      return MacViscousPressureProjectionView3D{
+          .cell_pressures = pressure,
+          .face_velocities = accepted_velocity,
+          .cell_constraint_defects = residual,
           .pressure_iterations = iteration,
           .constraint_residual_l2 = residual_norm,
           .initial_constraint_residual_l2 = original_rhs_norm,
@@ -449,7 +452,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
   return absl::AbortedError("coupled pressure iteration budget exhausted");
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformWithVelocityView(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformWithVelocityView(
     const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
@@ -523,58 +526,71 @@ absl::StatusOr<LiquidRecords3D<std::max_align_t>> CreateCoupledScratch(
   return storage;
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformWithReservation(
+absl::StatusOr<MacViscousPressureProjection3D> OwnProjection(
+    const absl::StatusOr<MacViscousPressureProjectionView3D>& result
+) {
+  if (!result.ok()) {
+    return result.status();
+  }
+  return MacViscousPressureProjection3D{
+      .cell_pressures = {result->cell_pressures.begin(), result->cell_pressures.end()},
+      .face_velocities = {result->face_velocities.begin(), result->face_velocities.end()},
+      .cell_constraint_defects = {result->cell_constraint_defects.begin(), result->cell_constraint_defects.end()},
+      .pressure_iterations = result->pressure_iterations,
+      .constraint_residual_l2 = result->constraint_residual_l2,
+      .initial_constraint_residual_l2 = result->initial_constraint_residual_l2,
+      .max_cell_constraint_defect = result->max_cell_constraint_defect,
+      .max_momentum_residual = result->max_momentum_residual,
+      .inward_prescribed_wall_flux_m3_per_s = result->inward_prescribed_wall_flux_m3_per_s,
+  };
+}
+
+absl::StatusOr<MacViscousPressureProjection3D> ProjectStandaloneUniform(
     const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
-    std::optional<SolveViscousVelocityView3D> solve_velocity_block,
-    MacPressureWorkspace3D* workspace
+    std::optional<SolveViscousVelocityView3D> solve_velocity_block
 ) {
   if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
     return absl::InvalidArgumentError("invalid coupled pressure iteration budget");
   }
-  const auto cell_count = inputs.pressure_cells.size();
-  const auto face_count = inputs.pressure_faces.size();
-  if (workspace != nullptr) {
-    using Access = pressure_internal::CoupledPressureWorkspaceAccess3D;
-    if (!Access::Fits(*workspace, cell_count, face_count)
-        || strain_rows.size() > cell_count * pressure_internal::kMaximumUniformStrainRowsPerCell3D) {
-      return absl::Status(absl::StatusCode::kResourceExhausted, {});
-    }
-    pressure_internal::MacPressureScratch3D scratch(Access::Storage(*workspace));
-    auto result = ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch);
-    Access::RecordUsage(*workspace, scratch);
-    return result;
-  }
-
-  auto storage = CreateCoupledScratch(cell_count, face_count, strain_rows.size(), true);
+  auto storage =
+      CreateCoupledScratch(inputs.pressure_cells.size(), inputs.pressure_faces.size(), strain_rows.size(), true);
   if (!storage.ok()) {
     return storage.status();
   }
   pressure_internal::MacPressureScratch3D scratch(storage->values());
-  return ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch);
+  return OwnProjection(ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch));
+}
+
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceUniform(
+    const pressure_internal::UniformViscousPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    std::optional<SolveViscousVelocityView3D> solve_velocity_block,
+    MacPressureWorkspace3D& workspace
+) {
+  if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto cell_count = inputs.pressure_cells.size();
+  using Access = pressure_internal::CoupledPressureWorkspaceAccess3D;
+  if (!Access::Fits(workspace, cell_count, inputs.pressure_faces.size())
+      || strain_rows.size() > cell_count * pressure_internal::kMaximumUniformStrainRowsPerCell3D) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  pressure_internal::MacPressureScratch3D scratch(Access::Storage(workspace));
+  auto result = ProjectUniformWithVelocityView(inputs, strain_rows, options, solve_velocity_block, scratch);
+  Access::RecordUsage(workspace, scratch);
+  return result;
 }
 
 pressure_internal::UniformViscousPressureInputs3D BorrowUniformInputs(const MacPressureInputs3D& inputs) {
   return {inputs.mac_grid.view(), inputs.step_duration, inputs.pressure_cells, inputs.pressure_faces};
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> ProjectCpuUniform(
-    const pressure_internal::UniformViscousPressureInputs3D& inputs,
-    std::span<const MacStrainRow3D> strain_rows,
-    MacPressureSolverOptions3D options,
-    MacPressureWorkspace3D* workspace
-) {
-  return ProjectUniformWithReservation(inputs, strain_rows, options, std::nullopt, workspace);
-}
-
-absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformWithOwningVelocity(
-    const pressure_internal::UniformViscousPressureInputs3D& inputs,
-    std::span<const MacStrainRow3D> strain_rows,
-    MacPressureSolverOptions3D options,
-    pressure_internal::SolveViscousVelocity3D solve_velocity_block,
-    MacPressureWorkspace3D* workspace
-) {
+template <typename Project>
+auto ProjectWithOwningVelocity(pressure_internal::SolveViscousVelocity3D solve_velocity_block, Project project) {
   std::optional<MacViscousVelocityBlockSolution3D> owned_velocity;
   const auto solve = [&](const MacViscousVelocityBlockInputs3D& block,
                          std::span<const double> rhs,
@@ -591,7 +607,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformWithOwningVelocity(
         .max_residual = owned_velocity->max_residual,
     };
   };
-  return ProjectUniformWithReservation(inputs, strain_rows, options, SolveViscousVelocityView3D(solve), workspace);
+  return project(SolveViscousVelocityView3D(solve));
 }
 }  // namespace
 
@@ -600,7 +616,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressure3D(
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options
 ) {
-  return ProjectCpuUniform(BorrowUniformInputs(inputs), strain_rows, options, nullptr);
+  return ProjectStandaloneUniform(BorrowUniformInputs(inputs), strain_rows, options, std::nullopt);
 }
 
 namespace pressure_internal {
@@ -610,32 +626,30 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressureWithVelo
     MacPressureSolverOptions3D options,
     SolveViscousVelocity3D solve_velocity_block
 ) {
-  return ProjectUniformWithOwningVelocity(
-      BorrowUniformInputs(inputs),
-      strain_rows,
-      options,
-      solve_velocity_block,
-      nullptr
-  );
+  return ProjectWithOwningVelocity(solve_velocity_block, [&](SolveViscousVelocityView3D solve) {
+    return ProjectStandaloneUniform(BorrowUniformInputs(inputs), strain_rows, options, solve);
+  });
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> ProjectWorkspaceMacViscousPressure3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressure3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
     MacPressureWorkspace3D& workspace
 ) {
-  return ProjectCpuUniform(inputs, strain_rows, options, &workspace);
+  return ProjectWorkspaceUniform(inputs, strain_rows, options, std::nullopt, workspace);
 }
 
-absl::StatusOr<MacViscousPressureProjection3D> ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
     MacPressureWorkspace3D& workspace,
     SolveViscousVelocity3D solve_velocity_block
 ) {
-  return ProjectUniformWithOwningVelocity(inputs, strain_rows, options, solve_velocity_block, &workspace);
+  return ProjectWithOwningVelocity(solve_velocity_block, [&](SolveViscousVelocityView3D solve) {
+    return ProjectWorkspaceUniform(inputs, strain_rows, options, solve, workspace);
+  });
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure3D(
@@ -657,7 +671,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
   if (!face_buffers.ok()) {
     return face_buffers.status();
   }
-  return SolveCoupled(
+  return OwnProjection(SolveCoupled(
       BorrowMacPressureSystem3D(*system),
       step_duration,
       strain_rows,
@@ -665,7 +679,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
       kPressureIterationBudget,
       std::nullopt,
       arena
-  );
+  ));
 }
 }  // namespace pressure_internal
 

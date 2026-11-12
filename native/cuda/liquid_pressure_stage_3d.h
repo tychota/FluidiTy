@@ -33,7 +33,7 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
 // ranges. The rows use the full-cell arena bound. Inputs and results use the
 // CPU projection's units and ordering. Arena capacity failure is
 // ResourceExhausted, runtime failure poisons the arena, and errors publish no result.
-absl::StatusOr<MacViscousPressureProjection3D> ProjectArenaViscousPressure3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectArenaViscousPressure3D(
     CudaLiquidArena3D& arena,
     const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
