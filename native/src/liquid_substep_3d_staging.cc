@@ -308,6 +308,11 @@ absl::StatusOr<Staging> Staging::Create(
   }
   STEP_TRY(Reserve(staging.pressure_cell_scratch, capacities.cells, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.prepressure_velocities, capacities.faces, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.face_pressure_impulses, capacities.faces, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.pressure_transfer_mass_scratch, capacities.faces, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.pressure_particle_impulses, capacities.particles, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.pressure_stored_velocities, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));
   if (needs_regular_transport) {

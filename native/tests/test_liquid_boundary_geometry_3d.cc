@@ -191,8 +191,33 @@ TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
     return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
   });
   ASSERT_NE(low_x, frozen->faces().end());
-  EXPECT_NEAR(low_x->blocked_area, 0.3125, 1e-13);
-  EXPECT_NEAR(low_x->open_area, 0.6875, 1e-13);
+  EXPECT_NEAR(low_x->blocked_area, 0.40625, 1e-13);
+  EXPECT_NEAR(low_x->open_area, 0.59375, 1e-13);
+  const auto high_y = std::ranges::find_if(frozen->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == -1;
+  });
+  ASSERT_NE(high_y, frozen->faces().end());
+  EXPECT_NEAR(high_y->open_area, 0.875, 1e-13);
+
+  // The same link is a free-surface link when the waterplane is above the
+  // MAC anchor, provided the head cell center is still in air.
+  const auto higher_samples = cases.Sample([](double, double y, double) {
+    return y - 1.25;
+  });
+  auto higher_inputs = inputs;
+  higher_inputs.cell_indices = higher_samples.candidates;
+  higher_inputs.center_distances = higher_samples.centers;
+  higher_inputs.corner_distances = higher_samples.corners;
+  auto higher_box = box;
+  higher_box.pose.center.y = 1.25;
+  higher_box.liquid_height = 1.25;
+  const auto higher = FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(higher_inputs, higher_box);
+  ASSERT_TRUE(higher.ok()) << higher.status();
+  const auto higher_waterplane = std::ranges::find_if(higher->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == -1;
+  });
+  ASSERT_NE(higher_waterplane, higher->faces().end());
+  EXPECT_NEAR(higher_waterplane->open_area, 0.875, 1e-13);
 
   const LiquidBoundaryGeometryViewInputs3D tank_inputs{
       grid.view(),
@@ -214,7 +239,7 @@ TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
     return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
   });
   ASSERT_NE(tank_low_x, in_tank->faces.end());
-  EXPECT_NEAR(tank_low_x->open_area, 0.34375, 1e-13);
+  EXPECT_NEAR(tank_low_x->open_area, 0.3125, 1e-13);
 
   auto overlaps_tank = box;
   overlaps_tank.pose.center.z = 0.25;

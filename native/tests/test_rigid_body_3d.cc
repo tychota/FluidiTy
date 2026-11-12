@@ -3,6 +3,7 @@
 #include <cmath>
 #include <numbers>
 
+#include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/rigid_body_3d.h"
 #include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "gtest/gtest.h"
@@ -373,6 +374,52 @@ TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
   EXPECT_DOUBLE_EQ(body_power + 8.0 * (*fluxes)[1], 0.0);
   EXPECT_EQ(ComputeRigidBodyInwardWallFlux3D(body, 1, patches).status().code(), absl::StatusCode::kInvalidArgument);
 }
+TEST(RigidBody3D, SubmergedVolumeMatchesTiltedBoxPrism) {
+  const RigidBodyPose3D pose{
+      .center = {0.5, 0.625, 0.5},
+      .orientation = {.w = std::sqrt(0.9), .vector = {0.0, 0.0, std::sqrt(0.1)}},
+  };
+  constexpr Vec3 kExtent{0.125, 0.125, 0.125};
+  const auto wet = ComputeRigidBoxSubmergedVolume3D(pose, kExtent, 0.75);
+  ASSERT_TRUE(wet.ok()) << wet.status();
+  EXPECT_NEAR(*wet, 0.25 * 0.25 * 0.25 - 0.25 * 0.05 * 0.05 / (2 * 0.6 * 0.8), 1e-14);
+  const auto dry = ComputeRigidBoxSubmergedVolume3D(pose, kExtent, 0.0);
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  EXPECT_DOUBLE_EQ(*dry, 0.0);
+}
+
+TEST(RigidBody3D, StationaryTankPressureUsesInteriorCellsAndFiveWetWalls) {
+  constexpr AxisAlignedLiquidTank3D kTank{0, 2, 0, 0, 1, 0};
+  constexpr std::array<CellIndex3D, 2> kCells{{{0, 0, 0}, {1, 0, 0}}};
+  const auto cell_at = [](std::size_t ordinal) {
+    return kCells[ordinal];
+  };
+  std::vector<RigidPressurePatch3D> patches;
+  const auto collect = [&](const RigidPressurePatch3D& patch) {
+    patches.push_back(patch);
+    return absl::OkStatus();
+  };
+  const auto status = VisitStationaryTankPressurePatches3D(7, kTank, 0.75, {{}, 1}, kCells.size(), cell_at, collect);
+  ASSERT_TRUE(status.ok()) << status;
+  ASSERT_EQ(patches.size(), 8u);
+  EXPECT_DOUBLE_EQ(patches[0].outward_body_normal.x, 1);
+  EXPECT_DOUBLE_EQ(patches[1].outward_body_normal.x, -1);
+  EXPECT_EQ(patches[0].pressure_cell_index, 0u);
+  EXPECT_EQ(patches[1].pressure_cell_index, 1u);
+  EXPECT_DOUBLE_EQ(patches[0].area_vertical_covariance.y, 0.75 * 0.75 * 0.75 / 12);
+  double upward_force = 0;
+  for (const auto& patch : patches) {
+    EXPECT_GE(patch.outward_body_normal.y, 0);
+    upward_force += 4 * (0.75 - patch.world_centroid.y) * patch.wetted_area * patch.outward_body_normal.y;
+  }
+  EXPECT_DOUBLE_EQ(upward_force, 6);
+  const auto dry = VisitStationaryTankPressurePatches3D(7, kTank, 0, {{}, 1}, 0, cell_at, collect);
+  EXPECT_TRUE(dry.ok()) << dry;
+  EXPECT_EQ(patches.size(), 8u);
+  const auto missing = VisitStationaryTankPressurePatches3D(7, kTank, 0.75, {{}, 1}, 1, cell_at, collect);
+  EXPECT_EQ(missing.code(), absl::StatusCode::kFailedPrecondition);
+}
+
 TEST(RigidBody3D, FloatingBoxRejectsInteriorHoleWithCompleteOuterEdges) {
   std::vector<CellIndex3D> cells;
   for (int z = -1; z <= 3; ++z) {

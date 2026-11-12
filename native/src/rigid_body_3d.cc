@@ -127,7 +127,12 @@ AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec
   return body;
 }
 
-static absl::Status VisitFloatingBoxPressurePatches(
+enum class RectangularPressureSurface {
+  kBoxExterior,
+  kOpenTankInterior
+};
+
+static absl::Status VisitRectangularPressurePatches(
     std::uint64_t body_id,
     Vec3 box_low,
     Vec3 box_high,
@@ -136,11 +141,14 @@ static absl::Status VisitFloatingBoxPressurePatches(
     std::size_t pressure_cell_count,
     absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
     absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit,
-    bool bounded
+    bool bounded,
+    RectangularPressureSurface surface = RectangularPressureSurface::kBoxExterior
 ) {
+  const bool tank_interior = surface == RectangularPressureSurface::kOpenTankInterior;
   if (body_id == 0 || !IsFinite(box_low) || !IsFinite(box_high) || !std::isfinite(liquid_height)
       || !IsFinite(geometry.world_origin) || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0.0
-      || box_low.x >= box_high.x || box_low.y >= box_high.y || box_low.z >= box_high.z) {
+      || box_low.x >= box_high.x || (tank_interior ? box_low.y > box_high.y : box_low.y >= box_high.y)
+      || box_low.z >= box_high.z) {
     return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "invalid floating box or pressure grid");
   }
 
@@ -192,8 +200,10 @@ static absl::Status VisitFloatingBoxPressurePatches(
     const std::array tangents{first_tangent, second_tangent};
     for (const double sign : {-1.0, 1.0}) {
       const double plane = sign < 0.0 ? lower[axis] : upper[axis];
+      const bool open_top = tank_interior && axis == 1 && sign > 0.0;
+      const double normal_sign = tank_interior ? -sign : sign;
       const bool dry = axis == 1 ? plane >= liquid_height : wet_upper[1] <= lower[1];
-      if (dry) {
+      if (open_top || dry) {
         continue;
       }
 
@@ -204,9 +214,9 @@ static absl::Status VisitFloatingBoxPressurePatches(
       std::array max_coordinate{-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
       for (std::size_t cell_index = 0; cell_index < pressure_cell_count; ++cell_index) {
         const auto receiver = receiver_at(cell_index);
-        const bool exterior_receiver = sign < 0.0 ? receiver.low[axis] < plane && plane <= receiver.high[axis]
+        const bool owns_plane = normal_sign < 0.0 ? receiver.low[axis] < plane && plane <= receiver.high[axis]
                                                   : receiver.low[axis] <= plane && plane < receiver.high[axis];
-        if (!exterior_receiver) {
+        if (!owns_plane) {
           continue;
         }
         const double a0 = std::max(lower[first_tangent], receiver.low[first_tangent]);
@@ -229,7 +239,12 @@ static absl::Status VisitFloatingBoxPressurePatches(
         centroid[first_tangent] = std::midpoint(a0, a1);
         centroid[second_tangent] = std::midpoint(b0, b1);
         std::array<double, 3> normal{};
-        normal[axis] = sign;
+        normal[axis] = normal_sign;
+        const double wet_height = std::min(wet_upper[1], receiver.high[1]) - std::max(lower[1], receiver.low[1]);
+        const double vertical_covariance = tank_interior && axis != 1 ? area * wet_height * wet_height / 12.0 : 0.0;
+        if (!std::isfinite(vertical_covariance)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
+        }
         const auto status = visit({
             .patch_id = ++patch_id,
             .body_id = body_id,
@@ -237,6 +252,7 @@ static absl::Status VisitFloatingBoxPressurePatches(
             .wetted_area = area,
             .world_centroid = {centroid[0], centroid[1], centroid[2]},
             .outward_body_normal = {normal[0], normal[1], normal[2]},
+            .area_vertical_covariance = {0.0, vertical_covariance, 0.0},
         });
 
         if (!status.ok()) {
@@ -275,6 +291,77 @@ static absl::Status VisitFloatingBoxPressurePatches(
   }
   return absl::OkStatus();
 }
+absl::StatusOr<double>
+ComputeRigidBoxSubmergedVolume3D(RigidBodyPose3D pose, Vec3 body_half_extent, double liquid_height) {
+  const auto valid_pose = ValidateRigidBodyPose3D(pose);
+  if (!valid_pose.ok()) {
+    return valid_pose;
+  }
+  if (!IsFinite(body_half_extent) || body_half_extent.x <= 0 || body_half_extent.y <= 0 || body_half_extent.z <= 0
+      || !std::isfinite(liquid_height)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  namespace clip = boundary_internal;
+  const auto offset = clip::HorizontalPlaneLatticeDistance(liquid_height, {pose.center.y, 0.0, 1.0});
+  const double full_volume = (2 * body_half_extent.x) * (2 * body_half_extent.y) * (2 * body_half_extent.z);
+  if (!offset.ok() || !std::isnormal(full_volume)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto orientation = pose.orientation;
+  const auto normal = Rotate({orientation.w, Scale(-1.0, orientation.vector)}, {0.0, 1.0, 0.0});
+  const clip::ClippingPlane waterplane{{normal.x, normal.y, normal.z}, -*offset};
+  const auto extent = clip::CartesianComponents(body_half_extent);
+  std::array<clip::ClippingVertex, 8> corners{};
+  for (std::size_t corner = 0; corner < corners.size(); ++corner) {
+    for (std::size_t axis = 0; axis < extent.size(); ++axis) {
+      corners[corner].cell_width_position[axis] = ((corner >> axis) & 1) ? extent[axis] : -extent[axis];
+    }
+  }
+  constexpr int kPermutations[6][3]{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+  double submerged_volume = 0.0;
+  for (const auto& permutation : kPermutations) {
+    const auto a = corners[0];
+    const auto b = corners[std::size_t{1} << permutation[0]];
+    const auto c = corners[(std::size_t{1} << permutation[0]) | (std::size_t{1} << permutation[1])];
+    const auto d = corners[7];
+    const clip::ClippingPolyhedron tetrahedron{{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}};
+    submerged_volume += clip::ComputeClippedVolume(clip::ClipPolyhedron(tetrahedron, waterplane), 1.0);
+  }
+  if (!std::isfinite(submerged_volume)
+      || submerged_volume / full_volume > 1.0 + 256.0 * std::numeric_limits<double>::epsilon()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return std::min(submerged_volume, full_volume);
+}
+
+absl::Status VisitStationaryTankPressurePatches3D(
+    std::uint64_t tank_id,
+    const AxisAlignedLiquidTank3D& tank,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+) {
+  if (tank.piston_velocity_x != 0.0 || !std::isfinite(liquid_height) || !std::isfinite(tank.floor_y)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  // A dry tank has no wet faces, but still requires valid horizontal bounds.
+  const double wet_top = std::max(liquid_height, tank.floor_y);
+  return VisitRectangularPressurePatches(
+      tank_id,
+      {tank.start_low_x, tank.floor_y, tank.low_z},
+      {tank.high_x, wet_top, tank.high_z},
+      liquid_height,
+      geometry,
+      pressure_cell_count,
+      pressure_cell_at,
+      visit,
+      true,
+      RectangularPressureSurface::kOpenTankInterior
+  );
+}
+
 absl::Status VisitFloatingBoxPressurePatches3D(
     std::uint64_t body_id,
     Vec3 box_low,
@@ -285,7 +372,7 @@ absl::Status VisitFloatingBoxPressurePatches3D(
     absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
     absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
 ) {
-  return VisitFloatingBoxPressurePatches(
+  return VisitRectangularPressurePatches(
       body_id,
       box_low,
       box_high,
@@ -307,7 +394,7 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
     std::span<const CellIndex3D> pressure_cells
 ) {
   std::vector<RigidPressurePatch3D> patches;
-  const auto status = VisitFloatingBoxPressurePatches(
+  const auto status = VisitRectangularPressurePatches(
       body_id,
       box_low,
       box_high,
