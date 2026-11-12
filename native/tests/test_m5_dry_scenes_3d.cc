@@ -779,7 +779,8 @@ bool TestPlasticCheckpointHandoff() {
     return false;
   }
   const auto decode_batch = [&](const std::array<fluidity::PlasticSolidCheckpointParticle3D, 2>& records,
-                                std::size_t maximum_particle_count) {
+                                std::size_t maximum_particle_count,
+                                std::uint32_t schema_version = 2) {
     const std::array wire_batch{
         fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[0]),
         fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[1]),
@@ -787,14 +788,21 @@ bool TestPlasticCheckpointHandoff() {
     flatbuffers::FlatBufferBuilder batch_builder;
     batch_builder.Finish(batch_builder.CreateVectorOfStructs(wire_batch.data(), wire_batch.size()));
     const auto* batch = flatbuffers::GetRoot<WireVector>(batch_builder.GetBufferPointer());
-    return fluidity::internal::DecodePlasticCheckpointWireVector3D(batch, bindings, maximum_particle_count);
+    return fluidity::internal::DecodePlasticCheckpointWireVector3D(
+        schema_version,
+        batch,
+        bindings,
+        maximum_particle_count
+    );
   };
   const auto decoded_batch = decode_batch(mixed_records, 2);
-  const auto absent = fluidity::internal::DecodePlasticCheckpointWireVector3D(nullptr, bindings, 0);
+  const auto absent = fluidity::internal::DecodePlasticCheckpointWireVector3D(1, nullptr, bindings, 0);
   if (!decoded_batch.ok() || decoded_batch->size() != 2 || (*decoded_batch)[0].particle_id != 5
       || (*decoded_batch)[1].particle_id != 7 || !absent.ok() || !absent->empty()
       || decode_batch(mixed_records, 1).status().code() != absl::StatusCode::kResourceExhausted
-      || decode_batch(invalid_state, 2).status().code() != absl::StatusCode::kFailedPrecondition) {
+      || decode_batch(invalid_state, 2).status().code() != absl::StatusCode::kFailedPrecondition
+      || decode_batch(mixed_records, 2, 1).status().code() != absl::StatusCode::kInvalidArgument
+      || decode_batch(mixed_records, 2, 3).status().code() != absl::StatusCode::kFailedPrecondition) {
     return false;
   }
   flatbuffers::FlatBufferBuilder owning_builder;
@@ -819,7 +827,13 @@ bool TestPlasticCheckpointHandoff() {
   }
   owning_builder.Finish(*encoded_batch);
   const auto* encoded_wire_records = flatbuffers::GetRoot<WireVector>(owning_builder.GetBufferPointer());
-  const auto replay = fluidity::internal::DecodePlasticCheckpointWireVector3D(encoded_wire_records, bindings, 2);
+  static_assert(fluidity::internal::InteractionCheckpointVersionForPlasticPayload3D(0) == 1);
+  const auto replay = fluidity::internal::DecodePlasticCheckpointWireVector3D(
+      fluidity::internal::InteractionCheckpointVersionForPlasticPayload3D(mixed_records.size()),
+      encoded_wire_records,
+      bindings,
+      2
+  );
   if (!replay.ok() || replay->size() != 2 || (*replay)[0].particle_id != 5 || (*replay)[1].particle_id != 7
       || (*replay)[1].log_plastic_jacobian != accepted.log_plastic_jacobian) {
     return false;

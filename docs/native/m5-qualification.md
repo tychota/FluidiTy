@@ -790,12 +790,15 @@ plastic vector absent, and preserved all selected fields of a
 plastic-bearing size-prefixed record. The schemas, inputs and decoded
 payloads are under out/m5-flsi-plastic.
 
-A plastic-bearing envelope must carry schema_version 2. The old
+The shared wire helper selects schema_version 2 when the plastic vector
+contains records and retains version 1 for an absent field. The old
 structural reader sees the version but ignores field 6. M6's current
 native decoder rejects versions other than 1, preventing silent loss
 of plastic state. The new codec should keep the version 1 default for
 envelopes without plastic state, and reject a nonempty plastic vector
-under version 1. This version policy is coordinated with M6. The
+under version 1. Both scene suites exercise that rejection, successful
+reads of legacy absence and a version 2 vector, and rejection of an
+unknown version. This version policy is coordinated with M6. The
 scratch schema establishes wire compatibility. It does not exercise
 the production codec or an accepted mixed restart.
 

@@ -55,6 +55,12 @@ inline PlasticSolidCheckpointParticle3D UnpackPlasticSolidCheckpointParticle3D(c
 
 using PlasticCheckpointWireVector3D = flatbuffers::Vector<const solid::v1::PlasticParticle*>;
 
+// Preserve FLSI v1 for an absent plastic payload. A nonempty field needs v2
+// so a legacy decoder rejects the envelope instead of dropping the records.
+inline constexpr std::uint32_t InteractionCheckpointVersionForPlasticPayload3D(std::size_t particle_count) {
+  return particle_count == 0 ? 1 : 2;
+}
+
 // Validate a payload before adding its optional vector to the owning builder.
 // An empty payload yields a null offset. Capacity or validation errors leave
 // the builder unchanged. The owner limits the size of the complete envelope.
@@ -84,19 +90,27 @@ inline absl::StatusOr<flatbuffers::Offset<PlasticCheckpointWireVector3D>> Encode
 }
 
 // Decode a structurally verified optional vector from the owning FLSI envelope.
-// Check the caller's particle limit before allocating. Validate all resolved
+// Check the version and particle limit before allocating. Validate all resolved
 // body bindings and material states before returning any decoded records.
 inline absl::StatusOr<std::vector<PlasticSolidCheckpointParticle3D>> DecodePlasticCheckpointWireVector3D(
+    std::uint32_t schema_version,
     const PlasticCheckpointWireVector3D* wire_records,
     std::span<const PlasticSolidCheckpointBinding3D> bindings,
     std::size_t maximum_particle_count
 ) {
-  if (wire_records != nullptr && wire_records->size() > maximum_particle_count) {
+  if (schema_version != 1 && schema_version != 2) {
+    return absl::FailedPreconditionError("unsupported solid checkpoint version");
+  }
+  const std::size_t particle_count = wire_records == nullptr ? 0 : wire_records->size();
+  if (schema_version < InteractionCheckpointVersionForPlasticPayload3D(particle_count)) {
+    return absl::InvalidArgumentError("plastic checkpoint payload requires FLSI version 2");
+  }
+  if (particle_count > maximum_particle_count) {
     return absl::ResourceExhaustedError("plastic checkpoint particle count exceeds capacity");
   }
   std::vector<PlasticSolidCheckpointParticle3D> records;
   if (wire_records != nullptr) {
-    records.reserve(wire_records->size());
+    records.reserve(particle_count);
     for (const auto* wire_record : *wire_records) {
       records.push_back(UnpackPlasticSolidCheckpointParticle3D(*wire_record));
     }
