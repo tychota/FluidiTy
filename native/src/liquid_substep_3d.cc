@@ -10,6 +10,7 @@
 #include <tuple>
 
 #include "absl/cleanup/cleanup.h"
+#include "dry_solid_step_3d_internal.h"
 #include "fluidity/host/plastic_solid_boundary_3d.h"
 #include "fluidity/host/small_solve.h"
 #include "liquid_adaptive_step_3d.h"
@@ -2710,7 +2711,7 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
   }
-  absl::StatusOr<double> ScheduledDuration() const {
+  absl::StatusOr<double> ScheduledDuration(double solid_bound) const {
     const auto& state = transaction.committed();
     const double remaining = target_time - state.clock.time;
     double speed = liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(scene.obstacle));
@@ -2723,7 +2724,7 @@ struct LiquidSubstepScheduler3D::Impl {
           liquid_step_internal::MaximumComponentMagnitude(source.emitted_particle_template.world_velocity)
       );
     }
-    double maximum = std::min(options.maximum_step_duration, remaining);
+    double maximum = std::min({options.maximum_step_duration, remaining, solid_bound});
     const double acceleration = liquid_step_internal::MaximumComponentMagnitude(scene.world_acceleration);
     // Bound v*step_duration + a*step_duration^2, including this step's full acceleration before advection.
     const double half_width = 0.5 * state.geometry.cell_width;
@@ -3185,8 +3186,7 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
   };
 }
 
-absl::StatusOr<LiquidSnowAttempt3D>
-LiquidSubstepScheduler3D::AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& inputs) {
+absl::Status LiquidSubstepScheduler3D::ValidateSnowStep(const LiquidSnowStepInputs3D& inputs) const {
   const auto& impl = *impl_;
   const auto* platen = std::get_if<TranslatingHalfspace3D>(&impl.scene.obstacle);
   const bool vertical_platen = platen != nullptr && platen->unit_normal.x == 0.0 && platen->unit_normal.y == -1.0
@@ -3205,6 +3205,12 @@ LiquidSubstepScheduler3D::AttemptWithSnow(double step_duration, const LiquidSnow
       || liquid_geometry.world_origin.z != solid_geometry.world_origin.z) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<LiquidSnowAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& inputs) {
+  STEP_TRY(ValidateSnowStep(inputs));
   SnowTrial snow{.inputs = inputs, .candidate = {}};
   const auto outcome = AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, &snow);
   if (!outcome.ok()) {
@@ -3314,10 +3320,69 @@ absl::Status LiquidSubstepScheduler3D::FinishFrame() {
   return absl::OkStatus();
 }
 absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgressObserver3D observer) {
+  return AdvanceFrameImpl(target, observer, std::nullopt, nullptr);
+}
+
+absl::Status LiquidSubstepScheduler3D::AdvanceFrameWithSnow(
+    double target,
+    const LiquidSnowStepInputs3D& inputs,
+    std::vector<PlasticSolidCheckpointParticle3D>& accepted_snow,
+    LiquidProgressObserver3D observer
+) {
+  STEP_TRY(ValidateSnowStep(inputs));
+  const double acoustic_cfl = inputs.solid_step.acoustic_cfl;
+  if (!std::isfinite(acoustic_cfl) || acoustic_cfl <= 0 || acoustic_cfl > 1) {
+    return absl::InvalidArgumentError("invalid snow acoustic CFL");
+  }
+  return AdvanceFrameImpl(target, observer, inputs, &accepted_snow);
+}
+
+absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
+    double target,
+    LiquidProgressObserver3D observer,
+    std::optional<LiquidSnowStepInputs3D> snow_inputs,
+    std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
+) {
   STEP_TRY(BeginFrame(target));
+  std::vector<PlasticSolidCheckpointParticle3D> frame_start_snow;
+  if (snow_inputs) {
+    const auto initial = snow_inputs->accepted_particles;
+    *accepted_snow = std::vector(initial.begin(), initial.end());
+    if (impl_->options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
+      frame_start_snow = *accepted_snow;
+    }
+  }
   std::optional<double> retry;
   while (committed().clock.time < target) {
-    auto duration = impl_->ScheduledDuration();
+    double snow_bound = std::numeric_limits<double>::infinity();
+    if (snow_inputs) {
+      snow_inputs->accepted_particles = *accepted_snow;
+      const double cell_width = snow_inputs->solid_grid.geometry().cell_width;
+      const auto particles = StagePressureLoadedSnowParticles3D(
+          *accepted_snow,
+          snow_inputs->body_id,
+          snow_inputs->material_id,
+          snow_inputs->snow,
+          cell_width,
+          {}
+      );
+      if (!particles.ok()) {
+        return particles.status();
+      }
+      for (const auto& particle : *particles) {
+        const auto state = internal::EvaluateAcceptedDrySolid3D(particle, snow_inputs->snow);
+        if (!state.ok()) {
+          return state.status();
+        }
+        const double wave_speed = std::sqrt(state->wave_speed_squared);
+        if (wave_speed > 0) {
+          const double acoustic_bound = snow_inputs->solid_step.acoustic_cfl * cell_width / wave_speed;
+          // Round inward so the dry solver's multiply-back bound stays admissible.
+          snow_bound = std::min(snow_bound, std::nextafter(acoustic_bound, 0.0));
+        }
+      }
+    }
+    auto duration = impl_->ScheduledDuration(snow_bound);
     if (!duration.ok()) {
       return duration.status();
     }
@@ -3328,7 +3393,17 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
     const auto previous_attempt_count = diagnostics().attempts;
     const auto work_start =
         observer.observe_attempt ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    const auto outcome = Attempt(*duration, observer.work_phase);
+    const auto outcome = [&]() -> absl::StatusOr<LiquidAttemptOutcome3D> {
+      if (!snow_inputs) {
+        return Attempt(*duration, observer.work_phase);
+      }
+      SnowTrial snow{.inputs = *snow_inputs, .candidate = {}};
+      auto attempt = AttemptImpl(*duration, observer.work_phase, nullptr, false, false, nullptr, nullptr, &snow);
+      if (attempt.ok() && attempt->disposition == LiquidAttemptDisposition3D::kAccepted) {
+        *accepted_snow = std::move(snow.candidate);
+      }
+      return attempt;
+    }();
     if (observer.observe_attempt && diagnostics().attempts != previous_attempt_count) {
       const std::chrono::duration<double> work_elapsed = std::chrono::steady_clock::now() - work_start;
       observer.observe_attempt(
@@ -3414,6 +3489,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
         return restarted;
       }
       impl_->backend.commit_growth(impl_->backend.context);
+      if (snow_inputs) {
+        *accepted_snow = std::move(frame_start_snow);
+      }
       impl_->reservation_bytes = *reservation_bytes + inlet_bytes + cavity_bytes;
       impl_->workspace = std::move(*workspace);
       impl_->staging = std::move(*staging);
