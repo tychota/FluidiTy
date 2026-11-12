@@ -924,7 +924,17 @@ struct LiquidSubstepScheduler3D::Impl {
         .regular_cell_transport = staging.regular_transport ? staging.regular_transport->values()
                                                             : std::span<const LiquidRegularCellTransport3D>{},
     };
-    STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    double piston_contact_impulse = 0.0;
+    if (dynamic_piston && trial.particles.size() != 0) {
+      const auto impulse =
+          UpdateCpuLiquidParticlesWithPistonReaction3D(particle_update_inputs, trial.particles.values());
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      piston_contact_impulse = *impulse;
+    } else {
+      STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWhitewater, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, step_duration));
     const double wall_displacement_bound =
@@ -951,7 +961,8 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(ValidateLiquidState3D(trial));
     if (dynamic_piston) {
       const double axial_acceleration = piston_load->force.x / piston_load->mass;
-      const double next_velocity = std::fma(step_duration, axial_acceleration, piston_load->linear_velocity.x);
+      const double next_velocity = std::fma(step_duration, axial_acceleration, piston_load->linear_velocity.x)
+          + piston_contact_impulse / piston_load->mass;
       if (!std::isfinite(next_velocity)) {
         return Error(absl::StatusCode::kOutOfRange);
       }
@@ -1149,9 +1160,13 @@ LiquidSubstepScheduler3D::AttemptWithPlanarPistonPressureLoad(double step_durati
 absl::StatusOr<LiquidPlanarPistonAttempt3D>
 LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston) {
   if (!impl_->staging.wetted_piston.has_value()
-      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field)
-      || !committed().particles.values().empty() || !impl_->scene.sources.empty() || impl_->ocean_boundary) {
-    return absl::FailedPreconditionError("dynamic piston requires a particle-free moving planar piston scene");
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field) || !impl_->scene.sources.empty()
+      || impl_->ocean_boundary) {
+    return absl::FailedPreconditionError("dynamic piston requires a moving planar piston scene without sources");
+  }
+  if (!committed().particles.values().empty()
+      && impl_->backend.update_particles != CpuLiquidSubstepBackend3D().update_particles) {
+    return absl::FailedPreconditionError("dynamic piston particles require the CPU contact update");
   }
   const auto validation = ValidateRigidBody3D(piston);
   if (!validation.ok()) {

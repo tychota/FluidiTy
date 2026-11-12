@@ -3,6 +3,7 @@
 #include <cmath>
 #include <functional>
 
+#include "fluidity/base/liquid_wall_contact_math_3d.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
@@ -170,8 +171,12 @@ absl::Status ApplyForces(
   }
   return absl::OkStatus();
 }
-absl::Status
-UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, LiquidParticleState3D& particle) {
+absl::Status UpdateParticle(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::size_t index,
+    LiquidParticleState3D& particle,
+    double* piston_impulse = nullptr
+) {
   const auto& gather = inputs.gathered[index];
   const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
   const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
@@ -203,7 +208,7 @@ UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, Li
         liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, beta * alpha)
     );
   }
-  const auto contact = ResolveLiquidWallContactBounded3D({
+  const LiquidWallContactInputs3D contact_inputs{
       .start_world_position = particle.world_position,
       .stored_world_velocity = stored,
       .advecting_world_velocity = advecting,
@@ -211,9 +216,21 @@ UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, Li
       .step_duration = inputs.step_duration,
       .friction_coefficient = inputs.friction_coefficient,
       .penetration_tolerance = inputs.penetration_tolerance,
-  });
+  };
+  double piston_velocity_change = 0.0;
+  const auto contact = boundary_internal::ResolveContact(
+      boundary_internal::PackContact(contact_inputs),
+      nullptr,
+      piston_impulse == nullptr ? nullptr : &piston_velocity_change
+  );
   if (!contact.ok()) {
-    return contact.status();
+    return boundary_internal::ArithmeticStatus(contact.status(), true);
+  }
+  if (piston_impulse != nullptr) {
+    *piston_impulse -= particle.mass * piston_velocity_change;
+    if (!std::isfinite(*piston_impulse)) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
   }
   const Vec3 displacement{
       contact->world_position.x - particle.world_position.x,
@@ -236,8 +253,11 @@ UpdateParticle(const LiquidParticleUpdateInputs3D& inputs, std::size_t index, Li
   return absl::OkStatus();
 }
 
-absl::Status
-UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+absl::Status UpdateParticlesImpl(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> particles,
+    double* piston_impulse
+) {
   if (inputs.gathered.size() != particles.size() || inputs.liquid_distances.size() != particles.size()) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
@@ -264,14 +284,34 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
     }
   }
   for (std::size_t index = 0; index < particles.size(); ++index) {
-    const auto status = UpdateParticle(inputs, index, particles[index]);
+    const auto status = UpdateParticle(inputs, index, particles[index], piston_impulse);
     if (!status.ok()) {
       return status;
     }
   }
   return absl::OkStatus();
 }
+absl::Status
+UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+  return UpdateParticlesImpl(inputs, particles, nullptr);
+}
 }  // namespace
+
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  if (!std::holds_alternative<AxisAlignedLiquidTank3D>(inputs.obstacle)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  double piston_impulse = 0.0;
+  const auto status = UpdateParticlesImpl(inputs, trial_particles, &piston_impulse);
+  if (!status.ok()) {
+    return status;
+  }
+  return piston_impulse;
+}
+
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
   return {
       .context = nullptr,

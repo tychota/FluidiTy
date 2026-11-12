@@ -254,10 +254,11 @@ class LiquidSubstepScheduler3D {
   // the piston trajectory stays prescribed for this attempt.
   absl::StatusOr<LiquidPlanarPistonAttempt3D>
   AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston);
-  // Advances a pressure-only, axially guided planar piston in a particle-free
+  // Advances an axially guided planar piston in a source-free
   // moving-piston scene. Body center.x is the wall coordinate in meters.
   // The old axial velocity drives the liquid boundary; accepted pressure and
-  // external axial force update velocity for the next attempt. The guide
+  // external axial force and CPU particle reaction update the next velocity.
+  // The guide
   // absorbs transverse loads and torque. Force and torque are cleared.
   // The returned body is present only on acceptance.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston);

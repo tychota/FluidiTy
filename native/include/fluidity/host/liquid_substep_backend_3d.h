@@ -225,5 +225,14 @@ struct LiquidSubstepBackend3D {
   SampleFieldBatch* sample_gathered_fields = nullptr;
 };
 // CPU operations share the bounded operators and the swept-contact particle update.
+// Updates trial particles with the CPU tank sweep and returns the axial
+// impulse on the low-x piston in N s, in particle order. Fixed-wall and
+// advection corrections contribute no piston impulse. Trial storage can be
+// partially updated on error and must be discarded by the caller.
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> trial_particles
+);
+
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity
