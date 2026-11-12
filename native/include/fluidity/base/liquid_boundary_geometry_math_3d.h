@@ -86,7 +86,9 @@ struct GeometryInput {
   UniformMacGeometry3D geometry{};
   CellIndex3D index{};
   Obstacle obstacle{};
-  double corner_distances[8]{};  // Physical liquid distances, m; x/y/z corner bits.
+  // Liquid distances in m, in x/y/z corner-bit order. Sampled solid face
+  // queries instead use the four incident corner normal velocities in m/s.
+  double corner_distances[8]{};
   // Curvature: 3x3x3 derivative halo in m, x fastest, eight outer corners
   // unused. Sampled solid cell and face modes use the first eight entries
   // for solid corner distances in x/y/z corner-bit order.
@@ -105,7 +107,7 @@ struct GeometryOutput {
   double open_face_area = 0;  // m^2.
   double blocked_face_area = 0;  // Exactly h^2 - open_face_area, m^2.
   double piston_normal_velocity = 0;  // Signed positive-normal velocity on piston-owned area, m/s.
-  double piston_flux = 0;  // Signed along the positive Cartesian face axis, m³/s.
+  double prescribed_wall_flux = 0;  // Signed along the positive Cartesian face axis, m³/s.
   double interface_curvature = 0;  // Outward 1/m.
   double capillary_step_bound = 0;  // s.
   double pressure_gradient_distance = 0;  // m, regularized theta*h.
@@ -606,8 +608,9 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeTankFace(const GeometryInput& in
     } else if (transverse_area > 0) {
       output.is_low_x_piston_face = true;
       output.piston_normal_velocity = tank.piston_velocity_x;
-      output.piston_flux = transverse_area * output.piston_normal_velocity;
-      if (!IsNormalOrZero(output.piston_flux) || (output.piston_normal_velocity != 0 && output.piston_flux == 0)) {
+      output.prescribed_wall_flux = transverse_area * output.piston_normal_velocity;
+      if (!IsNormalOrZero(output.prescribed_wall_flux)
+          || (output.piston_normal_velocity != 0 && output.prescribed_wall_flux == 0)) {
         return Error::kRange;
       }
     }

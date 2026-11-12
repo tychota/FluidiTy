@@ -1192,6 +1192,14 @@ void ExpectOrientedFloatingBoxHydrostaticWeight(bool explicit_composition) {
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       EXPECT_DOUBLE_EQ(attempt->oriented_loads->external_force.y, -kWeight);
       EXPECT_NEAR(attempt->oriented_loads->pressure_force.y, kWeight, 2e-6);
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
+      const auto& tank_pressure = *attempt->oriented_loads->tank_pressure;
+      EXPECT_NEAR(tank_pressure.force.x, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.force.y, 7.65625, 2e-6);
+      EXPECT_NEAR(tank_pressure.force.z, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.x, -7.65625, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.y, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.z, 7.65625, 2e-6);
       const double draft = 0.75 - (attempt->body->center.y - kHalfExtent.y);
       max_draft_error = std::max(max_draft_error, std::abs(draft - kInitialDraft));
       max_net_force = std::max(
@@ -1382,7 +1390,282 @@ void ExpectStoredLiquidMomentumBudget(
   }
 }
 
-TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
+Vec3 ExpectedPressureGridImpulse(
+    const LiquidPressureProblemView3D& problem,
+    std::span<const double> pressures,
+    double duration
+) {
+  constexpr std::array kCoordinates{&CellIndex3D::x, &CellIndex3D::y, &CellIndex3D::z};
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  Vec3 impulse{};
+  for (const auto& face : problem.faces) {
+    if (face.open_area == 0.0) {
+      continue;
+    }
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    const auto index = face.face_index.lattice_index;
+    const CellIndex3D head{index.x, index.y, index.z};
+    auto tail = head;
+    --(tail.*kCoordinates[axis]);
+    const auto* boundary = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link);
+    const auto pressure_at = [&](CellIndex3D coordinate) {
+      for (std::size_t ordinal = 0; ordinal < problem.cells.size(); ++ordinal) {
+        const auto cell = problem.cells[ordinal].cell_index;
+        if (cell.x == coordinate.x && cell.y == coordinate.y && cell.z == coordinate.z) {
+          return pressures[ordinal];
+        }
+      }
+      EXPECT_NE(boundary, nullptr);
+      return boundary ? boundary->exterior_pressure : 0.0;
+    };
+    const auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link);
+    const double jump = internal ? internal->pressure_jump : 0.0;
+    impulse.*kComponents[axis] += duration * face.open_area * (pressure_at(tail) - pressure_at(head) + jump);
+  }
+  return impulse;
+}
+
+double PressureTractionImpulseResidual(const OrientedFloatingBoxLoads3D& loads, double duration) {
+  const auto& tank = loads.tank_pressure->force;
+  const auto& box = loads.pressure_force;
+  const auto grid = loads.pressure_grid_impulse;
+  return std::hypot(
+      grid.x - duration * (tank.x - box.x),
+      grid.y - duration * (tank.y - box.y),
+      grid.z - duration * (tank.z - box.z)
+  );
+}
+
+struct PressureFaceMeasurement {
+  std::size_t slot;
+  FaceNormalAxis axis;
+  double predicted_velocity;
+  double velocity_change;
+  double pressure_dual_mass;
+  double deposited_mass;
+  Vec3 gathered_impulse{};
+};
+
+struct FloatingBoxPressureMeasurements {
+  double energy_blend;
+  double wall_flux{};
+  double wet_volume{};
+  Vec3 grid_impulse{};
+  Vec3 particle_pressure_impulse{};
+  Vec3 particle_prepressure_impulse{};
+  std::vector<PressureFaceMeasurement> pressure_faces;
+  std::vector<double> deposited_face_masses;
+  std::vector<LiquidBoundaryParticle3D> deposit_particles;
+  std::vector<LiquidCompatibleStencils3D> deposit_stencils;
+  std::vector<double> normal_face_impulses;
+  std::vector<double> face_mass_scratch;
+  std::vector<Vec3> compatible_particle_impulses;
+  std::vector<double> prepressure_velocities;
+};
+
+LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurements& measurements) {
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &measurements;
+  backend.deposit = [](void* context,
+                       const LiquidBoundaryDepositViewInputs3D& inputs,
+                       LiquidBoundaryWorkspace3D& workspace) -> absl::StatusOr<LiquidBoundaryFaceDepositsView3D> {
+    auto& measured = *static_cast<FloatingBoxPressureMeasurements*>(context);
+    auto result = CpuLiquidSubstepBackend3D().deposit(nullptr, inputs, workspace);
+    if (!result.ok()) {
+      return result.status();
+    }
+    measured.deposit_particles.assign(inputs.particles.begin(), inputs.particles.end());
+    measured.deposit_stencils.assign(result->compatible_stencils.begin(), result->compatible_stencils.end());
+    measured.deposited_face_masses.clear();
+    for (const auto& quanta : result->face_quanta) {
+      measured.deposited_face_masses.push_back(
+          static_cast<double>(quanta.mass_quanta_sum) * inputs.quantization.mass_per_quantum
+      );
+    }
+    return result;
+  };
+  backend.project = [](void* context,
+                       SparseMacGridView3D grid,
+                       double duration,
+                       const LiquidPressureProblemView3D& problem,
+                       MacPressureSolverOptions3D options,
+                       MacPressureWorkspace3D& workspace) -> absl::StatusOr<MacPressureProjectionView3D> {
+    auto& measured = *static_cast<FloatingBoxPressureMeasurements*>(context);
+    auto result = CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
+    if (!result.ok()) {
+      return result.status();
+    }
+    measured.wall_flux = 0.0;
+    measured.wet_volume = 0.0;
+    for (const auto& cell : problem.cells) {
+      measured.wet_volume += cell.fluid_volume;
+      measured.wall_flux += cell.integrated_inward_wall_flux;
+    }
+    measured.grid_impulse = ExpectedPressureGridImpulse(problem, result->cell_pressures, duration);
+    measured.particle_pressure_impulse = {};
+    measured.particle_prepressure_impulse = {};
+    measured.pressure_faces.clear();
+    measured.normal_face_impulses.assign(grid.face_count(), 0.0);
+    for (std::size_t index = 0; index < problem.faces.size(); ++index) {
+      const auto& face = problem.faces[index];
+      const auto slot = grid.FaceSlot(face.face_index);
+      if (!slot.ok()) {
+        return slot.status();
+      }
+      const double pressure_dual_mass =
+          face.open_area == 0.0 ? 0.0 : face.open_area * face.pressure_gradient_distance / face.inverse_density;
+      measured.pressure_faces.push_back({
+          .slot = *slot,
+          .axis = face.face_index.axis,
+          .predicted_velocity = face.predicted_normal_velocity,
+          .velocity_change = result->corrected_face_velocities[index] - face.predicted_normal_velocity,
+          .pressure_dual_mass = pressure_dual_mass,
+          .deposited_mass = measured.deposited_face_masses.at(*slot),
+      });
+      measured.normal_face_impulses[*slot] = pressure_dual_mass * measured.pressure_faces.back().velocity_change;
+    }
+    measured.face_mass_scratch.resize(grid.face_count());
+    measured.compatible_particle_impulses.resize(measured.deposit_particles.size());
+    const auto distributed = DistributeCompatiblePressureImpulse3D(
+        grid,
+        measured.deposit_particles,
+        measured.deposit_stencils,
+        measured.normal_face_impulses,
+        measured.face_mass_scratch,
+        measured.compatible_particle_impulses
+    );
+    if (!distributed.ok()) {
+      return distributed;
+    }
+    return result;
+  };
+  backend.gather = [](void* context,
+                      const LiquidBoundaryGatherViewInputs3D& inputs,
+                      LiquidBoundaryWorkspace3D& workspace) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    auto& measured = *static_cast<FloatingBoxPressureMeasurements*>(context);
+    if (inputs.particles.size() != 1) {
+      return absl::InternalError("floating-box diagnostic expects one particle per gather");
+    }
+    // Hold the final wall history and validity fixed, changing only the face
+    // velocities supplied by projection. The production gather runs last.
+    const auto velocities = inputs.new_history.face_velocities;
+    const bool has_pressure_correction = std::ranges::any_of(measured.pressure_faces, [&](const auto& face) {
+      return velocities[face.slot] != face.predicted_velocity;
+    });
+    if (!has_pressure_correction) {
+      return CpuLiquidSubstepBackend3D().gather(nullptr, inputs, workspace);
+    }
+    measured.prepressure_velocities.assign(velocities.begin(), velocities.end());
+    for (const auto& face : measured.pressure_faces) {
+      measured.prepressure_velocities[face.slot] = face.predicted_velocity;
+    }
+    auto baseline_inputs = inputs;
+    baseline_inputs.new_history.face_velocities = measured.prepressure_velocities;
+    const auto baseline = CpuLiquidSubstepBackend3D().gather(nullptr, baseline_inputs, workspace);
+    if (!baseline.ok()) {
+      return baseline.status();
+    }
+    const auto baseline_particle = baseline->particles.front();
+    // The trajectory seeds already have initialized PIC history and the
+    // scheduler preserves it. Reproduce the pre-contact stored-velocity blend.
+    const auto stored_velocity = [&](const LiquidBoundaryParticleGather3D& gathered, double Vec3::* component) {
+      const bool fallback = gathered.old_pic_fallback || gathered.new_pic_fallback || gathered.low_mass_fallback;
+      const double alpha = fallback ? 0.0 : 0.99 * measured.energy_blend;
+      return gathered.new_pic_velocity.*component + alpha * gathered.particle_minus_old_pic_velocity.*component;
+    };
+    const auto& particle = inputs.particles.front().transfer;
+    for (auto& face : measured.pressure_faces) {
+      if (face.velocity_change == 0.0) {
+        continue;
+      }
+      measured.prepressure_velocities[face.slot] = velocities[face.slot];
+      const auto single_face = CpuLiquidSubstepBackend3D().gather(nullptr, baseline_inputs, workspace);
+      measured.prepressure_velocities[face.slot] = face.predicted_velocity;
+      if (!single_face.ok()) {
+        return single_face.status();
+      }
+      for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+        const double before = stored_velocity(baseline_particle, component);
+        const double after = stored_velocity(single_face->particles.front(), component);
+        face.gathered_impulse.*component += particle.particle_mass * (after - before);
+      }
+    }
+    auto result = CpuLiquidSubstepBackend3D().gather(nullptr, inputs, workspace);
+    if (!result.ok()) {
+      return result.status();
+    }
+    for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+      const double before = stored_velocity(baseline_particle, component);
+      const double after = stored_velocity(result->particles.front(), component);
+      measured.particle_pressure_impulse.*component += particle.particle_mass * (after - before);
+      measured.particle_prepressure_impulse.*component +=
+          particle.particle_mass * (before - particle.particle_velocity.*component);
+    }
+    return result;
+  };
+  return backend;
+}
+
+void ExpectFloatingBoxPressureMeasurement(
+    const OrientedFloatingBoxLoads3D& loads,
+    const FloatingBoxPressureMeasurements& measured
+) {
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
+  Vec3 mass_weight_difference{};
+  Vec3 gather_weight_difference{};
+  Vec3 reconstructed_gather{};
+  for (const auto& face : measured.pressure_faces) {
+    const auto normal = kComponents[static_cast<std::size_t>(face.axis)];
+    mass_weight_difference.*normal += (face.deposited_mass - face.pressure_dual_mass) * face.velocity_change;
+    gather_weight_difference.*normal -= face.deposited_mass * face.velocity_change;
+    for (const auto component : kComponents) {
+      gather_weight_difference.*component += face.gathered_impulse.*component;
+      reconstructed_gather.*component += face.gathered_impulse.*component;
+    }
+  }
+  for (const auto component : kComponents) {
+    EXPECT_NEAR(loads.pressure_grid_impulse.*component, measured.grid_impulse.*component, 1e-12);
+    EXPECT_NEAR(reconstructed_gather.*component, measured.particle_pressure_impulse.*component, 1e-12);
+    double distributed_impulse = 0.0;
+    for (const auto& particle_impulse : measured.compatible_particle_impulses) {
+      distributed_impulse += particle_impulse.*component;
+    }
+    EXPECT_NEAR(distributed_impulse, measured.grid_impulse.*component, 1e-12);
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, distributed_impulse, 1e-12);
+    EXPECT_NEAR(
+        mass_weight_difference.*component + gather_weight_difference.*component,
+        measured.particle_pressure_impulse.*component - measured.grid_impulse.*component,
+        1e-12
+    );
+    EXPECT_NEAR(
+        loads.liquid_gather_impulse.*component,
+        distributed_impulse + measured.particle_prepressure_impulse.*component,
+        1e-12
+    );
+  }
+  std::cout << "pressure_face_weights mass_difference_n_s="
+            << std::hypot(mass_weight_difference.x, mass_weight_difference.y, mass_weight_difference.z)
+            << " gather_difference_n_s="
+            << std::hypot(gather_weight_difference.x, gather_weight_difference.y, gather_weight_difference.z) << '\n';
+}
+
+double MatchFloatingBoxSeedMassToWetVolume(LiquidState3D& state, double density, double submerged_box_volume) {
+  // The four seeds represent the four horizontal cells of the qualification
+  // tank. Their wet widths are 7/8 m and their wet depth is 5/8 m. Only the
+  // cell containing particle 1 is cut by the initial box.
+  constexpr double kWetCellVolume = 0.875 * 0.875 * 0.625;
+  for (auto& particle : state.particles.values()) {
+    particle.reference_volume = kWetCellVolume;
+    if (particle.id == 1) {
+      particle.reference_volume -= submerged_box_volume;
+    }
+    particle.mass = density * particle.reference_volume;
+  }
+  return 4 * kWetCellVolume - submerged_box_volume;
+}
+
+void CheckOrientedFloatingBoxTrajectory(bool match_seed_mass) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
   auto initial = Initial(4);
@@ -1390,10 +1673,17 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
   initial.particles[1].world_position = {1.375, 0.375, 0.375};
   initial.particles[2].world_position = {0.375, 0.375, 1.375};
   initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  // Upright box has a 3/16 m draft and a 1/4 m square waterplane.
+  const double initial_wet_volume =
+      match_seed_mass ? MatchFloatingBoxSeedMassToWetVolume(initial, scene.liquid_density, 0.1875 * 0.25 * 0.25) : 0.0;
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
+    SCOPED_TRACE(match_seed_mass);
     const int frames = static_cast<int>(0.0625 / kDt);
-    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+    const auto options = Options();
+    FloatingBoxPressureMeasurements measured{.energy_blend = options.particle_energy_blend};
+    const auto backend = MeasureFloatingBoxPressure(measured);
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
     ASSERT_TRUE(scheduler.ok()) << scheduler.status();
 
     constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
@@ -1408,6 +1698,9 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
     auto body = initial_body;
     std::vector<std::uint8_t> midpoint;
     std::vector<std::uint8_t> final;
+    double max_pressure_traction_residual = 0.0;
+    double max_particle_pressure_impulse = 0.0;
+    double max_grid_to_particle_pressure_difference = 0.0;
     bool observed_pressure = false;
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
@@ -1419,6 +1712,27 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
+      if (frame == 1 && match_seed_mass) {
+        EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
+      }
+      ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
+      const auto particle_pressure = measured.particle_pressure_impulse;
+      const auto grid_pressure = attempt->oriented_loads->pressure_grid_impulse;
+      max_particle_pressure_impulse = std::max(
+          max_particle_pressure_impulse,
+          std::hypot(particle_pressure.x, particle_pressure.y, particle_pressure.z)
+      );
+      max_grid_to_particle_pressure_difference = std::max(
+          max_grid_to_particle_pressure_difference,
+          std::hypot(
+              particle_pressure.x - grid_pressure.x,
+              particle_pressure.y - grid_pressure.y,
+              particle_pressure.z - grid_pressure.z
+          )
+      );
+      max_pressure_traction_residual =
+          std::max(max_pressure_traction_residual, PressureTractionImpulseResidual(*attempt->oriented_loads, kDt));
       ExpectStoredLiquidMomentumBudget(
           initial_momentum,
           scheduler->committed().particles.values(),
@@ -1444,6 +1758,13 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       }
     }
     EXPECT_GT(body.orientation.vector.z, 0.0);
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_traction_dt_s=" << kDt
+              << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
+              << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
+              << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
+    EXPECT_LE(max_pressure_traction_residual, 1e-12);
+    EXPECT_GT(max_particle_pressure_impulse, 1e-8);
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
     EXPECT_LT(body.linear_velocity.y, initial_body.linear_velocity.y);
@@ -1457,6 +1778,8 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       const auto attempt = replay->AttemptWithOrientedFloatingBox(kDt, history.body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value());
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       history = {*attempt->body, {history.body.center, history.body.orientation}};
       ASSERT_TRUE(replay->FinishFrame().ok());
     }
@@ -1468,7 +1791,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
     EXPECT_EQ(*replayed, final);
   }
 }
-TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody) {
+void CheckCoupledOrientedFloatingBoxTrajectory(bool match_seed_mass) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
   auto initial = Initial(4);
@@ -1476,26 +1799,20 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
   initial.particles[1].world_position = {1.375, 0.375, 0.375};
   initial.particles[2].world_position = {0.375, 0.375, 1.375};
   initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  // The tilted box projects vertical edge components of 0.6 and 0.8.
+  // Its exposed triangular prism is 0.05 m high and 0.25 m thick.
+  constexpr double kExposedVolume = 0.25 * 0.05 * 0.05 / (2.0 * 0.6 * 0.8);
+  const double initial_wet_volume = match_seed_mass
+      ? MatchFloatingBoxSeedMassToWetVolume(initial, scene.liquid_density, 0.25 * 0.25 * 0.25 - kExposedVolume)
+      : 0.0;
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
+    SCOPED_TRACE(match_seed_mass);
     const int frames = static_cast<int>(0.0625 / kDt);
-    double projected_wall_flux = 0.0;
-    auto backend = CpuLiquidSubstepBackend3D();
-    backend.context = &projected_wall_flux;
-    backend.project = [](void* context,
-                         SparseMacGridView3D grid,
-                         double duration,
-                         const LiquidPressureProblemView3D& problem,
-                         MacPressureSolverOptions3D options,
-                         MacPressureWorkspace3D& workspace) {
-      auto& flux = *static_cast<double*>(context);
-      flux = 0.0;
-      for (const auto& cell : problem.cells) {
-        flux += cell.integrated_inward_wall_flux;
-      }
-      return CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
-    };
-    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+    const auto options = Options();
+    FloatingBoxPressureMeasurements measured{.energy_blend = options.particle_energy_blend};
+    const auto backend = MeasureFloatingBoxPressure(measured);
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
     ASSERT_TRUE(scheduler.ok()) << scheduler.status();
 
     constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
@@ -1510,6 +1827,9 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
     auto body = initial_body;
     std::vector<std::uint8_t> midpoint;
     std::vector<std::uint8_t> final;
+    double max_pressure_traction_residual = 0.0;
+    double max_particle_pressure_impulse = 0.0;
+    double max_grid_to_particle_pressure_difference = 0.0;
     bool observed_pressure = false;
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
@@ -1521,7 +1841,9 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       const auto& loads = *attempt->oriented_loads;
+
       const double momentum_change = body.mass * (attempt->body->linear_velocity.y - body.linear_velocity.y);
       const double angular_momentum_change =
           body.principal_inertia.z * (attempt->body->angular_velocity.z - body.angular_velocity.z);
@@ -1535,6 +1857,26 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
           kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
           5e-14
       );
+      if (frame == 1 && match_seed_mass) {
+        EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
+      }
+      ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
+      const auto particle_pressure = measured.particle_pressure_impulse;
+      const auto grid_pressure = attempt->oriented_loads->pressure_grid_impulse;
+      max_particle_pressure_impulse = std::max(
+          max_particle_pressure_impulse,
+          std::hypot(particle_pressure.x, particle_pressure.y, particle_pressure.z)
+      );
+      max_grid_to_particle_pressure_difference = std::max(
+          max_grid_to_particle_pressure_difference,
+          std::hypot(
+              particle_pressure.x - grid_pressure.x,
+              particle_pressure.y - grid_pressure.y,
+              particle_pressure.z - grid_pressure.z
+          )
+      );
+      max_pressure_traction_residual =
+          std::max(max_pressure_traction_residual, PressureTractionImpulseResidual(*attempt->oriented_loads, kDt));
       ExpectStoredLiquidMomentumBudget(initial_momentum, scheduler->committed().particles.values(), loads);
       EXPECT_NEAR(attempt->body->center.y, body.center.y + kDt * attempt->body->linear_velocity.y, 1e-14);
       EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
@@ -1553,7 +1895,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(patches.ok()) << patches.status();
       const auto flux = ComputeRigidBodyInwardWallFlux3D(swept_body, cells.size(), *patches);
       ASSERT_TRUE(flux.ok()) << flux.status();
-      EXPECT_NEAR(projected_wall_flux, std::accumulate(flux->begin(), flux->end(), 0.0), 1e-15);
+      EXPECT_NEAR(measured.wall_flux, std::accumulate(flux->begin(), flux->end(), 0.0), 1e-15);
       const auto position = scheduler->committed().particles[0].world_position;
       observed_particle_motion |= std::abs(position.y - initial.particles[0].world_position.y) > 1e-9;
       const auto previous_pose = RigidBodyPose3D{body.center, body.orientation};
@@ -1569,6 +1911,13 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       }
     }
     EXPECT_LT(body.angular_velocity.z, 0.0);
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_traction_dt_s=" << kDt
+              << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
+              << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
+              << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
+    EXPECT_LE(max_pressure_traction_residual, 1e-12);
+    EXPECT_GT(max_particle_pressure_impulse, 1e-8);
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
     EXPECT_LT(std::abs(body.linear_velocity.y), 0.04);
@@ -1582,6 +1931,8 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       const auto attempt = replay->AttemptWithCoupledOrientedFloatingBox(kDt, history.body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value());
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       history = {*attempt->body, {history.body.center, history.body.orientation}};
       ASSERT_TRUE(replay->FinishFrame().ok());
     }
@@ -1593,6 +1944,19 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
     EXPECT_EQ(*replayed, final);
   }
 }
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
+  CheckOrientedFloatingBoxTrajectory(false);
+}
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysMatchedMassTrajectory) {
+  CheckOrientedFloatingBoxTrajectory(true);
+}
+TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody) {
+  CheckCoupledOrientedFloatingBoxTrajectory(false);
+}
+TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysMatchedMassLightBody) {
+  CheckCoupledOrientedFloatingBoxTrajectory(true);
+}
+
 TEST(LiquidSubstep3D, GuidedFloatingBoxCoupledLightBodyUsesProductionParticles) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
@@ -1922,6 +2286,168 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxMeasuresCoupledTranslationAndRotationAd
   std::cout << "oriented_box_added_mass_kg=" << vertical_added_mass << " ordinary_mode_gain=" << ordinary_gain
             << " light_mode_gain=" << light_gain << '\n';
 }
+TEST(LiquidSubstep3D, SparseOrientedFloatingBoxRoutesUnsupportedPressureImpulse) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 2.875, 0.125, 0.125, 2.875, 0.0};
+  auto initial = Initial();
+  initial.particles[0].world_position = {0.375, 0.25, 0.375};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDuration = 0.015625;
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.6875, 0.5},
+      .linear_velocity = {0.0, 0.125, 0.0},
+  };
+  constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
+  const auto encode = [&](const LiquidState3D& liquid, const RigidBody3D& box) {
+    return EncodeCoupledInteractionCheckpoint3D(
+        liquid,
+        {
+            .accepted_step = liquid.clock.accepted_step_ordinal,
+            .bodies = {{box, {body.center, body.orientation}}},
+        }
+    );
+  };
+  const auto seed = encode(scheduler->committed(), body);
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+  scheduler->SetStageFaultHookForTesting({nullptr, [](void*, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("")
+                                                                                           : absl::OkStatus();
+                                          }});
+  const auto rejected = scheduler->AttemptWithOrientedFloatingBox(kDuration, body, kHalfExtent);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->outcome.retry_duration.has_value());
+  const double retry_duration = *rejected->outcome.retry_duration;
+  EXPECT_FALSE(rejected->body.has_value());
+  EXPECT_FALSE(rejected->oriented_loads.has_value());
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  const auto after_rejection = encode(scheduler->committed(), body);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *seed);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto attempt = scheduler->AttemptWithOrientedFloatingBox(retry_duration, body, kHalfExtent);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code;
+  ASSERT_TRUE(attempt->oriented_loads.has_value());
+  EXPECT_GT(std::abs(attempt->oriented_loads->pressure_grid_impulse.y), 1e-8);
+  const auto& loads = *attempt->oriented_loads;
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
+  EXPECT_GT(loads.routed_pressure_faces, 0u);
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, loads.pressure_grid_impulse.*component, 1e-12);
+  }
+  EXPECT_GT(
+      std::hypot(
+          loads.routed_pressure_angular_impulse_change.x,
+          loads.routed_pressure_angular_impulse_change.y,
+          loads.routed_pressure_angular_impulse_change.z
+      ),
+      1e-8
+  );
+  EXPECT_EQ(scheduler->committed().clock.accepted_step_ordinal, 1u);
+  ExpectStoredLiquidMomentumBudget(
+      StoredLiquidMomentum(initial.particles.values()),
+      scheduler->committed().particles.values(),
+      loads
+  );
+  const auto accepted = encode(scheduler->committed(), *attempt->body);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*seed);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(replay->BeginFrame(kDuration).ok());
+  const auto repeated =
+      replay->AttemptWithOrientedFloatingBox(retry_duration, restored->solid.bodies.front().body, kHalfExtent);
+  ASSERT_TRUE(repeated.ok() && repeated->body && repeated->oriented_loads);
+  EXPECT_EQ(repeated->oriented_loads->routed_pressure_faces, loads.routed_pressure_faces);
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_DOUBLE_EQ(
+        repeated->oriented_loads->routed_pressure_angular_impulse_change.*component,
+        loads.routed_pressure_angular_impulse_change.*component
+    );
+  }
+  const auto repeated_bytes = encode(replay->committed(), *repeated->body);
+  ASSERT_TRUE(repeated_bytes.ok()) << repeated_bytes.status();
+  EXPECT_EQ(*repeated_bytes, *accepted);
+}
+
+TEST(LiquidSubstep3D, WideCoupledOrientedFloatingBoxUsesIterativePressure) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 4.875, 0.125, 0.125, 4.875, 0.0};
+  auto initial = Initial();
+  initial.particles[0].world_position = {0.375, 0.25, 0.375};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDuration = 0.015625;
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.6875, 0.5},
+      .linear_velocity = {0.0, 0.125, 0.0},
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+  const auto accepted = scheduler->AttemptWithCoupledOrientedFloatingBox(kDuration, body, {0.125, 0.125, 0.125});
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_TRUE(accepted->body && accepted->oriented_loads)
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_EQ(scheduler->committed().cells.size(), 25u);
+  EXPECT_GT(scheduler->diagnostics().pressure_diagnostics.iteration_count, 0u);
+  EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
+  EXPECT_LT(accepted->body->linear_velocity.y, body.linear_velocity.y);
+  const auto& loads = *accepted->oriented_loads;
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, loads.pressure_grid_impulse.*component, 1e-12);
+  }
+}
+
+TEST(LiquidSubstep3D, OrientedFloatingBoxRejectsPressureWithNoReachableParticleSupport) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 2.875, 0.125, 0.125, 2.875, 0.0};
+  auto initial = Initial();
+  // The particle is above every wet pressure stencil, so no receiver exists.
+  initial.particles[0].world_position = {0.375, 4.5, 0.375};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDuration = 0.015625;
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.6875, 0.5},
+      .linear_velocity = {0.0, 0.125, 0.0},
+  };
+  const auto encode = [&] {
+    const auto& liquid = scheduler->committed();
+    return EncodeCoupledInteractionCheckpoint3D(
+        liquid,
+        {
+            .accepted_step = liquid.clock.accepted_step_ordinal,
+            .bodies = {{body, {body.center, body.orientation}}},
+        }
+    );
+  };
+  const auto seed = encode();
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+  const auto attempt = scheduler->AttemptWithOrientedFloatingBox(kDuration, body, {0.125, 0.125, 0.125});
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  EXPECT_EQ(attempt->outcome.disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+  EXPECT_FALSE(attempt->body.has_value());
+  EXPECT_FALSE(attempt->oriented_loads.has_value());
+  const auto after = encode();
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_EQ(*after, *seed);
+}
+
 TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsAngularPressureAndReplays) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};

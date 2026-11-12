@@ -56,6 +56,25 @@ TEST(LiquidBoundaryGeometry3D, SampledSolidCornerKeepsPiecewiseLinearMeasure) {
   }
 }
 
+TEST(LiquidBoundaryGeometry3D, SampledSolidFaceWeightsIntegrateAffineWallFlux) {
+  const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5});
+  ASSERT_TRUE(weights.ok());
+  constexpr std::array expected_weights{11.0 / 48, 1.0 / 48, 7.0 / 48, 5.0 / 48};
+  constexpr std::array normal_velocities{2.0, 5.0, -2.0, 1.0};
+  for (std::size_t corner = 0; corner < weights->size(); ++corner) {
+    EXPECT_NEAR((*weights)[corner], expected_weights[corner], 2e-14);
+  }
+  EXPECT_NEAR(std::accumulate(weights->begin(), weights->end(), 0.0), 0.5, 2e-14);
+  EXPECT_NEAR(std::inner_product(weights->begin(), weights->end(), normal_velocities.begin(), 0.0), 0.375, 2e-14);
+
+  const auto closed = boundary_internal::MeasureSampledSolidFaceWeights(2.0, {0.0, 0.0, 0.0, 0.0});
+  ASSERT_TRUE(closed.ok());
+  EXPECT_NEAR(std::accumulate(closed->begin(), closed->end(), 0.0), 4.0, 2e-14);
+  const auto open = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {1.0, 1.0, 1.0, 1.0});
+  ASSERT_TRUE(open.ok());
+  EXPECT_EQ(std::accumulate(open->begin(), open->end(), 0.0), 0.0);
+}
+
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
   boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
   cell.liquid_distance.fill(-1);
@@ -103,8 +122,33 @@ TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
     return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
   });
   ASSERT_NE(low_x, frozen->faces().end());
-  EXPECT_NEAR(low_x->blocked_area, 0.3125, 1e-13);
-  EXPECT_NEAR(low_x->open_area, 0.6875, 1e-13);
+  EXPECT_NEAR(low_x->blocked_area, 0.40625, 1e-13);
+  EXPECT_NEAR(low_x->open_area, 0.59375, 1e-13);
+  const auto high_y = std::ranges::find_if(frozen->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == -1;
+  });
+  ASSERT_NE(high_y, frozen->faces().end());
+  EXPECT_NEAR(high_y->open_area, 0.875, 1e-13);
+
+  // The same link is a free-surface link when the waterplane is above the
+  // MAC anchor, provided the head cell center is still in air.
+  const auto higher_samples = cases.Sample([](double, double y, double) {
+    return y - 1.25;
+  });
+  auto higher_inputs = inputs;
+  higher_inputs.cell_indices = higher_samples.candidates;
+  higher_inputs.center_distances = higher_samples.centers;
+  higher_inputs.corner_distances = higher_samples.corners;
+  auto higher_box = box;
+  higher_box.pose.center.y = 1.25;
+  higher_box.liquid_height = 1.25;
+  const auto higher = FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(higher_inputs, higher_box);
+  ASSERT_TRUE(higher.ok()) << higher.status();
+  const auto higher_waterplane = std::ranges::find_if(higher->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == -1;
+  });
+  ASSERT_NE(higher_waterplane, higher->faces().end());
+  EXPECT_NEAR(higher_waterplane->open_area, 0.875, 1e-13);
 
   const LiquidBoundaryGeometryViewInputs3D tank_inputs{
       grid.view(),
@@ -126,7 +170,7 @@ TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
     return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
   });
   ASSERT_NE(tank_low_x, in_tank->faces.end());
-  EXPECT_NEAR(tank_low_x->open_area, 0.34375, 1e-13);
+  EXPECT_NEAR(tank_low_x->open_area, 0.3125, 1e-13);
 
   auto overlaps_tank = box;
   overlaps_tank.pose.center.z = 0.25;

@@ -77,11 +77,13 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
 struct SolidCornerDistance3D {
   CellCornerIndex3D corner_index;
   double signed_distance;  // Physical distance, m. Positive outside the solid.
+  Vec3 wall_velocity{};  // World m/s. Used when dense face velocities are absent.
 };
 
 // Borrowed freeze-time samples. Corner keys are distinct in (z,y,x)
 // order and cover each candidate cell. Wall normal velocities are signed
 // along the positive MAC face axis in m/s and cover all owned face slots.
+// An empty face velocity span selects integration of the corner velocities.
 // Sampled geometry is exclusive with the analytic obstacle variants.
 struct SampledSolidBoundary3D {
   std::span<const SolidCornerDistance3D> corner_distances;
@@ -127,7 +129,10 @@ struct FrozenLiquidCell3D {
 struct FrozenLiquidFace3D {
   FaceIndex3D face_index;
   std::size_t face_slot;
-  double open_area;  // Full face minus solid, m²; not clipped by liquid.
+  // Pressure aperture, m². Normally the full face minus solid. The oriented
+  // planar box clips lateral faces by the liquid and uses the wet waterplane
+  // section on the upper Dirichlet link.
+  double open_area;
   double blocked_area;  // Exactly h² - open_area, m².
   double wall_normal_velocity;  // Positive Cartesian face axis, m/s, on both low and high faces.
   // Positive Cartesian orientation, m³/s. For tanks this is the piston-only

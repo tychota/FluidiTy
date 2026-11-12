@@ -467,6 +467,22 @@ class GeometryCases {
     EXPECT_NEAR(shared_link.open_area, 0.75, 2e-14);
     EXPECT_NEAR((1.0 - shared_link.open_area) * shared_link.wall_normal_velocity, 0.05, 2e-14);
 
+    for (auto& corner : solid_corners) {
+      const double y = corner.corner_index.y + 2.0;
+      corner.wall_velocity.x = 2.0 + 4.0 * y;
+    }
+    inputs.sampled_solid->face_normal_velocities = {};
+    const auto affine_frozen = freeze_(inputs);
+    ASSERT_TRUE(affine_frozen.ok()) << affine_frozen.status();
+    const auto affine_links = Links(*affine_frozen);
+    ASSERT_EQ(affine_links.faces.size(), frozen->faces().size());
+    const auto& affine_link = affine_links.faces[static_cast<std::size_t>(shared - frozen->faces().begin())];
+    ASSERT_TRUE(affine_link.prescribed_wall_flux.has_value());
+    EXPECT_NEAR(affine_link.open_area, 0.75, 2e-14);
+    EXPECT_NEAR(*affine_link.prescribed_wall_flux, 0.625, 2e-14);
+    EXPECT_NEAR(affine_link.wall_normal_velocity, 2.5, 2e-14);
+    inputs.sampled_solid->face_normal_velocities = wall_velocities;
+
     inputs.sampled_solid->corner_distances = std::span<const SolidCornerDistance3D>(solid_corners).first(1);
     EXPECT_EQ(freeze_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
 

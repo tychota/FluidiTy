@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <vector>
@@ -688,6 +689,99 @@ absl::StatusOr<LiquidBoundaryFaceDeposits3D> DepositCompatibleMacQuanta3D(const 
   }
   return result;
 }
+absl::Status DistributeCompatiblePressureImpulse3D(
+    SparseMacGridView3D grid,
+    std::span<const LiquidBoundaryParticle3D> particles,
+    std::span<const std::array<CompatibleMacFaceStencil3D, 3>> stencils,
+    std::span<const double> normal_face_impulses,
+    std::span<double> face_mass_scratch,
+    std::span<Vec3> particle_impulse_scratch
+) {
+  const auto invalid = absl::Status(absl::StatusCode::kInvalidArgument, {});
+  const auto range = absl::Status(absl::StatusCode::kOutOfRange, {});
+  if (normal_face_impulses.size() != grid.face_count() || face_mass_scratch.size() != grid.face_count()
+      || stencils.size() != particles.size() || particle_impulse_scratch.size() != particles.size()) {
+    return invalid;
+  }
+  const auto overlaps = [](std::span<const std::byte> first, std::span<const std::byte> second) {
+    const std::less<const std::byte*> before;
+    return !first.empty() && !second.empty() && before(first.data(), second.data() + second.size())
+        && before(second.data(), first.data() + first.size());
+  };
+  const auto masses = std::as_bytes(face_mass_scratch);
+  const auto impulses = std::as_bytes(particle_impulse_scratch);
+  if (overlaps(masses, impulses)) {
+    return invalid;
+  }
+  for (const auto source : {
+           std::as_bytes(grid.active_block_indices()),
+           std::as_bytes(particles),
+           std::as_bytes(stencils),
+           std::as_bytes(normal_face_impulses),
+       }) {
+    if (overlaps(source, masses) || overlaps(source, impulses)) {
+      return invalid;
+    }
+  }
+
+  std::ranges::fill(face_mass_scratch, 0.0);
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    const double particle_mass = particles[ordinal].transfer.particle_mass;
+    if (!std::isfinite(particle_mass) || particle_mass <= 0.0) {
+      return invalid;
+    }
+    for (std::size_t axis = 0; axis < kAxes.size(); ++axis) {
+      for (const auto& sample : stencils[ordinal][axis]) {
+        const double weight = sample.normalized_weight;
+        if (!std::isfinite(weight) || weight < 0.0 || weight > 1.0 || (!sample.compatible && weight != 0.0)) {
+          return invalid;
+        }
+        if (weight == 0.0) {
+          continue;
+        }
+        const auto face = grid.FaceIndex(sample.face_slot);
+        if (!face.ok() || face->axis != kAxes[axis]) {
+          return invalid;
+        }
+        const double weighted_mass = particle_mass * weight;
+        auto& face_mass = face_mass_scratch[sample.face_slot];
+        face_mass += weighted_mass;
+        if (!std::isfinite(face_mass) || weighted_mass <= 0.0) {
+          return range;
+        }
+      }
+    }
+  }
+  for (std::size_t slot = 0; slot < normal_face_impulses.size(); ++slot) {
+    const double impulse = normal_face_impulses[slot];
+    if (!std::isfinite(impulse)) {
+      return invalid;
+    }
+    if (impulse != 0.0 && face_mass_scratch[slot] == 0.0) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    Vec3 impulse{};
+    const double particle_mass = particles[ordinal].transfer.particle_mass;
+    for (std::size_t axis = 0; axis < kAxes.size(); ++axis) {
+      for (const auto& sample : stencils[ordinal][axis]) {
+        if (sample.normalized_weight == 0.0 || normal_face_impulses[sample.face_slot] == 0.0) {
+          continue;
+        }
+        const double weighted_mass = particle_mass * sample.normalized_weight;
+        const double share = weighted_mass / face_mass_scratch[sample.face_slot];
+        impulse.*kVelocityComponents[axis] += share * normal_face_impulses[sample.face_slot];
+      }
+    }
+    if (!IsFinite(impulse)) {
+      return range;
+    }
+    particle_impulse_scratch[ordinal] = impulse;
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<NormalizedLiquidMacFaces3D> NormalizeLiquidMacFaces3D(
     std::span<const MacFaceDepositQuanta3D> quanta,
     MacDepositQuantization3D quantization,

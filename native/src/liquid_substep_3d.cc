@@ -26,6 +26,146 @@ namespace {
 absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+auto CellKey(CellIndex3D index) {
+  return std::tuple(index.z, index.y, index.x);
+}
+
+struct RoutedPressureImpulse3D {
+  Vec3 angular_impulse_change{};
+  std::size_t face_count = 0;
+};
+
+// Multi-source breadth-first search over the open pressure graph. Each
+// component and axis can only receive impulses on its own supported faces.
+absl::StatusOr<RoutedPressureImpulse3D> RouteUnsupportedPressureImpulse(
+    SparseMacGridView3D grid,
+    const LiquidPressureProblemView3D& problem,
+    std::span<const FrozenLiquidFace3D> frozen_faces,
+    std::span<const double> face_masses,
+    std::span<double> impulses
+) {
+  constexpr std::size_t kCellCapacity = 4096;
+  constexpr std::int32_t kMissing = -1;
+  if (problem.cells.size() > kCellCapacity || problem.faces.size() != frozen_faces.size()) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  constexpr std::array kCoordinates{&CellIndex3D::x, &CellIndex3D::y, &CellIndex3D::z};
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto find_cell = [&](CellIndex3D index) -> std::int32_t {
+    const auto key = CellKey(index);
+    const auto found = std::ranges::lower_bound(problem.cells, key, {}, [](const auto& cell) {
+      return CellKey(cell.cell_index);
+    });
+    return found == problem.cells.end() || CellKey(found->cell_index) != key
+        ? kMissing
+        : static_cast<std::int32_t>(found - problem.cells.begin());
+  };
+  const auto incident_cells = [&](FaceIndex3D face) {
+    const auto index = face.lattice_index;
+    const CellIndex3D head{index.x, index.y, index.z};
+    auto tail = head;
+    auto& coordinate = tail.*kCoordinates[static_cast<std::size_t>(face.axis)];
+    if (coordinate == std::numeric_limits<std::int32_t>::min()) {
+      return std::array{kMissing, find_cell(head)};
+    }
+    --coordinate;
+    return std::array{find_cell(tail), find_cell(head)};
+  };
+
+  std::array<std::array<std::int32_t, 6>, kCellCapacity> neighbors;
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    neighbors[cell].fill(kMissing);
+  }
+  for (const auto& face : problem.faces) {
+    if (face.open_area == 0.0 || !std::holds_alternative<InternalMacPressureLink3D>(face.pressure_link)) {
+      continue;
+    }
+    const auto [tail, head] = incident_cells(face.face_index);
+    if (tail == kMissing || head == kMissing) {
+      return Error(absl::StatusCode::kInternal);
+    }
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    neighbors[tail][2 * axis + 1] = head;
+    neighbors[head][2 * axis] = tail;
+  }
+
+  struct Route {
+    std::size_t face_ordinal;
+    std::size_t distance;
+  };
+  constexpr auto kNoFace = std::numeric_limits<std::size_t>::max();
+  std::array<Route, kCellCapacity> routes;
+  std::array<std::int32_t, kCellCapacity> queue;
+  RoutedPressureImpulse3D routed;
+  for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+    std::ranges::fill(std::span(routes).first(problem.cells.size()), Route{kNoFace, kNoFace});
+    std::size_t queue_end = 0;
+    // Pressure faces are in owned-slot order. Together with the ordered
+    // neighbor walk this fixes equal-distance donor selection.
+    for (std::size_t ordinal = 0; ordinal < problem.faces.size(); ++ordinal) {
+      const auto& face = problem.faces[ordinal];
+      if (static_cast<std::size_t>(face.face_index.axis) != axis || face.open_area == 0.0
+          || face_masses[frozen_faces[ordinal].face_slot] == 0.0) {
+        continue;
+      }
+      for (const auto cell : incident_cells(face.face_index)) {
+        if (cell != kMissing && routes[cell].face_ordinal == kNoFace) {
+          routes[cell] = {ordinal, 0};
+          queue[queue_end++] = cell;
+        }
+      }
+    }
+    for (std::size_t cursor = 0; cursor < queue_end; ++cursor) {
+      const auto cell = queue[cursor];
+      for (const auto neighbor : neighbors[cell]) {
+        if (neighbor != kMissing && routes[neighbor].face_ordinal == kNoFace) {
+          routes[neighbor] = {routes[cell].face_ordinal, routes[cell].distance + 1};
+          queue[queue_end++] = neighbor;
+        }
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < problem.faces.size(); ++ordinal) {
+      const auto& face = problem.faces[ordinal];
+      const auto slot = frozen_faces[ordinal].face_slot;
+      if (static_cast<std::size_t>(face.face_index.axis) != axis || face_masses[slot] != 0.0 || impulses[slot] == 0.0) {
+        continue;
+      }
+      Route target{kNoFace, kNoFace};
+      for (const auto cell : incident_cells(face.face_index)) {
+        if (cell != kMissing
+            && std::tie(routes[cell].distance, routes[cell].face_ordinal)
+                < std::tie(target.distance, target.face_ordinal)) {
+          target = routes[cell];
+        }
+      }
+      if (target.face_ordinal == kNoFace) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      const auto target_slot = frozen_faces[target.face_ordinal].face_slot;
+      const auto source = face.face_index.lattice_index;
+      const auto target_index = problem.faces[target.face_ordinal].face_index.lattice_index;
+      const double width = grid.geometry().cell_width;
+      const Vec3 offset{
+          width * (static_cast<double>(target_index.x) - source.x),
+          width * (static_cast<double>(target_index.y) - source.y),
+          width * (static_cast<double>(target_index.z) - source.z),
+      };
+      Vec3 impulse{};
+      impulse.*kComponents[axis] = impulses[slot];
+      routed.angular_impulse_change.x += offset.y * impulse.z - offset.z * impulse.y;
+      routed.angular_impulse_change.y += offset.z * impulse.x - offset.x * impulse.z;
+      routed.angular_impulse_change.z += offset.x * impulse.y - offset.y * impulse.x;
+      impulses[target_slot] += impulses[slot];
+      impulses[slot] = 0.0;
+      ++routed.face_count;
+      if (!std::isfinite(impulses[target_slot]) || !liquid_step_internal::Finite(routed.angular_impulse_change)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+    }
+  }
+  return routed;
+}
+
 // Mask anchors inside the box and use the nearest box face to complete those
 // velocity samples. Open anchors continue to use the tank history.
 absl::Status ApplyBoxFaceSamples(
@@ -230,9 +370,6 @@ bool Complete(const LiquidSubstepBackend3D& backend) {
       && backend.discard_growth && backend.topology && backend.deposit && backend.normalize
       && backend.predict_missing_face && backend.forces && backend.freeze && backend.links && backend.project
       && backend.gather && backend.update_particles;
-}
-auto CellKey(CellIndex3D index) {
-  return std::tuple(index.z, index.y, index.x);
 }
 
 // Select the projected new history only for particles in a frozen pressure cell.
@@ -848,6 +985,7 @@ struct LiquidSubstepScheduler3D::Impl {
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
     std::optional<RigidBodyStep3D> oriented_box_candidate;
+    bool use_compatible_pressure_transfer = false;
     const auto record_oriented_pressure_load = [&](const RigidBody3D& loaded) {
       auto& loads = *floating_box->oriented_loads;
       loads.pressure_force =
@@ -1402,43 +1540,46 @@ struct LiquidSubstepScheduler3D::Impl {
         pressure_problem.cells = rows;
         return absl::OkStatus();
       };
+      const auto accumulate_pressure_patch =
+          [&](RigidBody3D& body, std::span<const double> pressures, const RigidPressurePatch3D& patch) -> absl::Status {
+        auto pressure_patch = patch;
+        auto patch_pressures = pressures;
+        double reconstructed_pressure = 0.0;
+        double pressure_gradient_y = 0.0;
+        const bool supports_hydrostatic_gradient = !uses_composition_density || scene.constituent_materials.size() == 1;
+        if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
+          const auto geometry = grid.geometry();
+          const auto cell = links->cells[patch.pressure_cell_index].cell_index;
+          const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
+              patch.world_centroid.y,
+              {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
+          );
+          if (!centroid_to_cell.ok()) {
+            return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
+          }
+          const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
+          pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
+          reconstructed_pressure =
+              std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
+          patch_pressures = {&reconstructed_pressure, 1};
+          pressure_patch.pressure_cell_index = 0;
+        }
+        const auto loaded = AccumulateRigidBodyPressure3D(
+            body,
+            patch_pressures,
+            scene.ambient_pressure,
+            {&pressure_patch, 1},
+            pressure_gradient_y
+        );
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        body = *loaded;
+        return absl::OkStatus();
+      };
       const auto load_box = [&](std::span<const double> pressures, RigidBody3D body) -> absl::StatusOr<RigidBody3D> {
         STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
-          auto pressure_patch = patch;
-          auto patch_pressures = pressures;
-          double reconstructed_pressure = 0.0;
-          double pressure_gradient_y = 0.0;
-          const bool supports_hydrostatic_gradient =
-              !uses_composition_density || scene.constituent_materials.size() == 1;
-          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
-            const auto geometry = grid.geometry();
-            const auto cell = links->cells[patch.pressure_cell_index].cell_index;
-            const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
-                patch.world_centroid.y,
-                {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
-            );
-            if (!centroid_to_cell.ok()) {
-              return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
-            }
-            const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
-            pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
-            reconstructed_pressure =
-                std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
-            patch_pressures = {&reconstructed_pressure, 1};
-            pressure_patch.pressure_cell_index = 0;
-          }
-          const auto loaded = AccumulateRigidBodyPressure3D(
-              body,
-              patch_pressures,
-              scene.ambient_pressure,
-              {&pressure_patch, 1},
-              pressure_gradient_y
-          );
-          if (!loaded.ok()) {
-            return loaded.status();
-          }
-          body = *loaded;
-          return absl::OkStatus();
+          return accumulate_pressure_patch(body, pressures, patch);
         }));
         return body;
       };
@@ -1449,12 +1590,22 @@ struct LiquidSubstepScheduler3D::Impl {
         return Error(absl::StatusCode::kFailedPrecondition);
       }
       if (!active_viscosity) {
+        auto pressure_options = options.pressure_solver_options;
+        if (oriented_box && floating_box->coupled) {
+          const auto extent = floating_box->half_extent;
+          const double full_displaced_mass = 8.0 * extent.x * extent.y * extent.z * scene.liquid_density;
+          // A small rigid mass amplifies pressure residuals in the twist
+          // solve. Refine the inner response in that inertia regime.
+          const double residual_scale = floating_box->body.mass < 0.005 * full_displaced_mass ? 1e-6 : 1e-3;
+          pressure_options.cpu_residual_tolerance_scale =
+              std::min(pressure_options.cpu_residual_tolerance_scale, residual_scale);
+        }
         auto projection = backend.project(
             backend.context,
             grid,
             step_duration,
             pressure_problem,
-            options.pressure_solver_options,
+            pressure_options,
             workspace.pressure()
         );
         if (!projection.ok()) {
@@ -1510,7 +1661,7 @@ struct LiquidSubstepScheduler3D::Impl {
                 grid,
                 step_duration,
                 pressure_problem,
-                options.pressure_solver_options,
+                pressure_options,
                 workspace.pressure()
             );
             return projection.status();
@@ -1843,7 +1994,8 @@ struct LiquidSubstepScheduler3D::Impl {
         }
       }
       if (projected_cell_pressures.size() != frozen->cells.size()
-          || projected_face_velocities.size() != frozen->faces.size()) {
+          || projected_face_velocities.size() != frozen->faces.size()
+          || projected_face_velocities.size() != pressure_problem.faces.size()) {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
       }
       if (eos) {
@@ -1890,6 +2042,114 @@ struct LiquidSubstepScheduler3D::Impl {
             *tank_at_step_start,
             grid.geometry().cell_width
         ));
+      }
+      if (oriented_box) {
+        constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+        Vec3 grid_impulse{};
+        STEP_TRY(staging.face_pressure_impulses.Resize(grid.face_count()));
+        std::ranges::fill(staging.face_pressure_impulses.values(), 0.0);
+        const bool reconstruct_hydrostatic_pressure =
+            !eos && (!uses_composition_density || scene.constituent_materials.size() == 1);
+        const double hydrostatic_velocity_correction =
+            reconstruct_hydrostatic_pressure ? -step_duration * scene.world_acceleration.y : 0.0;
+        for (std::size_t index = 0; index < pressure_problem.faces.size(); ++index) {
+          const auto& face = pressure_problem.faces[index];
+          if (face.open_area == 0.0) {
+            continue;
+          }
+          const double dual_mass = face.open_area * face.pressure_gradient_distance / face.inverse_density;
+          const double velocity_change = projected_face_velocities[index] - face.predicted_normal_velocity;
+          const auto component = kComponents[static_cast<std::size_t>(face.face_index.axis)];
+          const double impulse = dual_mass * velocity_change;
+          grid_impulse.*component += impulse;
+          const double hydrostatic_correction =
+              face.face_index.axis == FaceNormalAxis::kY ? hydrostatic_velocity_correction : 0.0;
+          staging.face_pressure_impulses[frozen->faces[index].face_slot] =
+              dual_mass * (velocity_change - hydrostatic_correction);
+        }
+        if (!liquid_step_internal::Finite(grid_impulse)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+        floating_box->oriented_loads->pressure_grid_impulse = grid_impulse;
+        if (!trial.particles.values().empty()) {
+          STEP_TRY(staging.pressure_transfer_mass_scratch.Resize(grid.face_count()));
+          STEP_TRY(staging.pressure_particle_impulses.Resize(trial.particles.size()));
+          const auto distribute = [&]() {
+            return DistributeCompatiblePressureImpulse3D(
+                grid,
+                staging.particles.values(),
+                deposits->compatible_stencils,
+                staging.face_pressure_impulses.values(),
+                staging.pressure_transfer_mass_scratch.values(),
+                staging.pressure_particle_impulses.values()
+            );
+          };
+          auto distribution = distribute();
+          if (distribution.code() == absl::StatusCode::kFailedPrecondition) {
+            const auto routed = RouteUnsupportedPressureImpulse(
+                grid,
+                pressure_problem,
+                frozen->faces,
+                staging.pressure_transfer_mass_scratch.values(),
+                staging.face_pressure_impulses.values()
+            );
+            if (!routed.ok()) {
+              return routed.status();
+            }
+            distribution = distribute();
+            if (distribution.ok()) {
+              floating_box->oriented_loads->routed_pressure_faces = routed->face_count;
+              floating_box->oriented_loads->routed_pressure_angular_impulse_change = routed->angular_impulse_change;
+            }
+          }
+          if (distribution.ok()) {
+            use_compatible_pressure_transfer = true;
+            STEP_TRY(staging.prepressure_velocities.Resize(grid.face_count()));
+            STEP_TRY(staging.pressure_stored_velocities.Resize(trial.particles.size()));
+            std::ranges::copy(staging.new_velocities.values(), staging.prepressure_velocities.values().begin());
+            for (std::size_t index = 0; index < pressure_problem.faces.size(); ++index) {
+              const auto& face = pressure_problem.faces[index];
+              const double hydrostatic_correction = face.open_area > 0.0 && face.face_index.axis == FaceNormalAxis::kY
+                  ? hydrostatic_velocity_correction
+                  : 0.0;
+              staging.prepressure_velocities[frozen->faces[index].face_slot] =
+                  face.predicted_normal_velocity + hydrostatic_correction;
+            }
+            Vec3 distributed_impulse{};
+            for (const auto impulse : staging.pressure_particle_impulses.values()) {
+              distributed_impulse = liquid_step_internal::Add(distributed_impulse, impulse);
+            }
+            floating_box->oriented_loads->particle_pressure_impulse = distributed_impulse;
+          } else {
+            return distribution;
+          }
+        }
+
+        // Use the same checked traction accumulator for a fixed surface. The
+        // zero center makes its accumulated moment relative to the world origin.
+        constexpr std::uint64_t kTankPatchId = 1;
+        RigidBody3D tank_load{.body_id = kTankPatchId, .mass = 1.0, .principal_inertia = {1.0, 1.0, 1.0}};
+        const auto status = VisitStationaryTankPressurePatches3D(
+            kTankPatchId,
+            *tank_at_step_start,
+            floating_box->oriented_geometry->liquid_height,
+            grid.geometry(),
+            links->cells.size(),
+            [&](std::size_t ordinal) {
+              return links->cells[ordinal].cell_index;
+            },
+            [&](const RigidPressurePatch3D& patch) {
+              return accumulate_pressure_patch(tank_load, projected_cell_pressures, patch);
+            }
+        );
+        if (status.ok()) {
+          floating_box->oriented_loads->tank_pressure = TankPressureLoad3D{
+              .force = liquid_step_internal::Scale(tank_load.force, -1.0),
+              .torque = liquid_step_internal::Scale(tank_load.torque, -1.0),
+          };
+        } else if (status.code() != absl::StatusCode::kFailedPrecondition) {
+          return status;
+        }
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;
@@ -2023,6 +2283,28 @@ struct LiquidSubstepScheduler3D::Impl {
       };
       if (use_projected_history) {
         gather_inputs.new_history.validity = projected_gather_validity;
+      }
+      if (use_compatible_pressure_transfer) {
+        auto baseline_inputs = gather_inputs;
+        baseline_inputs.new_history.face_velocities = staging.prepressure_velocities.values();
+        const auto baseline = backend.gather(backend.context, baseline_inputs, boundary);
+        if (!baseline.ok()) {
+          return baseline.status();
+        }
+        if (baseline->particles.size() != 1) {
+          return Error(absl::StatusCode::kInternal);
+        }
+        const auto& sample = baseline->particles.front();
+        const bool fallback = sample.old_pic_fallback || sample.new_pic_fallback || sample.low_mass_fallback;
+        const double alpha = particle.pic_initialized && !fallback ? 0.99 * options.particle_energy_blend : 0.0;
+        const auto prepressure_velocity = liquid_step_internal::Add(
+            sample.new_pic_velocity,
+            liquid_step_internal::Scale(sample.particle_minus_old_pic_velocity, alpha)
+        );
+        staging.pressure_stored_velocities[index] = liquid_step_internal::Add(
+            prepressure_velocity,
+            liquid_step_internal::Scale(staging.pressure_particle_impulses[index], 1.0 / particle.mass)
+        );
       }
       const bool continues_projected_change = use_projected_history && continue_isolated_projection;
       if (backend.gather_run && index >= attempted_run_end) {
@@ -2175,7 +2457,8 @@ struct LiquidSubstepScheduler3D::Impl {
           particle_update_inputs,
           *oriented_box_candidate,
           floating_box->half_extent,
-          trial.particles.values()
+          trial.particles.values(),
+          use_compatible_pressure_transfer ? staging.pressure_stored_velocities.values() : std::span<const Vec3>{}
       );
       if (!impulse.ok()) {
         return impulse.status();

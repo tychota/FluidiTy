@@ -558,13 +558,25 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     }
   }
 
-  if (!face_query) {
-    auto vertical_lattice = clip::TankAxis(query, 1);
+  double face_normal_coordinate = 0.0;
+  const auto vertical_lattice = clip::TankAxis(query, 1);
+  if (face_query && query.axis == 1) {
+    const auto distance = clip::HorizontalPlaneLatticeDistance(request.box.liquid_height, vertical_lattice);
+    if (!distance.ok()) {
+      return clip::ArithmeticStatus(distance.status(), request.bounded);
+    }
+    // The link between the last liquid center and the first air center uses
+    // the physical free-surface section. Its MAC slot remains on the lattice.
+    const double surface_coordinate = -*distance / h;
+    if (surface_coordinate > -0.5 && surface_coordinate <= 0.5) {
+      face_normal_coordinate = surface_coordinate;
+    }
+  } else {
     const auto liquid_top = clip::TankClipCoordinate(request.box.liquid_height, vertical_lattice);
     if (!liquid_top.ok()) {
       return clip::ArithmeticStatus(liquid_top.status(), request.bounded);
     }
-    for (int corner = 0; corner < 8; ++corner) {
+    for (int corner = 0; !face_query && corner < 8; ++corner) {
       auto lattice = vertical_lattice;
       lattice.lattice_index += (corner >> 1) & 1;
       const auto distance = clip::HorizontalPlaneLatticeDistance(request.box.liquid_height, lattice);
@@ -597,10 +609,12 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     constexpr double kInfinity = std::numeric_limits<double>::infinity();
     const double box_low = std::nextafter(clip::AddDown(offset.lower, -request.world_extent[axis]) / h, -kInfinity);
     const double box_high = std::nextafter(clip::AddUp(offset.upper, request.world_extent[axis]) / h, kInfinity);
-    const double domain_high = face_query && axis == query.axis ? 0.0 : outer.high[axis];
-    clear_low[axis] = box_low > outer.low[axis];
+    const bool normal_axis = face_query && axis == query.axis;
+    const double domain_low = normal_axis ? face_normal_coordinate : outer.low[axis];
+    const double domain_high = normal_axis ? face_normal_coordinate : outer.high[axis];
+    clear_low[axis] = box_low > domain_low;
     clear_high[axis] = box_high < domain_high;
-    separated |= box_low > domain_high || box_high < outer.low[axis];
+    separated |= box_low > domain_high || box_high < domain_low;
   }
   const double outer_measure = clip::TankBoxMeasure(outer, h, face_query ? query.axis : -1);
   if (!IsNormalOrZero(outer_measure)) {
@@ -639,6 +653,7 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     };
     for (const auto& corner : kCornerBits) {
       clip::CartesianVector position{};
+      position[query.axis] = face_normal_coordinate;
       position[first_tangent] = corner[0] ? outer.high[first_tangent] : outer.low[first_tangent];
       position[second_tangent] = corner[1] ? outer.high[second_tangent] : outer.low[second_tangent];
       inside.push_back({position, 0.0});
@@ -793,7 +808,8 @@ absl::Status FreezeCore(
   const auto sampled_solid = inputs.sampled_solid;
   if (sampled_solid) {
     if (!std::holds_alternative<std::monostate>(inputs.obstacle)
-        || sampled_solid->face_normal_velocities.size() != inputs.mac_grid.face_count()
+        || (!sampled_solid->face_normal_velocities.empty()
+            && sampled_solid->face_normal_velocities.size() != inputs.mac_grid.face_count())
         || !std::ranges::all_of(sampled_solid->face_normal_velocities, [](double velocity) {
              return std::isfinite(velocity);
            })) {
@@ -925,11 +941,16 @@ absl::Status FreezeCore(
           }
           corner_index = *shifted;
         }
-        const auto distance = LookupSignedDistance(sampled_solid->corner_distances, corner_index, bounded);
-        if (!distance.ok()) {
-          return distance.status();
+        const auto samples = sampled_solid->corner_distances;
+        const auto key = CellKey(corner_index);
+        const auto sample = std::ranges::lower_bound(samples, key, {}, SampleKey<SolidCornerDistance3D>);
+        if (sample == samples.end() || SampleKey(*sample) != key) {
+          return MissingBoundarySample(bounded);
         }
-        query.derivative_distances[corner] = *distance;
+        query.derivative_distances[corner] = sample->signed_distance;
+        if (sampled_solid->face_normal_velocities.empty()) {
+          query.corner_distances[corner] = CartesianComponents(sample->wall_velocity)[query.axis];
+        }
       }
     }
     return true;
@@ -939,10 +960,15 @@ absl::Status FreezeCore(
     frozen_face.open_area = areas.open_face_area;
     frozen_face.blocked_area = areas.blocked_face_area;
     if (sampled_solid) {
-      frozen_face.wall_normal_velocity = sampled_solid->face_normal_velocities[frozen_face.face_slot];
+      if (sampled_solid->face_normal_velocities.empty()) {
+        frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
+        frozen_face.prescribed_wall_flux = areas.prescribed_wall_flux;
+      } else {
+        frozen_face.wall_normal_velocity = sampled_solid->face_normal_velocities[frozen_face.face_slot];
+      }
     } else if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
       frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
-      frozen_face.prescribed_wall_flux = areas.piston_flux;
+      frozen_face.prescribed_wall_flux = areas.prescribed_wall_flux;
       frozen_face.is_low_x_piston_face = areas.is_low_x_piston_face;
     } else {
       frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(frozen_face.face_index.axis)];
