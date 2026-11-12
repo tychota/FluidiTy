@@ -686,6 +686,23 @@ bool TestPlanarMixedContactDetection() {
       return false;
     }
   }
+  const std::array rear_traction{fluidity::SnowPressureContributor3D{4, 1}};
+  auto stale_wall_settings = deformation_settings;
+  stale_wall_settings.snow_layer_material.reset();
+  const auto rejected_stale_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      rear_traction,
+      stale_wall_settings,
+      project
+  );
+  if (rejected_stale_wall.status().message() != "planar pressure wall disagrees with the advected snow front"
+      || accepted_liquid.clock.time != 0 || deforming_snow[0].transfer.trial_world_position.x != -0.875
+      || deforming_snow[1].transfer.trial_world_position.x != -1.125) {
+    std::fprintf(stderr, "M5 inconsistent wall pose: %s\n", rejected_stale_wall.status().ToString().c_str());
+    return false;
+  }
   auto middle = deforming_snow[1];
   middle.particle_id = 5;
   middle.transfer.trial_world_position.x = -1;

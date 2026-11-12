@@ -240,7 +240,9 @@ struct PlanarSnowPressureFrame3D {
 // Drives the planar cut-cell scene to a completed frame. Snow records
 // describe one body. Liquid must have no sources or cavity state. Its
 // existing topology must match the frozen
-// cell and faces. The wall geometry is rebuilt after each accepted step.
+// cell and faces. Each accepted step must reconstruct its end wall in
+// that cell and agree with the pressure-driven wall trajectory within
+// the scatter speed tolerance integrated over the step plus 1e-10 cell widths.
 // Motion retries use the transaction's half-step schedule. On success the
 // returned states belong to the same completed frame. Errors publish no
 // frame and both input material states remain immutable.

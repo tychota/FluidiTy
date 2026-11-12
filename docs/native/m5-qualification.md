@@ -42,7 +42,7 @@ dry-scene target retains the sand and snow qualification cases.
 | Reciprocal pressure for a planar snow interface | Pass for one- and two-cell frozen fixtures | Native and CUDA recover analytic flux, pressure, speed, and impulse with either wall orientation. The two-cell case reverses which pressure row is incident to the wall. An interior wall selection rejects. |
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
 | Joint planar pressure advection | Pass for one- and two-cell frozen fixtures | The projected regular-cell field updates liquid positions, volume and slopes. Snow advances with its pressure-corrected velocity. Crossing into an adjacent pressure cell succeeds. A late unsupported liquid destination or snow motion failure preserves both states. |
-| Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
+| Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. An inconsistent wet volume or a pressure-driven wall pose that disagrees with the advected snow front rejects without publication. |
 | Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
 | Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
 | Planar snow-layer compression under water pressure | Pass for the one-cell affine layer fixture | Native and CUDA produce 12 Pa and reduce thickness from 0.25 m to 0.1875 m. The elastic Jacobian clamps at 0.975 and the combined Jacobian is 0.75. The frame rejects non-affine normal motion and preserves both input states. |
@@ -1427,6 +1427,14 @@ the cumulative elastic–plastic Jacobian is 3/11. The elastic Jacobian
 stays at its 0.975 clamp. The second-frame pressure, thickness, and total
 Jacobian use 2e-6 absolute tolerance in their respective units. The
 elastic clamp and rear coordinate use 1e-12.
+
+At each accepted substep, including the final one, the frame rebuilds the
+wall from the moved snow and checks that it stays in the selected cell.
+The reconstructed pose must agree with the integrated pressure-driven
+trajectory within the step duration times the existing scatter speed
+tolerance, plus 1e-10 cell widths. The rear-only traction regression
+previously accepted a moving liquid wall while the foremost snow particle
+stayed still. Native and CUDA now reject that frame and preserve the inputs.
 
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow

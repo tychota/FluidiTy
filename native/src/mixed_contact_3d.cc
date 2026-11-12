@@ -15,6 +15,10 @@
 namespace fluidity {
 namespace {
 
+double PlanarWallSpeedTolerance(double solved_wall_speed) {
+  return 2e-5 * std::max(1.0, std::abs(solved_wall_speed));
+}
+
 struct ContactVelocityBinding {
   ContactParticleIdentity3D identity;
   Vec3* stored_world_velocity;
@@ -562,9 +566,9 @@ absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
     }
     scattered_wall_speed += contributors[ordinal].area_fraction * velocity.candidate_velocity;
   }
-  const double speed_scale = std::max(1.0, std::abs(trial->solved_wall_normal_velocity));
   if (!std::isfinite(scattered_wall_speed)
-      || std::abs(scattered_wall_speed - trial->solved_wall_normal_velocity) > 2e-5 * speed_scale) {
+      || std::abs(scattered_wall_speed - trial->solved_wall_normal_velocity)
+          > PlanarWallSpeedTolerance(trial->solved_wall_normal_velocity)) {
     return absl::FailedPreconditionError("scattered planar snow traction did not recover wall speed");
   }
   for (const auto& velocity : staged) {
@@ -1143,8 +1147,8 @@ absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
 
   std::vector<PlasticSolidCheckpointParticle3D> snow(accepted_snow.begin(), accepted_snow.end());
   std::size_t rejected_attempts = 0;
-  while (transaction->committed().clock.time < settings.target_time) {
-    const auto frozen = FreezePlanarSnowPressureCell3D(
+  const auto freeze_wall = [&] {
+    return FreezePlanarSnowPressureCell3D(
         grid,
         settings.wall_cell,
         settings.wall_axis,
@@ -1154,9 +1158,14 @@ absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
         settings.inverse_liquid_density,
         settings.outlet_pressure
     );
-    if (!frozen.ok()) {
-      return frozen.status();
-    }
+  };
+  auto frozen = freeze_wall();
+  if (!frozen.ok()) {
+    return frozen.status();
+  }
+  const double wall_normal_sign = settings.wall_on_low_face ? 1 : -1;
+  const double wall_tolerance = 1e-10 * grid.geometry().cell_width;
+  while (transaction->committed().clock.time < settings.target_time) {
     const double remaining = settings.target_time - transaction->committed().clock.time;
     MacPressureInputs3D inputs{
         grid,
@@ -1180,6 +1189,22 @@ absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
         return attempt.status();
       }
       if (attempt->outcome.disposition == LiquidAttemptDisposition3D::kAccepted) {
+        const double end_wall_coordinate = std::fma(
+            inputs.step_duration,
+            wall_normal_sign * attempt->pressure->solved_wall_normal_velocity,
+            frozen->wall_plane_coordinate
+        );
+        auto end_geometry = freeze_wall();
+        if (!end_geometry.ok()) {
+          return end_geometry.status();
+        }
+        // Include the allowed discrepancy between the projected speed and scattered traction.
+        const double pose_tolerance = wall_tolerance
+            + inputs.step_duration * PlanarWallSpeedTolerance(attempt->pressure->solved_wall_normal_velocity);
+        if (std::abs(end_geometry->wall_plane_coordinate - end_wall_coordinate) > pose_tolerance) {
+          return absl::FailedPreconditionError("planar pressure wall disagrees with the advected snow front");
+        }
+        frozen = std::move(end_geometry);
         break;
       }
       if (!attempt->outcome.retry_duration.has_value()) {
