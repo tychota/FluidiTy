@@ -1867,3 +1867,13 @@ of wet volume. Its pressure impulse and affine work agree with the
 blocked area and signed flux, and a stale frozen flux is rejected.
 All 83 native and CUDA checks passed on the M6 base. The milestone
 integration passed six native M5 targets and three CLI checks.
+
+
+### Pressure-loaded snow trial
+
+[PR 102](https://github.com/tychota/FluidiTy/pull/102) landed at `60c4712`
+after 193 selected native tests passed on `6031c07`. The fixture stages
+reciprocal loads on three blocked faces from solved liquid pressure.
+The loaded trial advances with the expected translation and shear, and
+an unknown owner leaves the accepted checkpoint unchanged. The milestone
+integration passed six native M5 and three CLI tests.
