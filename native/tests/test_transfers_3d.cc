@@ -9,6 +9,9 @@
 
 #include "absl/status/status.h"
 #include "fixture_data.h"
+#include "fluidity/host/elastic_blade_deformation_3d.h"
+#include "fluidity/host/liquid_wall_contact_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "gtest/gtest.h"
 
@@ -238,6 +241,560 @@ TEST(MacTransfer3D, QuadraticRowDistinguishesFitAndGradient) {
     ExpectNear(gathered.fitted_velocity_slopes, expected_fitted_velocity_slopes);
     ExpectNear(gathered.velocity_gradient, Mat3{});
   }
+}
+
+TEST(MacTransfer3D, UncutElasticWorkBalancesAtTranslatedCorner) {
+  const auto mac_grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const auto particle = CornerParticle(kTranslatedGeometry);
+  const Vec3 position = particle.trial_world_position;
+  std::vector<double> face_velocities(mac_grid->face_count());
+  SampleField(
+      *mac_grid,
+      [position](std::size_t axis_index, Vec3 anchor) {
+        const double displacement = Components(anchor)[axis_index] - Components(position)[axis_index];
+        return displacement * displacement + 2.0 * displacement;
+      },
+      face_velocities
+  );
+  const Mat3 deformation_gradient{
+      .x_row = {2.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  const auto stress = NeoHookeanKirchhoffStress3D(deformation_gradient, 2.0, 0.0);
+  ASSERT_TRUE(stress.ok()) << stress.status();
+  ExpectNear(stress->x_row.x, 6.0);
+
+  constexpr double kReferenceVolume = 0.25;
+  std::vector<double> stress_forces(mac_grid->face_count());
+  const auto deposition =
+      DepositElasticStress3D(*mac_grid, position, position, kReferenceVolume, *stress, stress_forces);
+  ASSERT_TRUE(deposition.ok()) << deposition;
+  MacParticleGatherResult3D gathered{};
+  const auto gather = GatherMac3D(*mac_grid, {&particle, 1}, face_velocities, face_velocities, {&gathered, 1});
+  ASSERT_TRUE(gather.ok()) << gather;
+  ExpectNear(gathered.velocity_gradient.x_row.x, 2.0);
+
+  double grid_power = 0.0;
+  for (std::size_t face_slot = 0; face_slot < stress_forces.size(); ++face_slot) {
+    grid_power += face_velocities[face_slot] * stress_forces[face_slot];
+  }
+  const double deformation_power = kReferenceVolume * stress->x_row.x * gathered.velocity_gradient.x_row.x;
+  EXPECT_NEAR(grid_power, -3.0, 3e-6);
+  EXPECT_NEAR(
+      grid_power + deformation_power,
+      0.0,
+      1e-6 * std::max({1.0, std::abs(grid_power), std::abs(deformation_power)})
+  );
+}
+
+TEST(MacTransfer3D, NeoHookeanRejectsRoundedSingularDeformation) {
+  constexpr Vec3 kRepeatedRow{0.23645552527159452, 0.3692706737201661, 0.5042420323006809};
+  constexpr Mat3 kSingular{
+      .x_row = kRepeatedRow,
+      .y_row = {0.7048832636792213, 0.05054362863302231, 0.3695183543022722},
+      .z_row = kRepeatedRow,
+  };
+  EXPECT_EQ(NeoHookeanKirchhoffStress3D(kSingular, 2.0, 1.0).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
+  const auto mac_grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const Vec3 position = CornerParticle(kTranslatedGeometry).trial_world_position;
+  std::vector<double> completed_face_velocities(mac_grid->face_count());
+  SampleField(
+      *mac_grid,
+      [position](std::size_t axis_index, Vec3 anchor) {
+        const double displacement = Components(anchor)[axis_index] - Components(position)[axis_index];
+        return displacement * displacement + 2.0 * displacement;
+      },
+      completed_face_velocities
+  );
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {2.0, 0.0, 0.0},
+  };
+  const auto invalid_time = BuildElasticBladeFaceTags3D(mac_grid->view(), blade, -0.25);
+  EXPECT_EQ(invalid_time.status().code(), absl::StatusCode::kInvalidArgument);
+  const auto tags = BuildElasticBladeFaceTags3D(mac_grid->view(), blade, 0.25);
+  ASSERT_TRUE(tags.ok()) << tags.status();
+  std::vector<std::uint8_t> compatible_faces(mac_grid->face_count());
+  for (std::size_t face_slot = 0; face_slot < compatible_faces.size(); ++face_slot) {
+    const auto face = mac_grid->view().FaceIndex(face_slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    const auto anchor = mac_grid->FaceWorldAnchor(*face);
+    ASSERT_TRUE(anchor.ok()) << anchor.status();
+    const auto tag = (*tags)[face_slot];
+    const bool expected_positive = anchor->x >= 8.0;
+    const bool expected_negative = anchor->x <= 6.0;
+    EXPECT_EQ(tag.structurally_eligible, expected_positive || expected_negative);
+    EXPECT_EQ(tag.side_tag, expected_positive ? 1 : expected_negative ? -1 : 0);
+    compatible_faces[face_slot] = tag.structurally_eligible && tag.side_tag == 1;
+  }
+  constexpr Mat3 kStress{
+      .x_row = {6.0, 0.0, 0.0},
+      .y_row = {},
+      .z_row = {},
+  };
+  constexpr double kDt = 0.125;
+  constexpr double kVolume = 0.25;
+  constexpr double kCompatibleDerivative = 800.0 / 529.0;
+  std::vector<double> face_forces(mac_grid->face_count(), 999.0);
+  const auto budget = DepositCutElasticStress3D(
+      *mac_grid,
+      position,
+      position,
+      kVolume,
+      kStress,
+      kDt,
+      compatible_faces,
+      completed_face_velocities,
+      face_forces
+  );
+  ASSERT_TRUE(budget.ok()) << budget.status();
+  ExpectNear(budget->complete_velocity_gradient.x_row.x, 2.0);
+  ExpectNear(budget->compatible_velocity_gradient.x_row.x, kCompatibleDerivative);
+  ExpectNear(budget->cut_work, kDt * kVolume * 6.0 * (2.0 - kCompatibleDerivative));
+  ExpectNear(budget->grid_stress_work, -kDt * kVolume * 6.0 * kCompatibleDerivative);
+  ExpectNear(budget->stress_impulse, Vec3{});
+  ExpectNear(budget->stress_angular_impulse_about_particle, Vec3{});
+  for (std::size_t face_slot = 0; face_slot < compatible_faces.size(); ++face_slot) {
+    if (compatible_faces[face_slot] == 0) {
+      EXPECT_EQ(face_forces[face_slot], 0.0);
+    }
+  }
+
+  const auto accepted_forces = face_forces;
+  std::ranges::fill(compatible_faces, 0);
+  const auto rejected = DepositCutElasticStress3D(
+      *mac_grid,
+      position,
+      position,
+      kVolume,
+      kStress,
+      kDt,
+      compatible_faces,
+      completed_face_velocities,
+      face_forces
+  );
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(face_forces, accepted_forces);
+}
+
+TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsInversion) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const auto particle = CornerParticle(kTranslatedGeometry);
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {2.0, 0.0, 0.0},
+  };
+  const auto old_tags = BuildElasticBladeFaceTags3D(grid->view(), blade, 0.0);
+  const auto new_tags = BuildElasticBladeFaceTags3D(grid->view(), blade, 0.25);
+  ASSERT_TRUE(old_tags.ok()) << old_tags.status();
+  ASSERT_TRUE(new_tags.ok()) << new_tags.status();
+  std::vector<double> old_velocity(grid->face_count());
+  std::vector<double> new_velocity(grid->face_count());
+  SampleField(
+      *grid,
+      [](std::size_t axis_index, Vec3 anchor) {
+        return axis_index == 0 ? 2.0 * anchor.x + anchor.y : 0.0;
+      },
+      new_velocity
+  );
+  for (std::size_t face_slot = 0; face_slot < grid->face_count(); ++face_slot) {
+    if ((*new_tags)[face_slot].side_tag != 1) {
+      new_velocity[face_slot] = 1000.0;
+    }
+    if ((*old_tags)[face_slot].side_tag != 1) {
+      old_velocity[face_slot] = -1000.0;
+    }
+  }
+  const std::vector validity(grid->face_count(), LiquidFaceValidity3D::kValid);
+  const std::vector<LiquidPrescribedWallSample3D> walls(grid->face_count());
+  const LiquidBoundaryVelocityHistory3D old_history{0.0, 0.0, old_velocity, validity, *old_tags, walls};
+  const LiquidBoundaryVelocityHistory3D new_history{0.25, 0.25, new_velocity, validity, *new_tags, walls};
+  constexpr Mat3 kDeformation{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 2.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  const ElasticBladeSide3D side{.blade_id = 17, .sign = 1};
+  const auto result = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ExpectNear(result->gather.velocity_gradient.x_row, {2.0, 1.0, 0.0});
+  ExpectNear(result->deformation_gradient.x_row, {1.5, 0.5, 0.0});
+
+  SolidInteractionCheckpoint3D checkpoint{
+      .accepted_step = 1,
+      .sides = {{.particle_id = 7, .side = side}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = result->deformation_gradient,
+      }},
+  };
+  const auto encoded = EncodeSolidInteractionCheckpoint3D(checkpoint);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto restored = DecodeSolidInteractionCheckpoint3D(*encoded);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->elastic_particles.size(), 1);
+  ASSERT_EQ(restored->sides.size(), 1);
+  const auto& restored_particle = restored->elastic_particles.front();
+  EXPECT_EQ(restored_particle.body_id, 23);
+  EXPECT_DOUBLE_EQ(restored_particle.reference_volume, 0.25);
+  ExpectNear(restored_particle.transfer.trial_world_position, particle.trial_world_position);
+  ExpectNear(restored_particle.transfer.particle_velocity_slopes, particle.particle_velocity_slopes);
+  const auto uninterrupted =
+      GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, result->deformation_gradient);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  const auto replayed = GatherElasticBladeDeformation3D(
+      *grid,
+      restored_particle.transfer,
+      restored->sides.front().side,
+      old_history,
+      new_history,
+      restored_particle.deformation_gradient
+  );
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  checkpoint.elastic_particles.front().deformation_gradient = uninterrupted->deformation_gradient;
+  auto replay_checkpoint = *restored;
+  replay_checkpoint.elastic_particles.front().deformation_gradient = replayed->deformation_gradient;
+  const auto uninterrupted_bytes = EncodeSolidInteractionCheckpoint3D(checkpoint);
+  const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(replay_checkpoint);
+  ASSERT_TRUE(uninterrupted_bytes.ok()) << uninterrupted_bytes.status();
+  ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+  EXPECT_EQ(*uninterrupted_bytes, *replay_bytes);
+  checkpoint.elastic_particles.front().deformation_gradient = {};
+  EXPECT_EQ(EncodeSolidInteractionCheckpoint3D(checkpoint).status().code(), absl::StatusCode::kInvalidArgument);
+
+  // The affine step has determinant -1, away from a rounding-sensitive singularity.
+  for (double& velocity : new_velocity) {
+    velocity *= -4.0;
+  }
+  const auto inverted = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
+  EXPECT_EQ(inverted.status().code(), absl::StatusCode::kFailedPrecondition);
+  ExpectNear(kDeformation.x_row, {1.0, 0.0, 0.0});
+
+  auto accepted = *restored;
+  const auto rejected = AdvanceElasticBladeParticles3D(*grid, blade, 17, 0.0, 0.0, old_history, new_history, accepted);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto after_rejection = EncodeSolidInteractionCheckpoint3D(accepted);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *encoded);
+
+  for (double& velocity : new_velocity) {
+    velocity *= -0.03125;
+  }
+  const auto accepted_status =
+      AdvanceElasticBladeParticles3D(*grid, blade, 17, 0.0, 0.0, old_history, new_history, accepted);
+  ASSERT_TRUE(accepted_status.ok()) << accepted_status.status();
+  EXPECT_EQ(accepted.accepted_step, 2);
+  const auto& accepted_particle = accepted.elastic_particles.front();
+  ExpectNear(accepted_particle.deformation_gradient.x_row, {1.59375, 0.59375, 0.0});
+  EXPECT_GT(accepted_particle.transfer.trial_world_position.x, particle.trial_world_position.x);
+  EXPECT_EQ(accepted.sides.front().side.sign, 1);
+}
+
+TEST(MacTransfer3D, ElasticBladeStepBuildsHistoriesAndReplaysUniformTransport) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {0.125, 0.0, 0.0};
+  particle.particle_velocity_slopes = {};
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {},
+  };
+  constexpr Mat3 kIdentity{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  SolidInteractionCheckpoint3D state{
+      .accepted_step = 0,
+      .sides = {{.particle_id = 7, .side = {.blade_id = 17, .sign = 1}}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = kIdentity,
+      }},
+  };
+  const ElasticBladeGridStep3D settings{
+      .blade = blade,
+      .blade_id = 17,
+      .duration = 0.125,
+      .shear_modulus = 2.0,
+      .first_lame_parameter = 1.0,
+      .quantization = {0x1p-40, 0x1p-40, 1},
+  };
+  const auto first = StepElasticBladeGrid3D(*grid, settings, state);
+  ASSERT_TRUE(first.ok()) << first.status();
+  EXPECT_EQ(state.accepted_step, 1);
+  EXPECT_NEAR(
+      state.elastic_particles.front().transfer.trial_world_position.x,
+      particle.trial_world_position.x + 0.015625,
+      1e-9
+  );
+  ExpectNear(state.elastic_particles.front().deformation_gradient, kIdentity);
+  const auto bytes = EncodeSolidInteractionCheckpoint3D(state);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  auto restored = DecodeSolidInteractionCheckpoint3D(*bytes);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  const auto wave_speed = NeoHookeanAcousticSpeedBound3D(kIdentity, 2.0, 1.0, 8.0);
+  ASSERT_TRUE(wave_speed.ok()) << wave_speed.status();
+  ExpectNear(*wave_speed, std::sqrt(5.0 / 8.0));
+  auto stretched = kIdentity;
+  stretched.x_row.x = 2.0;
+  const auto stretched_speed = NeoHookeanAcousticSpeedBound3D(stretched, 2.0, 1.0, 8.0);
+  ASSERT_TRUE(stretched_speed.ok()) << stretched_speed.status();
+  ExpectNear(*stretched_speed, std::sqrt((11.0 - std::log(2.0)) / 8.0));
+  stretched.x_row.x = 32.0;
+  EXPECT_EQ(
+      NeoHookeanAcousticSpeedBound3D(stretched, 2.0, 1.0, 8.0).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto oversized = settings;
+  oversized.duration = 2.0;
+  EXPECT_EQ(StepElasticBladeGrid3D(*grid, oversized, *restored).status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto after_oversized = EncodeSolidInteractionCheckpoint3D(*restored);
+  ASSERT_TRUE(after_oversized.ok()) << after_oversized.status();
+  EXPECT_EQ(*after_oversized, *bytes);
+  auto rejected_settings = settings;
+  rejected_settings.quantization.declared_particle_capacity = 0;
+  EXPECT_FALSE(StepElasticBladeGrid3D(*grid, rejected_settings, *restored).ok());
+  const auto after_rejection = EncodeSolidInteractionCheckpoint3D(*restored);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *bytes);
+  ASSERT_TRUE(StepElasticBladeGrid3D(*grid, settings, *restored).ok());
+  ASSERT_TRUE(StepElasticBladeGrid3D(*grid, settings, state).ok());
+  const auto replayed = EncodeSolidInteractionCheckpoint3D(*restored);
+  const auto uninterrupted = EncodeSolidInteractionCheckpoint3D(state);
+  ASSERT_TRUE(replayed.ok() && uninterrupted.ok());
+  EXPECT_EQ(*replayed, *uninterrupted);
+
+  auto stressed = state;
+  stressed.elastic_particles.front().deformation_gradient.x_row.x = 1.01;
+  const auto stressed_step = StepElasticBladeGrid3D(*grid, settings, stressed);
+  ASSERT_TRUE(stressed_step.ok()) << stressed_step.status();
+  ASSERT_EQ(stressed_step->contacts.size(), 1);
+  EXPECT_GT(stressed_step->grid_stress_work, 0.0);
+  EXPECT_GT(std::abs(stressed_step->cut_work), 1e-12);
+  EXPECT_NEAR(stressed_step->grid_stress_work + stressed_step->deformation_work, stressed_step->cut_work, 1e-12);
+  EXPECT_LT(stressed.elastic_particles.front().deformation_gradient.x_row.x, 1.01);
+}
+
+TEST(MacTransfer3D, MovingBladeSceneRetainsSideAndReplaysAtTwoTimesteps) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {};
+  particle.particle_velocity_slopes = {};
+  constexpr Mat3 kIdentity{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  particle.trial_world_position.x = 9.0;
+  particle.sorted_world_position = particle.trial_world_position;
+  auto supporting_particle = particle;
+  supporting_particle.trial_world_position.x = 10.5;
+  supporting_particle.sorted_world_position = supporting_particle.trial_world_position;
+  SolidInteractionCheckpoint3D initial{
+      .accepted_step = 0,
+      .sides = {{.particle_id = 1, .side = {.blade_id = 17, .sign = 1}}},
+      .elastic_particles = {{
+          .particle_id = 1,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = kIdentity,
+      }},
+  };
+  initial.sides.push_back({.particle_id = 2, .side = {.blade_id = 17, .sign = 1}});
+  initial.elastic_particles.push_back({
+      .particle_id = 2,
+      .body_id = 23,
+      .transfer = supporting_particle,
+      .reference_volume = 0.25,
+      .deformation_gradient = kIdentity,
+  });
+  const std::array seed_positions{particle.trial_world_position, supporting_particle.trial_world_position};
+  const ElasticCutterSceneInputs3D authored{
+      .geometry = kTranslatedGeometry,
+      .domain_low = {8.0, -4.0, 11.0},
+      .domain_high = {11.0, -2.0, 14.0},
+      .blade = {{1.0, 0.0, 0.0}, 8.8125, 0.125, {0.5, 0.0, 0.0}},
+      .blade_id = 17,
+      .body_id = 23,
+      .density = 8.0,
+      .particle_reference_volume = 0.25,
+      .particle_positions = seed_positions,
+  };
+  const auto resolved = ResolveElasticCutterScene3D(authored);
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  EXPECT_EQ(resolved->checkpoint.accepted_step, 0);
+  ASSERT_EQ(resolved->checkpoint.sides.size(), 2);
+  EXPECT_EQ(resolved->checkpoint.sides[0].side.sign, 1);
+  EXPECT_EQ(resolved->checkpoint.sides[1].side.sign, 1);
+  EXPECT_DOUBLE_EQ(resolved->checkpoint.elastic_particles[0].transfer.particle_mass, 2.0);
+  auto overlapping = authored;
+  overlapping.blade.start_center_coordinate = seed_positions.front().x;
+  EXPECT_EQ(ResolveElasticCutterScene3D(overlapping).status().code(), absl::StatusCode::kFailedPrecondition);
+  auto oversized_domain = authored;
+  oversized_domain.domain_high.x = 1e6;
+  EXPECT_EQ(ResolveElasticCutterScene3D(oversized_domain).status().code(), absl::StatusCode::kResourceExhausted);
+  for (const double duration : {0.125, 0.0625}) {
+    SCOPED_TRACE(duration);
+    ElasticBladeGridStep3D settings{
+        .blade =
+            {
+                .unit_normal = {1.0, 0.0, 0.0},
+                .start_center_coordinate = 8.8125,
+                .half_width = 0.125,
+                .wall_velocity = {0.5, 0.0, 0.0},
+            },
+        .blade_id = 17,
+        .duration = duration,
+        .shear_modulus = 2.0,
+        .first_lame_parameter = 1.0,
+        .quantization = {0x1p-40, 0x1p-40, 2},
+    };
+    auto state = initial;
+    double blade_work = 0.0;
+    double normal_impulse = 0.0;
+    const int steps = duration == 0.125 ? 1 : 2;
+    std::vector<std::uint8_t> halfway_checkpoint;
+    for (int step = 0; step < steps; ++step) {
+      const auto result = StepElasticBladeGrid3D(*grid, settings, state);
+      ASSERT_TRUE(result.ok()) << result.status();
+      ASSERT_EQ(result->contacts.size(), 2);
+      const auto& contact = result->contacts.front();
+      blade_work += contact.blade_work;
+      normal_impulse += contact.particle_impulse.x;
+      EXPECT_EQ(state.sides.front().side.sign, 1);
+      EXPECT_NEAR(result->cut_work, 0.0, 1e-10);
+      if (steps == 2 && step == 0) {
+        const auto encoded = EncodeSolidInteractionCheckpoint3D(state);
+        ASSERT_TRUE(encoded.ok()) << encoded.status();
+        halfway_checkpoint = *encoded;
+      }
+      if (steps == 2 && step == 1) {
+        auto restarted = DecodeSolidInteractionCheckpoint3D(halfway_checkpoint);
+        ASSERT_TRUE(restarted.ok()) << restarted.status();
+        const auto replay = StepElasticBladeGrid3D(*grid, settings, *restarted);
+        ASSERT_TRUE(replay.ok()) << replay.status();
+        const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(*restarted);
+        const auto accepted_bytes = EncodeSolidInteractionCheckpoint3D(state);
+        ASSERT_TRUE(replay_bytes.ok() && accepted_bytes.ok());
+        EXPECT_EQ(*replay_bytes, *accepted_bytes);
+        EXPECT_DOUBLE_EQ(replay->contacts.front().blade_work, contact.blade_work);
+      }
+      settings.blade.start_center_coordinate += 0.5 * duration;
+    }
+    auto frame_state = resolved->checkpoint;
+    auto frame_settings = settings;
+    frame_settings.blade.start_center_coordinate = 8.8125;
+    frame_settings.duration = 0.125;
+    const auto frame = AdvanceElasticBladeFrame3D(resolved->grid, frame_settings, steps, frame_state);
+    ASSERT_TRUE(frame.ok()) << frame.status();
+    EXPECT_NEAR(frame->particle_impulse.x, normal_impulse, 1e-12);
+    EXPECT_NEAR(frame->blade_work, blade_work, 1e-12);
+    const auto frame_bytes = EncodeSolidInteractionCheckpoint3D(frame_state);
+    const auto manual_bytes = EncodeSolidInteractionCheckpoint3D(state);
+    ASSERT_TRUE(frame_bytes.ok() && manual_bytes.ok());
+    EXPECT_EQ(*frame_bytes, *manual_bytes);
+    if (steps == 2) {
+      auto restarted = DecodeSolidInteractionCheckpoint3D(halfway_checkpoint);
+      ASSERT_TRUE(restarted.ok()) << restarted.status();
+      const auto rejected = AdvanceElasticBladeFrame3D(resolved->grid, frame_settings, steps, *restarted);
+      EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
+      const auto preserved = EncodeSolidInteractionCheckpoint3D(*restarted);
+      ASSERT_TRUE(preserved.ok()) << preserved.status();
+      EXPECT_EQ(*preserved, halfway_checkpoint);
+      frame_settings.duration = duration;
+      const auto replay = AdvanceElasticBladeFrame3D(resolved->grid, frame_settings, 1, *restarted);
+      ASSERT_TRUE(replay.ok()) << replay.status();
+      const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(*restarted);
+      ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+      EXPECT_EQ(*replay_bytes, *frame_bytes);
+    }
+    const auto final = state.elastic_particles.front().transfer.trial_world_position;
+    EXPECT_NEAR(final.x, 9.0, 1e-9);
+    EXPECT_NEAR(normal_impulse, 1.0, 1e-9);
+    EXPECT_NEAR(blade_work, 0.5, 1e-9);
+  }
+}
+
+TEST(MacTransfer3D, ObliqueBladeStepReconstructsDistantSameSideGhosts) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {};
+  particle.particle_velocity_slopes = {};
+  const double normal_component = std::sqrt(0.5);
+  const Vec3 position = particle.trial_world_position;
+  SolidInteractionCheckpoint3D state{
+      .accepted_step = 0,
+      .sides = {},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}},
+      }},
+  };
+  const ElasticBladeGridStep3D settings{
+      .blade =
+          {
+              .unit_normal = {normal_component, normal_component, 0.0},
+              .start_center_coordinate = (position.x + position.y) * normal_component - 0.1875,
+              .half_width = 0.125,
+              .wall_velocity = {0.625 * normal_component, 0.625 * normal_component, 0.0},
+          },
+      .blade_id = 17,
+      .duration = 0.125,
+      .shear_modulus = 2.0,
+      .first_lame_parameter = 1.0,
+      .quantization = {0x1p-40, 0x1p-40, 1},
+  };
+  auto intersecting = settings;
+  intersecting.blade.start_center_coordinate = (position.x + position.y) * normal_component;
+  const auto rejected = StepElasticBladeGrid3D(*grid, intersecting, state);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(state.sides.empty());
+  EXPECT_EQ(state.accepted_step, 0);
+  const auto negative =
+      ClassifyInitialElasticBladeSide3D(settings.blade, settings.blade_id, {position.x - 1.0, position.y, position.z});
+  ASSERT_TRUE(negative.ok()) << negative.status();
+  EXPECT_EQ(negative->sign, -1);
+  auto bad_deposit = settings;
+  bad_deposit.quantization.declared_particle_capacity = 0;
+  EXPECT_FALSE(StepElasticBladeGrid3D(*grid, bad_deposit, state).ok());
+  EXPECT_TRUE(state.sides.empty());
+  EXPECT_EQ(state.accepted_step, 0);
+  const auto step = StepElasticBladeGrid3D(*grid, settings, state);
+  ASSERT_TRUE(step.ok()) << step.status();
+  ASSERT_EQ(step->contacts.size(), 1);
+  const auto& contact = step->contacts.front();
+  ASSERT_TRUE(contact.contact.contact_fraction.has_value());
+  EXPECT_NEAR(*contact.contact.contact_fraction, 0.8, 1e-10);
+  EXPECT_NEAR(contact.blade_work, 0.78125, 1e-10);
+  EXPECT_EQ(state.accepted_step, 1);
+  EXPECT_EQ(state.sides.front().side.sign, 1);
 }
 
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {

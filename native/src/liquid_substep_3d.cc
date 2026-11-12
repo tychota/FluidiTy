@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <numbers>
+#include <numeric>
 #include <optional>
 #include <tuple>
 
@@ -635,12 +636,21 @@ struct LiquidSubstepScheduler3D::Impl {
       double step_duration,
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& accepted_measurement,
-      LiquidWorkPhaseObserver3D work_phase
+      LiquidWorkPhaseObserver3D work_phase,
+      RigidBody3D* piston_load,
+      bool dynamic_piston,
+      bool coupled_piston,
+      const LiquidPistonReactionUpdate3D* update_with_reaction
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
-    const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    if (dynamic_piston) {
+      auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+      tank.start_low_x = piston_load->center.x;
+      tank.piston_velocity_x = piston_load->linear_velocity.x;
+    }
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const MacDepositQuantization3D quantization{
         options.mass_per_quantum,
@@ -1002,6 +1012,8 @@ struct LiquidSubstepScheduler3D::Impl {
     // Evaluate the signed wall flux at the frozen pose. Pressure link assembly
     // consumes the face-order borrow before the wetted-piston workspace is reused.
     std::span<const std::optional<double>> wetted_piston_face_fluxes;
+    std::optional<WettedPistonInputs3D> piston_inputs;
+    std::optional<WettedPistonView3D> piston_wetted;
     if (staging.wetted_piston.has_value()) {
       const WettedPistonInputs3D wetted_piston_inputs{
           .field = scene.field,
@@ -1017,6 +1029,8 @@ struct LiquidSubstepScheduler3D::Impl {
         return Error(absl::StatusCode::kInvalidArgument);
       }
       wetted_piston_face_fluxes = wetted->face_fluxes;
+      piston_inputs.emplace(wetted_piston_inputs);
+      piston_wetted = *wetted;
     }
     auto links = backend.links(
         backend.context,
@@ -1049,6 +1063,10 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(trial.cells.Resize(frozen->cells.size()));
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
+    std::optional<double> coupled_velocity;
+    if (coupled_piston && links->cells.empty()) {
+      return Error(absl::StatusCode::kFailedPrecondition);
+    }
     if (!links->cells.empty()) {
       auto pressure_problem = *links;
       if (staging.drift_pressure_cells) {
@@ -1087,8 +1105,11 @@ struct LiquidSubstepScheduler3D::Impl {
           : std::ranges::any_of(cell_dynamic_viscosity, [](double viscosity) {
               return viscosity > 0.0;
             });
+      if (coupled_piston && active_viscosity) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
       if (!active_viscosity) {
-        const auto projection = backend.project(
+        auto projection = backend.project(
             backend.context,
             grid,
             step_duration,
@@ -1098,6 +1119,105 @@ struct LiquidSubstepScheduler3D::Impl {
         );
         if (!projection.ok()) {
           return projection.status();
+        }
+        if (coupled_piston) {
+          auto& scratch = *staging.pressure_face_scratch;
+          STEP_TRY(scratch.Resize(links->faces.size()));
+          const auto coupled_faces = scratch.values();
+          std::ranges::copy(links->faces, coupled_faces.begin());
+          pressure_problem.faces = coupled_faces;
+
+          // Receiver area is aggregated once in the wetted geometry. Attached
+          // physical patches contribute their area through the same receiver.
+          const auto set_wall_speed = [&](double speed) -> absl::Status {
+            for (std::size_t face_index = 0; face_index < coupled_faces.size(); ++face_index) {
+              if (piston_wetted->face_fluxes[face_index].has_value()) {
+                auto& face = coupled_faces[face_index];
+                face.wall_normal_velocity = speed;
+                face.prescribed_wall_flux = 0.0;
+              }
+            }
+            for (const auto& patch : piston_wetted->patches) {
+              if (patch.receiver_area.upper > 0.0) {
+                if (!patch.receiver_face_ordinal || *patch.receiver_face_ordinal >= coupled_faces.size()
+                    || !piston_wetted->face_fluxes[*patch.receiver_face_ordinal].has_value()) {
+                  return Error(absl::StatusCode::kFailedPrecondition);
+                }
+                const double area = std::midpoint(patch.receiver_area.lower, patch.receiver_area.upper);
+                coupled_faces[*patch.receiver_face_ordinal].prescribed_wall_flux = area * speed;
+              }
+            }
+            return absl::OkStatus();
+          };
+          auto pressure_only_body = *piston_load;
+          pressure_only_body.force = {};
+          pressure_only_body.torque = {};
+          const auto load_at = [&](std::span<const double> pressures) {
+            return AccumulatePlanarWettedPistonPressure3D(
+                *piston_inputs,
+                *piston_wetted,
+                pressures,
+                scene.ambient_pressure,
+                pressure_only_body
+            );
+          };
+          const auto initial_load = load_at(projection->cell_pressures);
+          if (!initial_load.ok()) {
+            return initial_load.status();
+          }
+          const double initial_speed = piston_load->linear_velocity.x;
+          const double speed_increment =
+              std::copysign(0.125 * grid.geometry().cell_width / step_duration, initial_speed);
+          const double probe_speed = initial_speed + speed_increment;
+          const double probe_delta = probe_speed - initial_speed;
+          if (!std::isfinite(probe_speed) || !std::isfinite(probe_delta) || probe_delta == 0.0) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          STEP_TRY(set_wall_speed(probe_speed));
+          projection = backend.project(
+              backend.context,
+              grid,
+              step_duration,
+              pressure_problem,
+              options.pressure_solver_options,
+              workspace.pressure()
+          );
+          if (!projection.ok()) {
+            return projection.status();
+          }
+          const auto probe_load = load_at(projection->cell_pressures);
+          if (!probe_load.ok()) {
+            return probe_load.status();
+          }
+
+          // Frozen linear pressure response gives the scalar Schur complement
+          // for the axial body degree of freedom, regardless of pressure-cell count.
+          const double added_mass = -step_duration * (probe_load->force.x - initial_load->force.x) / probe_delta;
+          const double effective_mass = piston_load->mass + added_mass;
+          const double total_force = piston_load->force.x + initial_load->force.x;
+          const double speed = std::fma(step_duration, total_force / effective_mass, initial_speed);
+          if (added_mass < 0.0 || !std::isfinite(speed) || !std::isfinite(effective_mass)) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+          tank.piston_velocity_x = speed;
+          STEP_TRY(boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(tank, step_duration), true));
+          new_obstacle = liquid_step_internal::ObstacleAtTime(obstacle, step_duration);
+          accepted_measurement.piston_pose->step_end_low_x_m =
+              std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
+          STEP_TRY(set_wall_speed(speed));
+          projection = backend.project(
+              backend.context,
+              grid,
+              step_duration,
+              pressure_problem,
+              options.pressure_solver_options,
+              workspace.pressure()
+          );
+          if (!projection.ok()) {
+            return projection.status();
+          }
+          coupled_velocity = speed;
         }
         projected_cell_pressures = projection->cell_pressures;
         projected_face_velocities = projection->corrected_face_velocities;
@@ -1143,6 +1263,19 @@ struct LiquidSubstepScheduler3D::Impl {
             return accepted_eos.status();
           }
         }
+      }
+      if (piston_load != nullptr) {
+        const auto loaded = AccumulatePlanarWettedPistonPressure3D(
+            *piston_inputs,
+            *piston_wetted,
+            projected_cell_pressures,
+            scene.ambient_pressure,
+            *piston_load
+        );
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        *piston_load = *loaded;
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;
@@ -1382,11 +1515,22 @@ struct LiquidSubstepScheduler3D::Impl {
         .regular_cell_transport = staging.regular_transport ? staging.regular_transport->values()
                                                             : std::span<const LiquidRegularCellTransport3D>{},
     };
-    STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    double piston_contact_impulse = 0.0;
+    if (dynamic_piston && trial.particles.size() != 0) {
+      const auto impulse = update_with_reaction == nullptr
+          ? UpdateCpuLiquidParticlesWithPistonReaction3D(particle_update_inputs, trial.particles.values())
+          : (*update_with_reaction)(particle_update_inputs, trial.particles.values());
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      piston_contact_impulse = *impulse;
+    } else {
+      STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWhitewater, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, step_duration));
-    const double wall_displacement_bound = step_duration
-        * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(scene.obstacle));
+    const double wall_displacement_bound =
+        step_duration * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(obstacle));
     if (wall_displacement_bound > 0.5 * trial.geometry.cell_width) {
       return Error(absl::StatusCode::kAborted);
     }
@@ -1407,6 +1551,22 @@ struct LiquidSubstepScheduler3D::Impl {
       }
     }
     STEP_TRY(ValidateLiquidState3D(trial));
+    if (dynamic_piston) {
+      const double axial_acceleration = piston_load->force.x / piston_load->mass;
+      const double next_velocity = std::fma(step_duration, axial_acceleration, piston_load->linear_velocity.x)
+          + piston_contact_impulse / piston_load->mass;
+      if (!std::isfinite(next_velocity)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      piston_load->center.x = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
+      if (coupled_velocity
+          && std::abs(next_velocity - *coupled_velocity) > 1e-8 * std::max(1.0, std::abs(next_velocity))) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      piston_load->linear_velocity.x = coupled_velocity.value_or(next_velocity);
+      piston_load->force = {};
+      piston_load->torque = {};
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
   }
@@ -1677,6 +1837,96 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
 }
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase) {
+  return AttemptImpl(step_duration, work_phase, nullptr);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field)) {
+    return absl::FailedPreconditionError("piston load requires a moving planar piston scene");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston) {
+  return AttemptDynamicPistonImpl(step_duration, piston, false);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(
+    double step_duration,
+    RigidBody3D piston,
+    LiquidPistonReactionUpdate3D update_with_reaction
+) {
+  return AttemptDynamicPistonImpl(step_duration, piston, false, &update_with_reaction);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston) {
+  if (!committed().particles.values().empty() || std::isfinite(impl_->scene.bulk_modulus)
+      || impl_->scene.surface_tension != 0.0) {
+    return absl::FailedPreconditionError("coupled piston requires a particle-free incompressible planar scene");
+  }
+  return AttemptDynamicPistonImpl(step_duration, piston, true);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptDynamicPistonImpl(
+    double step_duration,
+    RigidBody3D piston,
+    bool coupled,
+    const LiquidPistonReactionUpdate3D* update_with_reaction
+) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field) || !impl_->scene.sources.empty()
+      || impl_->ocean_boundary) {
+    return absl::FailedPreconditionError("dynamic piston requires a moving planar piston scene without sources");
+  }
+  if (update_with_reaction == nullptr && !committed().particles.values().empty()
+      && impl_->backend.update_particles != CpuLiquidSubstepBackend3D().update_particles) {
+    return absl::FailedPreconditionError("dynamic piston particles require the CPU contact update");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (piston.linear_velocity.y != 0.0 || piston.linear_velocity.z != 0.0 || piston.angular_velocity.x != 0.0
+      || piston.angular_velocity.y != 0.0 || piston.angular_velocity.z != 0.0) {
+    return absl::InvalidArgumentError("dynamic piston requires axial motion");
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston, true, coupled, update_with_reaction);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
+    double step_duration,
+    LiquidWorkPhaseObserver3D work_phase,
+    RigidBody3D* piston_load,
+    bool dynamic_piston,
+    bool coupled_piston,
+    const LiquidPistonReactionUpdate3D* update_with_reaction
+) {
   auto& impl = *impl_;
   auto& diagnostics = impl.diagnostics;
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
@@ -1702,7 +1952,16 @@ LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase);
+  auto status = impl.Execute(
+      step_duration,
+      **trial,
+      accepted_measurement,
+      work_phase,
+      piston_load,
+      dynamic_piston,
+      coupled_piston,
+      update_with_reaction
+  );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -1806,7 +2065,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           growth,
           impl_->staging.regular_transport.has_value(),
           impl_->staging.wetted_piston.has_value(),
-          impl_->staging.isolated_drop_pressure_faces.has_value(),
+          impl_->staging.isolated_drop_restricted_gathers.has_value(),
           impl_->staging.drift_sensors.has_value(),
           impl_->staging.drift_pressure_cells.has_value(),
           impl_->staging.composition_density.has_value(),

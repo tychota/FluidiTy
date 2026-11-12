@@ -14,6 +14,7 @@
 #include "effects_execution.h"
 #include "flatbuffers/minireflect.h"
 #include "fluidity/host/cuda_probe.h"
+#include "fluidity/host/elastic_blade_deformation_3d.h"
 #include "fluidity/host/simulate_cli.h"
 #include "frame_manifest_generated.h"
 #include "liquid_state_generated.h"
@@ -146,6 +147,197 @@ absl::StatusOr<std::string> SceneJson(LiquidResolvedSceneView3D scene) {
   SceneJsonVisitor visitor;
   flatbuffers::IterateFlatBuffer(bytes->values().data(), wire::ResolvedSceneTypeTable(), &visitor);
   return visitor.s;
+}
+constexpr LiquidCacheLimits3D kCutterPacketLimits{.maximum_bytes = 128 * 1024};
+constexpr LiquidCacheLimits3D kCutterCheckpointLimits{.maximum_bytes = 1024 * 1024};
+constexpr std::size_t kCutterCheckpointPrefixSize = 2 * sizeof(LiquidDigest3D);
+
+absl::Status InspectCutterFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "cutter";
+  if ((args.size() != 2 && args.size() != 3) || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
+    return absl::InvalidArgumentError("expected cutter-inspect CHECKPOINT [PACKET]");
+  }
+  const auto checkpoint = files::ReadBytes(PathFromUtf8(args[1]), kCutterCheckpointLimits);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  const auto bytes = checkpoint->values();
+  if (bytes.size() <= kCutterCheckpointPrefixSize) {
+    return absl::InvalidArgumentError("invalid Cutter checkpoint framing");
+  }
+  if (args.size() == 3) {
+    const auto packet = files::ReadBytes(PathFromUtf8(args[2]), kCutterPacketLimits);
+    if (!packet.ok()) {
+      return packet.status();
+    }
+    const auto build_digest = ExecutableDigest();
+    if (!build_digest.ok()) {
+      return build_digest.status();
+    }
+    const auto packet_digest = LiquidContentDigest3D(packet->values());
+    if (!std::equal(packet_digest.begin(), packet_digest.end(), bytes.begin())
+        || !std::equal(build_digest->begin(), build_digest->end(), bytes.begin() + packet_digest.size())) {
+      return absl::FailedPreconditionError("Cutter checkpoint belongs to a different scene or executable");
+    }
+  }
+  const auto restored = DecodeSolidInteractionCheckpoint3D(bytes.subspan(kCutterCheckpointPrefixSize));
+  if (!restored.ok()) {
+    return restored.status();
+  }
+  if (restored->sides.empty() || restored->sides.size() != restored->elastic_particles.size()) {
+    return absl::InvalidArgumentError("Cutter checkpoint requires one side per elastic particle");
+  }
+  std::string members = "\"accepted_step\":" + std::to_string(restored->accepted_step) + ",\"points\":[";
+  for (std::size_t index = 0; index < restored->sides.size(); ++index) {
+    const auto& side = restored->sides[index];
+    const auto& particle = restored->elastic_particles[index];
+    if (side.particle_id != particle.particle_id) {
+      return absl::InvalidArgumentError("Cutter checkpoint has mismatched side and particle identities");
+    }
+    if (index != 0) {
+      members += ",";
+    }
+    const auto position = particle.transfer.trial_world_position;
+    members += "{\"id\":" + std::to_string(particle.particle_id) + ",\"side\":" + std::to_string(side.side.sign)
+        + ",\"position\":[" + JsonDouble(position.x) + "," + JsonDouble(position.y) + "," + JsonDouble(position.z)
+        + "]}";
+  }
+  members += "]";
+  return writer.Emit("cutter_inspect", members);
+}
+absl::Status RunCutterFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "cutter";
+  if (args.size() != 4 || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
+    return absl::InvalidArgumentError("expected cutter-frame PACKET PREVIOUS_OR_DASH OUTPUT");
+  }
+  const auto packet = files::ReadBytes(PathFromUtf8(args[1]), kCutterPacketLimits);
+  if (!packet.ok()) {
+    return packet.status();
+  }
+  const auto packet_bytes = packet->values();
+  std::istringstream input(std::string(reinterpret_cast<const char*>(packet_bytes.data()), packet_bytes.size()));
+  input.imbue(std::locale::classic());
+  std::string version;
+  ElasticCutterSceneInputs3D scene{};
+  ElasticBladeGridStep3D settings{};
+  std::uint32_t substeps_per_frame = 0;
+  std::size_t seed_count = 0;
+  auto read_vector = [&](Vec3& value) {
+    return static_cast<bool>(input >> value.x >> value.y >> value.z);
+  };
+  if (!(input >> version) || version != "FLUIDITY-CUTTER-1"
+      || !(
+          input >> scene.geometry.cell_width >> scene.density >> settings.shear_modulus >> settings.first_lame_parameter
+          >> settings.friction_coefficient >> substeps_per_frame
+      )
+      || !read_vector(scene.domain_low) || !read_vector(scene.domain_high)
+      || !(input >> settings.blade.start_center_coordinate >> settings.blade.half_width)
+      || !read_vector(settings.blade.wall_velocity) || !(input >> seed_count) || seed_count == 0
+      || seed_count > kLiquidBoundaryParticleCapacity3D || substeps_per_frame == 0 || substeps_per_frame > 256) {
+    return absl::InvalidArgumentError("invalid Cutter packet header");
+  }
+  std::vector<Vec3> seeds(seed_count);
+  for (auto& seed : seeds) {
+    if (!read_vector(seed)) {
+      return absl::InvalidArgumentError("invalid Cutter seed position");
+    }
+  }
+  if (input >> version) {
+    return absl::InvalidArgumentError("unexpected trailing Cutter input");
+  }
+
+  scene.blade_id = 1;
+  scene.body_id = 2;
+  settings.blade_id = scene.blade_id;
+  settings.blade.unit_normal = {1.0, 0.0, 0.0};
+  scene.blade = settings.blade;
+  const double cell_width = scene.geometry.cell_width;
+  scene.particle_reference_volume = cell_width * cell_width * cell_width;
+  scene.particle_positions = seeds;
+  settings.duration = 1.0 / 24.0;
+  settings.quantization = {0x1p-40, 0x1p-40, seed_count};
+  auto resolved = ResolveElasticCutterScene3D(scene);
+  if (!resolved.ok()) {
+    return resolved.status();
+  }
+
+  const auto build_digest = ExecutableDigest();
+  if (!build_digest.ok()) {
+    return build_digest.status();
+  }
+  const auto packet_digest = LiquidContentDigest3D(packet_bytes);
+  std::vector<std::uint8_t> checkpoint_prefix;
+  checkpoint_prefix.insert(checkpoint_prefix.end(), packet_digest.begin(), packet_digest.end());
+  checkpoint_prefix.insert(checkpoint_prefix.end(), build_digest->begin(), build_digest->end());
+  if (args[2] != "-") {
+    const auto prior = files::ReadBytes(PathFromUtf8(args[2]), kCutterCheckpointLimits);
+    if (!prior.ok()) {
+      return prior.status();
+    }
+    const auto bytes = prior->values();
+    if (bytes.size() <= checkpoint_prefix.size()
+        || !std::equal(checkpoint_prefix.begin(), checkpoint_prefix.end(), bytes.begin())) {
+      return absl::FailedPreconditionError("Cutter checkpoint belongs to a different scene or executable");
+    }
+    auto restored = DecodeSolidInteractionCheckpoint3D(bytes.subspan(checkpoint_prefix.size()));
+    if (!restored.ok()) {
+      return restored.status();
+    }
+    const auto& initial = resolved->checkpoint;
+    if (!restored->bodies.empty() || restored->elastic_particles.size() != initial.elastic_particles.size()
+        || restored->sides.size() != initial.sides.size()) {
+      return absl::FailedPreconditionError("Cutter checkpoint has incompatible particle or body records");
+    }
+    for (std::size_t index = 0; index < initial.elastic_particles.size(); ++index) {
+      const auto& particle = restored->elastic_particles[index];
+      const auto& seed = initial.elastic_particles[index];
+      const auto& side = restored->sides[index];
+      const auto& initial_side = initial.sides[index];
+      if (particle.particle_id != seed.particle_id || particle.body_id != seed.body_id
+          || particle.reference_volume != seed.reference_volume
+          || particle.transfer.particle_mass != seed.transfer.particle_mass
+          || side.particle_id != initial_side.particle_id || side.side.blade_id != initial_side.side.blade_id
+          || side.side.sign != initial_side.side.sign) {
+        return absl::FailedPreconditionError("Cutter checkpoint has incompatible particle identities or sides");
+      }
+    }
+    resolved->checkpoint = std::move(*restored);
+  }
+
+  const auto result = AdvanceElasticBladeFrame3D(resolved->grid, settings, substeps_per_frame, resolved->checkpoint);
+  if (!result.ok()) {
+    return result.status();
+  }
+  if (args[3] == "-") {
+    return writer.Emit("cutter_frame", "\"accepted_step\":" + std::to_string(resolved->checkpoint.accepted_step));
+  }
+  const auto checkpoint = EncodeSolidInteractionCheckpoint3D(resolved->checkpoint);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  checkpoint_prefix.insert(checkpoint_prefix.end(), checkpoint->begin(), checkpoint->end());
+  const auto published = files::PublishBytes(PathFromUtf8(args[3]), checkpoint_prefix, kCutterCheckpointLimits, {});
+  if (!published.ok()) {
+    return published;
+  }
+
+  const auto& impulse = result->particle_impulse;
+  std::string members = "\"accepted_step\":" + std::to_string(resolved->checkpoint.accepted_step)
+      + ",\"particle_impulse\":[" + JsonDouble(impulse.x) + "," + JsonDouble(impulse.y) + "," + JsonDouble(impulse.z)
+      + "]" + ",\"blade_work\":" + JsonDouble(result->blade_work) + ",\"cut_work\":" + JsonDouble(result->cut_work)
+      + ",\"grid_stress_work\":" + JsonDouble(result->grid_stress_work)
+      + ",\"deformation_work\":" + JsonDouble(result->deformation_work)
+      + ",\"omitted_stress_work\":" + JsonDouble(result->omitted_stress_work) + ",\"sides\":[";
+  for (std::size_t index = 0; index < resolved->checkpoint.sides.size(); ++index) {
+    const auto& side = resolved->checkpoint.sides[index];
+    if (index != 0) {
+      members += ",";
+    }
+    members +=
+        "{\"particle_id\":" + std::to_string(side.particle_id) + ",\"sign\":" + std::to_string(side.side.sign) + "}";
+  }
+  members += "]";
+  return writer.Emit("cutter_frame", members);
 }
 absl::Status CheckScene(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
   diagnostic->domain = "CACHE";
@@ -641,6 +833,18 @@ int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
 #endif
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
+  if (!public_cli && !arguments.empty()
+      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect")) {
+    const auto status = arguments.front() == "cutter-frame"
+        ? fluidity::simulate::RunCutterFrame(arguments, writer, diagnostic)
+        : fluidity::simulate::InspectCutterFrame(arguments, writer, diagnostic);
+    if (status.ok()) {
+      return 0;
+    }
+    diagnostic.cause = std::string(status.message());
+    const auto output_status = writer.Error(status, diagnostic);
+    return output_status.ok() && status.code() == absl::StatusCode::kInvalidArgument ? 2 : 1;
+  }
 #if defined(FLUIDITY_PUBLIC_CLI)
   if (public_cli && std::all_of(arguments.begin(), arguments.end(), fluidity::simulate::ValidUtf8)) {
     auto parsed = fluidity::simulate::ParsePublicCli(arguments);

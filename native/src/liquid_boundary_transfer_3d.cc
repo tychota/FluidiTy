@@ -19,7 +19,9 @@ namespace {
 constexpr std::array kAxes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
 constexpr std::array kVelocityComponents{&Vec3::x, &Vec3::y, &Vec3::z};
 constexpr std::array kVelocitySlopeRows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
-constexpr std::size_t kMaxDonors = 125;
+// A 4h sphere contains at most 268 staggered anchors of one component.
+// The largest count occurs when projecting across two half-cell offsets.
+constexpr std::size_t kMaxDonors = 268;
 constexpr std::int64_t kMaximumQuantaSum = std::int64_t{1} << 62;
 
 bool IsFinite(Vec3 value) {
@@ -187,9 +189,10 @@ absl::StatusOr<ContinuedVelocity> ContinueComponent(
     std::size_t component_index,
     std::int64_t side_tag,
     const LiquidPrescribedWallSample3D& wall,
-    bool bounded
+    bool bounded,
+    double squared_radius
 ) {
-  std::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors{};
+  std::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors;
   std::size_t donor_count = 0;
   std::size_t nearest_slot = anchors.size();
   double nearest_squared_distance = std::numeric_limits<double>::infinity();
@@ -200,7 +203,7 @@ absl::StatusOr<ContinuedVelocity> ContinueComponent(
     }
     const Vec3 offset = Difference(anchors[slot].anchor_in_cell_widths, target_in_cell_widths);
     const double squared_distance = Dot(offset, offset);
-    if (squared_distance > 4.0) {
+    if (squared_distance > squared_radius) {
       continue;
     }
     if (donor_count == donors.size()) {
@@ -246,7 +249,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
     std::size_t target_slot,
     std::size_t component_index,
     std::int64_t side_tag,
-    bool bounded
+    bool bounded,
+    double squared_radius = 4.0
 ) {
   if (IsCompatible(history.face_tags[target_slot], side_tag) && IsUsable(history.validity[target_slot])) {
     return ContinuedVelocity{history.face_velocities[target_slot], false};
@@ -259,7 +263,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
       component_index,
       side_tag,
       wall,
-      bounded
+      bounded,
+      squared_radius
   );
   if (!component.ok()) {
     return component.status();
@@ -280,7 +285,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
           other_component,
           side_tag,
           wall,
-          bounded
+          bounded,
+          4.0
       );
       if (!other.ok()) {
         return other.status();
@@ -515,7 +521,8 @@ absl::Status GatherCore(
     std::span<const Anchor> anchors,
     std::span<double> filled_old,
     std::span<double> filled_new,
-    bool bounded
+    bool bounded,
+    double squared_radius = 4.0
 ) {
   const auto capacity_status = ValidateCapacity(inputs.mac_grid.face_count(), inputs.particles.size(), bounded);
   if (!capacity_status.ok()) {
@@ -559,13 +566,27 @@ absl::Status GatherCore(
         return stencil.status();
       }
       for (const auto& sample : *stencil) {
-        const auto old_continued_velocity =
-            FillVelocity(inputs.old_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
+        const auto old_continued_velocity = FillVelocity(
+            inputs.old_history,
+            anchors,
+            sample.face_slot,
+            component,
+            particle.side_tag,
+            bounded,
+            squared_radius
+        );
         if (!old_continued_velocity.ok()) {
           return old_continued_velocity.status();
         }
-        const auto new_continued_velocity =
-            FillVelocity(inputs.new_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
+        const auto new_continued_velocity = FillVelocity(
+            inputs.new_history,
+            anchors,
+            sample.face_slot,
+            component,
+            particle.side_tag,
+            bounded,
+            squared_radius
+        );
         if (!new_continued_velocity.ok()) {
           return new_continued_velocity.status();
         }
@@ -686,7 +707,12 @@ absl::StatusOr<NormalizedLiquidMacFaces3D> NormalizeLiquidMacFaces3D(
   }
   return result;
 }
-absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
+namespace {
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherBoundaryParticles(
+    const LiquidBoundaryGatherInputs3D& inputs,
+    std::vector<double>* completed_new_face_velocities,
+    double squared_radius
 ) {
   if (const auto status = ValidateCapacity(inputs.mac_grid.face_count(), inputs.particles.size(), false);
       !status.ok()) {
@@ -706,13 +732,56 @@ absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(co
       .old_history = inputs.old_history,
       .new_history = inputs.new_history,
   };
-  const auto status =
-      GatherCore(borrowed_inputs, result, std::span<const OwnedFaceAnchor>(anchors), old_values, new_values, false);
+  const auto status = GatherCore(
+      borrowed_inputs,
+      result,
+      std::span<const OwnedFaceAnchor>(anchors),
+      old_values,
+      new_values,
+      false,
+      squared_radius
+  );
   if (!status.ok()) {
     return status;
   }
+  if (completed_new_face_velocities != nullptr) {
+    *completed_new_face_velocities = std::move(new_values);
+  }
   return result;
 }
+}  // namespace
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
+) {
+  return GatherBoundaryParticles(inputs, nullptr, 4.0);
+}
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherElasticBoundaryParticle3D(
+    const LiquidBoundaryGatherInputs3D& inputs,
+    std::vector<double>* completed_new_face_velocities
+) {
+  if (inputs.particles.size() != 1) {
+    return absl::InvalidArgumentError("completed face history requires exactly one particle");
+  }
+  std::vector<double> local_completed;
+  auto* completed = completed_new_face_velocities == nullptr ? nullptr : &local_completed;
+  auto gathered = GatherBoundaryParticles(inputs, completed, 4.0);
+  // Preserve the most local full-rank fit. A blade can remove the nearer
+  // donor plane between time samples, leaving only more distant same-side donors.
+  for (const double squared_radius : {9.0, 16.0}) {
+    const bool needs_wider_fit =
+        absl::IsFailedPrecondition(gathered.status()) || (gathered.ok() && !gathered->particles.front().affine_enabled);
+    if (!needs_wider_fit) {
+      break;
+    }
+    gathered = GatherBoundaryParticles(inputs, completed, squared_radius);
+  }
+  if (gathered.ok() && completed_new_face_velocities != nullptr) {
+    *completed_new_face_velocities = std::move(local_completed);
+  }
+  return gathered;
+}
+
 absl::StatusOr<LiquidBoundaryFaceDepositsView3D> LiquidBoundaryWorkspace3D::Deposit(
     const LiquidBoundaryDepositViewInputs3D& inputs
 ) {

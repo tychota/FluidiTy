@@ -21,7 +21,7 @@ from bpy.types import Object, Operator, PropertyGroup
 
 from . import authoring, interchange, jobs, playback, ui
 from .preferences import FLUIDITY_Preferences, preview_end
-from .scene_inputs import SceneError, require_cadence, scene_inputs
+from .scene_inputs import SceneError, cutter_frame_packet, require_cadence, scene_inputs
 from .translations import TRANSLATIONS
 
 is_running = jobs.is_running
@@ -99,6 +99,28 @@ class FluidiTySettings(PropertyGroup):
     collider: PointerProperty(
         name="Collider", type=Object, description="Box defining the analytic plane or slab", update=invalidate_guidance
     )
+    cutter: PointerProperty(
+        name="Cutter",
+        type=Object,
+        description="Animated box defining the elastic cutting slab",
+        update=invalidate_guidance,
+    )
+    elastic_solid: PointerProperty(
+        name="Elastic Solid",
+        type=Object,
+        description="Static box seeding the dry elastic body",
+        update=invalidate_guidance,
+    )
+    elastic_density: FloatProperty(
+        name="Elastic Density (kg/m³)", default=1000, min=1, max=50000, update=invalidate_guidance
+    )
+    elastic_shear_modulus: FloatProperty(
+        name="Shear Modulus (Pa)", default=1000, min=0.01, update=invalidate_guidance
+    )
+    elastic_first_lame_parameter: FloatProperty(
+        name="First Lamé Parameter (Pa)", default=1000, min=0, update=invalidate_guidance
+    )
+    elastic_substeps: IntProperty(name="Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
     material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
     density: FloatProperty(
         name="Density",
@@ -294,6 +316,11 @@ class FLUIDITY_OT_check_scene(SceneAction, Operator):
     bl_label = "Check Scene"
 
     def perform(self, scene):
+        if scene.fluidity.cutter:
+            cache_paths(scene.fluidity)
+            jobs.check_cutter(cutter_frame_packet(scene))
+            scene.fluidity.message = "Cutter scene is ready for a CPU bake."
+            return
         packet = scene_inputs(scene)
         cache_paths(scene.fluidity)
         backend = scene.fluidity.backend
@@ -310,15 +337,18 @@ class StartJob(SceneAction):
 
     def perform(self, scene):
         settings = scene.fluidity
-        packet = scene_inputs(scene, self.preview)
+        packet = cutter_frame_packet(scene) if settings.cutter else scene_inputs(scene, self.preview)
         bake, preview = cache_paths(settings)
         cache = preview if self.preview else bake
         if not self.resume and cache.exists():
             raise SceneError("cache", "Choose a fresh cache directory, or use Resume for an existing bake.")
-        check_device(settings.backend)
         last_frame = preview_end(scene) if self.preview else scene.frame_end
         try:
-            jobs.start(scene, cache, packet, settings.backend, last_frame, self.resume)
+            if settings.cutter:
+                jobs.start_cutter(scene, cache, packet, last_frame, self.resume)
+            else:
+                check_device(settings.backend)
+                jobs.start(scene, cache, packet, settings.backend, last_frame, self.resume)
         except jobs.ToolError as error:
             if self.resume and error.record.get("field") == "scene":
                 raise SceneError("scene", "The bake settings changed. Choose a fresh Bake cache.") from error
@@ -377,6 +407,19 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         cache = project_path(settings.attached_cache or settings.bake_cache)
         settings.inspect_frame = -1
         settings.point_detail = ""
+        cutter_cache = project_path(settings.bake_cache) if settings.cutter else cache
+        if (cutter_cache / "cutter.txt").is_file():
+            checkpoint = jobs.cutter_checkpoint(cutter_cache, scene.frame_current)
+            result = jobs.checked("simulate", "cutter-inspect", checkpoint, event="cutter_inspect")
+            points = result["points"]
+            settings.inspect_frame, settings.point_count = scene.frame_current, len(points)
+            if settings.point_index < len(points):
+                point = points[settings.point_index]
+                x, y, z = point["position"]
+                side = "+" if point["side"] > 0 else "-"
+                settings.point_detail = f"ID {point['id']} | Cutter side {side} | ({x:.4g}, {-z:.4g}, {y:.4g}) m"
+            settings.message = "Read the committed Cutter frame."
+            return
         result = json.loads(jobs.checked("blender_bridge", "inspect", cache, scene.frame_current))
         points = result["points"]
         settings.inspect_frame, settings.point_count = result["frame"], len(points)

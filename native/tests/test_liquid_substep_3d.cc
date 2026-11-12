@@ -13,6 +13,7 @@
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_cavity_scheduler_cases.h"
 #include "liquid_curved_phase_cases.h"
@@ -745,6 +746,357 @@ TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
       wet::CheckPlaneProjection(*scheduler, audit, height, speed);
     }
   }
+}
+
+TEST(LiquidSubstep3D, AcceptedPistonAttemptReturnsSolvedPressureLoad) {
+  namespace wet = wetted_piston_pressure_test;
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+  const RigidBody3D piston{.body_id = 17, .mass = 1.0, .principal_inertia = {1.0, 1.0, 1.0}};
+  const auto attempt = scheduler->AttemptWithPlanarPistonPressureLoad(wet::kDuration, piston);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_EQ(attempt->outcome.disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(attempt->loaded_piston.has_value());
+  const auto cells = scheduler->committed().cells.values();
+  ASSERT_EQ(cells.size(), 1);
+  EXPECT_NEAR(attempt->loaded_piston->force.x, -0.75 * cells.front().previous_pressure, 1e-10);
+  EXPECT_LT(attempt->loaded_piston->force.x, 0.0);
+  EXPECT_DOUBLE_EQ(piston.force.x, 0.0);
+
+  auto rejected = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->BeginFrame(wet::kDuration).ok());
+  rejected->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto refused = rejected->AttemptWithPlanarPistonPressureLoad(wet::kDuration, piston);
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  EXPECT_EQ(refused->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(refused->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
+}
+
+TEST(LiquidSubstep3D, CpuPistonReactionCountsStoredMomentumAtMovingFaceOnly) {
+  std::array particles{
+      LiquidParticleState3D{.world_position = {0.0, 0.0, 0.5}, .mass = 2.0},
+      LiquidParticleState3D{.world_position = {1.0, 0.5, 0.5}, .mass = 3.0},
+  };
+  const std::array gathers{
+      LiquidBoundaryParticleGather3D{.new_pic_velocity = {-0.125, -0.125, 0.0}},
+      LiquidBoundaryParticleGather3D{.new_pic_velocity = {0.125, 0.0, 0.0}},
+  };
+  constexpr std::array distances{-1.0, -1.0};
+  const LiquidParticleUpdateInputs3D inputs{
+      .gathered = gathers,
+      .liquid_distances = distances,
+      .obstacle = AxisAlignedLiquidTank3D{0.0, 1.0, 0.0, 0.0, 1.0, 0.25},
+      .cell_width = 1.0,
+      .step_duration = 0.125,
+  };
+  const auto impulse = UpdateCpuLiquidParticlesWithPistonReaction3D(inputs, particles);
+  ASSERT_TRUE(impulse.ok()) << impulse.status();
+  EXPECT_DOUBLE_EQ(*impulse, -0.75);
+  EXPECT_DOUBLE_EQ(particles[0].world_velocity.x, 0.25);
+  EXPECT_DOUBLE_EQ(particles[0].world_velocity.y, 0.0);
+  EXPECT_DOUBLE_EQ(particles[1].world_velocity.x, 0.0);
+}
+
+TEST(LiquidSubstep3D, GuidedPistonCommitsPressureAndParticleReactionTogether) {
+  namespace wet = wetted_piston_pressure_test;
+  auto initial = Initial();
+  initial.particles[0].world_position = {0x1p-13, 0.375, 0.5};
+  initial.particles[0].mass = 2.0;
+  initial.particles[0].reference_volume = 2.0;
+  std::array gathered{
+      LiquidBoundaryParticleGather3D{.new_pic_velocity = {-0.125, 0.0, 0.0}},
+  };
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &gathered;
+  backend.gather = [](void* context,
+                      const LiquidBoundaryGatherViewInputs3D&,
+                      LiquidBoundaryWorkspace3D&) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    return LiquidBoundaryGatherView3D{
+        .particles = *static_cast<std::array<LiquidBoundaryParticleGather3D, 1>*>(context)
+    };
+  };
+  auto scene = wet::PlaneScene(0.75, wet::kPistonSpeed);
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(scene.obstacle);
+  tank.high_x = 4.0;
+  tank.low_z = -1.0;
+  tank.high_z = 2.0;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+  const RigidBody3D piston{
+      .body_id = 17,
+      .mass = 1000.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {wet::kPistonSpeed, 0.0, 0.0},
+  };
+  const auto attempt = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, piston);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_TRUE(attempt->loaded_piston.has_value())
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  auto prescribed = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(prescribed.ok()) << prescribed.status();
+  ASSERT_TRUE(prescribed->BeginFrame(wet::kDuration).ok());
+  const auto load = prescribed->AttemptWithPlanarPistonPressureLoad(wet::kDuration, piston);
+  ASSERT_TRUE(load.ok()) << load.status();
+  ASSERT_TRUE(load->loaded_piston.has_value());
+  const double pressure_impulse = wet::kDuration * load->loaded_piston->force.x;
+  constexpr double kPistonReaction = -2.0 * (wet::kPistonSpeed + 0.125);
+  EXPECT_NEAR(
+      attempt->loaded_piston->linear_velocity.x,
+      wet::kPistonSpeed + (pressure_impulse + kPistonReaction) / piston.mass,
+      1e-12
+  );
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.x, wet::kPistonSpeed);
+
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto accepted_body = *attempt->loaded_piston;
+  const SolidInteractionCheckpoint3D contact_solid{
+      .accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+      .bodies = {{accepted_body, {piston.center, piston.orientation}}},
+      .sides = {},
+  };
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), contact_solid);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.bodies.size(), 1);
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options(), backend);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  ASSERT_TRUE(replay->BeginFrame(2.0 * wet::kDuration).ok());
+  replay->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto rejected = replay->AttemptWithDynamicPlanarPiston(wet::kDuration, restored->solid.bodies.front().body);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(rejected->loaded_piston.has_value());
+  const auto after_rejection = EncodeCoupledInteractionCheckpoint3D(replay->committed(), restored->solid);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *checkpoint);
+  replay->SetStageFaultHookForTesting({});
+
+  const auto uninterrupted = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, accepted_body);
+  const auto replayed =
+      replay->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, restored->solid.bodies.front().body);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(uninterrupted->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+  ASSERT_TRUE(replayed->loaded_piston.has_value()) << replay->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.x, accepted_body.linear_velocity.x);
+  const RigidBodyPose3D prior_pose{accepted_body.center, accepted_body.orientation};
+  const auto expected_bytes = EncodeCoupledInteractionCheckpoint3D(
+      scheduler->committed(),
+      {.accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+       .bodies = {{*uninterrupted->loaded_piston, prior_pose}},
+       .sides = {}}
+  );
+  const auto replayed_bytes = EncodeCoupledInteractionCheckpoint3D(
+      replay->committed(),
+      {.accepted_step = replay->committed().clock.accepted_step_ordinal,
+       .bodies = {{*replayed->loaded_piston, prior_pose}},
+       .sides = {}}
+  );
+  ASSERT_TRUE(expected_bytes.ok()) << expected_bytes.status();
+  ASSERT_TRUE(replayed_bytes.ok()) << replayed_bytes.status();
+  EXPECT_EQ(*expected_bytes, *replayed_bytes);
+}
+
+TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
+  namespace wet = wetted_piston_pressure_test;
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+  const RigidBody3D piston{
+      .body_id = 17,
+      .mass = 1000.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {wet::kPistonSpeed, 0.0, 0.0},
+  };
+  const auto first = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, piston);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_TRUE(first->loaded_piston.has_value());
+  const auto next = *first->loaded_piston;
+  EXPECT_DOUBLE_EQ(next.center.x, wet::kDuration * wet::kPistonSpeed);
+  EXPECT_LT(next.linear_velocity.x, wet::kPistonSpeed);
+  EXPECT_GT(next.linear_velocity.x, 0.0);
+  const auto cells = scheduler->committed().cells.values();
+  ASSERT_EQ(cells.size(), 1);
+  EXPECT_NEAR(
+      next.linear_velocity.x,
+      wet::kPistonSpeed - wet::kDuration * 0.75 * cells.front().previous_pressure / piston.mass,
+      1e-12
+  );
+
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  SolidInteractionCheckpoint3D solid{
+      .accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+      .bodies = {{next, {piston.center, piston.orientation}}},
+      .sides = {},
+  };
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  ++solid.accepted_step;
+  EXPECT_EQ(
+      EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(DecodeSolidInteractionCheckpoint3D(*checkpoint).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto solid_only = EncodeSolidInteractionCheckpoint3D(solid);
+  ASSERT_TRUE(solid_only.ok()) << solid_only.status();
+  EXPECT_EQ(DecodeCoupledInteractionCheckpoint3D(*solid_only).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.bodies.size(), 1);
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  ASSERT_TRUE(replay->BeginFrame(2.0 * wet::kDuration).ok());
+
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, next);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_FALSE(rejected->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, wet::kDuration);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto second = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, next);
+  ASSERT_TRUE(second.ok()) << second.status();
+  ASSERT_TRUE(second->loaded_piston.has_value());
+  const auto& measured = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measured && measured->piston_pose);
+  EXPECT_DOUBLE_EQ(measured->piston_pose->step_start_low_x_m, next.center.x);
+  EXPECT_NEAR(second->loaded_piston->center.x, next.center.x + next.linear_velocity.x * wet::kDuration / 2.0, 1e-15);
+  const auto replayed =
+      replay->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, restored->solid.bodies.front().body);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(replayed->loaded_piston.has_value());
+  solid.bodies.front() = {*second->loaded_piston, {next.center, next.orientation}};
+  auto replay_solid = solid;
+  replay_solid.bodies.front().body = *replayed->loaded_piston;
+  const auto uninterrupted_bytes = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid);
+  const auto replay_bytes = EncodeCoupledInteractionCheckpoint3D(replay->committed(), replay_solid);
+  ASSERT_TRUE(uninterrupted_bytes.ok()) << uninterrupted_bytes.status();
+  ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+  EXPECT_EQ(*uninterrupted_bytes, *replay_bytes);
+}
+
+TEST(LiquidSubstep3D, GuidedPistonMeasuresAddedMassAndLightBodyAmplification) {
+  namespace wet = wetted_piston_pressure_test;
+  constexpr double kHeight = 0.75;
+  constexpr double kWettedArea = kHeight;
+  constexpr double kPressureDistance = kHeight - 0.5;
+  constexpr double kExpectedAddedMass = kWettedArea * kWettedArea * kPressureDistance;
+  const auto body = [](double mass, double speed) {
+    return RigidBody3D{
+        .body_id = 17,
+        .mass = mass,
+        .principal_inertia = {1.0, 1.0, 1.0},
+        .linear_velocity = {speed, 0.0, 0.0},
+    };
+  };
+
+  std::array<double, 2> pressure_forces{};
+  const std::array probe_speeds{-wet::kPistonSpeed, wet::kPistonSpeed};
+  for (std::size_t probe = 0; probe < probe_speeds.size(); ++probe) {
+    const double speed = probe_speeds[probe];
+    auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, speed), Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+    const auto attempt = scheduler->AttemptWithPlanarPistonPressureLoad(wet::kDuration, body(1.0, speed));
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    ASSERT_TRUE(attempt->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+    pressure_forces[probe] = attempt->loaded_piston->force.x;
+  }
+
+  const double measured_added_mass =
+      -wet::kDuration * (pressure_forces[1] - pressure_forces[0]) / (probe_speeds[1] - probe_speeds[0]);
+  EXPECT_NEAR(measured_added_mass, kExpectedAddedMass, 1e-10);
+  std::cout << "CTEST_FULL_OUTPUT\n"
+            << "guided_piston_added_mass_kg=" << measured_added_mass << " analytic_added_mass_kg=" << kExpectedAddedMass
+            << '\n';
+
+  for (const double mass : {2.0 * kExpectedAddedMass, 0.25 * kExpectedAddedMass}) {
+    SCOPED_TRACE(mass);
+    auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+    const auto attempt = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, body(mass, wet::kPistonSpeed));
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    ASSERT_TRUE(attempt->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+    const double amplification = attempt->loaded_piston->linear_velocity.x / wet::kPistonSpeed;
+    EXPECT_NEAR(amplification, 1.0 - measured_added_mass / mass, 1e-10);
+    if (mass > measured_added_mass) {
+      EXPECT_LT(std::abs(amplification), 1.0);
+    } else {
+      EXPECT_GT(std::abs(amplification), 1.0);
+    }
+    std::cout << "guided_piston_body_mass_kg=" << mass << " signed_step_gain=" << amplification << '\n';
+  }
+  const double light_mass = 0.25 * kExpectedAddedMass;
+  auto coupled = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(coupled.ok()) << coupled.status();
+  ASSERT_TRUE(coupled->BeginFrame(wet::kDuration).ok());
+  const auto attempt = coupled->AttemptWithCoupledPlanarPiston(wet::kDuration, body(light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_TRUE(attempt->loaded_piston.has_value()) << coupled->diagnostics().failure_code;
+  const double expected_velocity = wet::kPistonSpeed * light_mass / (light_mass + kExpectedAddedMass);
+  EXPECT_NEAR(attempt->loaded_piston->linear_velocity.x, expected_velocity, 1e-12);
+  EXPECT_NEAR(attempt->loaded_piston->center.x, wet::kDuration * expected_velocity, 1e-12);
+  const auto& measurement = coupled->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_NEAR(measurement->step_start_inward_piston_flux_m3_per_s, kWettedArea * expected_velocity, 1e-12);
+
+  auto rejected = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->BeginFrame(wet::kDuration).ok());
+  rejected->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto refused = rejected->AttemptWithCoupledPlanarPiston(wet::kDuration, body(light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  EXPECT_EQ(refused->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(refused->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
+
+  auto wide_scene = wet::PlaneScene(kHeight, wet::kPistonSpeed);
+  auto& wide_tank = std::get<AxisAlignedLiquidTank3D>(wide_scene.obstacle);
+  wide_tank.low_z = -1.0;
+  wide_tank.high_z = 2.0;
+  auto wide = LiquidSubstepScheduler3D::Create({}, wide_scene, Options());
+  ASSERT_TRUE(wide.ok()) << wide.status();
+  ASSERT_TRUE(wide->BeginFrame(wet::kDuration).ok());
+  const auto wide_step =
+      wide->AttemptWithCoupledPlanarPiston(wet::kDuration, body(3.0 * light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(wide_step.ok()) << wide_step.status();
+  ASSERT_TRUE(wide_step->loaded_piston.has_value()) << wide->diagnostics().failure_code;
+  EXPECT_EQ(wide->committed().cells.size(), 3);
+  EXPECT_NEAR(wide_step->loaded_piston->linear_velocity.x, expected_velocity, 1e-8);
+  const auto& wide_measurement = wide->diagnostics().accepted_measurement;
+  ASSERT_TRUE(wide_measurement.has_value());
+  EXPECT_NEAR(
+      wide_measurement->step_start_inward_piston_flux_m3_per_s,
+      3.0 * kWettedArea * wide_step->loaded_piston->linear_velocity.x,
+      1e-12
+  );
 }
 
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {

@@ -10,13 +10,17 @@ endif()
 set(FLUIDITY_CACHE_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/cache")
 set(cache_schema_dir "${PROJECT_SOURCE_DIR}/schemas/simulate")
 set(cache_generated_headers)
-foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_scene checkpoint_reference)
+foreach(schema IN ITEMS common liquid_state point_frame frame_manifest resolved_scene checkpoint_reference solid_interaction_checkpoint)
   set(header "${FLUIDITY_CACHE_GENERATED_DIR}/${schema}_generated.h")
+  set(schema_dependencies)
+  if(schema STREQUAL "solid_interaction_checkpoint")
+    list(APPEND schema_dependencies "${cache_schema_dir}/plastic_solid_particle.fbs")
+  endif()
   add_custom_command(OUTPUT "${header}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${FLUIDITY_CACHE_GENERATED_DIR}"
     COMMAND "${FLUIDITY_FLATC_EXECUTABLE}" --cpp --scoped-enums --gen-mutable --reflect-names
             -I "${cache_schema_dir}" -o "${FLUIDITY_CACHE_GENERATED_DIR}" "${cache_schema_dir}/${schema}.fbs"
-    DEPENDS "${cache_schema_dir}/${schema}.fbs" "${cache_schema_dir}/common.fbs" "${FLUIDITY_FLATC_EXECUTABLE}"
+    DEPENDS "${cache_schema_dir}/${schema}.fbs" "${cache_schema_dir}/common.fbs" ${schema_dependencies} "${FLUIDITY_FLATC_EXECUTABLE}"
     VERBATIM)
   list(APPEND cache_generated_headers "${header}")
   if(BUILD_TESTING)

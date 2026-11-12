@@ -637,7 +637,8 @@ absl::Status ApplyLiquidForces3D(
 absl::Status UpdateLiquidParticles3D(
     CudaLiquidArena3D& arena,
     const LiquidParticleUpdateInputs3D& inputs,
-    std::span<LiquidParticleState3D> particles
+    std::span<LiquidParticleState3D> particles,
+    double* piston_impulse
 ) {
   TRANSFER_TRY(arena.RecordRuntimeResult(cudaSuccess));
   const auto transport = inputs.regular_cell_transport;
@@ -672,6 +673,9 @@ absl::Status UpdateLiquidParticles3D(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const auto obstacle = boundary_internal::PackObstacle(inputs.obstacle);
+  if (piston_impulse != nullptr && obstacle.kind != boundary_internal::ObstacleKind::kOpenTank) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
   if (obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
     if (inputs.friction_coefficient != 0) {
       return Error(absl::StatusCode::kInvalidArgument);
@@ -714,6 +718,8 @@ absl::Status UpdateLiquidParticles3D(
     return architecture.status();
   }
   query->pinned[0] = {
+      .operation = piston_impulse == nullptr ? BoundaryTransferOperation3D::kDeposit
+                                             : BoundaryTransferOperation3D::kParticleUpdateWithPistonReaction,
       .particle_count = particles.size(),
       .cell_width = inputs.cell_width,
       .step_duration = inputs.step_duration,
@@ -750,10 +756,18 @@ absl::Status UpdateLiquidParticles3D(
   }
   // Match the first serial arithmetic failure or timestep retry before
   // publishing any updated particle fields.
-  for (const auto& result : results->pinned) {
+  double axial_impulse = 0.0;
+  for (std::size_t index = 0; index < particles.size(); ++index) {
+    const auto& result = results->pinned[index];
     TRANSFER_TRY(boundary_internal::ArithmeticStatus(result.error, true));
     if (result.retry_step) {
       return Error(absl::StatusCode::kAborted);
+    }
+    if (piston_impulse != nullptr) {
+      axial_impulse -= particles[index].mass * result.piston_stored_velocity_change;
+      if (!std::isfinite(axial_impulse)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
     }
   }
   for (std::size_t index = 0; index < particles.size(); ++index) {
@@ -764,6 +778,9 @@ absl::Status UpdateLiquidParticles3D(
     particles[index].velocity_slopes = inputs.gathered[index].fitted_velocity_slopes;
     particles[index].affine_enabled = inputs.gathered[index].affine_enabled;
     particles[index].pic_initialized = true;
+  }
+  if (piston_impulse != nullptr) {
+    *piston_impulse = axial_impulse;
   }
   return absl::OkStatus();
 }

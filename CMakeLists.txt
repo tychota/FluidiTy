@@ -97,6 +97,9 @@ add_library(fluidity_native STATIC
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
+  native/src/elastic_blade_deformation_3d.cc
+  native/src/rigid_body_3d.cc
+  native/src/solid_interaction_checkpoint_3d.cc
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
@@ -193,6 +196,9 @@ if(BUILD_TESTING)
   add_dependencies(fluidity_m5_dry_scene_tests fluidity_cache_schemas)
   target_include_directories(fluidity_m5_dry_scene_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   add_test(NAME M5DryScenes.native COMMAND fluidity_m5_dry_scene_tests)
+  add_executable(fluidity_m5_planar_coupling_tests native/tests/test_m5_planar_coupling_3d.cc)
+  target_link_libraries(fluidity_m5_planar_coupling_tests PRIVATE fluidity_native)
+  add_test(NAME M5PlanarCoupling.native COMMAND fluidity_m5_planar_coupling_tests)
   add_executable(fluidity_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
   target_link_libraries(fluidity_m5_plastic_checkpoint_tests PRIVATE fluidity_native flatbuffers::flatbuffers)
   add_dependencies(fluidity_m5_plastic_checkpoint_tests fluidity_cache_schemas)
@@ -215,6 +221,10 @@ if(BUILD_TESTING)
     add_dependencies(fluidity_cuda_m5_dry_scene_tests fluidity_cache_schemas)
     target_include_directories(fluidity_cuda_m5_dry_scene_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
     add_test(NAME M5DryScenes.cuda COMMAND fluidity_cuda_m5_dry_scene_tests)
+    add_executable(fluidity_cuda_m5_planar_coupling_tests native/tests/test_m5_planar_coupling_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_planar_coupling_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_planar_coupling_tests PRIVATE fluidity_cuda_operators)
+    add_test(NAME M5PlanarCoupling.cuda COMMAND fluidity_cuda_m5_planar_coupling_tests)
     add_executable(fluidity_cuda_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
     target_compile_definitions(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
     target_link_libraries(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE fluidity_cuda_operators flatbuffers::flatbuffers)
@@ -334,6 +344,7 @@ if(BUILD_TESTING)
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
     native/tests/test_transfers_3d.cc
+    native/tests/test_rigid_body_3d.cc
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
