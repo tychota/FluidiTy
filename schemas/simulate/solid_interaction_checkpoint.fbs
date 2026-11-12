@@ -51,6 +51,7 @@ table SolidInteractionCheckpoint {
   elastic_particles:[ElasticParticle] (id:4);
   liquid_state:[ubyte] (id:5, force_align:8);
   plastic_particles:[PlasticParticle] (id:6);
+  resolved_fingerprint:fluidity.cache.v1.Digest (id:7);
 }
 
 root_type SolidInteractionCheckpoint;

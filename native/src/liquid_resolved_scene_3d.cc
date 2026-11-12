@@ -52,6 +52,13 @@ absl::Status CheckSceneRecordCounts(
   }
   return absl::OkStatus();
 }
+absl::Status CheckPlasticBodyCount(std::size_t body_count, LiquidCacheLimits3D limits) {
+  if (body_count > (1 << 20) || body_count > limits.maximum_bytes / sizeof(PlasticSolidCheckpointBinding3D)) {
+    return detail::Error(absl::StatusCode::kResourceExhausted);
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
   SCENE_TRY(CheckSceneRecordCounts(
       input.scene.sources.size(),
@@ -60,9 +67,15 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
       input.scene.phase_pairs.size(),
       limits
   ));
-  if (input.model_version != 1) {
+  if (input.model_version != kLiquidOnlyResolvedModel3D && input.model_version != kPlasticBodyResolvedModel3D) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
+  SCENE_TRY(CheckPlasticBodyCount(input.plastic_bodies.size(), limits));
+  const bool has_plastic_bodies = !input.plastic_bodies.empty();
+  if (has_plastic_bodies != (input.model_version == kPlasticBodyResolvedModel3D)) {
+    return Invalid();
+  }
+  SCENE_TRY(ValidatePlasticSolidCheckpointBindings3D(input.plastic_bodies));
   if (input.backend > LiquidBackend3D::kCuda || !detail::Finite(input.geometry.world_origin)
       || !detail::Positive(input.geometry.cell_width)) {
     return Invalid();
@@ -234,7 +247,7 @@ LiquidUpstreamContent3D ReadUpstream(const wire::UpstreamContent* upstream) {
   };
 }
 absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::ResolvedScene* root) {
-  if (root->model_version() != 1) {
+  if (root->model_version() != kLiquidOnlyResolvedModel3D && root->model_version() != kPlasticBodyResolvedModel3D) {
     return detail::Error(absl::StatusCode::kFailedPrecondition);
   }
   if (root->backend() > wire::Backend::Cuda || root->field()->kind() > wire::FieldKind::IsolatedCovarianceDrop
@@ -413,6 +426,7 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
       .model_version = model_version,
       .build_digest = build_digest,
       .upstream = upstream.values(),
+      .plastic_bodies = plastic_bodies.values(),
   };
   result.scene.sources = sources.values();
   result.scene.constituent_materials = constituent_materials.values();
@@ -429,7 +443,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
       + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
-      tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size(),
+      tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size() + input.plastic_bodies.size(),
       limits,
       wire::ResolvedSceneIdentifier(),
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::ResolvedScene>> {
@@ -681,6 +695,38 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           }
           phase_pairs = *records;
         }
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wire::PlasticBodyBinding>>> plastic_bodies;
+        if (!input.plastic_bodies.empty()) {
+          const auto records = detail::BuildVector<wire::PlasticBodyBinding>(
+              builder,
+              input.plastic_bodies.size(),
+              [&](std::size_t index) {
+                const auto& binding = input.plastic_bodies[index];
+                if (const auto* granular = std::get_if<GranularParameters3D>(&binding.material)) {
+                  const wire::GranularPlasticMaterial packed(
+                      detail::Canonical(granular->lame_lambda),
+                      detail::Canonical(granular->shear_modulus),
+                      detail::Canonical(granular->friction_angle),
+                      detail::Canonical(granular->cohesion_log_strain)
+                  );
+                  return wire::CreatePlasticBodyBinding(builder, binding.body_id, binding.material_id, &packed);
+                }
+                const auto& snow = std::get<SnowParameters3D>(binding.material);
+                const wire::SnowPlasticMaterial packed(
+                    detail::Canonical(snow.lame_lambda),
+                    detail::Canonical(snow.shear_modulus),
+                    detail::Canonical(snow.compression_limit),
+                    detail::Canonical(snow.stretch_limit),
+                    detail::Canonical(snow.hardening)
+                );
+                return wire::CreatePlasticBodyBinding(builder, binding.body_id, binding.material_id, nullptr, &packed);
+              }
+          );
+          if (!records.ok()) {
+            return records.status();
+          }
+          plastic_bodies = *records;
+        }
         const auto origin = detail::PackCanonical(input.geometry.world_origin);
         const auto acceleration = detail::PackCanonical(scene.world_acceleration);
         const auto build = detail::Pack(input.build_digest);
@@ -702,7 +748,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             *sources,
             *upstream,
             constituent_materials,
-            phase_pairs
+            phase_pairs,
+            plastic_bodies
         );
       }
   );
@@ -745,6 +792,39 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
   if (pairs) {
     SCENE_TRY(detail::Materialize(result->phase_pairs, pairs, [](const auto* pair) {
       return LiquidPhasePair3D{pair->phase_a(), pair->phase_b(), pair->surface_tension()};
+    }));
+  }
+  const auto* plastic_bodies = root->plastic_bodies();
+  if (plastic_bodies != nullptr) {
+    SCENE_TRY(CheckPlasticBodyCount(plastic_bodies->size(), limits));
+    if (plastic_bodies->size() == 0 || root->model_version() != kPlasticBodyResolvedModel3D) {
+      return detail::Corrupt();
+    }
+    for (const auto* binding : *plastic_bodies) {
+      if ((binding->granular() == nullptr) == (binding->snow() == nullptr)) {
+        return detail::Corrupt();
+      }
+    }
+    SCENE_TRY(detail::Materialize(result->plastic_bodies, plastic_bodies, [](const auto* binding) {
+      DrySolidMaterial3D material;
+      if (const auto* granular = binding->granular()) {
+        material = GranularParameters3D{
+            .shear_modulus = granular->shear_modulus_pa(),
+            .lame_lambda = granular->lame_lambda_pa(),
+            .friction_angle = granular->friction_angle_rad(),
+            .cohesion_log_strain = granular->cohesion_log_strain(),
+        };
+      } else {
+        const auto* snow = binding->snow();
+        material = SnowParameters3D{
+            .shear_modulus = snow->shear_modulus_pa(),
+            .lame_lambda = snow->lame_lambda_pa(),
+            .compression_limit = snow->compression_limit(),
+            .stretch_limit = snow->stretch_limit(),
+            .hardening = snow->hardening(),
+        };
+      }
+      return PlasticSolidCheckpointBinding3D{binding->body_id(), binding->material_id(), material};
     }));
   }
   // Validate the scalar settings and registries before materializing sources.
