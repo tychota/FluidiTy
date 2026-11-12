@@ -430,17 +430,140 @@ absl::Status AdvancePhysical(
   return scheduler.FinishFrame();
 }
 
+absl::Status AdvanceCertifiedQuadraticFamily(
+    LiquidSubstepScheduler3D& scheduler,
+    const test::QuadraticFamilyReplayFixture3D& fixture,
+    bool merge,
+    absl::FunctionRef<absl::Status()> check_device_epoch
+) {
+  const auto& start = scheduler.committed();
+  const std::uint64_t epoch = start.clock.epoch;
+  const std::uint64_t first_new_id = start.next_particle_id;
+  const std::size_t start_particles = start.particles.size();
+  const double duration = 0.02 - start.clock.time;
+  const auto before = EncodeLiquidState3D(start);
+  if (!before.ok()) {
+    return before.status();
+  }
+  const auto begun = scheduler.BeginFrame(0.02);
+  if (!begun.ok()) {
+    return begun;
+  }
+  const auto attempt = [&](double attempt_duration) {
+    if (merge) {
+      return scheduler.AttemptWithAdaptiveQuadraticMerge(
+          attempt_duration,
+          {
+              .accepted_epoch = epoch,
+              .exact_coarsening_halo = fixture.closure,
+              .merge_parent = test::QuadraticFamilyReplayFixture3D::kParent,
+              .source_particle_ids = std::span(fixture.source_ids).first(fixture.source_count),
+          }
+      );
+    }
+    return scheduler.AttemptWithAdaptiveQuadraticSplit(
+        attempt_duration,
+        {
+            .accepted_epoch = epoch,
+            .exact_refinement_closure = fixture.closure,
+            .split_parent = test::QuadraticFamilyReplayFixture3D::kParent,
+            .source_particle_id = fixture.source_ids.front(),
+        }
+    );
+  };
+  scheduler.SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject certified quadratic trial")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = attempt(duration);
+  scheduler.SetStageFaultHookForTesting({});
+  if (!rejected.ok()) {
+    return rejected.status();
+  }
+  if (rejected->disposition != LiquidAttemptDisposition3D::kRetryDt || !rejected->retry_duration
+      || scheduler.diagnostics().failed_stage != LiquidPhysicalStage3D::kAccept) {
+    return absl::FailedPreconditionError("certified quadratic trial did not reach late rejection");
+  }
+  const auto after = EncodeLiquidState3D(scheduler.committed());
+  if (!after.ok()) {
+    return after.status();
+  }
+  if (!std::ranges::equal(before->values(), after->values())) {
+    return absl::DataLossError("rejected certified quadratic trial changed the committed state");
+  }
+  const auto verified = check_device_epoch();
+  if (!verified.ok()) {
+    return verified;
+  }
+  // Reapply the same certificate at the retry duration to the unchanged epoch.
+  const auto accepted = attempt(*rejected->retry_duration);
+  if (!accepted.ok()) {
+    return accepted.status();
+  }
+  if (accepted->disposition != LiquidAttemptDisposition3D::kAccepted) {
+    return absl::Status(scheduler.diagnostics().failure_code, "certified quadratic trial was rejected");
+  }
+  const auto& final = scheduler.committed();
+  const std::size_t replacements = merge ? 1 : 8;
+  if (final.clock.epoch != epoch + 1 || final.next_particle_id != first_new_id + replacements
+      || final.particles.size() != start_particles - fixture.source_count + replacements
+      || final.adaptive_cells.size() != (merge ? 125 : 314)) {
+    return absl::DataLossError("accepted certified quadratic roster or topology differs");
+  }
+  for (std::uint64_t id = first_new_id; id < final.next_particle_id; ++id) {
+    if (std::ranges::find(final.particles.values(), id, &LiquidParticleState3D::id) == final.particles.values().end()) {
+      return absl::DataLossError("accepted certified quadratic replacement ID is absent");
+    }
+  }
+  for (const std::uint64_t source_id : std::span(fixture.source_ids).first(fixture.source_count)) {
+    if (std::ranges::find(final.particles.values(), source_id, &LiquidParticleState3D::id)
+        != final.particles.values().end()) {
+      return absl::DataLossError("accepted certified quadratic source ID remains live");
+    }
+  }
+  const auto published = check_device_epoch();
+  if (!published.ok()) {
+    return published;
+  }
+  // The authored rest seed permits an ordinary remainder without relying on
+  // a persisted quadratic basis policy.
+  const auto remainder = scheduler.Attempt(0.02 - final.clock.time);
+  if (!remainder.ok()) {
+    return remainder.status();
+  }
+  if (remainder->disposition != LiquidAttemptDisposition3D::kAccepted) {
+    return absl::Status(scheduler.diagnostics().failure_code, "certified quadratic replay remainder was rejected");
+  }
+  return scheduler.FinishFrame();
+}
+
 absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
   const bool physical = scenario == "physical";
   const bool width = scenario == "width";
   const bool batch = scenario == "closure";
+  const bool merge = scenario == "quadratic-merge";
+  const bool quadratic = merge || scenario == "quadratic-split";
   const auto family_scenario = band || width || batch || physical ? std::string_view{} : scenario;
-  const auto capacities = batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
+  const auto capacities = quadratic ? test::QuadraticFamilyReplayFixture3D::kCapacities
+                                    : (batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities);
   LiquidState3D state;
   LiquidSceneInputs3D scene;
-  const auto authored = [&] {
+  std::optional<test::QuadraticFamilyReplayFixture3D> quadratic_fixture;
+  const auto authored = [&]() -> absl::Status {
+    if (quadratic) {
+      auto authored_quadratic = test::PopulateQuadraticFamilyReplayFixture3D(state, scene, merge);
+      if (!authored_quadratic.ok()) {
+        return authored_quadratic.status();
+      }
+      quadratic_fixture = std::move(*authored_quadratic);
+      return absl::OkStatus();
+    }
     if (physical) {
       return test::PopulateGradedPhysicalHalfspaceFixture3D(state, scene, kPhysicalReplayWall);
     }
@@ -476,7 +599,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_tag = physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12)));
+  const std::uint8_t fixture_tag =
+      quadratic ? (merge ? 25 : 24) : (physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12))));
   const std::uint8_t fixture_identity[] = {1, 3, fixture_tag};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
@@ -496,7 +620,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells = batch ? 19 : (band || physical ? 5 : 12);
+    const std::size_t expected_cells =
+        quadratic ? state.adaptive_cells.size() : (batch ? 19 : (band || physical ? 5 : 12));
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
@@ -509,6 +634,10 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
                }
            ) != 8) {
       return absl::DataLossError("fixture checkpoint lost the accepted width eligibility");
+    }
+    if (quadratic_fixture) {
+      std::ranges::reverse(quadratic_fixture->closure);
+      std::ranges::reverse(std::span(quadratic_fixture->source_ids).first(quadratic_fixture->source_count));
     }
     state = std::move(checkpoint->state);
   }
@@ -599,6 +728,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 
   if (mode != "resume") {
     const auto refined = [&] {
+      if (quadratic) {
+        return scheduler->AdvanceFrame(0.01);
+      }
       if (physical) {
         return AdvancePhysical(*scheduler, 0.01, true, check_device_epoch);
       }
@@ -617,7 +749,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
     }
   }
-  if (width || batch || physical) {
+  if (width || batch || physical || quadratic) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -641,6 +773,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 
   const auto continued = [&] {
+    if (quadratic) {
+      return AdvanceCertifiedQuadraticFamily(*scheduler, *quadratic_fixture, merge, check_device_epoch);
+    }
     if (physical) {
       return AdvancePhysical(*scheduler, 0.02, false, check_device_epoch);
     }
@@ -655,7 +790,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!continued.ok()) {
     return continued;
   }
-  if (batch || physical) {
+  if (batch || physical || quadratic) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -683,7 +818,8 @@ int main(int argc, char** argv) {
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
-      && scenario != "width" && scenario != "closure" && scenario != "physical") {
+      && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "quadratic-split"
+      && scenario != "quadratic-merge") {
     return 2;
   }
   const std::string_view backend = argv[1];

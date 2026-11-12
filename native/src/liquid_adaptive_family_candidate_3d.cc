@@ -651,7 +651,8 @@ absl::StatusOr<LiquidState3D> PrepareRefinementClosure(
     const AdaptiveMacTopology3D& topology,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     const AdaptiveMacCellKey3D* split_parent,
-    std::uint64_t split_particle_id
+    std::uint64_t split_particle_id,
+    bool require_exact_closure
 ) {
   if (requested_parents.empty()) {
     return absl::InvalidArgumentError("adaptive refinement closure requires at least one parent");
@@ -673,9 +674,18 @@ absl::StatusOr<LiquidState3D> PrepareRefinementClosure(
     }
     requested.push_back(static_cast<std::size_t>(found - leaves.begin()));
   }
+  if (require_exact_closure) {
+    std::ranges::sort(requested);
+    if (std::ranges::adjacent_find(requested) != requested.end()) {
+      return absl::InvalidArgumentError("certified refinement closure contains duplicate parents");
+    }
+  }
   auto closure = topology.RefinementClosure(requested, capacities.cells);
   if (!closure.ok()) {
     return closure.status();
+  }
+  if (require_exact_closure && closure->size() != requested.size()) {
+    return absl::FailedPreconditionError("certified refinement closure omits a required parent");
   }
   const auto selected_key = split_parent == nullptr ? std::nullopt : std::optional(LeafKey(*split_parent));
   std::ranges::sort(*closure, {}, [&](std::size_t ordinal) {
@@ -719,7 +729,7 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidRefinementClosureCandidate3D(
     const AdaptiveMacTopology3D& topology,
     std::span<const AdaptiveMacCellKey3D> requested_parents
 ) {
-  return PrepareRefinementClosure(committed, scene, capacities, topology, requested_parents, nullptr, 0);
+  return PrepareRefinementClosure(committed, scene, capacities, topology, requested_parents, nullptr, 0, false);
 }
 
 absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
@@ -728,7 +738,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
     LiquidStateCapacities3D capacities,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     AdaptiveMacCellKey3D split_parent,
-    std::uint64_t split_particle_id
+    std::uint64_t split_particle_id,
+    bool require_exact_closure
 ) {
   if (split_particle_id == 0) {
     return absl::InvalidArgumentError("quadratic split requires a parent particle ID");
@@ -744,7 +755,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
       *topology,
       requested_parents,
       &split_parent,
-      split_particle_id
+      split_particle_id,
+      require_exact_closure
   );
 }
 
@@ -754,7 +766,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
     LiquidStateCapacities3D capacities,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     AdaptiveMacCellKey3D merge_parent,
-    std::span<const std::uint64_t> children
+    std::span<const std::uint64_t> children,
+    bool require_exact_closure
 ) {
   constexpr std::size_t kMaximumChildren = 8;
   if (children.size() < 2 || children.size() > kMaximumChildren || requested_parents.empty()
@@ -784,6 +797,9 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
     return std::tuple{canonical == selected_key, canonical};
   });
   const auto duplicate_tail = std::ranges::unique(ordered, {}, LeafKey);
+  if (require_exact_closure && !duplicate_tail.empty()) {
+    return absl::InvalidArgumentError("certified coarsening halo contains duplicate parents");
+  }
   ordered.erase(duplicate_tail.begin(), duplicate_tail.end());
   if (LeafKey(ordered.back()) != selected_key) {
     return absl::FailedPreconditionError("quadratic merge parent must be in the coarsening halo");

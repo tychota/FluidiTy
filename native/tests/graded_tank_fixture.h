@@ -1,12 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity::test {
@@ -450,6 +453,123 @@ inline absl::Status PopulateGradedRefinementClosureFixture3D(
   state.adaptive_faces = std::move(*faces);
   state.particles = std::move(*particles);
   return ValidateLiquidState3D(state);
+}
+
+struct QuadraticFamilyReplayFixture3D {
+  static constexpr AdaptiveMacCellKey3D kParent{.lower_corner = {0, 0, 0}, .width_exponent = 1};
+  static constexpr LiquidStateCapacities3D kCapacities{512, 0, 512, 2400, 0};
+
+  std::vector<AdaptiveMacCellKey3D> closure;
+  std::array<std::uint64_t, 8> source_ids{};
+  std::size_t source_count = 0;
+};
+
+// Author independent coarse and fine dyadic seeds at rest. The merge fixture
+// starts with its eight fine particles without running a split.
+inline absl::StatusOr<QuadraticFamilyReplayFixture3D>
+PopulateQuadraticFamilyReplayFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene, bool merge) {
+  state.geometry.cell_width = 0.5;
+  scene.field = LiquidHorizontalPlaneSurface3D{3};
+  scene.obstacle = AxisAlignedLiquidTank3D{-2, 3, -2, -2, 3, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 2;
+
+  std::vector<AdaptiveMacCellKey3D> keys;
+  std::vector<LiquidParticleState3D> roster;
+  QuadraticFamilyReplayFixture3D fixture;
+  for (int z = -2; z < 3; ++z) {
+    for (int y = -2; y < 3; ++y) {
+      for (int x = -2; x < 3; ++x) {
+        const AdaptiveMacCellKey3D key{.lower_corner = {2 * x, 2 * y, 2 * z}, .width_exponent = 1};
+        const bool refine = std::abs(x) <= 1 && std::abs(y) <= 1 && std::abs(z) <= 1;
+        if (refine) {
+          fixture.closure.push_back(key);
+        }
+        const bool center = x == 0 && y == 0 && z == 0;
+        if (!refine || !merge) {
+          keys.push_back(key);
+        }
+        if (!refine || (center && !merge)) {
+          roster.push_back({
+              .id = roster.size() + 1,
+              .world_position = {x + 0.5, y + 0.5, z + 0.5},
+              .mass = 2,
+              .pic_initialized = true,
+          });
+          if (center) {
+            fixture.source_ids[fixture.source_count++] = roster.back().id;
+          }
+          continue;
+        }
+        for (unsigned octant = 0; octant < 8; ++octant) {
+          if (merge) {
+            keys.push_back({
+                .lower_corner =
+                    {2 * x + static_cast<int>(octant & 1u),
+                     2 * y + static_cast<int>((octant >> 1) & 1u),
+                     2 * z + static_cast<int>((octant >> 2) & 1u)},
+                .width_exponent = 0,
+            });
+          }
+          roster.push_back({
+              .id = roster.size() + 1,
+              .world_position =
+                  {x + ((octant & 1u) == 0 ? 0.25 : 0.75),
+                   y + ((octant & 2u) == 0 ? 0.25 : 0.75),
+                   z + ((octant & 4u) == 0 ? 0.25 : 0.75)},
+              .mass = 0.25,
+              .reference_volume = 0.125,
+              .pic_initialized = true,
+          });
+          if (center) {
+            fixture.source_ids[fixture.source_count++] = roster.back().id;
+          }
+        }
+      }
+    }
+  }
+
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(roster.size());
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  if (!cells.ok() || !particles.ok() || !faces.ok()) {
+    return absl::ResourceExhaustedError("quadratic family fixture allocation failed");
+  }
+  if (!cells->Resize(keys.size()).ok() || !particles->Resize(roster.size()).ok() || !faces->Resize(face_count).ok()) {
+    return absl::InternalError("quadratic family fixture extent failed");
+  }
+  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
+    const auto& leaf = topology->cells()[ordinal];
+    (*cells)[ordinal] = {
+        .key = leaf.key,
+        .inventory =
+            {.mass_kg = 2 * leaf.cell_volume,
+             .reference_volume_m3 = leaf.cell_volume,
+             .current_volume_m3 = leaf.cell_volume},
+    };
+  }
+  std::ranges::copy(roster, particles->values().begin());
+  for (auto& face : faces->values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  state.particles = std::move(*particles);
+  state.next_particle_id = roster.size() + 1;
+  const auto valid = ValidateLiquidState3D(state);
+  if (!valid.ok()) {
+    return valid;
+  }
+  return fixture;
 }
 
 }  // namespace fluidity::test

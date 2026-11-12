@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -31,14 +32,26 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     std::span<std::size_t> leaf_row_offsets = {}
 );
 
-// A single selected particle and its canonical rows frozen before a physical
-// attempt. The normalized old carriers reside in the owning step scratch.
-struct PreparedAdaptiveQuadraticTransfer3D {
-  std::uint64_t epoch;
+// Canonical rows and identity of one selected step-start particle.
+struct PreparedAdaptiveQuadraticParticle3D {
   std::size_t particle_ordinal;
   std::uint64_t particle_id;
   Vec3 world_position_m;
   GradedQuadraticMacStencil3D stencil;
+};
+
+// Up to one complete split roster in stable particle order. The normalized
+// old carriers are borrowed from the step owner that prepared this roster.
+struct PreparedAdaptiveQuadraticTransfer3D {
+  static constexpr std::size_t kMaximumParticles = 8;
+
+  std::uint64_t epoch;
+  std::array<PreparedAdaptiveQuadraticParticle3D, kMaximumParticles> particles;
+  std::size_t particle_count;
+
+  std::span<const PreparedAdaptiveQuadraticParticle3D> selections() const {
+    return std::span(particles).first(particle_count);
+  }
 };
 
 // Frozen graded tank ownership and staging. The owner is built at scheduler
@@ -68,6 +81,13 @@ class AdaptiveLiquidStep3D {
       const LiquidStepOptions3D& options,
       std::uint64_t particle_id
   );
+  // Stage one complete certified roster against the detached candidate.
+  // Any missing, ineligible or malformed selection refuses the entire trial.
+  absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> PrepareCertifiedQuadraticTransfer(
+      const LiquidState3D& candidate,
+      const LiquidStepOptions3D& options,
+      std::span<const std::uint64_t> replacement_ids
+  );
   absl::Status Deposit(
       const LiquidState3D& trial,
       const LiquidStepOptions3D& options,
@@ -93,6 +113,12 @@ class AdaptiveLiquidStep3D {
 
  private:
   AdaptiveLiquidStep3D(AdaptiveMacTopology3D topology, GradedMacTransfer3D transfer);
+  absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> StageQuadraticTransfer(
+      const LiquidState3D& state,
+      const LiquidStepOptions3D& options,
+      std::span<const std::uint64_t> particle_ids,
+      bool allow_radial_fallback
+  );
   absl::Status NormalizeDeposits(
       const LiquidState3D& state,
       const LiquidStepOptions3D& options,

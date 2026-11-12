@@ -29,6 +29,12 @@ namespace {
 absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+bool AllowsAdaptiveQuadraticTransfer(const LiquidSceneInputs3D& scene) {
+  return std::holds_alternative<AxisAlignedLiquidTank3D>(scene.obstacle) && !scene.eos && std::isinf(scene.bulk_modulus)
+      && !scene.drift && scene.dynamic_viscosity == 0 && scene.surface_tension == 0
+      && scene.constituent_materials.empty();
+}
+
 auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
 }
@@ -3069,6 +3075,7 @@ struct LiquidSubstepScheduler3D::AdaptiveStateTrial {
   LiquidState3D state;
   liquid_step_internal::AdaptiveLiquidStep3D owner;
   std::size_t accepted_reservation_bytes;
+  std::optional<liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D> quadratic;
 };
 
 struct LiquidSubstepScheduler3D::AdaptivePhysicalTrial {
@@ -3200,10 +3207,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
     std::uint64_t committed_epoch,
     std::uint64_t particle_id
 ) {
-  const auto& scene = impl_->scene;
-  if (!impl_->adaptive || !std::holds_alternative<AxisAlignedLiquidTank3D>(scene.obstacle) || scene.eos
-      || std::isfinite(scene.bulk_modulus) || scene.drift || scene.dynamic_viscosity != 0 || scene.surface_tension != 0
-      || !scene.constituent_materials.empty()) {
+  if (!impl_->adaptive || !AllowsAdaptiveQuadraticTransfer(impl_->scene)) {
     return absl::FailedPreconditionError("explicit quadratic transfer requires a graded inviscid incompressible tank");
   }
   if (committed_epoch != committed().clock.epoch) {
@@ -3222,6 +3226,54 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
       nullptr,
       nullptr,
       particle_id
+  );
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveQuadraticSplit(
+    double step_duration,
+    const LiquidAdaptiveQuadraticSplitRequest3D& request
+) {
+  if (request.accepted_epoch != committed().clock.epoch) {
+    return absl::FailedPreconditionError("certified quadratic split requested a stale committed epoch");
+  }
+  return AttemptPreparedAdaptiveState(
+      step_duration,
+      [&] {
+        return liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+            committed(),
+            impl_->scene,
+            impl_->options.capacities,
+            request.exact_refinement_closure,
+            request.split_parent,
+            request.source_particle_id,
+            true
+        );
+      },
+      liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles
+  );
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveQuadraticMerge(
+    double step_duration,
+    const LiquidAdaptiveQuadraticMergeRequest3D& request
+) {
+  if (request.accepted_epoch != committed().clock.epoch) {
+    return absl::FailedPreconditionError("certified quadratic merge requested a stale committed epoch");
+  }
+  return AttemptPreparedAdaptiveState(
+      step_duration,
+      [&] {
+        return liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+            committed(),
+            impl_->scene,
+            impl_->options.capacities,
+            request.exact_coarsening_halo,
+            request.merge_parent,
+            request.source_particle_ids,
+            true
+        );
+      },
+      1
   );
 }
 
@@ -3359,7 +3411,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
 
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPreparedAdaptiveState(
     double step_duration,
-    absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare
+    absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
+    std::size_t certified_replacement_count
 ) {
   auto& impl = *impl_;
   if (!impl.adaptive || std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)) {
@@ -3368,6 +3421,9 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
     return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (certified_replacement_count != 0 && !AllowsAdaptiveQuadraticTransfer(impl.scene)) {
+    return absl::FailedPreconditionError("certified quadratic trial requires an inviscid incompressible graded tank");
   }
   auto prepared = prepare();
   if (!prepared.ok()) {
@@ -3381,7 +3437,28 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
     return Error(absl::StatusCode::kResourceExhausted);
   }
   const auto accepted_bytes = impl.reservation_bytes - impl.adaptive->reserved_bytes() + owner->reserved_bytes();
-  AdaptiveStateTrial candidate{std::move(*prepared), std::move(*owner), accepted_bytes};
+  AdaptiveStateTrial candidate{
+      .state = std::move(*prepared),
+      .owner = std::move(*owner),
+      .accepted_reservation_bytes = accepted_bytes,
+      .quadratic = std::nullopt,
+  };
+  if (certified_replacement_count != 0) {
+    const auto first_id = committed().next_particle_id;
+    const auto next_id = candidate.state.next_particle_id;
+    std::array<std::uint64_t, liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles> ids{};
+    if (certified_replacement_count > ids.size() || next_id < first_id
+        || next_id - first_id != certified_replacement_count) {
+      return absl::FailedPreconditionError("certified adaptive candidate has an unexpected replacement ID range");
+    }
+    const auto replacement_ids = std::span(ids).first(certified_replacement_count);
+    std::iota(replacement_ids.begin(), replacement_ids.end(), first_id);
+    auto transfer = candidate.owner.PrepareCertifiedQuadraticTransfer(candidate.state, impl.options, replacement_ids);
+    if (!transfer.ok()) {
+      return transfer.status();
+    }
+    candidate.quadratic = std::move(*transfer);
+  }
   return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, &candidate);
 }
 
@@ -3688,13 +3765,17 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   if (adaptive_physical != nullptr) {
     adaptive_owner = &adaptive_physical->owner;
   }
+  const auto* quadratic_transfer = quadratic ? &*quadratic : nullptr;
+  if (adaptive_replacement != nullptr && adaptive_replacement->quadratic) {
+    quadratic_transfer = &*adaptive_replacement->quadratic;
+  }
   auto status = adaptive_owner != nullptr ? impl.ExecuteAdaptive(
                                                 *adaptive_owner,
                                                 step_duration,
                                                 **trial,
                                                 accepted_measurement,
                                                 work_phase,
-                                                quadratic ? &*quadratic : nullptr
+                                                quadratic_transfer
                                             )
                                           : impl.Execute(
                                                 step_duration,

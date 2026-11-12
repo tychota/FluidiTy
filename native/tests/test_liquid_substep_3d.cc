@@ -420,93 +420,43 @@ TEST(LiquidSubstep3D, GradedExplicitQuadraticRejectsChangedProjectedCarrier) {
   auto trial = CloneLiquidState3D(state, options.capacities);
   ASSERT_TRUE(trial.ok()) << trial.status();
   ASSERT_TRUE(owner->Deposit(*trial, options, &**prepared).ok());
-  const auto slot = (**prepared).stencil.rows[0][0].face_slot;
+  const auto slot = (**prepared).selections().front().stencil.rows[0][0].face_slot;
   trial->adaptive_faces[slot].validity = LiquidFaceValidity3D::kPredicted;
   EXPECT_TRUE(absl::IsFailedPrecondition(owner->Gather(*trial, &**prepared)));
 }
 
+TEST(LiquidSubstep3D, GradedCertifiedQuadraticSplitRefusesIneligibleOldCarriersBeforeTrial) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto fixture = test::PopulateQuadraticFamilyReplayFixture3D(state, scene, false);
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  LiquidStepOptions3D options;
+  options.capacities = test::QuadraticFamilyReplayFixture3D::kCapacities;
+  options.minimum_face_mass = 4;
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const LiquidAdaptiveQuadraticSplitRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .exact_refinement_closure = fixture->closure,
+      .split_parent = test::QuadraticFamilyReplayFixture3D::kParent,
+      .source_particle_id = fixture->source_ids.front(),
+  };
+  const auto refused = scheduler->AttemptWithAdaptiveQuadraticSplit(0.01, request);
+  EXPECT_TRUE(absl::IsFailedPrecondition(refused.status())) << refused.status();
+  EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitAndMergeWithFullHalo) {
   LiquidState3D state;
-  state.geometry.cell_width = 0.5;
   LiquidSceneInputs3D scene;
-  scene.field = LiquidHorizontalPlaneSurface3D{3};
-  scene.obstacle = AxisAlignedLiquidTank3D{-2, 3, -2, -2, 3, 0};
-  scene.world_acceleration = {};
-  scene.liquid_density = 2;
-
-  constexpr AdaptiveMacCellKey3D kCenter{.lower_corner = {0, 0, 0}, .width_exponent = 1};
-  constexpr LiquidStateCapacities3D kCapacities{512, 0, 512, 2400, 0};
-  std::vector<AdaptiveMacCellKey3D> keys;
-  std::vector<AdaptiveMacCellKey3D> requested;
-  std::vector<LiquidParticleState3D> roster;
-  std::uint64_t parent_id = 0;
-  for (int z = -2; z < 3; ++z) {
-    for (int y = -2; y < 3; ++y) {
-      for (int x = -2; x < 3; ++x) {
-        const AdaptiveMacCellKey3D key{.lower_corner = {2 * x, 2 * y, 2 * z}, .width_exponent = 1};
-        keys.push_back(key);
-        const bool refine = std::abs(x) <= 1 && std::abs(y) <= 1 && std::abs(z) <= 1;
-        if (refine) {
-          requested.push_back(key);
-        }
-        const bool center = x == 0 && y == 0 && z == 0;
-        if (!refine || center) {
-          roster.push_back({
-              .id = roster.size() + 1,
-              .world_position = {x + 0.5, y + 0.5, z + 0.5},
-              .mass = 2,
-              .pic_initialized = true,
-          });
-          if (center) {
-            parent_id = roster.back().id;
-          }
-          continue;
-        }
-        for (unsigned octant = 0; octant < 8; ++octant) {
-          roster.push_back({
-              .id = roster.size() + 1,
-              .world_position =
-                  {x + ((octant & 1u) == 0 ? 0.25 : 0.75),
-                   y + ((octant & 2u) == 0 ? 0.25 : 0.75),
-                   z + ((octant & 4u) == 0 ? 0.25 : 0.75)},
-              .mass = 0.25,
-              .reference_volume = 0.125,
-              .pic_initialized = true,
-          });
-        }
-      }
-    }
-  }
-
-  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
-  ASSERT_TRUE(topology.ok()) << topology.status();
-  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
-  ASSERT_TRUE(ownership.ok()) << ownership.status();
-  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
-  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
-  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(roster.size());
-  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
-  ASSERT_TRUE(cells.ok()) << cells.status();
-  ASSERT_TRUE(particles.ok()) << particles.status();
-  ASSERT_TRUE(faces.ok()) << faces.status();
-  ASSERT_TRUE(cells->Resize(keys.size()).ok());
-  ASSERT_TRUE(particles->Resize(roster.size()).ok());
-  ASSERT_TRUE(faces->Resize(face_count).ok());
-  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
-    (*cells)[ordinal] = {
-        .key = topology->cells()[ordinal].key,
-        .inventory = {.mass_kg = 2, .reference_volume_m3 = 1, .current_volume_m3 = 1},
-    };
-  }
-  std::ranges::copy(roster, particles->values().begin());
-  for (auto& face : faces->values()) {
-    face.validity = LiquidFaceValidity3D::kValid;
-  }
-  state.adaptive_cells = std::move(*cells);
-  state.adaptive_faces = std::move(*faces);
-  state.particles = std::move(*particles);
-  state.next_particle_id = roster.size() + 1;
-  ASSERT_TRUE(ValidateLiquidState3D(state).ok());
+  const auto fixture = test::PopulateQuadraticFamilyReplayFixture3D(state, scene, false);
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr auto kCenter = test::QuadraticFamilyReplayFixture3D::kParent;
+  constexpr auto kCapacities = test::QuadraticFamilyReplayFixture3D::kCapacities;
+  const auto& requested = fixture->closure;
+  const auto parent_id = fixture->source_ids.front();
   const auto before = EncodeLiquidState3D(state);
   ASSERT_TRUE(before.ok()) << before.status();
 
