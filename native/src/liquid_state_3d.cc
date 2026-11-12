@@ -210,6 +210,7 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
   for (std::size_t ordinal = 0; ordinal < records.cell_count; ++ordinal) {
     const auto cell = cell_at(ordinal);
     if (cell.key.width_exponent > 30 || cell.occupancy > LiquidCellOccupancy3D::kSolid
+        || cell.material_owner > AdaptiveLiquidMaterialOwner3D::kEulerian
         || (ordinal > 0
             && LatticeSortKey(cell_at(ordinal - 1).key.lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
@@ -372,7 +373,7 @@ bool LiquidFaceState3D::operator==(const LiquidFaceState3D& other) const {
 bool LiquidAdaptiveCellState3D::operator==(const LiquidAdaptiveCellState3D& other) const {
   return LatticeSortKey(key.lower_corner) == LatticeSortKey(other.key.lower_corner)
       && key.width_exponent == other.key.width_exponent && occupancy == other.occupancy
-      && inventory.mass_kg == other.inventory.mass_kg
+      && material_owner == other.material_owner && inventory.mass_kg == other.inventory.mass_kg
       && inventory.reference_volume_m3 == other.inventory.reference_volume_m3
       && inventory.current_volume_m3 == other.inventory.current_volume_m3
       && Components(inventory.momentum_kg_m_per_s) == Components(other.inventory.momentum_kg_m_per_s)
