@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../src/graded_liquid_boundary_geometry_3d.h"
+#include "../src/graded_liquid_wet_transition_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #include "gtest/gtest.h"
 
@@ -71,6 +72,178 @@ TEST(GradedLiquidBoundaryGeometry3D, ClipsCanonicalSignedCoarseFineWorldSubfaces
       PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces).status().code(),
       absl::StatusCode::kFailedPrecondition
   );
+}
+
+TEST(GradedLiquidBoundaryGeometry3D, ProvesStableParticleWettingAndDryingAcrossSignedCoarseFineFace) {
+  constexpr std::array keys{AdaptiveMacCellKey3D{{-2, -2, 0}, 1}, AdaptiveMacCellKey3D{{-2, 0, 0}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_EQ(ownership->interior_face_slots.size(), 1);
+  const std::size_t crossing_slot = ownership->interior_face_slots[0];
+  const std::size_t face_count = ownership->exterior_faces.size() + 1;
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(2);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  ASSERT_TRUE(particles.ok() && cells.ok() && faces.ok());
+  ASSERT_TRUE(particles->Resize(2).ok() && cells->Resize(2).ok() && faces->Resize(face_count).ok());
+  (*particles)[0] = {
+      .id = 9,
+      .world_position = {-1.5, -1.5, 0.5},
+      .world_velocity = {2, -1, 0.5},
+      .mass = 0.25,
+      .reference_volume = 0.125,
+      .volume_ratio = 2,
+  };
+  (*particles)[1] = {
+      .id = 3,
+      .world_position = {-1.5, -0.5, 0.5},
+      .world_velocity = {-2, 3, -1},
+      .mass = 0.125,
+      .reference_volume = 0.25,
+      .volume_ratio = 0.5,
+  };
+  (*cells)[0] = {
+      .key = keys[0],
+      .inventory =
+          {
+              .mass_kg = 0.375,
+              .reference_volume_m3 = 0.375,
+              .current_volume_m3 = 0.375,
+              .momentum_kg_m_per_s = {0.25, 0.125, 0},
+          },
+      .previous_pressure = 4,
+      .coarsening_eligible_duration_s = 0.125,
+  };
+  (*cells)[1] = {
+      .key = keys[1],
+      .occupancy = LiquidCellOccupancy3D::kAir,
+      .coarsening_eligible_duration_s = 0.125,
+  };
+  LiquidState3D accepted{
+      .clock = {.time = 1, .frame_ordinal = 1, .accepted_step_ordinal = 1, .epoch = 1},
+      .next_particle_id = 10,
+      .particles = std::move(*particles),
+      .adaptive_cells = std::move(*cells),
+      .adaptive_faces = std::move(*faces),
+  };
+  const auto original = CloneLiquidState3D(accepted, {.particles = 2, .cells = 2, .faces = face_count});
+  ASSERT_TRUE(original.ok()) << original.status();
+  std::array<GradedLiquidParticlePath3D, 2> paths{{
+      {.particle_id = 9, .start_m = {-1.5, -1.5, 0.5}, .end_m = {-1.5, -1.5, 0.5}},
+      {
+          .particle_id = 3,
+          .start_m = {-1.5, -0.5, 0.5},
+          .end_m = {-1.5, 0.25, 0.5},
+          .end_leaf_ordinal = 1,
+          .crossing_face_slot = crossing_slot,
+      },
+  }};
+  GradedLiquidWetTransitionRequest3D request{
+      .expected_accepted_clock = accepted.clock,
+      .step_duration_s = 0.25,
+      .start_solid = {.unit_normal = {0, 1, 0}, .start_plane_coordinate = -1.875, .wall_velocity = {0, 0.5, 0}},
+      .start_liquid = {.unit_normal = {0, 1, 0}, .plane_coordinate_m = 0},
+      .end_liquid_plane_coordinate_m = 0.5,
+  };
+  const auto wet = PrepareGradedLiquidWetTransition3D(accepted, request, paths);
+  ASSERT_TRUE(wet.ok()) << wet.status();
+  EXPECT_EQ(wet->request.expected_accepted_clock, accepted.clock);
+  EXPECT_DOUBLE_EQ(wet->end_time_s, 1.25);
+  EXPECT_TRUE(wet->before.leaves()[1].known_air);
+  EXPECT_NEAR(wet->before.leaves()[0].fluid_volume_m3, 7.5, 1e-14);
+  EXPECT_NEAR(wet->after.leaves()[0].fluid_volume_m3, 7, 1e-14);
+  EXPECT_DOUBLE_EQ(wet->after.leaves()[1].fluid_volume_m3, 0.5);
+  EXPECT_EQ(wet->leaves[1].occupancy, LiquidCellOccupancy3D::kLiquid);
+  EXPECT_DOUBLE_EQ(wet->leaves[1].inventory.mass_kg, 0.125);
+  EXPECT_DOUBLE_EQ(wet->leaves[1].inventory.reference_volume_m3, 0.25);
+  EXPECT_DOUBLE_EQ(wet->leaves[1].inventory.current_volume_m3, 0.125);
+  EXPECT_DOUBLE_EQ(wet->leaves[1].inventory.momentum_kg_m_per_s.y, 0.375);
+  EXPECT_DOUBLE_EQ(wet->leaves[0].previous_pressure, 4);
+  EXPECT_DOUBLE_EQ(wet->leaves[1].coarsening_eligible_duration_s, 0);
+  EXPECT_EQ(wet->paths[1].particle_id, 3);
+  EXPECT_TRUE(accepted == *original);
+
+  auto wrong_path = paths;
+  wrong_path[1].particle_id = 9;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, request, wrong_path).ok());
+  wrong_path = paths;
+  wrong_path[1].crossing_face_slot = crossing_slot + 1;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, request, wrong_path).ok());
+  wrong_path = paths;
+  wrong_path[1].end_m.x = -1.25;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, request, wrong_path).ok());
+  wrong_path = paths;
+  wrong_path[1].end_m = wrong_path[1].start_m;
+  wrong_path[1].end_leaf_ordinal = 0;
+  wrong_path[1].crossing_face_slot.reset();
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, request, wrong_path).ok());
+  auto stale = request;
+  ++stale.expected_accepted_clock.epoch;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, stale, paths).ok());
+  auto blocked = request;
+  blocked.start_solid.start_plane_coordinate = -1;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, blocked, paths).ok());
+  auto overdrawn = request;
+  overdrawn.end_liquid_plane_coordinate_m = 0.0625;
+  wrong_path = paths;
+  wrong_path[1].end_m.y = 0.03125;
+  EXPECT_FALSE(PrepareGradedLiquidWetTransition3D(accepted, overdrawn, wrong_path).ok());
+  EXPECT_TRUE(accepted == *original);
+
+  auto lossy = CloneLiquidState3D(accepted, {.particles = 2, .cells = 2, .faces = face_count});
+  ASSERT_TRUE(lossy.ok()) << lossy.status();
+  lossy->particles[0].mass = 1;
+  lossy->particles[1].mass = std::ldexp(1.0, -60);
+  lossy->adaptive_cells[0].inventory.mass_kg = 1;
+  lossy->adaptive_cells[0].inventory.momentum_kg_m_per_s = {2, -1, 0.5};
+  const auto rejected_loss = PrepareGradedLiquidWetTransition3D(*lossy, request, paths);
+  EXPECT_EQ(rejected_loss.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(rejected_loss.status().message(), "Graded wet transition binned inventory loses represented material");
+
+  auto mixed_owner = CloneLiquidState3D(accepted, {.particles = 2, .cells = 2, .faces = face_count});
+  ASSERT_TRUE(mixed_owner.ok()) << mixed_owner.status();
+  mixed_owner->adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  const auto rejected_owner = PrepareGradedLiquidWetTransition3D(*mixed_owner, request, paths);
+  EXPECT_EQ(rejected_owner.status().code(), absl::StatusCode::kFailedPrecondition);
+
+  auto edge = CloneLiquidState3D(accepted, {.particles = 2, .cells = 2, .faces = face_count});
+  ASSERT_TRUE(edge.ok()) << edge.status();
+  wrong_path = paths;
+  edge->particles[1].world_position.x = -2;
+  wrong_path[1].start_m.x = -2;
+  wrong_path[1].end_m.x = -2;
+  const auto rejected_edge = PrepareGradedLiquidWetTransition3D(*edge, request, wrong_path);
+  EXPECT_EQ(rejected_edge.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(
+      rejected_edge.status().message(),
+      "Graded wet transition path does not cross strictly inside its named subface"
+  );
+
+  accepted.clock.time = wet->end_time_s;
+  ++accepted.clock.accepted_step_ordinal;
+  ++accepted.clock.substep_ordinal;
+  ++accepted.clock.epoch;
+  accepted.adaptive_cells[0] = wet->leaves[0];
+  accepted.adaptive_cells[1] = wet->leaves[1];
+  accepted.adaptive_cells[1].previous_pressure = -3;
+  accepted.particles[1].world_position = paths[1].end_m;
+  std::swap(paths[1].start_m, paths[1].end_m);
+  std::swap(paths[1].start_leaf_ordinal, paths[1].end_leaf_ordinal);
+  request.expected_accepted_clock = accepted.clock;
+  request.start_solid.start_plane_coordinate = -1.75;
+  request.start_liquid.plane_coordinate_m = 0.5;
+  request.end_liquid_plane_coordinate_m = 0;
+  const auto dry = PrepareGradedLiquidWetTransition3D(accepted, request, paths);
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  EXPECT_TRUE(dry->after.leaves()[1].known_air);
+  EXPECT_NEAR(dry->after.leaves()[0].fluid_volume_m3, 6.5, 1e-14);
+  EXPECT_TRUE(dry->leaves[0] == original->adaptive_cells[0]);
+  EXPECT_EQ(dry->leaves[1].occupancy, LiquidCellOccupancy3D::kAir);
+  EXPECT_DOUBLE_EQ(dry->leaves[1].inventory.mass_kg, 0);
+  EXPECT_DOUBLE_EQ(dry->leaves[1].previous_pressure, 0);
+  EXPECT_DOUBLE_EQ(dry->leaves[1].coarsening_eligible_duration_s, 0);
 }
 
 TEST(GradedLiquidBoundaryGeometry3D, AdmitsKnownAirOutsideSignedCoarseFinePressureSubset) {
