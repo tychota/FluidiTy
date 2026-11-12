@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "fluidity/host/adaptive_liquid_core_transport_3d.h"
+#include "fluidity/host/adaptive_liquid_owner_exchange_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/graded_quadratic_mac_transfer_3d.h"
@@ -108,7 +109,8 @@ class AdaptiveLiquidStep3D {
       double duration,
       const LiquidSceneInputs3D& scene,
       const LiquidStepOptions3D& options,
-      const LiquidSubstepBackend3D& backend
+      const LiquidSubstepBackend3D& backend,
+      bool allow_owner_exchange
   );
 
  private:
@@ -119,6 +121,8 @@ class AdaptiveLiquidStep3D {
       std::span<const std::uint64_t> particle_ids,
       bool allow_radial_fallback
   );
+  absl::Status CertifyExchangePaths(const LiquidState3D& trial, double duration, const LiquidSceneInputs3D& scene);
+  absl::Status CheckExchangePaths(std::span<const LiquidParticleState3D> particles) const;
   absl::Status NormalizeDeposits(
       const LiquidState3D& state,
       const LiquidStepOptions3D& options,
@@ -149,6 +153,15 @@ class AdaptiveLiquidStep3D {
   std::vector<std::uint8_t> core_faces_;
   std::vector<double> core_fluxes_;
   std::optional<AdaptiveLiquidCoreTransportWorkspace3D> core_transport_;
+  struct ExchangeParticlePath {
+    Vec3 endpoint;
+    std::uint64_t id;
+    double mass;
+    double reference_volume;
+    double volume_ratio;
+  };
+  std::vector<AdaptiveLiquidOwnerExchangeFace3D> exchange_samples_;
+  std::vector<ExchangeParticlePath> exchange_paths_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<MacStrainRow3D> strain_rows_;

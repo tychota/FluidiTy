@@ -49,8 +49,10 @@ restore using the same resolved scene.
 Use the accepted carrier and per-leaf material owner from the same epoch
 when qualifying constituent transport. Current M4 cases cover particle-owned
 EOS, one miscible phase and coupled viscosity. The closed implicit Eulerian
-core qualifies explicit retirement and reseeding. Nonzero cross-owner
-exchange needs its own live qualification. [Native adaptive band runtime](native-band-runtime.md)
+core qualifies explicit retirement and reseeding. An explicit ordinary attempt
+qualifies conservative nonzero exchange in the stationary implicit-liquid
+tank with certified same-leaf particle paths. The default core transport
+refuses mixed flux. [Native adaptive band runtime](native-band-runtime.md)
 · [Graded M4 runtime](graded-m4-runtime.md)
 
 The graph admits at most 4,096 pressure cells and 24,576 total subfaces. The

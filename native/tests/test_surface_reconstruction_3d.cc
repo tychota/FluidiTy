@@ -2,6 +2,7 @@
 #include <set>
 
 #include "fluidity/host/surface_reconstruction_3d.h"
+#include "graded_tank_fixture.h"
 #include "gtest/gtest.h"
 #include "liquid_cavity_scheduler_cases.h"
 
@@ -265,6 +266,60 @@ TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
   ASSERT_EQ(reconstructed->frame.volumes.size(), 1);
   EXPECT_DOUBLE_EQ(reconstructed->frame.volumes.front().material_m3, kTankVolume);
   EXPECT_NEAR(reconstructed->corrected_metrics.signed_volume, kTankVolume, 0.005 * kTankVolume);
+}
+
+TEST(SurfaceReconstruction3D, UsesAcceptedEulerianCoreInventoryForPlanarMesh) {
+  LiquidState3D seed;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateDeepGradedBandFixture3D(seed, scene, 3);
+  ASSERT_TRUE(authored.ok()) << authored;
+  const LiquidStepOptions3D step{
+      .capacities = {seed.particles.size(), 0, seed.adaptive_cells.size(), seed.adaptive_faces.size(), 0},
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(seed, scene, step);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const SurfaceReconstructionOptions3D mesh_options{.spacing_m = 0.125, .sigma_m = 0.25};
+  const auto seed_bytes = EncodeMotionSeed3D(scheduler->committed());
+  ASSERT_TRUE(seed_bytes.ok()) << seed_bytes.status();
+  const auto seed_motion = DecodeMotionFrame3D(seed_bytes->values());
+  ASSERT_TRUE(seed_motion.ok()) << seed_motion.status();
+  const auto seed_mesh = ReconstructSurfaceFrame3D(*seed_motion, scene, step, nullptr, mesh_options);
+  ASSERT_TRUE(seed_mesh.ok()) << seed_mesh.status();
+
+  constexpr double kFrameEnd = 0.01;
+  auto capture = MotionCapture3D::Create(scheduler->committed(), kFrameEnd, 1);
+  ASSERT_TRUE(capture.ok()) << capture.status();
+  ASSERT_TRUE(scheduler->BeginFrame(kFrameEnd).ok());
+  const LiquidAdaptiveBandRequest3D retirement{
+      .accepted_epoch = seed.clock.epoch,
+      .leaf = seed.adaptive_cells[0].key,
+      .destination_carrier = LiquidHandoffCarrier3D{.current_density = 2, .volume_ratio = 1},
+  };
+  const auto step_result = scheduler->AttemptWithAdaptiveBandPlacement(kFrameEnd, retirement);
+  ASSERT_TRUE(step_result.ok()) << step_result.status();
+  ASSERT_EQ(step_result->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  ASSERT_TRUE(capture->Observe(scheduler->committed(), false).ok());
+  const auto bytes = capture->Finish(scheduler->committed());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  auto motion = DecodeMotionFrame3D(bytes->values());
+  ASSERT_TRUE(motion.ok()) << motion.status();
+  auto& endpoint = motion->samples.back();
+  ASSERT_EQ(endpoint.adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  ASSERT_EQ(endpoint.particles.size(), seed.particles.size() - 1);
+  const auto mesh = ReconstructSurfaceFrame3D(*motion, scene, step, &seed_mesh->frame, mesh_options);
+  ASSERT_TRUE(mesh.ok()) << mesh.status();
+  ASSERT_EQ(mesh->frame.volumes.size(), 1);
+  EXPECT_EQ(mesh->frame.volumes.front().material_m3, 9);
+  EXPECT_EQ(mesh->corrected_metrics.positive_volume_components, 1);
+  EXPECT_EQ(mesh->corrected_metrics.negative_volume_components, 0);
+  EXPECT_EQ(mesh->retained_ids, seed_mesh->frame.mesh.vertices.size());
+  EXPECT_NEAR(mesh->corrected_metrics.signed_volume, 9, 0.005 * 9);
+
+  endpoint.adaptive_cells[0].inventory.current_volume_m3 /= 2;
+  ASSERT_TRUE(ValidateLiquidState3D(endpoint).ok());
+  const auto underfilled = ReconstructSurfaceFrame3D(*motion, scene, step, &seed_mesh->frame, mesh_options);
+  EXPECT_EQ(underfilled.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
 TEST(SurfaceReconstruction3D, CachedCavityRetainsAnInwardBoundary) {

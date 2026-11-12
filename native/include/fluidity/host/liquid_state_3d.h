@@ -116,6 +116,9 @@ struct LiquidParticleState3D {
   bool pic_initialized = false;  // False means a newly emitted particle must start with PIC.
   std::uint64_t phase_id = 0;  // Stable miscibility phase for an explicit composition.
   std::uint8_t constituent_count = 0;  // Zero is the legacy implicit single liquid.
+  // The last accepted adaptive transfer used a complete quadratic MAC basis.
+  // False is the default for uniform state and legacy adaptive checkpoints.
+  bool quadratic_adaptive_transfer = false;
   // Active fractions are positive, sorted by stable substance ID, and sum to one.
   std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
   bool operator==(const LiquidParticleState3D&) const;

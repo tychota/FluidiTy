@@ -133,6 +133,65 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, PublishesProjectedAdaptiveOwnerExchangeOnlyAfterAcceptance) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedOwnerExchangeFixture3D(state, scene).ok());
+  auto options = Options();
+  options.capacities = {3, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.maximum_step_duration = 0.125;
+  auto ordinary = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(ordinary.ok()) << ordinary.status();
+  ASSERT_TRUE(ordinary->BeginFrame(0.125).ok());
+  const auto refused = ordinary->Attempt(0.125);
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  EXPECT_EQ(refused->disposition, LiquidAttemptDisposition3D::kFatal);
+  ExpectIdenticalSerializedState(state, ordinary->committed());
+
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.125).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject projected owner exchange")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveOwnerExchange(0.125);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt) << scheduler->diagnostics().failure_code;
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retry = scheduler->AttemptWithAdaptiveOwnerExchange(*rejected->retry_duration);
+  ASSERT_TRUE(retry.ok()) << retry.status();
+  ASSERT_EQ(retry->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].mass, 0.1875);
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[1].mass, 0.1875);
+
+  auto complete = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(complete.ok()) << complete.status();
+  ASSERT_TRUE(complete->BeginFrame(0.125).ok());
+  const auto accepted = complete->AttemptWithAdaptiveOwnerExchange(0.125);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << complete->diagnostics().failure_code;
+  ASSERT_TRUE(complete->FinishFrame().ok());
+  const auto& result = complete->committed();
+  EXPECT_DOUBLE_EQ(result.particles[0].mass, 0.25);
+  EXPECT_DOUBLE_EQ(result.particles[1].mass, 0.125);
+  EXPECT_DOUBLE_EQ(result.particles[1].world_velocity.x, 1);
+  EXPECT_DOUBLE_EQ(result.particles[1].world_velocity.z, -1);
+  EXPECT_DOUBLE_EQ(result.adaptive_cells[0].inventory.current_volume_m3, 0.5);
+  EXPECT_DOUBLE_EQ(result.adaptive_cells[0].inventory.momentum_kg_m_per_s.x, -0.125);
+  EXPECT_DOUBLE_EQ(result.adaptive_cells[0].inventory.momentum_kg_m_per_s.z, 0.125);
+  EXPECT_EQ(result.next_particle_id, state.next_particle_id);
+  for (std::size_t particle = 0; particle < result.particles.size(); ++particle) {
+    EXPECT_EQ(result.particles[particle].id, state.particles[particle].id);
+  }
+}
+
 TEST(LiquidSubstep3D, PublishesRequiredGradedRefinementFamiliesAtomically) {
   constexpr std::array requested{AdaptiveMacCellKey3D{.lower_corner = {4, 0, 0}, .width_exponent = 1}};
   for (const bool exact_child_coverage : {false, true}) {

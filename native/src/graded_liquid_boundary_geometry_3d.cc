@@ -10,6 +10,7 @@
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
+#include "fluidity/host/liquid_state_3d.h"
 #include "liquid_boundary_backend.h"
 #include "mac_pressure_3d_arithmetic.h"
 
@@ -109,8 +110,9 @@ struct PlanePair {
   double liquid_coordinate_m;
 };
 
-absl::StatusOr<double>
-MeasureLeafVolume(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, const PlanePair& planes) {
+absl::StatusOr<FrozenGradedLiquidLeaf3D>
+MeasureLeaf(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, const PlanePair& planes) {
+  bool known_air = true;
   boundary_internal::SampledSolidLiquidCell query{.cell_width = leaf.cell_width};
   for (int corner_bits = 0; corner_bits < 8; ++corner_bits) {
     const auto world_corner = Corner(bounds, corner_bits);
@@ -121,13 +123,23 @@ MeasureLeafVolume(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, cons
     if (!std::isfinite(query.solid_distance[corner_bits]) || !std::isfinite(query.liquid_distance[corner_bits])) {
       return absl::OutOfRangeError("Graded liquid corner distance is unrepresentable");
     }
+    known_air &= query.solid_distance[corner_bits] > 0 && query.liquid_distance[corner_bits] >= 0;
   }
   const auto measured = boundary_internal::MeasureSampledSolidLiquidCell(query);
   if (!measured.ok()) {
     return boundary_internal::ArithmeticStatus(measured.status());
   }
   const double physical_full_volume_m3 = bounds.extent[0] * bounds.extent[1] * bounds.extent[2];
-  return RescaleMeasure(measured->wet_volume, leaf.cell_volume, physical_full_volume_m3);
+  const auto volume = RescaleMeasure(measured->wet_volume, leaf.cell_volume, physical_full_volume_m3);
+  if (!volume.ok()) {
+    return volume.status();
+  }
+  return FrozenGradedLiquidLeaf3D{
+      .world_lower_m = ToVec3(bounds.lower),
+      .world_upper_m = ToVec3(bounds.upper),
+      .fluid_volume_m3 = *volume,
+      .known_air = known_air,
+  };
 }
 
 absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
@@ -336,15 +348,11 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
     if (!bounds.ok()) {
       return bounds.status();
     }
-    const auto volume = MeasureLeafVolume(*bounds, leaf, planes);
-    if (!volume.ok()) {
-      return volume.status();
+    const auto measured = MeasureLeaf(*bounds, leaf, planes);
+    if (!measured.ok()) {
+      return measured.status();
     }
-    result.leaves_.push_back({
-        .world_lower_m = ToVec3(bounds->lower),
-        .world_upper_m = ToVec3(bounds->upper),
-        .fluid_volume_m3 = *volume,
-    });
+    result.leaves_.push_back(*measured);
   }
   for (std::size_t ordinal = 0; ordinal < interior.size(); ++ordinal) {
     const auto& face = interior[ordinal];
@@ -366,10 +374,13 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   return result;
 }
 
-absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
+namespace {
+
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposePressureInputs(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
-    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields,
+    bool allow_zero_volume
 ) {
   const auto leaves = geometry.leaves();
   const auto subfaces = geometry.subfaces();
@@ -383,7 +394,7 @@ absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureIn
     const auto& measured = leaves[ordinal];
     const auto& leaf = topology.cells()[ordinal];
     const auto& fields = cell_fields[ordinal];
-    if (measured.fluid_volume_m3 == 0) {
+    if (!allow_zero_volume && measured.fluid_volume_m3 == 0) {
       return absl::FailedPreconditionError("Graded liquid pressure requires positive volume on every leaf");
     }
     if (!MatchesPressureWidth(measured.world_lower_m, measured.world_upper_m, leaf.cell_width, -1)) {
@@ -427,6 +438,16 @@ absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureIn
   return GradedLiquidPressureInputs3D{.cells = std::move(cells), .subfaces = std::move(faces)};
 }
 
+}  // namespace
+
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+) {
+  return ComposePressureInputs(geometry, cell_fields, subface_fields, false);
+}
+
 absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
@@ -442,6 +463,161 @@ absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlan
       inputs->cells,
       inputs->subfaces
   );
+}
+
+namespace {
+
+bool EmptyAirInventory(const LiquidRemapInventory3D& inventory) {
+  return inventory.mass_kg == 0 && inventory.reference_volume_m3 == 0 && inventory.current_volume_m3 == 0
+      && inventory.momentum_kg_m_per_s.x == 0 && inventory.momentum_kg_m_per_s.y == 0
+      && inventory.momentum_kg_m_per_s.z == 0 && inventory.enthalpy_j == 0 && inventory.phase_id == 0
+      && inventory.constituent_count == 0;
+}
+
+bool EmptyDryFaceFields(const pressure_internal::AdaptiveMacPressureSubface3D& face) {
+  return face.open_area_m2 == 0 && face.inverse_density_m3_per_kg == 0 && face.predicted_normal_velocity_m_per_s == 0
+      && face.prescribed_wall_flux_m3_per_s == 0 && face.pressure_jump_pa == 0 && !face.exterior_pressure_pa;
+}
+
+}  // namespace
+
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+) {
+  const auto leaves = geometry.leaves();
+  if (accepted_leaves.size() != leaves.size()) {
+    return absl::InvalidArgumentError("Accepted leaves must cover the frozen graded geometry");
+  }
+  const auto inputs = ComposePressureInputs(geometry, cell_fields, subface_fields, true);
+  if (!inputs.ok()) {
+    return inputs.status();
+  }
+  const auto& topology = geometry.topology();
+  std::vector<std::size_t> leaf_ordinals;
+  std::vector<std::optional<std::size_t>> pressure_ordinals(leaves.size());
+  std::vector<MacPressureCell3D> pressure_cells;
+  for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
+    const auto& accepted = accepted_leaves[ordinal];
+    const auto& cell = inputs->cells[ordinal];
+    const auto& expected_key = topology.cells()[ordinal].key;
+    const auto& accepted_corner = accepted.key.lower_corner;
+    const auto& expected_corner = expected_key.lower_corner;
+    if (accepted.key.width_exponent != expected_key.width_exponent || accepted_corner.x != expected_corner.x
+        || accepted_corner.y != expected_corner.y || accepted_corner.z != expected_corner.z) {
+      return absl::InvalidArgumentError("Accepted leaf key differs from the frozen graded geometry");
+    }
+    if (cell.fluid_volume > 0) {
+      if (accepted.occupancy != LiquidCellOccupancy3D::kLiquid) {
+        return absl::FailedPreconditionError("Graded pressure subset requires accepted liquid on every wet leaf");
+      }
+      pressure_ordinals[ordinal] = pressure_cells.size();
+      pressure_cells.push_back(cell);
+      leaf_ordinals.push_back(ordinal);
+      continue;
+    }
+    if (!leaves[ordinal].known_air || accepted.occupancy != LiquidCellOccupancy3D::kAir
+        || !EmptyAirInventory(accepted.inventory)) {
+      return absl::FailedPreconditionError("Graded pressure subset requires accepted empty air on every dry leaf");
+    }
+    if (cell.target_divergence != 0 || cell.previous_pressure != 0
+        || cell.bulk_modulus != std::numeric_limits<double>::infinity()) {
+      return absl::FailedPreconditionError("Graded pressure subset cannot discard pressure data on an air leaf");
+    }
+  }
+  if (pressure_cells.empty()) {
+    return absl::FailedPreconditionError("Graded pressure subset requires a wet leaf");
+  }
+
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  std::vector<pressure_internal::ExplicitMacPressureFace3D> interior;
+  std::vector<pressure_internal::ExplicitMacPressureBoundaryFace3D> boundary;
+  const auto interior_faces = topology.interior_faces();
+  for (std::size_t ordinal = 0; ordinal < interior_faces.size(); ++ordinal) {
+    const auto& face = interior_faces[ordinal];
+    const std::size_t slot = ownership->interior_face_slots[ordinal];
+    const auto& fields = inputs->subfaces[slot];
+    const auto tail = pressure_ordinals[face.tail_cell_ordinal];
+    const auto head = pressure_ordinals[face.head_cell_ordinal];
+    if (fields.exterior_pressure_pa) {
+      return absl::InvalidArgumentError("Interior graded subface cannot carry exterior pressure data");
+    }
+    if (tail && head) {
+      interior.push_back({
+          .face_slot = slot,
+          .tail_cell_ordinal = *tail,
+          .head_cell_ordinal = *head,
+          .open_area = fields.open_area_m2,
+          .inverse_density = fields.inverse_density_m3_per_kg,
+          .pressure_gradient_distance = face.cell_center_distance,
+          .predicted_normal_velocity = fields.predicted_normal_velocity_m_per_s,
+          .full_face_area = face.face_area,
+          .prescribed_wall_flux = fields.prescribed_wall_flux_m3_per_s,
+          .pressure_jump_pa = fields.pressure_jump_pa,
+      });
+      continue;
+    }
+    if (!EmptyDryFaceFields(fields)) {
+      return absl::FailedPreconditionError("Graded pressure subset cannot discard flux or fields at an air subface");
+    }
+    if (tail || head) {
+      boundary.push_back({
+          .face_slot = slot,
+          .cell_ordinal = tail ? *tail : *head,
+          .cell_is_tail = tail.has_value(),
+          .full_face_area = face.face_area,
+          .open_area = 0,
+          .inverse_density = 0,
+          .pressure_gradient_distance = 0,
+          .predicted_normal_velocity = 0,
+          .prescribed_wall_flux = 0,
+          .exterior_pressure = std::nullopt,
+      });
+    }
+  }
+  for (const auto& face : ownership->exterior_faces) {
+    const auto& fields = inputs->subfaces[face.face_slot];
+    const auto row = pressure_ordinals[face.cell_ordinal];
+    if (!row) {
+      if (geometry.subfaces()[face.face_slot].wet_open_area_m2 != 0 || !EmptyDryFaceFields(fields)) {
+        return absl::FailedPreconditionError(
+            "Graded pressure subset cannot discard aperture or fields on an air exterior"
+        );
+      }
+      continue;
+    }
+    if (fields.pressure_jump_pa != 0) {
+      return absl::InvalidArgumentError("Exterior graded subface cannot carry an interior pressure jump");
+    }
+    boundary.push_back({
+        .face_slot = face.face_slot,
+        .cell_ordinal = *row,
+        .cell_is_tail = face.cell_is_tail,
+        .full_face_area = face.face_area,
+        .open_area = fields.open_area_m2,
+        .inverse_density = fields.inverse_density_m3_per_kg,
+        .pressure_gradient_distance = fields.exterior_pressure_distance_m,
+        .predicted_normal_velocity = fields.predicted_normal_velocity_m_per_s,
+        .prescribed_wall_flux = fields.prescribed_wall_flux_m3_per_s,
+        .exterior_pressure = fields.exterior_pressure_pa,
+    });
+  }
+  std::ranges::sort(boundary, {}, &pressure_internal::ExplicitMacPressureBoundaryFace3D::face_slot);
+  auto system = pressure_internal::PrepareExplicitMacPressureSystem3D(
+      geometry.step_duration_s(),
+      pressure_cells,
+      interior,
+      boundary
+  );
+  if (!system.ok()) {
+    return system.status();
+  }
+  return GradedWetPressureSubset3D{.system = std::move(*system), .leaf_ordinals = std::move(leaf_ordinals)};
 }
 
 }  // namespace fluidity

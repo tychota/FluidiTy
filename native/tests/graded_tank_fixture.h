@@ -91,6 +91,98 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+// A real divergence-free circulation in the lower X/Z plane. The particle-owned
+// cap separates the core from the open surface. Equal support weights on the
+// two eligible carriers in each horizontal direction give zero PIC motion.
+inline absl::Status PopulateGradedOwnerExchangeFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  state.geometry.cell_width = 1;
+  scene.field = LiquidHorizontalPlaneSurface3D{2};
+  scene.obstacle = AxisAlignedLiquidTank3D{0, 2, 0, 0, 2, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 1;
+  scene.ambient_pressure = 0;
+
+  std::array<AdaptiveMacCellKey3D, 8> keys{};
+  std::size_t ordinal = 0;
+  for (int z = 0; z < 2; ++z) {
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        keys[ordinal++].lower_corner = {x, y, z};
+      }
+    }
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(3);
+  if (!cells.ok() || !faces.ok() || !particles.ok()) {
+    return absl::ResourceExhaustedError("graded exchange fixture storage failed");
+  }
+  if (!cells->Resize(keys.size()).ok() || !faces->Resize(face_count).ok() || !particles->Resize(3).ok()) {
+    return absl::InternalError("graded exchange fixture extents failed");
+  }
+  for (std::size_t cell = 0; cell < keys.size(); ++cell) {
+    (*cells)[cell].key = keys[cell];
+  }
+  (*cells)[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  (*cells)[0].inventory = {.mass_kg = 0.5, .reference_volume_m3 = 0.5, .current_volume_m3 = 0.5};
+  constexpr std::array particle_leaves{1U, 4U, 5U};
+  constexpr std::array particle_masses{0.125, 0.25, 0.125};
+  const double low_side = std::nextafter(1.0, 0.0);
+  const std::array positions{Vec3{1, 0.5, low_side}, Vec3{low_side, 0.5, 1}, Vec3{1, 0.5, 1}};
+  for (std::size_t particle = 0; particle < particle_masses.size(); ++particle) {
+    const double mass = particle_masses[particle];
+    (*particles)[particle] = {
+        .id = particle + 1,
+        .world_position = positions[particle],
+        .world_velocity = {-1, 0, 1},
+        .affine_enabled = false,
+        .mass = mass,
+        .reference_volume = mass,
+    };
+    (*cells)[particle_leaves[particle]].inventory = {
+        .mass_kg = mass,
+        .reference_volume_m3 = mass,
+        .current_volume_m3 = mass,
+        .momentum_kg_m_per_s = {-mass, 0, mass},
+    };
+  }
+  for (auto& face : faces->values()) {
+    face = {.validity = LiquidFaceValidity3D::kValid, .structurally_eligible = false};
+  }
+  for (std::size_t face_ordinal = 0; face_ordinal < topology->interior_faces().size(); ++face_ordinal) {
+    const auto& face = topology->interior_faces()[face_ordinal];
+    const auto lower = face.face_index.lattice_index;
+    auto& carrier = (*faces)[ownership->interior_face_slots[face_ordinal]];
+    if (face.face_index.axis == FaceNormalAxis::kY) {
+      carrier.structurally_eligible = true;
+    } else if (lower.y == 0) {
+      carrier.structurally_eligible = true;
+      if (face.face_index.axis == FaceNormalAxis::kX) {
+        carrier.carrier_velocity = lower.z == 0 ? 1 : -1;
+      } else {
+        carrier.carrier_velocity = lower.x == 0 ? -1 : 1;
+      }
+    }
+  }
+  for (const auto& face : ownership->exterior_faces) {
+    (*faces)[face.face_slot].structurally_eligible = face.face_index.axis == FaceNormalAxis::kY;
+  }
+  state.next_particle_id = 4;
+  state.particles = std::move(*particles);
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  return ValidateLiquidState3D(state);
+}
+
 // A fully wet same-level island adjoining coarser leaves.
 inline absl::StatusOr<std::uint64_t>
 PopulateGradedQuadraticTankFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
@@ -228,15 +320,21 @@ inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
-inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+inline absl::Status
+PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene, std::int32_t horizontal_cells = 1) {
   state.geometry.cell_width = 0.5;
   scene.field = LiquidHorizontalPlaneSurface3D{4};
-  scene.obstacle = AxisAlignedLiquidTank3D{0, 0.5, 0, 0, 0.5, 0};
+  const double tank_width_m = 0.5 * horizontal_cells;
+  scene.obstacle = AxisAlignedLiquidTank3D{0, tank_width_m, 0, 0, tank_width_m, 0};
   scene.world_acceleration = {};
   scene.liquid_density = 2;
-  std::array<AdaptiveMacCellKey3D, 8> keys{};
-  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
-    keys[ordinal].lower_corner.y = static_cast<std::int32_t>(ordinal);
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (std::int32_t z = 0; z < horizontal_cells; ++z) {
+    for (std::int32_t y = 0; y < 8; ++y) {
+      for (std::int32_t x = 0; x < horizontal_cells; ++x) {
+        keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 0});
+      }
+    }
   }
   const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
   if (!topology.ok()) {
@@ -269,7 +367,8 @@ inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, Liquid
     };
     auto& particle = (*particles)[ordinal];
     particle.id = ordinal + 1;
-    particle.world_position = {0.25, 0.5 * leaf.key.lower_corner.y + 0.25, 0.25};
+    const auto lower = leaf.key.lower_corner;
+    particle.world_position = {0.5 * lower.x + 0.25, 0.5 * lower.y + 0.25, 0.5 * lower.z + 0.25};
     particle.mass = 2 * leaf.cell_volume;
     particle.reference_volume = leaf.cell_volume;
     particle.pic_initialized = true;

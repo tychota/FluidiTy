@@ -57,6 +57,7 @@ table AdaptiveFace {
 table AdaptiveState {
   cells:[AdaptiveCell] (required, id:0);
   faces:[AdaptiveFace] (required, id:1);
+  quadratic_particle_ids:[ulong] (id:2);
 }
 table CavityGasCell {
   index:Index3 (required, id:0);
