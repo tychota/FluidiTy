@@ -2704,3 +2704,38 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
 }
 & "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
 ```
+
+### Tangential traction at the wall reaction faces
+
+Local experiment `7dbe274` locates the friction quadrature on the
+stationary plane. For each constrained normal row, its signed force
+contribution is the original face force times the row coefficient sum
+minus one. Rows at the same horizontal position are combined before
+taking the positive normal load. Each wall point gathers its own
+tangent velocity from supported quadratic faces and scatters the
+mass-metric impulse using the same normalized weights.
+
+The loaded single-particle fixture initially lacked horizontal halo
+blocks for the new wall-point stencils. With the required support
+allocated, both native and SM120 dry-scene targets passed, including
+the Coulomb cap, negative grid friction work, and stress-work pairing.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.302086° | 0.183455 m |
+| Coarse half-step | 39.530375° | 0.161270 m |
+| Fine | Dry face-motion bound at step 828 | |
+| Fine half-step | 34.867803° | 0.179200 m |
+
+The completed cases retained cut stress work mismatch below 2.1e-16 J
+and vertical momentum residual below 5.7e-9 N·s. Moving the quadrature
+to the wall reduces both coarse angles relative to the particle-centered
+grid traction, with larger radii and one fine-grid rejection. The
+original Q-SAND checks remain open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-face-friction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
