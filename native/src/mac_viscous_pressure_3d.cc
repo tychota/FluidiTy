@@ -46,15 +46,17 @@ RemapStrain(const PreparedMacPressureSystem3D& system, std::span<const MacStrain
 
 // Apply D and C in integrated flux units. Add the wall and source terms only
 // for the physical candidate, never for a pressure search direction.
-absl::StatusOr<std::vector<double>> AccumulateConstraint(
+absl::Status AccumulateConstraint(
     const PreparedMacPressureSystem3D& system,
     std::span<const double> pressure,
     std::span<const double> velocity,
-    bool physical
+    bool physical,
+    std::span<pressure_internal::arithmetic::CompensatedSum> flux,
+    std::span<double> result
 ) {
   const auto cells = system.cells();
   const auto links = system.links();
-  std::vector<pressure_internal::arithmetic::CompensatedSum> flux(cells.size());
+  std::ranges::fill(flux, pressure_internal::arithmetic::CompensatedSum{});
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     if (physical) {
       flux[cell].Add(-cells[cell].integrated_target_flux);
@@ -86,14 +88,13 @@ absl::StatusOr<std::vector<double>> AccumulateConstraint(
       }
     });
   }
-  std::vector<double> result(cells.size());
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     result[cell] = flux[cell].Total();
     if (!std::isfinite(result[cell])) {
       return absl::OutOfRangeError("coupled cell flux is unrepresentable");
     }
   }
-  return result;
+  return absl::OkStatus();
 }
 
 double Dot(std::span<const double> left, std::span<const double> right) {
@@ -230,6 +231,8 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
   const bool starts_with_history = std::ranges::any_of(pressure, [](double value) {
     return value != 0.0;
   });
+  std::vector<pressure_internal::arithmetic::CompensatedSum> flux_sums(cells.size());
+  std::vector<double> residual(cells.size());
   double original_rhs_norm = 0.0;
   if (starts_with_history) {
     // Measure the RHS with the same velocity block at zero pressure. A
@@ -240,11 +243,12 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     if (!base_velocity.ok()) {
       return base_velocity.status();
     }
-    const auto base_flux = AccumulateConstraint(system, zero_pressure, base_velocity->velocity, true);
+    const auto base_flux =
+        AccumulateConstraint(system, zero_pressure, base_velocity->velocity, true, flux_sums, residual);
     if (!base_flux.ok()) {
-      return base_flux.status();
+      return base_flux;
     }
-    const auto base_norm = CoupledConstraintNorm(*base_flux);
+    const auto base_norm = CoupledConstraintNorm(residual);
     if (!base_norm.ok()) {
       return base_norm.status();
     }
@@ -253,19 +257,21 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
       std::ranges::fill(pressure, 0.0);
     }
   }
-  std::vector<std::vector<double>> directions;
-  std::vector<std::vector<double>> responses;
+  const std::size_t basis_capacity = std::min(kRestartLength, max_iterations);
+  const std::size_t basis_extent = basis_capacity * cells.size();
+  std::vector<double> directions;
+  std::vector<double> responses;
+  std::size_t basis_count = 0;
   pressure_internal::MacPressureStoppingCriteria3D stopping{};
   for (std::size_t iteration = 0; iteration <= max_iterations; ++iteration) {
     auto velocity = solve_velocity(pressure, true);
     if (!velocity.ok()) {
       return velocity.status();
     }
-    auto physical_flux = AccumulateConstraint(system, pressure, velocity->velocity, true);
+    const auto physical_flux = AccumulateConstraint(system, pressure, velocity->velocity, true, flux_sums, residual);
     if (!physical_flux.ok()) {
-      return physical_flux.status();
+      return physical_flux;
     }
-    auto& residual = *physical_flux;
     const auto constraint_norm = CoupledConstraintNorm(residual);
     if (!constraint_norm.ok()) {
       return constraint_norm.status();
@@ -316,14 +322,19 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     // GCR retains measured responses rather than assuming that a tolerance-based
     // inner solve is an exact linear inverse. Recompute the physical residual
     // from the coupled candidate after each pressure update.
-    if (directions.size() == kRestartLength) {
-      directions.clear();
-      responses.clear();
+    if (directions.empty()) {
+      directions.resize(basis_extent);
+      responses.resize(basis_extent);
     }
-    std::vector<double> direction(cells.size());
+    if (basis_count == basis_capacity) {
+      basis_count = 0;
+    }
+    const auto direction = std::span(directions).subspan(basis_count * cells.size(), cells.size());
+    const auto response = std::span(responses).subspan(basis_count * cells.size(), cells.size());
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
       if (pinned[cell]) {
         residual[cell] = 0.0;
+        direction[cell] = 0.0;
       } else {
         if (!pressure_internal::arithmetic::IsFinitePositive(pressure_diagonal[cell])) {
           return absl::OutOfRangeError("coupled preconditioner diagonal is unrepresentable");
@@ -335,21 +346,23 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     if (!response_velocity.ok()) {
       return response_velocity.status();
     }
-    auto response_flux = AccumulateConstraint(system, direction, response_velocity->velocity, false);
+    const auto response_flux =
+        AccumulateConstraint(system, direction, response_velocity->velocity, false, flux_sums, response);
     if (!response_flux.ok()) {
-      return response_flux.status();
+      return response_flux;
     }
-    auto& response = *response_flux;
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
       if (pinned[cell]) {
         response[cell] = 0.0;
       }
     }
-    for (std::size_t previous = 0; previous < responses.size(); ++previous) {
-      const double overlap = Dot(response, responses[previous]);
+    for (std::size_t previous = 0; previous < basis_count; ++previous) {
+      const auto previous_response = std::span(responses).subspan(previous * cells.size(), cells.size());
+      const auto previous_direction = std::span(directions).subspan(previous * cells.size(), cells.size());
+      const double overlap = Dot(response, previous_response);
       for (std::size_t cell = 0; cell < cells.size(); ++cell) {
-        response[cell] -= overlap * responses[previous][cell];
-        direction[cell] -= overlap * directions[previous][cell];
+        response[cell] -= overlap * previous_response[cell];
+        direction[cell] -= overlap * previous_direction[cell];
       }
     }
     const double norm = std::sqrt(Dot(response, response));
@@ -367,8 +380,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
         return absl::OutOfRangeError("coupled pressure iterate is unrepresentable");
       }
     }
-    directions.push_back(std::move(direction));
-    responses.push_back(std::move(response));
+    ++basis_count;
   }
   return absl::AbortedError("coupled pressure iteration budget exhausted");
 }
