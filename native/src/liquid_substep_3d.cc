@@ -13,6 +13,7 @@
 #include "dry_solid_step_3d_internal.h"
 #include "fluidity/host/plastic_solid_boundary_3d.h"
 #include "fluidity/host/small_solve.h"
+#include "liquid_adaptive_family_candidate_3d.h"
 #include "liquid_adaptive_step_3d.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
@@ -1034,6 +1035,7 @@ struct LiquidSubstepScheduler3D::Impl {
     }
   }
   absl::Status ExecuteAdaptive(
+      liquid_step_internal::AdaptiveLiquidStep3D& owner,
       double duration,
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& measurement,
@@ -1042,18 +1044,18 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, duration));
-    STEP_TRY(adaptive->Deposit(trial, options));
+    STEP_TRY(owner.Deposit(trial, options));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kPressure, duration));
-    STEP_TRY(adaptive->Project(trial, duration, scene, options, backend, workspace.pressure(), measurement));
+    STEP_TRY(owner.Project(trial, duration, scene, options, backend, workspace.pressure(), measurement));
     diagnostics.pressure_diagnostics = measurement.pressure;
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
-    STEP_TRY(adaptive->Gather(trial));
+    STEP_TRY(owner.Gather(trial));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
-    STEP_TRY(adaptive->Update(trial, duration, scene, options, backend));
+    STEP_TRY(owner.Update(trial, duration, scene, options, backend));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, duration));
     STEP_TRY(ValidateLiquidState3D(trial));
     return Enter(LiquidPhysicalStage3D::kAccept, duration);
@@ -3038,6 +3040,44 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
   impl_->diagnostics = {};
   return absl::OkStatus();
 }
+struct LiquidSubstepScheduler3D::AdaptiveFamilyTrial {
+  LiquidState3D state;
+  liquid_step_internal::AdaptiveLiquidStep3D owner;
+  std::size_t accepted_reservation_bytes;
+};
+
+absl::StatusOr<LiquidAttemptOutcome3D>
+LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine) {
+  auto& impl = *impl_;
+  if (!impl.adaptive) {
+    return absl::FailedPreconditionError("family replacement requires a graded scheduler");
+  }
+  if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
+      || step_duration > impl.target_time - committed().clock.time) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  auto state = liquid_step_internal::PrepareAdaptiveLiquidFamilyCandidate3D(
+      committed(),
+      impl.scene,
+      impl.options.capacities,
+      parent,
+      refine
+  );
+  if (!state.ok()) {
+    return state.status();
+  }
+  auto owner = liquid_step_internal::AdaptiveLiquidStep3D::Create(*state, impl.scene, impl.options);
+  if (!owner.ok()) {
+    return owner.status();
+  }
+  if (owner->reserved_bytes() > static_cast<std::size_t>(PTRDIFF_MAX) - impl.reservation_bytes) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  const auto accepted_bytes = impl.reservation_bytes - impl.adaptive->reserved_bytes() + owner->reserved_bytes();
+  AdaptiveFamilyTrial candidate{std::move(*state), std::move(*owner), accepted_bytes};
+  return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, &candidate);
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase) {
   return AttemptImpl(step_duration, work_phase, nullptr);
@@ -3277,7 +3317,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     bool coupled_piston,
     const LiquidPistonReactionUpdate3D* update_with_reaction,
     FloatingBoxTrial* floating_box,
-    SnowTrial* snow
+    SnowTrial* snow,
+    AdaptiveFamilyTrial* adaptive_family
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
@@ -3296,6 +3337,9 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   if (!trial.ok()) {
     return trial.status();
   }
+  if (adaptive_family != nullptr) {
+    **trial = std::move(adaptive_family->state);
+  }
   ++diagnostics.attempts;
   diagnostics.accepted_measurement.reset();
   diagnostics.stage_count = 0;
@@ -3307,19 +3351,22 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.adaptive ? impl.ExecuteAdaptive(step_duration, **trial, accepted_measurement, work_phase)
-                              : impl.Execute(
-                                    step_duration,
-                                    **trial,
-                                    accepted_measurement,
-                                    work_phase,
-                                    piston_load,
-                                    dynamic_piston,
-                                    coupled_piston,
-                                    update_with_reaction,
-                                    floating_box,
-                                    snow
-                                );
+  auto* adaptive_owner =
+      adaptive_family != nullptr ? &adaptive_family->owner : (impl.adaptive ? &*impl.adaptive : nullptr);
+  auto status = adaptive_owner != nullptr
+      ? impl.ExecuteAdaptive(*adaptive_owner, step_duration, **trial, accepted_measurement, work_phase)
+      : impl.Execute(
+            step_duration,
+            **trial,
+            accepted_measurement,
+            work_phase,
+            piston_load,
+            dynamic_piston,
+            coupled_piston,
+            update_with_reaction,
+            floating_box,
+            snow
+        );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -3346,6 +3393,10 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   }
   if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
     impl.backend.commit_publication(impl.backend.context);
+    if (adaptive_family != nullptr) {
+      impl.adaptive = std::move(adaptive_family->owner);
+      impl.reservation_bytes = adaptive_family->accepted_reservation_bytes;
+    }
     ++diagnostics.accepted_attempts;
     accepted_measurement.accepted_clock = committed().clock;
     accepted_measurement.accepted_dt_seconds = step_duration;

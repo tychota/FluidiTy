@@ -83,6 +83,54 @@ TEST(LiquidSubstep3D, SnowFrameAcousticCapAndCapacityReplayRestoreBothMaterials)
   test::ExpectSnowMovingPlaten(Initial(), Options(), CpuLiquidSubstepBackend3D(), test::SnowPlatenRun::kCapacityReplay);
 }
 
+TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedFamilyFixture3D(state, scene).ok());
+  auto options = Options();
+  options.capacities = {12, 0, 12, 64, 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject graded family")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto parent = state.adaptive_cells[0].key;
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto rejected = scheduler->AttemptWithAdaptiveFamily(0.01, parent, true);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto refined = scheduler->AttemptWithAdaptiveFamily(0.005, parent, true);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_EQ(refined->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+  const auto remainder = scheduler->Attempt(0.005);
+  ASSERT_TRUE(remainder.ok()) << remainder.status();
+  ASSERT_EQ(remainder->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto encoded = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidState3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  for (auto* run : {&*scheduler, &*restarted}) {
+    ASSERT_TRUE(run->BeginFrame(0.02).ok());
+    const auto coarsened = run->AttemptWithAdaptiveFamily(0.01, parent, false);
+    ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+    ASSERT_EQ(coarsened->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_TRUE(run->FinishFrame().ok());
+    EXPECT_EQ(run->committed().adaptive_cells.size(), 5);
+  }
+  ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
+}
+
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
