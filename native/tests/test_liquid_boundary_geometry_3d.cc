@@ -74,6 +74,51 @@ TEST(LiquidBoundaryGeometry3D, PredictorDensitySetsSharedAndFreeSurfaceMobility)
   );
 }
 
+TEST(LiquidBoundaryGeometry3D, ClipsGasVolumeAndSharedFaceAreas) {
+  LiquidAirCellMeasureInputs3D inputs{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .cell_index = {0, 0, 0},
+      .obstacle = {},
+      .liquid_corner_distances = {-0.25, 0.75, -0.25, 0.75, -0.25, 0.75, -0.25, 0.75},
+  };
+  const auto gas = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(gas.ok()) << gas.status();
+  EXPECT_NEAR(gas->gas_volume, 0.75, 1e-15);
+  EXPECT_EQ(gas->gas_face_areas, (std::array{0.0, 1.0, 0.75, 0.75, 0.75, 0.75}));
+  inputs.cell_index.y = 1;
+  const auto neighbor = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(neighbor.ok()) << neighbor.status();
+  EXPECT_EQ(gas->gas_face_areas[3], neighbor->gas_face_areas[2]);
+
+  inputs.cell_index.y = 0;
+  inputs.obstacle = TranslatingHalfspace3D{{0.0, 1.0, 0.0}, 0.5, {}};
+  const auto halfspace = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(halfspace.ok()) << halfspace.status();
+  EXPECT_NEAR(halfspace->gas_volume, 0.375, 1e-15);
+  EXPECT_EQ(halfspace->gas_face_areas, (std::array{0.0, 0.5, 0.0, 0.75, 0.375, 0.375}));
+  inputs.obstacle = AxisAlignedLiquidTank3D{0.5, 1.0, 0.0, 0.0, 1.0, 0.0};
+  const auto tank = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(tank.ok()) << tank.status();
+  EXPECT_NEAR(tank->gas_volume, 0.5, 1e-15);
+  EXPECT_EQ(tank->gas_face_areas, (std::array{0.0, 0.0, 0.0, 0.5, 0.0, 0.0}));
+}
+
+TEST(LiquidBoundaryGeometry3D, GasMeasureRejectsSlabSplitAndIgnoresZeroPlateaus) {
+  LiquidAirCellMeasureInputs3D inputs{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .cell_index = {0, 0, 0},
+      .obstacle = TranslatingSlab3D{{1.0, 0.0, 0.0}, 0.5, 0.1, {}},
+      .liquid_corner_distances = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+  };
+  EXPECT_EQ(MeasureLiquidAirCell3D(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+  inputs.obstacle = {};
+  inputs.liquid_corner_distances.fill(0.0);
+  const auto plateau = MeasureLiquidAirCell3D(inputs);
+  ASSERT_TRUE(plateau.ok()) << plateau.status();
+  EXPECT_EQ(plateau->gas_volume, 0.0);
+  EXPECT_EQ(plateau->gas_face_areas, (std::array<double, 6>{}));
+}
+
 TEST(LiquidBoundaryGeometry3D, CavityGasPressureAddsSignedCapillaryJumpOnce) {
   GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
   cases.CavityGasPressureAddsSignedCapillaryJumpOnce();

@@ -812,7 +812,157 @@ void Resize(LiquidRecords3D<T>& records, std::size_t size) {
   const auto status = records.Resize(size);
   (void)status;
 }
+absl::StatusOr<double> MeasureGasFace(GeometryInput face, const std::array<double, 8>& gas_distances, int side) {
+  using boundary_internal::CartesianVector;
+  using boundary_internal::ClippingPolygon;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ClipPolygon;
+  using boundary_internal::ComputeClippedArea;
+  using boundary_internal::ObstacleKind;
+  using boundary_internal::TankClipBounds;
+  const double width = face.geometry.cell_width;
+  const bool tank = face.obstacle.kind == ObstacleKind::kOpenTank;
+  TankClipBounds tank_bounds;
+  if (tank) {
+    const auto bounds = boundary_internal::LocalTankBounds(face);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    const auto opening = boundary_internal::ComputeTankFace(face, *bounds);
+    if (!opening.ok()) {
+      return boundary_internal::ArithmeticStatus(opening.status(), true);
+    }
+    if (opening->open_face_area == 0.0) {
+      return 0.0;
+    }
+    tank_bounds = *bounds;
+  }
+  const auto obstacle = boundary_internal::LocalObstacle(face);
+  if (!obstacle.ok()) {
+    return boundary_internal::ArithmeticStatus(obstacle.status(), true);
+  }
+  std::array<int, 2> transverse{};
+  std::size_t count = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis != face.axis) {
+      transverse[count++] = axis;
+    }
+  }
+  constexpr int kFirst[]{0, 1, 1, 0};
+  constexpr int kSecond[]{0, 0, 1, 1};
+  std::array<ClippingVertex, 4> vertices{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    const int bits = (side << face.axis) | (kFirst[corner] << transverse[0]) | (kSecond[corner] << transverse[1]);
+    vertices[corner].cell_width_position[transverse[0]] = kFirst[corner];
+    vertices[corner].cell_width_position[transverse[1]] = kSecond[corner];
+    vertices[corner].liquid_distance = gas_distances[bits];
+  }
+  double gas_area = 0.0;
+  for (int triangle = 0; triangle < 2; ++triangle) {
+    const ClippingPolygon polygon{vertices[0], vertices[triangle + 1], vertices[triangle + 2]};
+    if (std::ranges::none_of(polygon, [](const ClippingVertex& vertex) {
+          return vertex.liquid_distance < 0.0;
+        })) {
+      continue;
+    }
+    auto gas = ClipPolygon(polygon, {{}, 0.0, true});
+    if (tank) {
+      for (const int axis : transverse) {
+        if (tank_bounds.low[axis] > 0.0) {
+          CartesianVector normal{};
+          normal[axis] = -1.0;
+          gas = ClipPolygon(gas, {normal, -tank_bounds.low[axis], false, axis});
+        }
+        if (tank_bounds.high[axis] < 1.0) {
+          CartesianVector normal{};
+          normal[axis] = 1.0;
+          gas = ClipPolygon(gas, {normal, tank_bounds.high[axis], false, axis});
+        }
+      }
+    }
+    if (obstacle->present) {
+      gas_area += boundary_internal::ComputeOpenFaceArea(
+          gas,
+          {boundary_internal::Scale(obstacle->normal, -1.0), -obstacle->high},
+          width
+      );
+      if (obstacle->slab) {
+        gas_area += boundary_internal::ComputeOpenFaceArea(gas, {obstacle->normal, obstacle->low}, width);
+      }
+    } else {
+      gas_area += ComputeClippedArea(gas, width);
+    }
+  }
+  const double full_area = width * width;
+  if (!IsNormalOrZero(gas_area) || gas_area / full_area > 1.0 + 64.0 * std::numeric_limits<double>::epsilon()) {
+    return UnrepresentableGeometry(true);
+  }
+  return std::min(gas_area, full_area);
+}
+
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasureInputs3D& inputs) {
+  const double width = inputs.geometry.cell_width;
+  const double full_volume = width * width * width;
+  if (!IsPositiveFinite(width) || !HasFiniteComponents(CartesianComponents(inputs.geometry.world_origin))
+      || std::ranges::any_of(inputs.liquid_corner_distances, [](double distance) {
+           return !std::isfinite(distance);
+         })) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  if (!std::isnormal(full_volume) || !std::isnormal(width * width)) {
+    return UnrepresentableGeometry(true);
+  }
+  const auto obstacle = ValidateObstacle(inputs.obstacle, 0.0, true);
+  if (!obstacle.ok()) {
+    return obstacle.status();
+  }
+  GeometryInput query{
+      .mode = GeometryMode::kCell,
+      .geometry = inputs.geometry,
+      .index = inputs.cell_index,
+      .obstacle = PackObstacle(inputs.obstacle),
+  };
+  std::array<double, 8> gas_distances{};
+  for (std::size_t corner = 0; corner < gas_distances.size(); ++corner) {
+    gas_distances[corner] = -inputs.liquid_corner_distances[corner];
+    query.corner_distances[corner] = gas_distances[corner];
+  }
+  const auto volume = boundary_internal::ComputeGeometry(query);
+  if (!volume.ok()) {
+    return boundary_internal::ArithmeticStatus(volume.status(), true);
+  }
+  if (volume->low_side_liquid_volume > 0.0 && volume->high_side_liquid_volume > 0.0) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  const double gas_volume = volume->low_side_liquid_volume + volume->high_side_liquid_volume;
+  if (!IsNormalOrZero(gas_volume) || gas_volume / full_volume > 1.0 + 64.0 * std::numeric_limits<double>::epsilon()) {
+    return UnrepresentableGeometry(true);
+  }
+  LiquidAirCellMeasures3D result{.gas_volume = std::min(gas_volume, full_volume)};
+  for (int axis = 0; axis < 3; ++axis) {
+    for (int side = 0; side < 2; ++side) {
+      const auto index = OffsetCellIndex(inputs.cell_index, axis, side, true);
+      if (!index.ok()) {
+        return index.status();
+      }
+      query.mode = GeometryMode::kFace;
+      query.index = *index;
+      query.axis = axis;
+      const auto area = MeasureGasFace(query, gas_distances, side);
+      if (!area.ok()) {
+        return area.status();
+      }
+      result.gas_face_areas[2 * axis + side] = *area;
+    }
+  }
+  return result;
+}
+
 }  // namespace
+
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
+  return MeasureGasCell(inputs);
+}
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D>
 boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, GeometryBackend backend) {
   if (inputs.cell_indices.size() > 4096) {

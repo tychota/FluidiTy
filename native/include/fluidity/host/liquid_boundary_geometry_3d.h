@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -39,6 +40,25 @@ struct TranslatingSlab3D {
 };
 using LiquidObstacle3D =
     std::variant<std::monostate, TranslatingHalfspace3D, TranslatingSlab3D, AxisAlignedLiquidTank3D>;
+
+struct LiquidAirCellMeasureInputs3D {
+  UniformMacGeometry3D geometry;
+  CellIndex3D cell_index;
+  LiquidObstacle3D obstacle;  // Frozen world-space obstacle.
+  std::array<double, 8> liquid_corner_distances;  // Signed metres, x/y/z corner bits.
+};
+struct LiquidAirCellMeasures3D {
+  double gas_volume;  // m³ of strictly positive liquid distance outside solid.
+  std::array<double, 6> gas_face_areas{};  // m², low/high x, y and z.
+};
+
+// Clips gas volume and face areas with the liquid geometry's tetrahedra
+// and shared face diagonals. Zero plateaus have no gas measure. The areas
+// measure geometric openings and do not certify connectivity within a cell.
+// Invalid geometry or distances return InvalidArgument, gas on both sides
+// of a slab returns FailedPrecondition, and arithmetic range failures return
+// OutOfRange. No allocation or partial measures on failure.
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs);
 
 struct LiquidBoundaryGeometryInputs3D {
   const SparseMacGrid3D& mac_grid;  // Borrowed only during freeze; result owns a copy.

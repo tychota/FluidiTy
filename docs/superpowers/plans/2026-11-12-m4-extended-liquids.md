@@ -283,3 +283,11 @@ The bounded native labeler traverses certified face passages between sorted sign
 The CPU fixture checked mixed enclosed, vented and unclassified components, partial gas volumes, asymmetric passages, scratch overlap and signed endpoints. All six focused CPU cases and the existing real-device CUDA boundary regression passed. Reproduce with the locked Windows presets using ctest -R 'LiquidCavity3D|CavityGasPressure' on CPU and ctest -R '^CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle$' on CUDA. Logs use the out/m4-air-components prefix. clang-format 19.1.5 passed and review found no graph-labeling defect.
 
 The labeler consumes supplied gas geometry. Clipping the gas phase and certifying face passages from the sampled field, persistent cavity lineage, scheduler publication and Q-CAVITY remain open.
+
+## Gas cut-cell measures receipt
+
+The native gas measurement reuses the liquid geometry tetrahedra and shared face diagonals to clip the strictly positive-distance phase against the frozen obstacle. It returns geometric gas volume and six gas apertures. Tank walls retain their closed-face convention, and gas on both sides of a slab in one cell is rejected. An all-zero interface plateau contributes no volume or face area.
+
+Analytic fixtures checked 0.75 m³ gas in a planar cut, equal areas on both sides of a shared face, a simultaneous halfspace cut and an open tank with closed walls. All 32 CPU cavity and boundary geometry checks and the real-device CUDA geometry regression passed. The gas measure itself currently runs on the host. Reproduce with the locked Windows presets and ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle on CUDA. Logs use the out/m4-gas-measures prefix. The initial declaration-order build failure is retained in the declaration-negative logs. clang-format 19.1.5 passed.
+
+Positive gas volume and face aperture alone do not certify one connected gas region inside a cut cell. The geometry-to-component path still needs that certification and exterior classification before it can supply persistent cavity inventories to the scheduler.
