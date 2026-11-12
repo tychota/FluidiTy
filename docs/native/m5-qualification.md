@@ -3663,3 +3663,28 @@ foreach ($scale in 'four', 'eight') {
 
 The temporary instrumentation was restored after linking.
 Q-SAND remains open.
+
+### Tangential expansion at plastic-volume threshold crossings
+
+In the eightfold fine nominal Euler run, log each accepted
+crossing from log plastic Jacobian at or below one to above one.
+Record the post-sweep height and normal velocity and the diagonal
+of the reflected gradient used for deformation.
+
+All nine crossings occur at zero accepted height and zero
+normal velocity. The normal derivative is compressive in all
+nine, ranging from −0.1894 to −0.00146 s⁻¹. Both tangential
+derivatives are positive. In eight crossings the sum of the
+tangential derivatives is 6.16–10.39 s⁻¹. The remaining crossing,
+particle 50, has L_xx = 82.462300 s⁻¹ and advances log J_pl from
+0.988310 to 1.099056 in one step. The large expansion is
+therefore in the tangent field at these crossings.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-apex-crossing-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-apex-crossing
+```
+
+The temporary trace reads the accepted state and deformation
+gradient immediately before saving the new plastic Jacobian.
+Both experimental sources were restored after linking. The final
+pile geometry matches the previous eightfold stiffness control.
