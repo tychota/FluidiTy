@@ -3256,3 +3256,33 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Swept friction at persistent loaded contact
+
+On the wall-face Euler path, keep the swept normal constraint
+throughout. Set the sweep friction to zero for particles starting
+at the floor while the grid has a positive total normal reaction.
+Use that same coefficient for the stored affine projection.
+New impacts retain the original swept friction.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 0° | 0.230846 m |
+| Coarse half-step | 7.786764° | 0.229259 m |
+| Fine | 24.638068° | 0.195629 m |
+| Fine half-step | 31.036888° | 0.176448 m |
+
+The coarse nominal pile collapses onto the floor. Both coarse
+runs spread much farther. This control shows that the grid
+traction alone does not supply enough tangential resistance when
+the sweep still carries part of the normal impulse. The switch
+uses a global positive reaction, so it does not determine whether
+each persistent particle has local grid support. Vertical momentum
+residual stays below 4.9e-8 N·s. Source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-persistent-sweep-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
