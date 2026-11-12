@@ -11,6 +11,7 @@
 
 #include "absl/status/status.h"
 #include "fixture_data.h"
+#include "fluidity/host/sparse_mac_grid_3d.h"
 #include "fluidity/host/viscosity.h"
 #include "gtest/gtest.h"
 
@@ -247,6 +248,97 @@ TEST(Viscosity, TensorCouplesBothFaceOrientationsSymmetrically) {
   }
   EXPECT_NEAR(stiffness[1 * shape->face_velocity_count + 8], 3.0, kTolerance);
   EXPECT_NEAR(stiffness[1 * shape->face_velocity_count + 9], -3.0, kTolerance);
+}
+
+TEST(Viscosity, FullCell3DStrainReproducesAffineVelocityAcrossSignedOwners) {
+  const std::array blocks{
+      BlockIndex3D{-1, -1, -1},
+      BlockIndex3D{0, -1, -1},
+      BlockIndex3D{-1, 0, -1},
+      BlockIndex3D{0, 0, -1},
+      BlockIndex3D{-1, -1, 0},
+      BlockIndex3D{0, -1, 0},
+      BlockIndex3D{-1, 0, 0},
+      BlockIndex3D{0, 0, 0},
+  };
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 0.5}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<MacViscosityCell3D> cells;
+  for (const int z : {-1, 0}) {
+    for (const int y : {-1, 0}) {
+      for (const int x : {-1, 0}) {
+        cells.push_back({.cell_index = {x, y, z}, .dynamic_viscosity = 2.0});
+      }
+    }
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), cells);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  ASSERT_EQ(strain->size(), 30);
+  for (std::size_t row_index = 0; row_index < strain->size(); ++row_index) {
+    const auto& row = (*strain)[row_index];
+    const bool normal = row_index < 24;
+    EXPECT_EQ(row.term_count, normal ? 2 : 4);
+    EXPECT_EQ(row.quadrature_weight, normal ? 0.5 : 1.0);
+    double value = 0.0;
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      const auto face = grid->view().FaceIndex(term.face_slot);
+      ASSERT_TRUE(face.ok()) << face.status();
+      const auto position = grid->FaceWorldAnchor(*face);
+      ASSERT_TRUE(position.ok()) << position.status();
+      const std::array velocity{
+          2.0 * position->x + 3.0 * position->y + 5.0 * position->z,
+          -3.0 * position->x + 7.0 * position->y + 11.0 * position->z,
+          -5.0 * position->x - 11.0 * position->y + 13.0 * position->z,
+      };
+      value += term.coefficient * velocity[static_cast<std::size_t>(face->axis)];
+    }
+    constexpr std::array normal_derivatives{2.0, 7.0, 13.0};
+    EXPECT_EQ(value, normal ? normal_derivatives[row_index % 3] : 0.0);
+  }
+}
+
+TEST(Viscosity, FullCell3DStrainUsesHarmonicShearAcrossPhases) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{
+      MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 1.0},
+      MacViscosityCell3D{.cell_index = {1, 0, 0}, .dynamic_viscosity = 1.0},
+      MacViscosityCell3D{.cell_index = {0, 1, 0}, .dynamic_viscosity = 1000.0},
+      MacViscosityCell3D{.cell_index = {1, 1, 0}, .dynamic_viscosity = 1000.0},
+  };
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), cells);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  ASSERT_EQ(strain->size(), 13);
+  const auto& shear = strain->back();
+  ASSERT_EQ(shear.term_count, 4);
+  EXPECT_NEAR(shear.quadrature_weight, 8.0 / 1.001, kTolerance);
+  const double exact_traction = 1.0 / 1.001;
+  double shear_strain = 0.0;
+  for (const auto& term : shear.terms) {
+    const auto face = grid->view().FaceIndex(term.face_slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    const auto position = grid->FaceWorldAnchor(*face);
+    ASSERT_TRUE(position.ok()) << position.status();
+    if (face->axis == FaceNormalAxis::kX) {
+      const double velocity = exact_traction * (std::min(position->y, 1.0) + std::max(position->y - 1.0, 0.0) / 1000.0);
+      shear_strain += term.coefficient * velocity;
+    }
+  }
+  EXPECT_NEAR(shear.quadrature_weight * shear_strain / 2.0, exact_traction, kTolerance);
+}
+
+TEST(Viscosity, FullCell3DStrainRejectsDuplicatesAndMissingFaceOwners) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const MacViscosityCell3D cell{.cell_index = {3, 0, 0}, .dynamic_viscosity = 1.0};
+  const std::array duplicate{cell, cell};
+  EXPECT_EQ(AssembleFullCellMacStrain3D(grid->view(), duplicate).status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(
+      AssembleFullCellMacStrain3D(grid->view(), std::span(&cell, 1)).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
 }
 
 TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {

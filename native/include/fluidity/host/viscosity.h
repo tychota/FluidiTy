@@ -3,11 +3,13 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "fluidity/host/grid.h"
 #include "fluidity/host/small_solve.h"
+#include "fluidity/host/sparse_mac_grid_3d.h"
 
 namespace fluidity {
 
@@ -40,6 +42,38 @@ absl::Status AssembleMacStrain2D(
     std::span<double> strain_operator,
     std::span<double> strain_quadrature_weights
 );
+
+struct MacViscosityCell3D {
+  CellIndex3D cell_index;
+  double dynamic_viscosity;  // Nonnegative, in Pa s.
+};
+
+struct MacStrainTerm3D {
+  std::size_t face_slot;  // Owned velocity slot in the supplied sparse grid.
+  double coefficient;  // Inverse meters.
+};
+
+struct MacStrainRow3D {
+  CellIndex3D low_cell;  // Cell center for normal strain, low-low cell for edge shear.
+  FaceNormalAxis first_axis;
+  FaceNormalAxis second_axis;  // Equal to first_axis for normal strain.
+  std::array<MacStrainTerm3D, 4> terms;
+  std::size_t term_count;  // First two terms for normal strain, all four for shear.
+  double quadrature_weight;  // 2μh³ for normal strain, 4μ_edge h³ for shear, in kg m²/s.
+};
+
+// Assembles full-cell symmetric-gradient rows on a uniform 3D MAC layout.
+// Cells must be unique and ordered by (z,y,x). Every incident face must have
+// an allocated owner. Returns three normal rows per cell in Cartesian order,
+// followed by interior shear rows in low-cell order and axis-pair order xy,
+// xz, yz. Edge viscosity is the harmonic mean of the four adjacent cells.
+// Uses only full quadratures. Boundary shear, cuts and prescribed velocity
+// lifting require additional geometric rows or elimination by the caller.
+// Returns InvalidArgument for unordered cells or invalid viscosities,
+// FailedPrecondition for missing owners, and OutOfRange for invalid arithmetic
+// or indices. Errors carry no rows.
+absl::StatusOr<std::vector<MacStrainRow3D>>
+AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells);
 
 enum class ViscosityMode {
   kAuto,

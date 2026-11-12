@@ -1,11 +1,15 @@
 #include "fluidity/host/viscosity.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <span>
+#include <tuple>
+#include <vector>
 
 #include "fluidity/host/views.h"
 
@@ -42,6 +46,74 @@ BinaryProduct FactorProduct(double first_factor, double second_factor, double th
 
 double ScaledProduct(double first_factor, double second_factor, double third_factor, double divisor = 1.0) {
   return FactorProduct(first_factor, second_factor, third_factor, divisor).Value();
+}
+
+auto ViscosityCellKey(CellIndex3D cell) {
+  return std::tuple(cell.z, cell.y, cell.x);
+}
+
+CellIndex3D NextViscosityCell(CellIndex3D cell, std::size_t axis) {
+  std::array coordinates{&cell.x, &cell.y, &cell.z};
+  ++*coordinates[axis];
+  return cell;
+}
+
+FaceIndex3D ViscosityFace(std::size_t axis, CellIndex3D cell) {
+  return {.axis = static_cast<FaceNormalAxis>(axis), .lattice_index = {cell.x, cell.y, cell.z}};
+}
+
+const MacViscosityCell3D* FindViscosityCell(std::span<const MacViscosityCell3D> cells, CellIndex3D index) {
+  const auto key = ViscosityCellKey(index);
+  const auto found = std::ranges::lower_bound(cells, key, {}, [](const MacViscosityCell3D& cell) {
+    return ViscosityCellKey(cell.cell_index);
+  });
+  if (found == cells.end() || ViscosityCellKey(found->cell_index) != key) {
+    return nullptr;
+  }
+  return &*found;
+}
+
+// Scaling by the smallest viscosity keeps the reciprocal reduction bounded.
+double HarmonicEdgeViscosity(std::array<double, 4> viscosities) {
+  const double minimum = *std::ranges::min_element(viscosities);
+  if (minimum == 0.0) {
+    return 0.0;
+  }
+  double reciprocal_sum = 0.0;
+  for (const double viscosity : viscosities) {
+    reciprocal_sum += minimum / viscosity;
+  }
+  return minimum * (4.0 / reciprocal_sum);
+}
+
+double StrainWeight3D(double viscosity, double spacing, int multiplicity_exponent) {
+  int spacing_exponent;
+  const double spacing_fraction = std::frexp(spacing, &spacing_exponent);
+  const BinaryProduct weighted_area = FactorProduct(viscosity, spacing, spacing);
+  return std::scalbn(
+      weighted_area.fraction * spacing_fraction,
+      weighted_area.exponent + spacing_exponent + multiplicity_exponent
+  );
+}
+
+// Every row is assembled in a private vector. A failed lookup cannot expose
+// a stencil with an unowned face slot.
+absl::Status SetStrainTerms(
+    const SparseMacGridView3D& grid,
+    std::span<const FaceIndex3D> faces,
+    double difference_coefficient,
+    MacStrainRow3D& row
+) {
+  for (std::size_t term_index = 0; term_index < faces.size(); ++term_index) {
+    const auto slot = grid.FaceSlot(faces[term_index]);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    const double coefficient = term_index % 2 == 0 ? -difference_coefficient : difference_coefficient;
+    row.terms[term_index] = {.face_slot = *slot, .coefficient = coefficient};
+  }
+  row.term_count = faces.size();
+  return absl::OkStatus();
 }
 
 struct BinaryExponentRange {
@@ -624,6 +696,115 @@ absl::Status AssembleMacStrain2D(
     }
   }
   return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<MacStrainRow3D>>
+AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells) {
+  std::vector<MacStrainRow3D> rows;
+  const auto maximum_rows = CheckedExtentProduct(cells.size(), 6);
+  if (!maximum_rows.ok() || *maximum_rows > rows.max_size()) {
+    return absl::OutOfRangeError("viscosity strain row extent is unrepresentable");
+  }
+  for (std::size_t index = 0; index < cells.size(); ++index) {
+    const auto& cell = cells[index];
+    if (index > 0 && ViscosityCellKey(cells[index - 1].cell_index) >= ViscosityCellKey(cell.cell_index)) {
+      return absl::InvalidArgumentError("viscosity cells must be unique and ordered");
+    }
+    if (!std::isfinite(cell.dynamic_viscosity) || cell.dynamic_viscosity < 0.0) {
+      return absl::InvalidArgumentError("viscosity must be finite and nonnegative");
+    }
+    constexpr auto kMaximumIndex = std::numeric_limits<std::int32_t>::max();
+    if (cell.cell_index.x == kMaximumIndex || cell.cell_index.y == kMaximumIndex
+        || cell.cell_index.z == kMaximumIndex) {
+      return absl::OutOfRangeError("viscosity cell has an unrepresentable high face");
+    }
+  }
+  if (cells.empty()) {
+    return rows;
+  }
+
+  const double spacing = grid.geometry().cell_width;
+  const double normal_coefficient = 1.0 / spacing;
+  const double shear_coefficient = 0.5 * normal_coefficient;
+  if (!std::isnormal(normal_coefficient)) {
+    return absl::OutOfRangeError("normal strain coefficient is outside normal double range");
+  }
+  rows.reserve(*maximum_rows);
+  for (const auto& cell : cells) {
+    const double quadrature_weight = StrainWeight3D(cell.dynamic_viscosity, spacing, 1);
+    if (cell.dynamic_viscosity > 0.0 && !std::isnormal(quadrature_weight)) {
+      return absl::OutOfRangeError("normal strain quadrature is outside normal double range");
+    }
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto normal = static_cast<FaceNormalAxis>(axis);
+      const std::array faces{
+          ViscosityFace(axis, cell.cell_index),
+          ViscosityFace(axis, NextViscosityCell(cell.cell_index, axis)),
+      };
+      MacStrainRow3D row{
+          .low_cell = cell.cell_index,
+          .first_axis = normal,
+          .second_axis = normal,
+          .terms = {},
+          .term_count = 0,
+          .quadrature_weight = quadrature_weight,
+      };
+      const auto status = SetStrainTerms(grid, faces, normal_coefficient, row);
+      if (!status.ok()) {
+        return status;
+      }
+      rows.push_back(row);
+    }
+  }
+
+  for (const auto& cell : cells) {
+    for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
+      const auto first_index = NextViscosityCell(cell.cell_index, first_axis);
+      const auto* first = FindViscosityCell(cells, first_index);
+      if (first == nullptr) {
+        continue;
+      }
+      for (std::size_t second_axis = first_axis + 1; second_axis < 3; ++second_axis) {
+        const auto second_index = NextViscosityCell(cell.cell_index, second_axis);
+        const auto diagonal_index = NextViscosityCell(first_index, second_axis);
+        const auto* second = FindViscosityCell(cells, second_index);
+        const auto* diagonal = FindViscosityCell(cells, diagonal_index);
+        if (second == nullptr || diagonal == nullptr) {
+          continue;
+        }
+        const double edge_viscosity = HarmonicEdgeViscosity(
+            {cell.dynamic_viscosity, first->dynamic_viscosity, second->dynamic_viscosity, diagonal->dynamic_viscosity}
+        );
+        if (!std::isfinite(edge_viscosity)) {
+          return absl::OutOfRangeError("edge viscosity is unrepresentable");
+        }
+        const double quadrature_weight = StrainWeight3D(edge_viscosity, spacing, 2);
+        if (!std::isnormal(shear_coefficient) || (edge_viscosity > 0.0 && !std::isnormal(quadrature_weight))) {
+          return absl::OutOfRangeError("shear strain coefficient or quadrature is outside normal double range");
+        }
+        const std::array faces{
+            ViscosityFace(first_axis, first_index),
+            ViscosityFace(first_axis, diagonal_index),
+            ViscosityFace(second_axis, second_index),
+            ViscosityFace(second_axis, diagonal_index),
+        };
+        MacStrainRow3D row{
+            .low_cell = cell.cell_index,
+            .first_axis = static_cast<FaceNormalAxis>(first_axis),
+            .second_axis = static_cast<FaceNormalAxis>(second_axis),
+            .terms = {},
+            .term_count = 0,
+            .quadrature_weight = quadrature_weight,
+        };
+        const auto status = SetStrainTerms(grid, faces, shear_coefficient, row);
+        if (!status.ok()) {
+          return status;
+        }
+        rows.push_back(row);
+      }
+    }
+  }
+  return rows;
 }
 
 absl::Status
