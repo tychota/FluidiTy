@@ -95,7 +95,9 @@ bool TestScene(
     bool snow,
     double particle_energy_blend = 0,
     int particles_per_axis_multiplier = 1,
-    double sand_release_height = 0.10
+    double sand_release_height = 0.10,
+    bool release_cone = false,
+    double sand_end_time = 0.75
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -113,19 +115,23 @@ bool TestScene(
       ? DrySolidMaterial3D(fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4})
       : DrySolidMaterial3D(fluidity::GranularParameters3D{700, 450, 0.5235987755982989, 0});
   std::vector<DrySolidParticle3D> particles;
-  const int horizontal_samples = 3 * particles_per_axis_multiplier;
+  constexpr double kConeRadius = 0.175;
+  const int horizontal_samples = release_cone ? 15 : 3 * particles_per_axis_multiplier;
   const int vertical_samples = (snow ? 4 : 7) * particles_per_axis_multiplier;
   const double spacing = 0.05 / particles_per_axis_multiplier;
   const double horizontal_center = 0.5 * (horizontal_samples - 1);
   const double volume = spacing * spacing * spacing;
   for (int z = 0; z < horizontal_samples; ++z) {
-    for (int y = 0; y < vertical_samples; ++y) {
+    for (int y = 0; y < (release_cone ? 7 : vertical_samples); ++y) {
       for (int x = 0; x < horizontal_samples; ++x) {
+        const double world_x = (x - horizontal_center) * spacing;
+        const double world_z = (z - horizontal_center) * spacing;
+        const double height_above_base = (y + 0.5) * spacing;
+        if (release_cone && height_above_base + std::hypot(world_x, world_z) > kConeRadius) {
+          continue;
+        }
         particles.push_back(
-            {.world_position =
-                 {(x - horizontal_center) * spacing,
-                  (y + 0.5) * spacing + (snow ? 0.0 : sand_release_height),
-                  (z - horizontal_center) * spacing},
+            {.world_position = {world_x, height_above_base + (snow ? 0.0 : sand_release_height), world_z},
              .mass = 300 * volume,
              .reference_volume = volume,
              .elastic_deformation = kIdentity}
@@ -133,15 +139,18 @@ bool TestScene(
       }
     }
   }
-  const double time = snow ? 0.45 : 0.75;
-  constexpr double kSettlingSampleTime = 0.70;
+  if (release_cone) {
+    std::printf("45-degree cone samples=%zu mass_kg=%.9f\n", particles.size(), particles.size() * 300 * volume);
+  }
+  const double time = snow ? 0.45 : sand_end_time;
+  const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
   constexpr double kDegreesPerRadian = 57.29577951308232;
   double early_envelope_angle = 0;
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
   for (double t = 0; t < time; ++step) {
     const double phase_end =
-        snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < kSettlingSampleTime ? kSettlingSampleTime : time);
+        snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < settling_sample_time ? settling_sample_time : time);
     const double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
     DrySolidStep3D settings{
         .duration = next_time - t,
@@ -179,7 +188,7 @@ bool TestScene(
       );
       return false;
     }
-    if (!snow && t < kSettlingSampleTime && next_time == kSettlingSampleTime) {
+    if (!snow && t < settling_sample_time && next_time == settling_sample_time) {
       double height = 0;
       double radius = 0;
       for (const auto& particle : particles) {
@@ -264,6 +273,9 @@ bool TestScene(
     } else {
       std::printf("sand surface slope unresolved: fewer than four occupied radial bins per quadrant\n");
     }
+  }
+  if (release_cone) {
+    return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && kinetic_energy < 0.01;
   }
   return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && maximum_radius > 0.10
       && maximum_radius < 0.16 && kinetic_energy < 0.01;
@@ -503,6 +515,20 @@ int main(int argc, char** argv) {
     const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0);
     const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0);
     const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-release") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0, true);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0, true);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0, true);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0, true);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-long-settle") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0, true, 1.5);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0, true, 1.5);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0, true, 1.5);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0, true, 1.5);
     return coarse && fine && coarse_half && fine_half ? 0 : 1;
   }
   if (argc != 1) {

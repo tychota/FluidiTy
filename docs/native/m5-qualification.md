@@ -321,6 +321,50 @@ out/m5-paired-floor-friction.patch. The first uses the dense refined
 grid commands below. The padded variants use the same binaries with
 the experimental --q-sand-paired-floor-padded argument.
 
+### 45° cone release
+
+A cone starting above the required repose window tests relaxation without
+the high-aspect-ratio column and drop. The 45° cone has radius and height
+0.175 m and starts on the floor. A 0.025 m midpoint lattice gives 371
+particles and 1.7390625 kg. The granular law, gravity and friction are
+unchanged. At each grid width and timestep the envelope criterion remains
+30–35°, the last 0.05 s drift limit stays 2°, and kinetic energy must be
+below 0.01 J. The quadrant fit remains an independent diagnostic.
+
+| h (m) | nominal dt (s) | Native envelope at 0.75 s | Native quadrant fit |
+|---|---:|---:|---:|
+| 0.0375 | 0.00078125 | 33.417161° | 36.466922° |
+| 0.03125 | 0.00078125 | 32.183522° | 35.923693–36.296073° |
+| 0.0375 | 0.000390625 | 36.531421° | 38.533738–38.861962° |
+| 0.03125 | 0.000390625 | 35.383665° | 38.436984–38.778075° |
+
+CUDA matched the native envelope to 1e-6° at the printed precision.
+The coarser nominal CUDA quadrant minimum was 36.117503° while the other
+three quadrants and the native result were 36.466922°. This demonstrates
+surface-sample selection sensitivity despite near-identical envelopes.
+Both nominal cases meet the envelope criterion. Both half-step cases
+miss it, and all quadrant fits exceed 35° at 0.75 s.
+
+With the same start and acceptance criteria, extending the end time to
+1.5 s moves the envelope at the nominal timestep below 30°. The half-step
+runs are inside the envelope window at this later time.
+
+| h (m) | nominal dt (s) | Native envelope at 1.5 s | Native quadrant fit |
+|---|---:|---:|---:|
+| 0.0375 | 0.00078125 | 29.594340° | 34.300833–36.120679° |
+| 0.03125 | 0.00078125 | 28.245806° | 33.775882–35.571562° |
+| 0.0375 | 0.000390625 | 33.715553° | 36.147229–36.490832° |
+| 0.03125 | 0.000390625 | 32.577189° | 36.169228–36.544226° |
+
+CUDA envelope angles differed by at most 1e-6° at the reported precision.
+The 1.5 s half-step angles are within 0.40° of the 0.75 s nominal-step
+angles at equal grid width and roughly equal step count, despite
+doubling the physical time. At fixed 1.5 s, halving the step shifts the
+angle by more than 4° on both grids. All momentum checks pass. This
+shows that the cone changes the benchmark result but does not establish
+a converged repose angle, even when the last 0.05 s drift meets the
+declared bound.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -361,6 +405,10 @@ cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-refined-grid
 & ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-floor-release
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-floor-release
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-release
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-release
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-long-settle
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-long-settle
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources
@@ -404,6 +452,12 @@ solid interaction histories. The guided-piston restart reproduces the
 next accepted envelope byte for byte. This provides a joint codec and
 ordinal check for that pressure-only case. Plastic material records and
 particle-contact replay remain open for the mixed scene.
+
+M6 commits cd7c50b and e342d94 add the guided CPU piston's swept particle
+reaction and byte-identical coupled replay after a rejected attempt.
+The fixture prescribes the incoming gather to isolate the impulse.
+The CUDA reaction, deformable plastic particle records, and a production
+snow–water restart remain open.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
