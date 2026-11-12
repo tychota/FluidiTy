@@ -3841,3 +3841,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Isolate the normal and tangential partial moments
+
+Split the full-stencil moment control by velocity component.
+Refit only the affected tangential rows in one run and only the
+affected normal row in the other. Clear the other affected rows
+as in `eb8877c`. Both native and SM120 default dry-scene suites pass
+for both controls.
+
+| Native case at 3 s | Tangential moment angle / radius | Normal moment angle / radius |
+|---|---|---|
+| Coarse | 27.977012° / 0.176039 m | 34.493224° / 0.167806 m |
+| Coarse half-step | 30.744058° / 0.172182 m | 40.454623° / 0.156861 m |
+| Fine | 22.644307° / 0.183904 m | 31.369418° / 0.159845 m |
+| Fine half-step | 27.784469° / 0.171326 m | 34.725458° / 0.159911 m |
+
+The tangential-only moment reproduces most of the all-row change,
+including loss of both fine passes. The normal-only moment retains
+both fine passes with less than 0.16 mm of radius margin and leaves
+the coarse failure modes intact. Vertical momentum residual stays
+below 2.7e-8 N·s. The source was restored after both builds.
+
+```powershell
+foreach ($bin in 'sand-tangent-moment-bin', 'sand-normal-moment-bin') {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
