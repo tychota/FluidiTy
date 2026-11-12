@@ -41,17 +41,15 @@ struct PreparedAdaptiveQuadraticParticle3D {
   GradedQuadraticMacStencil3D stencil;
 };
 
-// Up to one complete split roster in stable particle order. The normalized
-// old carriers are borrowed from the step owner that prepared this roster.
+// Borrow a complete staged roster in stable particle order and its epoch.
+// The step owner retains both these rows and the normalized old carriers.
 struct PreparedAdaptiveQuadraticTransfer3D {
-  static constexpr std::size_t kMaximumParticles = 8;
-
+  static constexpr std::size_t kMaximumParticles = 8;  // Explicit resampling request only.
   std::uint64_t epoch;
-  std::array<PreparedAdaptiveQuadraticParticle3D, kMaximumParticles> particles;
-  std::size_t particle_count;
+  std::span<const PreparedAdaptiveQuadraticParticle3D> particles;
 
   std::span<const PreparedAdaptiveQuadraticParticle3D> selections() const {
-    return std::span(particles).first(particle_count);
+    return particles;
   }
 };
 
@@ -82,6 +80,10 @@ class AdaptiveLiquidStep3D {
       const LiquidStepOptions3D& options,
       std::uint64_t particle_id
   );
+  // Apply the stored basis roster in a normal trial. Unsupported complete
+  // support returns an empty roster so the scheduler can reset before PIC.
+  absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>>
+  PrepareStoredQuadraticTransfer(const LiquidState3D& committed, const LiquidStepOptions3D& options);
   // Stage one complete certified roster against the detached candidate.
   // Any missing, ineligible or malformed selection refuses the entire trial.
   absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> PrepareCertifiedQuadraticTransfer(
@@ -119,7 +121,8 @@ class AdaptiveLiquidStep3D {
       const LiquidState3D& state,
       const LiquidStepOptions3D& options,
       std::span<const std::uint64_t> particle_ids,
-      bool allow_radial_fallback
+      bool allow_radial_fallback,
+      bool include_stored_basis
   );
   absl::Status CertifyExchangePaths(const LiquidState3D& trial, double duration, const LiquidSceneInputs3D& scene);
   absl::Status CheckExchangePaths(std::span<const LiquidParticleState3D> particles) const;
@@ -169,6 +172,8 @@ class AdaptiveLiquidStep3D {
   std::vector<MacStrainRow3D> unit_strain_rows_;
   std::vector<std::size_t> leaf_strain_row_offsets_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
+  std::vector<PreparedAdaptiveQuadraticParticle3D> quadratic_particles_;
+  std::vector<MacFaceDeposit3D> quadratic_deposits_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;
   std::vector<double> distances_;
   std::vector<double> predictor_density_;

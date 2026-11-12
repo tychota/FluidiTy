@@ -103,6 +103,7 @@ gap, the coarsening halo restores the original 125-leaf graph and face
 history, with one fresh ID for the merged particle. A lone family without the
 required halo is refused in either direction. Duplicate child IDs fail
 preflight. The proposal is detached from accepted scheduler publication.
+
 ### Certified family trials
 
 The explicit split and merge scheduler requests bind a committed epoch,
@@ -119,10 +120,11 @@ fault checks that the committed host and device versions retain the previous
 layout and IDs. The resumed request also reverses its input order to check
 that the accepted result follows canonical particle order.
 
-Selection in this path lasts for the requested trial. Later ordinary
-attempts need a basis policy that can be reproduced after restart or an
-explicit switch that resets incompatible affine state. The replay fixtures
-use rest seeds for their ordinary frame remainder.
+Certified replacement IDs publish with the quadratic basis. An ordinary
+attempt on the replacement roster then uses the accepted policy described
+below. A resampling source with nonzero active affine slopes must already
+carry an accepted quadratic basis. This keeps the measured support
+covariance aligned with the source affine data.
 
 ### Accepted transfer basis in FLST
 
@@ -136,9 +138,32 @@ fields. Uniform states cannot carry the adaptive flag.
 The CUDA arena stores the flag beside the affine and PIC bits in its particle
 bank. Preparing and discarding a trial preserves the old flag and epoch.
 Publishing the trial switches the flag with the particle and topology state.
-The accepted basis is available to a subsequent scheduler attempt after
-restore. Continuing basis selection and any safe affine reset are scheduler
-policy.
+Ordinary attempts rebuild the marked support from the accepted roster and
+freeze it through deposit and both gather histories. A changed topology
+clears incompatible existing marks before a replacement trial. If the
+stored roster loses complete accepted support, the trial resets its
+marked slopes and PIC history before radial deposit. Rejection retains the
+previous accepted marks. A single explicit promotion stages zero old
+affine slopes when changing from radial to quadratic. Scratch is reserved
+from the admitted owner extent. The eight-ID bound applies to one explicit
+split or merge request.
+
+The persistent fixture publishes a v5 checkpoint after a real promotion,
+terminates the process, and advances the restored state with ordinary
+attempts. It compares the completed state against uninterrupted execution
+and checks the real CUDA device bank. The CPU controls also exercise
+pretrial support loss, late rejection of the reset, and a 16-particle stored
+roster.
+The CPU and SM120 runs reproduced checkpoint BLAKE3
+`a4e42dd663461a1bfbf67d117e7d518bbaf52d03abc59ee9681661d69cb2d79c`
+and completed state BLAKE3
+`3467cd43610645e6bcf48f8630a0e2cead97e9e19a3e1a88d0f385e887d8b039`.
+
+
+```powershell
+ctest --test-dir out/build/persistent-green-cpu -R 'GradedPersistentQuadraticBasis|quadratic-persistent' --output-on-failure
+ctest --test-dir out/build/persistent-green-cuda -R 'GradedExplicitQuadraticRejectionPreservesDeviceEpoch|quadratic-persistent' --output-on-failure
+```
 
 ```powershell
 ctest --test-dir out/build/basis-green-cpu -R 'LiquidCache3D|LiquidState3D|Schema|Adaptive(Family|Band|Width|Closure|Physical)Replay.cpu' --output-on-failure
@@ -162,10 +187,13 @@ component and cavity lineage, exact replay and rollback on the M2 accepted
 source. Verify Whitewater and Volumes use the same authenticated stage
 identities. [Occupancy and motion fixture](native-band-occupancy.md)
 
-The current bounded handoff accepts explicit one-leaf retirement and reseed
-requests. Automatic placement, overlap blending, conservative nonzero
-cross-owner exchange, and remap of mixed owners each require an independent
-qualification before the wave.
+The bounded handoff accepts an epoch-bound placement request for one leaf
+using the 6h depth, 2h carrier overlap, and measured sweep margins. The
+native planar Mesh path consumes accepted mixed-owner volume. The explicit
+owner-exchange attempt qualifies nonzero projected flux with a same-leaf
+stationary contact witness and exact represented inventories. Moving
+overlap blending, nonplanar authoritative extraction, and mixed-owner
+family remap still require qualification.
 
 ## Matched-error wave campaign
 
@@ -220,6 +248,22 @@ CUDA control in the same run took 24.6398 ms and 8.7352 ms. Peak allocated arena
 bytes were 9,360,128 and 3,396,608 for the two capacity tiers. Peak active
 pressure scratch was 7,411,928 and 2,540,864 bytes. These measurements cover
 the sealed-cube arena. Use the full-wave procedure below for the job-wide peak.
+### Current capacity boundary
+
+The adaptive topology and state validators admit 4,096 leaves and 24,576
+canonical subfaces. At 0.035 m, 4,096 finest leaves cover at most 0.175616 m³
+before coarser leaves or the face limit consume capacity. The largest
+qualified arena pressure control used 4,096 rows, 13,056 faces, and four
+hierarchy levels. Its maximum physical defect was 1.01548e-5 s⁻¹. The
+public adaptive CLI starts with the authenticated seed's exact extents.
+Native trial fixtures reserve additional particle, leaf and face capacity
+explicitly. The public uniform path defaults to 1,024 particles, 128 blocks,
+4,096 cells and 24,576 slots.
+
+The 3-frame matched public tank exercises Simulate and Mesh at identical
+initial particle inventories and error limits. Its short-run receipts
+report zero drift, 458 retained Mesh IDs, and relative volume error
+1.11022e-15. [Matched public control](matched-error-pressure.md#public-simulate-and-mesh-control)
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

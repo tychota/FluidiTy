@@ -555,6 +555,10 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     };
   }
   result.old_faces_.resize(initial.adaptive_faces.size());
+  if (!physical && phase_id == 0 && result.core_faces_.empty() && !result.update_volume_ratio_) {
+    result.quadratic_particles_.reserve(initial.particles.size());
+    result.quadratic_deposits_.resize(initial.adaptive_faces.size());
+  }
   result.gathered_.resize(initial.particles.size());
   result.distances_.resize(initial.particles.size());
   result.inventories_.resize(initial.adaptive_cells.size());
@@ -629,6 +633,8 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       + (strain_rows_.capacity() + unit_strain_rows_.capacity()) * sizeof(MacStrainRow3D)
       + leaf_strain_row_offsets_.capacity() * sizeof(std::size_t)
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
+      + quadratic_particles_.capacity() * sizeof(PreparedAdaptiveQuadraticParticle3D)
+      + quadratic_deposits_.capacity() * sizeof(MacFaceDeposit3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
       + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes
@@ -741,7 +747,14 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
     const LiquidStepOptions3D& options,
     std::uint64_t particle_id
 ) {
-  return StageQuadraticTransfer(committed, options, std::span(&particle_id, 1), true);
+  return StageQuadraticTransfer(committed, options, std::span(&particle_id, 1), true, true);
+}
+
+absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiquidStep3D::PrepareStoredQuadraticTransfer(
+    const LiquidState3D& committed,
+    const LiquidStepOptions3D& options
+) {
+  return StageQuadraticTransfer(committed, options, {}, true, true);
 }
 
 absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> AdaptiveLiquidStep3D::PrepareCertifiedQuadraticTransfer(
@@ -749,7 +762,7 @@ absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> AdaptiveLiquidStep3D::Prepar
     const LiquidStepOptions3D& options,
     std::span<const std::uint64_t> replacement_ids
 ) {
-  auto prepared = StageQuadraticTransfer(candidate, options, replacement_ids, false);
+  auto prepared = StageQuadraticTransfer(candidate, options, replacement_ids, false, false);
   if (!prepared.ok()) {
     return prepared.status();
   }
@@ -763,53 +776,67 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
     const LiquidState3D& state,
     const LiquidStepOptions3D& options,
     std::span<const std::uint64_t> particle_ids,
-    bool allow_radial_fallback
+    bool allow_radial_fallback,
+    bool include_stored_basis
 ) {
-  if (particle_ids.empty() || particle_ids.size() > PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles) {
-    return absl::InvalidArgumentError("quadratic transfer requires one to eight particle IDs");
+  if (particle_ids.size() > PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles
+      || (!include_stored_basis && particle_ids.empty())) {
+    return absl::InvalidArgumentError("quadratic transfer requires at most eight explicit particle IDs");
   }
   if (physical_trial_ || !core_faces_.empty() || update_volume_ratio_) {
+    if (include_stored_basis && particle_ids.empty()) {
+      return std::nullopt;
+    }
     return absl::FailedPreconditionError("explicit quadratic transfer requires incompressible particle-owned liquid");
   }
   std::array<std::uint64_t, PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles> sorted_ids{};
   const auto requested = std::span(sorted_ids).first(particle_ids.size());
   std::ranges::copy(particle_ids, requested.begin());
   std::ranges::sort(requested);
-  if (requested.front() == 0 || std::ranges::adjacent_find(requested) != requested.end()) {
+  if (!requested.empty() && (requested.front() == 0 || std::ranges::adjacent_find(requested) != requested.end())) {
     return absl::InvalidArgumentError("quadratic transfer requires distinct nonzero particle IDs");
   }
 
   const auto particles = state.particles.values();
-  PreparedAdaptiveQuadraticTransfer3D prepared{.epoch = state.clock.epoch, .particles = {}, .particle_count = 0};
+  if (particles.size() > quadratic_particles_.capacity() || quadratic_deposits_.size() != old_faces_.size()) {
+    return absl::FailedPreconditionError("quadratic transfer staging differs from the admitted owner extents");
+  }
+  quadratic_particles_.clear();
+  std::size_t matched_ids = 0;
   for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
     const auto& particle = particles[ordinal];
-    if (std::ranges::binary_search(requested, particle.id)) {
-      if (prepared.particle_count == requested.size()) {
-        return absl::InvalidArgumentError("staged state contains duplicate quadratic particle IDs");
-      }
-      prepared.particles[prepared.particle_count++] = {
+    const bool explicitly_requested = std::ranges::binary_search(requested, particle.id);
+    matched_ids += explicitly_requested;
+    if (explicitly_requested || (include_stored_basis && particle.quadratic_adaptive_transfer)) {
+      quadratic_particles_.push_back({
           .particle_ordinal = ordinal,
           .particle_id = particle.id,
           .world_position_m = particle.world_position,
           .stencil = {},
-      };
+      });
     }
   }
-  if (prepared.particle_count != requested.size()) {
+  if (matched_ids != requested.size()) {
     return absl::InvalidArgumentError("quadratic transfer particle ID is absent from the staged state");
   }
+  if (quadratic_particles_.empty()) {
+    return std::nullopt;
+  }
+  const PreparedAdaptiveQuadraticTransfer3D prepared{.epoch = state.clock.epoch, .particles = quadratic_particles_};
 
-  const auto transfer_particle = [](const LiquidParticleState3D& particle) {
+  const auto transfer_particle = [include_stored_basis](const LiquidParticleState3D& particle) {
+    const bool compatible_slopes =
+        particle.affine_enabled && (!include_stored_basis || particle.quadratic_adaptive_transfer);
     return MacTransferParticle3D{
         .sorted_world_position = particle.world_position,
         .trial_world_position = particle.world_position,
         .particle_mass = particle.mass,
         .particle_velocity = particle.world_velocity,
-        .particle_velocity_slopes = particle.affine_enabled ? particle.velocity_slopes : Mat3{},
+        .particle_velocity_slopes = compatible_slopes ? particle.velocity_slopes : Mat3{},
     };
   };
   const auto carrier_faces = state.adaptive_faces.values();
-  for (auto& selection : std::span(prepared.particles).first(prepared.particle_count)) {
+  for (auto& selection : quadratic_particles_) {
     const auto& particle = particles[selection.particle_ordinal];
     if (particle.phase_id != 0) {
       return absl::FailedPreconditionError("explicit quadratic transfer requires implicit liquid");
@@ -841,7 +868,8 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
 
   // The global particle order fixes rounding where any two contributions
   // share a face. The normalized old snapshot is reused by Deposit.
-  std::vector<MacFaceDeposit3D> deposits(old_faces_.size());
+  std::ranges::fill(quadratic_deposits_, MacFaceDeposit3D{});
+  const auto deposits = std::span(quadratic_deposits_);
   auto selections = prepared.selections();
   for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
     const auto& particle = particles[ordinal];

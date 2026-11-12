@@ -443,6 +443,8 @@ class LiquidSubstepScheduler3D {
   // MAC transfer, selected by ID in the exact committed epoch. Requires a
   // graded, inviscid incompressible particle-only tank. Unsupported carrier/support
   // eligibility uses the ordinary radial transfer before the trial starts.
+  // A successful selection records its basis in the accepted particle.
+  // Ordinary attempts retain that basis while all stored rows qualify.
   // A stale epoch, absent ID, malformed input or later physical failure leaves
   // the committed state and backend publication unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D>

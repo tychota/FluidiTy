@@ -417,7 +417,7 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu)
   set_tests_properties(AdaptiveFamilyReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
-  foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge)
+  foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge quadratic-persistent)
     add_test(NAME AdaptiveFamilyReplay.cpu.${scenario}
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu ${scenario})
@@ -450,7 +450,7 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda)
     set_tests_properties(AdaptiveFamilyReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
-    foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge)
+    foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge quadratic-persistent)
       add_test(NAME AdaptiveFamilyReplay.cuda.${scenario}
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
           "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda ${scenario})
