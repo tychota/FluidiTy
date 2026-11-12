@@ -256,7 +256,7 @@ TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {
   const auto status = ViscousStep(problem.Inputs(), result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[0], -89.0 / 111.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[1], -109.0 / 111.0, kTolerance);
 }
@@ -271,16 +271,47 @@ TEST(Viscosity, RejectsExplicitAboveMassScaledLimit) {
   result.ExpectUnchanged();
 }
 
-TEST(Viscosity, PermitsExplicitAtMassScaledLimit) {
+TEST(Viscosity, RoundedBoundCannotAdmitAnUnstableExplicitStep) {
+  const std::array face_velocities{1.0};
+  const std::array face_inertias{7.0};
+  const std::array strain_operator{1.0};
+  const std::array strain_quadrature_weights{1.0};
+  const std::array boundary_strain{0.0};
+  ViscosityInputsView inputs{
+      .face_velocities = face_velocities,
+      .face_inertias = face_inertias,
+      .strain_operator = strain_operator,
+      .strain_row_count = 1,
+      .strain_quadrature_weights = strain_quadrature_weights,
+      .boundary_strain = boundary_strain,
+      .dt = std::nextafter(14.0, kInfinity),
+      .mode = ViscosityMode::kExplicit,
+      .explicit_stability_margin = 0.0,
+  };
+  ViscosityWorkspace workspace;
+  ViscosityResult rejected(1);
+  EXPECT_EQ(ViscousStep(inputs, rejected.Outputs(), workspace).code(), absl::StatusCode::kFailedPrecondition);
+  rejected.ExpectUnchanged();
+
+  inputs.mode = ViscosityMode::kAuto;
+  ViscosityResult result(1);
+  const auto status = ViscousStep(inputs, result.Outputs(), workspace);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
+  EXPECT_GE(result.diagnostics.spectral_bound, std::nextafter(1.0 / 7.0, kInfinity));
+  EXPECT_NEAR(result.updated_face_velocities[0], 1.0 / 3.0, kTolerance);
+}
+
+TEST(Viscosity, PermitsExplicitBelowCertifiedLimit) {
   const TwoFaceCase problem;
   auto inputs = problem.Inputs();
-  inputs.dt = 0.99 * 2.0 / 110.0;
+  inputs.dt = 0.98 * 2.0 / 101.0;
   ViscosityResult result(problem.face_velocities.size());
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kExplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[0], 1.0 - 200.0 * inputs.dt, kTolerance);
   EXPECT_NEAR(result.updated_face_velocities[1], -1.0 + 2.0 * inputs.dt, kTolerance);
   EXPECT_LT(result.diagnostics.energy_after, result.diagnostics.energy_before);
@@ -381,7 +412,7 @@ TEST(Viscosity, ZeroTimeStepPreservesVelocity) {
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_TRUE(std::ranges::equal(result.updated_face_velocities, problem.face_velocities));
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kImplicit);
-  EXPECT_NEAR(result.diagnostics.spectral_bound, 110.0, kTolerance);
+  EXPECT_NEAR(result.diagnostics.spectral_bound, 101.0, kTolerance);
   EXPECT_EQ(result.diagnostics.energy_before, result.diagnostics.energy_after);
   EXPECT_EQ(result.diagnostics.wall_work, 0.0);
   EXPECT_EQ(result.diagnostics.numerical_dissipation, 0.0);
@@ -409,15 +440,15 @@ TEST(Viscosity, AcceptsOver64StrainRows) {
       .strain_row_count = shape->strain_row_count,
       .strain_quadrature_weights = strain_quadrature_weights,
       .boundary_strain = boundary_strain,
-      .dt = 0.01,
+      .dt = 0.001,
       .mode = ViscosityMode::kExplicit,
   };
   ViscosityResult result(shape->face_velocity_count);
   ViscosityWorkspace workspace;
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
-  EXPECT_NEAR(result.updated_face_velocities[28], 1.02, kTolerance);
-  EXPECT_NEAR(result.updated_face_velocities[54], 1.02, kTolerance);
+  EXPECT_NEAR(result.updated_face_velocities[28], 1.002, kTolerance);
+  EXPECT_NEAR(result.updated_face_velocities[54], 1.002, kTolerance);
 }
 
 TEST(Viscosity, RejectsOver64VelocityUnknowns) {
@@ -623,7 +654,8 @@ TEST(Viscosity, RetainsRepresentableStiffnessAndWallLoad) {
   const auto status = ViscousStep(inputs, result.Outputs(), workspace);
   ASSERT_TRUE(status.ok()) << status;
   EXPECT_EQ(result.diagnostics.method, ViscosityMethod::kExplicit);
-  EXPECT_EQ(result.diagnostics.spectral_bound, 0x1p-400);
+  EXPECT_GE(result.diagnostics.spectral_bound, 0x1p-400);
+  EXPECT_NEAR(result.diagnostics.spectral_bound / 0x1p-400, 1.0, kTolerance);
   EXPECT_EQ(result.updated_face_velocities[0], 1.0);
 }
 
@@ -653,7 +685,8 @@ TEST(Viscosity, ExplicitStepRetainsRepresentableVelocityIncrements) {
     if (!status.ok()) {
       continue;
     }
-    EXPECT_EQ(result.diagnostics.spectral_bound, strain_quadrature_weights[0]);
+    EXPECT_GE(result.diagnostics.spectral_bound, strain_quadrature_weights[0]);
+    EXPECT_NEAR(result.diagnostics.spectral_bound / strain_quadrature_weights[0], 1.0, kTolerance);
     EXPECT_EQ(result.updated_face_velocities[0], 0.0);
     EXPECT_EQ(result.diagnostics.energy_after, 0.0);
     EXPECT_EQ(result.diagnostics.numerical_dissipation, result.diagnostics.energy_before);

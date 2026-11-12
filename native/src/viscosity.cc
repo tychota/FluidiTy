@@ -229,25 +229,45 @@ double MassScaledStiffness(double coefficient, double row_sqrt_mass, double colu
   return ScaledProduct(coefficient, 1.0 / row_sqrt_mass, 1.0 / column_sqrt_mass);
 }
 
-// The infinity norm bounds the largest eigenvalue of the symmetric mass-scaled
-// operator. A single row maximum determines the stability limit for all faces.
-absl::StatusOr<double> ComputeSpectralBound(std::span<const double> stiffness, std::span<const double> sqrt_mass) {
-  const std::size_t columns = sqrt_mass.size();
+double UpperAdjacent(double value) {
+  return std::nextafter(value, std::numeric_limits<double>::infinity());
+}
+
+// Bound W E²/M using outward-rounded mantissas. This avoids overflowing E²
+// or losing a contribution below the normal range before division by M.
+double UpperTraceContribution(double quadrature, double strain_coefficient, double face_inertia) {
+  int quadrature_exponent;
+  int strain_exponent;
+  int inertia_exponent;
+  const double quadrature_fraction = std::frexp(quadrature, &quadrature_exponent);
+  const double strain_fraction = std::frexp(std::abs(strain_coefficient), &strain_exponent);
+  const double inertia_fraction = std::frexp(face_inertia, &inertia_exponent);
+  const double squared_strain_fraction = UpperAdjacent(strain_fraction * strain_fraction);
+  const double weighted_strain_fraction = UpperAdjacent(quadrature_fraction * squared_strain_fraction);
+  const double trace_fraction = UpperAdjacent(weighted_strain_fraction / inertia_fraction);
+  const int trace_exponent = quadrature_exponent + 2 * strain_exponent - inertia_exponent;
+  return UpperAdjacent(std::scalbn(trace_fraction, trace_exponent));
+}
+
+// The exact mass-scaled stiffness is PSD. Its trace bounds its spectrum
+// without depending on cancellation or the computed square roots of inertia.
+double ComputeSpectralBound(const ViscosityInputsView& inputs) {
+  const std::size_t columns = inputs.face_inertias.size();
   double spectral_bound = 0.0;
-  for (std::size_t row = 0; row < columns; ++row) {
-    double row_sum = 0.0;
+  for (std::size_t row = 0; row < inputs.strain_row_count; ++row) {
+    const double quadrature = inputs.strain_quadrature_weights[row];
+    if (quadrature == 0.0) {
+      continue;
+    }
     for (std::size_t column = 0; column < columns; ++column) {
-      const double coefficient = stiffness[row * columns + column];
-      const double scaled_coefficient = MassScaledStiffness(coefficient, sqrt_mass[row], sqrt_mass[column]);
-      if (coefficient != 0.0 && !std::isnormal(scaled_coefficient)) {
-        return absl::OutOfRangeError("mass-scaled viscous stiffness is outside normal double range");
+      const double strain_coefficient = inputs.strain_operator[row * columns + column];
+      if (strain_coefficient == 0.0) {
+        continue;
       }
-      row_sum += std::abs(scaled_coefficient);
+      const double trace_contribution =
+          UpperTraceContribution(quadrature, strain_coefficient, inputs.face_inertias[column]);
+      spectral_bound = UpperAdjacent(spectral_bound + trace_contribution);
     }
-    if (!std::isfinite(row_sum)) {
-      return absl::OutOfRangeError("viscosity spectral row sum is nonfinite");
-    }
-    spectral_bound = std::max(spectral_bound, row_sum);
   }
   return spectral_bound;
 }
@@ -628,17 +648,13 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
   for (std::size_t face = 0; face < columns; ++face) {
     sqrt_mass[face] = std::sqrt(inputs.face_inertias[face]);
   }
-  const auto computed_bound = ComputeSpectralBound(stiffness, sqrt_mass);
-  if (!computed_bound.ok()) {
-    return computed_bound.status();
-  }
-
-  // The stability test applies to the entire coupled operator. A product
-  // above the finite explicit limit can only select the implicit branch.
-  const double explicit_limit = 2.0 * (1.0 - inputs.explicit_stability_margin);
-  const double spectral_bound = *computed_bound;
-  const double dimensionless_step = inputs.dt * spectral_bound;
-  const bool explicit_safe = dimensionless_step <= explicit_limit;
+  const double spectral_bound = ComputeSpectralBound(inputs);
+  // Round toward rejection on both sides of the stability comparison.
+  // Zero dt and zero stiffness are exact identities.
+  const double stability_margin = inputs.explicit_stability_margin;
+  const double explicit_limit = stability_margin == 0.0 ? 2.0 : 2.0 * std::nextafter(1.0 - stability_margin, 0.0);
+  const bool explicit_safe =
+      inputs.dt == 0.0 || spectral_bound == 0.0 || UpperAdjacent(inputs.dt * spectral_bound) <= explicit_limit;
   if (inputs.mode == ViscosityMode::kExplicit && !explicit_safe) {
     return absl::FailedPreconditionError("explicit viscosity exceeds its stability bound");
   }

@@ -56,3 +56,25 @@ Use the accepted-state transaction and preserve the zero-compliance path. Requir
 - F7 theorem slice RED: python -m pytest tools/tests/test_verify_proofs.py -k f7_contracts -q -p no:cacheprovider. Exit 1, four missing inventory targets.
 - F7 theorem slice GREEN: python -m pytest tools/tests/test_verify_proofs.py -q -p no:cacheprovider. Exit 0, 34 passed.
 - Lean 4.34.1, pinned Mathlib: lake --wfail build completed 2,451 jobs in /var/tmp/fluidity-m4-proof.DmTffk/proofs. lake env lean Fluidity/Viscosity.lean confirmed all four closures use only propext, Classical.choice and Quot.sound. Retained output: out/m4-f7-lean.log.
+
+## Predeclared traction fixtures
+
+Use a unit square in the x-y plane, unit depth, density 1 kg/m³ in both phases, μ_a = 1 Pa s, μ_b / μ_a in {1, 10, 1000}, L = 1 m and U = 1 m/s. Use h = L/16 and L/32, and compare dt = 0.005 s and 0.0025 s at both resolutions. Use the same exact boundary traces at each resolution.
+
+- **Planar extension:** center the square at the origin, interface x = 0 with normal +x. Set strain rate a = U/L and velocity (a x, −a y). Set pressure in phase i to 2 μ_i a + S, where S = 2 μ_a U/L. The exact normal traction is −S and tangential traction is zero. The pressure jump exactly cancels the viscosity jump in normal stress. Drive from the analytic boundary velocity and use mean pressure consistent with the reference.
+- **Couette:** interface y = 0 with normal +y. Set tangential wall speeds 0 at y = −L/2 and U at y = L/2, with periodic x. Use piecewise-linear tangential velocity with slopes τ/μ_i, where τ = U / (L/(2 μ_a) + L/(2 μ_b)). The exact tangential traction is τ and the normal traction is −S at pressure S. Freeze the planar geometry and use matching analytic initial data.
+- Sample both one-sided tractions at each interface face and weight samples by physical interface area. For each side and component, require RMS error ≤ 0.05 S and maximum error ≤ 0.10 S. For a vanishing reference component, use the absolute floor 0.01 S and require both RMS and maximum to be within that floor. Apply these criteria to all ratios, resolutions and timesteps. A failed fractional gate requires a coupled Stokes path before production qualification.
+
+## Production dependencies to resolve
+
+- Stage 9 needs a sparse 3D tensor-strain assembly with prescribed-wall lifting and the pressure face inertia. The current bounded native solver is capped at 64 velocity columns and has no substep caller. The trace certificate is intentionally a bounded reference and can select implicit earlier than a tighter row-sum enclosure as the component grows.
+- M3 integration commit 1af7b0f is outside the baseline and carries geometric face ownership, exterior subfaces and allocation measurement. Adaptive M4 traction needs an accepted production topology with those capabilities and coarse/fine strain quadratures. Uniform reference qualification can continue independently.
+- The finite-compliance pressure field currently uses scene bulk modulus and the stored pressure of a matching cell in liquid_substep_3d.cc. EOS qualification needs an advected full-grid predictor and transaction-safe cell history, with remapping and a same-phase particle sensor. The one-cell reference piston deliberately tests the constitutive and pressure algebra independently.
+- The current boundary operator distinguishes liquid and air, and cache/reconstruction has no phase-pair interface ownership. Cavity lineage needs closed-air component inventory and vent detection on physical geometry. Multi-liquid qualification needs shared oriented geometry, constituent inventories through remap/cache and the supported headless Blender workflow.
+
+## Additional receipts
+
+- Independent F7 verification passed using the pinned Lean exporter and nano-lean checker. The complete 46-target axiom, export and checker receipt is out/m4-proof-verification/evidence.json.
+- Native F7 RED: fluidity_native_tests.exe --gtest_filter=Viscosity.RoundedBoundCannotAdmitAnUnstableExplicitStep. With inertia 7 and dt one ULP above 14, the old branch returned OK and increased energy. The old bound was 0.14285714285714282.
+- Native F7 GREEN: MSVC 19.44 Debug, fluidity_m4_focused.exe --gtest_filter=Viscosity.*. Exit 0, 30 passed. CMake built the production library and test object, then link.exe linked the Ninja response file to a separate test binary while the original executable was in use. Log: out/m4-f7-native.log.
+- clang-format 19.1.5 --dry-run --Werror passed on all tracked native files.

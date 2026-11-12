@@ -74,8 +74,8 @@ struct ViscosityInputsView {
 
 struct ViscosityDiagnostics {
   ViscosityMethod method;
-  // Float64 estimate of the upper bound on the maximum eigenvalue, in inverse
-  // time, from the largest absolute row sum of the mass-scaled stiffness.
+  // Outward-rounded trace bound for the exact mass-scaled stiffness, in inverse
+  // time. Positive infinity means no finite certificate was representable.
   double spectral_bound;
   // Mass-metric kinetic energies, in energy units.
   double energy_before;
@@ -105,8 +105,10 @@ struct ViscosityWorkspace {
 };
 
 // Advances the entire system using K = E^T W E and wall load E^T W boundary_strain.
-// Auto mode selects explicit only when dt*spectral_bound <= 2*(1-explicit_stability_margin).
-// The bound is float64 reference evidence. The wall strain is an algebraic lift.
+// Auto mode selects explicit only when an outward-rounded comparison certifies
+// dt * spectral_bound <= 2 * (1 - explicit_stability_margin). The trace bound
+// encloses the exact operator represented by the input coefficients. The wall
+// strain is an algebraic lift.
 //
 // Uses 1 to 64 velocity unknowns and any representable strain row count, including
 // zero. All inputs must be finite, masses positive and weights nonnegative.
