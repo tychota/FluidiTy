@@ -1877,3 +1877,15 @@ reciprocal loads on three blocked faces from solved liquid pressure.
 The loaded trial advances with the expected translation and shear, and
 an unknown owner leaves the accepted checkpoint unchanged. The milestone
 integration passed six native M5 and three CLI tests.
+
+
+### Joint snow and liquid scheduler acceptance
+
+[PR 103](https://github.com/tychota/FluidiTy/pull/103) landed at `715ad59`
+after all 143 native and CUDA scheduler tests passed. The shared
+fixture verifies a pressure-induced snow velocity change, rejection
+at the final acceptance stage without a snow candidate or changed
+liquid checkpoint, and successful half-step retry. The CUDA case
+checks the SM120 device receipt and the accepted device clock. The
+snow solid step uses host transfer in both cases. All nine milestone
+M5 and CLI checks passed after integrating the merge.
