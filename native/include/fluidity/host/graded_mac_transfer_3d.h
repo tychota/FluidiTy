@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <optional>
 #include <span>
 #include <vector>
@@ -45,9 +46,10 @@ class GradedMacTransfer3D {
     return faces_;
   }
 
-  // Bytes reserved by the frozen leaf boxes and canonical face geometry.
+  // Bytes reserved by the frozen leaf boxes, canonical face geometry and support bounds.
   std::size_t reserved_bytes() const {
-    return leaves_.capacity() * sizeof(LeafBox) + faces_.capacity() * sizeof(GradedMacFace3D);
+    return leaves_.capacity() * sizeof(LeafBox) + faces_.capacity() * sizeof(GradedMacFace3D)
+        + face_support_bounds_.capacity() * sizeof(FaceSupportBounds);
   }
 
   // Deposit mass in kg and positive-normal momentum in kg*m/s. Results are in
@@ -80,12 +82,18 @@ class GradedMacTransfer3D {
     double width_m;
   };
 
+  struct FaceSupportBounds {
+    std::array<double, 3> lower;  // Minimum world anchor coordinates, m.
+    std::array<double, 3> upper;  // Maximum world anchor coordinates, m.
+  };
+
   GradedMacTransfer3D() = default;
   absl::StatusOr<double> ParticleSupportWidth(Vec3 world_position) const;
 
   std::optional<Vec3> solid_upper_;
   std::vector<LeafBox> leaves_;
   std::vector<GradedMacFace3D> faces_;
+  std::vector<FaceSupportBounds> face_support_bounds_;  // Preorder bounds over canonical slot blocks.
 };
 
 }  // namespace fluidity
