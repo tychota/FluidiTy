@@ -1,3 +1,5 @@
+#include "fluidity/host/dry_solid_step_3d.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,7 +10,6 @@
 
 #include "dry_solid_step_3d_internal.h"
 #include "fluidity/base/solid_acoustic_3d.h"
-#include "fluidity/host/dry_solid_step_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "fluidity/host/views.h"
@@ -281,10 +282,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
 
   std::vector<MacFaceDeposit3D> deposits(grid.face_count());
   const double contact_tolerance = 1e-12 * cell_width;
-  const bool active_floor = compatible_floor && std::ranges::any_of(particles, [&](const auto& particle) {
-                              return particle.world_position.y <= contact_tolerance;
-                            });
   std::vector<LiquidBoundaryFaceTag3D> floor_tags;
+  std::vector<std::uint8_t> contact_patch;
   std::vector<LiquidBoundaryParticle3D> boundary_particles;
   LiquidBoundaryFaceDeposits3D boundary_deposits;
   double ghost_wall_force_y = 0;
@@ -292,6 +291,21 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<StationaryFloorGhostRow3D> ghost_rows;
   const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   if (compatible_floor) {
+    contact_patch.resize(grid.face_count());
+    for (const auto& particle : particles) {
+      if (particle.world_position.y > contact_tolerance) {
+        continue;
+      }
+      for (const auto axis : kAxes) {
+        const auto stencil = BuildOwnedMacFaceStencil3D(grid, axis, particle.world_position, particle.world_position);
+        if (!stencil.ok()) {
+          return stencil.status();
+        }
+        for (const auto& sample : *stencil) {
+          contact_patch[sample.face_slot] = 1;
+        }
+      }
+    }
     floor_tags.resize(grid.face_count());
     const auto layout = grid.view();
     for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
@@ -303,7 +317,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       if (!anchor.ok()) {
         return anchor.status();
       }
-      floor_tags[slot].structurally_eligible = !active_floor || anchor->y >= 0;
+      floor_tags[slot].structurally_eligible = contact_patch[slot] == 0 || anchor->y >= 0;
     }
     boundary_particles.reserve(particles.size());
     for (const auto& particle : transfer_particles) {
@@ -337,7 +351,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         }
         // The deformation field has zero normal velocity on the wall itself.
         // Compatible PIC still sees the unprojected incident velocity.
-        deformation_tags[slot].structurally_eligible = !active_floor || anchor->y > 0;
+        deformation_tags[slot].structurally_eligible = contact_patch[slot] == 0 || anchor->y > 0;
       }
     }
     std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
