@@ -395,6 +395,43 @@ TEST(Viscosity, SolvesSparsePositiveVelocityBlockAndEliminatesPrescribedFaces) {
   );
 }
 
+TEST(Viscosity, VelocityBlockMatchesIndependentNormalAndShearMomentum) {
+  const std::array rows{
+      MacStrainRow3D{
+          .low_cell = {0, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kX,
+          .terms = {{{.face_slot = 0, .coefficient = 1.0}, {.face_slot = 1, .coefficient = -1.0}}},
+          .term_count = 2,
+          .quadrature_weight = 2.0,
+      },
+      MacStrainRow3D{
+          .low_cell = {0, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kY,
+          .terms = {{
+              {.face_slot = 0, .coefficient = 0.5},
+              {.face_slot = 1, .coefficient = -0.5},
+              {.face_slot = 2, .coefficient = 0.5},
+              {.face_slot = 3, .coefficient = -0.5},
+          }},
+          .term_count = 4,
+          .quadrature_weight = 8.0,
+      },
+  };
+  const std::array inertia{1.0, 2.0, 3.0, 5.0};
+  constexpr std::array expected_velocity{2.0, -1.0, 3.0, -2.0};
+  // H is diag(inertia) plus the outer products of [1,-1,0,0] and [1,-1,1,-1].
+  const std::array rhs{13.0, -13.0, 17.0, -18.0};
+  const auto result = SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_EQ(result->velocity.size(), expected_velocity.size());
+  for (std::size_t face = 0; face < expected_velocity.size(); ++face) {
+    EXPECT_NEAR(result->velocity[face], expected_velocity[face], kTolerance);
+  }
+  EXPECT_LE(result->max_residual, kTolerance);
+}
+
 TEST(Viscosity, MassScaledBoundSelectsWholeImplicitStep) {
   const TwoFaceCase problem;
   ViscosityResult result(problem.face_velocities.size());
