@@ -12,6 +12,7 @@
 
 #include "../src/mac_pressure_3d_multigrid.h"
 #include "../src/mac_pressure_3d_system.h"
+#include "../src/mac_viscous_pressure_3d.h"
 #include "absl/status/status.h"
 #include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/viscosity.h"
@@ -399,6 +400,169 @@ TEST(MacPressure3D, CoupledViscosityRecoversMovingWallCouetteTraction) {
         std::cout << "couette resolution=" << resolution << " dt=" << step_duration
                   << " viscosity_ratio=" << viscosity_ratio << " normal_max=" << max_normal_error
                   << " tangential_max=" << max_shear_error << '\n';
+      }
+    }
+  }
+}
+
+TEST(MacPressure3D, CoupledViscosityQualifiesPeriodicCouetteTractions) {
+  for (const std::size_t resolution : {16, 32}) {
+    SCOPED_TRACE(resolution);
+    const double h = 1.0 / static_cast<double>(resolution);
+    const double volume = h * h;  // Unit-depth extrusion.
+    for (const double dt : {0.005, 0.0025}) {
+      SCOPED_TRACE(dt);
+      for (const double ratio : {1.0, 10.0, 1000.0}) {
+        SCOPED_TRACE(ratio);
+        const auto viscosity = [&](std::size_t y) {
+          return y < resolution / 2 ? 1.0 : ratio;
+        };
+        const auto x_slot = [&](std::size_t x, std::size_t y) {
+          return resolution * y + x;
+        };
+        const auto y_slot = [&](std::size_t x, std::size_t y) {
+          return resolution * (resolution + y - 1) + x;
+        };
+        const double exact_shear = 2.0 / (1.0 + 1.0 / ratio);
+        std::vector<MacPressureCell3D> cells;
+        std::vector<pressure_internal::ExplicitMacPressureFace3D> faces;
+        std::vector<MacStrainRow3D> strain;
+        for (std::size_t y = 0; y < resolution; ++y) {
+          const double sample_y = (static_cast<double>(y) + 0.5) * h;
+          const double speed = exact_shear * (std::min(sample_y, 0.5) + std::max(sample_y - 0.5, 0.0) / ratio);
+          for (std::size_t x = 0; x < resolution; ++x) {
+            const CellIndex3D cell_index{static_cast<int>(x), static_cast<int>(y), 0};
+            cells.push_back({.cell_index = cell_index, .fluid_volume = volume, .bulk_modulus = kInfinity});
+            faces.push_back({
+                .face_slot = x_slot(x, y),
+                .tail_cell_ordinal = x_slot((x + resolution - 1) % resolution, y),
+                .head_cell_ordinal = x_slot(x, y),
+                .open_area = h,
+                .inverse_density = 1.0,
+                .pressure_gradient_distance = h,
+                .predicted_normal_velocity = speed,
+            });
+            strain.push_back({
+                .low_cell = cell_index,
+                .first_axis = FaceNormalAxis::kX,
+                .second_axis = FaceNormalAxis::kX,
+                .terms = {{{x_slot(x, y), -1.0 / h}, {x_slot((x + 1) % resolution, y), 1.0 / h}}},
+                .term_count = 2,
+                .quadrature_weight = 2.0 * viscosity(y) * volume,
+            });
+            MacStrainRow3D normal{
+                .low_cell = cell_index,
+                .first_axis = FaceNormalAxis::kY,
+                .second_axis = FaceNormalAxis::kY,
+                .terms = {},
+                .term_count = 0,
+                .quadrature_weight = 2.0 * viscosity(y) * volume,
+            };
+            if (y > 0) {
+              normal.terms[normal.term_count++] = {y_slot(x, y), -1.0 / h};
+            }
+            if (y + 1 < resolution) {
+              normal.terms[normal.term_count++] = {y_slot(x, y + 1), 1.0 / h};
+            }
+            strain.push_back(normal);
+            if (y == 0 || y + 1 == resolution) {
+              const bool upper = y != 0;
+              auto row = MakeMacTangentialWallStrain3D(
+                  cell_index,
+                  FaceNormalAxis::kX,
+                  FaceNormalAxis::kY,
+                  x_slot(x, y),
+                  h,
+                  viscosity(y),
+                  upper ? 1.0 : 0.0,
+                  upper
+              );
+              ASSERT_TRUE(row.ok()) << row.status();
+              row->quadrature_weight /= h;  // Convert the half-cell row to unit depth.
+              strain.push_back(*row);
+            }
+          }
+        }
+        for (std::size_t y = 1; y < resolution; ++y) {
+          const double shear_viscosity = 2.0 / (1.0 / viscosity(y - 1) + 1.0 / viscosity(y));
+          for (std::size_t x = 0; x < resolution; ++x) {
+            faces.push_back({
+                .face_slot = y_slot(x, y),
+                .tail_cell_ordinal = x_slot(x, y - 1),
+                .head_cell_ordinal = x_slot(x, y),
+                .open_area = h,
+                .inverse_density = 1.0,
+                .pressure_gradient_distance = h,
+            });
+            const double derivative = 0.5 / h;
+            strain.push_back({
+                .low_cell = {static_cast<int>(x), static_cast<int>(y - 1), 0},
+                .first_axis = FaceNormalAxis::kX,
+                .second_axis = FaceNormalAxis::kY,
+                .terms = {{
+                    {x_slot(x, y - 1), -derivative},
+                    {x_slot(x, y), derivative},
+                    {y_slot((x + resolution - 1) % resolution, y), -derivative},
+                    {y_slot(x, y), derivative},
+                }},
+                .term_count = 4,
+                .quadrature_weight = 4.0 * shear_viscosity * volume,
+            });
+          }
+        }
+        const auto projection = pressure_internal::ProjectExplicitMacViscousPressure3D(dt, cells, faces, strain);
+        ASSERT_TRUE(projection.ok()) << projection.status();
+        double max_normal_error = 0.0;
+        double max_shear_error = 0.0;
+        std::array<double, 2> normal_error_squared{};
+        std::array<double, 2> shear_error_squared{};
+        std::array<std::size_t, 2> normal_samples{};
+        std::array<std::size_t, 2> shear_samples{};
+        for (const auto& row : strain) {
+          double value = row.prescribed_strain;
+          for (const auto& term : std::span(row.terms).first(row.term_count)) {
+            value += term.coefficient * projection->face_velocities[term.face_slot];
+          }
+          if (row.first_axis != row.second_axis) {
+            const double sample_volume = row.term_count == 1 ? 0.5 * volume : volume;
+            const double traction = row.quadrature_weight * value / (2.0 * sample_volume);
+            const double error = std::abs(traction - exact_shear) / 2.0;
+            max_shear_error = std::max(max_shear_error, error);
+            const auto y = static_cast<std::size_t>(row.low_cell.y);
+            if (row.term_count == 4 && (y == resolution / 2 - 2 || y == resolution / 2)) {
+              const std::size_t side = y < resolution / 2 ? 0 : 1;
+              shear_error_squared[side] += error * error;
+              ++shear_samples[side];
+            }
+          } else if (row.first_axis == FaceNormalAxis::kY) {
+            const auto y = static_cast<std::size_t>(row.low_cell.y);
+            const auto cell = x_slot(static_cast<std::size_t>(row.low_cell.x), y);
+            // The pressure pin is zero relative to the uniform analytic reference S.
+            const double normal_error = 2.0 * viscosity(y) * value - projection->cell_pressures[cell];
+            const double error = std::abs(normal_error) / 2.0;
+            max_normal_error = std::max(max_normal_error, error);
+            if (y == resolution / 2 - 1 || y == resolution / 2) {
+              const std::size_t side = y < resolution / 2 ? 0 : 1;
+              normal_error_squared[side] += error * error;
+              ++normal_samples[side];
+            }
+          }
+        }
+        double normal_rms = 0.0;
+        double shear_rms = 0.0;
+        for (std::size_t side = 0; side < 2; ++side) {
+          ASSERT_EQ(normal_samples[side], resolution);
+          ASSERT_EQ(shear_samples[side], resolution);
+          normal_rms = std::max(normal_rms, std::sqrt(normal_error_squared[side] / static_cast<double>(resolution)));
+          shear_rms = std::max(shear_rms, std::sqrt(shear_error_squared[side] / static_cast<double>(resolution)));
+        }
+        EXPECT_LE(normal_rms, 0.05);
+        EXPECT_LE(shear_rms, 0.05);
+        EXPECT_LE(max_normal_error, 0.10);
+        EXPECT_LE(max_shear_error, 0.10);
+        std::cout << "periodic_couette resolution=" << resolution << " dt=" << dt << " viscosity_ratio=" << ratio
+                  << " normal_rms=" << normal_rms << " tangential_rms=" << shear_rms
+                  << " normal_max=" << max_normal_error << " tangential_max=" << max_shear_error << '\n';
       }
     }
   }

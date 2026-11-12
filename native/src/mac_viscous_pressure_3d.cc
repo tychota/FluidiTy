@@ -1,3 +1,5 @@
+#include "mac_viscous_pressure_3d.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -7,9 +9,7 @@
 #include <variant>
 #include <vector>
 
-#include "fluidity/host/viscosity.h"
 #include "mac_pressure_3d_arithmetic.h"
-#include "mac_pressure_3d_system.h"
 
 namespace fluidity {
 namespace {
@@ -100,21 +100,20 @@ double Dot(std::span<const double> left, std::span<const double> right) {
   return std::inner_product(left.begin(), left.end(), right.begin(), 0.0);
 }
 
-}  // namespace
-
-absl::StatusOr<MacViscousPressureProjection3D>
-ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> strain_rows) {
-  const auto system = pressure_internal::PrepareMacPressureSystem3D(inputs);
-  if (!system.ok()) {
-    return system.status();
-  }
-  const auto rows = RemapStrain(*system, strain_rows);
+// Solve on frozen links. Explicit graphs have no closed faces and an empty
+// wall velocity view. Uniform graphs supply one prescribed value per link.
+absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
+    const PreparedMacPressureSystem3D& system,
+    double dt,
+    std::span<const MacStrainRow3D> strain_rows,
+    std::span<const double> wall_normal_velocities
+) {
+  const auto rows = RemapStrain(system, strain_rows);
   if (!rows.ok()) {
     return rows.status();
   }
-  const auto links = system->links();
-  const auto cells = system->cells();
-  const double dt = inputs.step_duration;
+  const auto links = system.links();
+  const auto cells = system.cells();
   std::vector<double> inertia(links.size());
   std::vector<double> base_momentum(links.size());
   std::vector<double> pressure_diagonal(cells.size());
@@ -174,7 +173,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
     double prescribed_strain = row.prescribed_strain;
     for (const auto& term : terms) {
       if (inertia[term.face_slot] == 0.0) {
-        prescribed_strain += term.coefficient * inputs.pressure_faces[term.face_slot].wall_normal_velocity;
+        prescribed_strain += term.coefficient * wall_normal_velocities[term.face_slot];
       }
     }
     if (prescribed_strain == 0.0) {
@@ -193,7 +192,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
   }
 
   std::vector<bool> pinned(cells.size());
-  for (const auto cell : system->gauge_cell_ordinals()) {
+  for (const auto cell : system.gauge_cell_ordinals()) {
     pinned[cell] = true;
   }
   const MacViscousVelocityBlockInputs3D velocity_block{*rows, inertia, dt};
@@ -219,7 +218,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
     if (!velocity.ok()) {
       return velocity.status();
     }
-    auto physical_flux = AccumulateConstraint(*system, pressure, velocity->velocity, true);
+    auto physical_flux = AccumulateConstraint(system, pressure, velocity->velocity, true);
     if (!physical_flux.ok()) {
       return physical_flux.status();
     }
@@ -248,7 +247,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
       }
       for (std::size_t face = 0; face < links.size(); ++face) {
         if (inertia[face] == 0.0) {
-          velocity->velocity[face] = inputs.pressure_faces[face].wall_normal_velocity;
+          velocity->velocity[face] = wall_normal_velocities[face];
         }
       }
       return MacViscousPressureProjection3D{
@@ -285,7 +284,7 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
     if (!response_velocity.ok()) {
       return response_velocity.status();
     }
-    auto response_flux = AccumulateConstraint(*system, direction, response_velocity->velocity, false);
+    auto response_flux = AccumulateConstraint(system, direction, response_velocity->velocity, false);
     if (!response_flux.ok()) {
       return response_flux.status();
     }
@@ -322,5 +321,36 @@ ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const M
   }
   return absl::AbortedError("coupled pressure iteration budget exhausted");
 }
+
+}  // namespace
+
+absl::StatusOr<MacViscousPressureProjection3D>
+ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> strain_rows) {
+  const auto system = pressure_internal::PrepareMacPressureSystem3D(inputs);
+  if (!system.ok()) {
+    return system.status();
+  }
+  std::vector<double> wall_normal_velocities;
+  wall_normal_velocities.reserve(inputs.pressure_faces.size());
+  for (const auto& face : inputs.pressure_faces) {
+    wall_normal_velocities.push_back(face.wall_normal_velocity);
+  }
+  return SolveCoupled(*system, inputs.step_duration, strain_rows, wall_normal_velocities);
+}
+
+namespace pressure_internal {
+absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure3D(
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const ExplicitMacPressureFace3D> faces,
+    std::span<const MacStrainRow3D> strain_rows
+) {
+  const auto system = PrepareExplicitMacPressureSystem3D(step_duration, cells, faces);
+  if (!system.ok()) {
+    return system.status();
+  }
+  return SolveCoupled(*system, step_duration, strain_rows, {});
+}
+}  // namespace pressure_internal
 
 }  // namespace fluidity
