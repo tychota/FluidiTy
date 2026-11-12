@@ -379,6 +379,60 @@ TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
   EXPECT_EQ(*uninterrupted_bytes, *replay_bytes);
 }
 
+TEST(LiquidSubstep3D, GuidedPistonMeasuresAddedMassAndLightBodyAmplification) {
+  namespace wet = wetted_piston_pressure_test;
+  constexpr double kHeight = 0.75;
+  constexpr double kWettedArea = kHeight;
+  constexpr double kPressureDistance = kHeight - 0.5;
+  constexpr double kExpectedAddedMass = kWettedArea * kWettedArea * kPressureDistance;
+  const auto body = [](double mass, double speed) {
+    return RigidBody3D{
+        .body_id = 17,
+        .mass = mass,
+        .principal_inertia = {1.0, 1.0, 1.0},
+        .linear_velocity = {speed, 0.0, 0.0},
+    };
+  };
+
+  std::array<double, 2> pressure_forces{};
+  const std::array probe_speeds{-wet::kPistonSpeed, wet::kPistonSpeed};
+  for (std::size_t probe = 0; probe < probe_speeds.size(); ++probe) {
+    const double speed = probe_speeds[probe];
+    auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, speed), Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+    const auto attempt = scheduler->AttemptWithPlanarPistonPressureLoad(wet::kDuration, body(1.0, speed));
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    ASSERT_TRUE(attempt->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+    pressure_forces[probe] = attempt->loaded_piston->force.x;
+  }
+
+  const double measured_added_mass =
+      -wet::kDuration * (pressure_forces[1] - pressure_forces[0]) / (probe_speeds[1] - probe_speeds[0]);
+  EXPECT_NEAR(measured_added_mass, kExpectedAddedMass, 1e-10);
+  std::cout << "CTEST_FULL_OUTPUT\n"
+            << "guided_piston_added_mass_kg=" << measured_added_mass << " analytic_added_mass_kg=" << kExpectedAddedMass
+            << '\n';
+
+  for (const double mass : {2.0 * kExpectedAddedMass, 0.25 * kExpectedAddedMass}) {
+    SCOPED_TRACE(mass);
+    auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+    const auto attempt = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, body(mass, wet::kPistonSpeed));
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    ASSERT_TRUE(attempt->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+    const double amplification = attempt->loaded_piston->linear_velocity.x / wet::kPistonSpeed;
+    EXPECT_NEAR(amplification, 1.0 - measured_added_mass / mass, 1e-10);
+    if (mass > measured_added_mass) {
+      EXPECT_LT(std::abs(amplification), 1.0);
+    } else {
+      EXPECT_GT(std::abs(amplification), 1.0);
+    }
+    std::cout << "guided_piston_body_mass_kg=" << mass << " signed_step_gain=" << amplification << '\n';
+  }
+}
+
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
   const LiquidState3D initial;
   auto scene = Scene();
