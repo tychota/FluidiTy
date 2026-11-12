@@ -1031,6 +1031,16 @@ int main(int argc, char** argv) {
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
   }
+  if (argc == 4 && std::string_view(argv[1]) == "--q-sand-reflected-timestep") {
+    const std::string_view grid_name = argv[2];
+    const std::string_view timestep_name = argv[3];
+    if ((grid_name != "coarse" && grid_name != "fine") || (timestep_name != "quarter" && timestep_name != "eighth")) {
+      return 2;
+    }
+    const double width = grid_name == "coarse" ? 0.075 : 0.0625;
+    const double duration = width / (timestep_name == "quarter" ? 160 : 320);
+    return TestScene(width, duration, false, 0, 1, 0.10, false, 3.0, 0, {}, 0.7, false, 1, 0, 700, true) ? 0 : 1;
+  }
   if (argc >= 4 && argc <= 6 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
     const std::string_view rate_name = argv[2];
     if (rate_name != "0" && rate_name != "2" && rate_name != "8" && rate_name != "32") {
