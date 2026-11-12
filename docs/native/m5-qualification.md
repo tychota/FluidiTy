@@ -4036,3 +4036,26 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Direct regression for bounded tangent extrapolation
+
+Local sand commit `3008848` adds four full-rank tangent donors on
+one side of a missing target. The linear donor velocity is
+`v_x = 2x` m/s with cell width 1 m. Ordinary affine extrapolation
+gives target velocity 0 m/s. The bounded nearest-donor row gives
+2 m/s. With a 3 N target force, each transpose preserves the total
+3 N and its grid power matches the corresponding target power,
+0 W or 6 W, to 1e-12 in fixture units. The fixture also checks the
+fallback flag and the nearest donor's force.
+
+Both native and SM120 dry-scene targets pass. The isolated
+reconstruction oracle executes on the host in both targets.
+It verifies the bounded operator and its transpose independently
+of the pile geometry. The remaining coarse failures keep
+Q-SAND open.
+
+```powershell
+$b = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
+cmake --build $b --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+ctest --test-dir $b -R '^M5DryScenes\.' --no-tests=error --output-on-failure
+```
