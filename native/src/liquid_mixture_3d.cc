@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <tuple>
+#include <utility>
 
 #include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/views.h"
@@ -28,6 +29,54 @@ double SumConstituentVolume(std::span<const LiquidConstituentVolume3D>& remainin
   return volume;
 }
 }  // namespace
+
+absl::Status ValidateLiquidPhasePairs3D(
+    std::span<const LiquidPhasePair3D> pairs,
+    std::span<const LiquidConstituentMaterial3D> materials
+) {
+  if (pairs.empty()) {
+    return absl::OkStatus();
+  }
+  auto phases = LiquidRecords3D<std::uint64_t>::Create(materials.size());
+  if (!phases.ok()) {
+    return phases.status();
+  }
+  const auto resized = phases->Resize(materials.size());
+  if (!resized.ok()) {
+    return resized;
+  }
+  std::ranges::transform(materials, phases->values().begin(), &LiquidConstituentMaterial3D::phase_id);
+  std::ranges::sort(phases->values());
+  const auto has_phase = [&](std::uint64_t phase) {
+    return std::ranges::binary_search(phases->values(), phase);
+  };
+  for (std::size_t index = 0; index < pairs.size(); ++index) {
+    const auto& pair = pairs[index];
+    if (pair.phase_a >= pair.phase_b || !std::isfinite(pair.surface_tension) || pair.surface_tension < 0.0
+        || !has_phase(pair.phase_a) || !has_phase(pair.phase_b)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    if (index > 0) {
+      const auto& previous = pairs[index - 1];
+      if (std::pair{previous.phase_a, previous.phase_b} >= std::pair{pair.phase_a, pair.phase_b}) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+const LiquidPhasePair3D*
+FindLiquidPhasePair3D(std::span<const LiquidPhasePair3D> pairs, std::uint64_t first_phase, std::uint64_t second_phase) {
+  if (first_phase == second_phase) {
+    return nullptr;
+  }
+  const std::pair key{std::min(first_phase, second_phase), std::max(first_phase, second_phase)};
+  const auto found = std::ranges::lower_bound(pairs, key, {}, [](const LiquidPhasePair3D& pair) {
+    return std::pair{pair.phase_a, pair.phase_b};
+  });
+  return found != pairs.end() && std::pair{found->phase_a, found->phase_b} == key ? &*found : nullptr;
+}
 
 bool ValidLiquidComposition3D(std::uint64_t phase_id, std::span<const LiquidConstituentFraction3D> fractions) {
   if (fractions.empty()) {

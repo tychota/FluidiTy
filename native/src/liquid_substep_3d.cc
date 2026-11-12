@@ -28,6 +28,7 @@ absl::StatusOr<std::size_t> ReservationBytes(
     LiquidStateCapacities3D capacities,
     std::size_t source_count,
     std::size_t constituent_material_count,
+    std::size_t phase_pair_count,
     std::size_t workspace_bytes,
     std::size_t staging_bytes,
     bool cavity_enabled
@@ -47,6 +48,7 @@ absl::StatusOr<std::size_t> ReservationBytes(
   STEP_TRY(add(capacities.sources, 3 * sizeof(LiquidSourceState3D)));
   STEP_TRY(add(source_count, sizeof(LiquidEmissionSource3D)));
   STEP_TRY(add(constituent_material_count, sizeof(LiquidConstituentMaterial3D)));
+  STEP_TRY(add(phase_pair_count, sizeof(LiquidPhasePair3D)));
   STEP_TRY(add(workspace_bytes, 1));
   STEP_TRY(add(staging_bytes, 1));
   if (cavity_enabled) {
@@ -578,6 +580,7 @@ struct LiquidSubstepScheduler3D::Impl {
   liquid_step_internal::Staging staging;
   LiquidRecords3D<LiquidEmissionSource3D> sources;
   LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
+  LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidSceneInputs3D scene;
   std::optional<CavityStepScratch> cavity;
   LiquidStepOptions3D options;
@@ -1426,6 +1429,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       capacities,
       scene.sources.size(),
       scene.constituent_materials.size(),
+      scene.phase_pairs.size(),
       bytes->total_bytes,
       staging->reserved_bytes,
       scene.cavity.has_value()
@@ -1527,6 +1531,12 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   }
   STEP_TRY(materials->Resize(scene.constituent_materials.size()));
   std::ranges::copy(scene.constituent_materials, materials->values().begin());
+  auto phase_pairs = LiquidRecords3D<LiquidPhasePair3D>::Create(scene.phase_pairs.size());
+  if (!phase_pairs.ok()) {
+    return phase_pairs.status();
+  }
+  STEP_TRY(phase_pairs->Resize(scene.phase_pairs.size()));
+  std::ranges::copy(scene.phase_pairs, phase_pairs->values().begin());
   std::unique_ptr<Impl> impl(new (std::nothrow)
                                  Impl(std::move(*transaction), std::move(*workspace), std::move(*staging)));
   if (!impl) {
@@ -1539,6 +1549,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   impl->scene.sources = impl->sources.values();
   impl->constituent_materials = std::move(*materials);
   impl->scene.constituent_materials = impl->constituent_materials.values();
+  impl->phase_pairs = std::move(*phase_pairs);
+  impl->scene.phase_pairs = impl->phase_pairs.values();
   impl->options = options;
   if (options.ocean_boundary) {
     auto ocean_boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
@@ -1731,6 +1743,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           growth,
           impl_->sources.size(),
           impl_->constituent_materials.size(),
+          impl_->phase_pairs.size(),
           workspace->usage().reserved_bytes,
           staging->reserved_bytes,
           impl_->cavity.has_value()

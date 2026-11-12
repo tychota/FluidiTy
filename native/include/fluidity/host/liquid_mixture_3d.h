@@ -9,6 +9,12 @@
 
 namespace fluidity {
 
+struct LiquidPhasePair3D {
+  std::uint64_t phase_a;
+  std::uint64_t phase_b;  // Strictly greater than phase_a.
+  double surface_tension;  // Nonnegative N/m at their shared interface.
+};
+
 struct LiquidConstituentMaterial3D {
   std::uint64_t substance_id;
   std::uint64_t phase_id;  // Shared by miscible substances.
@@ -53,6 +59,19 @@ absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
 );
 
 struct LiquidParticleState3D;
+
+// Checks canonical pair order, finite nonnegative tension and membership of
+// both endpoints in the supplied substance registry. Invalid records return
+// InvalidArgument. Temporary phase ordering may return ResourceExhausted.
+absl::Status ValidateLiquidPhasePairs3D(
+    std::span<const LiquidPhasePair3D> pairs,
+    std::span<const LiquidConstituentMaterial3D> materials
+);
+
+// Looks up a distinct phase pair in either orientation. Returns nullptr when
+// no pair is configured. The sorted table must outlive the returned borrow.
+const LiquidPhasePair3D*
+FindLiquidPhasePair3D(std::span<const LiquidPhasePair3D> pairs, std::uint64_t first_phase, std::uint64_t second_phase);
 
 // Validates positive finite densities and strictly ordered substance IDs.
 bool ValidLiquidConstituentMaterials3D(std::span<const LiquidConstituentMaterial3D> materials);

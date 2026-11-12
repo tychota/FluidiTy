@@ -101,6 +101,7 @@ struct LiquidSceneInputs3D {
   double target_divergence = 0;  // 1/s, pressure constraint source.
   double friction_coefficient = 0;
   double penetration_tolerance = 0;  // m.
+  std::span<const LiquidPhasePair3D> phase_pairs{};  // Copied at Create in (phase_a,phase_b) order.
   std::span<const LiquidConstituentMaterial3D> constituent_materials{};  // Copied at Create in substance ID order.
   std::span<const LiquidEmissionSource3D> sources;  // Copied at Create; exact committed identity order.
   std::optional<LiquidSceneCavity3D> cavity;  // Owns accepted gas state in the scheduler.

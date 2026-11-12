@@ -110,6 +110,7 @@ struct LiquidResolvedScene3D {
   LiquidDigest3D build_digest{};
   LiquidRecords3D<LiquidEmissionSource3D> sources;
   LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
+  LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidRecords3D<LiquidUpstreamContent3D> upstream;
   LiquidResolvedSceneView3D View() const;
 };

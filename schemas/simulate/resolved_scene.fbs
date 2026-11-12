@@ -104,6 +104,11 @@ table ConstituentMaterial {
   phase_id:ulong (id:1);
   density_kg_per_m3:double (id:2);
 }
+table LiquidPhasePair {
+  phase_a:ulong (id:0);
+  phase_b:ulong (id:1);
+  surface_tension:double (id:2);
+}
 table ResolvedScene {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -121,6 +126,7 @@ table ResolvedScene {
   sources:[EmissionSource] (required, id:13);
   upstream:[UpstreamContent] (required, id:14);
   constituent_materials:[ConstituentMaterial] (id:15);
+  liquid_phase_pairs:[LiquidPhasePair] (id:16);
 }
 root_type ResolvedScene;
 file_identifier "FLRS";

@@ -41,11 +41,13 @@ absl::Status CheckSceneRecordCounts(
     std::size_t source_count,
     std::size_t upstream_content_count,
     std::size_t material_count,
+    std::size_t pair_count,
     LiquidCacheLimits3D limits
 ) {
   if (source_count > limits.maximum_records.sources || upstream_content_count > limits.maximum_upstream_records
       || source_count > (1 << 20) || upstream_content_count > (1 << 20) || material_count > (1 << 20)
-      || material_count > limits.maximum_bytes / sizeof(LiquidConstituentMaterial3D)) {
+      || material_count > limits.maximum_bytes / sizeof(LiquidConstituentMaterial3D) || pair_count > (1 << 20)
+      || pair_count > limits.maximum_bytes / sizeof(LiquidPhasePair3D)) {
     return detail::Error(absl::StatusCode::kResourceExhausted);
   }
   return absl::OkStatus();
@@ -55,6 +57,7 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
       input.scene.sources.size(),
       input.upstream.size(),
       input.scene.constituent_materials.size(),
+      input.scene.phase_pairs.size(),
       limits
   ));
   if (input.model_version != 1) {
@@ -74,6 +77,7 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
       || !ValidLiquidConstituentMaterials3D(scene.constituent_materials)) {
     return Invalid();
   }
+  SCENE_TRY(ValidateLiquidPhasePairs3D(scene.phase_pairs, scene.constituent_materials));
   if (scene.eos) {
     if (!std::isinf(scene.bulk_modulus) || !std::isfinite(scene.eos->reference_sound_speed)) {
       return Invalid();
@@ -412,6 +416,7 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
   };
   result.scene.sources = sources.values();
   result.scene.constituent_materials = constituent_materials.values();
+  result.scene.phase_pairs = phase_pairs.values();
   return result;
 }
 absl::StatusOr<LiquidCacheBytes3D>
@@ -424,7 +429,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
       + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
-      tables + input.scene.constituent_materials.size(),
+      tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size(),
       limits,
       wire::ResolvedSceneIdentifier(),
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::ResolvedScene>> {
@@ -658,6 +663,23 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           }
           constituent_materials = *records;
         }
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wire::LiquidPhasePair>>> phase_pairs;
+        if (!scene.phase_pairs.empty()) {
+          const auto records =
+              detail::BuildVector<wire::LiquidPhasePair>(builder, scene.phase_pairs.size(), [&](std::size_t index) {
+                const auto& pair = scene.phase_pairs[index];
+                return wire::CreateLiquidPhasePair(
+                    builder,
+                    pair.phase_a,
+                    pair.phase_b,
+                    detail::Canonical(pair.surface_tension)
+                );
+              });
+          if (!records.ok()) {
+            return records.status();
+          }
+          phase_pairs = *records;
+        }
         const auto origin = detail::PackCanonical(input.geometry.world_origin);
         const auto acceleration = detail::PackCanonical(scene.world_acceleration);
         const auto build = detail::Pack(input.build_digest);
@@ -678,7 +700,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             obstacle,
             *sources,
             *upstream,
-            constituent_materials
+            constituent_materials,
+            phase_pairs
         );
       }
   );
@@ -692,7 +715,11 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
   const auto* root = *verified;
   const auto* materials = root->constituent_materials();
   const std::size_t material_count = materials ? materials->size() : 0;
-  SCENE_TRY(CheckSceneRecordCounts(root->sources()->size(), root->upstream()->size(), material_count, limits));
+  const auto* pairs = root->liquid_phase_pairs();
+  const std::size_t pair_count = pairs ? pairs->size() : 0;
+  SCENE_TRY(
+      CheckSceneRecordCounts(root->sources()->size(), root->upstream()->size(), material_count, pair_count, limits)
+  );
   auto result = DecodeResolvedSceneHeader(root);
   if (!result.ok()) {
     return result.status();
@@ -709,7 +736,12 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
       return LiquidConstituentMaterial3D{material->substance_id(), material->phase_id(), material->density_kg_per_m3()};
     }));
   }
-  // Validate the scalar settings and registry before materializing sources.
+  if (pairs) {
+    SCENE_TRY(detail::Materialize(result->phase_pairs, pairs, [](const auto* pair) {
+      return LiquidPhasePair3D{pair->phase_a(), pair->phase_b(), pair->surface_tension()};
+    }));
+  }
+  // Validate the scalar settings and registries before materializing sources.
   if (!ValidateResolvedScene(result->View(), limits).ok()) {
     return detail::Corrupt();
   }

@@ -333,6 +333,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
   if (!valid_material || !ValidLiquidConstituentMaterials3D(scene.constituent_materials)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
+  STEP_TRY(ValidateLiquidPhasePairs3D(scene.phase_pairs, scene.constituent_materials));
   if (std::ranges::any_of(initial.particles.values(), [&](const LiquidParticleState3D& particle) {
         return !LiquidParticleUsesRegisteredConstituents3D(particle, scene.constituent_materials);
       })) {

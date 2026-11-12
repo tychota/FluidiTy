@@ -495,3 +495,11 @@ The internal liquid crossing applies the two-density capillary limit sqrt((rho_t
 The shared CPU/CUDA fixture verified both density orientations, acceptance at the bound, rejection at the next representable duration, and the zero-tension path. The CPU range fixture checked density-sum overflow and a thin-cell limit with a representable square root. Forty-seven CPU checks passed with ctest --preset windows-debug-cpu -j 1 -R 'LiquidBoundaryGeometry3D|Cavity'. Twenty-two serial real-device regressions passed under windows-release-cuda. Compute Sanitizer reported zero errors on CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. clang-format 19.1.5 passed. Receipts use out/m4-internal-capillary.
 
 The scheduler still needs to generate internal crossings from phase fields and resolved pair settings. The current pressure builder enforces the bound once those crossings are supplied.
+
+## Resolved phase-pair surface tension receipt
+
+The resolved scene now carries one canonical tension record per configured pair of registered phases. Pair order is strict and both endpoint phases must exist. The scheduler owns its copy and lookup returns the same record in either orientation. The optional wire vector participates in scene fingerprints and preserves legacy encodings when absent.
+
+The fixture round-tripped the water–oil pair, checked 0.031 N/m and symmetric lookup, and rejected reversed authoring order, an unknown phase and negative tension. Forty-two CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidMixture3D|SharedLiquidInterface'. Twenty-two serial real-device CUDA regressions passed under windows-release-cuda. Both simulator targets built. The production schema exposes liquid_phase_pairs and clang-format 19.1.5 passed. Receipts use out/m4-phase-pairs.
+
+The pair table is ready for phase-field crossing assembly. The scheduler still needs to construct those crossings and use the pair settings in projection.

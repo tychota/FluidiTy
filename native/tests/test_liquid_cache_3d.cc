@@ -74,6 +74,42 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, ResolvedPhasePairIsCanonicalAndChangesFingerprint) {
+  constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  LiquidResolvedSceneView3D scene;
+  scene.scene.constituent_materials = kMaterials;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+
+  std::array<LiquidPhasePair3D, 1> pairs{{{4, 5, 0.031}}};
+  scene.scene.phase_pairs = pairs;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto view = decoded->View();
+  ASSERT_EQ(view.scene.phase_pairs.size(), 1);
+  const auto* forward = FindLiquidPhasePair3D(view.scene.phase_pairs, 4, 5);
+  ASSERT_NE(forward, nullptr);
+  EXPECT_EQ(FindLiquidPhasePair3D(view.scene.phase_pairs, 5, 4), forward);
+  EXPECT_EQ(FindLiquidPhasePair3D(view.scene.phase_pairs, 4, 4), nullptr);
+  EXPECT_DOUBLE_EQ(forward->surface_tension, 0.031);
+  const auto fingerprint = ResolvedSceneFingerprint(view);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+
+  pairs[0] = {5, 4, 0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  pairs[0] = {4, 6, 0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  pairs[0] = {4, 5, -0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ParticleCompositionSurvivesStateAndSourceEncoding) {
   auto state = PopulatedState();
   auto& particle = state.particles[0];
