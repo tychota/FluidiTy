@@ -387,6 +387,103 @@ TEST(LiquidCache3D, CheckpointSeparatesResumePlanAndRequiresCompletedFrame) {
   state.clock.substep_ordinal = 1;
   EXPECT_EQ(EncodeLiquidCheckpoint3D(state, Resume()).status().code(), absl::StatusCode::kInvalidArgument);
 }
+
+TEST(LiquidCache3D, AdaptiveCheckpointRestoresAcceptedTopologyAndDiscardsRejectedTrial) {
+  LiquidState3D initial;
+  initial.geometry.cell_width = 0.5;
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(2);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(14);
+  initial.adaptive_cells[0] = {
+      .key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1},
+      .inventory =
+          {.mass_kg = 2,
+           .reference_volume_m3 = 0.5,
+           .current_volume_m3 = 0.75,
+           .momentum_kg_m_per_s = {1, 2, 3},
+           .enthalpy_j = -4,
+           .phase_id = 9,
+           .constituent_count = 2,
+           .constituents = {{{11, 0.25}, {21, 0.5}}}},
+      .previous_pressure = 5,
+  };
+  initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
+  initial.adaptive_faces[0] = {
+      .carrier_velocity = -0.125,
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = 3,
+      .structurally_eligible = false,
+  };
+  auto resume = Resume();
+  resume.capacities = {0, 0, 2, 14, 0};
+  resume.capacity_replay_reservations = {};
+  auto transaction = LiquidFrameTransaction3D::Create(initial, resume.capacities);
+  ASSERT_TRUE(transaction.ok()) << transaction.status();
+  ASSERT_TRUE(transaction->BeginFrame(1).ok());
+  auto rejected = transaction->ResetTrialFromCommitted();
+  ASSERT_TRUE(rejected.ok());
+  (*rejected)->adaptive_cells[0].inventory.mass_kg = 17;
+  (*rejected)->adaptive_cells[1].key.lower_corner.x = 2;
+  (*rejected)->adaptive_faces[0].carrier_velocity = 4;
+  ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kRetryDt, 1).ok());
+  EXPECT_EQ(transaction->committed(), initial);
+
+  for (int step = 0; step < 2; ++step) {
+    auto trial = transaction->ResetTrialFromCommitted();
+    ASSERT_TRUE(trial.ok());
+    (*trial)->adaptive_cells[0].previous_pressure += 1;
+    (*trial)->adaptive_faces[0].carrier_velocity += 0.5;
+    ASSERT_TRUE(transaction->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 0.5).ok());
+  }
+  ASSERT_TRUE(transaction->FinishFrame().ok());
+  const auto bytes = EncodeLiquidCheckpoint3D(transaction->committed(), resume);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  EXPECT_EQ(wire::GetLiquidState(bytes->values().data())->schema_version(), 2U);
+  const auto restored = DecodeLiquidCheckpoint3D(bytes->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->state, transaction->committed());
+  EXPECT_EQ(restored->resume, resume);
+  const auto repeated = EncodeLiquidCheckpoint3D(restored->state, restored->resume);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*repeated), Copy(*bytes));
+
+  auto resumed = LiquidFrameTransaction3D::Create(restored->state, restored->resume.capacities);
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  for (auto* run : {&*transaction, &*resumed}) {
+    ASSERT_TRUE(run->BeginFrame(2).ok());
+    auto trial = run->ResetTrialFromCommitted();
+    ASSERT_TRUE(trial.ok());
+    (*trial)->adaptive_cells[0].inventory.enthalpy_j -= 0.25;
+    (*trial)->adaptive_cells[1].key.width_exponent = 1;
+    ASSERT_TRUE((*trial)->adaptive_faces.Resize(11).ok());
+    (*trial)->adaptive_faces[0].carrier_velocity -= 0.125;
+    ASSERT_TRUE(run->FinishAttempt(LiquidAttemptDisposition3D::kAccepted, 1).ok());
+    ASSERT_TRUE(run->FinishFrame().ok());
+  }
+  const auto uninterrupted = EncodeLiquidCheckpoint3D(transaction->committed(), resume);
+  const auto interrupted = EncodeLiquidCheckpoint3D(resumed->committed(), resume);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(interrupted.ok()) << interrupted.status();
+  EXPECT_EQ(Copy(*uninterrupted), Copy(*interrupted));
+  auto excess = resume;
+  excess.capacities.cells = kMaximumAdaptiveLiquidCells3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  excess = resume;
+  excess.capacity_replay_reservations = resume.capacities;
+  excess.capacity_replay_reservations.faces = kMaximumAdaptiveLiquidFaces3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  auto altered = Copy(*interrupted);
+  wire::GetMutableLiquidState(altered.data())
+      ->mutable_resume()
+      ->mutable_capacities()
+      ->mutate_cells(kMaximumAdaptiveLiquidCells3D + 1);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(altered).status().code(), absl::StatusCode::kDataLoss);
+
+  auto malformed = CloneLiquidState3D(restored->state, resume.capacities);
+  ASSERT_TRUE(malformed.ok());
+  ASSERT_TRUE(malformed->adaptive_faces.Resize(13).ok());
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(*malformed, resume).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, PointAndManifestRoundTripKeepPortableContentReference) {
   LiquidPointFrame3D frame;
   frame.clock = {1, 1, 0, 2, 2};
@@ -1155,6 +1252,31 @@ TEST(LiquidCache3D, InvalidSemanticInputAllocatesNoDecodedOwners) {
   ASSERT_TRUE(encoded.ok());
   auto bytes = Copy(*encoded);
   wire::GetMutableLiquidState(bytes.data())->mutable_particles()->GetMutableObject(0)->mutate_volume_ratio(0);
+  codec_allocations = 0;
+  codec_frees = 0;
+  const auto previous = _CrtSetAllocHook(CodecAllocationHook);
+  absl::StatusCode code;
+  {
+    auto decoded = DecodeLiquidState3D(bytes);
+    code = decoded.status().code();
+  }
+  _CrtSetAllocHook(previous);
+  EXPECT_EQ(code, absl::StatusCode::kDataLoss);
+  EXPECT_EQ(codec_allocations, 0);
+  EXPECT_EQ(codec_frees, 0);
+}
+TEST(LiquidCache3D, InvalidAdaptiveOwnershipAllocatesNoDecodedOwners) {
+  LiquidState3D state;
+  state.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+  state.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+  const auto encoded = EncodeLiquidState3D(state);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  auto bytes = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableLiquidState(bytes.data())
+                  ->mutable_adaptive()
+                  ->mutable_cells()
+                  ->GetMutableObject(0)
+                  ->mutate_width_exponent(31));
   codec_allocations = 0;
   codec_frees = 0;
   const auto previous = _CrtSetAllocHook(CodecAllocationHook);

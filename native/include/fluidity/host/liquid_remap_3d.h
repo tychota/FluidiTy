@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #include "absl/status/statusor.h"
-#include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/liquid_mixture_3d.h"
 
 namespace fluidity {
 

@@ -1,5 +1,6 @@
 #include <cstring>
 
+#include "../src/liquid_adaptive_state_internal_3d.h"
 #include "liquid_arena_3d_internal.h"
 namespace fluidity::cuda_internal {
 namespace {
@@ -84,6 +85,41 @@ void PackLiquidArenaState3D(
     faces[ordinal].side_tag = record.side_tag;
     faces[ordinal].structurally_eligible = record.structurally_eligible;
   }
+  if (layout.adaptive_state) {
+    auto* adaptive_cells = At<LiquidAdaptiveCellState3D>(destination, layout.cell_records_byte_offset);
+    for (std::size_t ordinal = 0; ordinal < source.adaptive_cells.size(); ++ordinal) {
+      const auto& record = source.adaptive_cells[ordinal];
+      auto& cell = adaptive_cells[ordinal];
+      cell.key.lower_corner.x = record.key.lower_corner.x;
+      cell.key.lower_corner.y = record.key.lower_corner.y;
+      cell.key.lower_corner.z = record.key.lower_corner.z;
+      cell.key.width_exponent = record.key.width_exponent;
+      cell.occupancy = record.occupancy;
+      cell.inventory.mass_kg = record.inventory.mass_kg;
+      cell.inventory.reference_volume_m3 = record.inventory.reference_volume_m3;
+      cell.inventory.current_volume_m3 = record.inventory.current_volume_m3;
+      cell.inventory.momentum_kg_m_per_s.x = record.inventory.momentum_kg_m_per_s.x;
+      cell.inventory.momentum_kg_m_per_s.y = record.inventory.momentum_kg_m_per_s.y;
+      cell.inventory.momentum_kg_m_per_s.z = record.inventory.momentum_kg_m_per_s.z;
+      cell.inventory.enthalpy_j = record.inventory.enthalpy_j;
+      cell.inventory.phase_id = record.inventory.phase_id;
+      cell.inventory.constituent_count = record.inventory.constituent_count;
+      for (std::size_t constituent = 0; constituent < record.inventory.constituent_count; ++constituent) {
+        cell.inventory.constituents[constituent].substance_id = record.inventory.constituents[constituent].substance_id;
+        cell.inventory.constituents[constituent].volume_m3 = record.inventory.constituents[constituent].volume_m3;
+      }
+      cell.previous_pressure = record.previous_pressure;
+    }
+    auto* adaptive_faces = At<LiquidAdaptiveFaceState3D>(destination, layout.face_records_byte_offset);
+    for (std::size_t ordinal = 0; ordinal < source.adaptive_faces.size(); ++ordinal) {
+      const auto& record = source.adaptive_faces[ordinal];
+      auto& face = adaptive_faces[ordinal];
+      face.carrier_velocity = record.carrier_velocity;
+      face.validity = record.validity;
+      face.side_tag = record.side_tag;
+      face.structurally_eligible = record.structurally_eligible;
+    }
+  }
   auto* sources = At<LiquidSourceState3D>(destination, layout.source_records_byte_offset);
   for (std::size_t ordinal = 0; ordinal < source.sources.size(); ++ordinal) {
     sources[ordinal].source_ordinal = source.sources[ordinal].source_ordinal;
@@ -100,10 +136,62 @@ void PackLiquidArenaState3D(
   control.clock.substep_ordinal = clock.substep_ordinal;
   control.clock.accepted_step_ordinal = clock.accepted_step_ordinal;
   control.clock.epoch = clock.epoch;
-  control.active =
-      {source.particles.size(), source.blocks.size(), source.cells.size(), source.faces.size(), source.sources.size()};
+  control.active = {
+      source.particles.size(),
+      source.blocks.size(),
+      layout.adaptive_state ? source.adaptive_cells.size() : source.cells.size(),
+      layout.adaptive_state ? source.adaptive_faces.size() : source.faces.size(),
+      source.sources.size(),
+  };
   control.random_seed = source.random_seed;
   control.next_particle_id = source.next_particle_id;
+}
+absl::Status ValidateLiquidArenaEncoding3D(const CudaLiquidStateLayout3D& layout, const std::byte* source) {
+  const auto& control = *At<LiquidArenaControl3D>(source, layout.control_record_byte_offset);
+  const auto* bins = At<CudaLiquidParticleBin3D>(source, layout.particle_bins_byte_offset);
+  const auto corrupt = absl::Status(absl::StatusCode::kDataLoss, {});
+  for (std::size_t ordinal = 0; ordinal < control.active.particles; ++ordinal) {
+    if (bins[ordinal / 32].affine_pic_flags[ordinal % 32] > 3U) {
+      return corrupt;
+    }
+  }
+  const auto stride = layout.adaptive_state ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D);
+  const auto flag_offset = layout.adaptive_state ? offsetof(LiquidAdaptiveFaceState3D, structurally_eligible)
+                                                 : offsetof(LiquidFaceState3D, structurally_eligible);
+  for (std::size_t ordinal = 0; ordinal < control.active.faces; ++ordinal) {
+    const auto* flag = source + layout.face_records_byte_offset + ordinal * stride + flag_offset;
+    const bool false_value = false;
+    const bool true_value = true;
+    if (std::memcmp(flag, &false_value, sizeof(bool)) != 0 && std::memcmp(flag, &true_value, sizeof(bool)) != 0) {
+      return corrupt;
+    }
+  }
+  if (!layout.adaptive_state) {
+    return absl::OkStatus();
+  }
+  struct Records {
+    const LiquidAdaptiveCellState3D* cells;
+    const LiquidAdaptiveFaceState3D* faces;
+  };
+  const Records records{
+      At<LiquidAdaptiveCellState3D>(source, layout.cell_records_byte_offset),
+      At<LiquidAdaptiveFaceState3D>(source, layout.face_records_byte_offset),
+  };
+  const auto checked = liquid_state_internal::ValidateAdaptiveRecordView3D({
+      .context = &records,
+      .finest_cell_width = control.geometry.cell_width,
+      .cell_count = control.active.cells,
+      .face_count = control.active.faces,
+      .read_cell =
+          [](const void* context, std::size_t ordinal) {
+            return static_cast<const Records*>(context)->cells[ordinal];
+          },
+      .read_face =
+          [](const void* context, std::size_t ordinal) {
+            return static_cast<const Records*>(context)->faces[ordinal];
+          },
+  });
+  return checked.ok() ? absl::OkStatus() : corrupt;
 }
 void UnpackLiquidArenaState3D(
     const CudaLiquidStateLayout3D& layout,
@@ -113,8 +201,10 @@ void UnpackLiquidArenaState3D(
   const auto& control = *At<LiquidArenaControl3D>(source, layout.control_record_byte_offset);
   (void)destination.particles.Resize(control.active.particles);
   (void)destination.blocks.Resize(control.active.blocks);
-  (void)destination.cells.Resize(control.active.cells);
-  (void)destination.faces.Resize(control.active.faces);
+  (void)destination.cells.Resize(layout.adaptive_state ? 0 : control.active.cells);
+  (void)destination.faces.Resize(layout.adaptive_state ? 0 : control.active.faces);
+  (void)destination.adaptive_cells.Resize(layout.adaptive_state ? control.active.cells : 0);
+  (void)destination.adaptive_faces.Resize(layout.adaptive_state ? control.active.faces : 0);
   (void)destination.sources.Resize(control.active.sources);
   const auto* bins = At<CudaLiquidParticleBin3D>(source, layout.particle_bins_byte_offset);
   for (std::size_t ordinal = 0; ordinal < destination.particles.size(); ++ordinal) {
@@ -154,16 +244,29 @@ void UnpackLiquidArenaState3D(
       control.active.blocks,
       destination.blocks.values().begin()
   );
-  std::copy_n(
-      At<LiquidCellState3D>(source, layout.cell_records_byte_offset),
-      control.active.cells,
-      destination.cells.values().begin()
-  );
-  std::copy_n(
-      At<LiquidFaceState3D>(source, layout.face_records_byte_offset),
-      control.active.faces,
-      destination.faces.values().begin()
-  );
+  if (layout.adaptive_state) {
+    std::copy_n(
+        At<LiquidAdaptiveCellState3D>(source, layout.cell_records_byte_offset),
+        control.active.cells,
+        destination.adaptive_cells.values().begin()
+    );
+    std::copy_n(
+        At<LiquidAdaptiveFaceState3D>(source, layout.face_records_byte_offset),
+        control.active.faces,
+        destination.adaptive_faces.values().begin()
+    );
+  } else {
+    std::copy_n(
+        At<LiquidCellState3D>(source, layout.cell_records_byte_offset),
+        control.active.cells,
+        destination.cells.values().begin()
+    );
+    std::copy_n(
+        At<LiquidFaceState3D>(source, layout.face_records_byte_offset),
+        control.active.faces,
+        destination.faces.values().begin()
+    );
+  }
   std::copy_n(
       At<LiquidSourceState3D>(source, layout.source_records_byte_offset),
       control.active.sources,

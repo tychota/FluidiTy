@@ -10,6 +10,10 @@
 #include "absl/status/statusor.h"
 #include "fluidity/host/mac_pressure_3d.h"
 
+namespace fluidity {
+class AdaptiveMacTopology3D;
+}
+
 namespace fluidity::pressure_internal {
 
 struct PreparedMacPressureCell3D {
@@ -35,7 +39,7 @@ struct FrozenMacPressureLink3D {
   std::variant<InternalMacPressureLink3D, DirichletMacPressureLink3D, SealedMacPressureLink3D> pressure_link;
 };
 
-// Explicitly owned open subface between two pressure cells. Cell ordinals
+// Explicitly owned subface between two pressure cells. Cell ordinals
 // index the supplied cell span. Normal velocity points from tail to head.
 struct ExplicitMacPressureFace3D {
   std::size_t face_slot;
@@ -45,6 +49,8 @@ struct ExplicitMacPressureFace3D {
   double inverse_density;  // m³/kg.
   double pressure_gradient_distance;  // m.
   double predicted_normal_velocity;  // m/s.
+  std::optional<double> full_face_area = std::nullopt;  // m². Omission denotes a fully open face.
+  double prescribed_wall_flux = 0;  // m³/s along the positive normal.
 };
 
 // An exterior subface names the one incident cell. Missing exterior pressure
@@ -123,6 +129,29 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
     std::span<const MacPressureCell3D> pressure_cells,
     std::span<const ExplicitMacPressureFace3D> pressure_faces,
     std::span<const ExplicitMacPressureBoundaryFace3D> boundary_faces = {}
+);
+
+// Step-start pressure input indexed by canonical global subface slot.
+struct AdaptiveMacPressureSubface3D {
+  double open_area_m2 = 0;
+  double inverse_density_m3_per_kg = 0;
+  double predicted_normal_velocity_m_per_s = 0;
+  double prescribed_wall_flux_m3_per_s = 0;  // Positive Cartesian normal.
+  double exterior_pressure_distance_m = 0;  // Positive on open exterior faces only.
+  std::optional<double> exterior_pressure_pa = std::nullopt;
+};
+
+// Derive incidence, full area and interior center distance from the frozen
+// topology. Cells match the canonical leaves and supply liquid volumes in m³,
+// source divergence in 1/s and warm-start pressure in Pa. Subfaces cover every
+// global slot, including sealed faces. Invalid extents, mismatched cells and
+// malformed coefficients return InvalidArgument. Explicit graph errors
+// propagate. The returned graph owns its coefficients and never borrows inputs.
+absl::StatusOr<PreparedMacPressureSystem3D> PrepareAdaptiveMacPressureSystem3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces
 );
 
 // Evaluate all original rows for the supplied finite pressures in Pa, in
