@@ -2821,6 +2821,7 @@ precision. The fine nominal case reaches 29.704868° and a radius of
 0.000122 J, cut stress work mismatch is 6.74e-16 J, and vertical
 momentum residual is 1.05e-8 N·s. The motion rejection is resolved
 for this case while its geometry still misses both checks.
+Native and SM120 fine nominal output logs match byte for byte.
 
 ```powershell
 $bin = 'out/pr-m5-sand-affine/out/sand-stress-donor-retry-bin'
