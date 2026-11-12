@@ -1889,3 +1889,44 @@ liquid checkpoint, and successful half-step retry. The CUDA case
 checks the SM120 device receipt and the accepted device clock. The
 snow solid step uses host transfer in both cases. All nine milestone
 M5 and CLI checks passed after integrating the merge.
+
+
+### Moving platen in the joint scheduler
+
+[PR 104](https://github.com/tychota/FluidiTy/pull/104) landed at
+`0a1b63d` after 197 native and 34 SM120 checks passed. Hosted CI was
+queued at merge. The oblique analytic halfspace and sampled snow share
+one face, with 0.375 m² open area and 1.25 m³/s total prescribed wall
+flux. The device oracle checks both to 2e-14 in their respective units.
+The host reaction fixture recovers 0.03 N·s and 0.09 J for snow from the
+sampled share of the blocked face.
+
+On both liquid backends the same vertical overhead platen pose is used
+at the start of each accepted substep. The two-step fixture compares
+unloaded snow against an independent dry advance to 2e-14 m in position
+and 2e-14 m/s in velocity. It checks nonpenetration against each end
+pose and checks the accepted liquid clock. The snow transfer runs on
+the host. The production joint scheduler supports one vertical
+overhead platen on the uniform liquid grid.
+
+```powershell
+cmake --build out/pr-m5-snow-platen/out/build/snow-platen-cpu --target fluidity_native_tests
+ctest --test-dir out/pr-m5-snow-platen/out/build/snow-platen-cpu -R '^(LiquidBoundary(Geometry|Workspace)3D\.|LiquidSubstep3D\.)' --no-tests=error --output-on-failure
+cmake --build out/pr-m5-snow-platen/out/build/snow-platen-sm120 --target fluidity_cuda_operator_tests fluidity_cuda_m5_constitutive_tests
+ctest --test-dir out/pr-m5-snow-platen/out/build/snow-platen-sm120 -R '^(CudaLiquidSubstep3D\.|CudaLiquidBoundary3D\.|M5Constitutive\.cuda$)' --no-tests=error --output-on-failure
+```
+
+The authored gate remains open. The model-2 CLI must decode the mixed
+initial state, advance both materials with the authored source and
+moving obstacle, and publish separate channels and a joint checkpoint.
+The Blender bake must read those channels and reproduce the
+uninterrupted mixed state after an authenticated checkpoint reopen.
+
+The clean integrated milestone build passed all six native M5 targets
+and all fourteen CLI tests. The build includes the
+`fluidity_simulate_fixture` target required by the CLI tests.
+
+```powershell
+cmake --build out/build/m5-platen-integrated-clean --target fluidity_m5_dry_scene_tests fluidity_m5_planar_coupling_tests fluidity_m5_plastic_checkpoint_tests fluidity_m5_snow_compaction_tests fluidity_m5_contact_scatter_tests fluidity_m5_constitutive_tests fluidity_simulate fluidity_simulate_fixture
+ctest --test-dir out/build/m5-platen-integrated-clean -R '^M5.*\.native$|^SimulateCli' --no-tests=error --output-on-failure
+```
