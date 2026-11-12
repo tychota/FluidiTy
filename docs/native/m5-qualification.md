@@ -1752,13 +1752,14 @@ foreach ($case in 'fine', 'coarse', 'coarse-half', 'fine-half') {
   .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle $case
 }
 ```
-The nominal CUDA cases reproduced the native measurements. Each process
-returned a failed qualification because the final angle was below 30°.
+The completed CUDA cases reproduced the native measurements. Both
+nominal cases missed the angle band. The coarse half-step case passed.
 
 | Case | Final angle | Late drift | Vertical momentum residual (N·s) |
 |---|---:|---:|---:|
 | Fine | 27.424648° | 0.223715° | -0.000100054 |
 | Coarse | 29.962967° | 0.114904° | -0.000015571 |
+| Coarse half-step | 32.042153° | 0.400340° | -0.000118859 |
 
 The milestone branch includes upstream `db4636d`, which adds the M6
 rigid-frame path and liquid gather and tank-contact momentum accounting.
@@ -1775,3 +1776,5 @@ The remaining production evidence is an authored Blender snow–water bake
 with general moving-interface reconstruction, reciprocal pressure and
 contact through the liquid scheduler, internal snow stress evolution, and
 joint restart through that same execution path.
+
+The resolved mixed input and joint checkpoint changes are in [draft PR 94](https://github.com/tychota/FluidiTy/pull/94).
