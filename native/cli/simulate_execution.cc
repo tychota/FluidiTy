@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <locale>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -13,6 +15,7 @@
 #include "fluidity/host/effects_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/motion_capture_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "fluidity/host/whitewater_sphere_source_3d.h"
 #include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
@@ -198,6 +201,18 @@ absl::StatusOr<LiquidState3D> ReadInitialState(const Command& command, LiquidRes
 }
 // Reject unusable diagnostics before serializing a settled physical witness.
 // The finite and sign checks do not feed back into the numerical attempt.
+// Report only settled lineage losses; rejected physical trials never reach the observer.
+absl::StatusOr<std::string> CavityInventoryLossMembers(const LiquidCavityLineageResult3D& lineage) {
+  for (const double inventory :
+       {lineage.vented_inventory, lineage.subresolution_inventory, lineage.unmatched_inventory}) {
+    if (!std::isfinite(inventory) || inventory < 0.0) {
+      return absl::DataLossError("");
+    }
+  }
+  return "\"vented_inventory\":" + Number(lineage.vented_inventory) + ",\"subresolution_inventory\":"
+      + Number(lineage.subresolution_inventory) + ",\"unmatched_inventory\":" + Number(lineage.unmatched_inventory);
+}
+
 absl::StatusOr<std::string>
 AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepMeasurement3D& measurement) {
   const double dt = measurement.accepted_dt_seconds;
@@ -219,11 +234,30 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       || (state.cells.values().empty() && state.adaptive_cells.values().empty()) != (pressure_volume == 0)) {
     return absl::DataLossError("");
   }
+  const auto viscous_residual = measurement.viscous_max_momentum_residual_kg_m_per_s;
+  if (viscous_residual && !nonnegative(*viscous_residual)) {
+    return absl::DataLossError("");
+  }
+  const std::string viscous_member =
+      viscous_residual ? ",\"viscous_max_momentum_residual_kg_m_per_s\":" + Number(*viscous_residual) : "";
   const auto& piston = measurement.piston_pose;
   const double inward_flux = measurement.step_start_inward_piston_flux_m3_per_s;
   if (!std::isfinite(inward_flux) || (!piston && inward_flux != 0)
       || (piston && (!std::isfinite(piston->step_start_low_x_m) || !std::isfinite(piston->step_end_low_x_m)))) {
     return absl::DataLossError("");
+  }
+  const auto cavity_bound = measurement.step_start_cavity_bound_seconds;
+  if (cavity_bound && (!std::isfinite(*cavity_bound) || *cavity_bound < dt)) {
+    return absl::DataLossError("");
+  }
+  std::string cavity_member;
+  if (const auto& cavity = measurement.cavity) {
+    const auto losses = CavityInventoryLossMembers(cavity->lineage);
+    if (!losses.ok()) {
+      return losses.status();
+    }
+    cavity_member = ",\"cavity\":{\"active_count\":" + std::to_string(cavity->boundaries.active_cavity_count)
+        + ",\"step_start_bound_seconds\":" + OptionalNumber(cavity_bound) + ",\"inventory_loss\":{" + *losses + "}}";
   }
   const std::string piston_start = piston ? Number(piston->step_start_low_x_m) : "null";
   const std::string piston_end = piston ? Number(piston->step_end_low_x_m) : "null";
@@ -234,8 +268,8 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       + ",\"pressure_max_volume_scaled_residual_per_s\":" + Number(pressure.max_volume_scaled_residual)
       + ",\"pressure_max_constraint_defect_per_s\":" + Number(pressure.max_cell_constraint_defect)
       + ",\"step_start_pressure_cell_volume_m3\":" + Number(pressure_volume)
-      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux)
-      + ",\"step_start_piston_low_x_m\":" + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + '}';
+      + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux) + ",\"step_start_piston_low_x_m\":"
+      + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + viscous_member + cavity_member + '}';
 }
 std::string GeometryMembers(const LiquidState3D& state) {
   std::string members = "\"geometry\":{\"particles\":[";
@@ -403,6 +437,34 @@ struct JobMeasurement {
   }
 #endif
 };
+#if defined(FLUIDITY_SIMULATE_CUDA)
+// Cavity lineage and particle composition are host-owned. Check every field
+// in the device ABI against the accepted state before attaching those fields.
+bool MatchesCudaSnapshot(const LiquidState3D& device, const LiquidState3D& accepted) {
+  const auto& device_origin = device.geometry.world_origin;
+  const auto& accepted_origin = accepted.geometry.world_origin;
+  if (device_origin.x != accepted_origin.x || device_origin.y != accepted_origin.y
+      || device_origin.z != accepted_origin.z || device.geometry.cell_width != accepted.geometry.cell_width
+      || device.clock != accepted.clock || device.random_seed != accepted.random_seed
+      || device.next_particle_id != accepted.next_particle_id || device.blocks != accepted.blocks
+      || device.cells != accepted.cells || device.faces != accepted.faces || device.sources != accepted.sources
+      || device.adaptive_cells != accepted.adaptive_cells || device.adaptive_faces != accepted.adaptive_faces
+      || device.next_cavity_id != 0 || !device.cavity_gas.values().empty()
+      || !device.cavity_components.values().empty()) {
+    return false;
+  }
+  return std::ranges::equal(
+      device.particles.values(),
+      accepted.particles.values(),
+      [](const auto& downloaded, auto host) {
+        host.phase_id = 0;
+        host.constituent_count = 0;
+        return downloaded == host;
+      }
+  );
+}
+#endif
+
 struct Observations {
   const Command& command;
   const SimulateJob& job;
@@ -410,6 +472,7 @@ struct Observations {
   const LiquidStepOptions3D& step_options;
   JobMeasurement* measurement;
   std::vector<std::string> trace;
+  std::vector<std::string> cavity_losses;
   std::optional<std::string> selected;
   std::vector<LiquidAttemptMeasurement3D> attempts;
   MotionCapture3D* motion_capture = nullptr;
@@ -448,8 +511,21 @@ struct Observations {
     }
     if (rollback) {
       self.trace.clear();
+      self.cavity_losses.clear();
       self.selected.reset();
       return absl::OkStatus();
+    }
+    if (self.command.kind == CommandKind::kRun && diagnostics.accepted_measurement
+        && diagnostics.accepted_measurement->cavity) {
+      const auto& lineage = diagnostics.accepted_measurement->cavity->lineage;
+      if (lineage.subresolution_inventory > 0.0 || lineage.vented_inventory > 0.0
+          || lineage.unmatched_inventory > 0.0) {
+        const auto losses = CavityInventoryLossMembers(lineage);
+        if (!losses.ok()) {
+          return losses.status();
+        }
+        self.cavity_losses.push_back(ClockMembers(state.clock) + ",\"inventory_loss\":{" + *losses + '}');
+      }
     }
     if (!self.command.trace && self.command.kind == CommandKind::kRun) {
       return absl::OkStatus();
@@ -873,11 +949,15 @@ absl::StatusOr<std::string> ExecuteCommand(
       }
       writer_lease = std::move(*finished);
       previous_queue.reset();
-      state = writer_lease.state();
+      const auto& downloaded = *writer_lease.state();
       copy_milliseconds = writer_lease.copy_milliseconds();
-      if (*state != scheduler->committed()) {
+      if (downloaded == *state) {
+        state = &downloaded;
+      } else if (!MatchesCudaSnapshot(downloaded, *state)) {
         return absl::DataLossError("");
       }
+      // For host-owned metadata, state remains the same accepted epoch whose
+      // entire device payload was just compared against the snapshot lease.
     }
 #endif
     if (!cache) {
@@ -979,6 +1059,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       .step_options = options,
       .measurement = measurement,
       .trace = {},
+      .cavity_losses = {},
       .selected = {},
       .attempts = {},
   };
@@ -1001,6 +1082,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       return time.status();
     }
     observations.trace.clear();
+    observations.cavity_losses.clear();
     observations.selected.reset();
     observations.attempts.clear();
     if (options.motion_sample_intervals != 0) {
@@ -1039,6 +1121,9 @@ absl::StatusOr<std::string> ExecuteCommand(
     job.SetSettledClock(scene.backend, scheduler->committed().clock);
     const bool publish = !read_only && (frame >= command.frame_start || frame % 10 == 0);
     EXEC_TRY(finish_frame_snapshot(publish));
+    for (const auto& loss : observations.cavity_losses) {
+      EXEC_TRY(writer.Emit("cavity_inventory_loss", loss));
+    }
   }
   auto result = StateMembers(scheduler->committed(), scheduler->diagnostics());
   if (!result.ok()) {
@@ -1078,6 +1163,172 @@ absl::StatusOr<std::string> ExecuteCommand(
   return members;
 }
 }  // namespace
+
+absl::Status ExecuteRigidBoxFrame(
+    const Command& liquid,
+    const std::filesystem::path& rigid_packet,
+    const std::filesystem::path& previous,
+    const std::filesystem::path& output,
+    ProtocolWriter& writer,
+    bool inspect
+) {
+  namespace files = liquid_cache_files_internal;
+  constexpr LiquidCacheLimits3D kPacketLimits{.maximum_bytes = 4096};
+  constexpr LiquidCacheLimits3D kCheckpointLimits{.maximum_bytes = 32 * 1024 * 1024};
+  const auto scene_bytes = files::ReadBytes(liquid.scene_path, {});
+  if (!scene_bytes.ok()) {
+    return scene_bytes.status();
+  }
+  const auto scene = DecodeLiquidResolvedScene3D(scene_bytes->values());
+  if (!scene.ok()) {
+    return scene.status();
+  }
+  const auto build = ExecutableDigest();
+  if (!build.ok()) {
+    return build.status();
+  }
+  if (scene->build_digest != *build || scene->backend != LiquidBackend3D::kCpu) {
+    return absl::FailedPreconditionError("rigid frame requires a CPU scene resolved for this executable");
+  }
+  const auto packet = files::ReadBytes(rigid_packet, kPacketLimits);
+  if (!packet.ok()) {
+    return packet.status();
+  }
+  const auto bytes = packet->values();
+  std::istringstream input(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  input.imbue(std::locale::classic());
+  std::string version;
+  RigidBody3D body{.body_id = 1};
+  Vec3 extent{};
+  unsigned substeps = 0;
+  const auto read_vector = [&](Vec3& value) {
+    return static_cast<bool>(input >> value.x >> value.y >> value.z);
+  };
+  if (!(input >> version >> substeps >> body.mass) || version != "FLUIDITY-RIGID-1" || substeps == 0 || substeps > 256
+      || !read_vector(body.principal_inertia) || !read_vector(extent) || !read_vector(body.center)
+      || !(input >> body.orientation.w) || !read_vector(body.orientation.vector) || !read_vector(body.linear_velocity)
+      || !read_vector(body.angular_velocity) || (input >> version)) {
+    return absl::InvalidArgumentError("invalid rigid box packet");
+  }
+  EXEC_TRY(ValidateRigidBody3D(body));
+
+  std::vector<std::uint8_t> prefix;
+  for (const auto& digest : {LiquidContentDigest3D(scene_bytes->values()), LiquidContentDigest3D(bytes), *build}) {
+    prefix.insert(prefix.end(), digest.begin(), digest.end());
+  }
+  auto initial = ReadInitialState(liquid, scene->View());
+  if (!initial.ok()) {
+    return initial.status();
+  }
+  if (!previous.empty()) {
+    const auto saved = files::ReadBytes(previous, kCheckpointLimits);
+    if (!saved.ok()) {
+      return saved.status();
+    }
+    if (saved->values().size() <= prefix.size() || !std::ranges::equal(saved->values().first(prefix.size()), prefix)) {
+      return absl::FailedPreconditionError("rigid checkpoint belongs to another scene, packet or executable");
+    }
+    const auto envelope = saved->values().subspan(prefix.size());
+    constexpr auto kDigestSize = std::tuple_size_v<LiquidDigest3D>;
+    if (envelope.size() <= kDigestSize) {
+      return absl::DataLossError("rigid checkpoint payload digest or payload is missing");
+    }
+    const auto payload = envelope.subspan(kDigestSize);
+    if (!std::ranges::equal(envelope.first(kDigestSize), LiquidContentDigest3D(payload))) {
+      return absl::DataLossError("rigid checkpoint payload digest does not match");
+    }
+    auto restored = DecodeCoupledInteractionCheckpoint3D(payload);
+    if (!restored.ok()) {
+      return restored.status();
+    }
+    if (restored->solid.bodies.size() != 1 || !restored->solid.sides.empty()
+        || !restored->solid.elastic_particles.empty() || !restored->solid.plastic_particles.empty()
+        || restored->liquid.clock.substep_ordinal != 0) {
+      return absl::FailedPreconditionError("rigid checkpoint does not contain one completed box frame");
+    }
+    const auto& saved_body = restored->solid.bodies.front().body;
+    if (saved_body.body_id != body.body_id || saved_body.mass != body.mass
+        || saved_body.principal_inertia.x != body.principal_inertia.x
+        || saved_body.principal_inertia.y != body.principal_inertia.y
+        || saved_body.principal_inertia.z != body.principal_inertia.z) {
+      return absl::FailedPreconditionError("rigid checkpoint body properties disagree with the packet");
+    }
+    body = saved_body;
+    *initial = std::move(restored->liquid);
+  }
+
+  const auto emit_pose = [&](std::string_view event, const LiquidClock3D& clock) {
+    const auto vector = [](Vec3 value) {
+      return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
+    };
+    const auto q = body.orientation;
+    return writer.Emit(
+        event,
+        ClockMembers(clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
+            + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
+    );
+  };
+  if (inspect) {
+    return emit_pose("rigid_inspect", initial->clock);
+  }
+
+  auto options = scene->options;
+  options.capacities = kCapacities;
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, scene->View().scene, options);
+  if (!scheduler.ok()) {
+    return scheduler.status();
+  }
+  const auto frame = initial->clock.frame_ordinal;
+  const auto frame_start = CompletedFrameTime(frame);
+  const auto frame_end = CompletedFrameTime(frame + 1);
+  if (!frame_start.ok() || !frame_end.ok() || initial->clock.time != *frame_start) {
+    return absl::FailedPreconditionError("rigid checkpoint is off the completed-frame schedule");
+  }
+  EXEC_TRY(scheduler->BeginFrame(*frame_end));
+  RigidBodyPose3D previous_pose{};
+  const double nominal_duration = std::min(options.maximum_step_duration, 1.0 / (kFramesPerSecond * substeps));
+  while (scheduler->committed().clock.time < *frame_end) {
+    double duration = std::min(nominal_duration, *frame_end - scheduler->committed().clock.time);
+    for (;;) {
+      const auto gravity = scene->scene.world_acceleration;
+      body.force = {body.mass * gravity.x, body.mass * gravity.y, body.mass * gravity.z};
+      const auto step = scheduler->AttemptWithCoupledOrientedFloatingBox(duration, body, extent);
+      if (!step.ok()) {
+        return step.status();
+      }
+      if (step->body) {
+        previous_pose = {body.center, body.orientation};
+        body = *step->body;
+        break;
+      }
+      if (!step->outcome.retry_duration) {
+        return absl::Status(
+            scheduler->diagnostics().failure_code,
+            "rigid frame attempt failed at stage "
+                + std::to_string(static_cast<int>(scheduler->diagnostics().failed_stage))
+        );
+      }
+      duration = *step->outcome.retry_duration;
+    }
+  }
+  EXEC_TRY(scheduler->FinishFrame());
+  const auto& state = scheduler->committed();
+  if (!output.empty()) {
+    const SolidInteractionCheckpoint3D solids{
+        .accepted_step = state.clock.accepted_step_ordinal,
+        .bodies = {{body, previous_pose}},
+    };
+    const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(state, solids);
+    if (!checkpoint.ok()) {
+      return checkpoint.status();
+    }
+    const auto checkpoint_digest = LiquidContentDigest3D(*checkpoint);
+    prefix.insert(prefix.end(), checkpoint_digest.begin(), checkpoint_digest.end());
+    prefix.insert(prefix.end(), checkpoint->begin(), checkpoint->end());
+    EXEC_TRY(files::PublishBytes(output, prefix, kCheckpointLimits, {}));
+  }
+  return emit_pose("rigid_frame", state.clock);
+}
 
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
   std::optional<JobMeasurement> measurement;

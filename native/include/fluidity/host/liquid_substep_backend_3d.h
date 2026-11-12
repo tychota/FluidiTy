@@ -2,6 +2,7 @@
 
 #include "fluidity/base/liquid_regular_cell_transport_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
+#include "fluidity/host/viscosity.h"
 #include "fluidity/host/wetted_piston_3d.h"
 
 namespace fluidity {
@@ -175,6 +176,17 @@ struct LiquidSubstepBackend3D {
       MacPressureSolverOptions3D options,
       MacPressureWorkspace3D& workspace
   );
+  // Optional coupled projection for supported strain geometry. On failure,
+  // the scheduler rejects the attempt without publishing state.
+  using ProjectViscous = absl::StatusOr<MacViscousPressureProjectionView3D>(
+      void* context,
+      const LiquidBoundaryGeometryViewInputs3D& geometry,
+      const LiquidPressureProblemView3D& problem,
+      double dynamic_viscosity,
+      std::span<const double> cell_dynamic_viscosity,
+      MacPressureSolverOptions3D options,
+      MacPressureWorkspace3D& workspace
+  );
   using Gather = absl::StatusOr<LiquidBoundaryGatherView3D>(
       void* context,
       const LiquidBoundaryGatherViewInputs3D& inputs,
@@ -208,6 +220,7 @@ struct LiquidSubstepBackend3D {
   WettedPiston* wetted_piston = nullptr;  // Required for a translating low-x piston.
   BuildLinks* links = nullptr;
   Project* project = nullptr;
+  ProjectViscous* project_viscous = nullptr;
   Gather* gather = nullptr;
   UpdateParticles* update_particles = nullptr;
   SampleFieldBatch* sample_field_batch = nullptr;
@@ -233,5 +246,45 @@ struct LiquidSubstepBackend3D {
   bool host_adaptive_pressure = false;
 };
 // CPU operations share the bounded operators and the swept-contact particle update.
+// Updates trial particles with the CPU tank sweep and returns the axial
+// impulse on the low-x piston in N s, in particle order. Fixed-wall and
+// advection corrections contribute no piston impulse. Trial storage can be
+// partially updated on error and must be discarded by the caller.
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> trial_particles
+);
+
+// Updates trial particles against a translating finite box and a static,
+// frictionless tank. Returns the vertical impulse on the box in N s.
+// Requests a retry when a second contact in the step cannot be excluded.
+// The caller discards trial particles on failure.
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+);
+// Same checked update, returning all three world components of box impulse.
+absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+);
+
+struct LiquidBoxImpulse3D {
+  Vec3 linear{};  // World N s.
+  Vec3 angular{};  // World N m s about the body center at each impact.
+  Vec3 liquid_gather_impulse{};  // World N s, stored momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+};
+
+// Updates trial particles against the prescribed rotating drift in a
+// stationary tank. The caller discards the trial on failure.
+absl::StatusOr<LiquidBoxImpulse3D> UpdateCpuLiquidParticlesWithRotatingBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 half_extent,
+    std::span<LiquidParticleState3D> trial_particles
+);
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

@@ -7,8 +7,12 @@
 #include <span>
 #include <variant>
 
+#include "absl/functional/function_ref.h"
+#include "fluidity/host/liquid_cavity.h"
+#include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 #include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
@@ -44,18 +48,66 @@ struct LiquidEmissionSource3D {
   Vec3 world_position_jitter{};  // Nonnegative half extents, meters; independent Philox components.
   LiquidParticleState3D emitted_particle_template;  // Resolved payload; ID/position/PIC flag are assigned on emission.
 };
+struct LiquidSceneEos3D {
+  double reference_sound_speed;  // Positive finite m/s at the scene's reference density.
+  LiquidEosLaw law = LiquidEosLaw::kHencky;
+};
+struct LiquidSceneDrift3D {
+  double correction_time;  // Positive finite seconds.
+  double maximum_rate;  // Finite nonnegative s⁻¹.
+};
+struct LiquidStepCavityBoundaries3D {
+  std::span<const LiquidAirCellPressure3D> air_pressures;  // Sorted air centers and gas-only gauge Pa.
+  double maximum_step_duration = std::numeric_limits<double>::infinity();  // Radial limit in seconds.
+};
+
+struct LiquidStepCavityProvider3D {
+  void* context = nullptr;
+  // Evaluates the step-start samples on each attempt, including retries.
+  // The returned pressure span must remain valid for that attempt. Evaluation
+  // can use caller scratch and must not publish accepted lineage state.
+  absl::StatusOr<LiquidStepCavityBoundaries3D> (*prepare)(
+      void* context,
+      double step_start_time,
+      const LiquidBoundaryGeometryViewInputs3D& samples
+  ) = nullptr;
+};
+
+struct LiquidSceneCavity3D {
+  double atmospheric_absolute_pressure;  // Positive absolute Pa.
+  double birth_hydrostatic_gauge_pressure = 0.0;  // Nonnegative Pa for default spherical birth equilibrium.
+  void* context = nullptr;
+  // Optional certification of atmosphere outlets for the current samples.
+  // The returned span is borrowed until the end of step preparation. The
+  // initial snapshot uses a zero-duration query at the initial obstacle pose.
+  absl::StatusOr<std::span<const FaceIndex3D>> (*atmosphere_outlets)(
+      void* context,
+      const LiquidBoundaryGeometryViewInputs3D& samples
+  ) = nullptr;
+  // Overrides spherical birth equilibrium from scene pressures and surface tension. Both callbacks
+  // may be repeated after a rejected step or a frame replay.
+  absl::StatusOr<LiquidCavityInventory3D> (*initialize)(void* context, const LiquidAirComponent3D& component) = nullptr;
+};
+
 struct LiquidSceneInputs3D {
   LiquidSceneField3D field = LiquidParticleSphereUnion3D{};
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
   Vec3 world_acceleration{0, -9.81, 0};  // m/s^2, applied once after the old snapshot.
   double liquid_density = 1000;  // kg/m^3.
+  double dynamic_viscosity = 0;  // Pa s. Zero disables grid viscosity.
   double surface_tension = 0;  // N/m.
   double ambient_pressure = 0;  // Pa, gauge.
-  double bulk_modulus = std::numeric_limits<double>::infinity();  // Pa.
+  double bulk_modulus = std::numeric_limits<double>::infinity();  // Legacy constant modulus in Pa.
+  std::optional<LiquidSceneDrift3D> drift;  // Optional particle-band correction for side-zero liquid.
+  std::optional<LiquidSceneEos3D> eos;  // Requires infinite legacy modulus. Absence keeps legacy behavior.
   double target_divergence = 0;  // 1/s, pressure constraint source.
   double friction_coefficient = 0;
   double penetration_tolerance = 0;  // m.
+  std::span<const LiquidPhasePair3D> phase_pairs{};  // Copied at Create in (phase_a,phase_b) order.
+  std::span<const LiquidConstituentMaterial3D> constituent_materials{};  // Copied at Create in substance ID order.
   std::span<const LiquidEmissionSource3D> sources;  // Copied at Create; exact committed identity order.
+  std::optional<LiquidSceneCavity3D> cavity;  // Owns accepted gas state in the scheduler.
+  LiquidStepCavityProvider3D cavity_provider{};  // Optional host evaluation, borrowed for scheduler lifetime.
 };
 struct WhitewaterCaptureSettings3D {
   Vec3 world_source_grid_origin{};
@@ -123,7 +175,10 @@ struct LiquidAcceptedStepMeasurement3D {
   LiquidClock3D accepted_clock;
   double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
   std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
+  std::optional<double> step_start_cavity_bound_seconds;  // Present for a finite radial limit.
+  std::optional<LiquidCavityStepPreparation3D> cavity;  // Accepted geometry and per-step inventory losses.
   MacPressureDiagnostics3D pressure;
+  std::optional<double> viscous_max_momentum_residual_kg_m_per_s;  // Present after a coupled viscosity solve.
   double pressure_rhs_l2_m3_per_s = 0;  // L2 norm of the original integrated RHS, including gauge rows.
   double step_start_pressure_cell_volume_m3 = 0;  // Frozen liquid volume in center-selected pressure cells.
   // Compensated sum of explicit one-sided piston wall flux in owned face order.
@@ -192,6 +247,32 @@ struct LiquidProgressObserver3D {
   LiquidWorkPhaseObserver3D work_phase{};
 };
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
+struct LiquidParticleUpdateInputs3D;
+using LiquidPistonReactionUpdate3D =
+    absl::FunctionRef<absl::StatusOr<double>(const LiquidParticleUpdateInputs3D&, std::span<LiquidParticleState3D>)>;
+
+struct LiquidPlanarPistonAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
+};
+
+struct OrientedFloatingBoxLoads3D {
+  Vec3 external_force{};  // World N, supplied at step start.
+  Vec3 external_torque{};  // World N m about the box center.
+  Vec3 pressure_force{};  // World N on the frozen wet surface.
+  Vec3 pressure_torque{};  // World N m about the frozen box center.
+  Vec3 particle_impulse{};  // World N s on the box.
+  Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
+  Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+};
+struct LiquidFloatingBoxAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
+  std::optional<double> added_mass_kg;  // Measured for an accepted guided coupled attempt.
+  std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -243,6 +324,68 @@ class LiquidSubstepScheduler3D {
   // even on failure. Returns disposition/retry duration; detailed code/stage are in
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
+  // Attempts the moving planar piston scene and returns the pressure load
+  // only when the liquid state commits. The body is supplied by value and
+  // the piston trajectory stays prescribed for this attempt.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D>
+  AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston);
+  // Advances an axially guided planar piston in a source-free
+  // moving-piston scene. Body center.x is the wall coordinate in meters.
+  // The old axial velocity drives the liquid boundary; accepted pressure and
+  // external axial force and CPU particle reaction update the next velocity.
+  // The guide
+  // absorbs transverse loads and torque. Force and torque are cleared.
+  // The returned body is present only on acceptance.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston);
+  // Uses the supplied backend's reaction update for this attempt. The
+  // callback must operate on the provided trial particles and return the
+  // low-x wall impulse in N s. It must remain valid until this call returns.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(
+      double step_duration,
+      RigidBody3D piston,
+      LiquidPistonReactionUpdate3D update_with_reaction
+  );
+  // Couples the guided piston velocity to the incompressible pressure
+  // domain using frozen wet areas and a pressure-response probe. This explicit
+  // attempt interface supports the particle-free planar scene. The coupled
+  // velocity sets both wall flux and drift. Unsupported topology rejects.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston);
+  // Advances an upright box guided along world Y in a stationary open tank.
+  // Requires CPU, an analytic horizontal surface, zero friction and no sources.
+  // The start velocity drives frozen wall flux and drift. Solved pressure and
+  // external force and particle reaction update the next velocity. The guide absorbs transverse
+  // force and torque. Half extents are in meters and must stay clear of walls.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Advances an axis-aligned box with all three translations free. Uses the
+  // same stationary tank and material restrictions as the guided attempt.
+  // A rotational constraint absorbs torque. Wall flux and drift use the
+  // old velocity, and solved pressure and contact update the next velocity.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithTranslatingFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Couples vertical wall flux and body inertia over one frozen pressure solve.
+  // Requires the incompressible, zero-surface-tension scene.
+  // The coupled velocity drives final flux, drift and particle contact.
+  // The accepted contact impulse updates the next velocity after pressure.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Couples pressure traction to all six rigid degrees of freedom for a posed
+  // box with no particles. The start pose and twist drive the pressure solve.
+  // The solved load updates the twist before drift. Requires the CPU analytic
+  // stationary tank and conservative sweep clearance. Rejection publishes
+  // neither liquid state nor a candidate body.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithOrientedFloatingBoxPressure(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Advances the pressure-driven oriented box and its particle contact in
+  // one trial. The pressure kick sets the swept drift. Reciprocal contact
+  // impulses change the accepted velocities for the next step.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Couples the six rigid velocity components to the frozen incompressible
+  // liquid pressure response. Contact impulses update the accepted twist
+  // after drift. Supports the oriented CPU box without surface tension.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -251,6 +394,40 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
+  enum class FloatingBoxMotion {
+    kVerticalGuide,
+    kTranslation,
+    kCoupledVerticalGuide,
+    kOrientedPressure,
+    kCoupledOrientedPressure
+  };
+  struct FloatingBoxTrial {
+    RigidBody3D body;
+    AxisAlignedFloatingBoxGeometry3D geometry;
+    std::optional<OrientedFloatingBoxGeometry3D> oriented_geometry;
+    Vec3 half_extent;
+    bool coupled;
+    bool vertical_guide;
+    std::optional<double> added_mass_kg;
+    std::optional<OrientedFloatingBoxLoads3D> oriented_loads;
+  };
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
+      double step_duration,
+      LiquidWorkPhaseObserver3D work_phase,
+      RigidBody3D* piston_load,
+      bool dynamic_piston = false,
+      bool coupled_piston = false,
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
+      FloatingBoxTrial* floating_box = nullptr
+  );
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
+      double step_duration,
+      RigidBody3D piston,
+      bool coupled,
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr
+  );
   struct Impl;
   explicit LiquidSubstepScheduler3D(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

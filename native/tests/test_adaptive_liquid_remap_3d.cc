@@ -1,5 +1,6 @@
 #include <array>
 #include <limits>
+#include <utility>
 
 #include "fluidity/host/adaptive_liquid_remap_3d.h"
 #include "gtest/gtest.h"
@@ -151,6 +152,90 @@ TEST(AdaptiveLiquidRemap3D, RefinesAffineInventoryAndPreservesSignedDivergence) 
   for (std::size_t index = 0; index < fields.inventories.size(); ++index) {
     EXPECT_EQ(InventoryValues(restored->inventories[index]), InventoryValues(fields.inventories[index]));
   }
+}
+
+TEST(AdaptiveLiquidRemap3D, ReplaysConstituentInventoryWithoutCrossPhaseTransfer) {
+  const auto topology = AdaptiveMacTopology3D::Create(kLeaves, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  auto fields = MakeFields(*topology);
+  const auto constituent_values = [](const LiquidRemapInventory3D& inventory) {
+    std::vector<std::pair<std::uint64_t, double>> values;
+    for (const auto& constituent : std::span(inventory.constituents).first(inventory.constituent_count)) {
+      values.emplace_back(constituent.substance_id, constituent.volume_m3);
+    }
+    return values;
+  };
+  const auto make_aqueous = [](LiquidRemapInventory3D& inventory) {
+    inventory.phase_id = 4;
+    inventory.constituent_count = 2;
+    inventory.constituents[0] = {8, inventory.current_volume_m3 / 4};
+    inventory.constituents[1] = {14, inventory.current_volume_m3 * 3 / 4};
+  };
+  const auto make_oil = [](LiquidRemapInventory3D& inventory) {
+    inventory.phase_id = 5;
+    inventory.constituent_count = 1;
+    inventory.constituents = {};
+    inventory.constituents[0] = {25, inventory.current_volume_m3};
+  };
+  for (auto& inventory : fields.inventories) {
+    make_oil(inventory);
+  }
+  for (auto& axis : fields.stencil) {
+    for (auto& neighbor : axis) {
+      make_aqueous(neighbor);
+    }
+  }
+  make_aqueous(fields.inventories[fields.parent_ordinal]);
+  make_oil(fields.stencil[0][0]);
+
+  const auto refined = PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil);
+  const auto replay = PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_EQ(refined->family.child_ordinals, replay->family.child_ordinals);
+  for (const std::size_t ordinal : refined->family.child_ordinals) {
+    const auto& child = refined->inventories[ordinal];
+    const auto corner = refined->family.topology.cells()[ordinal].key.lower_corner;
+    auto expected = InventoryValues(Affine(0, corner.z == -2 ? -0.25 : 0.25));
+    for (double& amount : expected) {
+      amount /= 8;
+    }
+    EXPECT_EQ(InventoryValues(child), expected);
+    EXPECT_EQ(child.phase_id, 4u);
+    ASSERT_EQ(child.constituent_count, 2u);
+    EXPECT_EQ(child.constituents[0].substance_id, 8u);
+    EXPECT_DOUBLE_EQ(child.constituents[0].volume_m3, child.current_volume_m3 / 4);
+    EXPECT_EQ(child.constituents[1].substance_id, 14u);
+    EXPECT_DOUBLE_EQ(child.constituents[1].volume_m3, child.current_volume_m3 * 3 / 4);
+    EXPECT_EQ(constituent_values(child), constituent_values(replay->inventories[ordinal]));
+  }
+  for (const auto retained : refined->family.retained_leaves) {
+    const auto& inventory = refined->inventories[retained.new_cell_ordinal];
+    EXPECT_EQ(inventory.phase_id, 5u);
+    EXPECT_EQ(constituent_values(inventory), constituent_values(fields.inventories[retained.old_cell_ordinal]));
+  }
+
+  auto candidate_inventories = refined->inventories;
+  const AdaptiveLiquidRemapInput3D fine{
+      candidate_inventories,
+      refined->family.previous_pressures,
+      refined->interior_fluxes_m3_per_s,
+  };
+  const auto restored = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->inventories.size(), fields.inventories.size());
+  for (std::size_t ordinal = 0; ordinal < fields.inventories.size(); ++ordinal) {
+    EXPECT_EQ(restored->inventories[ordinal].phase_id, fields.inventories[ordinal].phase_id);
+    EXPECT_EQ(constituent_values(restored->inventories[ordinal]), constituent_values(fields.inventories[ordinal]));
+  }
+
+  const auto child = refined->family.child_ordinals.front();
+  make_oil(candidate_inventories[child]);
+  const auto oil = constituent_values(candidate_inventories[child]);
+  const auto rejected = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(constituent_values(candidate_inventories[child]), oil);
+  EXPECT_EQ(refined->inventories[child].phase_id, 4u);
 }
 
 TEST(AdaptiveLiquidRemap3D, CoarsensMixedSubfacesAndRejectsLossySums) {

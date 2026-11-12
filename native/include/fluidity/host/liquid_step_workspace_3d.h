@@ -35,7 +35,10 @@ struct LiquidWorkspaceBytes3D {
 };
 // Checked sum/products bounded by PTRDIFF_MAX; overflow returns ResourceExhausted.
 // Sources reserve no topology storage. No allocation; errors have empty messages.
-absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCapacities3D capacities);
+absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(
+    LiquidStateCapacities3D capacities,
+    MacPressureWorkspaceMode3D pressure_mode = MacPressureWorkspaceMode3D::kInviscid
+);
 
 struct LiquidWorkspaceUsage3D {
   LiquidStateCapacities3D active;  // Published topology extents; sources is always zero.
@@ -65,8 +68,11 @@ class LiquidStepWorkspace3D {
   // Reserves two topology banks, 81*particles+7*cells activation keys, and fixed CPU numeric regions.
   // Invalid geometry returns InvalidArgument. Checked byte overflow or actual nothrow
   // allocation failure returns ResourceExhausted with no partial owner.
-  static absl::StatusOr<LiquidStepWorkspace3D>
-  Create(LiquidStateCapacities3D capacities, UniformMacGeometry3D geometry);
+  static absl::StatusOr<LiquidStepWorkspace3D> Create(
+      LiquidStateCapacities3D capacities,
+      UniformMacGeometry3D geometry,
+      MacPressureWorkspaceMode3D pressure_mode = MacPressureWorkspaceMode3D::kInviscid
+  );
   // Sorts particles stably by signed (z,y,x) bin and incoming ordinal. Selects unique
   // pressure cells in (z,y,x) order, all 81 original particle faces regardless of
   // weight/tag, and every pressure cell's owner plus all six incident face owners.

@@ -61,7 +61,8 @@ inline bool ValidClock(LiquidClock3D clock) {
 inline bool ValidParticle(const LiquidParticleState3D& particle) {
   return Finite(particle.world_position) && Finite(particle.world_velocity) && Finite(particle.velocity_slopes.x_row)
       && Finite(particle.velocity_slopes.y_row) && Finite(particle.velocity_slopes.z_row) && Positive(particle.mass)
-      && Positive(particle.reference_volume) && Positive(particle.volume_ratio);
+      && Positive(particle.reference_volume) && Positive(particle.volume_ratio)
+      && ValidLiquidParticleComposition3D(particle);
 }
 // Generated bool accessors normalize every nonzero byte; inspect the verified
 // raw field first so corrupt values cannot silently become canonical true.
@@ -71,9 +72,43 @@ bool ValidBoolean(const Table* table, typename Table::FlatBuffersVTableOffset fi
   const auto* value = base->GetAddressOf(static_cast<flatbuffers::voffset_t>(field));
   return value == nullptr || *value <= 1;
 }
-inline bool ValidParticleBooleans(const wire::Particle* particle) {
-  return ValidBoolean(particle, wire::Particle::VT_AFFINE_ENABLED)
+template <typename WireRecord>
+bool ValidCompositionEncoding(const WireRecord* record) {
+  const auto* constituents = record->constituents();
+  return record->phase_id().has_value() == (constituents != nullptr)
+      && (!constituents || (constituents->size() > 0 && constituents->size() <= kMaximumLiquidParticleConstituents3D));
+}
+inline bool ValidParticleEncoding(const wire::Particle* particle) {
+  return ValidCompositionEncoding(particle) && ValidBoolean(particle, wire::Particle::VT_AFFINE_ENABLED)
       && ValidBoolean(particle, wire::Particle::VT_PIC_INITIALIZED);
+}
+// The caller has verified presence and extent before copying the active prefix.
+template <typename WireRecord, typename Record>
+void UnpackComposition(const WireRecord* wire_record, Record& record) {
+  record.phase_id = wire_record->phase_id().value_or(0);
+  if (const auto* constituents = wire_record->constituents()) {
+    record.constituent_count = static_cast<std::uint8_t>(constituents->size());
+    for (flatbuffers::uoffset_t index = 0; index < constituents->size(); ++index) {
+      const auto* entry = constituents->Get(index);
+      record.constituents[index] = {entry->substance_id(), entry->volume_fraction()};
+    }
+  }
+}
+struct PackedComposition {
+  flatbuffers::Optional<std::uint64_t> phase_id;
+  flatbuffers::Offset<flatbuffers::Vector<const wire::ConstituentFraction*>> constituents;
+};
+template <typename Record>
+PackedComposition PackComposition(flatbuffers::FlatBufferBuilder& builder, const Record& record) {
+  if (record.constituent_count == 0) {
+    return {};
+  }
+  std::array<wire::ConstituentFraction, kMaximumLiquidParticleConstituents3D> entries;
+  for (std::size_t index = 0; index < record.constituent_count; ++index) {
+    const auto& entry = record.constituents[index];
+    entries[index] = wire::ConstituentFraction(entry.substance_id, entry.volume_fraction);
+  }
+  return {record.phase_id, builder.CreateVectorOfStructs(entries.data(), record.constituent_count)};
 }
 inline LiquidParticleState3D Unpack(const wire::Particle* particle) {
   const Mat3 slopes{
@@ -81,7 +116,7 @@ inline LiquidParticleState3D Unpack(const wire::Particle* particle) {
       .y_row = Unpack(&particle->slopes()->y_row()),
       .z_row = Unpack(&particle->slopes()->z_row()),
   };
-  return {
+  LiquidParticleState3D result{
       .id = particle->id(),
       .tag = particle->tag(),
       .world_position = Unpack(particle->position()),
@@ -94,6 +129,8 @@ inline LiquidParticleState3D Unpack(const wire::Particle* particle) {
       .side_tag = particle->side(),
       .pic_initialized = particle->pic_initialized(),
   };
+  UnpackComposition(particle, result);
+  return result;
 }
 inline flatbuffers::Offset<wire::Particle>
 PackParticle(flatbuffers::FlatBufferBuilder& builder, const LiquidParticleState3D& particle, bool canonical = false) {
@@ -107,6 +144,7 @@ PackParticle(flatbuffers::FlatBufferBuilder& builder, const LiquidParticleState3
       vector(particle.velocity_slopes.y_row),
       vector(particle.velocity_slopes.z_row)
   );
+  const auto composition = PackComposition(builder, particle);
   return wire::CreateParticle(
       builder,
       particle.id,
@@ -119,7 +157,9 @@ PackParticle(flatbuffers::FlatBufferBuilder& builder, const LiquidParticleState3
       particle.reference_volume,
       particle.volume_ratio,
       particle.side_tag,
-      particle.pic_initialized
+      particle.pic_initialized,
+      composition.phase_id,
+      composition.constituents
   );
 }
 inline bool Fits(LiquidStateCapacities3D used, LiquidStateCapacities3D limit) {

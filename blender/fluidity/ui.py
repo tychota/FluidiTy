@@ -118,16 +118,40 @@ class FLUIDITY_PT_fluid(ChildPanel, bpy.types.Panel):
         scene = context.scene
         settings = scene.fluidity
         column = controls(self.layout, scene)
-        input_object(column, settings, "liquid", "Initial Liquid")
+        if not settings.liquid_sources:
+            input_object(column, settings, "liquid", "Initial Liquid")
+        if settings.boundary_mode != "LEGACY_PADDLE":
+            for index, source in enumerate(settings.liquid_sources):
+                box = column.box()
+                row = box.row(align=True)
+                row.prop(source, "geometry")
+                row.operator("fluidity.liquid_source", text="", icon="X").index = index
+                for field in ("substance_id", "phase_id", "density", "emission_rate"):
+                    box.prop(source, field)
+                box.prop(source, "override_viscosity")
+                if source.override_viscosity:
+                    box.prop(source, "viscosity")
+                if source.emission_rate > 0:
+                    box.prop(source, "emitted_volume")
+            column.operator("fluidity.liquid_source", text="Add Liquid Source", icon="ADD")
+            if settings.liquid_sources and settings.boundary_mode == "TANK":
+                column.prop(settings, "planar_fill")
+                if settings.planar_fill:
+                    column.prop(settings, "fill_height")
+            if len({source.phase_id for source in settings.liquid_sources}) > 1:
+                interactions = column.box()
+                interactions.label(text="Interactions")
+                interactions.prop(settings, "phase_tension")
         material = column.column(align=True)
         material.enabled = settings.boundary_mode != "LEGACY_PADDLE"
-        row = material.row(align=True)
-        row.label(text="Fluid Preset")
-        preset_name = next(
-            label for key, label, _description in authoring.PRESET_ITEMS if key == settings.material_preset
-        )
-        row.operator_menu_enum("fluidity.apply_preset", "preset", text=preset_name)
-        material.prop(settings, "density", text="Density (kg/m³)")
+        if not settings.liquid_sources:
+            row = material.row(align=True)
+            row.label(text="Fluid Preset")
+            preset_name = next(
+                label for key, label, _description in authoring.PRESET_ITEMS if key == settings.material_preset
+            )
+            row.operator_menu_enum("fluidity.apply_preset", "preset", text=preset_name)
+            material.prop(settings, "density", text="Density (kg/m³)")
         material.prop(settings, "surface_tension", text="Surface Tension (N/m)")
         for index, label in enumerate(("Velocity X (m/s)", "Velocity Y (m/s)", "Velocity Z (m/s)")):
             material.prop(settings, "initial_velocity", index=index, text=label)
@@ -154,6 +178,28 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
             column.prop(settings, "friction")
         else:
             column.label(text="Free Space", icon="INFO")
+        if settings.boundary_mode == "TANK":
+            rigid_row = column.row()
+            rigid_row.alert = settings.issue_field == "rigid_box"
+            rigid_row.prop(settings, "rigid_box")
+            if context.object and context.object.type == "MESH":
+                column.operator("fluidity.assign_role", text="Use Selected as Rigid Box").role = "rigid_box"
+            if settings.rigid_box:
+                column.prop(settings, "rigid_mass")
+                column.prop(settings, "rigid_substeps")
+        cutter_row = column.row()
+        cutter_row.alert = settings.issue_field == "cutter"
+        cutter_row.prop(settings, "cutter")
+        if context.object and context.object.type == "MESH":
+            column.operator("fluidity.assign_role", text="Use Selected as Cutter").role = "cutter"
+        if settings.cutter:
+            solid_row = column.row()
+            solid_row.alert = settings.issue_field == "elastic_solid"
+            solid_row.prop(settings, "elastic_solid")
+            column.prop(settings, "elastic_density")
+            column.prop(settings, "elastic_shear_modulus")
+            column.prop(settings, "elastic_first_lame_parameter")
+            column.prop(settings, "elastic_substeps")
 
 
 class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):
@@ -166,8 +212,12 @@ class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):
         layout.use_property_decorate = False
         column = layout.column()
         column.enabled = not jobs.is_running(scene)
-        column.prop(scene.fluidity, "backend")
         column.prop(scene, "frame_end", text="End Frame")
+        if scene.fluidity.cutter:
+            column.label(text="Cutter solver: CPU")
+            column.operator("fluidity.check_scene", icon="CHECKMARK")
+            return
+        column.prop(scene.fluidity, "backend")
         advanced = column.column(align=True)
         advanced.enabled = scene.fluidity.boundary_mode != "LEGACY_PADDLE"
         advanced.prop(scene.fluidity, "maximum_step", text="Max Step (s)")
@@ -189,15 +239,29 @@ class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
         column.prop(scene.fluidity, "preview_cache")
         row = column.row(align=True)
         row.operator("fluidity.preview", icon="PLAY")
-        row.operator("fluidity.attach", text="Attach Preview", icon="POINTCLOUD_DATA").preview = True
+        if scene.fluidity.rigid_box:
+            row.operator("fluidity.attach", text="Attach Rigid Preview", icon="ACTION").preview = True
+        elif not scene.fluidity.cutter:
+            row.operator("fluidity.attach", text="Attach Preview", icon="POINTCLOUD_DATA").preview = True
         column.separator()
         column.prop(scene.fluidity, "bake_cache")
         row = column.row(align=True)
         row.operator("fluidity.bake", icon="RENDER_ANIMATION")
         row.operator("fluidity.resume", icon="RECOVER_LAST")
-        row = column.row(align=True)
-        row.operator("fluidity.attach", icon="POINTCLOUD_DATA")
-        row.operator("fluidity.relink", text="Relink Cache...", icon="FILE_FOLDER")
+        if scene.fluidity.rigid_box:
+            column.operator("fluidity.attach", text="Attach Rigid Motion", icon="ACTION")
+            column.operator("fluidity.inspect", icon="VIEWZOOM")
+            if scene.fluidity.inspect_frame >= 0:
+                message(column, scene.fluidity.point_detail)
+        elif scene.fluidity.cutter:
+            column.prop(scene.fluidity, "point_index")
+            column.operator("fluidity.inspect", icon="VIEWZOOM")
+            if scene.fluidity.inspect_frame >= 0:
+                message(column, scene.fluidity.point_detail)
+        else:
+            row = column.row(align=True)
+            row.operator("fluidity.attach", icon="POINTCLOUD_DATA")
+            row.operator("fluidity.relink", text="Relink Cache...", icon="FILE_FOLDER")
 
 
 class FLUIDITY_PT_display(ChildPanel, bpy.types.Panel):
@@ -232,6 +296,15 @@ class FLUIDITY_PT_interchange(ChildPanel, bpy.types.Panel):
         column = layout.column()
         column.enabled = not jobs.is_running(context.scene)
         column.operator("fluidity.import_cache", text="Import Cache...", icon="IMPORT")
+        surface = column.column(align=True)
+        settings = context.scene.fluidity
+        surface.prop(settings, "mesh_cache")
+        surface.prop(settings, "mesh_spacing")
+        surface.prop(settings, "mesh_sigma")
+        row = surface.row(align=True)
+        row.operator("fluidity.build_surface", icon="MESH_DATA")
+        row.operator("fluidity.build_surface", text="Resume Surface").resume = True
+        surface.operator("fluidity.attach_surface", text="Attach Surface Cache...", icon="MESH_DATA")
         column.operator("fluidity.export_alembic", text="Export Alembic...", icon="EXPORT")
         column.operator("fluidity.export_usd", text="Export USD...", icon="EXPORT")
 

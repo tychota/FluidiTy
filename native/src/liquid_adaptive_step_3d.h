@@ -16,6 +16,8 @@ class AdaptiveLiquidStep3D {
   static absl::StatusOr<AdaptiveLiquidStep3D>
   Create(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options);
 
+  // Dynamic payload kept by the frozen step owner between trials.
+  std::size_t reserved_bytes() const;
   absl::Status Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options);
   absl::Status Project(
       LiquidState3D& trial,

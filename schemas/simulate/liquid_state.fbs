@@ -31,6 +31,7 @@ table ResumeMetadata {
   capacities:Capacities (required, id:2);
   replay_capacities:Capacities (required, id:3);
 }
+struct AdaptiveConstituentVolume { substance_id:ulong; volume_m3:double; }
 table AdaptiveCell {
   lower_corner:Index3 (required, id:0);
   width_exponent:ubyte (id:1);
@@ -41,6 +42,8 @@ table AdaptiveCell {
   momentum_kg_m_per_s:Vector3 (required, id:6);
   enthalpy_j:double (id:7);
   previous_pressure:double (id:8);
+  phase_id:ulong (id:9);
+  constituents:[AdaptiveConstituentVolume] (id:10);
 }
 table AdaptiveFace {
   carrier_velocity:double (id:0);
@@ -51,6 +54,21 @@ table AdaptiveFace {
 table AdaptiveState {
   cells:[AdaptiveCell] (required, id:0);
   faces:[AdaptiveFace] (required, id:1);
+}
+table CavityGasCell {
+  index:Index3 (required, id:0);
+  gas_volume:double (id:1);
+  component:uint (id:2);
+}
+table CavityInventory {
+  id:ulong (id:0);
+  initial_volume:double (id:1);
+  initial_absolute_pressure:double (id:2);
+}
+table CavitySnapshot {
+  next_id:ulong (id:0);
+  gas:[CavityGasCell] (required, id:1);
+  inventories:[CavityInventory] (required, id:2);
 }
 table LiquidState {
   schema_version:uint = 1 (id:0);
@@ -66,7 +84,8 @@ table LiquidState {
   faces:[Face] (required, id:10);
   sources:[SourceState] (required, id:11);
   resume:ResumeMetadata (id:12);
-  adaptive:AdaptiveState (id:13);
+  cavity:CavitySnapshot (id:13);
+  adaptive:AdaptiveState (id:14);
 }
 root_type LiquidState;
 file_identifier "FLST";

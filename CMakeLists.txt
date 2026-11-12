@@ -42,6 +42,10 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+    native/src/contact_face_bodies_3d.cc
+    native/src/mixed_contact_3d.cc
+    native/src/dry_solid_step_3d.cc
+    native/src/plastic_solid_checkpoint_3d.cc
     native/src/effects_source_3d.cc
     native/src/surface_closest_point_3d.cc
     native/src/surface_reconstruction_3d.cc
@@ -95,6 +99,9 @@ add_library(fluidity_native STATIC
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
+  native/src/elastic_blade_deformation_3d.cc
+  native/src/rigid_body_3d.cc
+  native/src/solid_interaction_checkpoint_3d.cc
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
@@ -105,6 +112,12 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d.cc
   native/src/mac_pressure_3d_multigrid.cc
   native/src/adaptive_width_policy_3d.cc
+  native/src/mac_viscous_pressure_3d.cc
+  native/src/liquid_air_components.cc
+  native/src/liquid_cavity.cc
+  native/src/liquid_eos.cc
+  native/src/liquid_eos_sensor_3d.cc
+  native/src/liquid_mixture_3d.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
@@ -125,6 +138,7 @@ if(FLUIDITY_ENABLE_CUDA)
   target_compile_features(fluidity_cuda_probe PUBLIC cxx_std_20)
   target_link_libraries(fluidity_cuda_probe INTERFACE absl::status PRIVATE CUDA::cudart)
   add_library(fluidity_cuda_operators STATIC
+    native/cuda/dry_solid_step_3d_host.cc
     native/cuda/liquid_transfer_stages_3d_host.cc
     native/cuda/liquid_pressure_stage_3d_host.cc
     native/cuda/wetted_piston_3d.cu
@@ -147,6 +161,8 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/liquid_boundary_transfer_3d_host.cc
     native/cuda/liquid_wall_contact_3d_host.cc
     native/cuda/liquid_wall_contact_3d.cu
+    native/cuda/viscosity_velocity_block_3d_host.cc
+    native/cuda/viscosity_velocity_block_3d.cu
     native/cuda/mac_pressure_3d_host.cc
     native/cuda/mac_pressure_3d.cu
     native/cuda/pressure_host.cc
@@ -177,6 +193,46 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fluidity_m5_planar_coupling_tests native/tests/test_m5_planar_coupling_3d.cc)
+  target_link_libraries(fluidity_m5_planar_coupling_tests PRIVATE fluidity_native)
+  add_test(NAME M5PlanarCoupling.native COMMAND fluidity_m5_planar_coupling_tests)
+  add_executable(fluidity_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
+  target_link_libraries(fluidity_m5_plastic_checkpoint_tests PRIVATE fluidity_native flatbuffers::flatbuffers)
+  add_dependencies(fluidity_m5_plastic_checkpoint_tests fluidity_cache_schemas)
+  target_include_directories(fluidity_m5_plastic_checkpoint_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+  add_test(NAME M5PlasticCheckpoint.native COMMAND fluidity_m5_plastic_checkpoint_tests)
+  add_executable(fluidity_m5_snow_compaction_tests native/tests/test_m5_snow_compaction_3d.cc)
+  target_link_libraries(fluidity_m5_snow_compaction_tests PRIVATE fluidity_native)
+  add_test(NAME M5SnowCompaction.native COMMAND fluidity_m5_snow_compaction_tests)
+  add_executable(fluidity_m5_contact_scatter_tests native/tests/test_m5_contact_scatter_3d.cc)
+  target_link_libraries(fluidity_m5_contact_scatter_tests PRIVATE fluidity_native)
+  add_test(NAME M5ContactScatter.native COMMAND fluidity_m5_contact_scatter_tests)
+  add_executable(fluidity_m5_constitutive_tests native/tests/test_m5_constitutive_3d.cc)
+  target_include_directories(fluidity_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
+  target_compile_features(fluidity_m5_constitutive_tests PRIVATE cxx_std_20)
+  add_test(NAME M5Constitutive.native COMMAND fluidity_m5_constitutive_tests)
+  if(FLUIDITY_ENABLE_CUDA)
+    add_executable(fluidity_cuda_m5_planar_coupling_tests native/tests/test_m5_planar_coupling_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_planar_coupling_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_planar_coupling_tests PRIVATE fluidity_cuda_operators)
+    add_test(NAME M5PlanarCoupling.cuda COMMAND fluidity_cuda_m5_planar_coupling_tests)
+    add_executable(fluidity_cuda_m5_plastic_checkpoint_tests native/tests/test_m5_plastic_checkpoint_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE fluidity_cuda_operators flatbuffers::flatbuffers)
+    add_dependencies(fluidity_cuda_m5_plastic_checkpoint_tests fluidity_cache_schemas)
+    target_include_directories(fluidity_cuda_m5_plastic_checkpoint_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
+    add_test(NAME M5PlasticCheckpoint.cuda COMMAND fluidity_cuda_m5_plastic_checkpoint_tests)
+    add_executable(fluidity_cuda_m5_snow_compaction_tests native/tests/test_m5_snow_compaction_3d.cc)
+    target_compile_definitions(fluidity_cuda_m5_snow_compaction_tests PRIVATE FLUIDITY_M5_CUDA_SCENES=1)
+    target_link_libraries(fluidity_cuda_m5_snow_compaction_tests PRIVATE fluidity_cuda_operators)
+    add_test(NAME M5SnowCompaction.cuda COMMAND fluidity_cuda_m5_snow_compaction_tests)
+    add_executable(fluidity_cuda_m5_constitutive_tests native/tests/test_cuda_m5_constitutive_3d.cu)
+    target_include_directories(fluidity_cuda_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
+    target_compile_options(fluidity_cuda_m5_constitutive_tests PRIVATE
+      "$<$<CXX_COMPILER_ID:MSVC>:-Xcompiler=/Zc:preprocessor>")
+    set_target_properties(fluidity_cuda_m5_constitutive_tests PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+    add_test(NAME M5Constitutive.cuda COMMAND fluidity_cuda_m5_constitutive_tests)
+  endif()
   find_package(GTest 1.17.0 EXACT CONFIG REQUIRED)
   include(GoogleTest)
 
@@ -280,6 +336,7 @@ if(BUILD_TESTING)
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
     native/tests/test_transfers_3d.cc
+    native/tests/test_rigid_body_3d.cc
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
@@ -290,6 +347,9 @@ if(BUILD_TESTING)
     native/tests/test_adaptive_liquid_remap_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
+    native/tests/test_liquid_cavity.cc
+    native/tests/test_liquid_eos.cc
+    native/tests/test_liquid_mixture_3d.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
   target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
@@ -342,7 +402,8 @@ if(BUILD_TESTING)
       native/tests/test_cuda_wetted_piston_3d.cc
       native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
-      native/tests/test_cuda_mac_pressure_3d.cc)
+      native/tests/test_cuda_mac_pressure_3d.cc
+      native/tests/test_cuda_viscosity.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests
@@ -400,8 +461,6 @@ include(cmake/SimulateCli.cmake)
 option(FLUIDITY_BUILD_BLENDER_BRIDGE "Build the Blender cache and scene bridge (requires Alembic)" OFF)
 if(FLUIDITY_BUILD_BLENDER_BRIDGE)
   find_package(Alembic 1.8.8 EXACT CONFIG REQUIRED)
-  add_library(fluidity_blender_resolve STATIC native/cli/blender_resolve.cc)
-  target_link_libraries(fluidity_blender_resolve PRIVATE fluidity_native fluidity_native_options)
   add_executable(fluidity_blender_bridge tools/blender/point_cache_writer/blender_bridge.cc)
   target_include_directories(fluidity_blender_bridge PRIVATE native/cli)
   target_compile_features(fluidity_blender_bridge PRIVATE cxx_std_20)

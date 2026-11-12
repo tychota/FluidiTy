@@ -594,15 +594,21 @@ __global__ void LiquidParticleUpdate3DKernel(
     advecting = gathered.new_pic_velocity;
     AddScaled(advecting, gathered.particle_minus_old_pic_velocity, beta * alpha);
   }
-  const auto contact = boundary_internal::ResolveContact({
-      start,
-      stored,
-      advecting,
-      query.obstacle,
-      query.step_duration,
-      query.friction_coefficient,
-      query.penetration_tolerance,
-  });
+  const auto contact = boundary_internal::ResolveContact(
+      {
+          start,
+          stored,
+          advecting,
+          query.obstacle,
+          query.step_duration,
+          query.friction_coefficient,
+          query.penetration_tolerance,
+      },
+      nullptr,
+      query.operation == BoundaryTransferOperation3D::kParticleUpdateWithPistonReaction
+          ? &result.piston_stored_velocity_change
+          : nullptr
+  );
   if (!contact.ok()) {
     result.error = contact.status();
     return;
@@ -661,6 +667,9 @@ __global__ void LiquidBoundaryTransfer3DKernel(
       break;
     case BoundaryTransferOperation3D::kForces:
       report->error = Forces(*query, faces, face_results);
+      break;
+    case BoundaryTransferOperation3D::kParticleUpdateWithPistonReaction:
+      report->error = Error::kInvalid;
       break;
     case BoundaryTransferOperation3D::kFitGhost: {
       const auto fit = internal::FitLiquidGhostAffineCore3D(numeric::span(query->fit_samples, query->fit_count));

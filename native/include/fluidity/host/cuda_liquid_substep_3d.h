@@ -61,6 +61,13 @@ class CudaLiquidSubstepBackend3D {
   // Opt in to speculative scheduler gather runs. Field batches require both
   // flags and apply only to particles whose grouped gather has succeeded.
   LiquidSubstepBackend3D operations(bool enable_gather_runs = false, bool enable_gathered_field_batches = false);
+  // Runs the device tank sweep on trial particles and returns the impulse
+  // on the low-x piston, in N s. Fixed-wall and advection corrections are
+  // excluded. A failed update leaves the trial particle span unchanged.
+  absl::StatusOr<double> UpdateParticlesWithPistonReaction(
+      const LiquidParticleUpdateInputs3D& inputs,
+      std::span<LiquidParticleState3D> trial_particles
+  );
   // Actual reservations and CUDA call counts, including failed/replayed work.
   CudaLiquidSubstepUsage3D usage() const;
   // Consumes the backend after scheduler and snapshot drain, collecting the

@@ -3,6 +3,7 @@
 #include <new>
 #include <utility>
 
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "fluidity/host/cuda_wetted_piston_3d.h"
@@ -206,6 +207,30 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
                 workspace
             );
           },
+      .project_viscous =
+          [](void* context,
+             const LiquidBoundaryGeometryViewInputs3D& geometry,
+             const LiquidPressureProblemView3D& problem,
+             double dynamic_viscosity,
+             std::span<const double> cell_dynamic_viscosity,
+             MacPressureSolverOptions3D options,
+             MacPressureWorkspace3D& workspace) {
+            auto& arena = static_cast<Impl*>(context)->arena;
+            return liquid_step_internal::ProjectUniformViscosity(
+                geometry,
+                problem,
+                dynamic_viscosity,
+                cell_dynamic_viscosity,
+                options,
+                workspace,
+                [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
+                    std::span<const MacStrainRow3D> rows,
+                    MacPressureSolverOptions3D controls,
+                    pressure_internal::MacPressureScratch3D& pressure_scratch) {
+                  return cuda_internal::ProjectArenaViscousPressure3D(arena, inputs, rows, controls, pressure_scratch);
+                }
+            );
+          },
       .gather =
           [](void* context, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return cuda_internal::GatherLiquid3D(static_cast<Impl*>(context)->arena, inputs, workspace);
@@ -287,6 +312,18 @@ CudaLiquidArenaMetrics3D CudaLiquidSubstepBackend3D::DrainMetrics() && {
 absl::StatusOr<bool> CudaLiquidSubstepBackend3D::PublicationReady() const {
   return impl_->arena.PublicationReady();
 }
+absl::StatusOr<double> CudaLiquidSubstepBackend3D::UpdateParticlesWithPistonReaction(
+    const LiquidParticleUpdateInputs3D& inputs,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  double impulse = 0.0;
+  const auto status = cuda_internal::UpdateLiquidParticles3D(impl_->arena, inputs, trial_particles, &impulse);
+  if (!status.ok()) {
+    return status;
+  }
+  return impulse;
+}
+
 CudaLiquidSubstepUsage3D CudaLiquidSubstepBackend3D::usage() const {
   const auto metrics = impl_->arena.metrics();
   return {

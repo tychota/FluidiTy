@@ -260,6 +260,7 @@ absl::Status Execute(
     cells.pinned[ordinal] = {
         .fluid_volume = cell.fluid_volume,
         .integrated_target_flux = cell.integrated_target_flux,
+        .integrated_inward_wall_flux = cell.integrated_inward_wall_flux,
         .compliance = cell.compliance,
         .previous_pressure = cell.previous_pressure,
         .integrated_rhs = prepared.system.integrated_rhs()[ordinal],

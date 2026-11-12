@@ -24,12 +24,12 @@ PLATFORMS = {
 ARCHITECTURES = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "armv8", "aarch64": "armv8"}
 LOCKS = ("conan.lock", "reference/uv.lock")
 PUBLIC_REPORTS = ("ctest-cli.xml", "ctest-cuda-cli.xml", "summary.json", "ctest-cpu.xml", "ctest-gpu.xml", "ctest-cuda-mock.xml", "ctest-schema.xml")
-CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh", "cpu_ocean", "public_interface")}
+CLI_REQUIRED = {f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh", "cpu_ocean", "public_interface", "rigid_frame")}
 CUDA_CLI_REQUIRED = {"SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects", "SimulateCli.cuda_ocean"}
 SCHEMA_REQUIRED = {
     f"LiquidCacheSchema.{name}"
     for name in (
-        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference",
+        "common", "liquid_state", "point_frame", "frame_manifest", "resolved_scene", "checkpoint_reference", "solid_interaction_checkpoint",
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 } | {f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings", "volume_frame", "volume_settings")}
@@ -86,6 +86,13 @@ GPU_SNAPSHOT_CASES = {GPU_SNAPSHOT_3D_CASE, GPU_SNAPSHOT_FAILURE_3D_CASE}
 GPU_OPERATOR_MEMCHECK_CASES = {
     *GPU_SNAPSHOT_CASES,
     *GPU_SUBSTEP_CASES,
+    "CudaLiquidSubstep3D.FullCellViscosityMatchesCpuWithoutDeviceAllocation",
+    "CudaLiquidSubstep3D.TaitComplianceMatchesCpu",
+    "CudaLiquidSubstep3D.EosHydrostaticCompressionMatchesColumn",
+    "CudaLiquidSubstep3D.OpenIncompressibleDriftMatchesCpu",
+    "CudaLiquidSubstep3D.ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry",
+    "CudaLiquidSubstep3D.DiscoveredCavitySurvivesCheckpointResume",
+    "CudaLiquidSubstep3D.PreparedCavityBoundariesMatchCpuAfterRetry",
     *GPU_WETTED_PISTON_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
@@ -96,7 +103,14 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     GPU_PRESSURE_3D_MIXED_CASE,
     GPU_PRESSURE_3D_MULTILEVEL_CASE,
     GPU_PRESSURE_3D_EXPLICIT_CASE,
+    "CudaMacPressure3D.BackwardEulerStandingWaveMatchesAnalyticMode",
+    "CudaMacPressure3D.BackwardEulerPressurePulseMatchesModalOracle",
+    "CudaMacPressure3D.WaterHammerValveClosureMatchesAcousticOracle",
+    "CudaMacPressure3D.CompliantPistonConvergesToEosCompression",
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
+    "CudaMacViscosity3D.CoupledProjectionBalancesMomentumAndCompliantFlux",
+    "CudaMacViscosity3D.VelocityBlockMatchesCpuAndTrueResidual",
+    "CudaMacViscosity3D.RejectsExhaustionAndEliminatedMomentum",
     GPU_DEPOSIT_3D_RECEIPT_CASE,
     GPU_GATHER_3D_RECEIPT_CASE,
     "CudaMacTransfer3D.RejectionPreservesOutputs",
@@ -621,6 +635,9 @@ def run_ctest(run, label, required):
         f"^{label}$",
         "--output-on-failure",
         "--no-tests=error",
+        # Keep the GoogleTest completion markers after numerical fixture receipts.
+        "--test-output-size-passed",
+        "65536",
         "--output-junit",
         junit,
         check=False,
@@ -720,12 +737,17 @@ def verify_cuda_execution_receipt(output, qualification, case):
         record = json.loads(output.splitlines()[0])
     except (ValueError, IndexError) as error:
         raise ValueError("CUDA CLI execution receipt is malformed") from error
+    frame, substep, accepted_step = {
+        "cuda_execution": (2, 0, 4),
+        "cuda_replay": (10, 1, 21),
+        "cuda_effects": (3, 0, 6),
+        "cuda_ocean": (10, 0, 20),
+    }[case]
     replay = case == "cuda_replay"
-    effects = case == "cuda_effects"
     expected = {
         "protocol_version": 1, "event": "result", "command": "replay" if replay else "run",
-        "backend": "cuda", "frame": 10 if replay else (3 if effects else 2), "substep": 1 if replay else 0,
-        "epoch": 21 if replay else (6 if effects else 4), "accepted_step": 21 if replay else (6 if effects else 4),
+        "backend": "cuda", "frame": frame, "substep": substep,
+        "epoch": accepted_step, "accepted_step": accepted_step,
         "particle_count": 1, "next_particle_id": 2, "frames_per_second": 24,
         "compiled_architecture": qualification["cuda"]["architecture"] * 10, "read_only": replay,
     }
@@ -1075,7 +1097,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
         evidence["cuda_cli"]["execution"] = {
             case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
-            for case in ("cuda_execution", "cuda_replay", "cuda_effects")
+            for case in ("cuda_execution", "cuda_replay", "cuda_effects", "cuda_ocean")
         }
         evidence["cuda_cli"]["lifecycle"] = verify_cli_lifecycle_receipt(
             cli_outputs["SimulateCli.cuda_lifecycle"], "cuda", qualification["cuda"]["architecture"] * 10

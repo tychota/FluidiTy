@@ -157,7 +157,8 @@ FLUIDITY_HD inline Error SweepTankAxis(
     int wall_count,
     int axis,
     double& first_hit_time,
-    ContactOutput& result
+    ContactOutput& result,
+    double* piston_stored_velocity_change
 ) {
   constexpr double Vec3::* kComponents[]{&Vec3::x, &Vec3::y, &Vec3::z};
   const auto component = kComponents[axis];
@@ -182,6 +183,9 @@ FLUIDITY_HD inline Error SweepTankAxis(
       result.diagnostic = diagnostic;
     }
     if (stored_speed.estimate < 0) {
+      if (piston_stored_velocity_change != nullptr && axis == 0 && wall.outward_normal.x > 0.0) {
+        *piston_stored_velocity_change += wall.wall_velocity.x - stored.x;
+      }
       stored.x = wall.wall_velocity.x;
     }
     if (advecting_speed.estimate <= 0) {
@@ -283,7 +287,8 @@ FLUIDITY_HD inline Error SweepTankAxis(
   return Error::kNone;
 }
 
-FLUIDITY_HD inline Value<ContactOutput> ResolveTankContact(const ContactInput& inputs) {
+FLUIDITY_HD inline Value<ContactOutput>
+ResolveTankContact(const ContactInput& inputs, double* piston_stored_velocity_change) {
   if (inputs.friction_coefficient != 0) {
     return Error::kInvalid;
   }
@@ -333,16 +338,35 @@ FLUIDITY_HD inline Value<ContactOutput> ResolveTankContact(const ContactInput& i
   constexpr int kWallCounts[]{2, 1, 2};
   ContactOutput result;
   double first_hit_time = kInfinity;
+  double piston_change = 0.0;
   for (int axis = 0; axis < 3; ++axis) {
-    const auto status = SweepTankAxis(inputs, walls[axis], kWallCounts[axis], axis, first_hit_time, result);
+    const auto status = SweepTankAxis(
+        inputs,
+        walls[axis],
+        kWallCounts[axis],
+        axis,
+        first_hit_time,
+        result,
+        piston_stored_velocity_change == nullptr ? nullptr : &piston_change
+    );
     if (status != Error::kNone) {
       return status;
     }
   }
+  if (piston_stored_velocity_change != nullptr) {
+    if (!numeric::isfinite(piston_change)) {
+      return UncertifiedContact();
+    }
+    *piston_stored_velocity_change = piston_change;
+  }
   return result;
 }
 
-FLUIDITY_HD inline Value<ContactOutput> ResolveContact(const ContactInput& inputs) {
+FLUIDITY_HD inline Value<ContactOutput> ResolveContact(
+    const ContactInput& inputs,
+    Vec3* certified_plane_hit = nullptr,
+    double* piston_stored_velocity_change = nullptr
+) {
   if (!HasFiniteComponents(inputs.start_world_position) || !HasFiniteComponents(inputs.stored_world_velocity)
       || !HasFiniteComponents(inputs.advecting_world_velocity)) {
     return Error::kInvalid;
@@ -361,7 +385,7 @@ FLUIDITY_HD inline Value<ContactOutput> ResolveContact(const ContactInput& input
       .advecting_world_velocity = inputs.advecting_world_velocity,
   };
   if (inputs.obstacle.kind == ObstacleKind::kOpenTank) {
-    return ResolveTankContact(inputs);
+    return ResolveTankContact(inputs, piston_stored_velocity_change);
   }
   if (inputs.obstacle.kind == ObstacleKind::kAbsent) {
     result.world_position = Advance(inputs.start_world_position, inputs.advecting_world_velocity, inputs.step_duration);
@@ -521,6 +545,9 @@ FLUIDITY_HD inline Value<ContactOutput> ResolveContact(const ContactInput& input
   if (!numeric::isfinite(result.incoming_stored_relative_normal_speed)
       || !numeric::isfinite(result.incoming_advecting_relative_normal_speed)) {
     return UncertifiedContact();
+  }
+  if (certified_plane_hit != nullptr) {
+    *certified_plane_hit = hit_position;
   }
   result.diagnostic = initially_penetrating ? 2 : 1;
   return result;

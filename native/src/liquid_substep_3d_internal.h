@@ -1,10 +1,44 @@
 #pragma once
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "liquid_eos_sensor_3d.h"
 #include "liquid_isolated_drop_3d.h"
+#include "mac_viscous_pressure_3d.h"
 namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<
+    MacViscousPressureProjectionView3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, pressure_internal::MacPressureScratch3D&)>;
+
+// Builds strain rows from the same geometry as pressure, then runs the
+// coupled backend. Admits full cells and connected cut free surfaces. A
+// Cartesian tank can also cut solid cells when pressure centers stay within
+// the solid-free box. Normal differences use the actual wall distance.
+// Unsupported solid cuts return Unimplemented. Errors carry no projection.
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectUniformViscosity(
+    const LiquidBoundaryGeometryViewInputs3D& geometry,
+    const LiquidPressureProblemView3D& problem,
+    double dynamic_viscosity,
+    std::span<const double> cell_dynamic_viscosity,
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace,
+    ProjectViscousPressure3D project
+);
+// Backtraces a uniform cell center in the committed MAC carrier field, then
+// interpolates liquid pressure in Pa over available committed trilinear donors.
+// Uses one eligible face if its opposite is missing, or zero if both are
+// missing. With no pressure donor it carries the old local pressure or uses
+// ambient gauge pressure for a newly wet cell. Input state and positive step
+// duration in seconds must already be validated. An unrepresentable
+// displacement returns OutOfRange.
+absl::StatusOr<double> AdvectLiquidPressureHistory3D(
+    const LiquidState3D& committed,
+    CellIndex3D cell,
+    double step_duration,
+    double ambient_pressure
+);
+
 class OceanInletParticles3D {
  public:
   static absl::StatusOr<OceanInletParticles3D> Create(const OceanBoundarySettings3D& settings, double density);
@@ -37,6 +71,13 @@ struct Staging {
   LiquidRecords3D<LiquidPrescribedWallSample3D> old_walls;
   LiquidRecords3D<LiquidPrescribedWallSample3D> new_walls;
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
+  std::optional<LiquidRecords3D<CellVolumeRatioSensor3D>> drift_sensors;
+  std::optional<LiquidRecords3D<CellCompositionDensity3D>> composition_density;
+  std::optional<LiquidRecords3D<double>> composition_viscosity;
+  std::optional<LiquidRecords3D<LiquidInternalInterface3D>> phase_crossings;
+  std::optional<LiquidRecords3D<MacPressureCell3D>> drift_pressure_cells;
+  std::optional<LiquidRecords3D<SealedLiquidDriftCell3D>> sealed_drift_cells;
+  LiquidRecords3D<MacPressureCell3D> pressure_cell_scratch;  // Trial interior wall flux rows.
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
@@ -51,13 +92,18 @@ struct Staging {
   // Keep the restricted old run across workspace reuse for the full and projected gathers.
   std::optional<LiquidRecords3D<LiquidBoundaryParticleGather3D>> isolated_drop_restricted_gathers;
   // Separate owned link copy used by pressure and velocity correction.
-  std::optional<LiquidRecords3D<MacPressureFace3D>> isolated_drop_pressure_faces;
+  std::optional<LiquidRecords3D<MacPressureFace3D>> pressure_face_scratch;
   std::size_t reserved_bytes = 0;
   static absl::StatusOr<Staging> Create(
       LiquidStateCapacities3D capacities,
       bool needs_regular_transport = false,
       bool needs_wetted_piston = false,
-      bool needs_isolated_drop = false
+      bool needs_isolated_drop = false,
+      bool needs_drift_sensors = false,
+      bool needs_incompressible_drift = false,
+      bool needs_composition_density = false,
+      bool needs_phase_crossings = false,
+      bool needs_composition_viscosity = false
   );
 };
 bool Finite(Vec3 value);
@@ -84,7 +130,8 @@ absl::Status PrepareField(
     const LiquidObstacle3D& obstacle,
     const LiquidState3D& trial,
     Staging& staging,
-    const LiquidSubstepBackend3D& backend
+    const LiquidSubstepBackend3D& backend,
+    bool sample_cavity_interior = false
 );
 // Copy the assembled faces into staging and replace the isolated drop air
 // lifts with ambient + sigma times analytic curvature. On success the

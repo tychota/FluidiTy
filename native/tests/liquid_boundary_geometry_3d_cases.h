@@ -6,11 +6,13 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include "fixture_data.h"
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
+#include "fluidity/host/liquid_cavity.h"
 #include "gtest/gtest.h"
 
 namespace fluidity::boundary_test {
@@ -427,6 +429,149 @@ class GeometryCases {
     }
     return samples;
   }
+  void SharedLiquidInterfaceUsesSeriesResistanceAndOneJump() {
+    const auto grid = Grid();
+    auto samples = Sample([](double, double, double) {
+      return -1.0;
+    });
+    samples.candidates.push_back({-1, -2, -2});
+    for (auto& center : samples.centers) {
+      const auto index = center.cell_index;
+      if (index.y != -2 || index.z != -2 || (index.x != -2 && index.x != -1)) {
+        center.signed_distance = 1.0;
+      }
+    }
+    const auto frozen = Freeze(grid, samples);
+    ASSERT_TRUE(frozen.ok()) << frozen.status();
+    ASSERT_EQ(frozen->cells().size(), 2);
+    const auto faces = frozen->faces();
+    const auto shared = std::ranges::find_if(faces, [](const FrozenLiquidFace3D& face) {
+      const auto index = face.face_index.lattice_index;
+      return face.face_index.axis == FaceNormalAxis::kX && index.x == -1 && index.y == -2 && index.z == -2;
+    });
+    ASSERT_NE(shared, faces.end());
+    const auto ordinal = static_cast<std::size_t>(shared - faces.begin());
+    std::vector<double> velocities(faces.size(), 0.0);
+    std::array cells{
+        LiquidPressureCellFields3D{0.0, kInfinity, 0.0, 1000.0},
+        LiquidPressureCellFields3D{0.0, kInfinity, 0.0, 800.0},
+    };
+    std::array crossings{LiquidInternalInterface3D{ordinal, 0.25, 0.5, 6.0, 1.0}};
+    const LiquidPressureFields3D fields{
+        .cells = cells,
+        .predicted_face_velocities = velocities,
+        .ambient_pressure = 0.0,
+        .internal_interfaces = crossings,
+    };
+    for (const double expected_jump : {-2.0, 2.0}) {
+      const auto links = links_(*frozen, fields);
+      ASSERT_TRUE(links.ok()) << links.status();
+      const auto& face = links->faces[ordinal];
+      EXPECT_DOUBLE_EQ(face.inverse_density, 1.0 / 850.0);
+      const auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link);
+      ASSERT_NE(internal, nullptr);
+      EXPECT_DOUBLE_EQ(internal->pressure_jump, expected_jump);
+
+      std::vector<MacPressureFace3D> sealed(links->faces.begin(), links->faces.end());
+      for (std::size_t index = 0; index < sealed.size(); ++index) {
+        if (index != ordinal) {
+          sealed[index].open_area = 0.0;
+          sealed[index].pressure_link = SealedMacPressureLink3D{};
+        }
+      }
+      const auto projection = project_({grid, 0.01, links->cells, sealed});
+      ASSERT_TRUE(projection.ok()) << projection.status();
+      ASSERT_EQ(projection->cell_pressures.size(), 2);
+      EXPECT_NEAR(projection->cell_pressures[1] - projection->cell_pressures[0], expected_jump, 1.0e-6);
+      EXPECT_NEAR(projection->corrected_face_velocities[ordinal], 0.0, 1.0e-9);
+
+      std::swap(cells[0].density, cells[1].density);
+      crossings[0].tail_fraction = 1.0 - crossings[0].tail_fraction;
+      crossings[0].curvature_tail_to_head = -crossings[0].curvature_tail_to_head;
+      crossings[0].normal_viscous_jump_tail_to_head = -crossings[0].normal_viscous_jump_tail_to_head;
+    }
+    const auto bound = InternalLiquidCapillaryStepBound3D(1000.0, 800.0, grid.geometry().cell_width, 0.5);
+    ASSERT_TRUE(bound.ok()) << bound.status();
+    const double h = grid.geometry().cell_width;
+    EXPECT_DOUBLE_EQ(*bound, std::sqrt(1800.0 * h * h * h / (2.0 * std::numbers::pi)));
+    const auto at_limit = Freeze(grid, samples, {}, 0.0, *bound);
+    ASSERT_TRUE(at_limit.ok()) << at_limit.status();
+    EXPECT_TRUE(links_(*at_limit, fields).ok());
+    const auto above_limit = Freeze(grid, samples, {}, 0.0, std::nextafter(*bound, kInfinity));
+    ASSERT_TRUE(above_limit.ok()) << above_limit.status();
+    EXPECT_EQ(links_(*above_limit, fields).status().code(), absl::StatusCode::kAborted);
+    crossings[0].surface_tension = 0.0;
+    EXPECT_TRUE(links_(*above_limit, fields).ok());
+
+    cells[0].density.reset();
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+    cells[0].density = 1000.0;
+    crossings[0].face_ordinal = (ordinal + 1) % faces.size();
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+  }
+
+  void CavityGasPressureAddsSignedCapillaryJumpOnce() {
+    const auto grid = Grid();
+    const auto samples = IsolatedLiquid(-0.25);
+    constexpr double kSigma = 0.5;
+    constexpr double kCurvature = -2.0;
+    const auto frozen = freeze_({
+        .mac_grid = grid,
+        .cell_indices = samples.candidates,
+        .center_distances = samples.centers,
+        .corner_distances = samples.corners,
+        .obstacle = {},
+        .step_duration = 0.01,
+        .liquid_density = 1000.0,
+        .surface_tension = kSigma,
+        .exact_outward_interface_curvature = kCurvature,
+    });
+    ASSERT_TRUE(frozen.ok()) << frozen.status();
+    ASSERT_EQ(frozen->cells().size(), 1U);
+    const auto cavity = EvaluateLiquidCavity3D({1.0, 100019.0}, 1.0, 100000.0, 1000.0, kSigma, kCurvature, 0.25);
+    ASSERT_TRUE(cavity.ok()) << cavity.status();
+    std::array air_pressures{
+        LiquidAirCellPressure3D{.cell_index = {-3, -2, -2}, .gas_gauge_pressure = cavity->gas_gauge_pressure},
+        LiquidAirCellPressure3D{.cell_index = {-1, -2, -2}, .gas_gauge_pressure = -3.0},
+    };
+    const std::array cells{LiquidPressureCellFields3D{0.0, kInfinity, 0.0}};
+    const std::vector<double> velocities(frozen->faces().size(), 0.0);
+    const LiquidPressureFields3D fields{
+        .cells = cells,
+        .predicted_face_velocities = velocities,
+        .ambient_pressure = 7.0,
+        .air_cell_pressures = air_pressures,
+    };
+    const auto links = links_(*frozen, fields);
+    ASSERT_TRUE(links.ok()) << links.status();
+    ASSERT_EQ(links->faces.size(), 6U);
+    std::size_t cavity_faces = 0;
+    for (const auto& face : links->faces) {
+      const auto* air = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link);
+      ASSERT_NE(air, nullptr);
+      if (face.face_index.axis != FaceNormalAxis::kX) {
+        EXPECT_EQ(air->exterior_pressure, 6.0);
+        continue;
+      }
+      ++cavity_faces;
+      const bool low_face = face.face_index.lattice_index.x == -2;
+      EXPECT_EQ(air->exterior_pressure, low_face ? 18.0 : -4.0);
+      if (low_face) {
+        EXPECT_EQ(air->exterior_pressure, cavity->boundary_gauge_pressure);
+      }
+    }
+    EXPECT_EQ(cavity_faces, 2U);
+    const auto projection = project_({grid, 0.01, links->cells, links->faces});
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    ASSERT_EQ(projection->cell_pressures.size(), 1U);
+    EXPECT_NEAR(projection->cell_pressures[0], (18.0 - 4.0 + 4.0 * 6.0) / 6.0, 1e-6);
+    EXPECT_LE(projection->diagnostics.max_cell_constraint_defect, 2e-5);
+    air_pressures[1].cell_index = {-2, -2, -2};
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+    air_pressures[1].cell_index = air_pressures[0].cell_index;
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+  }
+
   void ThetaFixtureAndSignedPressureMapping() {
     const auto grid = Grid();
     for (const double center : {-0.01, -0.25}) {

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "liquid_adaptive_state_internal_3d.h"
+#include "liquid_remap_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -90,10 +91,13 @@ bool ActiveRecordsFit(const LiquidState3D& state, LiquidStateCapacities3D capaci
   return state.particles.size() <= capacity.particles && state.blocks.size() <= capacity.blocks
       && state.cells.size() <= capacity.cells && state.faces.size() <= capacity.faces
       && state.sources.size() <= capacity.sources && state.adaptive_cells.size() <= capacity.cells
-      && state.adaptive_faces.size() <= capacity.faces;
+      && state.adaptive_faces.size() <= capacity.faces && state.cavity_gas.size() <= capacity.cells
+      && state.cavity_components.size() <= capacity.cells;
 }
 bool HasReservedCapacities(const LiquidState3D& state, LiquidStateCapacities3D capacity, bool adaptive) {
-  return state.particles.capacity() == capacity.particles && state.blocks.capacity() == capacity.blocks
+  const std::size_t cavity_capacity = state.next_cavity_id == 0 ? 0 : capacity.cells;
+  return state.cavity_gas.capacity() == cavity_capacity && state.cavity_components.capacity() == cavity_capacity
+      && state.particles.capacity() == capacity.particles && state.blocks.capacity() == capacity.blocks
       && state.cells.capacity() == (adaptive ? 0 : capacity.cells)
       && state.faces.capacity() == (adaptive ? 0 : capacity.faces)
       && state.adaptive_cells.capacity() == (adaptive ? capacity.cells : 0)
@@ -120,6 +124,9 @@ void CopyState(const LiquidState3D& source, LiquidState3D& destination) {
   CopyRecords(source.sources, destination.sources);
   CopyRecords(source.adaptive_cells, destination.adaptive_cells);
   CopyRecords(source.adaptive_faces, destination.adaptive_faces);
+  destination.next_cavity_id = source.next_cavity_id;
+  CopyRecords(source.cavity_gas, destination.cavity_gas);
+  CopyRecords(source.cavity_components, destination.cavity_components);
 }
 template <typename Record>
 absl::Status AllocateRecords(LiquidRecords3D<Record>& records, std::size_t capacity) {
@@ -132,7 +139,7 @@ absl::Status AllocateRecords(LiquidRecords3D<Record>& records, std::size_t capac
 }
 // Reject impossible aggregate byte counts before making any allocation. The three
 // independent transaction versions all need to fit in the addressable byte range.
-absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool adaptive) {
+absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool adaptive, bool cavity_enabled) {
   if (adaptive && (capacity.cells > kMaximumAdaptiveLiquidCells3D || capacity.faces > kMaximumAdaptiveLiquidFaces3D)) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -144,6 +151,7 @@ absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool adaptive) {
       {capacity.cells, adaptive ? sizeof(LiquidAdaptiveCellState3D) : sizeof(LiquidCellState3D)},
       {capacity.faces, adaptive ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D)},
       {capacity.sources, sizeof(LiquidSourceState3D)},
+      {cavity_enabled ? capacity.cells : 0, sizeof(LiquidCavityGasState3D) + sizeof(LiquidCavityComponentState3D)},
   });
   for (const auto& [count, stride] : regions) {
     if (count > (limit - bytes) / stride) {
@@ -224,7 +232,7 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
     if (!IsNonnegativeFinite(inventory.mass_kg) || !IsNonnegativeFinite(inventory.reference_volume_m3)
         || !IsNonnegativeFinite(inventory.current_volume_m3) || inventory.current_volume_m3 > volume_m3
         || !Finite(inventory.momentum_kg_m_per_s) || !std::isfinite(inventory.enthalpy_j)
-        || !std::isfinite(cell.previous_pressure)) {
+        || !std::isfinite(cell.previous_pressure) || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
@@ -317,6 +325,13 @@ absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
 absl::Status liquid_state_internal::ValidateAdaptiveRecordView3D(const AdaptiveRecordView3D& records) {
   return ValidateAdaptiveRecordView(records);
 }
+bool ValidLiquidParticleComposition3D(const LiquidParticleState3D& particle) {
+  return particle.constituent_count <= particle.constituents.size()
+      && ValidLiquidComposition3D(
+             particle.phase_id,
+             std::span(particle.constituents).first(particle.constituent_count)
+      );
+}
 
 bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const {
   return std::tie(id, tag, affine_enabled, mass, reference_volume, volume_ratio, side_tag, pic_initialized)
@@ -332,7 +347,12 @@ bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const
       )
       && Components(world_position) == Components(other.world_position)
       && Components(world_velocity) == Components(other.world_velocity)
-      && Components(velocity_slopes) == Components(other.velocity_slopes);
+      && Components(velocity_slopes) == Components(other.velocity_slopes) && phase_id == other.phase_id
+      && constituent_count == other.constituent_count && constituent_count <= constituents.size()
+      && std::ranges::equal(
+             std::span(constituents).first(constituent_count),
+             std::span(other.constituents).first(other.constituent_count)
+      );
 }
 bool LiquidBlockState3D::operator==(const LiquidBlockState3D& other) const {
   return LatticeSortKey(block_index) == LatticeSortKey(other.block_index)
@@ -356,13 +376,31 @@ bool LiquidAdaptiveCellState3D::operator==(const LiquidAdaptiveCellState3D& othe
       && inventory.reference_volume_m3 == other.inventory.reference_volume_m3
       && inventory.current_volume_m3 == other.inventory.current_volume_m3
       && Components(inventory.momentum_kg_m_per_s) == Components(other.inventory.momentum_kg_m_per_s)
-      && inventory.enthalpy_j == other.inventory.enthalpy_j && previous_pressure == other.previous_pressure;
+      && inventory.enthalpy_j == other.inventory.enthalpy_j && inventory.phase_id == other.inventory.phase_id
+      && inventory.constituent_count == other.inventory.constituent_count
+      && std::ranges::equal(
+             std::span(inventory.constituents)
+                 .first(std::min<std::size_t>(inventory.constituent_count, inventory.constituents.size())),
+             std::span(other.inventory.constituents)
+                 .first(std::min<std::size_t>(other.inventory.constituent_count, other.inventory.constituents.size())),
+             [](const auto& left, const auto& right) {
+               return left.substance_id == right.substance_id && left.volume_m3 == right.volume_m3;
+             }
+      )
+      && previous_pressure == other.previous_pressure;
 }
+bool LiquidCavityGasState3D::operator==(const LiquidCavityGasState3D& other) const {
+  return LatticeSortKey(cell_index) == LatticeSortKey(other.cell_index) && gas_volume == other.gas_volume
+      && component == other.component;
+}
+
 bool LiquidState3D::operator==(const LiquidState3D& other) const {
   return SameGeometry(geometry, other.geometry) && clock == other.clock && random_seed == other.random_seed
       && next_particle_id == other.next_particle_id && particles == other.particles && blocks == other.blocks
       && cells == other.cells && faces == other.faces && sources == other.sources
-      && adaptive_cells == other.adaptive_cells && adaptive_faces == other.adaptive_faces;
+      && adaptive_cells == other.adaptive_cells && adaptive_faces == other.adaptive_faces
+      && next_cavity_id == other.next_cavity_id && cavity_gas == other.cavity_gas
+      && cavity_components == other.cavity_components;
 }
 
 absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
@@ -381,6 +419,41 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
   if (state.next_particle_id == 0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
+  if (state.next_cavity_id == 0 && (state.cavity_gas.size() != 0 || state.cavity_components.size() != 0)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  std::size_t next_component = 0;
+  for (std::size_t index = 0; index < state.cavity_gas.size(); ++index) {
+    const auto& gas = state.cavity_gas[index];
+    if (!Positive(gas.gas_volume) || gas.component >= state.cavity_components.size() || gas.component > next_component
+        || (index > 0 && LatticeSortKey(state.cavity_gas[index - 1].cell_index) >= LatticeSortKey(gas.cell_index))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    if (gas.component == next_component) {
+      ++next_component;
+    }
+  }
+  if (next_component != state.cavity_components.size()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  for (std::size_t index = 0; index < state.cavity_components.size(); ++index) {
+    const auto& component = state.cavity_components[index];
+    if (component.id == 0) {
+      if (component.initial_volume != 0.0 || component.initial_absolute_pressure != 0.0) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+      continue;
+    }
+    if (component.id >= state.next_cavity_id || !Positive(component.initial_volume)
+        || !Positive(component.initial_absolute_pressure)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (state.cavity_components[previous].id == component.id) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+    }
+  }
   for (std::size_t index = 0; index < state.particles.size(); ++index) {
     const auto& particle = state.particles[index];
     if (particle.id == 0 || particle.id >= state.next_particle_id) {
@@ -388,7 +461,8 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
     }
     if (!Finite(particle.world_position) || !Finite(particle.world_velocity) || !Finite(particle.velocity_slopes.x_row)
         || !Finite(particle.velocity_slopes.y_row) || !Finite(particle.velocity_slopes.z_row)
-        || !Positive(particle.mass) || !Positive(particle.reference_volume) || !Positive(particle.volume_ratio)) {
+        || !Positive(particle.mass) || !Positive(particle.reference_volume) || !Positive(particle.volume_ratio)
+        || !ValidLiquidParticleComposition3D(particle)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     // Stable spatial order is not ID order. Check uniqueness without sorting or
@@ -458,12 +532,14 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, LiquidStateCapacities3D capacities) {
+static absl::StatusOr<LiquidState3D>
+CloneState(const LiquidState3D& source, LiquidStateCapacities3D capacities, bool enable_cavity) {
+  const bool cavity_enabled = enable_cavity || source.next_cavity_id != 0;
   if (auto status = ValidateLiquidState3D(source); !status.ok()) {
     return status;
   }
   const bool adaptive = source.adaptive_cells.size() != 0;
-  if (auto status = CheckCapacities(capacities, adaptive); !status.ok()) {
+  if (auto status = CheckCapacities(capacities, adaptive, cavity_enabled); !status.ok()) {
     return status;
   }
   if (!ActiveRecordsFit(source, capacities)) {
@@ -491,21 +567,39 @@ absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, Li
   if (auto status = AllocateRecords(result.adaptive_faces, adaptive ? capacities.faces : 0); !status.ok()) {
     return status;
   }
+  if (cavity_enabled) {
+    if (auto status = AllocateRecords(result.cavity_gas, capacities.cells); !status.ok()) {
+      return status;
+    }
+    if (auto status = AllocateRecords(result.cavity_components, capacities.cells); !status.ok()) {
+      return status;
+    }
+  }
   CopyState(source, result);
+  if (cavity_enabled && result.next_cavity_id == 0) {
+    result.next_cavity_id = 1;
+  }
   return result;
 }
 
-absl::StatusOr<LiquidFrameTransaction3D>
-LiquidFrameTransaction3D::Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities) {
-  auto committed = CloneLiquidState3D(initial_state, capacities);
+absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, LiquidStateCapacities3D capacities) {
+  return CloneState(source, capacities, false);
+}
+
+absl::StatusOr<LiquidFrameTransaction3D> LiquidFrameTransaction3D::Create(
+    const LiquidState3D& initial_state,
+    LiquidStateCapacities3D capacities,
+    bool enable_cavity
+) {
+  auto committed = CloneState(initial_state, capacities, enable_cavity);
   if (!committed.ok()) {
     return committed.status();
   }
-  auto trial = CloneLiquidState3D(initial_state, capacities);
+  auto trial = CloneState(initial_state, capacities, enable_cavity);
   if (!trial.ok()) {
     return trial.status();
   }
-  auto frame_start = CloneLiquidState3D(initial_state, capacities);
+  auto frame_start = CloneState(initial_state, capacities, enable_cavity);
   if (!frame_start.ok()) {
     return frame_start.status();
   }
@@ -611,7 +705,9 @@ LiquidFrameTransaction3D::FinishAttempt(LiquidAttemptDisposition3D decision, dou
   }
   if (trial_.clock != committed_.clock || !SameGeometry(trial_.geometry, committed_.geometry)
       || trial_.random_seed != committed_.random_seed || trial_.next_particle_id < committed_.next_particle_id
-      || (trial_.adaptive_cells.size() == 0) != (committed_.adaptive_cells.size() == 0)) {
+      || (trial_.adaptive_cells.size() == 0) != (committed_.adaptive_cells.size() == 0)
+      || trial_.next_cavity_id < committed_.next_cavity_id
+      || (trial_.next_cavity_id == 0) != (committed_.next_cavity_id == 0)) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (!HasReservedCapacities(trial_, capacities_, committed_.adaptive_cells.size() != 0)

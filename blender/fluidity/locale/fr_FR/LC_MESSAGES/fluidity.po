@@ -711,3 +711,129 @@ msgstr "Eau"
 msgid "World-space initial liquid velocity in m/s"
 msgstr "Vitesse initiale du liquide dans le repère monde en m/s"
 
+
+msgid "Source Box"
+msgstr "Boîte source"
+
+msgid "Substance ID"
+msgstr "Identifiant de substance"
+
+msgid "Miscibility Phase"
+msgstr "Phase de miscibilité"
+
+msgid "Particles per Second"
+msgstr "Particules par seconde"
+
+msgid "Emitted Particle Volume (m³)"
+msgstr "Volume des particules émises (m³)"
+
+msgid "Edit Liquid Sources"
+msgstr "Modifier les sources de liquide"
+
+msgid "Add Liquid Source"
+msgstr "Ajouter une source de liquide"
+
+msgid "Interactions"
+msgstr "Interactions"
+
+msgid "Phase Interface Tension (N/m)"
+msgstr "Tension interfaciale entre phases (N/m)"
+
+msgid "Give each substance ID one phase and density."
+msgstr "Associez chaque identifiant de substance à une phase et une masse volumique."
+
+msgid "Give each source box positive volume."
+msgstr "Donnez un volume positif à chaque boîte source."
+
+msgid "Assign sources to at most two miscibility phases."
+msgstr "Attribuez les sources à deux phases de miscibilité au maximum."
+
+msgid "Choose a boundary model for the liquid sources."
+msgstr "Choisissez un modèle de limites pour les sources de liquide."
+
+msgid "Assign a distinct box to each liquid source."
+msgstr "Attribuez une boîte distincte à chaque source de liquide."
+
+msgid "Attach Surface Cache"
+msgstr "Attacher un cache de surface"
+
+msgid "Attach Surface Cache..."
+msgstr "Attacher un cache de surface..."
+
+msgid "Attach committed Mesh frames with their phase and composition attributes"
+msgstr "Attacher les images de maillage publiees avec leurs attributs de phase et de composition"
+
+msgid "Surface attached. Save the project to keep the binding."
+msgstr "Surface attachée. Enregistrez le projet pour conserver la liaison."
+
+msgid "The saved Surface binding is not a FluidiTy object."
+msgstr "La liaison de surface enregistrée ne désigne pas un objet FluidiTy."
+
+msgid "Restore the FluidiTy Surface cache reader before relinking."
+msgstr "Restaurez le lecteur de cache de surface FluidiTy avant de rétablir la liaison."
+
+msgid "Blender could not open the verified Surface archive."
+msgstr "Blender n'a pas pu ouvrir l'archive de surface vérifiée."
+
+msgid "Blender could not find the native Surface reader."
+msgstr "Blender n'a pas trouvé le lecteur natif de surface."
+
+msgid "Blender could not read the last committed Surface sample."
+msgstr "Blender n'a pas pu lire le dernier échantillon de surface publié."
+
+msgid "Surface export timed out."
+msgstr "Le délai d'exportation de la surface a été dépassé."
+
+msgid "Surface Cache"
+msgstr "Cache de surface"
+
+msgid "Surface Spacing (m)"
+msgstr "Espacement de surface (m)"
+
+msgid "Surface Smoothing (m)"
+msgstr "Lissage de surface (m)"
+
+msgid "Build Surface"
+msgstr "Construire la surface"
+
+msgid "Resume Surface"
+msgstr "Reprendre la surface"
+
+msgid "Reconstruct native Mesh frames from the committed Bake cache"
+msgstr "Reconstruire les images de maillage natives à partir du cache de calcul publié"
+
+msgid "Choose a separate, non-nested Surface cache directory."
+msgstr "Choisissez un dossier de cache de surface distinct et non imbriqué."
+
+msgid "Choose a fresh Surface cache directory, or use Resume Surface."
+msgstr "Choisissez un nouveau dossier de cache de surface ou reprenez la surface."
+
+msgid "Waiting for the first committed Surface frame."
+msgstr "En attente de la première image de surface publiée."
+
+msgid "Surface build complete. Attach the committed surface to render."
+msgstr "Surface construite. Attachez la surface publiée pour le rendu."
+
+msgid "Surface build failed. Committed frames are preserved."
+msgstr "La construction de la surface a échoué. Les images publiées sont conservées."
+
+msgid "Set Viscosity"
+msgstr "Régler la viscosité"
+
+msgid "Dynamic Viscosity (Pa·s)"
+msgstr "Viscosité dynamique (Pa·s)"
+
+msgid "Planar Tank Fill"
+msgstr "Remplissage plan de la cuve"
+
+msgid "Fill Surface Height (m)"
+msgstr "Hauteur de la surface (m)"
+
+msgid "Give each substance ID one phase, density and viscosity."
+msgstr "Associez chaque identifiant de substance à une phase, une masse volumique et une viscosité."
+
+msgid "Place the fill height above the tank floor and inside the domain."
+msgstr "Placez la surface au-dessus du fond de la cuve et dans le domaine."
+
+msgid "Place each source box below the planar fill height."
+msgstr "Placez chaque boîte source sous la hauteur de remplissage."

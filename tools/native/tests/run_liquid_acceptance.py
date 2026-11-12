@@ -430,6 +430,16 @@ def verify_solver(
             accepted_trace_count = 0
             previous_dt_retry_count = 0
             continue
+        if event == "cavity_inventory_loss":
+            loss = record.get("inventory_loss")
+            require(isinstance(loss, dict), "missing cavity inventory loss")
+            names = ("vented_inventory", "subresolution_inventory", "unmatched_inventory")
+            values = [loss.get(name) for name in names]
+            require(all(type(value) in (float, int) and math.isfinite(value) and value >= 0 for value in values)
+                    and any(values), "invalid cavity inventory loss")
+            require(last_clock is not None and 0 < clock(record)[3] <= last_clock[3],
+                    "cavity inventory loss outside settled steps")
+            continue
         if event == "attempt":
             job_attempt_count += 1
             require(0 < published_count < len(frame_ordinals) and not frame_traces, "attempt ledger outside frame")

@@ -5,10 +5,12 @@
 #include <chrono>
 #include <cmath>
 #include <numbers>
+#include <numeric>
 #include <optional>
 #include <tuple>
 
 #include "absl/cleanup/cleanup.h"
+#include "fluidity/host/small_solve.h"
 #include "liquid_adaptive_step_3d.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
@@ -24,12 +26,180 @@ namespace {
 absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+// Mask anchors inside the box and use the nearest box face to complete those
+// velocity samples. Open anchors continue to use the tank history.
+absl::Status ApplyBoxFaceSamples(
+    SparseMacGridView3D grid,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidBoundaryFaceTag3D> tags,
+    std::span<LiquidPrescribedWallSample3D> walls
+) {
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto geometry = grid.geometry();
+  for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
+    const auto face = grid.FaceIndex(slot);
+    if (!face.ok()) {
+      return face.status();
+    }
+    const auto anchor = boundary_internal::TankFaceAnchorInCellWidths(*face);
+    bool inside = true;
+    double nearest = std::numeric_limits<double>::infinity();
+    Vec3 outward{};
+    for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+      const auto component = kComponents[axis];
+      const boundary_internal::TankLatticeAxis lattice{
+          geometry.world_origin.*component,
+          anchor.*component,
+          geometry.cell_width
+      };
+      const auto low = boundary_internal::TankPlaneOffset(box.world_low.*component, lattice).Bounds();
+      const auto high = boundary_internal::TankPlaneOffset(box.world_high.*component, lattice).Bounds();
+      const auto low_sign = low.sign();
+      const auto high_sign = high.sign();
+      if (!low_sign.has_value() || !high_sign.has_value()) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (*low_sign > 0 || *high_sign < 0) {
+        inside = false;
+        break;
+      }
+      if (-low.estimate < nearest) {
+        nearest = -low.estimate;
+        outward = {};
+        outward.*component = -1.0;
+      }
+      if (high.estimate < nearest) {
+        nearest = high.estimate;
+        outward = {};
+        outward.*component = 1.0;
+      }
+    }
+    if (inside) {
+      if (!tags.empty()) {
+        tags[slot].structurally_eligible = false;
+      }
+      if (!walls.empty()) {
+        walls[slot] = {true, 0, outward, box.wall_velocity};
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+Vec3 RigidSurfaceVelocity(const RigidBody3D& body, Vec3 center_relative_position, Vec3 linear_velocity) {
+  const auto angular = body.angular_velocity;
+  const auto arm = center_relative_position;
+  return {
+      std::fma(angular.y, arm.z, -angular.z * arm.y) + linear_velocity.x,
+      std::fma(angular.z, arm.x, -angular.x * arm.z) + linear_velocity.y,
+      std::fma(angular.x, arm.y, -angular.y * arm.x) + linear_velocity.z,
+  };
+}
+
+// Select the same body-frame solid for pressure aperture and MAC wall history.
+absl::Status ApplyOrientedBoxFaceSamples(
+    SparseMacGridView3D grid,
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    std::span<LiquidBoundaryFaceTag3D> tags,
+    std::span<LiquidPrescribedWallSample3D> walls
+) {
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array kUnitAxes{Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}, Vec3{0.0, 0.0, 1.0}};
+  std::array<Vec3, 3> world_axes;
+  for (std::size_t axis = 0; axis < world_axes.size(); ++axis) {
+    const auto rotated = RotateRigidBodyVector3D(body.orientation, kUnitAxes[axis]);
+    if (!rotated.ok()) {
+      return rotated.status();
+    }
+    world_axes[axis] = *rotated;
+  }
+  const auto geometry = grid.geometry();
+  for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
+    const auto face = grid.FaceIndex(slot);
+    if (!face.ok()) {
+      return face.status();
+    }
+    const auto anchor = boundary_internal::TankFaceAnchorInCellWidths(*face);
+    Vec3 arm{};
+    for (const auto component : kComponents) {
+      const auto distance = boundary_internal::HorizontalPlaneLatticeDistance(
+          body.center.*component,
+          {geometry.world_origin.*component, anchor.*component, geometry.cell_width}
+      );
+      if (!distance.ok()) {
+        return boundary_internal::ArithmeticStatus(distance.status(), true);
+      }
+      arm.*component = *distance;
+    }
+    double nearest = std::numeric_limits<double>::infinity();
+    Vec3 outward{};
+    for (std::size_t axis = 0; axis < world_axes.size(); ++axis) {
+      const double local_coordinate = liquid_step_internal::Dot(world_axes[axis], arm);
+      const double clearance = body_half_extent.*kComponents[axis] - std::abs(local_coordinate);
+      if (!std::isfinite(clearance)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (clearance < nearest) {
+        nearest = clearance;
+        outward = liquid_step_internal::Scale(world_axes[axis], local_coordinate < 0.0 ? -1.0 : 1.0);
+      }
+      if (clearance < 0.0) {
+        break;
+      }
+    }
+    if (nearest >= 0.0) {
+      if (!tags.empty()) {
+        tags[slot].structurally_eligible = false;
+      }
+      if (!walls.empty()) {
+        const auto wall_velocity = RigidSurfaceVelocity(body, arm, body.linear_velocity);
+        if (!liquid_step_internal::Finite(wall_velocity)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+        walls[slot] = {true, 0, outward, wall_velocity};
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status CheckOrientedBoxSweepInTank(
+    const RigidBodyStep3D& step,
+    Vec3 body_half_extent,
+    const AxisAlignedLiquidTank3D& tank,
+    double cell_width
+) {
+  const double radius = std::nextafter(
+      std::hypot(body_half_extent.x, body_half_extent.y, body_half_extent.z),
+      std::numeric_limits<double>::infinity()
+  );
+  const auto travel = RigidBodySweepDistanceBound3D(step, radius);
+  if (!travel.ok()) {
+    return travel.status();
+  }
+  const double swept_radius = boundary_internal::AddUp(radius, *travel);
+  const auto center = step.start.center;
+  if (!std::isfinite(swept_radius) || *travel > 0.5 * cell_width
+      || boundary_internal::AddDown(center.x, -swept_radius) <= tank.start_low_x
+      || boundary_internal::AddUp(center.x, swept_radius) >= tank.high_x
+      || boundary_internal::AddDown(center.y, -swept_radius) <= tank.floor_y
+      || boundary_internal::AddDown(center.z, -swept_radius) <= tank.low_z
+      || boundary_internal::AddUp(center.z, swept_radius) >= tank.high_z) {
+    return Error(absl::StatusCode::kAborted);
+  }
+  return absl::OkStatus();
+}
 // Check the complete owned payload before publishing any reservation or growth.
 absl::StatusOr<std::size_t> ReservationBytes(
     LiquidStateCapacities3D capacities,
     std::size_t source_count,
+    std::size_t constituent_material_count,
+    std::size_t phase_pair_count,
     std::size_t workspace_bytes,
-    std::size_t staging_bytes
+    std::size_t staging_bytes,
+    bool cavity_enabled,
+    bool adaptive = false
 ) {
   std::size_t total = 0;
   const auto add = [&](std::size_t count, std::size_t stride) -> absl::Status {
@@ -41,12 +211,17 @@ absl::StatusOr<std::size_t> ReservationBytes(
   };
   STEP_TRY(add(capacities.particles, 3 * sizeof(LiquidParticleState3D)));
   STEP_TRY(add(capacities.blocks, 3 * sizeof(LiquidBlockState3D)));
-  STEP_TRY(add(capacities.cells, 3 * sizeof(LiquidCellState3D)));
-  STEP_TRY(add(capacities.faces, 3 * sizeof(LiquidFaceState3D)));
+  STEP_TRY(add(capacities.cells, 3 * (adaptive ? sizeof(LiquidAdaptiveCellState3D) : sizeof(LiquidCellState3D))));
+  STEP_TRY(add(capacities.faces, 3 * (adaptive ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D))));
   STEP_TRY(add(capacities.sources, 3 * sizeof(LiquidSourceState3D)));
   STEP_TRY(add(source_count, sizeof(LiquidEmissionSource3D)));
+  STEP_TRY(add(constituent_material_count, sizeof(LiquidConstituentMaterial3D)));
+  STEP_TRY(add(phase_pair_count, sizeof(LiquidPhasePair3D)));
   STEP_TRY(add(workspace_bytes, 1));
   STEP_TRY(add(staging_bytes, 1));
+  if (cavity_enabled) {
+    STEP_TRY(add(capacities.cells, 3 * (sizeof(LiquidCavityGasState3D) + sizeof(LiquidCavityComponentState3D))));
+  }
   return total;
 }
 bool Complete(const LiquidSubstepBackend3D& backend) {
@@ -77,10 +252,92 @@ auto FaceKey(FaceIndex3D index) {
   return std::tuple(index.axis, index.lattice_index.z, index.lattice_index.y, index.lattice_index.x);
 }
 
+using liquid_step_internal::BalanceSealedLiquidDrift3D;
+using liquid_step_internal::LiquidVolumeDriftRate3D;
+using liquid_step_internal::Staging;
+
+// Check physical compatibility before adding any sensor correction.
+absl::Status ApplyIncompressibleDrift(
+    SparseMacGridView3D grid,
+    double step_duration,
+    LiquidSceneDrift3D controls,
+    Staging& staging,
+    MacPressureWorkspace3D& workspace,
+    LiquidPressureProblemView3D& problem
+) {
+  const auto components = workspace.ClassifyPhysicalComponents(grid, step_duration, problem);
+  if (!components.ok()) {
+    return components.status();
+  }
+  auto& corrected = *staging.drift_pressure_cells;
+  auto& sealed = *staging.sealed_drift_cells;
+  STEP_TRY(corrected.Resize(problem.cells.size()));
+  std::ranges::copy(problem.cells, corrected.values().begin());
+  const auto add_correction = [&](std::size_t cell, double correction) {
+    if (correction != 0.0) {
+      corrected[cell].target_divergence += correction;
+    }
+    return std::isfinite(corrected[cell].target_divergence) ? absl::OkStatus() : Error(absl::StatusCode::kOutOfRange);
+  };
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    if (std::ranges::binary_search(components->sealed_roots, components->roots[cell])) {
+      continue;
+    }
+    const auto correction =
+        LiquidVolumeDriftRate3D((*staging.drift_sensors)[cell], 0.0, controls.correction_time, controls.maximum_rate);
+    if (!correction.ok()) {
+      return correction.status();
+    }
+    STEP_TRY(add_correction(cell, *correction));
+  }
+  STEP_TRY(sealed.Resize(problem.cells.size()));
+  for (const std::size_t root : components->sealed_roots) {
+    std::size_t sensed_count = 0;
+    for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+      const auto& sensor = (*staging.drift_sensors)[cell];
+      if (components->roots[cell] != root || sensor.sampled_reference_volume == 0.0) {
+        continue;
+      }
+      const double raw_rate = -std::log(sensor.mean_volume_ratio) / controls.correction_time;
+      if (!std::isfinite(raw_rate)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      sealed[sensed_count++] = {
+          .cell_ordinal = cell,
+          .fluid_volume = problem.cells[cell].fluid_volume,
+          .raw_rate = raw_rate,
+      };
+    }
+    const auto sensed_cells = sealed.values().first(sensed_count);
+    STEP_TRY(BalanceSealedLiquidDrift3D(sensed_cells, controls.maximum_rate));
+    for (const auto& cell : sensed_cells) {
+      STEP_TRY(add_correction(cell.cell_ordinal, cell.corrected_rate));
+    }
+  }
+  problem.cells = corrected.values();
+  return absl::OkStatus();
+}
+
+bool HasConstituentViscosity(const LiquidSceneInputs3D& scene) {
+  return std::ranges::any_of(scene.constituent_materials, [](const auto& material) {
+    return material.dynamic_viscosity_pa_s.has_value();
+  });
+}
+
+bool CanApplyViscosity(const LiquidSceneInputs3D& scene) {
+  return scene.dynamic_viscosity > 0.0 || std::ranges::any_of(scene.constituent_materials, [](const auto& material) {
+           return material.dynamic_viscosity_pa_s.value_or(0.0) > 0.0;
+         });
+}
+MacPressureWorkspaceMode3D PressureWorkspaceMode(const LiquidSceneInputs3D& scene) {
+  return CanApplyViscosity(scene) ? MacPressureWorkspaceMode3D::kCoupledViscosity
+                                  : MacPressureWorkspaceMode3D::kInviscid;
+}
+
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
-      && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus)
-      && scene.surface_tension == 0;
+      && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus) && !scene.eos
+      && (!scene.drift || scene.drift->maximum_rate == 0.0) && scene.surface_tension == 0 && !CanApplyViscosity(scene);
 }
 
 // Continue projected changes only when the new donors are a strict subset of
@@ -349,13 +606,166 @@ LiquidRegularCellTransport3D RegularTransportSample(
   sample.active = true;
   return sample;
 }
+struct CavityStepScratch {
+  LiquidRecords3D<LiquidAirVolumeCell3D> previous_gas;
+  LiquidRecords3D<std::size_t> previous_labels;
+  LiquidRecords3D<LiquidCavityLineageState3D> previous_lineage;
+  LiquidRecords3D<LiquidAirVolumeCell3D> candidate_gas;
+  LiquidRecords3D<std::size_t> candidate_labels;
+  LiquidRecords3D<std::size_t> queue;
+  LiquidRecords3D<LiquidAirComponent3D> components;
+  LiquidRecords3D<LiquidAirComponentOverlap3D> overlaps;
+  LiquidRecords3D<std::optional<LiquidCavityInventory3D>> inventories;
+  LiquidRecords3D<LiquidCavityLineageCandidate3D> candidates;
+  LiquidRecords3D<LiquidCavityBoundaryComponent3D> boundary_components;
+  LiquidRecords3D<LiquidAirCellPressure3D> pressures;
+  std::size_t reserved_bytes = 0;
+
+  static absl::StatusOr<CavityStepScratch> Create(std::size_t capacity) {
+    CavityStepScratch owner;
+    const auto reserve = [&]<typename Record>(LiquidRecords3D<Record>& records) -> absl::Status {
+      constexpr std::size_t stride = sizeof(Record);
+      if (capacity > (SIZE_MAX - owner.reserved_bytes) / stride) {
+        return Error(absl::StatusCode::kResourceExhausted);
+      }
+      auto storage = LiquidRecords3D<Record>::Create(capacity);
+      if (!storage.ok()) {
+        return storage.status();
+      }
+      STEP_TRY(storage->Resize(capacity));
+      records = std::move(*storage);
+      owner.reserved_bytes += capacity * stride;
+      return absl::OkStatus();
+    };
+    STEP_TRY(reserve(owner.previous_gas));
+    STEP_TRY(reserve(owner.previous_labels));
+    STEP_TRY(reserve(owner.previous_lineage));
+    STEP_TRY(reserve(owner.candidate_gas));
+    STEP_TRY(reserve(owner.candidate_labels));
+    STEP_TRY(reserve(owner.queue));
+    STEP_TRY(reserve(owner.components));
+    STEP_TRY(reserve(owner.overlaps));
+    STEP_TRY(reserve(owner.inventories));
+    STEP_TRY(reserve(owner.candidates));
+    STEP_TRY(reserve(owner.boundary_components));
+    STEP_TRY(reserve(owner.pressures));
+    return owner;
+  }
+
+  absl::StatusOr<LiquidStepCavityBoundaries3D> Prepare(
+      const LiquidSceneCavity3D& settings,
+      const LiquidBoundaryGeometryViewInputs3D& samples,
+      LiquidState3D& state,
+      std::optional<LiquidCavityStepPreparation3D>& measurement
+  ) {
+    std::span<const FaceIndex3D> outlets;
+    if (settings.atmosphere_outlets) {
+      const auto supplied = settings.atmosphere_outlets(settings.context, samples);
+      if (!supplied.ok()) {
+        return supplied.status();
+      }
+      outlets = *supplied;
+    }
+    struct BirthEquilibrium {
+      const LiquidSceneCavity3D& settings;
+      double surface_tension;
+    } equilibrium{settings, samples.surface_tension};
+    const auto default_initialize = [](void* context, const LiquidAirComponent3D& component) {
+      const auto& birth = *static_cast<const BirthEquilibrium*>(context);
+      return InitializeSubmergedLiquidCavity3D(
+          component.gas_volume,
+          birth.settings.atmospheric_absolute_pressure,
+          birth.settings.birth_hydrostatic_gauge_pressure,
+          birth.surface_tension
+      );
+    };
+    // The transaction supplies the last accepted snapshot, including on resume
+    // and capacity replay. Gas passages are only needed for the current labeler.
+    for (std::size_t index = 0; index < state.cavity_gas.size(); ++index) {
+      const auto& saved = state.cavity_gas[index];
+      previous_gas[index] = {.cell_index = saved.cell_index, .gas_volume = saved.gas_volume};
+      previous_labels[index] = saved.component;
+    }
+    for (std::size_t index = 0; index < state.cavity_components.size(); ++index) {
+      const auto& saved = state.cavity_components[index];
+      auto& lineage = previous_lineage[index];
+      lineage = {.id = saved.id, .inventory = std::nullopt};
+      if (saved.id != 0) {
+        lineage.inventory = LiquidCavityInventory3D{saved.initial_volume, saved.initial_absolute_pressure};
+      }
+    }
+    const LiquidCavityStepInputs3D inputs{
+        .geometry = samples.mac_grid.geometry(),
+        .obstacle = samples.obstacle,
+        .sampled_cells = samples.cell_indices,
+        .corners = samples.corner_distances,
+        .centers = samples.center_distances,
+        .atmosphere_outlets = outlets,
+        .previous_snapshot =
+            {
+                previous_gas.values().first(state.cavity_gas.size()),
+                previous_labels.values().first(state.cavity_gas.size()),
+                state.cavity_components.size(),
+            },
+        .previous_lineage = previous_lineage.values().first(state.cavity_components.size()),
+        .next_id = state.next_cavity_id,
+        .atmospheric_absolute_pressure = settings.atmospheric_absolute_pressure,
+        .liquid_density = samples.liquid_density,
+        .exterior = !settings.atmosphere_outlets && std::holds_alternative<std::monostate>(samples.obstacle)
+            ? LiquidAirExterior3D::kUnobstructedBoundingBox
+            : LiquidAirExterior3D::kExplicitOutlets,
+        .initialization_context = settings.initialize ? settings.context : &equilibrium,
+        .initialize = settings.initialize ? settings.initialize : +default_initialize,
+    };
+    const LiquidCavityStepScratch3D scratch{
+        .gas_cells = candidate_gas.values(),
+        .labels = candidate_labels.values(),
+        .queue = queue.values(),
+        .components = components.values(),
+        .overlaps = overlaps.values(),
+        .inventories = inventories.values(),
+        .lineage = candidates.values(),
+        .boundary_components = boundary_components.values(),
+        .air_pressures = pressures.values(),
+    };
+    const auto prepared = PrepareLiquidCavityStep3D(inputs, scratch);
+    if (!prepared.ok()) {
+      return prepared.status();
+    }
+    STEP_TRY(state.cavity_gas.Resize(prepared->gas_cell_count));
+    STEP_TRY(state.cavity_components.Resize(prepared->component_count));
+    for (std::size_t index = 0; index < prepared->gas_cell_count; ++index) {
+      const auto& cell = candidate_gas[index];
+      state.cavity_gas[index] = {cell.cell_index, cell.gas_volume, candidate_labels[index]};
+    }
+    for (std::size_t index = 0; index < prepared->component_count; ++index) {
+      const auto& lineage = candidates[index].state;
+      auto& saved = state.cavity_components[index];
+      saved = {.id = lineage.id, .initial_volume = 0.0, .initial_absolute_pressure = 0.0};
+      if (lineage.inventory) {
+        saved.initial_volume = lineage.inventory->initial_volume;
+        saved.initial_absolute_pressure = lineage.inventory->initial_absolute_pressure;
+      }
+    }
+    state.next_cavity_id = prepared->lineage.next_id;
+    measurement = *prepared;
+    return LiquidStepCavityBoundaries3D{
+        .air_pressures = pressures.values().first(prepared->boundaries.air_pressure_count),
+        .maximum_step_duration = prepared->boundaries.maximum_step_duration,
+    };
+  }
+};
+
 }  // namespace
 struct LiquidSubstepScheduler3D::Impl {
   LiquidFrameTransaction3D transaction;
   LiquidStepWorkspace3D workspace;
   liquid_step_internal::Staging staging;
   LiquidRecords3D<LiquidEmissionSource3D> sources;
+  LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
+  LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidSceneInputs3D scene;
+  std::optional<CavityStepScratch> cavity;
   LiquidStepOptions3D options;
   LiquidSubstepBackend3D backend;
   std::optional<liquid_step_internal::AdaptiveLiquidStep3D> adaptive;
@@ -419,13 +829,49 @@ struct LiquidSubstepScheduler3D::Impl {
       double step_duration,
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& accepted_measurement,
-      LiquidWorkPhaseObserver3D work_phase
+      LiquidWorkPhaseObserver3D work_phase,
+      RigidBody3D* piston_load,
+      bool dynamic_piston,
+      bool coupled_piston,
+      const LiquidPistonReactionUpdate3D* update_with_reaction,
+      FloatingBoxTrial* floating_box
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
-    const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    if (dynamic_piston) {
+      auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+      tank.start_low_x = piston_load->center.x;
+      tank.piston_velocity_x = piston_load->linear_velocity.x;
+    }
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
+    const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
+    std::optional<RigidBodyStep3D> oriented_box_candidate;
+    const auto record_oriented_pressure_load = [&](const RigidBody3D& loaded) {
+      auto& loads = *floating_box->oriented_loads;
+      loads.pressure_force =
+          liquid_step_internal::Add(loaded.force, liquid_step_internal::Scale(loads.external_force, -1.0));
+      loads.pressure_torque =
+          liquid_step_internal::Add(loaded.torque, liquid_step_internal::Scale(loads.external_torque, -1.0));
+    };
+    TranslatingContactBox3D contact_box{};
+    TranslatingContactBox3D end_box{};
+    if (floating_box != nullptr && !oriented_box) {
+      contact_box = {
+          floating_box->geometry.world_low,
+          floating_box->geometry.world_high,
+          floating_box->body.linear_velocity,
+      };
+      const auto translate = [&](Vec3 point) {
+        return Vec3{
+            std::fma(step_duration, contact_box.wall_velocity.x, point.x),
+            std::fma(step_duration, contact_box.wall_velocity.y, point.y),
+            std::fma(step_duration, contact_box.wall_velocity.z, point.z),
+        };
+      };
+      end_box = {translate(contact_box.world_low), translate(contact_box.world_high), contact_box.wall_velocity};
+    }
     const MacDepositQuantization3D quantization{
         options.mass_per_quantum,
         options.momentum_per_quantum,
@@ -442,7 +888,7 @@ struct LiquidSubstepScheduler3D::Impl {
       STEP_TRY(ocean_inlet_particles->Apply(*ocean_boundary, obstacle, old_time, trial));
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, step_duration));
-    STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend));
+    STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend, cavity.has_value()));
     STEP_TRY(backend.topology(
         backend.context,
         trial.particles.values(),
@@ -458,6 +904,15 @@ struct LiquidSubstepScheduler3D::Impl {
     const auto grid = topology->grid;
     STEP_TRY(liquid_step_internal::PrepareTransfers(trial, grid, staging));
     STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, 0, staging.tags.values(), {}));
+    if (floating_box != nullptr) {
+      if (oriented_box) {
+        STEP_TRY(
+            ApplyOrientedBoxFaceSamples(grid, floating_box->body, floating_box->half_extent, staging.tags.values(), {})
+        );
+      } else {
+        STEP_TRY(ApplyBoxFaceSamples(grid, contact_box, staging.tags.values(), {}));
+      }
+    }
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, step_duration));
     const auto deposits = backend.deposit(
@@ -544,7 +999,34 @@ struct LiquidSubstepScheduler3D::Impl {
         .surface_tension = scene.surface_tension,
         .exact_outward_interface_curvature = exact_curvature,
     };
-    const auto frozen = backend.freeze(backend.context, geometry_inputs, boundary);
+    LiquidStepCavityBoundaries3D cavity_boundaries;
+    if (cavity || scene.cavity_provider.prepare) {
+      const auto prepared = cavity
+          ? cavity->Prepare(*scene.cavity, geometry_inputs, trial, accepted_measurement.cavity)
+          : scene.cavity_provider.prepare(scene.cavity_provider.context, old_time, geometry_inputs);
+      if (!prepared.ok()) {
+        return prepared.status();
+      }
+      cavity_boundaries = *prepared;
+      const double bound = cavity_boundaries.maximum_step_duration;
+      if (!(bound > 0.0)) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+      if (std::isfinite(bound)) {
+        accepted_measurement.step_start_cavity_bound_seconds = bound;
+        if (step_duration > bound) {
+          return Error(absl::StatusCode::kAborted);
+        }
+      }
+    }
+    const auto freeze = [&](const LiquidBoundaryGeometryViewInputs3D& inputs) {
+      if (oriented_box) {
+        return boundary.FreezeOrientedFloatingBox(inputs, *floating_box->oriented_geometry);
+      }
+      return floating_box == nullptr ? backend.freeze(backend.context, inputs, boundary)
+                                     : boundary.FreezeFloatingBox(inputs, floating_box->geometry);
+    };
+    const auto frozen = freeze(geometry_inputs);
     if (!frozen.ok()) {
       // Geometry uses FailedPrecondition for both step_duration certification and incompatible
       // geometry. Recheck only the former at the conservative capillary duration;
@@ -556,7 +1038,7 @@ struct LiquidSubstepScheduler3D::Impl {
         if (std::isfinite(capillary_duration) && capillary_duration > 0 && step_duration > capillary_duration) {
           auto certified_inputs = geometry_inputs;
           certified_inputs.step_duration = capillary_duration;
-          const auto certified = backend.freeze(backend.context, certified_inputs, boundary);
+          const auto certified = freeze(certified_inputs);
           if (certified.ok() && step_duration > certified->capillary_step_bound) {
             return Error(absl::StatusCode::kAborted);
           }
@@ -573,14 +1055,77 @@ struct LiquidSubstepScheduler3D::Impl {
       accepted_measurement.step_start_capillary_bound_seconds = frozen->capillary_step_bound;
     }
     const auto* tank_at_step_start = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
-    if (tank_at_step_start) {
+    if (tank_at_step_start && floating_box == nullptr) {
       accepted_measurement.piston_pose = LiquidPistonStepPose3D{
           .step_start_low_x_m = tank_at_step_start->start_low_x,
           .step_end_low_x_m = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x,
       };
     }
+    std::optional<LiquidEos3D> eos;
+    if (scene.eos) {
+      eos = LiquidEos3D{scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law};
+    }
+    double minimum_predictor_density = scene.liquid_density;
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
+    const auto particles = trial.particles.values();
+    const auto first_explicit = std::ranges::find_if(particles, [](const LiquidParticleState3D& particle) {
+      return particle.constituent_count != 0;
+    });
+    const bool uses_composition_density = staging.composition_density && first_explicit != particles.end();
+    const bool uses_composition_viscosity = uses_composition_density && staging.composition_viscosity.has_value();
+    const double sensor_viscosity = uses_composition_viscosity ? scene.dynamic_viscosity : 0.0;
+    std::span<const LiquidInternalInterface3D> internal_interfaces;
+    if (uses_composition_density) {
+      STEP_TRY(staging.composition_density->Resize(frozen->cells.size()));
+      const auto second_phase = std::ranges::find_if(particles, [&](const LiquidParticleState3D& particle) {
+        return particle.constituent_count != 0 && particle.phase_id != first_explicit->phase_id;
+      });
+      if (second_phase == particles.end()) {
+        STEP_TRY(liquid_step_internal::SampleLiquidCellCompositionDensity3D(
+            grid.geometry(),
+            frozen->cells,
+            particles,
+            scene.constituent_materials,
+            scene.liquid_density,
+            staging.composition_density->values(),
+            sensor_viscosity
+        ));
+      } else {
+        const auto* pair = FindLiquidPhasePair3D(scene.phase_pairs, first_explicit->phase_id, second_phase->phase_id);
+        const auto* planar_tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
+        const bool supported_exterior = std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
+            || (std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field) && planar_tank
+                && planar_tank->piston_velocity_x == 0.0);
+        if (!pair || !staging.phase_crossings || !supported_exterior || staging.drift_sensors) {
+          return Error(absl::StatusCode::kFailedPrecondition);
+        }
+        STEP_TRY(staging.phase_crossings->Resize(frozen->faces.size()));
+        const auto count = liquid_step_internal::PrepareLiquidPhaseCrossings3D(
+            *frozen,
+            particles,
+            scene.constituent_materials,
+            *pair,
+            staging.composition_density->values(),
+            staging.phase_crossings->values(),
+            sensor_viscosity
+        );
+        if (!count.ok()) {
+          return count.status();
+        }
+        internal_interfaces = staging.phase_crossings->values().first(*count);
+      }
+    }
+    if (staging.drift_sensors) {
+      STEP_TRY(staging.drift_sensors->Resize(frozen->cells.size()));
+      STEP_TRY(liquid_step_internal::SampleLiquidCellVolumeRatios3D(
+          grid.geometry(),
+          frozen->cells,
+          trial.particles.values(),
+          0,
+          staging.drift_sensors->values()
+      ));
+    }
     for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
       const auto cells = trial.cells.values();
       const auto key = frozen->cells[index].cell_index;
@@ -590,7 +1135,80 @@ struct LiquidSubstepScheduler3D::Impl {
       if (found == cells.end() || CellKey(found->cell_index) != CellKey(key)) {
         return Error(absl::StatusCode::kInternal);
       }
-      staging.pressure_fields[index] = {scene.target_divergence, scene.bulk_modulus, found->previous_pressure};
+      double target_divergence = scene.target_divergence;
+      double predicted_pressure = found->previous_pressure;
+      double tangent_bulk_modulus = scene.bulk_modulus;
+      std::optional<double> predicted_density;
+      if (uses_composition_density) {
+        const auto& sensed = (*staging.composition_density)[index];
+        if (sensed.sampled_volume_m3 > 0.0) {
+          predicted_density = sensed.sampled_mass_kg / sensed.sampled_volume_m3;
+          if (!std::isfinite(*predicted_density) || *predicted_density <= 0.0) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+        } else if (sensed.extrapolated_density > 0.0) {
+          predicted_density = sensed.extrapolated_density;
+        }
+      }
+      if (eos) {
+        const auto pressure = liquid_step_internal::AdvectLiquidPressureHistory3D(
+            transaction.committed(),
+            key,
+            step_duration,
+            scene.ambient_pressure
+        );
+        if (!pressure.ok()) {
+          return pressure.status();
+        }
+        predicted_pressure = *pressure;
+        auto local_eos = *eos;
+        local_eos.reference_density = predicted_density.value_or(scene.liquid_density);
+        const auto predictor = EvaluateLiquidEosAtPressure3D(local_eos, predicted_pressure);
+        if (!predictor.ok()) {
+          return predictor.status();
+        }
+        tangent_bulk_modulus = predictor->bulk_modulus;
+        predicted_density = predictor->density;
+        if (staging.drift_sensors) {
+          const auto correction = liquid_step_internal::LiquidVolumeDriftRate3D(
+              (*staging.drift_sensors)[index],
+              predictor->log_volume_ratio,
+              scene.drift->correction_time,
+              scene.drift->maximum_rate
+          );
+          if (!correction.ok()) {
+            return correction.status();
+          }
+          if (*correction != 0.0) {
+            target_divergence += *correction;
+          }
+          if (!std::isfinite(target_divergence)) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+        }
+      }
+      if (predicted_density) {
+        minimum_predictor_density = std::min(minimum_predictor_density, *predicted_density);
+      }
+      staging.pressure_fields[index] = {
+          .target_divergence = target_divergence,
+          .bulk_modulus = tangent_bulk_modulus,
+          .previous_pressure = predicted_pressure,
+          .density = predicted_density,
+      };
+    }
+    if ((eos || uses_composition_density) && accepted_measurement.step_start_capillary_bound_seconds) {
+      // Freeze used reference density. Tighten its active bound when the
+      // pressure operator sees lighter liquid at the advected predictor.
+      const double density_scale = std::sqrt(minimum_predictor_density) / std::sqrt(scene.liquid_density);
+      auto& capillary_bound = *accepted_measurement.step_start_capillary_bound_seconds;
+      capillary_bound *= density_scale;
+      if (!(capillary_bound > 0.0)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (step_duration > capillary_bound) {
+        return Error(absl::StatusCode::kAborted);
+      }
     }
     for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
       const auto& face = frozen->faces[index];
@@ -606,6 +1224,17 @@ struct LiquidSubstepScheduler3D::Impl {
             {},
             staging.old_walls.values()
         ));
+        if (oriented_box) {
+          STEP_TRY(ApplyOrientedBoxFaceSamples(
+              grid,
+              floating_box->body,
+              floating_box->half_extent,
+              {},
+              staging.old_walls.values()
+          ));
+        } else if (floating_box != nullptr) {
+          STEP_TRY(ApplyBoxFaceSamples(grid, contact_box, {}, staging.old_walls.values()));
+        }
         const LiquidMissingFacePredictionInputs3D prediction_inputs{
             .grid = grid,
             .old_history = old_history,
@@ -630,6 +1259,8 @@ struct LiquidSubstepScheduler3D::Impl {
     // Evaluate the signed wall flux at the frozen pose. Pressure link assembly
     // consumes the face-order borrow before the wetted-piston workspace is reused.
     std::span<const std::optional<double>> wetted_piston_face_fluxes;
+    std::optional<WettedPistonInputs3D> piston_inputs;
+    std::optional<WettedPistonView3D> piston_wetted;
     if (staging.wetted_piston.has_value()) {
       const WettedPistonInputs3D wetted_piston_inputs{
           .field = scene.field,
@@ -645,6 +1276,8 @@ struct LiquidSubstepScheduler3D::Impl {
         return Error(absl::StatusCode::kInvalidArgument);
       }
       wetted_piston_face_fluxes = wetted->face_fluxes;
+      piston_inputs.emplace(wetted_piston_inputs);
+      piston_wetted = *wetted;
     }
     auto links = backend.links(
         backend.context,
@@ -654,6 +1287,8 @@ struct LiquidSubstepScheduler3D::Impl {
             .predicted_face_velocities = staging.incident_velocities.values(),
             .ambient_pressure = scene.ambient_pressure,
             .wetted_piston_face_fluxes = wetted_piston_face_fluxes,
+            .air_cell_pressures = cavity_boundaries.air_pressures,
+            .internal_interfaces = internal_interfaces,
         },
         boundary
     );
@@ -675,38 +1310,605 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(trial.cells.Resize(frozen->cells.size()));
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
+    std::optional<double> coupled_velocity;
+    std::optional<double> coupled_box_speed;
+    if ((coupled_piston || floating_box != nullptr) && links->cells.empty()) {
+      return Error(absl::StatusCode::kFailedPrecondition);
+    }
     if (!links->cells.empty()) {
       auto pressure_problem = *links;
-      pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
-      const auto projection = backend.project(
-          backend.context,
-          grid,
-          step_duration,
-          pressure_problem,
-          options.pressure_solver_options,
-          workspace.pressure()
-      );
-      if (!projection.ok()) {
-        return projection.status();
+      if (staging.drift_pressure_cells) {
+        STEP_TRY(
+            ApplyIncompressibleDrift(grid, step_duration, *scene.drift, staging, workspace.pressure(), pressure_problem)
+        );
       }
-      diagnostics.pressure_diagnostics = projection->diagnostics;
-      accepted_measurement.pressure = projection->diagnostics;
-      accepted_measurement.pressure_rhs_l2_m3_per_s = projection->frozen_measurement.integrated_rhs_l2_m3_per_s;
-      accepted_measurement.step_start_pressure_cell_volume_m3 = projection->frozen_measurement.pressure_cell_volume_m3;
+      pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
+      std::span<const double> projected_cell_pressures;
+      std::span<const double> projected_face_velocities;
+      MacPressureDiagnostics3D pressure_diagnostics;
+      MacPressureFrozenMeasurement3D frozen_measurement;
+      std::span<double> cell_dynamic_viscosity;
+      if (uses_composition_viscosity) {
+        if (pressure_problem.cells.size() != frozen->cells.size()) {
+          return absl::InternalError("viscosity staging lost frozen cells");
+        }
+        STEP_TRY(staging.composition_viscosity->Resize(pressure_problem.cells.size()));
+        cell_dynamic_viscosity = staging.composition_viscosity->values();
+        for (std::size_t index = 0; index < pressure_problem.cells.size(); ++index) {
+          if (CellKey(pressure_problem.cells[index].cell_index) != CellKey(frozen->cells[index].cell_index)) {
+            return absl::InternalError("viscosity staging lost frozen cell order");
+          }
+          const auto& sensor = (*staging.composition_density)[index];
+          const double viscosity = sensor.sampled_volume_m3 > 0.0
+              ? sensor.sampled_viscosity_volume / sensor.sampled_volume_m3
+              : sensor.extrapolated_viscosity;
+          if (!std::isfinite(viscosity) || viscosity < 0.0) {
+            return absl::OutOfRangeError("sampled liquid viscosity is unrepresentable");
+          }
+          cell_dynamic_viscosity[index] = viscosity;
+        }
+      }
+      const bool active_viscosity = cell_dynamic_viscosity.empty()
+          ? scene.dynamic_viscosity > 0.0
+          : std::ranges::any_of(cell_dynamic_viscosity, [](double viscosity) {
+              return viscosity > 0.0;
+            });
+      const auto box_pressure_base_rows = pressure_problem.cells;
+      const auto visit_box_patches = [&](absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit) {
+        const auto pressure_cell_at = [&](std::size_t ordinal) {
+          return links->cells[ordinal].cell_index;
+        };
+        if (oriented_box) {
+          return VisitOrientedBoxPressurePatches3D(
+              floating_box->body,
+              floating_box->half_extent,
+              floating_box->oriented_geometry->liquid_height,
+              grid.geometry(),
+              links->cells.size(),
+              pressure_cell_at,
+              visit
+          );
+        }
+        const auto& box = floating_box->geometry;
+        return VisitFloatingBoxPressurePatches3D(
+            floating_box->body.body_id,
+            box.world_low,
+            box.world_high,
+            box.liquid_height,
+            grid.geometry(),
+            links->cells.size(),
+            pressure_cell_at,
+            visit
+        );
+      };
+      const auto set_box_velocity = [&](Vec3 velocity, Vec3 angular_velocity = {}) -> absl::Status {
+        STEP_TRY(staging.pressure_cell_scratch.Resize(links->cells.size()));
+        const auto rows = staging.pressure_cell_scratch.values();
+        std::ranges::copy(box_pressure_base_rows, rows.begin());
+        STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
+          Vec3 wall_velocity = velocity;
+          if (oriented_box) {
+            auto body = floating_box->body;
+            body.angular_velocity = angular_velocity;
+            const auto arm =
+                liquid_step_internal::Add(patch.world_centroid, liquid_step_internal::Scale(body.center, -1.0));
+            wall_velocity = RigidSurfaceVelocity(body, arm, velocity);
+          }
+          const double normal_speed = liquid_step_internal::Dot(patch.outward_body_normal, wall_velocity);
+          auto& flux = rows[patch.pressure_cell_index].integrated_inward_wall_flux;
+          flux += patch.wetted_area * normal_speed;
+          return std::isfinite(flux) ? absl::OkStatus() : Error(absl::StatusCode::kOutOfRange);
+        }));
+        pressure_problem.cells = rows;
+        return absl::OkStatus();
+      };
+      const auto load_box = [&](std::span<const double> pressures, RigidBody3D body) -> absl::StatusOr<RigidBody3D> {
+        STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
+          auto pressure_patch = patch;
+          auto patch_pressures = pressures;
+          double reconstructed_pressure = 0.0;
+          double pressure_gradient_y = 0.0;
+          const bool supports_hydrostatic_gradient =
+              !uses_composition_density || scene.constituent_materials.size() == 1;
+          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
+            const auto geometry = grid.geometry();
+            const auto cell = links->cells[patch.pressure_cell_index].cell_index;
+            const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
+                patch.world_centroid.y,
+                {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
+            );
+            if (!centroid_to_cell.ok()) {
+              return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
+            }
+            const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
+            pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
+            reconstructed_pressure =
+                std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
+            patch_pressures = {&reconstructed_pressure, 1};
+            pressure_patch.pressure_cell_index = 0;
+          }
+          const auto loaded = AccumulateRigidBodyPressure3D(
+              body,
+              patch_pressures,
+              scene.ambient_pressure,
+              {&pressure_patch, 1},
+              pressure_gradient_y
+          );
+          if (!loaded.ok()) {
+            return loaded.status();
+          }
+          body = *loaded;
+          return absl::OkStatus();
+        }));
+        return body;
+      };
+      if (floating_box != nullptr) {
+        STEP_TRY(set_box_velocity(floating_box->body.linear_velocity, floating_box->body.angular_velocity));
+      }
+      if ((coupled_piston || floating_box != nullptr) && active_viscosity) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      if (!active_viscosity) {
+        auto projection = backend.project(
+            backend.context,
+            grid,
+            step_duration,
+            pressure_problem,
+            options.pressure_solver_options,
+            workspace.pressure()
+        );
+        if (!projection.ok()) {
+          return projection.status();
+        }
+        if (oriented_box && floating_box->coupled) {
+          const auto& body = floating_box->body;
+          constexpr std::size_t kTwistSize = 6;
+          using Twist = std::array<double, kTwistSize>;
+          const double length = grid.geometry().cell_width;
+          const RigidOrientation3D inverse_orientation{
+              body.orientation.w,
+              liquid_step_internal::Scale(body.orientation.vector, -1.0)
+          };
+          // Translation uses world axes. Rotation uses the frozen principal
+          // axes, with angular speed scaled by cell width for conditioning.
+          const auto twist = [&](const RigidBody3D& value) -> absl::StatusOr<Twist> {
+            const auto local = RotateRigidBodyVector3D(inverse_orientation, value.angular_velocity);
+            if (!local.ok()) {
+              return local.status();
+            }
+            const auto linear = value.linear_velocity;
+            return Twist{linear.x, linear.y, linear.z, length * local->x, length * local->y, length * local->z};
+          };
+          const auto generalized_force = [&](const RigidBody3D& value) -> absl::StatusOr<Twist> {
+            const auto torque = RotateRigidBodyVector3D(inverse_orientation, value.torque);
+            if (!torque.ok()) {
+              return torque.status();
+            }
+            return Twist{
+                value.force.x,
+                value.force.y,
+                value.force.z,
+                torque->x / length,
+                torque->y / length,
+                torque->z / length
+            };
+          };
+          const auto world_angular_velocity = [&](const Twist& value) {
+            return RotateRigidBodyVector3D(body.orientation, {value[3] / length, value[4] / length, value[5] / length});
+          };
+          const auto set_twist = [&](const Twist& value) -> absl::Status {
+            const auto angular = world_angular_velocity(value);
+            if (!angular.ok()) {
+              return angular.status();
+            }
+            return set_box_velocity({value[0], value[1], value[2]}, *angular);
+          };
+          const auto project_twist = [&](const Twist& value) -> absl::Status {
+            STEP_TRY(set_twist(value));
+            projection = backend.project(
+                backend.context,
+                grid,
+                step_duration,
+                pressure_problem,
+                options.pressure_solver_options,
+                workspace.pressure()
+            );
+            return projection.status();
+          };
+          const auto start = twist(body);
+          const auto baseline = load_box(projection->cell_pressures, body);
+          if (!start.ok()) {
+            return start.status();
+          }
+          if (!baseline.ok()) {
+            return baseline.status();
+          }
+          const auto baseline_force = generalized_force(*baseline);
+          if (!baseline_force.ok()) {
+            return baseline_force.status();
+          }
+          const auto inertia = body.principal_inertia;
+          const Twist mass{
+              body.mass,
+              body.mass,
+              body.mass,
+              inertia.x / length / length,
+              inertia.y / length / length,
+              inertia.z / length / length
+          };
+          std::array<double, kTwistSize * kTwistSize> system{};
+          const double probe_scale =
+              std::max(1.0, liquid_step_internal::MaximumComponentMagnitude(body.linear_velocity));
+          for (std::size_t column = 0; column < kTwistSize; ++column) {
+            auto probe = *start;
+            probe[column] += std::copysign(std::max(probe_scale, std::abs(probe[column])), probe[column]);
+            const double increment = probe[column] - (*start)[column];
+            if (!std::isfinite(increment)) {
+              return Error(absl::StatusCode::kOutOfRange);
+            }
+            STEP_TRY(project_twist(probe));
+            const auto load = load_box(projection->cell_pressures, body);
+            if (!load.ok()) {
+              return load.status();
+            }
+            const auto force = generalized_force(*load);
+            if (!force.ok()) {
+              return force.status();
+            }
+            for (std::size_t row = 0; row < kTwistSize; ++row) {
+              system[row * kTwistSize + column] = -step_duration * ((*force)[row] - (*baseline_force)[row]) / increment;
+            }
+          }
+          // Reciprocal pressure traction and wall flux give a symmetric
+          // response. Average iterative projection noise, then check the
+          // actual unsymmetrized fluid/body residual after reprojecting.
+          for (std::size_t row = 0; row < kTwistSize; ++row) {
+            system[row * kTwistSize + row] += mass[row];
+            for (std::size_t column = 0; column < row; ++column) {
+              const double symmetric =
+                  std::midpoint(system[row * kTwistSize + column], system[column * kTwistSize + row]);
+              system[row * kTwistSize + column] = symmetric;
+              system[column * kTwistSize + row] = symmetric;
+            }
+          }
+          auto load = *baseline;
+          auto speed = *start;
+          SmallSolveWorkspace solve_workspace;
+          constexpr int kMaximumCorrections = 4;
+          for (int iteration = 0;; ++iteration) {
+            const auto drift = AdvanceRigidBody3D(load, step_duration);
+            if (!drift.ok()) {
+              return drift.status();
+            }
+            const auto expected = twist(drift->end);
+            if (!expected.ok()) {
+              return expected.status();
+            }
+            Twist residual{};
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              residual[axis] = mass[axis] * ((*expected)[axis] - speed[axis]);
+            }
+            Twist correction{};
+            STEP_TRY(SolveSmallSpd(system, residual, correction, solve_workspace));
+            bool converged = true;
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              converged &= std::abs(correction[axis]) <= 1e-8 * std::max(1.0, std::abs(speed[axis]));
+            }
+            if (converged && iteration > 0) {
+              // The verified pressure projection already used this twist.
+              // Carry it through the pose and particle sweep unchanged.
+              auto candidate = *drift;
+              const auto angular = world_angular_velocity(speed);
+              if (!angular.ok()) {
+                return angular.status();
+              }
+              candidate.end.linear_velocity = {speed[0], speed[1], speed[2]};
+              candidate.end.angular_velocity = *angular;
+              const auto pose = SampleRigidBodyPose3D(candidate, 1.0);
+              if (!pose.ok()) {
+                return pose.status();
+              }
+              candidate.end.center = pose->center;
+              candidate.end.orientation = pose->orientation;
+              record_oriented_pressure_load(load);
+              oriented_box_candidate = candidate;
+              break;
+            }
+            if (iteration == kMaximumCorrections) {
+              return Error(absl::StatusCode::kAborted);
+            }
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              speed[axis] += correction[axis];
+            }
+            STEP_TRY(project_twist(speed));
+            const auto next_load = load_box(projection->cell_pressures, body);
+            if (!next_load.ok()) {
+              return next_load.status();
+            }
+            load = *next_load;
+          }
+        }
+        if (floating_box != nullptr && floating_box->coupled && !oriented_box) {
+          const auto& body = floating_box->body;
+          const double start_speed = body.linear_velocity.y;
+          auto pressure_only = body;
+          pressure_only.force = {};
+          pressure_only.torque = {};
+          const auto initial_load = load_box(projection->cell_pressures, pressure_only);
+          if (!initial_load.ok()) {
+            return initial_load.status();
+          }
+          const double probe_speed = start_speed + 1.0;
+          if (!std::isfinite(probe_speed) || probe_speed == start_speed) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          STEP_TRY(set_box_velocity({0.0, probe_speed, 0.0}));
+          projection = backend.project(
+              backend.context,
+              grid,
+              step_duration,
+              pressure_problem,
+              options.pressure_solver_options,
+              workspace.pressure()
+          );
+          if (!projection.ok()) {
+            return projection.status();
+          }
+          const auto probe_load = load_box(projection->cell_pressures, pressure_only);
+          if (!probe_load.ok()) {
+            return probe_load.status();
+          }
+          const double added_mass =
+              -step_duration * (probe_load->force.y - initial_load->force.y) / (probe_speed - start_speed);
+          const double effective_mass = body.mass + added_mass;
+          if (!std::isfinite(added_mass) || !std::isfinite(effective_mass) || added_mass < 0.0
+              || effective_mass <= 0.0) {
+            return Error(absl::StatusCode::kFailedPrecondition);
+          }
+          double speed = std::fma(step_duration, (body.force.y + initial_load->force.y) / effective_mass, start_speed);
+          // Each pressure solve satisfies the liquid residual tolerance. Check
+          // the resulting body impulse too, scaled by the coupled inertia.
+          // Correct the remaining wall-speed error on the same frozen domain.
+          constexpr int kMaximumCouplingProjections = 4;
+          for (int iteration = 0; iteration < kMaximumCouplingProjections; ++iteration) {
+            if (!std::isfinite(speed)) {
+              return Error(absl::StatusCode::kOutOfRange);
+            }
+            STEP_TRY(set_box_velocity({0.0, speed, 0.0}));
+            projection = backend.project(
+                backend.context,
+                grid,
+                step_duration,
+                pressure_problem,
+                options.pressure_solver_options,
+                workspace.pressure()
+            );
+            if (!projection.ok()) {
+              return projection.status();
+            }
+            const auto final_load = load_box(projection->cell_pressures, pressure_only);
+            if (!final_load.ok()) {
+              return final_load.status();
+            }
+            const double force = body.force.y + final_load->force.y;
+            const double impulse_error = std::fma(step_duration, force, body.mass * (start_speed - speed));
+            const double speed_correction = impulse_error / effective_mass;
+            if (!std::isfinite(speed_correction)) {
+              return Error(absl::StatusCode::kOutOfRange);
+            }
+            if (std::abs(speed_correction) <= 1e-8 * std::max(1.0, std::abs(speed))) {
+              break;
+            }
+            if (iteration + 1 == kMaximumCouplingProjections) {
+              return Error(absl::StatusCode::kAborted);
+            }
+            speed += speed_correction;
+          }
+          floating_box->added_mass_kg = added_mass;
+          coupled_box_speed = speed;
+          end_box.world_low.y = std::fma(step_duration, speed, contact_box.world_low.y);
+          end_box.world_high.y = std::fma(step_duration, speed, contact_box.world_high.y);
+          end_box.wall_velocity.y = speed;
+        }
+        if (coupled_piston) {
+          auto& scratch = *staging.pressure_face_scratch;
+          STEP_TRY(scratch.Resize(links->faces.size()));
+          const auto coupled_faces = scratch.values();
+          std::ranges::copy(links->faces, coupled_faces.begin());
+          pressure_problem.faces = coupled_faces;
+
+          // Receiver area is aggregated once in the wetted geometry. Attached
+          // physical patches contribute their area through the same receiver.
+          const auto set_wall_speed = [&](double speed) -> absl::Status {
+            for (std::size_t face_index = 0; face_index < coupled_faces.size(); ++face_index) {
+              if (piston_wetted->face_fluxes[face_index].has_value()) {
+                auto& face = coupled_faces[face_index];
+                face.wall_normal_velocity = speed;
+                face.prescribed_wall_flux = 0.0;
+              }
+            }
+            for (const auto& patch : piston_wetted->patches) {
+              if (patch.receiver_area.upper > 0.0) {
+                if (!patch.receiver_face_ordinal || *patch.receiver_face_ordinal >= coupled_faces.size()
+                    || !piston_wetted->face_fluxes[*patch.receiver_face_ordinal].has_value()) {
+                  return Error(absl::StatusCode::kFailedPrecondition);
+                }
+                const double area = std::midpoint(patch.receiver_area.lower, patch.receiver_area.upper);
+                coupled_faces[*patch.receiver_face_ordinal].prescribed_wall_flux = area * speed;
+              }
+            }
+            return absl::OkStatus();
+          };
+          auto pressure_only_body = *piston_load;
+          pressure_only_body.force = {};
+          pressure_only_body.torque = {};
+          const auto load_at = [&](std::span<const double> pressures) {
+            return AccumulatePlanarWettedPistonPressure3D(
+                *piston_inputs,
+                *piston_wetted,
+                pressures,
+                scene.ambient_pressure,
+                pressure_only_body
+            );
+          };
+          const auto initial_load = load_at(projection->cell_pressures);
+          if (!initial_load.ok()) {
+            return initial_load.status();
+          }
+          const double initial_speed = piston_load->linear_velocity.x;
+          const double speed_increment =
+              std::copysign(0.125 * grid.geometry().cell_width / step_duration, initial_speed);
+          const double probe_speed = initial_speed + speed_increment;
+          const double probe_delta = probe_speed - initial_speed;
+          if (!std::isfinite(probe_speed) || !std::isfinite(probe_delta) || probe_delta == 0.0) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          STEP_TRY(set_wall_speed(probe_speed));
+          projection = backend.project(
+              backend.context,
+              grid,
+              step_duration,
+              pressure_problem,
+              options.pressure_solver_options,
+              workspace.pressure()
+          );
+          if (!projection.ok()) {
+            return projection.status();
+          }
+          const auto probe_load = load_at(projection->cell_pressures);
+          if (!probe_load.ok()) {
+            return probe_load.status();
+          }
+
+          // Frozen linear pressure response gives the scalar Schur complement
+          // for the axial body degree of freedom, regardless of pressure-cell count.
+          const double added_mass = -step_duration * (probe_load->force.x - initial_load->force.x) / probe_delta;
+          const double effective_mass = piston_load->mass + added_mass;
+          const double total_force = piston_load->force.x + initial_load->force.x;
+          const double speed = std::fma(step_duration, total_force / effective_mass, initial_speed);
+          if (added_mass < 0.0 || !std::isfinite(speed) || !std::isfinite(effective_mass)) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+          auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+          tank.piston_velocity_x = speed;
+          STEP_TRY(boundary_internal::ArithmeticStatus(boundary_internal::CheckTankStep(tank, step_duration), true));
+          new_obstacle = liquid_step_internal::ObstacleAtTime(obstacle, step_duration);
+          accepted_measurement.piston_pose->step_end_low_x_m =
+              std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
+          STEP_TRY(set_wall_speed(speed));
+          projection = backend.project(
+              backend.context,
+              grid,
+              step_duration,
+              pressure_problem,
+              options.pressure_solver_options,
+              workspace.pressure()
+          );
+          if (!projection.ok()) {
+            return projection.status();
+          }
+          coupled_velocity = speed;
+        }
+        projected_cell_pressures = projection->cell_pressures;
+        projected_face_velocities = projection->corrected_face_velocities;
+        pressure_diagnostics = projection->diagnostics;
+        frozen_measurement = projection->frozen_measurement;
+      } else {
+        auto result = backend.project_viscous(
+            backend.context,
+            geometry_inputs,
+            pressure_problem,
+            scene.dynamic_viscosity,
+            cell_dynamic_viscosity,
+            options.pressure_solver_options,
+            workspace.pressure()
+        );
+        if (!result.ok()) {
+          return result.status();
+        }
+        const auto& coupled = *result;
+        accepted_measurement.viscous_max_momentum_residual_kg_m_per_s = coupled.max_momentum_residual;
+        projected_cell_pressures = coupled.cell_pressures;
+        projected_face_velocities = coupled.face_velocities;
+        pressure_diagnostics = {
+            .iteration_count = coupled.pressure_iterations,
+            .true_residual_l2 = coupled.constraint_residual_l2,
+            .max_volume_scaled_residual = coupled.max_cell_constraint_defect,
+            .max_cell_constraint_defect = coupled.max_cell_constraint_defect,
+        };
+        frozen_measurement.integrated_rhs_l2_m3_per_s = coupled.initial_constraint_residual_l2;
+        frozen_measurement.inward_prescribed_wall_flux_m3_per_s = coupled.inward_prescribed_wall_flux_m3_per_s;
+        for (const auto& cell : pressure_problem.cells) {
+          frozen_measurement.pressure_cell_volume_m3 += cell.fluid_volume;
+        }
+      }
+      if (projected_cell_pressures.size() != frozen->cells.size()
+          || projected_face_velocities.size() != frozen->faces.size()) {
+        return absl::InternalError("pressure projection extents do not match frozen geometry");
+      }
+      if (eos) {
+        for (const double pressure : projected_cell_pressures) {
+          const auto accepted_eos = EvaluateLiquidEosAtPressure3D(*eos, pressure);
+          if (!accepted_eos.ok()) {
+            return accepted_eos.status();
+          }
+        }
+      }
+      if (piston_load != nullptr) {
+        const auto loaded = AccumulatePlanarWettedPistonPressure3D(
+            *piston_inputs,
+            *piston_wetted,
+            projected_cell_pressures,
+            scene.ambient_pressure,
+            *piston_load
+        );
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        *piston_load = *loaded;
+      }
+      if (floating_box != nullptr && !oriented_box_candidate) {
+        const auto loaded = load_box(projected_cell_pressures, floating_box->body);
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        if (oriented_box) {
+          const auto candidate = AdvanceRigidBody3D(*loaded, step_duration);
+          if (!candidate.ok()) {
+            return candidate.status();
+          }
+          record_oriented_pressure_load(*loaded);
+          oriented_box_candidate = *candidate;
+        } else {
+          floating_box->body = *loaded;
+        }
+      }
+      if (oriented_box_candidate) {
+        STEP_TRY(CheckOrientedBoxSweepInTank(
+            *oriented_box_candidate,
+            floating_box->half_extent,
+            *tank_at_step_start,
+            grid.geometry().cell_width
+        ));
+      }
+      diagnostics.pressure_diagnostics = pressure_diagnostics;
+      accepted_measurement.pressure = pressure_diagnostics;
+      accepted_measurement.pressure_rhs_l2_m3_per_s = frozen_measurement.integrated_rhs_l2_m3_per_s;
+      accepted_measurement.step_start_pressure_cell_volume_m3 = frozen_measurement.pressure_cell_volume_m3;
       if (accepted_measurement.piston_pose.has_value()) {
         accepted_measurement.step_start_inward_piston_flux_m3_per_s =
-            projection->frozen_measurement.inward_prescribed_wall_flux_m3_per_s;
+            frozen_measurement.inward_prescribed_wall_flux_m3_per_s;
       }
       for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
         trial.cells[index] = {
             frozen->cells[index].cell_index,
             LiquidCellOccupancy3D::kLiquid,
-            projection->cell_pressures[index],
+            projected_cell_pressures[index],
         };
       }
       for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
         const auto slot = frozen->faces[index].face_slot;
-        staging.new_velocities[slot] = projection->corrected_face_velocities[index];
+        staging.new_velocities[slot] = projected_face_velocities[index];
         if (staging.validity[slot] == LiquidFaceValidity3D::kMissing && frozen->faces[index].open_area > 0) {
           staging.validity[slot] = LiquidFaceValidity3D::kPredicted;
         }
@@ -715,6 +1917,17 @@ struct LiquidSubstepScheduler3D::Impl {
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, step_duration));
     STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, 0, staging.new_tags.values(), {}));
+    if (oriented_box) {
+      STEP_TRY(ApplyOrientedBoxFaceSamples(
+          grid,
+          oriented_box_candidate->end,
+          floating_box->half_extent,
+          staging.new_tags.values(),
+          {}
+      ));
+    } else if (floating_box != nullptr) {
+      STEP_TRY(ApplyBoxFaceSamples(grid, end_box, staging.new_tags.values(), {}));
+    }
     for (std::size_t index = 0; index < trial.faces.size(); ++index) {
       trial.faces[index].carrier_velocity = staging.new_velocities[index];
       trial.faces[index].validity = staging.validity[index];
@@ -762,6 +1975,25 @@ struct LiquidSubstepScheduler3D::Impl {
       if (sampled_wall_side != side) {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
+        if (oriented_box) {
+          STEP_TRY(ApplyOrientedBoxFaceSamples(
+              grid,
+              floating_box->body,
+              floating_box->half_extent,
+              {},
+              staging.old_walls.values()
+          ));
+          STEP_TRY(ApplyOrientedBoxFaceSamples(
+              grid,
+              oriented_box_candidate->end,
+              floating_box->half_extent,
+              {},
+              staging.new_walls.values()
+          ));
+        } else if (floating_box != nullptr) {
+          STEP_TRY(ApplyBoxFaceSamples(grid, contact_box, {}, staging.old_walls.values()));
+          STEP_TRY(ApplyBoxFaceSamples(grid, end_box, {}, staging.new_walls.values()));
+        }
         sampled_wall_side = side;
         if (staging.isolated_drop && !projected_gather_validity.empty()) {
           auto projected_history = new_history;
@@ -908,7 +2140,7 @@ struct LiquidSubstepScheduler3D::Impl {
       staging.particle_distances[index] = *distance;
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, step_duration));
-    if (staging.regular_transport) {
+    if (staging.regular_transport && floating_box == nullptr) {
       const auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
       for (std::size_t index = 0; index < trial.particles.size(); ++index) {
         (*staging.regular_transport)[index] =
@@ -924,14 +2156,73 @@ struct LiquidSubstepScheduler3D::Impl {
         .particle_energy_blend = options.particle_energy_blend,
         .friction_coefficient = scene.friction_coefficient,
         .penetration_tolerance = scene.penetration_tolerance,
-        .regular_cell_transport = staging.regular_transport ? staging.regular_transport->values()
-                                                            : std::span<const LiquidRegularCellTransport3D>{},
+        .regular_cell_transport = staging.regular_transport && floating_box == nullptr
+            ? staging.regular_transport->values()
+            : std::span<const LiquidRegularCellTransport3D>{},
     };
-    STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    double piston_contact_impulse = 0.0;
+    Vec3 box_contact_impulse{};
+    if (dynamic_piston && trial.particles.size() != 0) {
+      const auto impulse = update_with_reaction == nullptr
+          ? UpdateCpuLiquidParticlesWithPistonReaction3D(particle_update_inputs, trial.particles.values())
+          : (*update_with_reaction)(particle_update_inputs, trial.particles.values());
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      piston_contact_impulse = *impulse;
+    } else if (oriented_box && trial.particles.size() != 0) {
+      const auto impulse = UpdateCpuLiquidParticlesWithRotatingBoxImpulse3D(
+          particle_update_inputs,
+          *oriented_box_candidate,
+          floating_box->half_extent,
+          trial.particles.values()
+      );
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      floating_box->oriented_loads->particle_impulse = impulse->linear;
+      floating_box->oriented_loads->particle_angular_impulse = impulse->angular;
+      floating_box->oriented_loads->liquid_gather_impulse = impulse->liquid_gather_impulse;
+      floating_box->oriented_loads->tank_particle_impulse = impulse->tank_particle_impulse;
+      auto& body = oriented_box_candidate->end;
+      body.linear_velocity = liquid_step_internal::Add(
+          body.linear_velocity,
+          liquid_step_internal::Scale(impulse->linear, 1.0 / body.mass)
+      );
+      const auto orientation = body.orientation;
+      const auto local_impulse = RotateRigidBodyVector3D(
+          {orientation.w, liquid_step_internal::Scale(orientation.vector, -1.0)},
+          impulse->angular
+      );
+      if (!local_impulse.ok()) {
+        return local_impulse.status();
+      }
+      const auto inertia = body.principal_inertia;
+      const auto angular_change = RotateRigidBodyVector3D(
+          orientation,
+          {local_impulse->x / inertia.x, local_impulse->y / inertia.y, local_impulse->z / inertia.z}
+      );
+      if (!angular_change.ok()) {
+        return angular_change.status();
+      }
+      body.angular_velocity = liquid_step_internal::Add(body.angular_velocity, *angular_change);
+      STEP_TRY(ValidateRigidBody3D(body));
+    } else if (floating_box != nullptr && trial.particles.size() != 0) {
+      auto swept_box = contact_box;
+      swept_box.wall_velocity.y = coupled_box_speed.value_or(contact_box.wall_velocity.y);
+      const auto impulse =
+          UpdateCpuLiquidParticlesWithBoxImpulse3D(particle_update_inputs, swept_box, trial.particles.values());
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      box_contact_impulse = *impulse;
+    } else {
+      STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWhitewater, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, step_duration));
-    const double wall_displacement_bound = step_duration
-        * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(scene.obstacle));
+    const double wall_displacement_bound =
+        step_duration * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(obstacle));
     if (wall_displacement_bound > 0.5 * trial.geometry.cell_width) {
       return Error(absl::StatusCode::kAborted);
     }
@@ -952,6 +2243,63 @@ struct LiquidSubstepScheduler3D::Impl {
       }
     }
     STEP_TRY(ValidateLiquidState3D(trial));
+    if (dynamic_piston) {
+      const double axial_acceleration = piston_load->force.x / piston_load->mass;
+      const double next_velocity = std::fma(step_duration, axial_acceleration, piston_load->linear_velocity.x)
+          + piston_contact_impulse / piston_load->mass;
+      if (!std::isfinite(next_velocity)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      piston_load->center.x = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
+      if (coupled_velocity
+          && std::abs(next_velocity - *coupled_velocity) > 1e-8 * std::max(1.0, std::abs(next_velocity))) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      piston_load->linear_velocity.x = coupled_velocity.value_or(next_velocity);
+      piston_load->force = {};
+      piston_load->torque = {};
+    }
+    if (oriented_box) {
+      floating_box->body = oriented_box_candidate->end;
+    } else if (floating_box != nullptr) {
+      auto& body = floating_box->body;
+      auto drift_velocity = body.linear_velocity;
+      drift_velocity.y = coupled_box_speed.value_or(drift_velocity.y);
+      const auto displacement = liquid_step_internal::Scale(drift_velocity, step_duration);
+      auto next_center = body.center;
+      auto next_velocity = body.linear_velocity;
+      constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+      for (const auto component : kComponents) {
+        if (floating_box->vertical_guide && component != &Vec3::y) {
+          continue;
+        }
+        next_center.*component = std::fma(step_duration, drift_velocity.*component, body.center.*component);
+        const double pressure_velocity = coupled_box_speed.has_value()
+            ? *coupled_box_speed
+            : std::fma(step_duration, (body.force.*component) / body.mass, body.linear_velocity.*component);
+        next_velocity.*component = pressure_velocity + (box_contact_impulse.*component) / body.mass;
+      }
+      const auto half_extent = floating_box->half_extent;
+      const auto next_low = liquid_step_internal::Add(next_center, liquid_step_internal::Scale(half_extent, -1.0));
+      const auto next_high = liquid_step_internal::Add(next_center, half_extent);
+      if (!liquid_step_internal::Finite(displacement) || !liquid_step_internal::Finite(next_velocity)
+          || !liquid_step_internal::Finite(next_low) || !liquid_step_internal::Finite(next_high)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      const auto& tank = *tank_at_step_start;
+      if (liquid_step_internal::MaximumComponentMagnitude(displacement) > 0.5 * grid.geometry().cell_width
+          || std::min(next_low.x, end_box.world_low.x) <= tank.start_low_x
+          || std::max(next_high.x, end_box.world_high.x) >= tank.high_x
+          || std::min(next_low.y, end_box.world_low.y) <= tank.floor_y
+          || std::min(next_low.z, end_box.world_low.z) <= tank.low_z
+          || std::max(next_high.z, end_box.world_high.z) >= tank.high_z) {
+        return Error(absl::StatusCode::kAborted);
+      }
+      body.center = next_center;
+      body.linear_velocity = next_velocity;
+      body.force = {};
+      body.torque = {};
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
   }
@@ -1028,7 +2376,13 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));
-  const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);
+  if (CanApplyViscosity(scene) && !backend.project_viscous) {
+    return absl::UnimplementedError("backend does not support coupled viscosity");
+  }
+  if (CanApplyViscosity(scene) && needs_wetted_piston && !needs_lattice_plane) {
+    return absl::UnimplementedError("viscous projection requires certified moving-wall quadratures");
+  }
+  const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities, PressureWorkspaceMode(scene));
   if (!bytes.ok()) {
     return bytes.status();
   }
@@ -1036,22 +2390,109 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       options.capacities,
       !adaptive_mode && CanStageRegularCellTransport(scene, tank),
       needs_wetted_piston,
-      needs_isolated_drop
+      needs_isolated_drop,
+      scene.drift && scene.drift->maximum_rate > 0.0,
+      scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos,
+      !scene.constituent_materials.empty(),
+      !scene.phase_pairs.empty(),
+      HasConstituentViscosity(scene)
   );
   if (!staging.ok()) {
     return staging.status();
   }
   const auto capacities = options.capacities;
-  const auto reservation_bytes =
-      ReservationBytes(capacities, scene.sources.size(), bytes->total_bytes, staging->reserved_bytes);
+  const auto reservation_bytes = ReservationBytes(
+      capacities,
+      scene.sources.size(),
+      scene.constituent_materials.size(),
+      scene.phase_pairs.size(),
+      bytes->total_bytes,
+      staging->reserved_bytes,
+      scene.cavity.has_value(),
+      adaptive_mode
+  );
   if (!reservation_bytes.ok()) {
     return reservation_bytes.status();
   }
-  auto transaction = LiquidFrameTransaction3D::Create(initial, capacities);
+  if ((!scene.cavity && initial.next_cavity_id != 0)
+      || (scene.cavity && initial.clock.accepted_step_ordinal != 0 && initial.next_cavity_id == 0)) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  std::optional<CavityStepScratch> cavity;
+  std::optional<LiquidState3D> cavity_seed;
+  if (scene.cavity) {
+    if (scene.cavity_provider.prepare || !std::isfinite(scene.cavity->atmospheric_absolute_pressure)
+        || scene.cavity->atmospheric_absolute_pressure <= 0.0
+        || !std::isfinite(scene.cavity->birth_hydrostatic_gauge_pressure)
+        || scene.cavity->birth_hydrostatic_gauge_pressure < 0.0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto cavity_capacity = std::max(capacities.cells, options.capacity_replay_reservations.cells);
+    auto scratch = CavityStepScratch::Create(cavity_capacity);
+    if (!scratch.ok()) {
+      return scratch.status();
+    }
+    if (scratch->reserved_bytes > SIZE_MAX - *reservation_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    cavity = std::move(*scratch);
+    if (initial.next_cavity_id == 0) {
+      const LiquidStateCapacities3D seed_capacities{
+          initial.particles.size(),
+          initial.blocks.size(),
+          initial.cells.size(),
+          initial.faces.size(),
+          initial.sources.size(),
+      };
+      auto seed = CloneLiquidState3D(initial, seed_capacities);
+      if (!seed.ok()) {
+        return seed.status();
+      }
+      auto gas = LiquidRecords3D<LiquidCavityGasState3D>::Create(capacities.cells);
+      auto components = LiquidRecords3D<LiquidCavityComponentState3D>::Create(capacities.cells);
+      if (!gas.ok()) {
+        return gas.status();
+      }
+      if (!components.ok()) {
+        return components.status();
+      }
+      seed->cavity_gas = std::move(*gas);
+      seed->cavity_components = std::move(*components);
+      seed->next_cavity_id = 1;
+      const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, initial.clock.time);
+      // Frame zero has no activated grid. The host field sampler supplies the
+      // initial geometry independently of the physical backend's publication.
+      STEP_TRY(
+          liquid_step_internal::PrepareField(scene.field, obstacle, *seed, *staging, CpuLiquidSubstepBackend3D(), true)
+      );
+      const auto grid = SparseMacGridView3D::Create(initial.geometry, {});
+      if (!grid.ok()) {
+        return grid.status();
+      }
+      const LiquidBoundaryGeometryViewInputs3D samples{
+          .mac_grid = *grid,
+          .cell_indices = staging->candidates.values(),
+          .center_distances = staging->centers.values(),
+          .corner_distances = staging->corners.values(),
+          .obstacle = obstacle,
+          .step_duration = 0.0,
+          .liquid_density = scene.liquid_density,
+          .surface_tension = scene.surface_tension,
+      };
+      std::optional<LiquidCavityStepPreparation3D> measurement;
+      const auto prepared = cavity->Prepare(*scene.cavity, samples, *seed, measurement);
+      if (!prepared.ok()) {
+        return prepared.status();
+      }
+      cavity_seed = std::move(*seed);
+    }
+  }
+  const auto& initial_version = cavity_seed ? *cavity_seed : initial;
+  auto transaction = LiquidFrameTransaction3D::Create(initial_version, capacities, scene.cavity.has_value());
   if (!transaction.ok()) {
     return transaction.status();
   }
-  auto workspace = LiquidStepWorkspace3D::Create(capacities, initial.geometry);
+  auto workspace = LiquidStepWorkspace3D::Create(capacities, initial.geometry, PressureWorkspaceMode(scene));
   if (!workspace.ok()) {
     return workspace.status();
   }
@@ -1061,15 +2502,32 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   }
   STEP_TRY(sources->Resize(scene.sources.size()));
   std::ranges::copy(scene.sources, sources->values().begin());
+  auto materials = LiquidRecords3D<LiquidConstituentMaterial3D>::Create(scene.constituent_materials.size());
+  if (!materials.ok()) {
+    return materials.status();
+  }
+  STEP_TRY(materials->Resize(scene.constituent_materials.size()));
+  std::ranges::copy(scene.constituent_materials, materials->values().begin());
+  auto phase_pairs = LiquidRecords3D<LiquidPhasePair3D>::Create(scene.phase_pairs.size());
+  if (!phase_pairs.ok()) {
+    return phase_pairs.status();
+  }
+  STEP_TRY(phase_pairs->Resize(scene.phase_pairs.size()));
+  std::ranges::copy(scene.phase_pairs, phase_pairs->values().begin());
   std::unique_ptr<Impl> impl(new (std::nothrow)
                                  Impl(std::move(*transaction), std::move(*workspace), std::move(*staging)));
   if (!impl) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
-  impl->reservation_bytes = *reservation_bytes;
+  impl->reservation_bytes = *reservation_bytes + (cavity ? cavity->reserved_bytes : 0);
+  impl->cavity = std::move(cavity);
   impl->sources = std::move(*sources);
   impl->scene = scene;
   impl->scene.sources = impl->sources.values();
+  impl->constituent_materials = std::move(*materials);
+  impl->scene.constituent_materials = impl->constituent_materials.values();
+  impl->phase_pairs = std::move(*phase_pairs);
+  impl->scene.phase_pairs = impl->phase_pairs.values();
   impl->options = options;
   if (options.ocean_boundary) {
     auto ocean_boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
@@ -1097,9 +2555,13 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     if (!adaptive.ok()) {
       return adaptive.status();
     }
+    if (adaptive->reserved_bytes() > static_cast<std::size_t>(PTRDIFF_MAX) - impl->reservation_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    impl->reservation_bytes += adaptive->reserved_bytes();
     impl->adaptive = std::move(*adaptive);
   }
-  STEP_TRY(backend.initialize(backend.context, initial));
+  STEP_TRY(backend.initialize(backend.context, initial_version));
   impl->backend = backend;
   return LiquidSubstepScheduler3D(std::move(impl));
 }
@@ -1124,7 +2586,211 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
 }
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase) {
+  return AttemptImpl(step_duration, work_phase, nullptr);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field)) {
+    return absl::FailedPreconditionError("piston load requires a moving planar piston scene");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston) {
+  return AttemptDynamicPistonImpl(step_duration, piston, false);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(
+    double step_duration,
+    RigidBody3D piston,
+    LiquidPistonReactionUpdate3D update_with_reaction
+) {
+  return AttemptDynamicPistonImpl(step_duration, piston, false, &update_with_reaction);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston) {
+  if (!committed().particles.values().empty() || std::isfinite(impl_->scene.bulk_modulus)
+      || impl_->scene.surface_tension != 0.0) {
+    return absl::FailedPreconditionError("coupled piston requires a particle-free incompressible planar scene");
+  }
+  return AttemptDynamicPistonImpl(step_duration, piston, true);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptDynamicPistonImpl(
+    double step_duration,
+    RigidBody3D piston,
+    bool coupled,
+    const LiquidPistonReactionUpdate3D* update_with_reaction
+) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field) || !impl_->scene.sources.empty()
+      || impl_->ocean_boundary) {
+    return absl::FailedPreconditionError("dynamic piston requires a moving planar piston scene without sources");
+  }
+  if (update_with_reaction == nullptr && !committed().particles.values().empty()
+      && impl_->backend.update_particles != CpuLiquidSubstepBackend3D().update_particles) {
+    return absl::FailedPreconditionError("dynamic piston particles require the CPU contact update");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (piston.linear_velocity.y != 0.0 || piston.linear_velocity.z != 0.0 || piston.angular_velocity.x != 0.0
+      || piston.angular_velocity.y != 0.0 || piston.angular_velocity.z != 0.0) {
+    return absl::InvalidArgumentError("dynamic piston requires axial motion");
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston, true, coupled, update_with_reaction);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidFloatingBoxAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent) {
+  return AttemptFloatingBox(step_duration, body, half_extent, FloatingBoxMotion::kVerticalGuide);
+}
+
+absl::StatusOr<LiquidFloatingBoxAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithTranslatingFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent) {
+  return AttemptFloatingBox(step_duration, body, half_extent, FloatingBoxMotion::kTranslation);
+}
+
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithCoupledGuidedFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 half_extent
+) {
+  if (std::isfinite(impl_->scene.bulk_modulus) || impl_->scene.surface_tension != 0.0) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  return AttemptFloatingBox(step_duration, body, half_extent, FloatingBoxMotion::kCoupledVerticalGuide);
+}
+
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithOrientedFloatingBoxPressure(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 body_half_extent
+) {
+  if (committed().particles.size() != 0) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kOrientedPressure);
+}
+
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithOrientedFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 body_half_extent
+) {
+  return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kOrientedPressure);
+}
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithCoupledOrientedFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 body_half_extent
+) {
+  if (std::isfinite(impl_->scene.bulk_modulus) || impl_->scene.surface_tension != 0.0) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kCoupledOrientedPressure);
+}
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 half_extent,
+    FloatingBoxMotion motion
+) {
+  const bool oriented_coupling = motion == FloatingBoxMotion::kCoupledOrientedPressure;
+  const bool oriented = motion == FloatingBoxMotion::kOrientedPressure || oriented_coupling;
+  const bool coupled = motion == FloatingBoxMotion::kCoupledVerticalGuide;
+  const bool vertical_guide = motion == FloatingBoxMotion::kVerticalGuide || coupled;
+  const auto* surface = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&impl_->scene.obstacle);
+  if (!surface || !tank || tank->piston_velocity_x != 0.0 || !impl_->scene.sources.empty()
+      || impl_->scene.friction_coefficient != 0.0 || impl_->backend.freeze != CpuLiquidSubstepBackend3D().freeze) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  const bool valid_extent =
+      liquid_step_internal::Finite(half_extent) && half_extent.x > 0.0 && half_extent.y > 0.0 && half_extent.z > 0.0;
+  const bool aligned = std::abs(body.orientation.w) == 1.0
+      && liquid_step_internal::MaximumComponentMagnitude(body.orientation.vector) == 0.0;
+  const bool violates_guide = vertical_guide && (body.linear_velocity.x != 0.0 || body.linear_velocity.z != 0.0);
+  const bool violates_orientation_constraint =
+      !oriented && (!aligned || liquid_step_internal::MaximumComponentMagnitude(body.angular_velocity) != 0.0);
+  if (!ValidateRigidBody3D(body).ok() || !valid_extent || violates_guide || violates_orientation_constraint) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  FloatingBoxTrial box{
+      .body = body,
+      .geometry =
+          {
+              .world_low = liquid_step_internal::Add(body.center, liquid_step_internal::Scale(half_extent, -1.0)),
+              .world_high = liquid_step_internal::Add(body.center, half_extent),
+              .liquid_height = surface->world_surface_height_y,
+          },
+      .oriented_geometry = oriented
+          ? std::optional<
+                OrientedFloatingBoxGeometry3D>{{{body.center, body.orientation}, half_extent, surface->world_surface_height_y}
+            }
+          : std::nullopt,
+      .half_extent = half_extent,
+      .coupled = coupled || oriented_coupling,
+      .vertical_guide = vertical_guide,
+      .added_mass_kg = std::nullopt,
+      .oriented_loads = oriented
+          ? std::optional<OrientedFloatingBoxLoads3D>{{.external_force = body.force, .external_torque = body.torque}}
+          : std::nullopt,
+  };
+  const auto outcome = AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, &box);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidFloatingBoxAttempt3D{
+      .outcome = *outcome,
+      .body = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? std::optional<RigidBody3D>{box.body}
+                                                                            : std::nullopt,
+      .added_mass_kg = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.added_mass_kg : std::nullopt,
+      .oriented_loads =
+          outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.oriented_loads : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
+    double step_duration,
+    LiquidWorkPhaseObserver3D work_phase,
+    RigidBody3D* piston_load,
+    bool dynamic_piston,
+    bool coupled_piston,
+    const LiquidPistonReactionUpdate3D* update_with_reaction,
+    FloatingBoxTrial* floating_box
+) {
   auto& impl = *impl_;
+  if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
+    return absl::UnimplementedError("graded Simulate does not support coupled rigid trials");
+  }
   auto& diagnostics = impl.diagnostics;
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
@@ -1150,7 +2816,17 @@ LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
   auto status = impl.adaptive ? impl.ExecuteAdaptive(step_duration, **trial, accepted_measurement, work_phase)
-                              : impl.Execute(step_duration, **trial, accepted_measurement, work_phase);
+                              : impl.Execute(
+                                    step_duration,
+                                    **trial,
+                                    accepted_measurement,
+                                    work_phase,
+                                    piston_load,
+                                    dynamic_piston,
+                                    coupled_piston,
+                                    update_with_reaction,
+                                    floating_box
+                                );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -1254,22 +2930,35 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           growth,
           impl_->staging.regular_transport.has_value(),
           impl_->staging.wetted_piston.has_value(),
-          impl_->staging.isolated_drop_pressure_faces.has_value()
+          impl_->staging.isolated_drop_restricted_gathers.has_value(),
+          impl_->staging.drift_sensors.has_value(),
+          impl_->staging.drift_pressure_cells.has_value(),
+          impl_->staging.composition_density.has_value(),
+          impl_->staging.phase_crossings.has_value(),
+          impl_->staging.composition_viscosity.has_value()
       );
       if (!staging.ok()) {
         return staging.status();
       }
-      auto workspace = LiquidStepWorkspace3D::Create(growth, committed().geometry);
+      auto workspace = LiquidStepWorkspace3D::Create(growth, committed().geometry, PressureWorkspaceMode(impl_->scene));
       if (!workspace.ok()) {
         return workspace.status();
       }
-      const auto reservation_bytes =
-          ReservationBytes(growth, impl_->sources.size(), workspace->usage().reserved_bytes, staging->reserved_bytes);
+      const auto reservation_bytes = ReservationBytes(
+          growth,
+          impl_->sources.size(),
+          impl_->constituent_materials.size(),
+          impl_->phase_pairs.size(),
+          workspace->usage().reserved_bytes,
+          staging->reserved_bytes,
+          impl_->cavity.has_value()
+      );
       if (!reservation_bytes.ok()) {
         return reservation_bytes.status();
       }
       const auto inlet_bytes = impl_->ocean_inlet_particles ? impl_->ocean_inlet_particles->reserved_bytes() : 0;
-      if (inlet_bytes > SIZE_MAX - *reservation_bytes) {
+      const auto cavity_bytes = impl_->cavity ? impl_->cavity->reserved_bytes : 0;
+      if (inlet_bytes > SIZE_MAX - *reservation_bytes || cavity_bytes > SIZE_MAX - *reservation_bytes - inlet_bytes) {
         return Error(absl::StatusCode::kResourceExhausted);
       }
       const auto prepared_growth =
@@ -1284,7 +2973,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
         return restarted;
       }
       impl_->backend.commit_growth(impl_->backend.context);
-      impl_->reservation_bytes = *reservation_bytes + inlet_bytes;
+      impl_->reservation_bytes = *reservation_bytes + inlet_bytes + cavity_bytes;
       impl_->workspace = std::move(*workspace);
       impl_->staging = std::move(*staging);
       impl_->options.capacities = growth;

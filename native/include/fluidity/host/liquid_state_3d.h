@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -14,6 +15,7 @@
 #include "absl/status/statusor.h"
 #include "fluidity/base/liquid_boundary_transfer_types_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/liquid_mixture_3d.h"
 #include "fluidity/host/liquid_remap_3d.h"
 
 namespace fluidity {
@@ -112,8 +114,15 @@ struct LiquidParticleState3D {
   double volume_ratio = 1.0;  // Positive dimensionless J.
   std::int64_t side_tag = 0;  // Equality identifies a material/body side.
   bool pic_initialized = false;  // False means a newly emitted particle must start with PIC.
+  std::uint64_t phase_id = 0;  // Stable miscibility phase for an explicit composition.
+  std::uint8_t constituent_count = 0;  // Zero is the legacy implicit single liquid.
+  // Active fractions are positive, sorted by stable substance ID, and sum to one.
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
   bool operator==(const LiquidParticleState3D&) const;
 };
+// Checks the bounded active fraction prefix and its unit sum to floating-point
+// tolerance. Legacy particles require zero phase ID. Inactive slots are ignored.
+bool ValidLiquidParticleComposition3D(const LiquidParticleState3D& particle);
 struct LiquidBlockState3D {
   BlockIndex3D block_index{};  // Canonical unique (z,y,x) order, signed 4-cell blocks.
   std::uint64_t generation = 0;
@@ -178,6 +187,20 @@ struct LiquidAdaptiveFaceState3D {
   bool operator==(const LiquidAdaptiveFaceState3D&) const = default;
 };
 
+struct LiquidCavityGasState3D {
+  CellIndex3D cell_index;
+  double gas_volume;  // Positive geometric m³.
+  std::size_t component;  // Canonical label of this gas cell.
+  bool operator==(const LiquidCavityGasState3D& other) const;
+};
+
+struct LiquidCavityComponentState3D {
+  std::uint64_t id;  // Zero for an untracked component.
+  double initial_volume;  // Positive m³ for a tracked component, otherwise zero.
+  double initial_absolute_pressure;  // Positive Pa for a tracked component, otherwise zero.
+  bool operator==(const LiquidCavityComponentState3D&) const = default;
+};
+
 struct LiquidState3D {
   UniformMacGeometry3D geometry{{0.0, 0.0, 0.0}, 1.0};
   LiquidClock3D clock;
@@ -194,6 +217,9 @@ struct LiquidState3D {
   // reserve the corresponding adaptive records in this mode.
   LiquidRecords3D<LiquidAdaptiveCellState3D> adaptive_cells;
   LiquidRecords3D<LiquidAdaptiveFaceState3D> adaptive_faces;
+  std::uint64_t next_cavity_id = 0;  // Zero disables cavity state.
+  LiquidRecords3D<LiquidCavityGasState3D> cavity_gas;  // Sorted (z,y,x) step-start snapshot.
+  LiquidRecords3D<LiquidCavityComponentState3D> cavity_components;  // First-member label order.
   bool operator==(const LiquidState3D&) const;
 };
 struct LiquidStateCapacities3D {
@@ -243,9 +269,10 @@ class LiquidFrameTransaction3D {
   // Validates and copies initial_state into independent reserved versions. Invalid
   // state propagates validation status; inadequate/overflowing capacities return
   // ResourceExhausted, including allocation failure. Does not retain input aliases
-  // or modify input on failure.
+  // or modify input on failure. Enabling cavity state for a fresh input starts
+  // with an empty snapshot and next cavity ID one.
   static absl::StatusOr<LiquidFrameTransaction3D>
-  Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities);
+  Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities, bool enable_cavity = false);
   // Const borrowed versions. References to these state objects survive transitions;
   // record spans/pointers must be reacquired after any modifying operation. Neither
   // borrow may outlive this owner. frame_start contents are immutable during a frame.

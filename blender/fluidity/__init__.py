@@ -8,6 +8,8 @@ from pathlib import Path
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -19,7 +21,7 @@ from bpy.types import Object, Operator, PropertyGroup
 
 from . import authoring, interchange, jobs, playback, ui
 from .preferences import FLUIDITY_Preferences, preview_end
-from .scene_inputs import SceneError, require_cadence, scene_inputs
+from .scene_inputs import SceneError, cutter_frame_packet, require_cadence, rigid_scene_packets, scene_inputs
 from .translations import TRANSLATIONS
 
 is_running = jobs.is_running
@@ -38,7 +40,49 @@ def custom_material(settings, context):
     invalidate_guidance(settings, context)
 
 
+class FluidiTyLiquidSource(PropertyGroup):
+    geometry: PointerProperty(name="Source Box", type=Object)
+    substance_id: IntProperty(name="Substance ID", min=1, default=1)
+    phase_id: IntProperty(name="Miscibility Phase", min=1, default=1)
+    density: FloatProperty(name="Density (kg/m³)", min=1, default=1000)
+    override_viscosity: BoolProperty(name="Set Viscosity")
+    viscosity: FloatProperty(name="Dynamic Viscosity (Pa·s)", min=0, default=0, precision=5)
+    emission_rate: FloatProperty(name="Particles per Second", min=0, default=0)
+    emitted_volume: FloatProperty(name="Emitted Particle Volume (m³)", min=1e-9, default=0.001, precision=6)
+
+
+class FLUIDITY_OT_liquid_source(Operator):
+    bl_idname = "fluidity.liquid_source"
+    bl_label = "Edit Liquid Sources"
+    index: IntProperty(default=-1)
+
+    def execute(self, context):
+        settings = context.scene.fluidity
+        if self.index < 0:
+            if len(settings.liquid_sources) >= 64:
+                return {"CANCELLED"}
+            used_ids = {item.substance_id for item in settings.liquid_sources}
+            source = settings.liquid_sources.add()
+            source.substance_id = next(index for index in range(1, 65) if index not in used_ids)
+        elif self.index < len(settings.liquid_sources):
+            settings.liquid_sources.remove(self.index)
+        else:
+            return {"CANCELLED"}
+        invalidate_guidance(settings, context)
+        return {"FINISHED"}
+
 class FluidiTySettings(PropertyGroup):
+    liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    planar_fill: BoolProperty(name="Planar Tank Fill", update=invalidate_guidance)
+    fill_height: FloatProperty(name="Fill Surface Height (m)", default=1.0, update=invalidate_guidance)
+    surface_object: PointerProperty(type=Object)
+    attached_surface_cache: StringProperty()
+    mesh_cache: StringProperty(name="Surface Cache", default="//FluidiTy Surface", subtype="DIR_PATH")
+    mesh_spacing: FloatProperty(name="Surface Spacing (m)", default=0.0125, min=0.00001, precision=5)
+    mesh_sigma: FloatProperty(name="Surface Smoothing (m)", default=0.025, min=0.00001, precision=5)
+    phase_tension: FloatProperty(
+        name="Phase Interface Tension (N/m)", min=0, default=0, precision=4, update=invalidate_guidance
+    )
     boundary_mode: EnumProperty(
         name="Boundaries",
         description="Choose the actual collision model used by the solver",
@@ -55,6 +99,38 @@ class FluidiTySettings(PropertyGroup):
     collider: PointerProperty(
         name="Collider", type=Object, description="Box defining the analytic plane or slab", update=invalidate_guidance
     )
+    cutter: PointerProperty(
+        name="Cutter",
+        type=Object,
+        description="Animated box defining the elastic cutting slab",
+        update=invalidate_guidance,
+    )
+    rigid_box: PointerProperty(
+        name="Rigid Box",
+        type=Object,
+        description="Box driven by liquid pressure and particle contact",
+        update=invalidate_guidance,
+    )
+    rigid_mass: FloatProperty(
+        name="Rigid Mass (kg)", default=1, min=1e-9, update=invalidate_guidance
+    )
+    rigid_substeps: IntProperty(name="Rigid Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
+    elastic_solid: PointerProperty(
+        name="Elastic Solid",
+        type=Object,
+        description="Static box seeding the dry elastic body",
+        update=invalidate_guidance,
+    )
+    elastic_density: FloatProperty(
+        name="Elastic Density (kg/m³)", default=1000, min=1, max=50000, update=invalidate_guidance
+    )
+    elastic_shear_modulus: FloatProperty(
+        name="Shear Modulus (Pa)", default=1000, min=0.01, update=invalidate_guidance
+    )
+    elastic_first_lame_parameter: FloatProperty(
+        name="First Lamé Parameter (Pa)", default=1000, min=0, update=invalidate_guidance
+    )
+    elastic_substeps: IntProperty(name="Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
     material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
     density: FloatProperty(
         name="Density",
@@ -250,6 +326,16 @@ class FLUIDITY_OT_check_scene(SceneAction, Operator):
     bl_label = "Check Scene"
 
     def perform(self, scene):
+        if scene.fluidity.cutter:
+            cache_paths(scene.fluidity)
+            jobs.check_cutter(cutter_frame_packet(scene))
+            scene.fluidity.message = "Cutter scene is ready for a CPU bake."
+            return
+        if scene.fluidity.rigid_box:
+            cache_paths(scene.fluidity)
+            jobs.check_rigid(rigid_scene_packets(scene))
+            scene.fluidity.message = "Rigid box scene is ready for a CPU bake."
+            return
         packet = scene_inputs(scene)
         cache_paths(scene.fluidity)
         backend = scene.fluidity.backend
@@ -266,15 +352,25 @@ class StartJob(SceneAction):
 
     def perform(self, scene):
         settings = scene.fluidity
-        packet = scene_inputs(scene, self.preview)
+        if settings.rigid_box:
+            packet = rigid_scene_packets(scene, self.preview)
+        elif settings.cutter:
+            packet = cutter_frame_packet(scene)
+        else:
+            packet = scene_inputs(scene, self.preview)
         bake, preview = cache_paths(settings)
         cache = preview if self.preview else bake
         if not self.resume and cache.exists():
             raise SceneError("cache", "Choose a fresh cache directory, or use Resume for an existing bake.")
-        check_device(settings.backend)
         last_frame = preview_end(scene) if self.preview else scene.frame_end
         try:
-            jobs.start(scene, cache, packet, settings.backend, last_frame, self.resume)
+            if settings.rigid_box:
+                jobs.start_rigid(scene, cache, packet, last_frame, self.resume)
+            elif settings.cutter:
+                jobs.start_cutter(scene, cache, packet, last_frame, self.resume)
+            else:
+                check_device(settings.backend)
+                jobs.start(scene, cache, packet, settings.backend, last_frame, self.resume)
         except jobs.ToolError as error:
             if self.resume and error.record.get("field") == "scene":
                 raise SceneError("scene", "The bake settings changed. Choose a fresh Bake cache.") from error
@@ -333,6 +429,26 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         cache = project_path(settings.attached_cache or settings.bake_cache)
         settings.inspect_frame = -1
         settings.point_detail = ""
+        if settings.rigid_box:
+            result = jobs.inspect_rigid(project_path(settings.bake_cache), scene.frame_current)
+            x, y, z = result["position"]
+            settings.inspect_frame, settings.point_count = result["frame"], 0
+            settings.point_detail = f"Rigid Box | ({x:.4g}, {-z:.4g}, {y:.4g}) m"
+            settings.message = "Read the committed rigid pose."
+            return
+        cutter_cache = project_path(settings.bake_cache) if settings.cutter else cache
+        if (cutter_cache / "cutter.txt").is_file():
+            checkpoint = jobs.cutter_checkpoint(cutter_cache, scene.frame_current)
+            result = jobs.checked("simulate", "cutter-inspect", checkpoint, event="cutter_inspect")
+            points = result["points"]
+            settings.inspect_frame, settings.point_count = scene.frame_current, len(points)
+            if settings.point_index < len(points):
+                point = points[settings.point_index]
+                x, y, z = point["position"]
+                side = "+" if point["side"] > 0 else "-"
+                settings.point_detail = f"ID {point['id']} | Cutter side {side} | ({x:.4g}, {-z:.4g}, {y:.4g}) m"
+            settings.message = "Read the committed Cutter frame."
+            return
         result = json.loads(jobs.checked("blender_bridge", "inspect", cache, scene.frame_current))
         points = result["points"]
         settings.inspect_frame, settings.point_count = result["frame"], len(points)
@@ -344,6 +460,29 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         settings.message = "Read the committed frame."
 
 
+class FLUIDITY_OT_build_surface(SceneAction, Operator):
+    bl_idname = "fluidity.build_surface"
+    bl_label = "Build Surface"
+    bl_description = "Reconstruct native Mesh frames from the committed Bake cache"
+    resume: BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def perform(self, scene):
+        require_cadence(scene)
+        settings = scene.fluidity
+        source = project_path(settings.bake_cache)
+        output = project_path(settings.mesh_cache)
+        if source == output or source in output.parents or output in source.parents:
+            raise SceneError("cache", "Choose a separate, non-nested Surface cache directory.")
+        if not self.resume and output.exists():
+            raise SceneError("cache", "Choose a fresh Surface cache directory, or use Resume Surface.")
+        last_frame = playback.committed_last(source)
+        jobs.start_mesh(scene, source, output, last_frame, settings.mesh_spacing, settings.mesh_sigma, self.resume)
+        settings.committed_frame = -1
+        settings.target_frame = last_frame
+        settings.message = "Waiting for the first committed Surface frame."
+        if not bpy.app.timers.is_registered(tick):
+            bpy.app.timers.register(tick, first_interval=0.01)
+
 class FLUIDITY_OT_attach(SceneAction, Operator):
     bl_idname = "fluidity.attach"
     bl_description = "Validate and attach native Alembic Points playback without replacing artist display edits"
@@ -352,6 +491,10 @@ class FLUIDITY_OT_attach(SceneAction, Operator):
 
     def perform(self, scene):
         bake, preview = cache_paths(scene.fluidity)
+        if scene.fluidity.rigid_box:
+            playback.attach_rigid(scene, preview if self.preview else bake, self.preview)
+            scene.fluidity.message = "Rigid motion attached to a separate animated object."
+            return
         playback.attach(scene, preview if self.preview else bake)
         scene.fluidity.message = "Points attached. Save the project to keep the binding."
 
@@ -372,6 +515,8 @@ class FLUIDITY_OT_relink(SceneAction, Operator):
 
 
 _CLASSES = (
+    FluidiTyLiquidSource,
+    FLUIDITY_OT_liquid_source,
     FluidiTySettings,
     FLUIDITY_OT_check_scene,
     FLUIDITY_OT_preview,
@@ -380,6 +525,7 @@ _CLASSES = (
     FLUIDITY_OT_cancel,
     FLUIDITY_OT_inspect,
     FLUIDITY_OT_attach,
+    FLUIDITY_OT_build_surface,
     FLUIDITY_OT_relink,
     FLUIDITY_Preferences,
     *authoring.CLASSES,

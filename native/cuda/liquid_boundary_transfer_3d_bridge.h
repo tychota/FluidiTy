@@ -10,7 +10,8 @@ enum class BoundaryTransferOperation3D {
   kGather,
   kFitGhost,
   kPredict,
-  kForces
+  kForces,
+  kParticleUpdateWithPistonReaction
 };
 enum class BoundaryHistoryStage3D {
   kOld,
@@ -79,6 +80,7 @@ struct BoundaryUpdateResult3D {
   Vec3 world_position{};  // Continuous-contact position, meters.
   Vec3 stored_world_velocity{};  // Retained/contact-corrected m/s.
   double volume_ratio{};  // Start-time J times exp(dt times the transport divergence).
+  double piston_stored_velocity_change{};  // Low-x correction in m/s.
   boundary_internal::Error error{};
   bool retry_step{};
 };

@@ -2,13 +2,16 @@
 
 import filecmp
 import json
+import math
 from pathlib import Path
 from uuid import uuid4
 
 import bpy
+from bpy_extras.anim_utils import action_get_channelbag_for_slot
+from mathutils import Matrix, Quaternion
 
 from . import jobs
-from .scene_inputs import require_cadence
+from .scene_inputs import require_cadence, rigid_scene_packets
 
 ASSET_VERSION = 2
 
@@ -104,13 +107,13 @@ def inspection(cache, frame):
     return json.loads(jobs.checked("blender_bridge", "inspect", cache, frame))
 
 
-def committed_last(cache):
+def committed_last(cache, manifest_extension="flmf"):
     """Find the last publication record; the bridge subsequently verifies its contents."""
     if not cache.is_dir():
         raise jobs.ToolError("Choose a directory containing a committed FluidiTy cache.")
     frames = [
         int(p.stem)
-        for p in (cache / "frames").glob("*.flmf")
+        for p in (cache / "frames").glob(f"*.{manifest_extension}")
         if len(p.stem) == 20 and p.stem.isascii() and p.stem.isdecimal()
     ]
     if not frames:
@@ -229,3 +232,72 @@ def attach(scene, cache):
                 # Blender can hold a native read handle until its dependency graph updates.
                 pass
     return last
+
+def attach_rigid(scene, cache, preview=False):
+    """Attach verified poses as native transform keys on a separate display object."""
+    liquid, rigid = rigid_scene_packets(scene, preview)
+    for filename, packet in (("scene.txt", liquid), ("rigid.txt", rigid)):
+        path = cache / filename
+        if not path.is_file() or path.read_bytes() != packet.encode("ascii"):
+            raise jobs.ToolError("The rigid bake settings changed. Use the matching scene or bake again.")
+
+    box = scene.fluidity.rigid_box
+    frame, subframe = scene.frame_current, scene.frame_subframe
+    try:
+        scene.frame_set(0)
+        center, orientation, scale = box.evaluated_get(bpy.context.evaluated_depsgraph_get()).matrix_world.decompose()
+    finally:
+        scene.frame_set(frame, subframe=subframe)
+
+    poses = [(center, orientation)]
+    solver_to_blender = Matrix(((1, 0, 0), (0, 0, -1), (0, 1, 0)))
+    for ordinal in range(1, scene.frame_end + 1):
+        if not jobs.rigid_checkpoint(cache, ordinal).is_file():
+            break
+        record = jobs.inspect_rigid(cache, ordinal)
+        position, rotation = record["position"], record["orientation"]
+        if (record["frame"] != ordinal or record["substep"] != 0
+                or len(position) != 3 or len(rotation) != 4
+                or not all(math.isfinite(value) for value in (*position, *rotation))
+                or abs(math.hypot(*rotation) - 1) > 1e-12):
+            raise jobs.ToolError("The rigid checkpoint contains an invalid pose.")
+        x, y, z = position
+        orientation = (solver_to_blender @ Quaternion(rotation).to_matrix()).to_quaternion()
+        if orientation.dot(poses[-1][1]) < 0:
+            orientation.negate()
+        poses.append(((x, -z, y), orientation))
+    if len(poses) == 1:
+        raise jobs.ToolError("Bake a rigid frame before attaching its motion.")
+
+    display = box.copy()
+    display.name = f"{box.name} · FluidiTy Motion"
+    scene.collection.objects.link(display)
+    try:
+        display.animation_data_clear()
+        display.delta_location = (0, 0, 0)
+        display.delta_rotation_euler = (0, 0, 0)
+        display.delta_rotation_quaternion = (1, 0, 0, 0)
+        display.delta_scale = (1, 1, 1)
+        display.scale = scale
+        display.rotation_mode = "QUATERNION"
+        for ordinal, (center, orientation) in enumerate(poses):
+            display.location = center
+            display.rotation_quaternion = orientation
+            if not (display.keyframe_insert(data_path="location", frame=ordinal)
+                    and display.keyframe_insert(data_path="rotation_quaternion", frame=ordinal)):
+                raise jobs.ToolError("Blender could not keyframe the rigid motion.")
+        animation = display.animation_data
+        animation.action.name = f"{box.name} FluidiTy Motion"
+        channels = action_get_channelbag_for_slot(animation.action, animation.action_slot)
+        for curve in channels.fcurves:
+            for key in curve.keyframe_points:
+                key.interpolation = "LINEAR"
+        scene.frame_set(frame, subframe=subframe)
+    except (RuntimeError, ValueError, jobs.ToolError):
+        animation = display.animation_data
+        action = animation.action if animation else None
+        bpy.data.objects.remove(display, do_unlink=True)
+        if action and not action.users:
+            bpy.data.actions.remove(action)
+        raise
+    return display

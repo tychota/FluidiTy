@@ -17,6 +17,9 @@ struct MacPressureCell3D {
   double target_divergence;  // Prescribed divergence in s⁻¹.
   double bulk_modulus;  // Positive Pa. Positive infinity selects zero compliance.
   double previous_pressure;  // Pressure before the step in Pa.
+  // Flux through a solid boundary inside the cell, positive into the liquid.
+  // In m³/s. Excludes any contribution already represented by an incident MAC face.
+  double integrated_inward_wall_flux = 0.0;
 };
 
 // The jump in Pa enters the pressure correction as p_tail − p_head + pressure_jump.
@@ -86,7 +89,8 @@ struct MacPressureSolverOptions3D {
 // pin pressure on unanchored components. Success requires the original FP64
 // residual and independent physical defect gates, including every pin row:
 // ||b-Ap||₂ <= 2e-6 m³/s + 2e-6 ||b||₂ and both maximum |r|/V and physical
-// constraint defect <= 2e-5 s⁻¹.
+// constraint defect <= 2e-5 s⁻¹. A nonzero internal pressure jump additionally
+// caps the global tolerance at 1e-3 ||b||₂ when the RHS norm is positive.
 // Returns kInvalidArgument for invalid data, face topology, or an iteration
 // budget outside [1,256]. Missing face ownership or incompatible unanchored
 // components return kFailedPrecondition. Extents above capacity return

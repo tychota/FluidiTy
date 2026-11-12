@@ -4,16 +4,20 @@
 #include <cstdint>
 
 #include "absl/status/statusor.h"
-#include "fluidity/base/mac_types_3d.h"
+#include "fluidity/host/liquid_mixture_3d.h"
 
 namespace fluidity {
 
 struct LiquidRemapInventory3D {
   double mass_kg = 0;
   double reference_volume_m3 = 0;
-  double current_volume_m3 = 0;  // Also the only constituent volume in the single-liquid model.
+  double current_volume_m3 = 0;
   Vec3 momentum_kg_m_per_s{};
   double enthalpy_j = 0;  // Signed relative to the material's enthalpy reference.
+  std::uint64_t phase_id = 0;  // Zero for empty inventory or legacy implicit liquid.
+  std::uint8_t constituent_count = 0;
+  // Positive extensive current volumes, in strictly increasing substance ID order.
+  std::array<LiquidConstituentVolume3D, kMaximumLiquidParticleConstituents3D> constituents{};
 };
 
 using LiquidRemapChildren3D = std::array<LiquidRemapInventory3D, 8>;
@@ -31,13 +35,17 @@ struct LiquidRemapSubface3D {
 
 // Sums eight extensive child inventories in lexicographic xyz order (z changes
 // fastest). All lanes must be finite and mass and both volumes nonnegative.
-// Invalid data returns InvalidArgument. A nonfinite sum returns OutOfRange.
+// Wet child inventories must agree on explicit phase or legacy mode.
+// Invalid data returns InvalidArgument, incompatible phases FailedPrecondition,
+// excess constituent IDs ResourceExhausted, and unrepresentable sums OutOfRange.
 absl::StatusOr<LiquidRemapInventory3D> RestrictLiquidInventory3D(const LiquidRemapChildren3D& children);
 
 // Prolongs one parent into eight equal-volume Cartesian child cells at offsets
 // ±1/4 of a parent cell width on each axis, in the same order as restriction.
 // The limited parent-scale reconstruction stays within stencil extrema. Child
-// extensive values divide it by eight. Uses the same input rules as restriction
+// extensive values divide it by eight. Incompatible wet neighbors use the
+// parent state at the phase boundary. Constituent volumes use the parent
+// fractions and the limited child current volumes. Uses the same input rules as restriction
 // and returns OutOfRange for unrepresentable arithmetic or inventory loss.
 // These operations return new values. Inputs are read-only on every path.
 absl::StatusOr<LiquidRemapChildren3D>
