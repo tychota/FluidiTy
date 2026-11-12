@@ -64,6 +64,9 @@ struct LiquidPoint3D {
   double radius = 1;  // Positive visualization radius, m.
   double volume_ratio = 1;  // Dimensionless J.
   std::uint8_t level = 0;  // Uniform M1 admits level zero only.
+  std::uint64_t phase_id = 0;  // Stable phase when the active composition prefix is nonempty.
+  std::uint8_t constituent_count = 0;
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
 };
 struct LiquidPointFrame3D {
   LiquidClock3D clock;  // Completed frame (substep zero).
@@ -100,12 +103,14 @@ struct LiquidResolvedSceneView3D {
 struct LiquidResolvedScene3D {
   UniformMacGeometry3D geometry{{0, 0, 0}, 1};
   std::uint64_t random_seed = 0;
-  LiquidSceneInputs3D scene;  // sources remains empty; use View().scene.sources.
+  LiquidSceneInputs3D scene;  // Borrowed arrays remain empty; use View().scene.
   LiquidStepOptions3D options;  // Capacity plans remain zero; read them from checkpoint.
   LiquidBackend3D backend = LiquidBackend3D::kCpu;
   std::uint32_t model_version = 1;
   LiquidDigest3D build_digest{};
   LiquidRecords3D<LiquidEmissionSource3D> sources;
+  LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
+  LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidRecords3D<LiquidUpstreamContent3D> upstream;
   LiquidResolvedSceneView3D View() const;
 };

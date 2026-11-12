@@ -16,6 +16,7 @@
 #include "liquid_device_3d_internal.h"
 #include "liquid_geometry_stages_3d_bridge.h"
 #include "mac_pressure_3d_bridge.h"
+#include "viscosity_velocity_block_3d_bridge.h"
 #include "wetted_piston_3d_bridge.h"
 
 namespace fluidity {
@@ -165,7 +166,20 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
   const auto index_count = count_sum(capacity.cells, 1 + 3 * level_count, capacity.faces, 4 * level_count, level_count);
   const auto coefficient_count = count_sum(capacity.cells, 34 * level_count, capacity.faces, level_count, 0);
   const auto pressure_output_count = count_sum(capacity.cells, 4, capacity.faces, 1, 0);
-  if (!index_count.ok() || !coefficient_count.ok() || !pressure_output_count.ok()) {
+  // The mutually exclusive viscosity path needs three two-term normal rows
+  // and at most one four-term row per incident cut edge (twelve per cell).
+  constexpr std::size_t kNormalRowsPerCell = 3;
+  constexpr std::size_t kShearRowsPerCell = 12;
+  static_assert(sizeof(cuda_internal::PressureLink3D) >= sizeof(cuda_internal::ViscousVelocityFace3D));
+  static_assert(sizeof(cuda_internal::PressureState3D) >= sizeof(cuda_internal::ViscousVelocityState3D));
+  static_assert(sizeof(cuda_internal::ViscousVelocityTerm3D) == 2 * sizeof(double));
+  const auto viscous_index_count = count_sum(capacity.cells, kNormalRowsPerCell + kShearRowsPerCell, 0, 1, 1);
+  const auto viscous_coefficient_count =
+      count_sum(capacity.cells, 2 * (2 * kNormalRowsPerCell + 4 * kShearRowsPerCell), 0, 1, 0);
+  const auto coarse_scratch_count = count_sum(capacity.cells, 3 * level_count, 0, 1, 0);
+  const auto viscous_scratch_count = count_sum(capacity.faces, 5, 0, 1, 0);
+  if (!index_count.ok() || !coefficient_count.ok() || !pressure_output_count.ok() || !viscous_index_count.ok()
+      || !viscous_coefficient_count.ok() || !coarse_scratch_count.ok() || !viscous_scratch_count.ok()) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
   using Range = CudaLiquidRange3D;
@@ -199,10 +213,10 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
       && add(Range::kPressureLinks, capacity.faces, sizeof(cuda_internal::PressureLink3D))
       && add(Range::kPressureLevels, level_count, sizeof(cuda_internal::PressureLevel3D))
       && add(Range::kPressureBlocks, capacity.cells, level_count * sizeof(cuda_internal::PressureBlock3D))
-      && add(Range::kPressureIndices, *index_count, sizeof(std::size_t))
-      && add(Range::kPressureCoefficients, *coefficient_count, sizeof(double))
+      && add(Range::kPressureIndices, std::max(*index_count, *viscous_index_count), sizeof(std::size_t))
+      && add(Range::kPressureCoefficients, std::max(*coefficient_count, *viscous_coefficient_count), sizeof(double))
       && add(Range::kPressureFineScratch, capacity.cells, 6 * sizeof(float))
-      && add(Range::kPressureCoarseScratch, capacity.cells, 3 * level_count * sizeof(double))
+      && add(Range::kPressureCoarseScratch, std::max(*coarse_scratch_count, *viscous_scratch_count), sizeof(double))
       && add(Range::kPressureRows, capacity.cells, 2 * sizeof(cuda_internal::PressureRow3D))
       && add(Range::kPressureOutput, *pressure_output_count, sizeof(double))
       && add(Range::kPressureState, 1, sizeof(cuda_internal::PressureState3D))

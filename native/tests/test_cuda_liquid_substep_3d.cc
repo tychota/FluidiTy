@@ -16,8 +16,13 @@
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/liquid_cache_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_cavity_scheduler_cases.h"
+#include "liquid_curved_phase_cases.h"
+#include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
+#include "liquid_viscous_tank_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
@@ -82,6 +87,11 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
     const auto& cuda_particle = gpu.particles[index];
     EXPECT_EQ(cpu_particle.id, cuda_particle.id);
     EXPECT_EQ(cpu_particle.tag, cuda_particle.tag);
+    EXPECT_EQ(cpu_particle.phase_id, cuda_particle.phase_id);
+    ASSERT_EQ(cpu_particle.constituent_count, cuda_particle.constituent_count);
+    for (std::size_t constituent = 0; constituent < cpu_particle.constituent_count; ++constituent) {
+      EXPECT_EQ(cpu_particle.constituents[constituent], cuda_particle.constituents[constituent]);
+    }
     const std::array cpu_velocity_slopes{
         cpu_particle.velocity_slopes.x_row,
         cpu_particle.velocity_slopes.y_row,
@@ -1171,6 +1181,507 @@ void CheckRejectedFieldBatch() {
   EXPECT_EQ(DeviceBytes(*after), bytes);
 }
 
+TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
+  pressure_test::ExpectEosHydrostaticColumn(
+      [](const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options
+      ) -> absl::StatusOr<pressure_test::HydrostaticRun> {
+        auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+        if (!backend.ok()) {
+          return backend.status();
+        }
+        auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+        if (!scheduler.ok()) {
+          return scheduler.status();
+        }
+        EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+        return pressure_test::AdvanceHydrostaticColumn(*scheduler, options.capacities);
+      }
+  );
+}
+
+TEST(CudaLiquidSubstep3D, ResolvesWeakCurvedPhasePressureWithAndWithoutViscosity) {
+  const auto fixture = curved_phase_test::MakeFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double kAnalyticPressure = curved_phase_test::kTension * curved_phase_test::kExpectedCurvature;
+  for (const double viscosity : {0.0, 0.001}) {
+    SCOPED_TRACE(viscosity);
+    auto scene = fixture->scene;
+    scene.dynamic_viscosity = viscosity;
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto gpu = LiquidSubstepScheduler3D::Create(fixture->initial, scene, fixture->options, backend->operations());
+    auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, scene, fixture->options);
+    ASSERT_TRUE(gpu.ok()) << gpu.status();
+    ASSERT_TRUE(cpu.ok()) << cpu.status();
+    ASSERT_TRUE(gpu->BeginFrame(curved_phase_test::kStepDuration).ok());
+    MeasuredAttempt(*gpu, *backend, curved_phase_test::kStepDuration, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_TRUE(gpu->FinishFrame().ok());
+    const auto advanced = cpu->AdvanceFrame(curved_phase_test::kStepDuration);
+    ASSERT_TRUE(advanced.ok()) << advanced;
+    const auto [pressure_sum, core_cells] = curved_phase_test::CorePressureSum(gpu->committed());
+    ASSERT_EQ(core_cells, 8u);
+    const double core_pressure = pressure_sum / static_cast<double>(core_cells);
+    EXPECT_NEAR(core_pressure, kAnalyticPressure, 0.25 * kAnalyticPressure);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    std::cout << "curved_phase_viscosity_pa_s=" << viscosity << " core_pressure_pa=" << core_pressure << '\n';
+    ExpectState(cpu->committed(), gpu->committed());
+  }
+}
+
+TEST(CudaLiquidSubstep3D, ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry) {
+  constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 3.0e6}}};
+  auto initial = Initial();
+  initial.particles[0].world_velocity = {};
+  initial.particles[0].mass = 1015.0;
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
+  initial.particles[1].world_position.x += 1.0;
+  initial.particles[1].world_velocity = {};
+  initial.particles[1].mass = 820.0;
+  initial.particles[1].phase_id = 5;
+  initial.particles[1].constituent_count = 1;
+  initial.particles[1].constituents[0] = {25, 1.0};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  scene.world_acceleration = {};
+  scene.constituent_materials = kMaterials;
+  scene.phase_pairs = kPairs;
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+  ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
+  EXPECT_EQ(gpu->diagnostics().dt_retries, 1);
+  EXPECT_EQ(cpu->diagnostics().dt_retries, 1);
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaLiquidSubstep3D, DiscoveredCavitySurvivesCheckpointResume) {
+  const auto initial = cavity_test::ParticleShell();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  const auto options = cavity_test::ShellOptions(initial->particles.size());
+  LiquidResolvedSceneView3D resolved;
+  resolved.backend = LiquidBackend3D::kCuda;
+  resolved.options = options;
+  resolved.scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  resolved.scene.world_acceleration = {};
+  resolved.scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .birth_hydrostatic_gauge_pressure = 100.0,
+  };
+  const auto fingerprint = ResolvedSceneFingerprint(resolved);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, resolved.scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  EXPECT_EQ(scheduler->committed().clock, LiquidClock3D{});
+  ASSERT_EQ(scheduler->committed().next_cavity_id, 2);
+  ASSERT_GT(scheduler->committed().cavity_gas.size(), 0);
+  const auto first = scheduler->AdvanceFrame(0.001);
+  ASSERT_TRUE(first.ok()) << first << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+  const auto& measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement && measurement->cavity && measurement->step_start_cavity_bound_seconds);
+  EXPECT_EQ(measurement->cavity->boundaries.active_cavity_count, 1);
+  EXPECT_GT(measurement->cavity->boundaries.air_pressure_count, 0);
+  EXPECT_GT(measurement->pressure_rhs_l2_m3_per_s, 0.0);
+  EXPECT_LE(measurement->accepted_dt_seconds, *measurement->step_start_cavity_bound_seconds);
+  EXPECT_EQ(scheduler->committed().next_cavity_id, 2);
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+
+  const LiquidResumeMetadata3D resume{
+      .resolved_fingerprint = *fingerprint,
+      .execution_id = LiquidExecutionId3D(*fingerprint),
+      .capacities = options.capacities,
+      .capacity_replay_reservations = options.capacity_replay_reservations,
+  };
+  const auto checkpoint = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto decoded = DecodeLiquidCheckpoint3D(checkpoint->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(restarted_backend.ok()) << restarted_backend.status();
+  auto restarted =
+      LiquidSubstepScheduler3D::Create(decoded->state, resolved.scene, options, restarted_backend->operations());
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  ASSERT_TRUE(scheduler->AdvanceFrame(0.002).ok());
+  ASSERT_TRUE(restarted->AdvanceFrame(0.002).ok());
+  EXPECT_EQ(restarted->committed().next_cavity_id, 2);
+  const auto uninterrupted = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+  const auto continued = EncodeLiquidCheckpoint3D(restarted->committed(), resume);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(continued.ok()) << continued.status();
+  EXPECT_EQ(LiquidContentDigest3D(uninterrupted->values()), LiquidContentDigest3D(continued->values()));
+}
+
+TEST(CudaLiquidSubstep3D, PreparedCavityBoundariesMatchCpuAfterRetry) {
+  std::array<LiquidAirCellPressure3D, 512> pressures;
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.cavity_provider = {
+      .context = &pressures,
+      .prepare = [](void* context, double, const LiquidBoundaryGeometryViewInputs3D& samples
+                 ) -> absl::StatusOr<LiquidStepCavityBoundaries3D> {
+        auto& output = *static_cast<std::array<LiquidAirCellPressure3D, 512>*>(context);
+        std::size_t count = 0;
+        for (const auto& center : samples.center_distances) {
+          if (center.signed_distance >= 0.0) {
+            if (count == output.size()) {
+              return absl::ResourceExhaustedError("cavity fixture capacity");
+            }
+            output[count++] = {center.cell_index, 17.0};
+          }
+        }
+        return LiquidStepCavityBoundaries3D{
+            .air_pressures = std::span(output).first(count),
+            .maximum_step_duration = 0.006,
+        };
+      },
+  };
+  const auto options = Options();
+  const auto initial = Initial();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  ASSERT_TRUE(gpu->AdvanceFrame(0.01).ok());
+  ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
+  EXPECT_EQ(gpu->diagnostics().dt_retries, 1);
+  ASSERT_TRUE(gpu->diagnostics().accepted_measurement);
+  EXPECT_EQ(gpu->diagnostics().accepted_measurement->step_start_cavity_bound_seconds, 0.006);
+  ASSERT_GT(gpu->committed().cells.size(), 0);
+  const double radius = std::get<LiquidAnalyticSphere3D>(scene.field).radius;
+  const double boundary_pressure = 17.0 + scene.surface_tension * 2.0 / radius;
+  EXPECT_NEAR(gpu->committed().cells[0].previous_pressure, boundary_pressure, kPressureTolerance);
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {
+  auto initial = Initial();
+  initial.particles[0].volume_ratio = 1.02;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  scene.world_acceleration = {};
+  scene.ambient_pressure = 10.0;
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  for (const double target_time : {0.01, 0.02}) {
+    const auto gpu_status = gpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+    const auto cpu_status = cpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    ExpectState(cpu->committed(), gpu->committed());
+  }
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaLiquidSubstep3D, OpenIncompressibleDriftMatchesCpu) {
+  auto initial = Initial();
+  initial.particles[0].volume_ratio = 1.02;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  scene.world_acceleration = {};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  const auto cpu_status = cpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
+  auto initial = Initial();
+  initial.particles[0].world_position = {2.5, 2.5, 2.5};
+  initial.particles[1].world_position = {3.5, 2.5, 2.5};
+  initial.particles[0].world_velocity = {0.0, 0.0, 0.125};
+  initial.particles[1].world_velocity = {0.0, 0.0, -0.125};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  scene.world_acceleration = {};
+
+  const auto options = Options();
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {14, 4, 1000.0, 120.0},
+  }};
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kImmiscibleMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {25, 5, 820.0, 120.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 0.031}}};
+  enum class MaterialMode {
+    kUniform,
+    kMiscible,
+    kImmiscible
+  };
+  for (const auto mode : {MaterialMode::kUniform, MaterialMode::kMiscible, MaterialMode::kImmiscible}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    scene.dynamic_viscosity = mode == MaterialMode::kUniform ? 100.0 : 0.0;
+    if (mode != MaterialMode::kUniform) {
+      scene.constituent_materials = mode == MaterialMode::kMiscible ? kMaterials : kImmiscibleMaterials;
+      if (mode == MaterialMode::kImmiscible) {
+        scene.phase_pairs = kPairs;
+      }
+      for (std::size_t index = 0; index < initial.particles.size(); ++index) {
+        auto& particle = initial.particles[index];
+        const auto& material = scene.constituent_materials[index];
+        particle.phase_id = material.phase_id;
+        particle.mass = material.density_kg_per_m3;
+        particle.constituent_count = 1;
+        particle.constituents[0] = {material.substance_id, 1.0};
+      }
+    }
+    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+    ASSERT_TRUE(gpu.ok()) << gpu.status();
+    auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(cpu.ok()) << cpu.status();
+    const auto before = backend->usage();
+    const auto gpu_status = gpu->AdvanceFrame(0.01);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+    const auto cpu_status = cpu->AdvanceFrame(0.01);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    ExpectState(cpu->committed(), gpu->committed());
+    const auto after = backend->usage();
+    EXPECT_EQ(after.compiled_architecture, 1200);
+    EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+    EXPECT_EQ(after.device_free_count, before.device_free_count);
+    EXPECT_LT(std::abs(gpu->committed().particles[0].world_velocity.z), 0.125);
+  }
+}
+
+TEST(CudaLiquidSubstep3D, PositiveViscosityAttemptsAllocateAndFreeNothing) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (auto failure : {absl::StatusCode::kOk, absl::StatusCode::kAborted, absl::StatusCode::kFailedPrecondition}) {
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    scheduler->SetStageFaultHookForTesting({&failure, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                              if (stage != LiquidPhysicalStage3D::kAccept) {
+                                                return absl::OkStatus();
+                                              }
+                                              return absl::Status(*static_cast<absl::StatusCode*>(context), {});
+                                            }});
+    const auto expected = failure == absl::StatusCode::kOk ? LiquidAttemptDisposition3D::kAccepted
+        : failure == absl::StatusCode::kAborted            ? LiquidAttemptDisposition3D::kRetryDt
+                                                           : LiquidAttemptDisposition3D::kFatal;
+    MeasuredAttempt(*scheduler, *backend, duration, expected);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    if (failure == absl::StatusCode::kOk) {
+      EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, duration);
+    } else {
+      EXPECT_EQ(scheduler->committed(), fixture->initial);
+    }
+  }
+}
+
+TEST(CudaLiquidSubstep3D, ViscosityPhysicalFailuresAllocateAndFreeNothing) {
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (const bool invalid_geometry : {false, true}) {
+    const auto fixture = viscous_tank_test::ViscosityFailure(invalid_geometry);
+    ASSERT_TRUE(fixture.ok()) << fixture.status();
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    const auto expected = invalid_geometry ? LiquidAttemptDisposition3D::kFatal : LiquidAttemptDisposition3D::kRetryDt;
+    MeasuredAttempt(*scheduler, *backend, duration, expected);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+    EXPECT_EQ(
+        scheduler->diagnostics().failure_code,
+        invalid_geometry ? absl::StatusCode::kUnimplemented : absl::StatusCode::kAborted
+    );
+    EXPECT_EQ(scheduler->committed(), fixture->initial);
+  }
+}
+
+TEST(CudaLiquidSubstep3D, ViscousFractionalTankFillMatchesCpuHydrostaticRest) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu =
+      LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+
+  const auto before = backend->usage();
+  const auto cpu_status = cpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  const auto gpu_status = gpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  viscous_tank_test::ExpectHydrostaticRest(*gpu);
+  ExpectState(cpu->committed(), gpu->committed());
+}
+
+TEST(CudaLiquidSubstep3D, ViscousCartesianCutPistonMatchesCpuAndPreservesFlux) {
+  auto fixture = viscous_tank_test::CartesianCut();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+  constexpr double kWallSpeed = 0.05;
+  tank.piston_velocity_x = kWallSpeed;
+  auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  auto backend = CudaLiquidSubstepBackend3D::Create(
+      fixture->options.capacities,
+      0,
+      /*measure_job=*/false,
+      /*needs_wetted_piston=*/true
+  );
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu =
+      LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+
+  const auto before = backend->usage();
+  for (int frame = 1; frame <= 2; ++frame) {
+    const double target_time = frame * viscous_tank_test::kStepDuration;
+    const auto cpu_status = cpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    const auto gpu_status = gpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  }
+  EXPECT_EQ(gpu->committed().clock.frame_ordinal, 2u);
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  const auto& accepted = gpu->diagnostics().accepted_measurement;
+  ASSERT_TRUE(accepted.has_value());
+  EXPECT_NEAR(accepted->step_start_inward_piston_flux_m3_per_s, kWallSpeed * 3 * viscous_tank_test::kFillHeight, 1e-12);
+  EXPECT_LT(accepted->viscous_max_momentum_residual_kg_m_per_s.value_or(1.0), 1e-5);
+  ExpectState(cpu->committed(), gpu->committed());
+}
+
+TEST(CudaLiquidSubstep3D, CutViscousSphereDampsShearAndMatchesCpu) {
+  constexpr double kRadius = 0.125;
+  constexpr int kCellsPerRadius = 3;
+  constexpr double kWidth = kRadius / kCellsPerRadius;
+  constexpr double kDt = 1.0 / 120.0;
+  LiquidState3D initial;
+  initial.geometry.cell_width = kWidth;
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(136);
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(particles->Resize(136).ok());
+  std::size_t ordinal = 0;
+  for (int z = -kCellsPerRadius; z < kCellsPerRadius; ++z) {
+    for (int y = -kCellsPerRadius; y < kCellsPerRadius; ++y) {
+      for (int x = -kCellsPerRadius; x < kCellsPerRadius; ++x) {
+        const Vec3 position{(x + 0.5) * kWidth, (y + 0.5) * kWidth, (z + 0.5) * kWidth};
+        if (std::hypot(position.x, position.y, position.z) >= kRadius) {
+          continue;
+        }
+        ASSERT_LT(ordinal, particles->size());
+        (*particles)[ordinal] = {
+            .id = ordinal + 1,
+            .world_position = position,
+            .world_velocity = {0.4 * position.y, 0.4 * position.x, 0.0},
+            .mass = 0.06,
+            .reference_volume = 0.00006,
+        };
+        ++ordinal;
+      }
+    }
+  }
+  ASSERT_EQ(ordinal, particles->size());
+  initial.next_particle_id = ordinal + 1;
+  initial.particles = std::move(*particles);
+
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{}, kRadius};
+  scene.world_acceleration = {};
+  scene.liquid_density = 1000;
+  LiquidStepOptions3D options;
+  options.capacities = {256, 128, 512, 4096, 256};
+  auto inviscid = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(inviscid.ok()) << inviscid.status();
+  const auto inviscid_status = inviscid->AdvanceFrame(kDt);
+  ASSERT_TRUE(inviscid_status.ok()) << inviscid_status;
+
+  scene.dynamic_viscosity = 10.0;
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+
+  const auto before = backend->usage();
+  const auto cpu_status = cpu->AdvanceFrame(kDt);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  const auto gpu_status = gpu->AdvanceFrame(kDt);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  ExpectState(cpu->committed(), gpu->committed());
+
+  const auto kinetic_energy = [](const LiquidState3D& state) {
+    double energy = 0.0;
+    for (const auto& particle : state.particles.values()) {
+      const auto v = particle.world_velocity;
+      energy += 0.5 * particle.mass * (v.x * v.x + v.y * v.y + v.z * v.z);
+    }
+    return energy;
+  };
+  const double inviscid_energy = kinetic_energy(inviscid->committed());
+  const double viscous_energy = kinetic_energy(gpu->committed());
+  ASSERT_GT(inviscid_energy, 0.0);
+  std::cout << "cut_sphere_particle_kinetic_energy_ratio=" << viscous_energy / inviscid_energy << '\n';
+  EXPECT_LT(viscous_energy, 0.95 * inviscid_energy);
+  const auto& measurement = gpu->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_LT(measurement->viscous_max_momentum_residual_kg_m_per_s.value_or(1.0), 1e-5);
+}
+
 TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   cudaDeviceProp properties{};
@@ -1292,13 +1803,24 @@ void CheckSlabWallSamplesAndRefreshFailures() {
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   auto initial = Initial();
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
   auto options = Options();
-  auto cpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
+  auto scene = Scene();
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, options).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
+  scene.constituent_materials = kMaterials;
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(cpu.ok()) << cpu.status();
   ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
   auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
   ASSERT_TRUE(backend.ok()) << backend.status();
-  auto gpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options, backend->operations());
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
   ASSERT_TRUE(gpu.ok()) << gpu.status();
   const auto before = backend->usage();
   const auto wall_start = std::chrono::steady_clock::now();
@@ -1308,6 +1830,13 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
       << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - wall_start).count()
       << '\n';
   ExpectState(cpu->committed(), gpu->committed());
+  const auto mixed =
+      std::ranges::find(gpu->committed().particles.values(), initial.particles[0].id, &LiquidParticleState3D::id);
+  ASSERT_NE(mixed, gpu->committed().particles.values().end());
+  EXPECT_EQ(mixed->phase_id, 4);
+  ASSERT_EQ(mixed->constituent_count, 2);
+  EXPECT_EQ(mixed->constituents[0], (LiquidConstituentFraction3D{8, 0.25}));
+  EXPECT_EQ(mixed->constituents[1], (LiquidConstituentFraction3D{14, 0.75}));
   EXPECT_EQ(before.device_allocation_count, backend->usage().device_allocation_count);
   EXPECT_EQ(before.device_free_count, backend->usage().device_free_count);
   const auto final_usage = backend->usage();

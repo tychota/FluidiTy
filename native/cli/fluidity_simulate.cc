@@ -206,6 +206,28 @@ absl::Status CheckScene(const Command& command, ProtocolWriter& writer, Diagnost
           + std::to_string(clock.accepted_step_ordinal) + ",\"time_seconds\":" + JsonDouble(clock.time)
           + ",\"execution_id\":" + JsonString(DigestHex(frame->manifest.execution_id)) + ",\"points_relative_name\":"
           + JsonString(name->data()) + ",\"point_count\":" + std::to_string(frame->points.points.size());
+      bool first_composition = true;
+      for (const auto& point : frame->points.points.values()) {
+        if (point.constituent_count == 0) {
+          continue;
+        }
+        members += first_composition ? ",\"particle_composition\":[" : ",";
+        first_composition = false;
+        members += "{\"particle_id\":" + std::to_string(point.id) + ",\"phase_id\":" + std::to_string(point.phase_id)
+            + ",\"constituents\":[";
+        for (std::size_t index = 0; index < point.constituent_count; ++index) {
+          const auto& constituent = point.constituents[index];
+          if (index != 0) {
+            members += ',';
+          }
+          members += "{\"substance_id\":" + std::to_string(constituent.substance_id)
+              + ",\"volume_fraction\":" + JsonDouble(constituent.volume_fraction) + "}";
+        }
+        members += "]}";
+      }
+      if (!first_composition) {
+        members += ']';
+      }
     }
     const auto job_status = InspectJobStatus(command.cache_directory);
     if (job_status.ok()) {
