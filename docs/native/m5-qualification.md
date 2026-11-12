@@ -35,6 +35,7 @@ clean Windows Release CUDA rebuild.
 | One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
 | Reciprocal pressure for a planar snow interface | Pass for the frozen single-cell fixture | Native and CUDA pressure solvers both recover the analytic speed, pressure, impulse, and work for the two wall orientations. The trial returns the pressure candidate and snow impulse together. |
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
+| Joint planar pressure advection | Pass for the frozen single-cell fixture | The projected regular-cell field advects liquid and updates its volume and slopes. Snow advances with its pressure-corrected velocity. A late snow path rejection preserves both original particle states. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1039,6 +1040,19 @@ these values within 1e-12. Tangential velocities, positions, plastic
 history and the third body are preserved. Closing the liquid outlet
 makes the unit-speed pressure probe fail. The staged trial publishes
 no snow velocities in that case.
+
+The joint candidate uses the production regular-cell velocity and
+divergence evaluator for liquid and a certified translating-wall sweep
+for each material. A single snow contributor at x = −1.125 m enters
+at 3 m/s and solves to 2 m/s. Liquid at x = −0.75 m also moves at
+2 m/s. After 0.125 s the two positions are −0.875 m and −0.50 m,
+and the liquid volume ratio stays 0.95. The 0.30 m path budget
+accepts these paths. Adding a 3 m/s tangential snow velocity exceeds
+the budget after the liquid candidate is staged. The rejection
+preserves both positions and velocities. The fixture passes with
+native and CUDA pressure to 1e-12 absolute tolerance. The host trial
+uses a fixed cell and explicit contributor fractions. Production
+still needs reconstructed geometry and rebinning across cells.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

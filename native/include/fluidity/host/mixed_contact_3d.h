@@ -143,4 +143,21 @@ absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
     MixedPressureProjector3D project
 );
 
+// Stages pressure traction, regular-cell liquid advection and snow
+// contributor drift. Non-wall faces must be fully open or stationary
+// sealed. Liquid stays in the frozen cell. Both materials stay on their
+// respective sides of the translating wall without a second impulse. Position increments are limited
+// by maximum_path_length in meters. Advances volume from the same
+// regular-cell field. On success both spans receive the candidate state;
+// otherwise neither span changes. The caller owns rebinning and acceptance.
+absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    std::span<const SnowPressureContributor3D> contributors,
+    std::span<LiquidParticleState3D> liquid,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    double maximum_path_length,
+    MixedPressureProjector3D project
+);
+
 }  // namespace fluidity

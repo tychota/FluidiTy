@@ -621,6 +621,46 @@ bool TestPlanarMixedContactDetection() {
       || pressure_snow[1].log_plastic_jacobian != snow.log_plastic_jacobian) {
     return false;
   }
+  auto advected_water = water;
+  advected_water.world_position = {-0.75, 0.25, 0.25};
+  advected_water.world_velocity = {};
+  advected_water.volume_ratio = 0.95;
+  auto advected_snow = snow;
+  advected_snow.transfer.trial_world_position = {-1.125, 0.25, 0.25};
+  advected_snow.transfer.particle_velocity = {3, 3, 0};
+  const std::array single_traction{fluidity::SnowPressureContributor3D{3, 1}};
+  const auto rejected_advection = fluidity::AdvancePlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      single_traction,
+      {&advected_water, 1},
+      {&advected_snow, 1},
+      0.3,
+      project
+  );
+  if (rejected_advection.status().message() != "planar mixed contact path exceeds motion bound"
+      || advected_water.world_position.x != -0.75 || advected_water.world_velocity.x != 0
+      || advected_water.volume_ratio != 0.95 || advected_snow.transfer.trial_world_position.x != -1.125
+      || advected_snow.transfer.particle_velocity.x != 3) {
+    return false;
+  }
+  advected_snow.transfer.particle_velocity.y = 0;
+  const auto accepted_advection = fluidity::AdvancePlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      single_traction,
+      {&advected_water, 1},
+      {&advected_snow, 1},
+      0.3,
+      project
+  );
+  if (!accepted_advection.ok() || std::abs(advected_water.world_position.x + 0.5) > 1e-12
+      || std::abs(advected_snow.transfer.trial_world_position.x + 0.875) > 1e-12
+      || std::abs(advected_water.world_velocity.x - 2) > 1e-12
+      || std::abs(advected_snow.transfer.particle_velocity.x - 2) > 1e-12
+      || std::abs(advected_water.volume_ratio - 0.95) > 1e-12 || advected_snow.transfer.sorted_world_position.x != 0) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;
