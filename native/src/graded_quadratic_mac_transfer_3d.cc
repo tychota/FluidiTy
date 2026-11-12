@@ -63,6 +63,45 @@ bool MatchesAnchorDisplacement(Vec3 anchor, Vec3 position, Vec3 displacement) {
       && anchor.z - position.z == displacement.z;
 }
 
+struct PairedQuadraticSupport {
+  const GradedQuadraticMacSupportSnapshot3D& committed;
+  const GradedQuadraticMacSupportSnapshot3D& candidate;
+  double committed_cell_width_m;
+  LiquidResamplingAdmissibility3D certify;
+  void* context;
+};
+
+// Resampling supplies the accepted width for the old roster and the other
+// width for its proposal. Bind checks the actual containing leaf in each.
+absl::Status CheckPairedQuadraticSupport(
+    const LiquidParticleState3D& particle,
+    double cell_width_m,
+    LiquidUniformResamplingBasis3D basis,
+    void* context
+) {
+  const auto& paired = *static_cast<const PairedQuadraticSupport*>(context);
+  const auto& snapshot = cell_width_m == paired.committed_cell_width_m ? paired.committed : paired.candidate;
+  const GradedQuadraticMacParticle3D transfer_particle{
+      .transfer =
+          {
+              .sorted_world_position = particle.world_position,
+              .trial_world_position = particle.world_position,
+              .particle_mass = particle.mass,
+              .particle_velocity = particle.world_velocity,
+              .particle_velocity_slopes = particle.velocity_slopes,
+          },
+      .side_tag = particle.side_tag,
+  };
+  const auto bound = snapshot.transfer.Bind(transfer_particle, snapshot.open_areas_m2, snapshot.carrier_faces);
+  if (!bound.ok()) {
+    return bound.status();
+  }
+  if (bound->cell_width_m != cell_width_m) {
+    return absl::FailedPreconditionError("resampling support has the wrong physical leaf width");
+  }
+  return paired.certify(particle, cell_width_m, basis, paired.context);
+}
+
 }  // namespace
 
 GradedQuadraticMacTransfer3D::GradedQuadraticMacTransfer3D(
@@ -251,4 +290,49 @@ absl::StatusOr<MacParticleGatherResult3D> GradedQuadraticMacTransfer3D::Gather(
   return gathered;
 }
 
+absl::StatusOr<LiquidUniformSplit3D> SplitGradedQuadraticLiquidParticle3D(
+    const LiquidParticleState3D& parent,
+    std::uint64_t first_child_id,
+    double parent_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+) {
+  if (certify == nullptr) {
+    return absl::InvalidArgumentError("split requires particle admissibility certification");
+  }
+  PairedQuadraticSupport paired{committed, candidate, parent_cell_width_m, certify, context};
+  return SplitUniformLiquidParticle3D(
+      parent,
+      first_child_id,
+      parent_cell_width_m,
+      LiquidUniformResamplingBasis3D::kQuadratic,
+      CheckPairedQuadraticSupport,
+      &paired
+  );
+}
+
+absl::StatusOr<LiquidUniformMerge3D> MergeGradedQuadraticLiquidParticles3D(
+    std::span<const LiquidParticleState3D> children,
+    std::uint64_t target_id,
+    double fine_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+) {
+  if (certify == nullptr) {
+    return absl::InvalidArgumentError("merge requires particle admissibility certification");
+  }
+  PairedQuadraticSupport paired{committed, candidate, fine_cell_width_m, certify, context};
+  return MergeUniformLiquidParticles3D(
+      children,
+      target_id,
+      fine_cell_width_m,
+      LiquidUniformResamplingBasis3D::kQuadratic,
+      CheckPairedQuadraticSupport,
+      &paired
+  );
+}
 }  // namespace fluidity
