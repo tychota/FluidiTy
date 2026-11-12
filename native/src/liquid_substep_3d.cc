@@ -10,6 +10,7 @@
 #include <tuple>
 
 #include "absl/cleanup/cleanup.h"
+#include "fluidity/host/small_solve.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
@@ -162,27 +163,22 @@ absl::Status ApplyOrientedBoxFaceSamples(
   return absl::OkStatus();
 }
 
-absl::StatusOr<RigidBodyStep3D> AdvanceOrientedBoxInTank(
-    RigidBody3D loaded_body,
+absl::Status CheckOrientedBoxSweepInTank(
+    const RigidBodyStep3D& step,
     Vec3 body_half_extent,
     const AxisAlignedLiquidTank3D& tank,
-    double step_duration,
     double cell_width
 ) {
-  const auto step = AdvanceRigidBody3D(loaded_body, step_duration);
-  if (!step.ok()) {
-    return step.status();
-  }
   const double radius = std::nextafter(
       std::hypot(body_half_extent.x, body_half_extent.y, body_half_extent.z),
       std::numeric_limits<double>::infinity()
   );
-  const auto travel = RigidBodySweepDistanceBound3D(*step, radius);
+  const auto travel = RigidBodySweepDistanceBound3D(step, radius);
   if (!travel.ok()) {
     return travel.status();
   }
   const double swept_radius = boundary_internal::AddUp(radius, *travel);
-  const auto center = loaded_body.center;
+  const auto center = step.start.center;
   if (!std::isfinite(swept_radius) || *travel > 0.5 * cell_width
       || boundary_internal::AddDown(center.x, -swept_radius) <= tank.start_low_x
       || boundary_internal::AddUp(center.x, swept_radius) >= tank.high_x
@@ -191,7 +187,7 @@ absl::StatusOr<RigidBodyStep3D> AdvanceOrientedBoxInTank(
       || boundary_internal::AddUp(center.z, swept_radius) >= tank.high_z) {
     return Error(absl::StatusCode::kAborted);
   }
-  return *step;
+  return absl::OkStatus();
 }
 // Check the complete owned payload before publishing any reservation or growth.
 absl::StatusOr<std::size_t> ReservationBytes(
@@ -824,6 +820,13 @@ struct LiquidSubstepScheduler3D::Impl {
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
     std::optional<RigidBodyStep3D> oriented_box_candidate;
+    const auto record_oriented_pressure_load = [&](const RigidBody3D& loaded) {
+      auto& loads = *floating_box->oriented_loads;
+      loads.pressure_force =
+          liquid_step_internal::Add(loaded.force, liquid_step_internal::Scale(loads.external_force, -1.0));
+      loads.pressure_torque =
+          liquid_step_internal::Add(loaded.torque, liquid_step_internal::Scale(loads.external_torque, -1.0));
+    };
     TranslatingContactBox3D contact_box{};
     TranslatingContactBox3D end_box{};
     if (floating_box != nullptr && !oriented_box) {
@@ -1350,14 +1353,15 @@ struct LiquidSubstepScheduler3D::Impl {
             visit
         );
       };
-      const auto set_box_velocity = [&](Vec3 velocity) -> absl::Status {
+      const auto set_box_velocity = [&](Vec3 velocity, Vec3 angular_velocity = {}) -> absl::Status {
         STEP_TRY(staging.pressure_cell_scratch.Resize(links->cells.size()));
         const auto rows = staging.pressure_cell_scratch.values();
         std::ranges::copy(box_pressure_base_rows, rows.begin());
         STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
           Vec3 wall_velocity = velocity;
           if (oriented_box) {
-            const auto& body = floating_box->body;
+            auto body = floating_box->body;
+            body.angular_velocity = angular_velocity;
             const auto arm =
                 liquid_step_internal::Add(patch.world_centroid, liquid_step_internal::Scale(body.center, -1.0));
             wall_velocity = RigidSurfaceVelocity(body, arm, velocity);
@@ -1372,7 +1376,36 @@ struct LiquidSubstepScheduler3D::Impl {
       };
       const auto load_box = [&](std::span<const double> pressures, RigidBody3D body) -> absl::StatusOr<RigidBody3D> {
         STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
-          const auto loaded = AccumulateRigidBodyPressure3D(body, pressures, scene.ambient_pressure, {&patch, 1});
+          auto pressure_patch = patch;
+          auto patch_pressures = pressures;
+          double reconstructed_pressure = 0.0;
+          double pressure_gradient_y = 0.0;
+          const bool supports_hydrostatic_gradient =
+              !uses_composition_density || scene.constituent_materials.size() == 1;
+          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
+            const auto geometry = grid.geometry();
+            const auto cell = links->cells[patch.pressure_cell_index].cell_index;
+            const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
+                patch.world_centroid.y,
+                {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
+            );
+            if (!centroid_to_cell.ok()) {
+              return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
+            }
+            const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
+            pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
+            reconstructed_pressure =
+                std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
+            patch_pressures = {&reconstructed_pressure, 1};
+            pressure_patch.pressure_cell_index = 0;
+          }
+          const auto loaded = AccumulateRigidBodyPressure3D(
+              body,
+              patch_pressures,
+              scene.ambient_pressure,
+              {&pressure_patch, 1},
+              pressure_gradient_y
+          );
           if (!loaded.ok()) {
             return loaded.status();
           }
@@ -1382,7 +1415,7 @@ struct LiquidSubstepScheduler3D::Impl {
         return body;
       };
       if (floating_box != nullptr) {
-        STEP_TRY(set_box_velocity(floating_box->body.linear_velocity));
+        STEP_TRY(set_box_velocity(floating_box->body.linear_velocity, floating_box->body.angular_velocity));
       }
       if ((coupled_piston || floating_box != nullptr) && active_viscosity) {
         return Error(absl::StatusCode::kFailedPrecondition);
@@ -1399,7 +1432,175 @@ struct LiquidSubstepScheduler3D::Impl {
         if (!projection.ok()) {
           return projection.status();
         }
-        if (floating_box != nullptr && floating_box->coupled) {
+        if (oriented_box && floating_box->coupled) {
+          const auto& body = floating_box->body;
+          constexpr std::size_t kTwistSize = 6;
+          using Twist = std::array<double, kTwistSize>;
+          const double length = grid.geometry().cell_width;
+          const RigidOrientation3D inverse_orientation{
+              body.orientation.w,
+              liquid_step_internal::Scale(body.orientation.vector, -1.0)
+          };
+          // Translation uses world axes. Rotation uses the frozen principal
+          // axes, with angular speed scaled by cell width for conditioning.
+          const auto twist = [&](const RigidBody3D& value) -> absl::StatusOr<Twist> {
+            const auto local = RotateRigidBodyVector3D(inverse_orientation, value.angular_velocity);
+            if (!local.ok()) {
+              return local.status();
+            }
+            const auto linear = value.linear_velocity;
+            return Twist{linear.x, linear.y, linear.z, length * local->x, length * local->y, length * local->z};
+          };
+          const auto generalized_force = [&](const RigidBody3D& value) -> absl::StatusOr<Twist> {
+            const auto torque = RotateRigidBodyVector3D(inverse_orientation, value.torque);
+            if (!torque.ok()) {
+              return torque.status();
+            }
+            return Twist{
+                value.force.x,
+                value.force.y,
+                value.force.z,
+                torque->x / length,
+                torque->y / length,
+                torque->z / length
+            };
+          };
+          const auto world_angular_velocity = [&](const Twist& value) {
+            return RotateRigidBodyVector3D(body.orientation, {value[3] / length, value[4] / length, value[5] / length});
+          };
+          const auto set_twist = [&](const Twist& value) -> absl::Status {
+            const auto angular = world_angular_velocity(value);
+            if (!angular.ok()) {
+              return angular.status();
+            }
+            return set_box_velocity({value[0], value[1], value[2]}, *angular);
+          };
+          const auto project_twist = [&](const Twist& value) -> absl::Status {
+            STEP_TRY(set_twist(value));
+            projection = backend.project(
+                backend.context,
+                grid,
+                step_duration,
+                pressure_problem,
+                options.pressure_solver_options,
+                workspace.pressure()
+            );
+            return projection.status();
+          };
+          const auto start = twist(body);
+          const auto baseline = load_box(projection->cell_pressures, body);
+          if (!start.ok()) {
+            return start.status();
+          }
+          if (!baseline.ok()) {
+            return baseline.status();
+          }
+          const auto baseline_force = generalized_force(*baseline);
+          if (!baseline_force.ok()) {
+            return baseline_force.status();
+          }
+          const auto inertia = body.principal_inertia;
+          const Twist mass{
+              body.mass,
+              body.mass,
+              body.mass,
+              inertia.x / length / length,
+              inertia.y / length / length,
+              inertia.z / length / length
+          };
+          std::array<double, kTwistSize * kTwistSize> system{};
+          const double probe_scale =
+              std::max(1.0, liquid_step_internal::MaximumComponentMagnitude(body.linear_velocity));
+          for (std::size_t column = 0; column < kTwistSize; ++column) {
+            auto probe = *start;
+            probe[column] += std::copysign(std::max(probe_scale, std::abs(probe[column])), probe[column]);
+            const double increment = probe[column] - (*start)[column];
+            if (!std::isfinite(increment)) {
+              return Error(absl::StatusCode::kOutOfRange);
+            }
+            STEP_TRY(project_twist(probe));
+            const auto load = load_box(projection->cell_pressures, body);
+            if (!load.ok()) {
+              return load.status();
+            }
+            const auto force = generalized_force(*load);
+            if (!force.ok()) {
+              return force.status();
+            }
+            for (std::size_t row = 0; row < kTwistSize; ++row) {
+              system[row * kTwistSize + column] = -step_duration * ((*force)[row] - (*baseline_force)[row]) / increment;
+            }
+          }
+          // Reciprocal pressure traction and wall flux give a symmetric
+          // response. Average iterative projection noise, then check the
+          // actual unsymmetrized fluid/body residual after reprojecting.
+          for (std::size_t row = 0; row < kTwistSize; ++row) {
+            system[row * kTwistSize + row] += mass[row];
+            for (std::size_t column = 0; column < row; ++column) {
+              const double symmetric =
+                  std::midpoint(system[row * kTwistSize + column], system[column * kTwistSize + row]);
+              system[row * kTwistSize + column] = symmetric;
+              system[column * kTwistSize + row] = symmetric;
+            }
+          }
+          auto load = *baseline;
+          auto speed = *start;
+          SmallSolveWorkspace solve_workspace;
+          constexpr int kMaximumCorrections = 4;
+          for (int iteration = 0;; ++iteration) {
+            const auto drift = AdvanceRigidBody3D(load, step_duration);
+            if (!drift.ok()) {
+              return drift.status();
+            }
+            const auto expected = twist(drift->end);
+            if (!expected.ok()) {
+              return expected.status();
+            }
+            Twist residual{};
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              residual[axis] = mass[axis] * ((*expected)[axis] - speed[axis]);
+            }
+            Twist correction{};
+            STEP_TRY(SolveSmallSpd(system, residual, correction, solve_workspace));
+            bool converged = true;
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              converged &= std::abs(correction[axis]) <= 1e-8 * std::max(1.0, std::abs(speed[axis]));
+            }
+            if (converged && iteration > 0) {
+              // The verified pressure projection already used this twist.
+              // Carry it through the pose and particle sweep unchanged.
+              auto candidate = *drift;
+              const auto angular = world_angular_velocity(speed);
+              if (!angular.ok()) {
+                return angular.status();
+              }
+              candidate.end.linear_velocity = {speed[0], speed[1], speed[2]};
+              candidate.end.angular_velocity = *angular;
+              const auto pose = SampleRigidBodyPose3D(candidate, 1.0);
+              if (!pose.ok()) {
+                return pose.status();
+              }
+              candidate.end.center = pose->center;
+              candidate.end.orientation = pose->orientation;
+              record_oriented_pressure_load(load);
+              oriented_box_candidate = candidate;
+              break;
+            }
+            if (iteration == kMaximumCorrections) {
+              return Error(absl::StatusCode::kAborted);
+            }
+            for (std::size_t axis = 0; axis < kTwistSize; ++axis) {
+              speed[axis] += correction[axis];
+            }
+            STEP_TRY(project_twist(speed));
+            const auto next_load = load_box(projection->cell_pressures, body);
+            if (!next_load.ok()) {
+              return next_load.status();
+            }
+            load = *next_load;
+          }
+        }
+        if (floating_box != nullptr && floating_box->coupled && !oriented_box) {
           const auto& body = floating_box->body;
           const double start_speed = body.linear_velocity.y;
           auto pressure_only = body;
@@ -1638,26 +1839,29 @@ struct LiquidSubstepScheduler3D::Impl {
         }
         *piston_load = *loaded;
       }
-      if (floating_box != nullptr) {
+      if (floating_box != nullptr && !oriented_box_candidate) {
         const auto loaded = load_box(projected_cell_pressures, floating_box->body);
         if (!loaded.ok()) {
           return loaded.status();
         }
         if (oriented_box) {
-          const auto candidate = AdvanceOrientedBoxInTank(
-              *loaded,
-              floating_box->half_extent,
-              *tank_at_step_start,
-              step_duration,
-              grid.geometry().cell_width
-          );
+          const auto candidate = AdvanceRigidBody3D(*loaded, step_duration);
           if (!candidate.ok()) {
             return candidate.status();
           }
+          record_oriented_pressure_load(*loaded);
           oriented_box_candidate = *candidate;
         } else {
           floating_box->body = *loaded;
         }
+      }
+      if (oriented_box_candidate) {
+        STEP_TRY(CheckOrientedBoxSweepInTank(
+            *oriented_box_candidate,
+            floating_box->half_extent,
+            *tank_at_step_start,
+            grid.geometry().cell_width
+        ));
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;
@@ -1948,6 +2152,8 @@ struct LiquidSubstepScheduler3D::Impl {
       if (!impulse.ok()) {
         return impulse.status();
       }
+      floating_box->oriented_loads->particle_impulse = impulse->linear;
+      floating_box->oriented_loads->particle_angular_impulse = impulse->angular;
       auto& body = oriented_box_candidate->end;
       body.linear_velocity = liquid_step_internal::Add(
           body.linear_velocity,
@@ -2455,13 +2661,24 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWith
 ) {
   return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kOrientedPressure);
 }
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithCoupledOrientedFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 body_half_extent
+) {
+  if (std::isfinite(impl_->scene.bulk_modulus) || impl_->scene.surface_tension != 0.0) {
+    return Error(absl::StatusCode::kFailedPrecondition);
+  }
+  return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kCoupledOrientedPressure);
+}
 absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloatingBox(
     double step_duration,
     RigidBody3D body,
     Vec3 half_extent,
     FloatingBoxMotion motion
 ) {
-  const bool oriented = motion == FloatingBoxMotion::kOrientedPressure;
+  const bool oriented_coupling = motion == FloatingBoxMotion::kCoupledOrientedPressure;
+  const bool oriented = motion == FloatingBoxMotion::kOrientedPressure || oriented_coupling;
   const bool coupled = motion == FloatingBoxMotion::kCoupledVerticalGuide;
   const bool vertical_guide = motion == FloatingBoxMotion::kVerticalGuide || coupled;
   const auto* surface = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
@@ -2494,9 +2711,12 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
             }
           : std::nullopt,
       .half_extent = half_extent,
-      .coupled = coupled,
+      .coupled = coupled || oriented_coupling,
       .vertical_guide = vertical_guide,
       .added_mass_kg = std::nullopt,
+      .oriented_loads = oriented
+          ? std::optional<OrientedFloatingBoxLoads3D>{{.external_force = body.force, .external_torque = body.torque}}
+          : std::nullopt,
   };
   const auto outcome = AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, &box);
   if (!outcome.ok()) {
@@ -2507,6 +2727,8 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
       .body = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? std::optional<RigidBody3D>{box.body}
                                                                             : std::nullopt,
       .added_mass_kg = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.added_mass_kg : std::nullopt,
+      .oriented_loads =
+          outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.oriented_loads : std::nullopt,
   };
 }
 

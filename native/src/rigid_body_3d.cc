@@ -336,6 +336,7 @@ using boundary_internal::ClippingPolygon;
 struct WetPolygonMoment {
   double area = 0.0;
   Vec3 weighted_centroid{};
+  Vec3 area_vertical_covariance{};
 };
 
 absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygon, bool bounded) {
@@ -359,7 +360,26 @@ absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygo
     result.area += area;
     result.weighted_centroid = Add(result.weighted_centroid, Scale(area, centroid));
   }
-  if (!std::isfinite(result.area) || !IsFinite(result.weighted_centroid)) {
+  if (result.area > 0.0) {
+    const auto center = Scale(1.0 / result.area, result.weighted_centroid);
+    for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
+      const Vec3 second = position(vertex);
+      const Vec3 third = position(vertex + 1);
+      const double area = 0.5 * Norm(Cross(Subtract(second, first), Subtract(third, first)));
+      const std::array centered{Subtract(first, center), Subtract(second, center), Subtract(third, center)};
+      Vec3 sum{};
+      Vec3 products{};
+      for (const auto point : centered) {
+        sum = Add(sum, point);
+        products = Add(products, Scale(point.y, point));
+      }
+      // Exact degree-two triangle integration in centroid-relative coordinates.
+      result.area_vertical_covariance =
+          Add(result.area_vertical_covariance, Scale(area / 12.0, Add(Scale(sum.y, sum), products)));
+    }
+  }
+  if (!std::isfinite(result.area) || !IsFinite(result.weighted_centroid)
+      || !IsFinite(result.area_vertical_covariance)) {
     return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "oriented box patch moment is unrepresentable");
   }
   return result;
@@ -533,6 +553,7 @@ absl::Status VisitOrientedBoxPressurePatches(
             .wetted_area = moment->area,
             .world_centroid = centroid,
             .outward_body_normal = outward_normal,
+            .area_vertical_covariance = moment->area_vertical_covariance,
         });
         if (!status.ok()) {
           return status;
@@ -632,9 +653,10 @@ absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
     RigidBody3D body,
     std::span<const double> solved_pressures,
     double ambient_pressure,
-    std::span<const RigidPressurePatch3D> patches
+    std::span<const RigidPressurePatch3D> patches,
+    double pressure_gradient_y
 ) {
-  if (!ValidBody(body) || !std::isfinite(ambient_pressure)) {
+  if (!ValidBody(body) || !std::isfinite(ambient_pressure) || !std::isfinite(pressure_gradient_y)) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   std::uint64_t previous_patch_id = 0;
@@ -657,6 +679,14 @@ absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
       return loaded.status();
     }
     body = *loaded;
+    if (pressure_gradient_y != 0.0) {
+      body.torque =
+          Add(body.torque,
+              Scale(-pressure_gradient_y, Cross(patch.area_vertical_covariance, patch.outward_body_normal)));
+      if (!IsFinite(body.torque)) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+    }
   }
   return body;
 }
