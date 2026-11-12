@@ -1832,3 +1832,7 @@ The sampled input currently requires an otherwise unobstructed domain.
 The mixed scheduler still needs particle-derived samples, composition
 with the tank and moving obstacle, and reciprocal traction scatter
 using the same geometry.
+
+The sampled geometry and split-cell checks are available for independent
+review in [draft PR 98](https://github.com/tychota/FluidiTy/pull/98),
+based on upstream `b56e06e`.
