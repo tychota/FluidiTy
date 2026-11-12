@@ -5,7 +5,7 @@
 #include <limits>
 
 #include "absl/status/status.h"
-#include "mac_pressure_3d_arithmetic.h"
+#include "liquid_remap_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -38,7 +38,7 @@ bool PositiveFinite(double value) {
 bool ValidInventory(const LiquidRemapInventory3D& inventory) {
   return PositiveFinite(inventory.mass_kg) && PositiveFinite(inventory.reference_volume_m3)
       && PositiveFinite(inventory.current_volume_m3) && Finite(inventory.momentum_kg_m_per_s)
-      && std::isfinite(inventory.enthalpy_j);
+      && std::isfinite(inventory.enthalpy_j) && liquid_remap_internal::ValidConstituentInventory(inventory);
 }
 
 // Zero and subnormal inventory lanes must survive exactly. For other lanes
@@ -124,6 +124,7 @@ absl::StatusOr<LiquidRemapInventory3D> SumBand(
   CompensatedSum reference_volume;
   CompensatedSum current_volume;
   std::array<CompensatedSum, 3> momentum;
+  liquid_remap_internal::ConstituentSums constituent_sums;
   for (std::size_t index = 0; index < particles.size(); ++index) {
     const auto& particle = particles[index];
     if (particle.id == 0 || !PositiveFinite(particle.mass) || !PositiveFinite(particle.reference_volume)
@@ -132,7 +133,7 @@ absl::StatusOr<LiquidRemapInventory3D> SumBand(
         || !Contains(bounds, particle.world_position)) {
       return absl::InvalidArgumentError("Invalid or out-of-cell band particle");
     }
-    if (particle.tag != carrier.tag || particle.side_tag != carrier.side_tag) {
+    if (particle.tag != carrier.tag || particle.side_tag != carrier.side_tag || particle.phase_id != carrier.phase_id) {
       return absl::FailedPreconditionError("Band particle material or side differs from the destination");
     }
     for (std::size_t prior = 0; prior < index; ++prior) {
@@ -147,6 +148,20 @@ absl::StatusOr<LiquidRemapInventory3D> SumBand(
         || !FiniteMomentum(particle.mass, particle.world_velocity, particle_momentum)) {
       return absl::OutOfRangeError("Band particle current volume or momentum is unrepresentable");
     }
+    if (particle.constituent_count > particle.constituents.size()) {
+      return absl::InvalidArgumentError("Band particle constituent count exceeds its capacity");
+    }
+    const auto composition = std::span(particle.constituents).first(particle.constituent_count);
+    if (!ValidLiquidComposition3D(particle.phase_id, composition)) {
+      return absl::InvalidArgumentError("Invalid band particle composition");
+    }
+    for (const auto& constituent : composition) {
+      const auto status =
+          constituent_sums.Add(constituent.substance_id, constituent.volume_fraction * particle_current_volume);
+      if (!status.ok()) {
+        return status;
+      }
+    }
     mass.Add(particle.mass);
     reference_volume.Add(particle.reference_volume);
     current_volume.Add(particle_current_volume);
@@ -160,7 +175,12 @@ absl::StatusOr<LiquidRemapInventory3D> SumBand(
       .current_volume_m3 = current_volume.Total(),
       .momentum_kg_m_per_s = {momentum[0].Total(), momentum[1].Total(), momentum[2].Total()},
       .enthalpy_j = enthalpy_j,
+      .phase_id = carrier.phase_id,
   };
+  const auto stored = constituent_sums.Store(inventory);
+  if (!stored.ok()) {
+    return stored;
+  }
   if (!ValidInventory(inventory)) {
     return absl::OutOfRangeError("Summed band inventory is unrepresentable");
   }
@@ -168,6 +188,9 @@ absl::StatusOr<LiquidRemapInventory3D> SumBand(
 }
 
 absl::Status CheckCarrierInventory(const LiquidRemapInventory3D& inventory, const LiquidHandoffCarrier3D& carrier) {
+  if (inventory.phase_id != carrier.phase_id) {
+    return absl::FailedPreconditionError("Destination phase differs from owned inventory");
+  }
   const double carrier_mass = carrier.current_density * inventory.current_volume_m3;
   const double carrier_reference_volume = inventory.current_volume_m3 / carrier.volume_ratio;
   Vec3 carrier_momentum;
@@ -318,6 +341,17 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
     return absl::OutOfRangeError("Liquid reseed quarter-cell displacement is unrepresentable");
   }
 
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> fractions{};
+  for (std::size_t index = 0; index < core_inventory.constituent_count; ++index) {
+    const auto& constituent = core_inventory.constituents[index];
+    fractions[index] = {constituent.substance_id, constituent.volume_m3 / core_inventory.current_volume_m3};
+  }
+  if (!ValidLiquidComposition3D(
+          core_inventory.phase_id,
+          std::span(fractions).first(core_inventory.constituent_count)
+      )) {
+    return absl::OutOfRangeError("Liquid reseed constituent fractions are unrepresentable");
+  }
   LiquidBandReseed3D result;
   result.particle_count_ = particle_count;
   result.next_particle_id_ = first_particle_id + particle_count;
@@ -331,6 +365,9 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
         .reference_volume = particle_reference_volume,
         .volume_ratio = carrier.volume_ratio,
         .side_tag = carrier.side_tag,
+        .phase_id = core_inventory.phase_id,
+        .constituent_count = core_inventory.constituent_count,
+        .constituents = fractions,
     };
     const auto offset = SeedOffset(particle_count, ordinal, quarter_width);
     const absl::Status seed_status = FillSeedGeometry(*bounds, carrier, offset, particle);
@@ -349,6 +386,16 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
       || !Matches(core_inventory.current_volume_m3, represented->current_volume_m3)
       || !Matches(core_inventory.momentum_kg_m_per_s, represented->momentum_kg_m_per_s)) {
     return absl::OutOfRangeError("Liquid reseed cannot preserve stored cell inventories");
+  }
+  if (represented->constituent_count != core_inventory.constituent_count) {
+    return absl::OutOfRangeError("Liquid reseed lost a constituent");
+  }
+  for (std::size_t index = 0; index < core_inventory.constituent_count; ++index) {
+    const auto& expected = core_inventory.constituents[index];
+    const auto& actual = represented->constituents[index];
+    if (expected.substance_id != actual.substance_id || !Matches(expected.volume_m3, actual.volume_m3)) {
+      return absl::OutOfRangeError("Liquid reseed cannot preserve a constituent volume");
+    }
   }
   return result;
 }

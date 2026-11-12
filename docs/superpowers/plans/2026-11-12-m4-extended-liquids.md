@@ -646,3 +646,11 @@ New-Item -ItemType Directory $run
 ```
 
 Mesh generation still uses the separate native stage command. This receipt qualifies public attachment to its committed output.
+
+## Constituent inventory through band and core ownership
+
+Merged pinned main b540f2d locally as 54efed6 to adopt the accepted M3 band/core handoff API. The native core inventory carries one phase and sorted extensive constituent current volumes. Band retirement sums J V0 times each fraction, and reseeding reconstructs fractions from the core owner and checks the actually stored particle inventories. Adaptive restriction accumulates each constituent in child order. Prolongation distributes the parent fractions across the limited child current volumes and certifies each restricted total. An incompatible wet neighbor supplies the parent state at the phase boundary, and mixed-phase restriction or ownership transfer refuses the operation.
+
+The full-cell ownership round trip conserved 6 m³ clear and 2 m³ dyed water through band retirement, eight-child prolongation, restriction and reseeding with oil present in the stencil. A separate nonuniform refinement fixture preserved 3 m³ and 9 m³ across child current volumes of 1.375 and 1.625 m³. Malformed constituent totals, cross-phase owners and the ninth constituent were rejected. Twenty CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidBandHandoff3D|LiquidRemap3D|LiquidUniform'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-constituent-band.
+
+Main and origin/main were both at b540f2d. M3 family-remap integration fdc3c28 and topology/exterior-ownership integration 1af7b0f remain outside main. The verified M4 APIs can carry composition through full single-phase cells. Production adaptive scheduling, checkpoint ownership and coarse/fine traction still need the accepted M3 execution path and its qualification receipts.
