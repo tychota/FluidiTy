@@ -2402,3 +2402,28 @@ foreach ($case in 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Reflected deformation gradient during impact
+
+This control uses the full reflected-grid velocity gradient for the
+deformation update over an impact step. Swept particle velocity and
+stored affine velocity still use the Coulomb projection. The previous
+contact split also projected the deformation gradient after impact.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 32.002240° | 0.136839 m | Pass |
+| Coarse half-step | 36.029863° | 0.138532 m | Angle above 35° |
+| Fine | | | Dry face-motion bound at step 1152 |
+| Fine half-step | 29.792169° | 0.180244 m | Angle below 30° and radius above 0.16 m |
+
+The completed cases retained less than 5.1e-16 J of cut stress work
+mismatch and less than 5.6e-9 N·s of vertical momentum residual. The
+3 s control leaves Q-SAND open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/floor-wall-gradient-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
