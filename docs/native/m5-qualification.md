@@ -2739,3 +2739,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### One-sided wall support and sweep ordering
+
+Starting from wall-face traction, exclude tangent faces below the wall
+from the weight normalization, gather, and transpose scatter. Local
+commit `59e1426` also splits the Coulomb cap equally across a forward
+and a reverse traversal of the wall points. The sum of the magnitudes
+of the two impulses at a point stays within its original cap. Both
+versions passed the native and SM120 loaded-traction dry-scene tests.
+
+| Native case at 3 s | One-sided forward angle / radius | One-sided forward and reverse angle / radius |
+|---|---|---|
+| Coarse | 35.376436° / 0.186758 m | 35.932364° / 0.178563 m |
+| Coarse half-step | 40.969791° / 0.155660 m | 41.107594° / 0.153975 m |
+| Fine | Dry face-motion bound at step 891 | Dry face-motion bound at step 846 |
+| Fine half-step | 34.614158° / 0.180542 m | 34.345649° / 0.179405 m |
+
+The completed cases retained cut stress work mismatch below 6.2e-16 J
+and vertical momentum residual below 2.2e-8 N·s. The sweep order changes
+the resulting geometry without changing which gates fail. In the fine
+nominal runs the rejection still comes from the stress-update motion
+bound, before tangential friction is applied.
+
+```powershell
+foreach ($bin in 'sand-wall-one-sided-bin', 'sand-wall-bidirectional-bin') {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
