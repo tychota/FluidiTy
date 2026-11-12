@@ -256,10 +256,19 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct OrientedFloatingBoxLoads3D {
+  Vec3 external_force{};  // World N, supplied at step start.
+  Vec3 external_torque{};  // World N m about the box center.
+  Vec3 pressure_force{};  // World N on the frozen wet surface.
+  Vec3 pressure_torque{};  // World N m about the frozen box center.
+  Vec3 particle_impulse{};  // World N s on the box.
+  Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
+};
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;
   std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
-  std::optional<double> added_mass_kg;  // Measured for an accepted coupled attempt.
+  std::optional<double> added_mass_kg;  // Measured for an accepted guided coupled attempt.
+  std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
 // All attempts, including rejection/status destruction, allocate and free nothing.
@@ -398,6 +407,7 @@ class LiquidSubstepScheduler3D {
     bool coupled;
     bool vertical_guide;
     std::optional<double> added_mass_kg;
+    std::optional<OrientedFloatingBoxLoads3D> oriented_loads;
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);

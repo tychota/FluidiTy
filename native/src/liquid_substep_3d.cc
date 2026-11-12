@@ -820,6 +820,13 @@ struct LiquidSubstepScheduler3D::Impl {
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
     std::optional<RigidBodyStep3D> oriented_box_candidate;
+    const auto record_oriented_pressure_load = [&](const RigidBody3D& loaded) {
+      auto& loads = *floating_box->oriented_loads;
+      loads.pressure_force =
+          liquid_step_internal::Add(loaded.force, liquid_step_internal::Scale(loads.external_force, -1.0));
+      loads.pressure_torque =
+          liquid_step_internal::Add(loaded.torque, liquid_step_internal::Scale(loads.external_torque, -1.0));
+    };
     TranslatingContactBox3D contact_box{};
     TranslatingContactBox3D end_box{};
     if (floating_box != nullptr && !oriented_box) {
@@ -1572,6 +1579,7 @@ struct LiquidSubstepScheduler3D::Impl {
               }
               candidate.end.center = pose->center;
               candidate.end.orientation = pose->orientation;
+              record_oriented_pressure_load(load);
               oriented_box_candidate = candidate;
               break;
             }
@@ -1838,6 +1846,7 @@ struct LiquidSubstepScheduler3D::Impl {
           if (!candidate.ok()) {
             return candidate.status();
           }
+          record_oriented_pressure_load(*loaded);
           oriented_box_candidate = *candidate;
         } else {
           floating_box->body = *loaded;
@@ -2140,6 +2149,8 @@ struct LiquidSubstepScheduler3D::Impl {
       if (!impulse.ok()) {
         return impulse.status();
       }
+      floating_box->oriented_loads->particle_impulse = impulse->linear;
+      floating_box->oriented_loads->particle_angular_impulse = impulse->angular;
       auto& body = oriented_box_candidate->end;
       body.linear_velocity = liquid_step_internal::Add(
           body.linear_velocity,
@@ -2700,6 +2711,9 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
       .coupled = coupled || oriented_coupling,
       .vertical_guide = vertical_guide,
       .added_mass_kg = std::nullopt,
+      .oriented_loads = oriented
+          ? std::optional<OrientedFloatingBoxLoads3D>{{.external_force = body.force, .external_torque = body.torque}}
+          : std::nullopt,
   };
   const auto outcome = AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, &box);
   if (!outcome.ok()) {
@@ -2710,6 +2724,8 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
       .body = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? std::optional<RigidBody3D>{box.body}
                                                                             : std::nullopt,
       .added_mass_kg = outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.added_mass_kg : std::nullopt,
+      .oriented_loads =
+          outcome->disposition == LiquidAttemptDisposition3D::kAccepted ? box.oriented_loads : std::nullopt,
   };
 }
 

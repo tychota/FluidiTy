@@ -1075,6 +1075,9 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeig
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      EXPECT_DOUBLE_EQ(attempt->oriented_loads->external_force.y, -kWeight);
+      EXPECT_NEAR(attempt->oriented_loads->pressure_force.y, kWeight, 2e-6);
       const double draft = 0.75 - (attempt->body->center.y - kHalfExtent.y);
       max_draft_error = std::max(max_draft_error, std::abs(draft - kInitialDraft));
       max_net_force = std::max(
@@ -1364,6 +1367,21 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      const auto& loads = *attempt->oriented_loads;
+      const double momentum_change = body.mass * (attempt->body->linear_velocity.y - body.linear_velocity.y);
+      const double angular_momentum_change =
+          body.principal_inertia.z * (attempt->body->angular_velocity.z - body.angular_velocity.z);
+      EXPECT_NEAR(
+          momentum_change,
+          kDt * (loads.external_force.y + loads.pressure_force.y) + loads.particle_impulse.y,
+          3e-12
+      );
+      EXPECT_NEAR(
+          angular_momentum_change,
+          kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
+          5e-14
+      );
       EXPECT_NEAR(attempt->body->center.y, body.center.y + kDt * attempt->body->linear_velocity.y, 1e-14);
       EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
       for (const auto& cell : scheduler->committed().cells.values()) {
@@ -1595,6 +1613,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
   EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
   EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
   EXPECT_FALSE(rejected->body.has_value());
+  EXPECT_FALSE(rejected->oriented_loads.has_value());
   EXPECT_FALSE(rejected->added_mass_kg.has_value());
   EXPECT_EQ(scheduler->committed(), initial);
   const auto rejected_bytes = encode(scheduler->committed(), body);
@@ -1605,6 +1624,13 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
   const auto accepted = attempt_box(*scheduler, kDt, body);
   ASSERT_TRUE(accepted.ok()) << accepted.status();
   ASSERT_TRUE(accepted->body.has_value()) << static_cast<int>(scheduler->diagnostics().failed_stage);
+  ASSERT_TRUE(accepted->oriented_loads.has_value());
+  const auto& loads = *accepted->oriented_loads;
+  EXPECT_DOUBLE_EQ(loads.external_force.y, 0.0);
+  EXPECT_DOUBLE_EQ(loads.pressure_force.y, 0.0);
+  EXPECT_DOUBLE_EQ(loads.pressure_torque.z, 0.0);
+  EXPECT_DOUBLE_EQ(loads.particle_impulse.y, 1.5);
+  EXPECT_DOUBLE_EQ(loads.particle_angular_impulse.z, -0.09375);
   EXPECT_DOUBLE_EQ(accepted->body->angular_velocity.z, -0.046875);
   EXPECT_DOUBLE_EQ(accepted->body->linear_velocity.y, 0.75);
   EXPECT_DOUBLE_EQ(accepted->body->center.y, body.center.y);
