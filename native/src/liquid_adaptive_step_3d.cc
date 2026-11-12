@@ -64,6 +64,11 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
   }
+  for (const auto& cell : initial.adaptive_cells.values()) {
+    if (cell.material_owner != AdaptiveLiquidMaterialOwner3D::kParticles) {
+      return absl::UnimplementedError("graded Simulate has no Eulerian liquid carrier");
+    }
+  }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
   }

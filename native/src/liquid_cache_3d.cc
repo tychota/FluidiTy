@@ -17,7 +17,18 @@ namespace fluidity {
 namespace cache_detail = liquid_cache_internal;
 namespace wire = cache::v1;
 namespace {
+constexpr std::uint32_t kAdaptiveLiquidStateVersion = 2;
+constexpr std::uint32_t kEulerianLiquidStateVersion = 3;
+
 // Native enums may grow independently; existing wire tags must never drift.
+static_assert(
+    static_cast<int>(AdaptiveLiquidMaterialOwner3D::kParticles)
+    == static_cast<int>(wire::AdaptiveMaterialOwner::Particles)
+);
+static_assert(
+    static_cast<int>(AdaptiveLiquidMaterialOwner3D::kEulerian)
+    == static_cast<int>(wire::AdaptiveMaterialOwner::Eulerian)
+);
 static_assert(static_cast<int>(FaceNormalAxis::kX) == static_cast<int>(wire::Axis::X));
 static_assert(static_cast<int>(FaceNormalAxis::kY) == static_cast<int>(wire::Axis::Y));
 static_assert(static_cast<int>(FaceNormalAxis::kZ) == static_cast<int>(wire::Axis::Z));
@@ -158,6 +169,9 @@ LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
   LiquidAdaptiveCellState3D result{
       .key = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = cell->width_exponent()},
       .occupancy = static_cast<LiquidCellOccupancy3D>(cell->occupancy()),
+      .material_owner = static_cast<AdaptiveLiquidMaterialOwner3D>(
+          cell->material_owner().value_or(wire::AdaptiveMaterialOwner::Particles)
+      ),
       .inventory =
           {
               .mass_kg = cell->mass_kg(),
@@ -191,7 +205,8 @@ LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
 // decoded record owner. Stable particle order is checked for unique IDs, not sorted.
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
-  if ((state->schema_version() == 2) != (state->adaptive() != nullptr)) {
+  const bool eulerian_version = state->schema_version() == kEulerianLiquidStateVersion;
+  if ((state->schema_version() >= kAdaptiveLiquidStateVersion) != (state->adaptive() != nullptr)) {
     return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
   }
   if (const auto* adaptive = state->adaptive()) {
@@ -203,11 +218,20 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
         || state->faces()->size() != 0) {
       return cache_detail::Corrupt();
     }
+    bool has_eulerian_owner = false;
     for (const auto* cell : *adaptive->cells()) {
+      const auto owner = cell->material_owner();
+      if (owner.has_value() && !eulerian_version) {
+        return cache_detail::Corrupt();
+      }
+      has_eulerian_owner |= owner == wire::AdaptiveMaterialOwner::Eulerian;
       const auto* constituents = cell->constituents();
       if (constituents && (constituents->size() == 0 || constituents->size() > kMaximumLiquidParticleConstituents3D)) {
         return cache_detail::Corrupt();
       }
+    }
+    if (eulerian_version != has_eulerian_owner) {
+      return cache_detail::Corrupt();
     }
     for (const auto* face : *adaptive->faces()) {
       if (!cache_detail::ValidBoolean(face, wire::AdaptiveFace::VT_STRUCTURALLY_ELIGIBLE)) {
@@ -415,6 +439,13 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
     return Invalid();
   }
   const bool adaptive = state.adaptive_cells.size() != 0;
+  const bool has_eulerian_owner = std::ranges::any_of(state.adaptive_cells.values(), [](const auto& cell) {
+    return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
+  });
+  std::uint32_t schema_version = adaptive ? kAdaptiveLiquidStateVersion : 1;
+  if (has_eulerian_owner) {
+    schema_version = kEulerianLiquidStateVersion;
+  }
   const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
       + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1)
       + state.cavity_gas.size() + state.cavity_components.size() + (state.next_cavity_id != 0);
@@ -528,7 +559,10 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
                     inventory.enthalpy_j,
                     cell.previous_pressure,
                     inventory.phase_id,
-                    constituents
+                    constituents,
+                    cell.material_owner == AdaptiveLiquidMaterialOwner3D::kParticles
+                        ? flatbuffers::Optional<wire::AdaptiveMaterialOwner>{}
+                        : flatbuffers::Optional{static_cast<wire::AdaptiveMaterialOwner>(cell.material_owner)}
                 );
               }
           );
@@ -595,7 +629,7 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
         const auto clock = cache_detail::Pack(state.clock);
         return wire::CreateLiquidState(
             builder,
-            adaptive ? 2 : 1,
+            schema_version,
             0,
             &origin,
             state.geometry.cell_width,
@@ -722,7 +756,12 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& stat
   return EncodeState(state, nullptr, limits);
 }
 absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
+  auto state = cache_detail::Verify<wire::LiquidState>(
+      bytes,
+      wire::LiquidStateIdentifier(),
+      limits,
+      kEulerianLiquidStateVersion
+  );
   if (!state.ok()) {
     return state.status();
   }
@@ -735,7 +774,12 @@ EncodeLiquidCheckpoint3D(const LiquidState3D& state, const LiquidResumeMetadata3
 }
 absl::StatusOr<LiquidCheckpoint3D>
 DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
+  auto state = cache_detail::Verify<wire::LiquidState>(
+      bytes,
+      wire::LiquidStateIdentifier(),
+      limits,
+      kEulerianLiquidStateVersion
+  );
   if (!state.ok()) {
     return state.status();
   }

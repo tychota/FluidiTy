@@ -388,6 +388,39 @@ TEST(LiquidCache3D, CheckpointSeparatesResumePlanAndRequiresCompletedFrame) {
   EXPECT_EQ(EncodeLiquidCheckpoint3D(state, Resume()).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidCache3D, AdaptiveMaterialOwnerDefaultsToParticlesAndRejectsUnknownWireValues) {
+  LiquidState3D initial;
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+  auto particle_bytes = EncodeLiquidState3D(initial);
+  ASSERT_TRUE(particle_bytes.ok()) << particle_bytes.status();
+  auto* particle_wire = wire::GetMutableLiquidState(particle_bytes->values().data());
+  EXPECT_EQ(particle_wire->schema_version(), 2U);
+  auto* particle_record = particle_wire->mutable_adaptive()->mutable_cells()->GetMutableObject(0);
+  EXPECT_FALSE(particle_record->mutate_material_owner(wire::AdaptiveMaterialOwner::Eulerian));
+  const auto particle_state = DecodeLiquidState3D(particle_bytes->values());
+  ASSERT_TRUE(particle_state.ok()) << particle_state.status();
+  EXPECT_EQ(particle_state->adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+
+  initial.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  auto eulerian_bytes = EncodeLiquidState3D(initial);
+  ASSERT_TRUE(eulerian_bytes.ok()) << eulerian_bytes.status();
+  const auto eulerian_state = DecodeLiquidState3D(eulerian_bytes->values());
+  ASSERT_TRUE(eulerian_state.ok()) << eulerian_state.status();
+  EXPECT_EQ(eulerian_state->adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(*eulerian_state, initial);
+  auto* eulerian_wire = wire::GetMutableLiquidState(eulerian_bytes->values().data());
+  EXPECT_EQ(eulerian_wire->schema_version(), 3U);
+  auto* eulerian_record = eulerian_wire->mutable_adaptive()->mutable_cells()->GetMutableObject(0);
+  ASSERT_TRUE(eulerian_wire->mutate_schema_version(2));
+  EXPECT_EQ(DecodeLiquidState3D(eulerian_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  ASSERT_TRUE(eulerian_wire->mutate_schema_version(3));
+  ASSERT_TRUE(eulerian_record->mutate_material_owner(static_cast<wire::AdaptiveMaterialOwner>(2)));
+  EXPECT_EQ(DecodeLiquidState3D(eulerian_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  initial.adaptive_cells[0].material_owner = static_cast<AdaptiveLiquidMaterialOwner3D>(2);
+  EXPECT_EQ(EncodeLiquidState3D(initial).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, AdaptiveCheckpointRestoresAcceptedTopologyAndDiscardsRejectedTrial) {
   LiquidState3D initial;
   initial.geometry.cell_width = 0.5;

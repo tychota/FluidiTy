@@ -32,6 +32,7 @@ table ResumeMetadata {
   replay_capacities:Capacities (required, id:3);
 }
 struct AdaptiveConstituentVolume { substance_id:ulong; volume_m3:double; }
+enum AdaptiveMaterialOwner:ubyte { Particles = 0, Eulerian = 1 }
 table AdaptiveCell {
   lower_corner:Index3 (required, id:0);
   width_exponent:ubyte (id:1);
@@ -44,6 +45,7 @@ table AdaptiveCell {
   previous_pressure:double (id:8);
   phase_id:ulong (id:9);
   constituents:[AdaptiveConstituentVolume] (id:10);
+  material_owner:AdaptiveMaterialOwner = null (id:11);
 }
 table AdaptiveFace {
   carrier_velocity:double (id:0);
