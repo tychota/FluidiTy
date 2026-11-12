@@ -42,3 +42,15 @@ integration still requires authenticated occupancy and particle support from
 the accepted interval, obstacle closure, component volume targets and lineage,
 accepted motion and valid carrier coverage, and mesh persistence and cache
 replay. See the [M3 plan](../superpowers/plans/2026-11-11-m3-adaptivity-and-band.md#task-4--particle-band-and-eulerian-interior).
+
+## Accepted adaptive leaves
+
+`ApplyAdaptiveSurfaceOccupancy3D` maps decoded adaptive leaves onto the extraction lattice using half-open bounds in represented world coordinates. Supported particle nodes retain their samples. An unsupported node requires a full liquid leaf or an explicit empty air leaf. Missing, solid and partial leaves leave coverage unknown. The extraction gate requires eight supported samples in every crossing cube.
+
+The manufactured regression covers a 2:1 corner, signed keys on a translated lattice, false inner shell removal, and true cavity preservation. The mapped samples equal the independently authored controls. An unsupported node in a solid leaf is refused.
+
+Production Mesh still needs authenticated accepted state, density, support and obstacle closure at the same epoch and lattice.
+
+```powershell
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/occupancy-cpu --output-on-failure -R '^SurfaceOccupancy3D' --no-tests=error
+```
