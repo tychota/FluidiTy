@@ -167,7 +167,7 @@ SCHEMA_CASES = tuple(
         "RejectIncompatibleField", "RejectIncompatibleCheckpointField"
     )
 ) + tuple(f"EffectsCacheSchema.{name}" for name in ("stage_manifest", "motion_frame", "surface_frame", "mesh_settings", "whitewater_frame", "whitewater_settings", "volume_frame", "volume_settings"))
-CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh", "cpu_ocean", "public_interface"))
+CLI_CASES = tuple(f"SimulateCli.{name}" for name in ("arguments", "schema", "identity", "inspection", "cpu_device", "cpu_execution", "cpu_replay", "execution_validation", "cpu_lifecycle", "cpu_effects", "cpu_mesh", "cpu_ocean", "public_interface", "rigid_frame"))
 CUDA_CLI_CASES = ("SimulateCli.cuda_device", "SimulateCli.cuda_execution", "SimulateCli.cuda_replay", "SimulateCli.cuda_lifecycle", "SimulateCli.cuda_effects", "SimulateCli.cuda_ocean")
 CUDA_EXECUTION_RECEIPT = {
     "protocol_version": 1, "event": "result", "command": "run", "backend": "cuda",

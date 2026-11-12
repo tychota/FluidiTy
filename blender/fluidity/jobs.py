@@ -304,10 +304,12 @@ class RigidJob(FrameJob):
             for path, packet in zip((cache / "scene.txt", self.paths[2]), packets, strict=True):
                 if not path.is_file() or path.read_bytes() != packet.encode("ascii"):
                     raise ToolError("The rigid bake settings changed. Choose a fresh Bake cache.")
-            while self.committed_frame < last_frame and rigid_checkpoint(cache, self.committed_frame + 1).is_file():
-                self.committed_frame += 1
-            if self.committed_frame:
-                self.check_record(inspect_rigid(cache, self.committed_frame), self.committed_frame)
+            for frame in range(1, last_frame + 1):
+                if rigid_checkpoint(cache, frame).is_file():
+                    if frame != self.committed_frame + 1:
+                        raise ToolError("The rigid bake cache has a missing frame.")
+                    self.check_record(inspect_rigid(cache, frame), frame)
+                    self.committed_frame = frame
         else:
             # Resolve and validate before creating a persistent bake directory.
             with tempfile.TemporaryDirectory(prefix="fluidity-rigid-prepare-") as directory:

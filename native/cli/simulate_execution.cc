@@ -1214,7 +1214,16 @@ absl::Status ExecuteRigidBoxFrame(
     if (saved->values().size() <= prefix.size() || !std::ranges::equal(saved->values().first(prefix.size()), prefix)) {
       return absl::FailedPreconditionError("rigid checkpoint belongs to another scene, packet or executable");
     }
-    auto restored = DecodeCoupledInteractionCheckpoint3D(saved->values().subspan(prefix.size()));
+    const auto envelope = saved->values().subspan(prefix.size());
+    constexpr auto kDigestSize = std::tuple_size_v<LiquidDigest3D>;
+    if (envelope.size() <= kDigestSize) {
+      return absl::DataLossError("rigid checkpoint payload digest or payload is missing");
+    }
+    const auto payload = envelope.subspan(kDigestSize);
+    if (!std::ranges::equal(envelope.first(kDigestSize), LiquidContentDigest3D(payload))) {
+      return absl::DataLossError("rigid checkpoint payload digest does not match");
+    }
+    auto restored = DecodeCoupledInteractionCheckpoint3D(payload);
     if (!restored.ok()) {
       return restored.status();
     }
@@ -1299,6 +1308,8 @@ absl::Status ExecuteRigidBoxFrame(
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
+    const auto checkpoint_digest = LiquidContentDigest3D(*checkpoint);
+    prefix.insert(prefix.end(), checkpoint_digest.begin(), checkpoint_digest.end());
     prefix.insert(prefix.end(), checkpoint->begin(), checkpoint->end());
     EXEC_TRY(files::PublishBytes(output, prefix, kCheckpointLimits, {}));
   }

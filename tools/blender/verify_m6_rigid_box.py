@@ -122,6 +122,16 @@ if "--" in sys.argv:
         poll_until(lambda: not fluidity.jobs.is_running(scene))
         assert settings.committed_frame == 2, settings.diagnostic
         assert first.read_bytes() == first_bytes
+        second_bytes = second.read_bytes()
+        first.write_bytes(first_bytes + b"\x00")
+        assert bpy.ops.fluidity.resume() == {"CANCELLED"}
+        assert "checkpoint payload digest" in settings.diagnostic, settings.diagnostic
+        assert second.read_bytes() == second_bytes
+        first.unlink()
+        assert bpy.ops.fluidity.resume() == {"CANCELLED"}
+        assert "missing frame" in settings.message
+        assert second.read_bytes() == second_bytes
+        first.write_bytes(first_bytes)
         receipt = fluidity.jobs.inspect_rigid(cache, 2)
         assert receipt["frame"] == 2
         scene.frame_set(2)
@@ -158,4 +168,27 @@ if "--" in sys.argv:
         assert (scene.objects[display_name].location - expected).length < 1e-7
         assert scene.fluidity.rigid_box.matrix_world == authored
 
-    print("PASS rigid bake, byte-identical resume, and saved native timeline playback")
+        settings = scene.fluidity
+        scene.frame_set(0)
+        scene.use_gravity = True
+        scene.gravity = (0, 0, -4)
+        settings.initial_velocity = (0, 0, 0)
+        settings.density = 1.0
+        for source in settings.liquid_sources:
+            source.density = 1.0
+        settings.rigid_box.location = (0.375, -0.375, 0.75)
+        settings.rigid_box.rotation_euler = (0, 0, 0)
+        settings.rigid_box.dimensions = (0.25, 0.25, 0.25)
+        settings.rigid_mass = 0.0078125
+        settings.bake_cache = str(root / "Hydrostatic bake")
+        assert bpy.ops.fluidity.bake() == {"FINISHED"}, (settings.message, settings.diagnostic)
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 2, (settings.message, settings.diagnostic)
+        hydrostatic_cache = Path(settings.bake_cache)
+        for ordinal in (1, 2):
+            hydrostatic = fluidity.jobs.inspect_rigid(hydrostatic_cache, ordinal)
+            assert math.isclose(hydrostatic["position"][1], 0.75, rel_tol=0, abs_tol=1e-6), hydrostatic
+            expected_orientation = Quaternion((math.sqrt(0.5), -math.sqrt(0.5), 0, 0))
+            assert abs(Quaternion(hydrostatic["orientation"]).dot(expected_orientation)) > 1 - 1e-6, hydrostatic
+
+    print("PASS rigid bake, verified resume, saved timeline playback and authored hydrostatic balance")

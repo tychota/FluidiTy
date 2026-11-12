@@ -36,6 +36,12 @@ def run(solver, fixture):
         assert second_record["frame"] == 2 and second_record["orientation"][3] > first_record["orientation"][3]
         assert json.loads(frame(first, replay).stdout) == second_record
         assert second.read_bytes() == replay.read_bytes()
+        corrupt = root / "corrupt.chk"
+        corrupt.write_bytes(first.read_bytes() + b"\x00")
+        refused = root / "refused.chk"
+        result = frame(corrupt, refused, check=False)
+        assert result.returncode != 0 and not refused.exists()
+        assert "checkpoint payload digest" in result.stdout
         packet.write_text(packet.read_text(encoding="ascii") + " ", encoding="ascii")
         refused = root / "refused.chk"
         result = frame(first, refused, check=False)
@@ -45,4 +51,4 @@ def run(solver, fixture):
 
 if __name__ == "__main__":
     run(*(Path(path).resolve() for path in sys.argv[1:]))
-    print("PASS rigid frame pose, byte-identical replay and packet binding")
+    print("PASS rigid_frame")
