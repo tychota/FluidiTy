@@ -85,6 +85,63 @@ TEST(LiquidEos3D, DriftTracksEosStateAndClampsOnlySensedCells) {
   EXPECT_EQ(LiquidVolumeDriftRate3D({1.0, 1.0}, 0.0, 0.0, 0.3).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidEos3D, SealedDriftBalancesVolumeWithoutLosingTheClamp) {
+  using liquid_step_internal::BalanceSealedLiquidDrift3D;
+  using liquid_step_internal::SealedLiquidDriftCell3D;
+  std::array cells{
+      SealedLiquidDriftCell3D{.cell_ordinal = 4, .fluid_volume = 1.0, .raw_rate = 3.0},
+      SealedLiquidDriftCell3D{.cell_ordinal = 2, .fluid_volume = 2.0, .raw_rate = -1.0},
+  };
+  const auto status = BalanceSealedLiquidDrift3D(cells, 1.0);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(cells[0].cell_ordinal, 2U);
+  EXPECT_NEAR(cells[0].corrected_rate, -0.5, 2e-15);
+  EXPECT_EQ(cells[1].cell_ordinal, 4U);
+  EXPECT_EQ(cells[1].corrected_rate, 1.0);
+  EXPECT_NEAR(2.0 * cells[0].corrected_rate + cells[1].corrected_rate, 0.0, 4e-15);
+}
+
+TEST(LiquidEos3D, SealedDriftResolvesOffsetsBelowRawRateUlp) {
+  using liquid_step_internal::BalanceSealedLiquidDrift3D;
+  using liquid_step_internal::SealedLiquidDriftCell3D;
+  std::array cells{
+      SealedLiquidDriftCell3D{.cell_ordinal = 0, .fluid_volume = 1.0, .raw_rate = 1e100},
+      SealedLiquidDriftCell3D{.cell_ordinal = 1, .fluid_volume = 2.0, .raw_rate = std::nextafter(1e100, 2e100)},
+  };
+  const auto status = BalanceSealedLiquidDrift3D(cells, 1.0);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(cells[0].corrected_rate, -1.0);
+  EXPECT_NEAR(cells[1].corrected_rate, 0.5, 2e-15);
+  cells[0].fluid_volume = 0.0;
+  EXPECT_EQ(BalanceSealedLiquidDrift3D(cells, 1.0).code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidEos3D, SealedDriftRetainsDifferencesFarBelowClamp) {
+  using liquid_step_internal::BalanceSealedLiquidDrift3D;
+  using liquid_step_internal::SealedLiquidDriftCell3D;
+  std::array cells{
+      SealedLiquidDriftCell3D{.cell_ordinal = 0, .fluid_volume = 1.0, .raw_rate = 0.0},
+      SealedLiquidDriftCell3D{.cell_ordinal = 1, .fluid_volume = 1.0, .raw_rate = 1e-300},
+  };
+  const auto status = BalanceSealedLiquidDrift3D(cells, 1e300);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(cells[0].corrected_rate, -5e-301);
+  EXPECT_EQ(cells[1].corrected_rate, 5e-301);
+}
+
+TEST(LiquidEos3D, SealedDriftRejectsHiddenBalanceTermUnderflow) {
+  using liquid_step_internal::BalanceSealedLiquidDrift3D;
+  using liquid_step_internal::SealedLiquidDriftCell3D;
+  std::array cells{
+      SealedLiquidDriftCell3D{.cell_ordinal = 0, .fluid_volume = 1e-308, .raw_rate = 1.0},
+      SealedLiquidDriftCell3D{.cell_ordinal = 1, .fluid_volume = 1e308, .raw_rate = 0.0},
+  };
+  EXPECT_EQ(BalanceSealedLiquidDrift3D(cells, 1.0).code(), absl::StatusCode::kOutOfRange);
+  for (const auto& cell : cells) {
+    EXPECT_EQ(cell.corrected_rate, 0.0);
+  }
+}
+
 TEST(LiquidEos3D, HenckyAndExactIncompressibleStates) {
   const auto finite = EvaluateLiquidEosAtPressure3D({1000.0, 2.0}, 4000.0 * std::log(2.0));
   ASSERT_TRUE(finite.ok()) << finite.status();

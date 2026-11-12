@@ -36,4 +36,18 @@ absl::StatusOr<double> LiquidVolumeDriftRate3D(
     double maximum_rate
 );
 
+struct SealedLiquidDriftCell3D {
+  std::size_t cell_ordinal;  // Caller identity, retained across sorting.
+  double fluid_volume;  // Positive m³.
+  double raw_rate;  // Unclamped drift in s⁻¹.
+  double corrected_rate = 0.0;  // Balanced, clamped drift in s⁻¹.
+};
+
+// Balances one sealed component's sensed cells by a common shift followed
+// by clamping to ±maximum_rate. Core cells and physical sources are omitted.
+// Sorts the scratch by raw rate and cell ordinal. Invalid inputs return
+// InvalidArgument. An unrepresentable balance returns OutOfRange and may
+// reorder scratch, with corrected rates unchanged.
+absl::Status BalanceSealedLiquidDrift3D(std::span<SealedLiquidDriftCell3D> sensed_cells, double maximum_rate);
+
 }  // namespace fluidity::liquid_step_internal

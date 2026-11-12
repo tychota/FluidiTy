@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <tuple>
 
 namespace fluidity::liquid_step_internal {
@@ -134,6 +135,119 @@ absl::StatusOr<double> LiquidVolumeDriftRate3D(
   }
   const double drift_rate = (target_log_volume_ratio - std::log(sensor.mean_volume_ratio)) / correction_time;
   return std::clamp(drift_rate, -maximum_rate, maximum_rate);
+}
+
+absl::Status BalanceSealedLiquidDrift3D(std::span<SealedLiquidDriftCell3D> sensed_cells, double maximum_rate) {
+  if (!std::isfinite(maximum_rate) || maximum_rate < 0.0) {
+    return absl::InvalidArgumentError("invalid sealed drift rate limit");
+  }
+  double maximum_volume = 0.0;
+  for (const auto& cell : sensed_cells) {
+    if (!std::isfinite(cell.raw_rate) || !std::isfinite(cell.fluid_volume) || cell.fluid_volume <= 0.0) {
+      return absl::InvalidArgumentError("invalid sealed drift cell data");
+    }
+    maximum_volume = std::max(maximum_volume, cell.fluid_volume);
+  }
+  if (sensed_cells.empty() || maximum_rate == 0.0) {
+    for (auto& cell : sensed_cells) {
+      cell.corrected_rate = 0.0;
+    }
+    return absl::OkStatus();
+  }
+
+  std::ranges::sort(sensed_cells, [](const SealedLiquidDriftCell3D& left, const SealedLiquidDriftCell3D& right) {
+    return std::tie(left.raw_rate, left.cell_ordinal) < std::tie(right.raw_rate, right.cell_ordinal);
+  });
+  double total_weight = 0.0;
+  for (const auto& cell : sensed_cells) {
+    total_weight += cell.fluid_volume / maximum_volume;
+  }
+  double median_rate = sensed_cells.back().raw_rate;
+  double prefix_weight = 0.0;
+  for (const auto& cell : sensed_cells) {
+    prefix_weight += cell.fluid_volume / maximum_volume;
+    if (prefix_weight >= 0.5 * total_weight) {
+      median_rate = cell.raw_rate;
+      break;
+    }
+  }
+
+  // Rebase at the weighted median before shifting. A root lies within one
+  // clamp radius of the median, even when raw rates have a large common offset.
+  const auto rate = [&](const SealedLiquidDriftCell3D& cell, double offset) {
+    const double difference = cell.raw_rate - median_rate;
+    if (std::isfinite(difference)) {
+      return std::clamp(difference - offset, -maximum_rate, maximum_rate);
+    }
+    if (maximum_rate <= std::numeric_limits<double>::max() / 2.0) {
+      return std::copysign(maximum_rate, difference);
+    }
+    const double half_difference = cell.raw_rate * 0.5 - median_rate * 0.5;
+    const double half_maximum_rate = maximum_rate * 0.5;
+    return 2.0 * std::clamp(half_difference - offset * 0.5, -half_maximum_rate, half_maximum_rate);
+  };
+  const auto balance = [&](double offset) {
+    double rate_scale = 0.0;
+    for (const auto& cell : sensed_cells) {
+      rate_scale = std::max(rate_scale, std::abs(rate(cell, offset)));
+    }
+    if (rate_scale == 0.0) {
+      return std::tuple{0.0, 0.0, true};
+    }
+    double sum = 0.0;
+    double roundoff = 0.0;
+    double absolute_sum = 0.0;
+    bool terms_representable = true;
+    for (const auto& cell : sensed_cells) {
+      const double corrected_rate = rate(cell, offset);
+      const double term = (cell.fluid_volume / maximum_volume) * (corrected_rate / rate_scale);
+      terms_representable &= corrected_rate == 0.0 || std::isnormal(term);
+      const double corrected_term = term - roundoff;
+      const double next = sum + corrected_term;
+      roundoff = (next - sum) - corrected_term;
+      sum = next;
+      absolute_sum += std::abs(term);
+    }
+    return std::tuple{sum, absolute_sum, terms_representable};
+  };
+  const double offset_radius = std::min(
+      maximum_rate,
+      std::max(median_rate - sensed_cells.front().raw_rate, sensed_cells.back().raw_rate - median_rate)
+  );
+  double lower = -offset_radius;
+  double upper = offset_radius;
+  double offset = 0.0;
+  constexpr double kBalanceTolerance = 8.0 * std::numeric_limits<double>::epsilon();
+  // Check the balance of rounded output rates, including when an endpoint
+  // supplies the closest representable offset.
+  while (true) {
+    const auto [sum, absolute_sum, representable] = balance(offset);
+    if (representable && std::abs(sum) <= kBalanceTolerance * absolute_sum) {
+      for (auto& cell : sensed_cells) {
+        cell.corrected_rate = rate(cell, offset);
+      }
+      return absl::OkStatus();
+    }
+    if (sum > 0.0) {
+      lower = offset;
+    } else {
+      upper = offset;
+    }
+    const double next = std::midpoint(lower, upper);
+    if (next == lower || next == upper) {
+      for (const double endpoint : {lower, upper}) {
+        const auto [endpoint_sum, endpoint_absolute_sum, endpoint_representable] = balance(endpoint);
+        if (endpoint_representable && std::abs(endpoint_sum) <= kBalanceTolerance * endpoint_absolute_sum) {
+          for (auto& cell : sensed_cells) {
+            cell.corrected_rate = rate(cell, endpoint);
+          }
+          return absl::OkStatus();
+        }
+      }
+      return absl::OutOfRangeError("sealed liquid drift balance is unrepresentable");
+    }
+    offset = next;
+  }
 }
 
 }  // namespace fluidity::liquid_step_internal
