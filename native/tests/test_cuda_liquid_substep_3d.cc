@@ -1161,6 +1161,30 @@ void CheckRejectedFieldBatch() {
   EXPECT_EQ(DeviceBytes(*after), bytes);
 }
 
+TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {
+  const auto initial = Initial();
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  scene.world_acceleration = {};
+  scene.ambient_pressure = 10.0;
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  for (const double target_time : {0.01, 0.02}) {
+    const auto gpu_status = gpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+    const auto cpu_status = cpu->AdvanceFrame(target_time);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    ExpectState(cpu->committed(), gpu->committed());
+  }
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
   auto initial = Initial();
   initial.particles[0].world_position = {2.5, 2.5, 2.5};

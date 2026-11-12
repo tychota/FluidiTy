@@ -78,7 +78,7 @@ auto FaceKey(FaceIndex3D index) {
 
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
-      && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus)
+      && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus) && !scene.eos
       && scene.surface_tension == 0 && scene.dynamic_viscosity == 0;
 }
 
@@ -552,6 +552,10 @@ struct LiquidSubstepScheduler3D::Impl {
           .step_end_low_x_m = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x,
       };
     }
+    std::optional<LiquidEos3D> eos;
+    if (scene.eos) {
+      eos = LiquidEos3D{scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law};
+    }
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
     for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
@@ -563,7 +567,16 @@ struct LiquidSubstepScheduler3D::Impl {
       if (found == cells.end() || CellKey(found->cell_index) != CellKey(key)) {
         return Error(absl::StatusCode::kInternal);
       }
-      staging.pressure_fields[index] = {scene.target_divergence, scene.bulk_modulus, found->previous_pressure};
+      double tangent_bulk_modulus = scene.bulk_modulus;
+      if (eos) {
+        // Freeze the tangent at the current cell's carried pressure for this solve.
+        const auto predictor = EvaluateLiquidEosAtPressure3D(*eos, found->previous_pressure);
+        if (!predictor.ok()) {
+          return predictor.status();
+        }
+        tangent_bulk_modulus = predictor->bulk_modulus;
+      }
+      staging.pressure_fields[index] = {scene.target_divergence, tangent_bulk_modulus, found->previous_pressure};
     }
     for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
       const auto& face = frozen->faces[index];
@@ -703,6 +716,14 @@ struct LiquidSubstepScheduler3D::Impl {
       if (projected_cell_pressures.size() != frozen->cells.size()
           || projected_face_velocities.size() != frozen->faces.size()) {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
+      }
+      if (eos) {
+        for (const double pressure : projected_cell_pressures) {
+          const auto accepted_eos = EvaluateLiquidEosAtPressure3D(*eos, pressure);
+          if (!accepted_eos.ok()) {
+            return accepted_eos.status();
+          }
+        }
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;

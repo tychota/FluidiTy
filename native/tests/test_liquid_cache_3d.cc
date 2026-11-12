@@ -387,6 +387,26 @@ TEST(LiquidCache3D, ResolvedViscosityRoundTripsAndChangesFingerprint) {
   EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidCache3D, ResolvedEosRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto round_trip = decoded->View();
+  ASSERT_TRUE(round_trip.scene.eos.has_value());
+  EXPECT_EQ(round_trip.scene.eos->reference_sound_speed, 2.0);
+  EXPECT_EQ(round_trip.scene.eos->law, LiquidEosLaw::kTait);
+  const auto fingerprint = ResolvedSceneFingerprint(round_trip);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*baseline, *fingerprint);
+  scene.scene.bulk_modulus = 4000.0;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ResolvedDefaultsMaterializeAndRoundTrip) {
   LiquidResolvedSceneView3D scene;
   auto encoded = EncodeLiquidResolvedScene3D(scene);

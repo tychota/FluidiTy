@@ -87,6 +87,70 @@ TEST(LiquidSubstep3D, SchedulerConsumesResolvedViscosityOnFullCells) {
   );
 }
 
+TEST(LiquidSubstep3D, TaitFreezesComplianceAtCarriedPressure) {
+  struct Observation {
+    std::size_t cells = 0;
+    bool saw_nonzero_pressure = false;
+  } observation;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &observation;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    auto& observed = *static_cast<Observation*>(context);
+    for (const auto& cell : fields.cells) {
+      ++observed.cells;
+      observed.saw_nonzero_pressure |= std::abs(cell.previous_pressure) > 1e-8;
+      EXPECT_NEAR(cell.bulk_modulus, 4000.0 + 7.0 * cell.previous_pressure, 1e-10);
+    }
+    return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+  };
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.ambient_pressure = 10.0;
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  auto scheduler = LiquidSubstepScheduler3D::Create(Initial(), scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto first = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(first.ok()) << first;
+  const auto second = scheduler->AdvanceFrame(0.02);
+  ASSERT_TRUE(second.ok()) << second;
+  EXPECT_GT(observation.cells, 0U);
+  EXPECT_TRUE(observation.saw_nonzero_pressure);
+}
+
+TEST(LiquidSubstep3D, TaitRejectsCandidateOutsideDomainBeforePublication) {
+  std::vector<double> candidate_pressures;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &candidate_pressures;
+  backend.project = [](void* context,
+                       SparseMacGridView3D grid,
+                       double step_duration,
+                       const LiquidPressureProblemView3D& problem,
+                       MacPressureSolverOptions3D options,
+                       MacPressureWorkspace3D& workspace) {
+    auto result = CpuLiquidSubstepBackend3D().project(nullptr, grid, step_duration, problem, options, workspace);
+    if (result.ok()) {
+      auto& pressures = *static_cast<std::vector<double>*>(context);
+      pressures.assign(result->cell_pressures.size(), -1000.0);
+      result->cell_pressures = pressures;
+    }
+    return result;
+  };
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(0.01);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_FALSE(candidate_pressures.empty());
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, UnsupportedViscousGeometryPreservesCommittedState) {
   const auto initial = Initial();
   auto scene = Scene();

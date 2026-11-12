@@ -7,6 +7,7 @@
 #include <span>
 #include <variant>
 
+#include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
 #include "fluidity/host/whitewater_3d.h"
@@ -44,6 +45,10 @@ struct LiquidEmissionSource3D {
   Vec3 world_position_jitter{};  // Nonnegative half extents, meters; independent Philox components.
   LiquidParticleState3D emitted_particle_template;  // Resolved payload; ID/position/PIC flag are assigned on emission.
 };
+struct LiquidSceneEos3D {
+  double reference_sound_speed;  // Positive finite m/s at the scene's reference density.
+  LiquidEosLaw law = LiquidEosLaw::kHencky;
+};
 struct LiquidSceneInputs3D {
   LiquidSceneField3D field = LiquidParticleSphereUnion3D{};
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
@@ -52,7 +57,8 @@ struct LiquidSceneInputs3D {
   double dynamic_viscosity = 0;  // Pa s. Zero disables grid viscosity.
   double surface_tension = 0;  // N/m.
   double ambient_pressure = 0;  // Pa, gauge.
-  double bulk_modulus = std::numeric_limits<double>::infinity();  // Pa.
+  double bulk_modulus = std::numeric_limits<double>::infinity();  // Legacy constant modulus in Pa.
+  std::optional<LiquidSceneEos3D> eos;  // Requires infinite legacy modulus. Absence keeps legacy behavior.
   double target_divergence = 0;  // 1/s, pressure constraint source.
   double friction_coefficient = 0;
   double penetration_tolerance = 0;  // m.

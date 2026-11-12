@@ -63,6 +63,18 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   if (!material_valid || !detail::Finite(scene.world_acceleration)) {
     return Invalid();
   }
+  if (scene.eos) {
+    if (!std::isinf(scene.bulk_modulus) || !std::isfinite(scene.eos->reference_sound_speed)) {
+      return Invalid();
+    }
+    const auto eos = EvaluateLiquidEosAtPressure3D(
+        {scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law},
+        scene.ambient_pressure
+    );
+    if (!eos.ok()) {
+      return eos.status();
+    }
+  }
   const bool options_valid = detail::Nonnegative(options.particle_energy_blend) && options.particle_energy_blend <= 1
       && detail::Positive(options.maximum_step_duration) && detail::Nonnegative(options.minimum_face_mass)
       && PowerOfTwo(options.mass_per_quantum) && PowerOfTwo(options.momentum_per_quantum)
@@ -111,7 +123,7 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   } else if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
     if (!detail::Positive(drop->physical_radius) || !detail::Positive(drop->seed_covariance_scale)
         || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
-        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.target_divergence != 0) {
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.target_divergence != 0) {
       return Invalid();
     }
   } else {
@@ -215,6 +227,14 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   result.scene.surface_tension = material->surface_tension();
   result.scene.ambient_pressure = material->ambient_pressure();
   result.scene.bulk_modulus = material->bulk_modulus();
+  if (const auto speed = material->reference_sound_speed()) {
+    result.scene.eos = LiquidSceneEos3D{
+        .reference_sound_speed = *speed,
+        .law = static_cast<LiquidEosLaw>(material->eos_law().value_or(wire::LiquidEosLaw::Hencky)),
+    };
+  } else if (material->eos_law().has_value()) {
+    return Invalid();
+  }
   result.scene.target_divergence = material->target_divergence();
   result.scene.friction_coefficient = material->friction();
   result.scene.penetration_tolerance = material->penetration_tolerance();
@@ -364,6 +384,14 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
         if (scene.dynamic_viscosity > 0.0) {
           dynamic_viscosity = scene.dynamic_viscosity;
         }
+        flatbuffers::Optional<double> reference_sound_speed;
+        flatbuffers::Optional<wire::LiquidEosLaw> eos_law;
+        if (scene.eos) {
+          reference_sound_speed = scene.eos->reference_sound_speed;
+          if (scene.eos->law == LiquidEosLaw::kTait) {
+            eos_law = wire::LiquidEosLaw::Tait;
+          }
+        }
         const auto material = wire::CreateMaterial(
             builder,
             scene.liquid_density,
@@ -373,7 +401,9 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             detail::Canonical(scene.target_divergence),
             detail::Canonical(scene.friction_coefficient),
             detail::Canonical(scene.penetration_tolerance),
-            dynamic_viscosity
+            dynamic_viscosity,
+            reference_sound_speed,
+            eos_law
         );
         flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
         if (const auto& capture = options.whitewater_capture) {

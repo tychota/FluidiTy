@@ -3,6 +3,7 @@ namespace fluidity.cache.v1;
 enum FieldKind:ubyte { ParticleUnion = 0, AnalyticSphere = 1, HorizontalPlane = 2, IsolatedCovarianceDrop = 3 }
 enum ObstacleKind:ubyte { None = 0, Halfspace = 1, Slab = 2, OpenTank = 3 }
 enum UpstreamRole:ubyte { InitialParticles = 0, Source = 1, Obstacle = 2 }
+enum LiquidEosLaw:ubyte { Hencky = 0, Tait = 1 }
 table Material {
   density:double = 1000 (id:0);
   surface_tension:double (id:1);
@@ -12,6 +13,8 @@ table Material {
   friction:double (id:5);
   penetration_tolerance:double (id:6);
   dynamic_viscosity:double = null (id:7);
+  reference_sound_speed:double = null (id:8);
+  eos_law:LiquidEosLaw = null (id:9);
 }
 struct WhitewaterRampBounds { low:double; high:double; }
 table WhitewaterCapture {

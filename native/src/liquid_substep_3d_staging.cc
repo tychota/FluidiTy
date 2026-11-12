@@ -201,6 +201,18 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
   if (!valid_material) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
+  if (scene.eos) {
+    if (!std::isinf(scene.bulk_modulus) || !std::isfinite(scene.eos->reference_sound_speed)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto eos = EvaluateLiquidEosAtPressure3D(
+        {scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law},
+        scene.ambient_pressure
+    );
+    if (!eos.ok()) {
+      return eos.status();
+    }
+  }
   const bool valid_step = std::isfinite(options.particle_energy_blend) && options.particle_energy_blend >= 0
       && options.particle_energy_blend <= 1 && std::isfinite(options.maximum_step_duration)
       && options.maximum_step_duration > 0 && std::isfinite(options.minimum_face_mass) && options.minimum_face_mass >= 0
@@ -244,7 +256,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
     if (!std::isfinite(drop->physical_radius) || drop->physical_radius <= 0
         || !std::isfinite(drop->seed_covariance_scale) || drop->seed_covariance_scale <= 0
         || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
-        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.target_divergence != 0
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.target_divergence != 0
         || initial.particles.size() != kMaxIsolatedDropParticles3D) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
