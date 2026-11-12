@@ -395,15 +395,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     const bool hit_granular_floor = std::holds_alternative<GranularParameters3D>(material)
         && !settings.platen.has_value() && contact->contact_fraction.has_value();
-    Mat3 trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, settings.duration);
-    if (hit_granular_floor) {
-      const double preimpact_duration = settings.duration * *contact->contact_fraction;
-      const double postimpact_duration = settings.duration - preimpact_duration;
-      trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, preimpact_duration);
-      const Mat3 postimpact_gradient =
-          FloorProjectedGradient(velocity, particle_gather.velocity_gradient, settings.floor_friction);
-      trial = TrialDeformation(trial, postimpact_gradient, postimpact_duration);
-    }
+    const Mat3 trial =
+        TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, settings.duration);
     SolidDeformationState3D state{};
     double speed_squared = 0;
     if (!ReturnState(trial, particle.log_plastic_jacobian, material, state)
@@ -443,7 +436,13 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;
-    particle.velocity_slopes = contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
+    if (hit_granular_floor) {
+      particle.velocity_slopes =
+          FloorProjectedGradient(stored_velocity, particle_gather.fitted_velocity_slopes, settings.floor_friction);
+    } else {
+      particle.velocity_slopes =
+          contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
+    }
     particle.elastic_deformation = state.elastic_deformation;
     particle.log_plastic_jacobian = state.log_plastic_jacobian;
   }
