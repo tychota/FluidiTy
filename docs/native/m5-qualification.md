@@ -3169,3 +3169,31 @@ foreach ($angle in '25', '35') {
 The temporary harness applies the transform to positions only and
 keeps the cone selection and particle mass unchanged. Both sources
 were restored after linking.
+
+### Lamé pair with wall-face traction
+
+Repeat the fixed-step column matrix using the wall-face solver and
+Euler deformation. Change only the Lamé pair from (700, 450) Pa to
+(1280, 160) Pa. The material friction angle stays at 30° and the
+longitudinal modulus stays at 1600 Pa.
+
+| Native case at 3 s | Baseline angle / radius | Alternate Lamé pair angle / radius |
+|---|---|---|
+| Coarse | 35.932364° / 0.178563 m | 36.161317° / 0.175584 m |
+| Coarse half-step | 41.107594° / 0.153975 m | 41.023197° / 0.153872 m |
+| Fine | 29.704868° / 0.200837 m | 31.350540° / 0.197523 m |
+| Fine half-step | 34.345649° / 0.179405 m | 32.690472° / 0.184132 m |
+
+The coarse angles move by less than 0.23°. Both fine angles enter
+or stay in the acceptance range, with radii above 0.16 m. All four
+runs finish with vertical momentum residual at most 2.01e-8 N·s.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-lame-bin'
+foreach ($grid in 'fine', 'coarse') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-lame $grid $step
+  }
+}
+```
