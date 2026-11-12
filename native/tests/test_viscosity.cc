@@ -274,11 +274,26 @@ TEST(Viscosity, FullCell3DStrainReproducesAffineVelocityAcrossSignedOwners) {
   const auto strain = AssembleFullCellMacStrain3D(grid->view(), cells);
   ASSERT_TRUE(strain.ok()) << strain.status();
   ASSERT_EQ(strain->size(), 30);
+  std::array<double, 8> full_octants;
+  full_octants.fill(0.5 * 0.5 * 0.5 / 8.0);
+  const std::vector<std::array<double, 8>> liquid_octant_volumes(cells.size(), full_octants);
+  const auto cut_strain = AssembleCutCellMacStrain3D(grid->view(), cells, liquid_octant_volumes);
+  ASSERT_TRUE(cut_strain.ok()) << cut_strain.status();
+  ASSERT_EQ(cut_strain->size(), strain->size());
   for (std::size_t row_index = 0; row_index < strain->size(); ++row_index) {
     const auto& row = (*strain)[row_index];
     const bool normal = row_index < 24;
     EXPECT_EQ(row.term_count, normal ? 2 : 4);
     EXPECT_EQ(row.quadrature_weight, normal ? 0.5 : 1.0);
+    const auto& cut_row = (*cut_strain)[row_index];
+    EXPECT_EQ(cut_row.first_axis, row.first_axis);
+    EXPECT_EQ(cut_row.second_axis, row.second_axis);
+    EXPECT_EQ(cut_row.term_count, row.term_count);
+    EXPECT_EQ(cut_row.quadrature_weight, row.quadrature_weight);
+    for (std::size_t term = 0; term < row.term_count; ++term) {
+      EXPECT_EQ(cut_row.terms[term].face_slot, row.terms[term].face_slot);
+      EXPECT_EQ(cut_row.terms[term].coefficient, row.terms[term].coefficient);
+    }
     double rotation_control_strain = 0.0;
     double symmetric_affine_strain = 0.0;
     for (const auto& term : std::span(row.terms).first(row.term_count)) {
@@ -379,6 +394,18 @@ TEST(Viscosity, CutCell3DStrainWeightsCompleteEdgeWithLiquidVolume) {
   EXPECT_EQ(shear.term_count, 4);
   // Total volume is 9/16 m³. The volume-weighted harmonic viscosity is 4 Pa s.
   EXPECT_NEAR(shear.quadrature_weight, 9.0, kTolerance);
+
+  auto inviscid_cells = cells;
+  inviscid_cells[3].dynamic_viscosity = 0.0;
+  const auto zero_shear = AssembleCutCellMacStrain3D(grid->view(), inviscid_cells, octants);
+  ASSERT_TRUE(zero_shear.ok()) << zero_shear.status();
+  EXPECT_DOUBLE_EQ(zero_shear->back().quadrature_weight, 0.0);
+  octants[3][1] = octants[3][0];
+  octants[3][0] = 0.0;
+  const auto liquid_only_shear = AssembleCutCellMacStrain3D(grid->view(), inviscid_cells, octants);
+  ASSERT_TRUE(liquid_only_shear.ok()) << liquid_only_shear.status();
+  const double expected_weight = 4.0 * 0.4375 * 0.4375 / (0.125 / 2.0 + 0.25 / 4.0 + 0.0625 / 8.0);
+  EXPECT_NEAR(liquid_only_shear->back().quadrature_weight, expected_weight, kTolerance);
 
   octants[0][3] = 0.126;
   EXPECT_EQ(
