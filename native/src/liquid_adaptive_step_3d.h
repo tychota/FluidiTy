@@ -66,6 +66,10 @@ class AdaptiveLiquidStep3D {
     return topology_;
   }
 
+  // Query the represented world position in the frozen transfer layout.
+  absl::StatusOr<double> ParticleSupportWidth(Vec3 world_position_m) const {
+    return transfer_.ParticleSupportWidth(world_position_m);
+  }
   // Dynamic payload kept by the frozen step owner between trials.
   std::size_t reserved_bytes() const;
   absl::Status PreparePhysicalTrial(

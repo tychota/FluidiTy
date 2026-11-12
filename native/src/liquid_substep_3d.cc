@@ -3446,7 +3446,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
   for (auto& particle : prepared->particles.values()) {
     if (certified_replacement_count != 0 && particle.id >= first_id) {
       particle.quadratic_adaptive_transfer = true;
-    } else {
+    } else if (certified_replacement_count == 0) {
       ResetAdaptiveQuadraticBasis(particle);
     }
   }
@@ -3473,6 +3473,18 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
     }
     const auto replacement_ids = std::span(ids).first(certified_replacement_count);
     std::iota(replacement_ids.begin(), replacement_ids.end(), first_id);
+    // Retained marked particles have the same positions and affine lanes.
+    // Their physical width must stay fixed for the measured moments to apply.
+    for (const auto& particle : candidate.state.particles.values()) {
+      if (particle.id >= first_id || !particle.quadratic_adaptive_transfer) {
+        continue;
+      }
+      const auto old_width_m = impl.adaptive->ParticleSupportWidth(particle.world_position);
+      const auto new_width_m = candidate.owner.ParticleSupportWidth(particle.world_position);
+      if (!old_width_m.ok() || !new_width_m.ok() || *old_width_m != *new_width_m) {
+        return absl::FailedPreconditionError("certified resampling changes a retained particle's quadratic width");
+      }
+    }
     auto transfer = candidate.owner.PrepareCertifiedQuadraticTransfer(candidate.state, impl.options, replacement_ids);
     if (!transfer.ok()) {
       return transfer.status();
