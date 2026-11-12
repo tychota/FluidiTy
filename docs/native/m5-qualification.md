@@ -3313,3 +3313,36 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Accumulated Coulomb impulse across wall sweeps
+
+Replace the two half-cap wall traversals with four alternating
+block-coordinate sweeps. At each wall point, subtract the velocity
+contribution of its previous impulse, minimize grid kinetic energy
+over the full local Coulomb disk, and scatter only the impulse
+difference. The stored impulse therefore stays inside one disk
+regardless of sweep count. The normal reaction, reflected
+deformation gather and Euler increment are unchanged. Native and
+SM120 dry-scene targets passed, including the loaded wall oracle.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.399164° | 0.177291 m |
+| Coarse half-step | 41.111856° | 0.153680 m |
+| Fine | 30.504264° | 0.186557 m |
+| Fine half-step | 33.581269° | 0.180036 m |
+
+The fine nominal case enters the angle window but exceeds the
+radius bound. The coarse half-step angle changes by only 0.0043°
+relative to the two half-cap sweeps. The block-coordinate test
+uses a fixed sweep count and does not certify convergence.
+Cut stress work mismatch stays below 2.2e-16 J and vertical
+momentum residual below 7.9e-8 N·s. Both sources were restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-accumulated-friction-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
