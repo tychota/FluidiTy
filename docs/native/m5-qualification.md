@@ -419,6 +419,30 @@ observed native/CUDA split in this comparison. Finer quanta alone do
 not move the quantized result into the window. Matching these operators
 does not establish general bitwise backend replay or close Q-SAND.
 
+### Low-mass retention taper control
+
+The stored blend normally suppresses its correction when a positive-weight
+face falls below the low-mass threshold. The temporary control kept zero
+retention at and below that threshold and ramped linearly to full retention
+at twice the threshold, taking the minimum across positive-weight faces.
+The weighted mean correction uses particle mass times the ramp factor, so
+the net retained momentum still cancels.
+
+| Deposit path | Existing envelope | Taper envelope | Taper surface fit |
+|---|---:|---:|---:|
+| Native floating point | 29.903758° | 29.908319° | 34.495912° |
+| Native or CUDA, matched standard quanta | 29.990626° | 29.994948° | 34.111658° |
+| Native or CUDA, matched finer quanta | 29.990626° | 29.994948° | 34.111658° |
+
+All three taper runs passed the momentum check. The taper changes the
+fitted surface but neither removes the float/quantized difference nor
+passes the envelope gate. This control addresses only the transition in
+deposited mass for already-active stencil faces. It does not address
+changes in stencil membership. The production source was restored.
+Apply out/m5-cone-low-mass-taper.patch against 0158e3e and use the cone
+quantization commands below, plus --q-sand-cone-float-taper on the native
+Release binary, to reproduce the comparison.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -521,6 +545,11 @@ M6 commits 5d017de and 8a15777 measure light-body amplification for
 partitioned pressure feedback and provide a stable coupled update for
 one analytic pressure cell and a guided piston. M6 commit 62cbf0c extends that guided update to multiple pressure cells. The coupled path is particle-free.
 It does not provide a coupled plastic-particle pressure or contact step.
+
+M6 commit 11bd9c6 adds an isolated CUDA piston reaction output, reduced
+in particle order and published transactionally with the particle batch.
+Its SM120 fixture matches the CPU impulse and checks rejection rollback.
+Accepted dynamic-body feedback still needs to consume that CUDA output.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
