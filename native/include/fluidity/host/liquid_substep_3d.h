@@ -354,6 +354,12 @@ class LiquidSubstepScheduler3D {
   // even on failure. Returns disposition/retry duration; detailed code/stage are in
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
+
+  // Request one graded family refinement (refine=true) or coarsening before
+  // the physical attempt. Preparation errors leave the current frame open
+  // and consume no attempt. Rejection preserves the accepted topology and inventories.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
   // Attempts the moving planar piston scene and returns the pressure load
   // only when the liquid state commits. The body is supplied by value and
   // the piston trajectory stays prescribed for this attempt.
@@ -470,6 +476,7 @@ class LiquidSubstepScheduler3D {
       std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
   );
   struct SnowTrial;
+  struct AdaptiveFamilyTrial;
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -478,7 +485,8 @@ class LiquidSubstepScheduler3D {
       bool coupled_piston = false,
       const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
       FloatingBoxTrial* floating_box = nullptr,
-      SnowTrial* snow = nullptr
+      SnowTrial* snow = nullptr,
+      AdaptiveFamilyTrial* adaptive_family = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,
