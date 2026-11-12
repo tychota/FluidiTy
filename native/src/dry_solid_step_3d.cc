@@ -79,12 +79,16 @@ bool AcousticBound(
 }
 
 // The gap and motion bound ensure the path cannot meet both planes during a step.
-absl::StatusOr<LiquidWallContactResult3D>
-SweepDryWalls(const DrySolidParticle3D& particle, Vec3 velocity, const DrySolidStep3D& settings) {
+absl::StatusOr<LiquidWallContactResult3D> SweepDryWalls(
+    const DrySolidParticle3D& particle,
+    Vec3 stored_velocity,
+    Vec3 advecting_velocity,
+    const DrySolidStep3D& settings
+) {
   LiquidWallContactInputs3D input{
       .start_world_position = particle.world_position,
-      .stored_world_velocity = velocity,
-      .advecting_world_velocity = velocity,
+      .stored_world_velocity = stored_velocity,
+      .advecting_world_velocity = advecting_velocity,
       .obstacle = TranslatingHalfspace3D{{0, 1, 0}, 0, {}},
       .step_duration = settings.duration,
       .friction_coefficient = settings.floor_friction,
@@ -137,6 +141,9 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       || !solid_detail::NonnegativeFinite(settings.floor_friction)
       || !solid_detail::PositiveFinite(settings.acoustic_cfl) || settings.acoustic_cfl > 1) {
     return absl::InvalidArgumentError("invalid dry step settings");
+  }
+  if (!solid_detail::NonnegativeFinite(settings.particle_energy_blend) || settings.particle_energy_blend > 1) {
+    return absl::InvalidArgumentError("invalid dry particle energy blend");
   }
   const double cell_width = grid.geometry().cell_width;
   const double maximum_displacement = 0.45 * cell_width;
@@ -193,6 +200,9 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     return deposited;
   }
   std::vector<double> velocities(grid.face_count());
+  const bool blend_stored_velocity = settings.particle_energy_blend > 0;
+  std::vector<double> old_velocities(blend_stored_velocity ? grid.face_count() : 0);
+  const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   const auto layout = grid.view();
   for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
     const double mass = deposits[slot].deposited_mass;
@@ -205,9 +215,12 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     // Quadratic weight vanishes faster than its derivative at the support edge.
     // Regularize force acceleration there while retaining the normalized APIC deposit.
-    const double force_mass = std::max(mass, 1e-4 * minimum_particle_mass);
-    double velocity =
-        deposits[slot].deposited_pure_momentum / mass + settings.duration * (face_force[slot] / force_mass);
+    const double force_mass = std::max(mass, minimum_force_mass);
+    const double pre_force_velocity = deposits[slot].deposited_pure_momentum / mass;
+    if (blend_stored_velocity) {
+      old_velocities[slot] = pre_force_velocity;
+    }
+    double velocity = pre_force_velocity + settings.duration * (face_force[slot] / force_mass);
     if (face->axis == FaceNormalAxis::kY) {
       velocity += settings.duration * settings.gravity_y;
       const auto anchor = layout.FaceWorldAnchor(*face);
@@ -236,7 +249,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   }
 
   std::vector<MacParticleGatherResult3D> gathers(particles.size());
-  const auto gathered = gather(grid, transfer_particles, velocities, velocities, gathers);
+  const auto& history = blend_stored_velocity ? old_velocities : velocities;
+  const auto gathered = gather(grid, transfer_particles, history, velocities, gathers);
   if (!gathered.ok()) {
     return gathered;
   }
@@ -248,7 +262,27 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
       return absl::FailedPreconditionError("dry particle motion bound");
     }
-    const auto contact = SweepDryWalls(particle, velocity, settings);
+    Vec3 stored_velocity = velocity;
+    if (blend_stored_velocity) {
+      bool usable_history = true;
+      for (const auto axis : kAxes) {
+        const auto support = BuildOwnedMacFaceStencil3D(grid, axis, particle.world_position, particle.world_position);
+        if (!support.ok()) {
+          return support.status();
+        }
+        for (const auto& sample : *support) {
+          if (sample.weight > 0 && deposits[sample.face_slot].deposited_mass < minimum_force_mass) {
+            usable_history = false;
+          }
+        }
+      }
+      if (usable_history) {
+        const Vec3 old_pic = solid_detail::Combine(velocity, 1, particle_gather.grid_velocity_increment, -1);
+        const Vec3 residual = solid_detail::Combine(particle.world_velocity, 1, old_pic, -1);
+        stored_velocity = solid_detail::Combine(velocity, 1, residual, 0.99 * settings.particle_energy_blend);
+      }
+    }
+    const auto contact = SweepDryWalls(particle, stored_velocity, velocity, settings);
     if (!contact.ok()) {
       return contact.status();
     }

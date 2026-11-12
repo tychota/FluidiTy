@@ -81,6 +81,28 @@ case misses the existing window. Next isolate the per-step PIC velocity
 replacement and the elastic update from the spatial quadrature, before
 changing the material parameters or angle estimator.
 
+### Stored velocity experiment
+
+The optional dry-step blend retains 0.594 of the particle velocity
+residual against the pre-force grid at energy setting 0.6. The
+manufactured test uses opposing velocities with zero grid increment.
+It verifies that the residual survives in storage while the PIC advection
+and positions stay fixed. Low-mass supports retain PIC storage.
+
+| h (m) | nominal dt (s) | PIC angle | stored blend angle |
+|---|---:|---:|---:|
+| 0.075 | 0.001875 | 30.161149° | 26.571091° |
+| 0.0625 | 0.0015625 | 27.803822° | 25.525547° |
+| 0.075 | 0.0009375 | 37.248475° | 32.408302° |
+| 0.0625 | 0.00078125 | 32.699841° | 29.525806° |
+
+CPU and CUDA matched at the printed precision. The option changes the
+pile response but leaves 5.837211° and 4.000259° timestep shifts at
+the respective widths. The existing PIC default stays in place.
+Advection and deformation still use the PIC field and its derivative
+respectively. Surface separation and an independent deformation
+integration experiment remain open.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -108,6 +130,10 @@ compute-sanitizer --tool memcheck --error-exitcode 1 ./out/build/windows-release
 # Timestep sensitivity at the same two widths. Exit 1 records the failed reference case.
 & ./out/build/windows-debug-cpu/fluidity_m5_dry_scene_tests.exe --q-sand-half-step
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-half-step
+
+# Stored-velocity diagnostic at both widths and timesteps. Exit 1 retains the misses.
+& ./out/build/windows-debug-cpu/fluidity_m5_dry_scene_tests.exe --q-sand-stored-blend
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-stored-blend
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources

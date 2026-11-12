@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string_view>
@@ -22,7 +23,7 @@ using fluidity::SparseMacGrid3D;
 
 constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 
-bool TestScene(double width, double duration, bool snow) {
+bool TestScene(double width, double duration, bool snow, double particle_energy_blend = 0) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
     for (int y = -1; y <= 4; ++y) {
@@ -66,7 +67,8 @@ bool TestScene(double width, double duration, bool snow) {
         .duration = next_time - t,
         .gravity_y = snow ? 0.0 : -9.81,
         .floor_friction = 0.7,
-        .acoustic_cfl = 0.25
+        .acoustic_cfl = 0.25,
+        .particle_energy_blend = particle_energy_blend,
     };
     if (snow && t < 0.35) {
       const double speed = t < 0.23 ? -0.4 : 0.5;
@@ -134,6 +136,34 @@ bool TestScene(double width, double duration, bool snow) {
   std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
   return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && maximum_radius > 0.10
       && maximum_radius < 0.16 && kinetic_energy < 0.01;
+}
+
+bool TestStoredVelocityResidual() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidParticle3D first{
+      .world_position = {2.25, 2.25, 2.25},
+      .world_velocity = {1, 0, 0},
+      .mass = 1000,
+      .reference_volume = 1,
+      .elastic_deformation = kIdentity,
+  };
+  std::array particles{first, first, first, first};
+  particles[1].world_velocity.x = -1;
+  particles[3].world_velocity.x = -1;
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.01, .acoustic_cfl = 0.25, .particle_energy_blend = 0.6};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, particles);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, particles);
+#endif
+  return status.ok() && std::abs(particles[0].world_velocity.x - 0.594) < 1e-12
+      && std::abs(particles[1].world_velocity.x + 0.594) < 1e-12 && particles[0].world_position.x == 2.25
+      && particles[1].world_position.x == 2.25;
 }
 
 bool TestRollbackOnUnsupportedDestination() {
@@ -270,10 +300,18 @@ int main(int argc, char** argv) {
     const bool refined = TestScene(0.0625, 0.00078125, false);
     return reference && refined ? 0 : 1;
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-stored-blend") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0.6);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0.6);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0.6);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0.6);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
   if (argc != 1) {
     return 2;
   }
-  if (!TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestStoredVelocityResidual() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

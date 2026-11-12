@@ -33,10 +33,13 @@ struct DrySolidStep3D {
   double floor_friction;  // Nonnegative Coulomb coefficient.
   double acoustic_cfl;  // Discrete acoustic safety factor in (0, 1].
   std::optional<DrySolidPlaten3D> platen;
+  double particle_energy_blend = 0;  // [0, 1], applied to stored velocity only.
 };
 
 // Advances a single dry body on a fixed uniform MAC layout with complete quadratic supports.
-// Uses APIC/PIC, uncut stress quadrature, a stationary floor, and an optional translating flat platen.
+// Uses APIC deposits, PIC advection, uncut stress quadrature and a stationary floor with an optional platen.
+// When enabled, the stored velocity retains 0.99 times the blend times the incoming particle residual against
+// the pre-force grid. The supplied particle state seeds that history. Low-mass support uses PIC storage.
 // Snow grid normal constraints use face anchors. A continuous halfspace sweep constrains particle transport.
 // The force-acceleration denominator is floored at 1e-4 times the smallest particle mass for low-mass faces.
 // The bounded dry path uses no liquid pressure, cut support reconstruction, or body mixing.
