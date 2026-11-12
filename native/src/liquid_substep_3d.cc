@@ -1098,7 +1098,7 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
     STEP_TRY(owner.Gather(trial, quadratic));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
-    STEP_TRY(owner.Update(trial, duration, scene, options, backend, allow_owner_exchange));
+    STEP_TRY(owner.Update(trial, transaction.committed(), duration, scene, options, backend, allow_owner_exchange));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, duration));
     STEP_TRY(ValidateLiquidState3D(trial));
     return Enter(LiquidPhysicalStage3D::kAccept, duration);

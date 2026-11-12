@@ -12,6 +12,7 @@
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/viscosity.h"
 #include "graded_liquid_boundary_geometry_3d.h"
+#include "graded_liquid_wet_transition_3d.h"
 #include "liquid_remap_3d_internal.h"
 #include "mac_pressure_3d_system.h"
 
@@ -116,6 +117,7 @@ class AdaptiveLiquidStep3D {
   absl::Status Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr);
   absl::Status Update(
       LiquidState3D& trial,
+      const LiquidState3D& accepted,
       double duration,
       const LiquidSceneInputs3D& scene,
       const LiquidStepOptions3D& options,
@@ -125,6 +127,11 @@ class AdaptiveLiquidStep3D {
 
  private:
   AdaptiveLiquidStep3D(AdaptiveMacTopology3D topology, GradedMacTransfer3D transfer);
+  absl::StatusOr<GradedLiquidWetTransition3D> CertifyWetTransition(
+      const LiquidState3D& accepted,
+      const GradedLiquidWetTransitionRequest3D& request,
+      const LiquidSceneInputs3D& scene
+  ) const;
   absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> StageQuadraticTransfer(
       const LiquidState3D& state,
       const LiquidStepOptions3D& options,
@@ -156,6 +163,7 @@ class AdaptiveLiquidStep3D {
     std::vector<double> end_fluid_volumes_m3;
     // Stored only when certified air leaves require a sparse pressure graph.
     std::optional<FrozenGradedPlanarLiquidGeometry3D> sparse_geometry;
+    std::optional<GradedLiquidWetTransitionRequest3D> wet_transition;
   };
 
   AdaptiveMacTopology3D topology_;

@@ -30,6 +30,10 @@ struct GradedLiquidWetTransitionRequest3D {
   double end_liquid_plane_coordinate_m;  // Same normal as the start plane, linear motion in time.
 };
 
+// Derive the endpoint coordinate with the same binary64 reduction as the
+// frozen planar geometry. The checked geometry owner validates the result.
+TranslatingHalfspace3D EndGradedLiquidWetTransitionSolid3D(TranslatingHalfspace3D start_solid, double duration_s);
+
 struct GradedLiquidWetTransition3D {
   GradedLiquidWetTransitionRequest3D request;
   double end_time_s;  // Unsnapped endpoint in seconds; this result does not advance the clock.

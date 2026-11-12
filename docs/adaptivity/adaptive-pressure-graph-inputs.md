@@ -58,8 +58,22 @@ its own inventory accounting. Restore the accepted clock and canonical
 state, recreate the same resolved scene, and reapply the request with the
 attempt duration, canonical sources and optional global-slot exterior
 pressures. Each retry and restored continuation requires its own request.
-The current sparse runtime keeps wet and air membership fixed throughout
-the attempt.
+An omitted endpoint keeps wet and air membership fixed throughout the
+attempt. An explicit finite `end_surface_height_m` admits one changed leaf
+and one orthogonal particle crossing on the same canonical roster. The
+resolved horizontal plane supplies the start height. Pressure uses the
+start geometry. The post-pressure PIC path must be straight and contact-free
+and match the actual stable-ID particle update. Exact represented mass and
+volume transport uses the detached transition proof. The accepted inventory
+retains the momentum computed from the updated particle velocities.
+
+The publication clears pressure and coarsening age on the changed leaf and
+masks carriers without wet support at either endpoint. An attempt using
+the old resolved start plane is refused after membership changes. Replaying
+the transition from its start checkpoint requires the same explicit endpoint
+and start pressure fields. The wetting and drying replay fixtures bind
+their heights, duration and canonical source values to the checkpoint
+identity.
 
 Use the accepted carrier and per-leaf material owner from the same epoch
 when qualifying constituent transport. Current M4 cases cover particle-owned
