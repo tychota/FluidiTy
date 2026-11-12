@@ -4119,3 +4119,36 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Limit incoming tangent affine motion
+
+Retain the tangent fit from the bounded field and scale each
+tangent row before deposit by a common factor across its
+compatible samples. Compute the weighted mean offset on the
+same structural support as the deposit. This preserves the
+zero weighted mean of the affine contribution. Leave the
+normal component, translation, and final motion check in place.
+
+| Native case | Limit at the face speed | Limit at 99% of face speed |
+|---|---|---|
+| Coarse | Face-motion bound, step 289 | Unlabelled FailedPrecondition, step 316 |
+| Coarse half-step | Face-motion bound, step 1095 | Unlabelled FailedPrecondition, step 1110 |
+| Fine | Face-motion bound, step 304 | Unlabelled FailedPrecondition, step 330 |
+| Fine half-step | Unlabelled FailedPrecondition, step 1074 | Face-motion bound, step 1059 |
+
+Both default native and SM120 dry-scene targets pass at each
+setting. With the exact limit, the first fine nominal failure
+has zero stress and a deposited speed of 18 m/s against a
+computed bound of 17.999999999999744 m/s. The coarse nominal
+failure has zero stress and speed 18.011788 m/s on a face with
+1.157332e-10 kg. A one-percent margin moves the nominal failures
+past those faces but does not recover any full pile run.
+Both source controls were restored after linking.
+
+```powershell
+foreach ($bin in 'sand-affine-motion-limit-bin', 'sand-affine-limit-margin-bin') {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
