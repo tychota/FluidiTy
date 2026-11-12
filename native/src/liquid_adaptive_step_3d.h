@@ -11,6 +11,7 @@
 #include "fluidity/host/graded_quadratic_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/viscosity.h"
+#include "graded_liquid_boundary_geometry_3d.h"
 #include "liquid_remap_3d_internal.h"
 #include "mac_pressure_3d_system.h"
 
@@ -145,10 +146,13 @@ class AdaptiveLiquidStep3D {
   };
 
   struct PhysicalTrial3D {
+    LiquidClock3D accepted_clock;
     LiquidObstacle3D start_wall;
     LiquidObstacle3D end_wall;
     std::vector<std::uint8_t> wet_open_faces;
     std::vector<double> end_fluid_volumes_m3;
+    // Stored only when certified air leaves require a sparse pressure graph.
+    std::optional<FrozenGradedPlanarLiquidGeometry3D> sparse_geometry;
   };
 
   AdaptiveMacTopology3D topology_;
