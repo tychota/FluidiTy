@@ -35,6 +35,16 @@ bool AllowsAdaptiveQuadraticTransfer(const LiquidSceneInputs3D& scene) {
       && scene.constituent_materials.empty();
 }
 
+void ResetAdaptiveQuadraticBasis(LiquidParticleState3D& particle) {
+  if (!particle.quadratic_adaptive_transfer) {
+    return;
+  }
+  particle.quadratic_adaptive_transfer = false;
+  particle.velocity_slopes = {};
+  particle.affine_enabled = false;
+  particle.pic_initialized = false;
+}
+
 auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
 }
@@ -3430,6 +3440,16 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
   if (!prepared.ok()) {
     return prepared.status();
   }
+  // Topology/ownership changes can invalidate the old transfer geometry.
+  // A certified replacement starts on its new measured quadratic support.
+  const auto first_id = committed().next_particle_id;
+  for (auto& particle : prepared->particles.values()) {
+    if (certified_replacement_count != 0 && particle.id >= first_id) {
+      particle.quadratic_adaptive_transfer = true;
+    } else {
+      ResetAdaptiveQuadraticBasis(particle);
+    }
+  }
   auto owner = liquid_step_internal::AdaptiveLiquidStep3D::Create(*prepared, impl.scene, impl.options);
   if (!owner.ok()) {
     return owner.status();
@@ -3445,7 +3465,6 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
       .quadratic = std::nullopt,
   };
   if (certified_replacement_count != 0) {
-    const auto first_id = committed().next_particle_id;
     const auto next_id = candidate.state.next_particle_id;
     std::array<std::uint64_t, liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles> ids{};
     if (certified_replacement_count > ids.size() || next_id < first_id
@@ -3750,8 +3769,17 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   std::optional<liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D> quadratic;
+  const bool stored_basis = impl.adaptive
+      && std::ranges::any_of(committed().particles.values(), &LiquidParticleState3D::quadratic_adaptive_transfer);
   if (quadratic_particle_id.has_value()) {
     const auto prepared = impl.adaptive->PrepareQuadraticTransfer(committed(), impl.options, *quadratic_particle_id);
+    if (!prepared.ok()) {
+      return prepared.status();
+    }
+    quadratic = *prepared;
+  } else if (stored_basis && adaptive_replacement == nullptr && adaptive_physical == nullptr
+             && AllowsAdaptiveQuadraticTransfer(impl.scene)) {
+    const auto prepared = impl.adaptive->PrepareStoredQuadraticTransfer(committed(), impl.options);
     if (!prepared.ok()) {
       return prepared.status();
     }
@@ -3797,6 +3825,20 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   const auto* quadratic_transfer = quadratic ? &*quadratic : nullptr;
   if (adaptive_replacement != nullptr && adaptive_replacement->quadratic) {
     quadratic_transfer = &*adaptive_replacement->quadratic;
+  }
+  if (quadratic_transfer != nullptr) {
+    for (const auto& selection : quadratic_transfer->selections()) {
+      auto& particle = (*trial)->particles[selection.particle_ordinal];
+      if (!particle.quadratic_adaptive_transfer) {
+        particle.velocity_slopes = {};
+        particle.affine_enabled = false;
+        particle.quadratic_adaptive_transfer = true;
+      }
+    }
+  } else if (stored_basis && adaptive_replacement == nullptr) {
+    for (auto& particle : (*trial)->particles.values()) {
+      ResetAdaptiveQuadraticBasis(particle);
+    }
   }
   auto status = adaptive_owner != nullptr ? impl.ExecuteAdaptive(
                                                 *adaptive_owner,

@@ -515,8 +515,10 @@ absl::Status AdvanceCertifiedQuadraticFamily(
     return absl::DataLossError("accepted certified quadratic roster or topology differs");
   }
   for (std::uint64_t id = first_new_id; id < final.next_particle_id; ++id) {
-    if (std::ranges::find(final.particles.values(), id, &LiquidParticleState3D::id) == final.particles.values().end()) {
-      return absl::DataLossError("accepted certified quadratic replacement ID is absent");
+    const auto roster = final.particles.values();
+    const auto replacement = std::ranges::find(roster, id, &LiquidParticleState3D::id);
+    if (replacement == roster.end() || !replacement->quadratic_adaptive_transfer) {
+      return absl::DataLossError("accepted certified replacement lost its ID or quadratic basis");
     }
   }
   for (const std::uint64_t source_id : std::span(fixture.source_ids).first(fixture.source_count)) {
@@ -529,8 +531,7 @@ absl::Status AdvanceCertifiedQuadraticFamily(
   if (!published.ok()) {
     return published;
   }
-  // The authored rest seed permits an ordinary remainder without relying on
-  // a persisted quadratic basis policy.
+  // The ordinary remainder derives its basis from the accepted replacement roster.
   const auto remainder = scheduler.Attempt(0.02 - final.clock.time);
   if (!remainder.ok()) {
     return remainder.status();
@@ -550,21 +551,22 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   const bool merge = scenario == "quadratic-merge";
   const bool quadratic = merge || scenario == "quadratic-split";
   const bool exchange = scenario == "exchange";
+  const bool persistent = scenario == "quadratic-persistent";
   const auto family_scenario =
-      band || width || batch || physical || quadratic || exchange ? std::string_view{} : scenario;
-  const auto capacities = [&] {
-    if (quadratic) {
-      return test::QuadraticFamilyReplayFixture3D::kCapacities;
-    }
-    if (exchange) {
-      return LiquidStateCapacities3D{3, 0, 8, 36, 0};
-    }
-    return batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
-  }();
+      band || width || batch || physical || quadratic || exchange || persistent ? std::string_view{} : scenario;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   std::optional<test::QuadraticFamilyReplayFixture3D> quadratic_fixture;
+  std::uint64_t persistent_particle_id = 0;
   const auto authored = [&]() -> absl::Status {
+    if (persistent) {
+      const auto selected = test::PopulateGradedQuadraticTankFixture3D(state, scene);
+      if (!selected.ok()) {
+        return selected.status();
+      }
+      persistent_particle_id = *selected;
+      return absl::OkStatus();
+    }
     if (quadratic) {
       auto authored_quadratic = test::PopulateQuadraticFamilyReplayFixture3D(state, scene, merge);
       if (!authored_quadratic.ok()) {
@@ -587,6 +589,24 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!authored.ok()) {
     return authored;
   }
+  const auto capacities = [&] {
+    if (persistent) {
+      return LiquidStateCapacities3D{
+          state.particles.size(),
+          0,
+          state.adaptive_cells.size(),
+          state.adaptive_faces.size(),
+          0
+      };
+    }
+    if (quadratic) {
+      return test::QuadraticFamilyReplayFixture3D::kCapacities;
+    }
+    if (exchange) {
+      return LiquidStateCapacities3D{3, 0, 8, 36, 0};
+    }
+    return batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
+  }();
   if (scenario == "eos") {
     test::SetGradedTankEos3D(state, scene);
   }
@@ -611,8 +631,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_tag =
-      quadratic ? (merge ? 25 : 24) : (physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12))));
+  const std::uint8_t fixture_tag = persistent
+      ? 26
+      : (quadratic ? (merge ? 25 : 24) : (physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12)))));
   const std::uint8_t fixture_identity[] = {1, 3, fixture_tag};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
@@ -636,8 +657,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells =
-        quadratic ? state.adaptive_cells.size() : (exchange ? 8 : (batch ? 19 : (band || physical ? 5 : 12)));
+    const std::size_t expected_cells = (quadratic || persistent)
+        ? state.adaptive_cells.size()
+        : (exchange ? 8 : (batch ? 19 : (band || physical ? 5 : 12)));
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
@@ -654,6 +676,13 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (quadratic_fixture) {
       std::ranges::reverse(quadratic_fixture->closure);
       std::ranges::reverse(std::span(quadratic_fixture->source_ids).first(quadratic_fixture->source_count));
+    }
+    if (persistent) {
+      const auto roster = checkpoint->state.particles.values();
+      const auto selected = std::ranges::find(roster, persistent_particle_id, &LiquidParticleState3D::id);
+      if (selected == roster.end() || !selected->quadratic_adaptive_transfer) {
+        return absl::DataLossError("persistent replay checkpoint lost the accepted basis");
+      }
     }
     state = std::move(checkpoint->state);
   }
@@ -747,6 +776,23 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 
   if (!exchange && mode != "resume") {
     const auto refined = [&] {
+      if (persistent) {
+        constexpr double kDuration = 0.001;
+        const auto begun = scheduler->BeginFrame(kDuration);
+        if (!begun.ok()) {
+          return begun;
+        }
+        const auto selected =
+            scheduler->AttemptWithAdaptiveQuadraticTransfer(kDuration, state.clock.epoch, persistent_particle_id);
+        if (!selected.ok()) {
+          return selected.status();
+        }
+        if (selected->disposition != LiquidAttemptDisposition3D::kAccepted
+            || !scheduler->committed().particles[persistent_particle_id - 1].quadratic_adaptive_transfer) {
+          return absl::FailedPreconditionError("persistent replay did not publish its quadratic basis");
+        }
+        return scheduler->FinishFrame();
+      }
       if (quadratic) {
         return scheduler->AdvanceFrame(0.01);
       }
@@ -768,7 +814,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
     }
   }
-  if (width || batch || physical || quadratic) {
+  if (width || batch || physical || quadratic || persistent) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -792,6 +838,16 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 
   const auto continued = [&] {
+    if (persistent) {
+      const auto advanced = scheduler->AdvanceFrame(0.002);
+      if (!advanced.ok()) {
+        return advanced;
+      }
+      if (!scheduler->committed().particles[persistent_particle_id - 1].quadratic_adaptive_transfer) {
+        return absl::FailedPreconditionError("ordinary replay did not continue its accepted quadratic basis");
+      }
+      return absl::OkStatus();
+    }
     if (quadratic) {
       return AdvanceCertifiedQuadraticFamily(*scheduler, *quadratic_fixture, merge, check_device_epoch);
     }
@@ -826,7 +882,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!continued.ok()) {
     return continued;
   }
-  if (batch || physical || quadratic || exchange) {
+  if (batch || physical || quadratic || exchange || persistent) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -872,7 +928,7 @@ int main(int argc, char** argv) {
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
       && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "quadratic-split"
-      && scenario != "quadratic-merge" && scenario != "exchange") {
+      && scenario != "quadratic-merge" && scenario != "quadratic-persistent" && scenario != "exchange") {
     return 2;
   }
   const std::string_view backend = argv[1];

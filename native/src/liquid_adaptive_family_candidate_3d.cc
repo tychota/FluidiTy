@@ -247,6 +247,17 @@ absl::Status ApplyQuadraticResampling(
     if (std::ranges::find(request.particle_ids, particle.id) == request.particle_ids.end()) {
       continue;
     }
+    const std::array rows{
+        particle.velocity_slopes.x_row,
+        particle.velocity_slopes.y_row,
+        particle.velocity_slopes.z_row,
+    };
+    const bool has_affine_data = particle.affine_enabled && std::ranges::any_of(rows, [](Vec3 row) {
+                                   return row.x != 0 || row.y != 0 || row.z != 0;
+                                 });
+    if (has_affine_data && !particle.quadratic_adaptive_transfer) {
+      return absl::FailedPreconditionError("quadratic resampling requires accepted quadratic affine data");
+    }
     const auto source_leaf = source_location->ParticleLeafOrdinal(particle.world_position);
     if (!source_leaf.ok()) {
       return source_leaf.status();

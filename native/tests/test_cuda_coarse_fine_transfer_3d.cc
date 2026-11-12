@@ -310,6 +310,19 @@ TEST(CudaAdaptiveSimulate3D, GradedExplicitQuadraticRejectionPreservesDeviceEpoc
   ASSERT_TRUE(epoch->Readback(*readback).ok());
   EXPECT_EQ(*readback, scheduler->committed());
   EXPECT_EQ(readback->clock.epoch, state.clock.epoch + 1);
+
+  EXPECT_TRUE(readback->particles[*particle_id - 1].quadratic_adaptive_transfer);
+  const auto continued = scheduler->Attempt(0.0005);
+  ASSERT_TRUE(continued.ok()) << continued.status();
+  ASSERT_EQ(continued->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto next_epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(next_epoch.ok()) << next_epoch.status();
+  ASSERT_TRUE(next_epoch->Readback(*readback).ok());
+  EXPECT_EQ(*readback, scheduler->committed());
+  EXPECT_TRUE(readback->particles[*particle_id - 1].quadratic_adaptive_transfer);
+  EXPECT_EQ(readback->clock.epoch, state.clock.epoch + 2);
+
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
