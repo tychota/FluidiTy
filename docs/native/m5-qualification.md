@@ -3442,3 +3442,31 @@ foreach ($grid in 'coarse', 'fine') {
 The temporary budget instrumentation was restored after linking.
 All four traces reproduce the previous wall work values. Q-SAND
 remains open.
+
+### Interleave tangential stress and friction
+
+In the zero-phase Euler wall-face solver, apply half of the
+tangential stress impulse before each half-cap friction sweep.
+Keep the normal stress update, reconstructed deformation gather,
+and total friction caps fixed. The cut-stress diagnostic continues
+to pair the stress transpose with the final gathered field. It
+does not measure work separately for the two force kicks.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.750690° | 0.178511 m |
+| Coarse half-step | 40.977227° | 0.154051 m |
+| Fine | 31.571312° | 0.184764 m |
+| Fine half-step | 34.177652° | 0.179629 m |
+
+The fine nominal angle enters range and its radius remains high.
+The other three cases retain the same failed geometric checks.
+Vertical momentum residual stays below 2.2e-8 N·s. Source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-interleaved-stress-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
