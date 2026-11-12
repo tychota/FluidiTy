@@ -252,6 +252,43 @@ void MeasuredAttempt(
   EXPECT_EQ(disposition, expected);
   ExpectNoOwnershipCalls(before, backend.usage().arena_metrics);
 }
+TEST(CudaLiquidSubstep3D, PistonReactionMatchesCpuMovingFaceImpulse) {
+  auto device = CudaLiquidSubstepBackend3D::Create(Options().capacities, 0);
+  ASSERT_TRUE(device.ok()) << device.status();
+  std::array particles{
+      LiquidParticleState3D{.world_position = {0.0, 0.0, 0.5}, .mass = 2.0},
+      LiquidParticleState3D{.world_position = {1.0, 0.5, 0.5}, .mass = 3.0},
+  };
+  auto cpu_particles = particles;
+  const std::array gathers{
+      LiquidBoundaryParticleGather3D{.new_pic_velocity = {-0.125, -0.125, 0.0}},
+      LiquidBoundaryParticleGather3D{.new_pic_velocity = {0.125, 0.0, 0.0}},
+  };
+  constexpr std::array distances{-1.0, -1.0};
+  const LiquidParticleUpdateInputs3D inputs{
+      .gathered = gathers,
+      .liquid_distances = distances,
+      .obstacle = AxisAlignedLiquidTank3D{0.0, 1.0, 0.0, 0.0, 1.0, 0.25},
+      .cell_width = 1.0,
+      .step_duration = 0.125,
+  };
+  const auto cpu = UpdateCpuLiquidParticlesWithPistonReaction3D(inputs, cpu_particles);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto gpu = device->UpdateParticlesWithPistonReaction(inputs, particles);
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  EXPECT_DOUBLE_EQ(*gpu, -0.75);
+  EXPECT_DOUBLE_EQ(*gpu, *cpu);
+  EXPECT_EQ(particles, cpu_particles);
+
+  auto rejected = particles;
+  rejected[0].world_position.x = 0.0;
+  rejected[1].world_position.x = 1.125;
+  const auto before = rejected;
+  const auto refused = device->UpdateParticlesWithPistonReaction(inputs, rejected);
+  EXPECT_EQ(refused.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(rejected, before);
+}
+
 TEST(CudaLiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wet = wetted_piston_pressure_test;
