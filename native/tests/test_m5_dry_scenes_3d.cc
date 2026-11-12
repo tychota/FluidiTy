@@ -488,10 +488,16 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
 #else
   const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
+  // The stationary normal ghost gives L_yy = -0.5/s for this incoming
+  // uniform field. Sliding with friction 0.5 gives post-impact L_xy = -0.25/s.
+  // At zero trace, the cone return retains only the simple-shear polar rotation.
+  const double trial_shear = compatible_floor ? -0.0025 : 0;
+  const double expected_rotation_xy = trial_shear / std::hypot(2.0, trial_shear);
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
       && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
-      && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
+      && budget.cut_stress_work == 0 && budget.granular_projected_particles == (compatible_floor ? 1U : 0U)
+      && std::abs(particle.elastic_deformation.x_row.y - expected_rotation_xy) < 1e-10
       && budget.granular_plastic_volume_changes == 0;
 }
 
