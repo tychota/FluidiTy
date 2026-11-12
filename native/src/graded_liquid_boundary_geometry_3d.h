@@ -60,6 +60,11 @@ class FrozenGradedPlanarLiquidGeometry3D {
   double step_duration_s() const {
     return step_duration_s_;
   }
+  // Reserved dynamic bytes owned by this frozen layout and its measured records.
+  std::size_t reserved_bytes() const {
+    return topology_.reserved_bytes() + leaves_.capacity() * sizeof(FrozenGradedLiquidLeaf3D)
+        + subfaces_.capacity() * sizeof(FrozenGradedLiquidSubface3D);
+  }
 
  private:
   friend absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeometry3D(
@@ -123,12 +128,20 @@ struct GradedLiquidPressureInputs3D {
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces;
 };
 
+enum class GradedLiquidPressureDomain3D {
+  kAllWet,
+  kKnownAir
+};
+
 // Compose canonical pressure input rows without solving. This lets a scheduler
 // freeze aperture and wall terms before adding its trial predictor velocities.
+// kKnownAir allows geometrically certified zero-volume leaves in the staging
+// arrays. Pass them to the sparse graph preparer for occupancy admission.
 absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
-    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields,
+    GradedLiquidPressureDomain3D domain = GradedLiquidPressureDomain3D::kAllWet
 );
 
 // Compose explicit pressure fields with frozen physical measures and canonical
@@ -165,6 +178,17 @@ absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
     std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
+// Prepare the same subset from canonical inputs produced by Compose for this
+// geometry. The caller may stage predictor velocities and warm-start pressure
+// on the wet domain before assembly. The sparse admission and graph checks
+// apply to the completed fields, with no change to the borrowed inputs.
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubsetFromInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
+    std::span<const MacPressureCell3D> cell_inputs,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subface_inputs
 );
 
 }  // namespace fluidity
