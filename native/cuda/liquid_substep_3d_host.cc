@@ -199,16 +199,14 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
           },
       .project_viscous =
           [](void* context,
-             SparseMacGridView3D grid,
-             double step_duration,
+             const LiquidBoundaryGeometryViewInputs3D& geometry,
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
              std::span<const double> cell_dynamic_viscosity,
              MacPressureSolverOptions3D options) {
             auto& arena = static_cast<Impl*>(context)->arena;
-            return liquid_step_internal::ProjectFullCellViscosity(
-                grid,
-                step_duration,
+            return liquid_step_internal::ProjectUniformViscosity(
+                geometry,
                 problem,
                 dynamic_viscosity,
                 cell_dynamic_viscosity,

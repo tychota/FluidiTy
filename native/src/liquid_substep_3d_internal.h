@@ -13,12 +13,12 @@ using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<MacViscousPres
     MacPressureSolverOptions3D
 )>;
 
-// Builds full-cell strain rows and runs the chosen coupled pressure backend.
-// This geometry admits full or sealed faces with natural static-wall slip.
-// Partial cells and faces return Unimplemented. Errors carry no projection.
-absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
-    SparseMacGridView3D grid,
-    double step_duration,
+// Builds strain rows from the same geometry as pressure, then runs the
+// coupled backend. Admits full cells with full or sealed faces, and cut
+// free surfaces with connected shear support and no obstacle. Solid cuts
+// return Unimplemented. Errors carry no projection.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformViscosity(
+    const LiquidBoundaryGeometryViewInputs3D& geometry,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,
     std::span<const double> cell_dynamic_viscosity,

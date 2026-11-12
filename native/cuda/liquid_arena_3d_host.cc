@@ -166,13 +166,16 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
   const auto index_count = count_sum(capacity.cells, 1 + 3 * level_count, capacity.faces, 4 * level_count, level_count);
   const auto coefficient_count = count_sum(capacity.cells, 34 * level_count, capacity.faces, level_count, 0);
   const auto pressure_output_count = count_sum(capacity.cells, 4, capacity.faces, 1, 0);
-  // The mutually exclusive full-cell viscosity path needs three two-term
-  // normal and at most three four-term shear rows per pressure cell.
+  // The mutually exclusive viscosity path needs three two-term normal rows
+  // and at most one four-term row per incident cut edge (twelve per cell).
+  constexpr std::size_t kNormalRowsPerCell = 3;
+  constexpr std::size_t kShearRowsPerCell = 12;
   static_assert(sizeof(cuda_internal::PressureLink3D) >= sizeof(cuda_internal::ViscousVelocityFace3D));
   static_assert(sizeof(cuda_internal::PressureState3D) >= sizeof(cuda_internal::ViscousVelocityState3D));
   static_assert(sizeof(cuda_internal::ViscousVelocityTerm3D) == 2 * sizeof(double));
-  const auto viscous_index_count = count_sum(capacity.cells, 6, 0, 1, 1);
-  const auto viscous_coefficient_count = count_sum(capacity.cells, 36, 0, 1, 0);
+  const auto viscous_index_count = count_sum(capacity.cells, kNormalRowsPerCell + kShearRowsPerCell, 0, 1, 1);
+  const auto viscous_coefficient_count =
+      count_sum(capacity.cells, 2 * (2 * kNormalRowsPerCell + 4 * kShearRowsPerCell), 0, 1, 0);
   const auto coarse_scratch_count = count_sum(capacity.cells, 3 * level_count, 0, 1, 0);
   const auto viscous_scratch_count = count_sum(capacity.faces, 5, 0, 1, 0);
   if (!index_count.ok() || !coefficient_count.ok() || !pressure_output_count.ok() || !viscous_index_count.ok()

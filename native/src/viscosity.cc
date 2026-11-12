@@ -752,7 +752,8 @@ namespace {
 absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
     const SparseMacGridView3D& grid,
     std::span<const MacViscosityCell3D> cells,
-    std::span<const std::array<double, 8>> liquid_octant_volumes
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    bool include_complete_shear = true
 ) {
   std::vector<MacStrainRow3D> rows;
   const auto maximum_rows = CheckedExtentProduct(cells.size(), 6);
@@ -836,6 +837,9 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
     }
   }
 
+  if (!include_complete_shear) {
+    return rows;
+  }
   for (const auto& cell : cells) {
     for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
       const auto first_index = NextViscosityCell(cell.cell_index, first_axis);
@@ -1023,7 +1027,10 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary
     std::span<const std::array<double, 8>> liquid_octant_volumes,
     std::span<const MacPressureFace3D> pressure_faces
 ) {
-  auto rows = AssembleCutCellMacStrain3D(grid, cells, liquid_octant_volumes);
+  if (liquid_octant_volumes.size() != cells.size()) {
+    return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
+  }
+  auto rows = AssembleMacStrain(grid, cells, liquid_octant_volumes, false);
   if (!rows.ok() || cells.empty()) {
     return rows;
   }
@@ -1039,6 +1046,13 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary
       return absl::InvalidArgumentError("cut strain pressure faces must be in unique owned slot order");
     }
     slots.push_back(*slot);
+  }
+  for (const auto& row : *rows) {
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      if (!std::ranges::binary_search(slots, term.face_slot)) {
+        return absl::FailedPreconditionError("cut strain normal face has no pressure owner");
+      }
+    }
   }
   const auto find_face = [&](FaceIndex3D index) -> const MacPressureFace3D* {
     const auto slot = grid.FaceSlot(index);
@@ -1120,9 +1134,6 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary
           };
           if (!CutEdgeLiquidIsConnected(liquid_quadrants, separating_faces, find_face)) {
             return absl::FailedPreconditionError("cut shear edge spans disconnected liquid quadrants");
-          }
-          if (std::ranges::find(incident_cells, nullptr) == incident_cells.end()) {
-            continue;
           }
           const auto first =
               FindCutBoundaryDerivative(cells, support_cells, first_axis, second_axis, first_cell, find_face);

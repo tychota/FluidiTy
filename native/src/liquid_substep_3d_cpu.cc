@@ -3,6 +3,8 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <numeric>
+#include <tuple>
 
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
@@ -275,18 +277,74 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
 
 }  // namespace
 
-absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFullCellViscosity(
-    SparseMacGridView3D grid,
-    double step_duration,
+namespace {
+constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
+
+absl::StatusOr<std::vector<std::array<double, 8>>> CutViscosityOctants(
+    const LiquidBoundaryGeometryViewInputs3D& geometry,
+    std::span<const MacPressureCell3D> pressure_cells,
+    double full_volume
+) {
+  const auto corner_key = [](CellCornerIndex3D index) {
+    return std::tuple(index.z, index.y, index.x);
+  };
+  std::vector<std::array<double, 8>> volumes;
+  volumes.reserve(pressure_cells.size());
+  for (const auto& cell : pressure_cells) {
+    if (std::abs(cell.fluid_volume / full_volume - 1.0) <= kFullCellRoundoff) {
+      auto& full_octants = volumes.emplace_back();
+      full_octants.fill(full_volume / 8.0);
+      continue;
+    }
+    const auto index = cell.cell_index;
+    constexpr auto kMaxIndex = std::numeric_limits<std::int32_t>::max();
+    if (index.x == kMaxIndex || index.y == kMaxIndex || index.z == kMaxIndex) {
+      return absl::OutOfRangeError("cut viscosity cell has an unrepresentable corner");
+    }
+    std::array<double, 8> distances{};
+    for (int corner = 0; corner < 8; ++corner) {
+      const CellCornerIndex3D corner_index{
+          index.x + (corner & 1),
+          index.y + ((corner >> 1) & 1),
+          index.z + ((corner >> 2) & 1),
+      };
+      const auto key = corner_key(corner_index);
+      const auto found = std::ranges::lower_bound(geometry.corner_distances, key, {}, [&](const auto& sample) {
+        return corner_key(sample.corner_index);
+      });
+      if (found == geometry.corner_distances.end() || corner_key(found->corner_index) != key) {
+        return absl::FailedPreconditionError("cut viscosity cell lacks its frozen corner samples");
+      }
+      distances[corner] = found->signed_distance;
+    }
+    const auto octants = MeasureLiquidCellOctants3D(geometry.mac_grid.geometry(), index, geometry.obstacle, distances);
+    if (!octants.ok()) {
+      return octants.status();
+    }
+    const double measured_volume = std::accumulate(octants->begin(), octants->end(), 0.0);
+    constexpr double kPartitionRoundoff = 512 * std::numeric_limits<double>::epsilon();
+    if (measured_volume <= 0.0 || std::abs(measured_volume / cell.fluid_volume - 1.0) > kPartitionRoundoff) {
+      return absl::FailedPreconditionError("cut strain quadratures differ from the frozen pressure volume");
+    }
+    volumes.push_back(*octants);
+  }
+  return volumes;
+}
+}  // namespace
+
+absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUniformViscosity(
+    const LiquidBoundaryGeometryViewInputs3D& geometry,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,
     std::span<const double> cell_dynamic_viscosity,
     MacPressureSolverOptions3D options,
     ProjectViscousPressure3D project
 ) {
+  const auto grid = geometry.mac_grid;
   const double width = grid.geometry().cell_width;
   const double full_area = width * width;
   const double full_volume = full_area * width;
+  bool uses_cut_cells = false;
   std::vector<MacViscosityCell3D> material;
   material.reserve(problem.cells.size());
   if (!cell_dynamic_viscosity.empty() && cell_dynamic_viscosity.size() != problem.cells.size()) {
@@ -295,19 +353,27 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFull
   for (std::size_t index = 0; index < problem.cells.size(); ++index) {
     const auto& cell = problem.cells[index];
     // The cut-volume accumulator sums tetrahedra even for full cells.
-    constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
-    if (std::abs(cell.fluid_volume / full_volume - 1.0) > kFullCellRoundoff) {
-      return absl::UnimplementedError("viscous substep requires full-cell strain quadratures");
-    }
+    uses_cut_cells |= std::abs(cell.fluid_volume / full_volume - 1.0) > kFullCellRoundoff;
     const double viscosity = cell_dynamic_viscosity.empty() ? dynamic_viscosity : cell_dynamic_viscosity[index];
     material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = viscosity});
   }
-  for (const auto& face : problem.faces) {
-    if (face.open_area != 0.0 && face.open_area != full_area) {
-      return absl::UnimplementedError("viscous substep requires full-area or sealed faces");
-    }
+  const bool uses_cut_faces = std::ranges::any_of(problem.faces, [&](const auto& face) {
+    return face.open_area != 0.0 && face.open_area != full_area;
+  });
+  if (uses_cut_faces || (uses_cut_cells && !std::holds_alternative<std::monostate>(geometry.obstacle))) {
+    return absl::UnimplementedError("cut solid boundaries require viscous wall strain closure");
   }
-  const auto strain = AssembleFullCellMacStrain3D(grid, material);
+  const auto assemble_strain = [&]() -> absl::StatusOr<std::vector<MacStrainRow3D>> {
+    if (!uses_cut_cells) {
+      return AssembleFullCellMacStrain3D(grid, material);
+    }
+    const auto volumes = CutViscosityOctants(geometry, problem.cells, full_volume);
+    if (!volumes.ok()) {
+      return volumes.status();
+    }
+    return AssembleCutCellMacStrainWithBoundary3D(grid, material, *volumes, problem.faces);
+  };
+  const auto strain = assemble_strain();
   if (!strain.ok()) {
     return strain.status();
   }
@@ -316,7 +382,7 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFull
   if (!owning_grid.ok()) {
     return owning_grid.status();
   }
-  return project({*owning_grid, step_duration, problem.cells, problem.faces}, *strain, options);
+  return project({*owning_grid, geometry.step_duration, problem.cells, problem.faces}, *strain, options);
 }
 
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
@@ -449,15 +515,13 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
           },
       .project_viscous =
           [](void*,
-             SparseMacGridView3D grid,
-             double step_duration,
+             const LiquidBoundaryGeometryViewInputs3D& geometry,
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
              std::span<const double> cell_dynamic_viscosity,
              MacPressureSolverOptions3D options) {
-            return liquid_step_internal::ProjectFullCellViscosity(
-                grid,
-                step_duration,
+            return liquid_step_internal::ProjectUniformViscosity(
+                geometry,
                 problem,
                 dynamic_viscosity,
                 cell_dynamic_viscosity,

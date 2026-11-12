@@ -134,16 +134,14 @@ TEST(LiquidSubstep3D, SamplesResolvedConstituentViscosityInCoupledProjection) {
   auto backend = CpuLiquidSubstepBackend3D();
   backend.context = &sampled;
   backend.project_viscous = [](void* context,
-                               SparseMacGridView3D grid,
-                               double duration,
+                               const LiquidBoundaryGeometryViewInputs3D& geometry,
                                const LiquidPressureProblemView3D& problem,
                                double viscosity,
                                std::span<const double> cell_viscosity,
                                MacPressureSolverOptions3D controls) {
     auto& observed = *static_cast<std::vector<double>*>(context);
     observed.assign(cell_viscosity.begin(), cell_viscosity.end());
-    return CpuLiquidSubstepBackend3D()
-        .project_viscous(nullptr, grid, duration, problem, viscosity, cell_viscosity, controls);
+    return CpuLiquidSubstepBackend3D().project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls);
   };
   auto mixture = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
   ASSERT_TRUE(mixture.ok()) << mixture.status();
@@ -209,8 +207,7 @@ TEST(LiquidSubstep3D, CouplesImmiscibleViscosityAcrossPlanarTankCells) {
     return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
   };
   backend.project_viscous = [](void* context,
-                               SparseMacGridView3D grid,
-                               double duration,
+                               const LiquidBoundaryGeometryViewInputs3D& geometry,
                                const LiquidPressureProblemView3D& problem,
                                double viscosity,
                                std::span<const double> cell_viscosity,
@@ -220,8 +217,7 @@ TEST(LiquidSubstep3D, CouplesImmiscibleViscosityAcrossPlanarTankCells) {
     for (std::size_t index = 0; index < cell_viscosity.size(); ++index) {
       EXPECT_DOUBLE_EQ(cell_viscosity[index], problem.cells[index].cell_index.x == 2 ? 40.0 : 120.0);
     }
-    return CpuLiquidSubstepBackend3D()
-        .project_viscous(nullptr, grid, duration, problem, viscosity, cell_viscosity, controls);
+    return CpuLiquidSubstepBackend3D().project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls);
   };
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
@@ -1524,6 +1520,22 @@ TEST(LiquidSubstep3D, AnalyticSpherePreservesExactRestPressureAtBothResolutions)
     EXPECT_EQ(audit.incorrect_pressures, 0);
     EXPECT_EQ(audit.pressure_iterations, 0);
     EXPECT_DOUBLE_EQ(audit.maximum_corrected_speed, 0);
+    scene.dynamic_viscosity = 1.0;
+    auto viscous = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(viscous.ok()) << viscous.status();
+    const auto viscous_status = viscous->AdvanceFrame(1.0 / 120);
+    ASSERT_TRUE(viscous_status.ok()) << viscous_status;
+    for (const auto& cell : viscous->committed().cells.values()) {
+      EXPECT_NEAR(cell.previous_pressure, 19.0, 1e-3);
+    }
+    for (const auto& particle : viscous->committed().particles.values()) {
+      const auto velocity = particle.world_velocity;
+      EXPECT_LT(std::hypot(velocity.x, velocity.y, velocity.z), 1e-5);
+    }
+    const auto& accepted = viscous->diagnostics().accepted_measurement;
+    ASSERT_TRUE(accepted.has_value());
+    ASSERT_TRUE(accepted->viscous_max_momentum_residual_kg_m_per_s.has_value());
+    EXPECT_LT(*accepted->viscous_max_momentum_residual_kg_m_per_s, 1e-5);
   }
 }
 

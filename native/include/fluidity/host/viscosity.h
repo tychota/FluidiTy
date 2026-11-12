@@ -92,8 +92,8 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
     std::span<const std::array<double, 8>> liquid_octant_volumes
 );
 
-// Also assembles positive-volume incomplete edge rows. For each derivative,
-// selects the nearest axis-aligned face pair with a supporting open pressure
+// Assembles normal rows and positive-weight edge rows on the pressure graph.
+// Each shear derivative selects the nearest axis-aligned face pair with an open
 // link from an incident cell. A one-sided difference uses the same h spacing,
 // reproducing affine fields. Supply the exact incident pressure-face union in
 // owned slot order. Unsupported positive-weight edges return FailedPrecondition.

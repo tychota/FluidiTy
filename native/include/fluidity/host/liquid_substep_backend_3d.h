@@ -180,8 +180,7 @@ struct LiquidSubstepBackend3D {
   // the scheduler rejects the attempt without publishing state.
   using ProjectViscous = absl::StatusOr<MacViscousPressureProjection3D>(
       void* context,
-      SparseMacGridView3D grid,
-      double step_duration,
+      const LiquidBoundaryGeometryViewInputs3D& geometry,
       const LiquidPressureProblemView3D& problem,
       double dynamic_viscosity,
       std::span<const double> cell_dynamic_viscosity,

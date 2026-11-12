@@ -1102,8 +1102,7 @@ struct LiquidSubstepScheduler3D::Impl {
       } else {
         auto result = backend.project_viscous(
             backend.context,
-            grid,
-            step_duration,
+            geometry_inputs,
             pressure_problem,
             scene.dynamic_viscosity,
             cell_dynamic_viscosity,
