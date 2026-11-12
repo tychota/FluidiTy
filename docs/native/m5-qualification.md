@@ -1486,6 +1486,16 @@ transfer disabled and carries that state through acceptance and checkpoint
 replay on both backends. A pressure row whose committed cell is marked as
 air rejects before the trial begins, preserving the occupancy and clock.
 
+The shared plastic binding validator checks material parameters at unit
+elastic stretch before examining the particle payload. This also checks
+a resolved body with no particles. Native and CUDA checkpoint tests reject
+an invalid snow compression limit on empty payload encode and decode, with
+the encode builder unchanged. The current resolved liquid scene codec has
+no plastic body table. The bake calls the liquid scheduler and writes
+liquid checkpoints, so a production mixed scene still needs to supply the
+validated bindings and route joint acceptance and persistence through that
+entry point.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

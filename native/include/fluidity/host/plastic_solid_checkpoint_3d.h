@@ -29,6 +29,11 @@ struct PlasticSolidCheckpointBinding3D {
   DrySolidMaterial3D material;
 };
 
+// Validates resolved material parameters even for bodies with no particles.
+// Body IDs must be strictly increasing and material IDs must be nonzero.
+// Invalid identities or constitutive parameters return InvalidArgument.
+absl::Status ValidatePlasticSolidCheckpointBindings3D(std::span<const PlasticSolidCheckpointBinding3D> bindings);
+
 // Validates a complete plastic payload in globally increasing particle ID order
 // against bindings in increasing body ID order. IDs must be nonzero. Each
 // record must reference its body's resolved material. Invalid IDs, ordering,
