@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -13,6 +14,8 @@
 
 namespace fluidity {
 
+struct LiquidAdaptiveCellState3D;
+
 struct GradedLiquidPlanarSurface3D {
   Vec3 unit_normal;  // Outward from liquid; liquid is n dot x < plane_coordinate_m.
   double plane_coordinate_m;  // World meters at the freeze time.
@@ -22,6 +25,7 @@ struct FrozenGradedLiquidLeaf3D {
   Vec3 world_lower_m;
   Vec3 world_upper_m;
   double fluid_volume_m3;  // Intersection of liquid and nonsolid.
+  bool known_air;  // Entire leaf is strictly nonsolid and on the dry side of the liquid plane.
 };
 
 struct FrozenGradedLiquidSubface3D {
@@ -132,6 +136,28 @@ absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureIn
 // The frozen geometry and inputs are unchanged, with no graph on failure.
 absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
+struct GradedWetPressureSubset3D {
+  pressure_internal::PreparedMacPressureSystem3D system;
+  // Maps compact pressure row ordinals to canonical accepted leaf ordinals.
+  std::vector<std::size_t> leaf_ordinals;
+};
+
+// Prepare a positive-volume pressure subset on the fixed accepted leaf roster.
+// Supply validated accepted leaf records whose inventory accounts for all
+// resident material. Field spans retain canonical leaf and global subface
+// order, and returned links retain global face slots. A dry leaf must already
+// be accepted empty air and be geometrically certified. Wetting, drying,
+// unsupported occupancy, an open wet/air interface, and nonempty fields for
+// omitted rows or faces return FailedPrecondition. Inconsistent extents or
+// keys return InvalidArgument.
+// Geometry and graph errors propagate. Inputs remain unchanged on failure.
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
 );

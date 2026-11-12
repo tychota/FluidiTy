@@ -12,8 +12,11 @@
 #include <vector>
 
 #include "../cuda/liquid_pressure_stage_3d.h"
+#include "../src/graded_liquid_boundary_geometry_3d.h"
 #include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
+#include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
 #include "mac_pressure_acoustic_cases.h"
@@ -176,6 +179,115 @@ TEST(CudaMacPressure3D, CompliantPistonConvergesToEosCompression) {
       }
   );
   RecordProperty("piston_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, SparseWetCoarseFineSubsetPreservesGlobalSlots) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  constexpr std::array keys{AdaptiveMacCellKey3D{{-2, -2, 0}, 1}, AdaptiveMacCellKey3D{{-2, 0, 0}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_EQ(ownership->interior_face_slots.size(), 1);
+  const std::size_t shared_slot = ownership->interior_face_slots[0];
+  bool observed_sparse_outlet = false;
+  for (const std::size_t wet_leaf : {std::size_t{0}, std::size_t{1}}) {
+    SCOPED_TRACE(wet_leaf);
+    const auto geometry = FreezeGradedPlanarLiquidGeometry3D(
+        *topology,
+        {},
+        {.unit_normal = {0, 1, 0}, .start_plane_coordinate = -10},
+        {.unit_normal = {0, wet_leaf == 0 ? 1.0 : -1.0, 0}, .plane_coordinate_m = 0},
+        0.25
+    );
+    ASSERT_TRUE(geometry.ok()) << geometry.status();
+    std::array<LiquidAdaptiveCellState3D, 2> accepted{{
+        {.key = keys[0], .occupancy = LiquidCellOccupancy3D::kAir},
+        {.key = keys[1], .occupancy = LiquidCellOccupancy3D::kAir},
+    }};
+    accepted[wet_leaf].occupancy = LiquidCellOccupancy3D::kLiquid;
+    accepted[wet_leaf].inventory = {.mass_kg = 1, .reference_volume_m3 = 1, .current_volume_m3 = 1};
+    std::array<GradedLiquidPressureCellFields3D, 2> cells{};
+    cells[wet_leaf].target_divergence_s_inv = 0.125;
+    std::vector<GradedLiquidPressureSubfaceFields3D> faces(geometry->subfaces().size());
+    const auto outlet = std::ranges::find_if(ownership->exterior_faces, [&](const auto& face) {
+      return face.cell_ordinal == wet_leaf && face.face_index.axis == FaceNormalAxis::kX && !face.cell_is_tail;
+    });
+    ASSERT_NE(outlet, ownership->exterior_faces.end());
+    faces[outlet->face_slot] = {
+        .inverse_density_m3_per_kg = 1,
+        .predicted_normal_velocity_m_per_s = 0.5,
+        .exterior_pressure = GradedLiquidPressureExterior3D{.pressure_pa = 2, .distance_m = 0.5},
+    };
+    const auto subset = PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, faces);
+    ASSERT_TRUE(subset.ok()) << subset.status();
+    ASSERT_EQ(subset->leaf_ordinals, std::vector<std::size_t>{wet_leaf});
+    const auto& system = subset->system;
+    const auto links = system.links();
+    ASSERT_LT(links.size(), faces.size());
+    auto cpu_workspace = MacPressureWorkspace3D::Create(system.cells().size(), links.size());
+    ASSERT_TRUE(cpu_workspace.ok()) << cpu_workspace.status();
+    const auto cpu = cpu_workspace->ProjectPrepared(system);
+    ASSERT_TRUE(cpu.ok()) << cpu.status();
+    const auto cuda = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+    ASSERT_TRUE(cuda.ok()) << cuda.status();
+    ExpectDeviceAndMeasurement(cuda->measurement);
+    EXPECT_GT(cuda->projection.diagnostics.iteration_count, 0);
+    ASSERT_EQ(cuda->projection.cell_pressures.size(), 1);
+    const double pressure_error = std::abs(cuda->projection.cell_pressures[0] - cpu->cell_pressures[0]);
+    EXPECT_LE(pressure_error, 2e-5);
+    EXPECT_LE(cuda->projection.diagnostics.max_cell_constraint_defect, 2e-5);
+    ASSERT_EQ(cuda->projection.corrected_face_velocities.size(), links.size());
+
+    std::vector<double> global_velocities(faces.size(), std::numeric_limits<double>::quiet_NaN());
+    double maximum_velocity_error = 0;
+    for (std::size_t link_ordinal = 0; link_ordinal < links.size(); ++link_ordinal) {
+      const auto& link = links[link_ordinal];
+      ASSERT_LT(link.face_slot, global_velocities.size());
+      EXPECT_TRUE(std::isnan(global_velocities[link.face_slot]));
+      const double cuda_velocity = cuda->projection.corrected_face_velocities[link_ordinal];
+      global_velocities[link.face_slot] = cuda_velocity;
+      maximum_velocity_error =
+          std::max(maximum_velocity_error, std::abs(cuda_velocity - cpu->corrected_face_velocities[link_ordinal]));
+      if (link.face_slot == shared_slot) {
+        EXPECT_EQ(link.tail_cell_ordinal.has_value(), wet_leaf == 0);
+        EXPECT_EQ(link.head_cell_ordinal.has_value(), wet_leaf == 1);
+        EXPECT_DOUBLE_EQ(link.open_area, 0);
+      }
+      if (link.face_slot == outlet->face_slot) {
+        observed_sparse_outlet |= link_ordinal != link.face_slot;
+      }
+    }
+    EXPECT_LE(maximum_velocity_error, 2e-5);
+    const double expected_outlet_flux = wet_leaf == 0 ? -1.0 : -0.125;
+    const double expected_pressure = wet_leaf == 0 ? 3.5 : 3.25;
+    EXPECT_NEAR(cuda->projection.cell_pressures[0], expected_pressure, 2e-5);
+    EXPECT_NEAR(global_velocities[outlet->face_slot] * outlet->face_area, expected_outlet_flux, 2e-5);
+    EXPECT_DOUBLE_EQ(global_velocities[shared_slot], 0);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            global_velocities,
+            [](double velocity) {
+              return std::isfinite(velocity);
+            }
+        ),
+        links.size()
+    );
+    for (const auto& exterior : ownership->exterior_faces) {
+      if (exterior.cell_ordinal != wet_leaf) {
+        EXPECT_TRUE(std::isnan(global_velocities[exterior.face_slot]));
+      }
+    }
+    std::cout << "wet_leaf=" << wet_leaf << " global_slots=" << faces.size() << " pressure_links=" << links.size()
+              << " shared_slot=" << shared_slot << " outlet_slot=" << outlet->face_slot
+              << " iterations=" << cuda->projection.diagnostics.iteration_count
+              << " pressure_pa=" << cuda->projection.cell_pressures[0]
+              << " outlet_flux_m3_per_s=" << global_velocities[outlet->face_slot] * outlet->face_area
+              << " max_pressure_error_pa=" << pressure_error << " max_velocity_error_m_per_s=" << maximum_velocity_error
+              << " max_defect_per_s=" << cuda->projection.diagnostics.max_cell_constraint_defect << '\n';
+    Receipt("sparse_wet_coarse_fine_pressure", cuda->measurement);
+  }
+  EXPECT_TRUE(observed_sparse_outlet);
 }
 
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {

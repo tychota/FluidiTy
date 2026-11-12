@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../src/graded_liquid_boundary_geometry_3d.h"
+#include "fluidity/host/liquid_state_3d.h"
 #include "gtest/gtest.h"
 
 namespace fluidity {
@@ -70,6 +71,103 @@ TEST(GradedLiquidBoundaryGeometry3D, ClipsCanonicalSignedCoarseFineWorldSubfaces
       PrepareGradedPlanarLiquidPressure3D(*geometry, cells, faces).status().code(),
       absl::StatusCode::kFailedPrecondition
   );
+}
+
+TEST(GradedLiquidBoundaryGeometry3D, AdmitsKnownAirOutsideSignedCoarseFinePressureSubset) {
+  constexpr std::array keys{AdaptiveMacCellKey3D{{-2, -2, 0}, 1}, AdaptiveMacCellKey3D{{-2, 0, 0}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto freeze = [&](double liquid_height, double wall_height, double outward_y = 1) {
+    return FreezeGradedPlanarLiquidGeometry3D(
+        *topology,
+        {},
+        {.unit_normal = {0, 1, 0}, .start_plane_coordinate = wall_height},
+        {.unit_normal = {0, outward_y, 0}, .plane_coordinate_m = liquid_height},
+        0.25
+    );
+  };
+  const auto geometry = freeze(0, -10);
+  ASSERT_TRUE(geometry.ok()) << geometry.status();
+  ASSERT_FALSE(geometry->leaves()[0].known_air);
+  ASSERT_TRUE(geometry->leaves()[1].known_air);
+  std::array<LiquidAdaptiveCellState3D, 2> accepted{{
+      {.key = keys[0], .inventory = {.mass_kg = 1, .reference_volume_m3 = 1, .current_volume_m3 = 1}},
+      {.key = keys[1], .occupancy = LiquidCellOccupancy3D::kAir},
+  }};
+  std::array<GradedLiquidPressureCellFields3D, 2> cells{};
+  const std::vector<GradedLiquidPressureSubfaceFields3D> faces(geometry->subfaces().size());
+  const auto subset = PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, faces);
+  ASSERT_TRUE(subset.ok()) << subset.status();
+  EXPECT_EQ(subset->leaf_ordinals, std::vector<std::size_t>{0});
+  ASSERT_EQ(subset->system.cells().size(), 1);
+  EXPECT_DOUBLE_EQ(subset->system.cells()[0].fluid_volume, 8);
+  EXPECT_LT(subset->system.links().size(), faces.size());
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_EQ(ownership->interior_face_slots.size(), 1);
+  const auto shared = std::ranges::find(
+      subset->system.links(),
+      ownership->interior_face_slots[0],
+      &pressure_internal::FrozenMacPressureLink3D::face_slot
+  );
+  ASSERT_NE(shared, subset->system.links().end());
+  EXPECT_EQ(shared->tail_cell_ordinal, 0);
+  EXPECT_FALSE(shared->head_cell_ordinal);
+  EXPECT_DOUBLE_EQ(shared->open_area, 0);
+  const auto stationary = pressure_internal::EvaluateMacPressure3D(subset->system, std::array{0.0});
+  ASSERT_TRUE(stationary.ok()) << stationary.status();
+  EXPECT_EQ(stationary->corrected_face_velocities.size(), subset->system.links().size());
+  EXPECT_DOUBLE_EQ(stationary->cell_constraint_defects[0], 0);
+  auto unmasked_faces = faces;
+  unmasked_faces[ownership->interior_face_slots[0]].predicted_normal_velocity_m_per_s = -1;
+  EXPECT_EQ(
+      PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, unmasked_faces).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+
+  const auto reversed_geometry = freeze(0, -10, -1);
+  ASSERT_TRUE(reversed_geometry.ok()) << reversed_geometry.status();
+  auto reversed_leaves = accepted;
+  std::swap(reversed_leaves[0].occupancy, reversed_leaves[1].occupancy);
+  std::swap(reversed_leaves[0].inventory, reversed_leaves[1].inventory);
+  const auto reversed = PrepareGradedWetPressureSubset3D(*reversed_geometry, reversed_leaves, cells, faces);
+  ASSERT_TRUE(reversed.ok()) << reversed.status();
+  EXPECT_EQ(reversed->leaf_ordinals, std::vector<std::size_t>{1});
+  EXPECT_DOUBLE_EQ(reversed->system.cells()[0].fluid_volume, 1);
+  const auto reversed_shared = std::ranges::find(
+      reversed->system.links(),
+      ownership->interior_face_slots[0],
+      &pressure_internal::FrozenMacPressureLink3D::face_slot
+  );
+  ASSERT_NE(reversed_shared, reversed->system.links().end());
+  EXPECT_FALSE(reversed_shared->tail_cell_ordinal);
+  EXPECT_EQ(reversed_shared->head_cell_ordinal, 0);
+
+  const auto wetting = freeze(0.5, -10);
+  ASSERT_TRUE(wetting.ok()) << wetting.status();
+  const auto drying = freeze(-2, -10);
+  ASSERT_TRUE(drying.ok()) << drying.status();
+  const auto blocked = freeze(0, 1);
+  ASSERT_TRUE(blocked.ok()) << blocked.status();
+  ASSERT_FALSE(blocked->leaves()[1].known_air);
+  for (const auto* unsupported : {&*wetting, &*drying, &*blocked}) {
+    EXPECT_EQ(
+        PrepareGradedWetPressureSubset3D(*unsupported, accepted, cells, faces).status().code(),
+        absl::StatusCode::kFailedPrecondition
+    );
+  }
+  cells[1].target_divergence_s_inv = 1;
+  EXPECT_EQ(
+      PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, faces).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  cells[1] = {};
+  accepted[1].inventory.enthalpy_j = -1;
+  EXPECT_EQ(
+      PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, faces).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_DOUBLE_EQ(accepted[1].inventory.enthalpy_j, -1);
 }
 
 TEST(GradedLiquidBoundaryGeometry3D, EdgeAndCornerContactBlockNoPositiveMeasure) {
@@ -201,6 +299,20 @@ TEST(GradedLiquidBoundaryGeometry3D, ComposesSignedWallIncidenceAndIndependentSo
   ASSERT_TRUE(anchored.ok()) << anchored.status();
   EXPECT_DOUBLE_EQ(anchored->links()[low_x_slot].open_area, 0.5);
   EXPECT_TRUE(anchored->gauge_cell_ordinals().empty());
+
+  const std::array<LiquidAdaptiveCellState3D, 2> accepted{{
+      {.key = keys[0], .inventory = {.mass_kg = 0.5, .reference_volume_m3 = 0.5, .current_volume_m3 = 0.5}},
+      {.key = keys[1], .inventory = {.mass_kg = 0.5, .reference_volume_m3 = 0.5, .current_volume_m3 = 0.5}},
+  }};
+  const auto subset = PrepareGradedWetPressureSubset3D(*geometry, accepted, cells, faces);
+  ASSERT_TRUE(subset.ok()) << subset.status();
+  EXPECT_EQ(subset->leaf_ordinals, (std::vector<std::size_t>{0, 1}));
+  const auto anchored_projection = pressure_internal::EvaluateMacPressure3D(*anchored, zero_pressure);
+  const auto subset_projection = pressure_internal::EvaluateMacPressure3D(subset->system, zero_pressure);
+  ASSERT_TRUE(anchored_projection.ok()) << anchored_projection.status();
+  ASSERT_TRUE(subset_projection.ok()) << subset_projection.status();
+  EXPECT_EQ(anchored_projection->corrected_face_velocities, subset_projection->corrected_face_velocities);
+  EXPECT_EQ(anchored_projection->true_residuals, subset_projection->true_residuals);
 }
 
 TEST(GradedLiquidBoundaryGeometry3D, MeasuresResolvedWorldExtentBeforeCheckingNominalGraphMetric) {
