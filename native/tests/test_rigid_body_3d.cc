@@ -325,6 +325,29 @@ TEST(RigidBody3D, RotatingSweepChecksReentryAfterSeparatingStart) {
   ASSERT_TRUE(miss.ok()) << miss.status();
   EXPECT_FALSE(miss->has_value());
 }
+TEST(RigidBody3D, OrientedWetPatchIntegratesVerticalPressureGradientTorque) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+  };
+  constexpr Vec3 kExtent{0.125, 0.125, 0.125};
+  const std::array cells{CellIndex3D{0, 0, 0}};
+  const auto patches = BuildOrientedBoxPressurePatches3D(body, kExtent, 0.0, {{-0.5, -0.5, -0.5}, 1.0}, cells);
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  const auto patch = std::ranges::find_if(*patches, [](const auto& candidate) {
+    return candidate.outward_body_normal.x == 1.0;
+  });
+  ASSERT_NE(patch, patches->end());
+  constexpr double kArea = 0.125 * 0.25;
+  constexpr double kVerticalVariance = 0.125 * 0.125 / 12.0;
+  EXPECT_NEAR(patch->area_vertical_covariance.y, kArea * kVerticalVariance, 1e-17);
+  const std::array pressure{0.25};
+  const auto load = AccumulateRigidBodyPressure3D(body, pressure, 0.0, {&*patch, 1}, -4.0);
+  ASSERT_TRUE(load.ok()) << load.status();
+  EXPECT_NEAR(load->force.x, -kArea * pressure[0], 1e-15);
+  EXPECT_NEAR(load->torque.z, -kArea * (0.0625 * pressure[0] + 4.0 * kVerticalVariance), 1e-15);
+}
 TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
   const RigidBody3D body{
       .body_id = 23,

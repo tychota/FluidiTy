@@ -64,6 +64,7 @@ struct RigidPressurePatch3D {
   double wetted_area;  // Certified wet surface area in m².
   Vec3 world_centroid;  // Meters.
   Vec3 outward_body_normal;  // Unit normal pointing out of the rigid body.
+  Vec3 area_vertical_covariance{};  // Integral of (x - centroid) times (y - centroid.y), in m^4.
 };
 
 // Clips a finite world-axis-aligned box to a horizontal liquid plane (wet
@@ -136,11 +137,13 @@ absl::StatusOr<std::vector<double>> ComputeRigidBodyInwardWallFlux3D(
 // Patches must be disjoint, strictly ordered by ID, and belong to the body.
 // Malformed patches or pressure indices return InvalidArgument. Nonfinite
 // load arithmetic returns OutOfRange. Input body and spans stay unchanged.
+// Pressures are evaluated at patch centroids when a vertical gradient is supplied.
 absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
     RigidBody3D body,
     std::span<const double> solved_pressures,
     double ambient_pressure,
-    std::span<const RigidPressurePatch3D> patches
+    std::span<const RigidPressurePatch3D> patches,
+    double pressure_gradient_y = 0.0
 );
 
 // Evaluates force and the gyroscopic term at the start, updates velocities,

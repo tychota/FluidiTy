@@ -1042,6 +1042,62 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxProductionGatherBalancesHydrostaticWeight
   }
 }
 
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeight) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
+  scene.world_acceleration = {0.0, -4.0, 0.0};
+  auto initial = Initial(4);
+  initial.particles[0].world_position = {0.375, 0.1875, 0.375};
+  initial.particles[1].world_position = {1.375, 0.375, 0.375};
+  initial.particles[2].world_position = {0.375, 0.375, 1.375};
+  initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
+  constexpr double kInitialDraft = 0.125;
+  constexpr double kBodyMass = 0.0078125;
+  constexpr double kWeight = 0.03125;
+  for (const double duration : {0.03125, 0.015625}) {
+    SCOPED_TRACE(duration);
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    RigidBody3D body{
+        .body_id = 23,
+        .mass = kBodyMass,
+        .principal_inertia = {0.001, 0.001, 0.001},
+        .center = {0.375, 0.75, 0.375},
+    };
+    double max_draft_error = 0.0;
+    double max_net_force = 0.0;
+    double max_defect = 0.0;
+    for (int frame = 1; frame <= static_cast<int>(0.125 / duration); ++frame) {
+      body.force.y = -kWeight;
+      ASSERT_TRUE(scheduler->BeginFrame(frame * duration).ok());
+      const auto attempt = scheduler->AttemptWithOrientedFloatingBox(duration, body, kHalfExtent);
+      ASSERT_TRUE(attempt.ok()) << attempt.status();
+      ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
+                                             << static_cast<int>(scheduler->diagnostics().failed_stage);
+      const double draft = 0.75 - (attempt->body->center.y - kHalfExtent.y);
+      max_draft_error = std::max(max_draft_error, std::abs(draft - kInitialDraft));
+      max_net_force = std::max(
+          max_net_force,
+          std::abs(kBodyMass * (attempt->body->linear_velocity.y - body.linear_velocity.y) / duration)
+      );
+      max_defect = std::max(max_defect, scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect);
+      for (const auto& cell : scheduler->committed().cells.values()) {
+        EXPECT_NEAR(cell.previous_pressure, 1.0, 2e-5);
+      }
+      EXPECT_NEAR(attempt->body->angular_velocity.x, 0.0, 1e-8);
+      EXPECT_NEAR(attempt->body->angular_velocity.z, 0.0, 1e-8);
+      body = *attempt->body;
+      ASSERT_TRUE(scheduler->FinishFrame().ok());
+    }
+    std::cout << "oriented_equilibrium_dt_s=" << duration << " max_draft_error_m=" << max_draft_error
+              << " max_net_force_n=" << max_net_force << " max_constraint_defect_per_s=" << max_defect << '\n';
+    EXPECT_LE(max_draft_error, 1e-6);
+    EXPECT_LE(max_net_force, 2e-6);
+    EXPECT_LE(max_defect, 2e-5);
+  }
+}
+
 TEST(LiquidSubstep3D, GuidedFloatingBoxMeasuresAddedMassAndLightBodyAmplification) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
