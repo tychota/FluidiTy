@@ -8,6 +8,7 @@
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -48,7 +49,12 @@ TEST(CudaLiveGradedMesh3D, RetainsCorrespondenceAcrossAcceptedClosureAndReplaysR
 #else
 TEST(LiveGradedMesh3D, RetainsCorrespondenceAcrossAcceptedClosureAndReplaysReadOnly) {
 #endif
-  const auto root = std::filesystem::path(FLUIDITY_CACHE_SCRATCH_PATH)
+  // Keep content-addressed blob paths within the Windows path limit even when
+  // CTest runs from a deeply nested build directory.
+  std::error_code error;
+  const auto temporary_directory = std::filesystem::temp_directory_path(error);
+  ASSERT_FALSE(error) << error.message();
+  const auto root = temporary_directory
       / ("live-graded-mesh-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   const auto simulate_root = root / "simulate";
   const auto mesh_root = root / "mesh";
