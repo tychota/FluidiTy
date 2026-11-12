@@ -93,6 +93,7 @@ add_library(fluidity_native STATIC
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
+  native/src/elastic_blade_deformation_3d.cc
   native/src/rigid_body_3d.cc
   native/src/solid_interaction_checkpoint_3d.cc
   native/src/pressure.cc

@@ -75,3 +75,5 @@ contact change. The new elastic and rigid operators are host paths.
   fixture and corrected before the final checks.
 
 On the subsequent slab face-tag change, the rebuilt Windows Debug CPU executable passed all 31 focused transfer, wall-contact, blade and rigid tests. The fixture covers both exact blade faces, interior anchors and invalid sample time.
+
+The subsequent elastic deformation stage uses the shared old/new same-side ghost gather and advances the dimensionless deformation gradient from the true new-time velocity derivative. The fixture poisons velocities on the excluded side, verifies the affine gradient and the left multiplication of F, and rejects a collapsing trial. All 32 focused native tests passed. The production scheduler still has to commit the candidate with the rest of the accepted material state.

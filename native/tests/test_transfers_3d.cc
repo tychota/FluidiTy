@@ -9,6 +9,7 @@
 
 #include "absl/status/status.h"
 #include "fixture_data.h"
+#include "fluidity/host/elastic_blade_deformation_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "gtest/gtest.h"
@@ -381,6 +382,60 @@ TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
   );
   EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
   EXPECT_EQ(face_forces, accepted_forces);
+}
+
+TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollapse) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const auto particle = CornerParticle(kTranslatedGeometry);
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {2.0, 0.0, 0.0},
+  };
+  const auto old_tags = BuildElasticBladeFaceTags3D(grid->view(), blade, 0.0);
+  const auto new_tags = BuildElasticBladeFaceTags3D(grid->view(), blade, 0.25);
+  ASSERT_TRUE(old_tags.ok()) << old_tags.status();
+  ASSERT_TRUE(new_tags.ok()) << new_tags.status();
+  std::vector<double> old_velocity(grid->face_count());
+  std::vector<double> new_velocity(grid->face_count());
+  SampleField(
+      *grid,
+      [](std::size_t axis_index, Vec3 anchor) {
+        return axis_index == 0 ? 2.0 * anchor.x + anchor.y : 0.0;
+      },
+      new_velocity
+  );
+  for (std::size_t face_slot = 0; face_slot < grid->face_count(); ++face_slot) {
+    if ((*new_tags)[face_slot].side_tag != 1) {
+      new_velocity[face_slot] = 1000.0;
+    }
+    if ((*old_tags)[face_slot].side_tag != 1) {
+      old_velocity[face_slot] = -1000.0;
+    }
+  }
+  const std::vector validity(grid->face_count(), LiquidFaceValidity3D::kValid);
+  const std::vector<LiquidPrescribedWallSample3D> walls(grid->face_count());
+  const LiquidBoundaryVelocityHistory3D old_history{0.0, 0.0, old_velocity, validity, *old_tags, walls};
+  const LiquidBoundaryVelocityHistory3D new_history{0.25, 0.25, new_velocity, validity, *new_tags, walls};
+  constexpr Mat3 kDeformation{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 2.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  const ElasticBladeSide3D side{.blade_id = 17, .sign = 1};
+  const auto result = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ExpectNear(result->gather.velocity_gradient.x_row, {2.0, 1.0, 0.0});
+  ExpectNear(result->deformation_gradient.x_row, {1.5, 0.5, 0.0});
+
+  for (double& velocity : new_velocity) {
+    velocity *= -2.0;
+  }
+  const auto collapsed = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
+  EXPECT_EQ(collapsed.status().code(), absl::StatusCode::kFailedPrecondition);
+  ExpectNear(kDeformation.x_row, {1.0, 0.0, 0.0});
 }
 
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
