@@ -33,6 +33,23 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     return boundary_internal::ArithmeticStatus(swept.status());
   }
   const auto contact = boundary_internal::UnpackContact(*swept);
+  if (committed_side.blade_id != 0) {
+    const double sign = committed_side.sign;
+    const auto normal = blade->unit_normal;
+    const boundary_internal::SweepPlane incident_plane{
+        .outward_normal = {sign * normal.x, sign * normal.y, sign * normal.z},
+        .start_coordinate = sign * blade->start_center_coordinate,
+        .slab_half_width = blade->half_width,
+        .wall_velocity = blade->wall_velocity,
+    };
+    const auto side = boundary_internal::DistanceAlongPath(incident_plane, inputs.start_world_position, {}, 0.0).sign();
+    if (!side.has_value()) {
+      return absl::OutOfRangeError("uncertified committed blade side");
+    }
+    if (*side < 0) {
+      return absl::FailedPreconditionError("sweep start disagrees with the committed blade side");
+    }
+  }
   ElasticBladeContact3D result{
       .contact = contact,
       .side = committed_side,

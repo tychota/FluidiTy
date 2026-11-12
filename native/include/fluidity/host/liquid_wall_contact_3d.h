@@ -71,7 +71,7 @@ struct ElasticBladeContact3D {
 // its authored normal direction for this blade ID. Mass is positive finite
 // kilograms. The reaction on the blade is the opposite of the particle
 // impulse. The advection correction contributes no second impulse.
-// Invalid parameters return InvalidArgument. A different blade, conflicting
+// Invalid parameters return InvalidArgument. A different blade, conflicting start or impact
 // side, or initially penetrating contact returns FailedPrecondition. An
 // unrepresentable sweep or budget returns OutOfRange. Inputs remain intact.
 absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(

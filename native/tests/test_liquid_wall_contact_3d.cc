@@ -118,6 +118,8 @@ TEST(ElasticBladeContact3D, MovingThinBladeAccountsForOnePhysicalReaction) {
   EXPECT_DOUBLE_EQ(second->blade_work, 0.0);
 
   const ElasticBladeSide3D opposite_side{.blade_id = 17, .sign = -1};
+  const auto wrong_side_without_contact = ResolveElasticBladeContact3D(retreating, 2.0, 17, opposite_side);
+  EXPECT_EQ(wrong_side_without_contact.status().code(), absl::StatusCode::kFailedPrecondition);
   const auto rejected = ResolveElasticBladeContact3D(inputs, 2.0, 17, opposite_side);
   EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
 }

@@ -482,6 +482,25 @@ TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollaps
   const auto collapsed = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
   EXPECT_EQ(collapsed.status().code(), absl::StatusCode::kFailedPrecondition);
   ExpectNear(kDeformation.x_row, {1.0, 0.0, 0.0});
+
+  auto accepted = *restored;
+  const auto rejected = AdvanceElasticBladeParticles3D(*grid, blade, 17, 0.0, 0.0, old_history, new_history, accepted);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto after_rejection = EncodeSolidInteractionCheckpoint3D(accepted);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *encoded);
+
+  for (double& velocity : new_velocity) {
+    velocity *= -0.0625;
+  }
+  const auto accepted_status =
+      AdvanceElasticBladeParticles3D(*grid, blade, 17, 0.0, 0.0, old_history, new_history, accepted);
+  ASSERT_TRUE(accepted_status.ok()) << accepted_status.status();
+  EXPECT_EQ(accepted.accepted_step, 2);
+  const auto& accepted_particle = accepted.elastic_particles.front();
+  ExpectNear(accepted_particle.deformation_gradient.x_row, {1.59375, 0.59375, 0.0});
+  EXPECT_GT(accepted_particle.transfer.trial_world_position.x, particle.trial_world_position.x);
+  EXPECT_EQ(accepted.sides.front().side.sign, 1);
 }
 
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
