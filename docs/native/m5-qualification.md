@@ -1960,3 +1960,35 @@ The model-2 CLI still rejects mixed execution. The authored gate needs
 the resolved snow settings and grid, a source-driven run through this
 frame driver, separate Blender material channels, and an authenticated
 restart comparison from a retained joint checkpoint.
+
+
+### Model-2 CLI and retained mixed checkpoints
+
+[PR 106](https://github.com/tychota/FluidiTy/pull/106) landed at
+`172d4b6` after all 14 native and 21 SM120-build CLI tests passed.
+Hosted CI was queued at merge. The CLI authenticates the initial FLSI
+payload, advances one snow body on a uniform grid with a water source
+and optional vertical platen, and publishes a point frame and retained
+joint checkpoints. Snow uses the high bit of the point ID and tag.
+The remaining tag bits identify its material. The cache checks mixed
+point bytes against both checkpoint states at retained frames.
+
+The fixture bakes 20 frames, observes two emitted liquid particles,
+and checks the first snow point lies below and within 10 µm of the
+moving platen. It reopens the retained frame-10 checkpoint and
+reproduces the committed point and checkpoint files through frame 20.
+Read-only replay reconstructs frame 19. A damaged initial payload
+fails before cache creation. The fixture isolates platen motion from
+the source to test the CLI and cache lifecycle.
+
+```powershell
+cmake --build out/pr-m5-mixed-cli/out/build/mixed-cli-cpu --target fluidity_simulate fluidity_simulate_fixture
+ctest --test-dir out/pr-m5-mixed-cli/out/build/mixed-cli-cpu -R '^SimulateCli\.' --no-tests=error --output-on-failure
+cmake --build out/pr-m5-mixed-cli/out/build/mixed-cli-sm120 --target fluidity_simulate fluidity_simulate_fixture
+ctest --test-dir out/pr-m5-mixed-cli/out/build/mixed-cli-sm120 -R '^SimulateCli\.' --no-tests=error --output-on-failure
+```
+
+The authored gate still needs Blender snow authoring and an
+end-to-end bake with obstacle compaction, water reaching the mound,
+separate Blender material assignment, and authenticated playback
+after restart.
