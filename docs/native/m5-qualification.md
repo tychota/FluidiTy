@@ -4059,3 +4059,32 @@ $b = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
 cmake --build $b --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
 ctest --test-dir $b -R '^M5DryScenes\.' --no-tests=error --output-on-failure
 ```
+
+### Restrict bounded tangent rows to the wall layer
+
+Starting at `3008848`, restrict the bounded tangential fallback
+to targets at most 1.5 cell widths above the floor. This is
+the radius of a quadratic stencil. Farther targets retain the
+original affine reconstruction even with negative coefficients.
+Native and SM120 default dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 31.867744° | 0.171033 m |
+| Coarse half-step | 39.317476° | 0.160104 m |
+| Fine | 28.010243° | 0.162308 m |
+| Fine half-step | 32.703293° | 0.160297 m |
+
+Both fine passes are lost. The coarse half-step angle decreases
+but remains above 35°. The restriction shows that bounding the
+rows farther from the floor matters to the passing fine cases.
+All four runs retain vertical momentum residual below 5.4e-9 N·s
+and cut stress work mismatch below 3.1e-16 J. Source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-floor-only-bound-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
