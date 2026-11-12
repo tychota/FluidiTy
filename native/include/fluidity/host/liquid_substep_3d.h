@@ -286,9 +286,9 @@ class LiquidSubstepScheduler3D {
   // velocity sets both wall flux and drift. Unsupported topology rejects.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston);
   // Advances an upright box guided along world Y in a stationary open tank.
-  // Requires CPU, an analytic horizontal surface and no particles or sources.
+  // Requires CPU, an analytic horizontal surface, zero friction and no sources.
   // The start velocity drives frozen wall flux and drift. Solved pressure and
-  // external force update the next velocity. The guide absorbs transverse
+  // external force and particle reaction update the next velocity. The guide absorbs transverse
   // force and torque. Half extents are in meters and must stay clear of walls.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
