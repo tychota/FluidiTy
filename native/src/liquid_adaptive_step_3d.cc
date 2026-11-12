@@ -762,7 +762,10 @@ absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> AdaptiveLiquidStep3D::Prepar
     const LiquidStepOptions3D& options,
     std::span<const std::uint64_t> replacement_ids
 ) {
-  auto prepared = StageQuadraticTransfer(candidate, options, replacement_ids, false, false);
+  if (replacement_ids.empty()) {
+    return absl::InvalidArgumentError("certified transfer requires replacement particle IDs");
+  }
+  auto prepared = StageQuadraticTransfer(candidate, options, replacement_ids, false, true);
   if (!prepared.ok()) {
     return prepared.status();
   }
