@@ -1305,6 +1305,83 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxCommitsParticleReactionWithLiquid) {
   }
 }
 
+TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsParticleReactionWithLiquid) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
+  auto initial = Initial();
+  initial.particles[0].world_position = {0.4375, 0.3125, 0.5};
+  initial.particles[0].mass = 2.0;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.gather = [](void*,
+                      const LiquidBoundaryGatherViewInputs3D&,
+                      LiquidBoundaryWorkspace3D&) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    static constexpr std::array gathered{
+        LiquidBoundaryParticleGather3D{.new_pic_velocity = {0.0, 0.75, 0.0}},
+    };
+    return LiquidBoundaryGatherView3D{.particles = gathered};
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDt = 0.125;
+  constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 2.0},
+      .center = {0.5, 0.5, 0.5},
+  };
+  const auto encode = [&](const LiquidState3D& liquid, const RigidBody3D& box_body) {
+    const SolidInteractionCheckpoint3D solid{
+        .accepted_step = liquid.clock.accepted_step_ordinal,
+        .bodies = {{box_body, {body.center, body.orientation}}},
+    };
+    return EncodeCoupledInteractionCheckpoint3D(liquid, solid);
+  };
+  const auto before_impact = encode(scheduler->committed(), body);
+  ASSERT_TRUE(before_impact.ok()) << before_impact.status();
+  const auto attempt_box = [&](LiquidSubstepScheduler3D& target, double duration, RigidBody3D current) {
+    return target.AttemptWithOrientedFloatingBox(duration, current, kHalfExtent);
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * kDt).ok());
+  scheduler->SetStageFaultHookForTesting({nullptr, [](void*, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("")
+                                                                                           : absl::OkStatus();
+                                          }});
+  const auto rejected = attempt_box(*scheduler, 2.0 * kDt, body);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  EXPECT_FALSE(rejected->body.has_value());
+  EXPECT_FALSE(rejected->added_mass_kg.has_value());
+  EXPECT_EQ(scheduler->committed(), initial);
+  const auto rejected_bytes = encode(scheduler->committed(), body);
+  ASSERT_TRUE(rejected_bytes.ok()) << rejected_bytes.status();
+  EXPECT_EQ(*rejected_bytes, *before_impact);
+
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = attempt_box(*scheduler, kDt, body);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_TRUE(accepted->body.has_value()) << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_DOUBLE_EQ(accepted->body->angular_velocity.z, -0.046875);
+  EXPECT_DOUBLE_EQ(accepted->body->linear_velocity.y, 0.75);
+  EXPECT_DOUBLE_EQ(accepted->body->center.y, body.center.y);
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.y, 0.0);
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_position.y, 0.375);
+
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*before_impact);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options(), backend);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(replay->BeginFrame(2.0 * kDt).ok());
+  const auto replayed = attempt_box(*replay, kDt, restored->solid.bodies.front().body);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(replayed->body.has_value());
+  const auto replay_bytes = encode(replay->committed(), *replayed->body);
+  const auto accepted_bytes = encode(scheduler->committed(), *accepted->body);
+  ASSERT_TRUE(replay_bytes.ok() && accepted_bytes.ok());
+  EXPECT_EQ(*replay_bytes, *accepted_bytes);
+}
+
 TEST(LiquidSubstep3D, GuidedFloatingBoxExcludesTankImpulseAndRetriesDoubleImpact) {
   const TranslatingContactBox3D box{{0.5, 0.25, 0.25}, {0.75, 0.875, 0.5}, {}};
   std::array gathered{LiquidBoundaryParticleGather3D{.new_pic_velocity = {1.0, 0.0, 0.0}}};
