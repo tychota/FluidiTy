@@ -906,6 +906,15 @@ The focused native piston, legacy checkpoint, and M5 dry-scene checks
 all passed. The fixture stages a separate dry update and liquid pressure
 step. It exercises common checkpoint replay before reciprocal coupling.
 
+Draft PR 84 carries the owning codec integration on the published M6
+native-solids base with main 160e2fa. The five-file change is 354b0fd.
+It supports a plastic payload in both solid-only and coupled FLSI
+envelopes and shares the existing liquid field with M6. All seven
+selected Windows Debug CPU tests passed, including schema conformance,
+legacy rigid replay, and byte-identical joint liquid/plastic round trip.
+The guided-piston scheduler changes remain in M6's stack. The detached
+advancing-snow restart trial above supplies separate scheduler evidence.
+
 The host mixed-contact bridge applies a supplied face batch to liquid
 and plastic candidate records. It builds a separate global particle ID
 order so the stored liquid sort order and plastic record order are
