@@ -61,7 +61,8 @@ absl::StatusOr<double> ScatterStationaryFloorGhostTranspose3D(
     std::span<double> force,
     std::span<const MacFaceDeposit3D> masses = {},
     std::span<const std::uint8_t> needed = {},
-    std::vector<StationaryFloorGhostRow3D>* ghost_rows = nullptr
+    std::vector<StationaryFloorGhostRow3D>* ghost_rows = nullptr,
+    bool reflect_normal = false
 );
 
 }  // namespace fluidity::internal

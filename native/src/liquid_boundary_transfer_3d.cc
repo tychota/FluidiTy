@@ -1051,7 +1051,8 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     std::span<double> force,
     std::span<const MacFaceDeposit3D> masses,
     std::span<const std::uint8_t> needed,
-    std::vector<StationaryFloorGhostRow3D>* ghost_rows
+    std::vector<StationaryFloorGhostRow3D>* ghost_rows,
+    bool reflect_normal
 ) {
   if (force.size() != grid.face_count() || validity.size() != force.size() || tags.size() != force.size()
       || (!masses.empty() && masses.size() != force.size())
@@ -1081,7 +1082,14 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       continue;
     }
     StationaryFloorGhostRow3D row{.target_slot = target, .terms = {}};
-    if (fixed_normal) {
+    auto target_position = anchors[target].anchor_in_cell_widths;
+    const double floor_coordinate = -grid.geometry().world_origin.y / grid.geometry().cell_width;
+    const bool reflected = reflect_normal && fixed_normal && target_position.y < floor_coordinate;
+    if (reflected) {
+      target_position.y = 2 * floor_coordinate - target_position.y;
+    }
+    const double continuation_sign = reflected ? -1 : 1;
+    if (fixed_normal && !reflected) {
       if (gather_needed) {
         rows.push_back(std::move(row));
       }
@@ -1098,7 +1106,7 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       if (anchors[donor].axis != anchors[target].axis) {
         continue;
       }
-      const auto offset = Difference(anchors[donor].anchor_in_cell_widths, anchors[target].anchor_in_cell_widths);
+      const auto offset = Difference(anchors[donor].anchor_in_cell_widths, target_position);
       const double squared_distance = Dot(offset, offset);
       if (squared_distance > 4.0) {
         continue;
@@ -1132,6 +1140,14 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
         samples[index].row_scale = std::sqrt(donor_mass / largest_mass);
       }
     }
+    if (reflected && nearest_squared_distance == 0) {
+      scattered_force[nearest] -= force[target];
+      if (gather_needed) {
+        row.terms.push_back({nearest, -1});
+        rows.push_back(std::move(row));
+      }
+      continue;
+    }
     const auto fit_input = std::span(samples).first(count);
     const auto rank = FitBoundedLiquidGhostAffineCore3D<kDonorCapacity>(fit_input);
     if (!rank.ok()) {
@@ -1150,9 +1166,9 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
           }
         }
       }
-      scattered_force[nearest] += force[target];
+      scattered_force[nearest] += continuation_sign * force[target];
       if (gather_needed) {
-        row.terms.push_back({nearest, 1});
+        row.terms.push_back({nearest, continuation_sign});
         row.fallback = true;
         rows.push_back(std::move(row));
       }
@@ -1167,9 +1183,10 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       if (!basis.ok()) {
         return absl::OutOfRangeError("floor ghost transpose coefficient evaluation failed");
       }
-      scattered_force[donors[index]] += basis->velocity_at_target * force[target];
+      const double coefficient = continuation_sign * basis->velocity_at_target;
+      scattered_force[donors[index]] += coefficient * force[target];
       if (gather_needed) {
-        row.terms.push_back({donors[index], basis->velocity_at_target});
+        row.terms.push_back({donors[index], coefficient});
       }
     }
     if (gather_needed) {

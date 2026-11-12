@@ -369,7 +369,12 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       double wall_force_y = 0;
       for (const auto& sample : *normal_stencil) {
         if (!deformation_tags[sample.face_slot].structurally_eligible) {
-          wall_force_y += particles[index].reference_volume
+          const auto anchor = floor_grid.FaceWorldAnchor(*floor_grid.FaceIndex(sample.face_slot));
+          if (!anchor.ok()) {
+            return anchor.status();
+          }
+          const double reflection_factor = anchor->y < 0 ? 2 : 1;
+          wall_force_y += reflection_factor * particles[index].reference_volume
               * solid_detail::Dot(particle_stresses[index].y_row, sample.weight_gradient);
         }
       }
@@ -386,11 +391,12 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     const auto wall_force = ScatterStationaryFloorGhostTranspose3D(
         grid.view(),
         validity,
-        floor_tags,
+        deformation_tags,
         face_force,
         deposits,
         needed,
-        &ghost_rows
+        &ghost_rows,
+        true
     );
     if (!wall_force.ok()) {
       return wall_force.status();
