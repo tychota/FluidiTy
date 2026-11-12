@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -23,6 +24,70 @@ using fluidity::Mat3;
 using fluidity::SparseMacGrid3D;
 
 constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+struct SandSurfaceSlopes {
+  double minimum_degrees = 90;
+  double maximum_degrees = -90;
+  int size = 0;
+};
+
+// Fit each quadrant's free surface independently. Use actual sample radii to
+// avoid a bin-center bias. The quadrant spread describes sampling uncertainty.
+SandSurfaceSlopes FitSandSurface(std::span<const DrySolidParticle3D> particles, double maximum_radius) {
+  struct SurfaceSample {
+    double radius = 0;
+    double height = -1;
+  };
+  constexpr int kBinCount = 6;
+  constexpr double kStart = 0.15;
+  constexpr double kEnd = 0.85;
+  constexpr double kDegreesPerRadian = 57.29577951308232;
+  std::array<std::array<SurfaceSample, kBinCount>, 4> quadrants{};
+  for (const auto& particle : particles) {
+    const auto position = particle.world_position;
+    const double radius = std::hypot(position.x, position.z);
+    const double fraction = radius / maximum_radius;
+    if (fraction < kStart || fraction >= kEnd) {
+      continue;
+    }
+    const int quadrant = (position.x < 0 ? 1 : 0) + (position.z < 0 ? 2 : 0);
+    const int bin = std::min(kBinCount - 1, static_cast<int>((fraction - kStart) * kBinCount / (kEnd - kStart)));
+    auto& sample = quadrants[quadrant][bin];
+    if (position.y > sample.height) {
+      sample = {.radius = radius, .height = position.y};
+    }
+  }
+
+  SandSurfaceSlopes slopes{};
+  for (const auto& quadrant : quadrants) {
+    int sample_count = 0;
+    double radius_sum = 0;
+    double height_sum = 0;
+    double radius_squared_sum = 0;
+    double radius_height_sum = 0;
+    for (const auto& sample : quadrant) {
+      if (sample.height >= 0) {
+        ++sample_count;
+        radius_sum += sample.radius;
+        height_sum += sample.height;
+        radius_squared_sum += sample.radius * sample.radius;
+        radius_height_sum += sample.radius * sample.height;
+      }
+    }
+    if (sample_count < 4) {
+      continue;
+    }
+    const double radius_variation = sample_count * radius_squared_sum - radius_sum * radius_sum;
+    if (radius_variation > 0) {
+      const double slope = (sample_count * radius_height_sum - radius_sum * height_sum) / radius_variation;
+      const double degrees = -kDegreesPerRadian * std::atan(slope);
+      slopes.minimum_degrees = std::min(slopes.minimum_degrees, degrees);
+      slopes.maximum_degrees = std::max(slopes.maximum_degrees, degrees);
+      ++slopes.size;
+    }
+  }
+  return slopes;
+}
 
 bool TestScene(
     double width,
@@ -186,8 +251,39 @@ bool TestScene(
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
   const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
   std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
+  if (particles_per_axis_multiplier > 1 && maximum_radius > 0) {
+    const auto slopes = FitSandSurface(particles, maximum_radius);
+    if (slopes.size > 0) {
+      std::printf(
+          "sand surface slope range_degrees=[%.6f,%.6f] quadrants=%d\n",
+          slopes.minimum_degrees,
+          slopes.maximum_degrees,
+          slopes.size
+      );
+    } else {
+      std::printf("sand surface slope unresolved: fewer than four occupied radial bins per quadrant\n");
+    }
+  }
   return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && maximum_radius > 0.10
       && maximum_radius < 0.16 && kinetic_energy < 0.01;
+}
+
+bool TestSandSurfaceFit() {
+  std::vector<DrySolidParticle3D> particles;
+  for (double sign_x : {-1.0, 1.0}) {
+    for (double sign_z : {-1.0, 1.0}) {
+      for (int bin = 0; bin < 6; ++bin) {
+        const double radius = 0.15 + (bin + 0.5) * 0.70 / 6;
+        const double component = radius / std::sqrt(2.0);
+        const double height = (1 - radius) / std::sqrt(3.0);
+        particles.push_back({.world_position = {sign_x * component, height, sign_z * component}});
+        particles.push_back({.world_position = {sign_x * component, 0, sign_z * component}});
+      }
+    }
+  }
+  const auto slopes = FitSandSurface(particles, 1);
+  return slopes.size == 4 && std::abs(slopes.minimum_degrees - 30) < 1e-11
+      && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
 bool TestWallImpulseBudget() {
@@ -408,7 +504,7 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestUncutStressWork()
+  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestUncutStressWork()
       || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }

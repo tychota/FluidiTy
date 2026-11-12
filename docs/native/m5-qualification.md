@@ -204,6 +204,31 @@ asymptotic slope. The next physical comparison should isolate the floor
 transfer and the pile shape measurement on a spatially resolved benchmark
 before any material calibration.
 
+### Independent sand surface fit
+
+The refined-grid command also reports a separate free-surface fit. In
+each of four horizontal quadrants, divide 15–85% of the maximum radius
+into six annuli. Retain the highest particle in each occupied annulus
+and regress its height against its actual radius. A quadrant needs at
+least four occupied annuli. Report the range of resolved quadrant slopes
+as a measure of angular sampling spread. This excludes the apex and toe
+from the fit. The manufactured 30° cone recovers 30° in all quadrants
+within 1e-11°, even with additional samples below the surface.
+
+| h (m) | nominal dt (s) | Native surface fit | CUDA surface fit |
+|---|---:|---:|---:|
+| 0.0375 | 0.00078125 | 14.817355° | 14.817355° |
+| 0.03125 | 0.00078125 | 8.289243° | 8.289234° |
+| 0.0375 | 0.000390625 | 20.016329° | 20.016329° |
+| 0.03125 | 0.000390625 | 11.285081° | 11.285063° |
+
+All four quadrants resolved in every run, with zero spread at the printed
+precision. The symmetric fixture makes this spread a weak bound on
+discretization uncertainty. The surface fit is lower than the original
+envelope angle in every refined run. Thus an envelope dominated by the
+outermost grains does not explain the Q-SAND discrepancy. The gate still
+uses the original protocol and remains open.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -264,6 +289,11 @@ uses stable nonzero uint64 body IDs, world SI units, cut-side identity
 separate from body identity, and publication on acceptance. The isolated M5
 pair impulse API was shared with M6. The production liquid checkpoint
 schema was left unchanged.
+
+M6 commit 2294680 adds isolated rigid pressure traction and torque from
+ordered, certified wet patches and solved liquid pressures. The mixed
+transaction still needs to produce and consume those patches at the
+declared pressure time level.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
