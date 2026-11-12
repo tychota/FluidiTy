@@ -631,6 +631,35 @@ plastic activity measurements above remain the extended Q-SAND
 qualification for the landed change. Earlier baseline measurements
 in this report use the original floor deformation update.
 
+### Dense particles with the landed floor update
+
+Double the particle sampling in each direction from a 0.05 m to a
+0.025 m lattice. The same column volume and total mass are now
+represented by 504 particles instead of 63. Use the landed PR 89
+floor update and repeat the centered 1.50 s settling cases without
+changing the grid widths, timesteps, or envelope estimator.
+
+| h (m) | Nominal dt (s) | 63-particle envelope | 504-particle envelope | Dense quadrant fit |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 29.113507° | 26.634632° | 15.398842° |
+| 0.0625 | 0.0015625 | 26.761332° | 25.002454° | 21.925421° |
+| 0.075 | 0.0009375 | 29.006384° | 26.113921° | 6.973853° |
+| 0.0625 | 0.00078125 | 27.033753° | 23.529643° | 13.925098° |
+
+Native values are shown. CUDA differs by at most 0.000002° at the
+printed precision. The drift and vertical momentum checks pass on
+both backends. Increasing the sampling density lowers the envelope
+in every case.
+The denser pile spreads farther even though its final peak height
+is larger. All dense quadrant fits are shallower than the envelope,
+so the dense sampling and independent estimator both leave the
+repose gate open.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-dense-column-long-settle
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-column-long-settle
+```
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.

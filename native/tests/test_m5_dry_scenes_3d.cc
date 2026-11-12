@@ -657,11 +657,14 @@ int main(int argc, char** argv) {
     }
     return all_pass ? 0 : 1;
   }
-  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-column-long-settle") {
-    const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5);
-    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5);
-    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 1, 0.10, false, 1.5);
-    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 1, 0.10, false, 1.5);
+  if (argc == 2
+      && (std::string_view(argv[1]) == "--q-sand-column-long-settle"
+          || std::string_view(argv[1]) == "--q-sand-dense-column-long-settle")) {
+    const int sampling_multiplier = std::string_view(argv[1]) == "--q-sand-dense-column-long-settle" ? 2 : 1;
+    const bool reference = TestScene(0.075, 0.001875, false, 0, sampling_multiplier, 0.10, false, 1.5);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, sampling_multiplier, 0.10, false, 1.5);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, sampling_multiplier, 0.10, false, 1.5);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, sampling_multiplier, 0.10, false, 1.5);
     return reference && refined && reference_half && refined_half ? 0 : 1;
   }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-grid-phase") {
