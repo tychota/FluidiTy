@@ -607,27 +607,30 @@ ComputeWettedPiston3D(const WettedPistonInputs3D& inputs, WettedPistonWorkspace3
       }
   );
 }
-absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressurePatches3D(
+namespace {
+
+template <typename Emit>
+absl::Status VisitPlanarPistonPressurePatches(
     const WettedPistonInputs3D& inputs,
     const WettedPistonView3D& wetted,
-    std::uint64_t body_id
+    std::uint64_t body_id,
+    Emit emit
 ) {
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&inputs.field);
   if (plane == nullptr || body_id == 0 || !std::isfinite(plane->world_surface_height_y)
       || !std::isfinite(inputs.tank.start_low_x) || !std::isfinite(inputs.tank.floor_y)
       || !std::isfinite(inputs.tank.low_z) || !std::isfinite(inputs.tank.high_z)
       || inputs.tank.low_z >= inputs.tank.high_z || wetted.face_fluxes.size() != inputs.frozen.faces.size()) {
-    return absl::InvalidArgumentError("invalid planar piston pressure patch inputs");
+    return Status(absl::StatusCode::kInvalidArgument);
   }
   const auto geometry = inputs.frozen.mac_grid.geometry();
   const double h = geometry.cell_width;
-  std::vector<RigidPressurePatch3D> patches;
-  patches.reserve(wetted.patches.size());
+  std::uint64_t patch_id = 0;
   std::optional<std::pair<std::int32_t, std::int32_t>> previous_patch;
   for (const auto& wet : wetted.patches) {
     const std::pair patch_order{wet.lattice_z, wet.lattice_y};
     if (previous_patch && patch_order <= *previous_patch) {
-      return absl::InvalidArgumentError("piston pressure patches must be strictly ordered");
+      return Status(absl::StatusCode::kInvalidArgument);
     }
     previous_patch = patch_order;
     const double lattice_y = wet.lattice_y;
@@ -639,17 +642,17 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressur
     const double high_z = std::min(inputs.tank.high_z, std::fma(h, lattice_z + 1.0, geometry.world_origin.z));
     const double area = std::max(0.0, high_y - low_y) * std::max(0.0, high_z - low_z);
     if (!std::isfinite(area)) {
-      return absl::OutOfRangeError("nonfinite planar piston patch area");
+      return Status(absl::StatusCode::kOutOfRange);
     }
     if (!std::isfinite(wet.area.lower) || !std::isfinite(wet.area.upper) || wet.area.lower < 0.0
         || area < wet.area.lower || area > wet.area.upper) {
-      return absl::FailedPreconditionError("planar piston patch area disagrees with its wet enclosure");
+      return Status(absl::StatusCode::kFailedPrecondition);
     }
     if (area == 0.0) {
       continue;
     }
     if (!wet.receiver_face_ordinal || *wet.receiver_face_ordinal >= inputs.frozen.faces.size()) {
-      return absl::FailedPreconditionError("wet piston pressure patch has no receiver");
+      return Status(absl::StatusCode::kFailedPrecondition);
     }
     const auto& face = inputs.frozen.faces[*wet.receiver_face_ordinal];
     const auto index = face.face_index.lattice_index;
@@ -662,7 +665,7 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressur
     const auto patch_row_offset = static_cast<std::int64_t>(wet.lattice_y) - index.y;
     if (!receiver.ok() || *receiver != *wet.receiver_face_ordinal || index.z != wet.lattice_z || patch_row_offset < 0
         || patch_row_offset > 1) {
-      return absl::FailedPreconditionError("invalid piston pressure receiver geometry");
+      return Status(absl::StatusCode::kFailedPrecondition);
     }
     const auto cells = inputs.frozen.cells;
     const auto cell_key = wetted_piston_internal::CellOrder({index.x, index.y, index.z});
@@ -670,18 +673,65 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressur
       return wetted_piston_internal::CellOrder(entry.cell_index);
     });
     if (cell == cells.end() || wetted_piston_internal::CellOrder(cell->cell_index) != cell_key) {
-      return absl::FailedPreconditionError("piston pressure receiver has no selected pressure cell");
+      return Status(absl::StatusCode::kFailedPrecondition);
     }
-    patches.push_back({
-        .patch_id = static_cast<std::uint64_t>(patches.size()) + 1,
+    const auto status = emit(RigidPressurePatch3D{
+        .patch_id = ++patch_id,
         .body_id = body_id,
         .pressure_cell_index = static_cast<std::size_t>(cell - cells.begin()),
         .wetted_area = area,
         .world_centroid = {inputs.tank.start_low_x, std::midpoint(low_y, high_y), std::midpoint(low_z, high_z)},
         .outward_body_normal = {1.0, 0.0, 0.0},
     });
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressurePatches3D(
+    const WettedPistonInputs3D& inputs,
+    const WettedPistonView3D& wetted,
+    std::uint64_t body_id
+) {
+  std::vector<RigidPressurePatch3D> patches;
+  patches.reserve(wetted.patches.size());
+  const auto status = VisitPlanarPistonPressurePatches(inputs, wetted, body_id, [&](RigidPressurePatch3D patch) {
+    patches.push_back(patch);
+    return absl::OkStatus();
+  });
+  if (!status.ok()) {
+    return status;
   }
   return patches;
+}
+
+absl::StatusOr<RigidBody3D> AccumulatePlanarWettedPistonPressure3D(
+    const WettedPistonInputs3D& inputs,
+    const WettedPistonView3D& wetted,
+    std::span<const double> solved_pressures,
+    double ambient_pressure,
+    RigidBody3D body
+) {
+  const auto validation = AccumulateRigidBodyPressure3D(body, solved_pressures, ambient_pressure, {});
+  if (!validation.ok()) {
+    return validation.status();
+  }
+  const auto status = VisitPlanarPistonPressurePatches(inputs, wetted, body.body_id, [&](RigidPressurePatch3D patch) {
+    const auto loaded = AccumulateRigidBodyPressure3D(body, solved_pressures, ambient_pressure, {&patch, 1});
+    if (!loaded.ok()) {
+      return loaded.status();
+    }
+    body = *loaded;
+    return absl::OkStatus();
+  });
+  if (!status.ok()) {
+    return status;
+  }
+  return body;
 }
 
 }  // namespace fluidity

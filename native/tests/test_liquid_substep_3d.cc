@@ -130,6 +130,38 @@ TEST(LiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   }
 }
 
+TEST(LiquidSubstep3D, AcceptedPistonAttemptReturnsSolvedPressureLoad) {
+  namespace wet = wetted_piston_pressure_test;
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
+  const RigidBody3D piston{.body_id = 17, .mass = 1.0, .principal_inertia = {1.0, 1.0, 1.0}};
+  const auto attempt = scheduler->AttemptWithPlanarPistonPressureLoad(wet::kDuration, piston);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_EQ(attempt->outcome.disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(attempt->loaded_piston.has_value());
+  const auto cells = scheduler->committed().cells.values();
+  ASSERT_EQ(cells.size(), 1);
+  EXPECT_NEAR(attempt->loaded_piston->force.x, -0.75 * cells.front().previous_pressure, 1e-10);
+  EXPECT_LT(attempt->loaded_piston->force.x, 0.0);
+  EXPECT_DOUBLE_EQ(piston.force.x, 0.0);
+
+  auto rejected = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->BeginFrame(wet::kDuration).ok());
+  rejected->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto refused = rejected->AttemptWithPlanarPistonPressureLoad(wet::kDuration, piston);
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  EXPECT_EQ(refused->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(refused->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
+}
+
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
   const LiquidState3D initial;
   auto scene = Scene();

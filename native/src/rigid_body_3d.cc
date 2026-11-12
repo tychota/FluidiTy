@@ -89,13 +89,13 @@ absl::Status ValidateRigidBody3D(const RigidBody3D& body) {
 absl::StatusOr<RigidBody3D>
 AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec3 world_force) {
   if (!ValidBody(body) || !IsFinite(force_world_position) || !IsFinite(world_force)) {
-    return absl::InvalidArgumentError("invalid rigid body or point load");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   body.force = Add(body.force, world_force);
   const Vec3 moment_arm = Subtract(force_world_position, body.center);
   body.torque = Add(body.torque, Cross(moment_arm, world_force));
   if (!IsFinite(body.force) || !IsFinite(body.torque)) {
-    return absl::OutOfRangeError("nonfinite rigid body load");
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return body;
 }
@@ -107,27 +107,27 @@ absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
     std::span<const RigidPressurePatch3D> patches
 ) {
   if (!ValidBody(body) || !std::isfinite(ambient_pressure)) {
-    return absl::InvalidArgumentError("invalid rigid body or ambient pressure");
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   std::uint64_t previous_patch_id = 0;
   for (const auto& patch : patches) {
     if (patch.patch_id <= previous_patch_id || patch.body_id != body.body_id) {
-      return absl::InvalidArgumentError("invalid rigid pressure patch identity or order");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     previous_patch_id = patch.patch_id;
     if (patch.pressure_cell_index >= solved_pressures.size()) {
-      return absl::InvalidArgumentError("rigid pressure patch cell index is out of bounds");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const double pressure = solved_pressures[patch.pressure_cell_index];
     const double normal_length = Norm(patch.outward_body_normal);
     if (!std::isfinite(pressure) || !std::isfinite(patch.wetted_area) || patch.wetted_area <= 0.0
         || !IsFinite(patch.world_centroid) || !std::isfinite(normal_length) || std::abs(normal_length - 1.0) > 1e-12) {
-      return absl::InvalidArgumentError("invalid rigid pressure patch sample");
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const double pressure_difference = pressure - ambient_pressure;
     const Vec3 pressure_force = Scale(-patch.wetted_area * pressure_difference, patch.outward_body_normal);
     if (!IsFinite(pressure_force)) {
-      return absl::OutOfRangeError("unrepresentable rigid pressure force");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
     const auto loaded = AccumulateRigidBodyPointForce3D(body, patch.world_centroid, pressure_force);
     if (!loaded.ok()) {

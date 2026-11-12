@@ -96,4 +96,14 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressur
     std::uint64_t body_id
 );
 
+// Accumulates the same planar traction directly in the body, in wet patch
+// order, without allocating a patch array. Input body remains unchanged.
+absl::StatusOr<RigidBody3D> AccumulatePlanarWettedPistonPressure3D(
+    const WettedPistonInputs3D& inputs,
+    const WettedPistonView3D& wetted,
+    std::span<const double> solved_pressures,
+    double ambient_pressure,
+    RigidBody3D body
+);
+
 }  // namespace fluidity

@@ -9,6 +9,7 @@
 
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 #include "fluidity/host/whitewater_3d.h"
 
 namespace fluidity {
@@ -192,6 +193,11 @@ struct LiquidProgressObserver3D {
   LiquidWorkPhaseObserver3D work_phase{};
 };
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
+struct LiquidPlanarPistonAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -243,6 +249,11 @@ class LiquidSubstepScheduler3D {
   // even on failure. Returns disposition/retry duration; detailed code/stage are in
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
+  // Attempts the moving planar piston scene and returns the pressure load
+  // only when the liquid state commits. The body is supplied by value and
+  // the piston trajectory stays prescribed for this attempt.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D>
+  AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -251,6 +262,8 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptImpl(double step_duration, LiquidWorkPhaseObserver3D work_phase, RigidBody3D* piston_load);
   struct Impl;
   explicit LiquidSubstepScheduler3D(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

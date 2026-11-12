@@ -392,7 +392,8 @@ struct LiquidSubstepScheduler3D::Impl {
       double step_duration,
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& accepted_measurement,
-      LiquidWorkPhaseObserver3D work_phase
+      LiquidWorkPhaseObserver3D work_phase,
+      RigidBody3D* piston_load
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
@@ -603,6 +604,8 @@ struct LiquidSubstepScheduler3D::Impl {
     // Evaluate the signed wall flux at the frozen pose. Pressure link assembly
     // consumes the face-order borrow before the wetted-piston workspace is reused.
     std::span<const std::optional<double>> wetted_piston_face_fluxes;
+    std::optional<WettedPistonInputs3D> piston_inputs;
+    std::optional<WettedPistonView3D> piston_wetted;
     if (staging.wetted_piston.has_value()) {
       const WettedPistonInputs3D wetted_piston_inputs{
           .field = scene.field,
@@ -618,6 +621,8 @@ struct LiquidSubstepScheduler3D::Impl {
         return Error(absl::StatusCode::kInvalidArgument);
       }
       wetted_piston_face_fluxes = wetted->face_fluxes;
+      piston_inputs.emplace(wetted_piston_inputs);
+      piston_wetted = *wetted;
     }
     auto links = backend.links(
         backend.context,
@@ -661,6 +666,19 @@ struct LiquidSubstepScheduler3D::Impl {
       );
       if (!projection.ok()) {
         return projection.status();
+      }
+      if (piston_load != nullptr) {
+        const auto loaded = AccumulatePlanarWettedPistonPressure3D(
+            *piston_inputs,
+            *piston_wetted,
+            projection->cell_pressures,
+            scene.ambient_pressure,
+            *piston_load
+        );
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        *piston_load = *loaded;
       }
       diagnostics.pressure_diagnostics = projection->diagnostics;
       accepted_measurement.pressure = projection->diagnostics;
@@ -1086,6 +1104,36 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
 }
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase) {
+  return AttemptImpl(step_duration, work_phase, nullptr);
+}
+
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field)) {
+    return absl::FailedPreconditionError("piston load requires a moving planar piston scene");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
+    double step_duration,
+    LiquidWorkPhaseObserver3D work_phase,
+    RigidBody3D* piston_load
+) {
   auto& impl = *impl_;
   auto& diagnostics = impl.diagnostics;
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
@@ -1111,7 +1159,7 @@ LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase);
+  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase, piston_load);
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
