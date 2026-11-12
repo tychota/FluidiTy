@@ -10,6 +10,55 @@
 namespace fluidity {
 namespace {
 
+TEST(RigidBody3D, AcceptedInteractionCheckpointRoundTripsLiquidAndPlastic) {
+  LiquidState3D liquid;
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(1);
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(particles->Resize(1).ok());
+  liquid.particles = std::move(*particles);
+  liquid.particles[0] = {.id = 5, .world_position = {1, 2, 3}};
+  liquid.next_particle_id = 6;
+  const DrySolidMaterial3D snow = SnowParameters3D{2, 3, 0.025, 0.01, 4};
+  const DrySolidParticle3D compressed_snow{
+      .world_position = {2.25, 2.25, 2.25},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  const auto captured = CapturePlasticSolidCheckpointParticle3D(7, 9, 11, snow, compressed_snow);
+  ASSERT_TRUE(captured.ok()) << captured.status();
+  const std::array bindings{PlasticSolidCheckpointBinding3D{9, 11, snow}};
+  SolidInteractionCheckpoint3D solid{.accepted_step = 0, .bodies = {}, .sides = {}};
+  const auto legacy = EncodeSolidInteractionCheckpoint3D(solid);
+  ASSERT_TRUE(legacy.ok()) << legacy.status();
+  ASSERT_TRUE(DecodeSolidInteractionCheckpoint3D(*legacy).ok());
+  solid.plastic_particles = {*captured};
+  const auto bytes = EncodeCoupledInteractionCheckpoint3D(liquid, solid, bindings);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  EXPECT_EQ(DecodeCoupledInteractionCheckpoint3D(*bytes).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*bytes, bindings);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->liquid, liquid);
+  ASSERT_EQ(restored->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(restored->solid.plastic_particles.front().log_plastic_jacobian, std::log(0.8));
+  const auto replayed = EncodeCoupledInteractionCheckpoint3D(restored->liquid, restored->solid, bindings);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  EXPECT_EQ(*bytes, *replayed);
+  const auto solid_only = EncodeSolidInteractionCheckpoint3D(solid, bindings);
+  ASSERT_TRUE(solid_only.ok()) << solid_only.status();
+  EXPECT_TRUE(DecodeSolidInteractionCheckpoint3D(*solid_only, bindings).ok());
+  EXPECT_EQ(
+      DecodeCoupledInteractionCheckpoint3D(*solid_only, bindings).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  solid.plastic_particles.front().log_plastic_jacobian = 1000;
+  EXPECT_EQ(
+      EncodeCoupledInteractionCheckpoint3D(liquid, solid, bindings).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 TEST(RigidBody3D, PressureTractionUsesWettedAreaAndOffCenterMoment) {
   const RigidBody3D body{
       .body_id = 23,
