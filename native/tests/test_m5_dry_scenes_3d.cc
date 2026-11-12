@@ -524,6 +524,25 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
+bool TestDryGridWallFriction() {
+  using fluidity::internal::SolveDryGridWallFriction3D;
+  constexpr fluidity::Vec3 velocity{3, 0, 4};
+  constexpr fluidity::Vec3 mobility{2, 0, 4};
+  const auto sticking = SolveDryGridWallFriction3D(velocity, mobility, 2);
+  const auto frictionless = SolveDryGridWallFriction3D(velocity, mobility, 0);
+  const double cap = std::hypot(0.75, 2.0 / 3);
+  const auto sliding = SolveDryGridWallFriction3D(velocity, mobility, cap);
+  if (!sticking.ok() || !frictionless.ok() || !sliding.ok()) {
+    return false;
+  }
+  const double work = sliding->x * (velocity.x + 0.5 * mobility.x * sliding->x)
+      + sliding->z * (velocity.z + 0.5 * mobility.z * sliding->z);
+  return sticking->x == -1.5 && sticking->z == -1 && frictionless->x == 0 && frictionless->z == 0 && sliding->y == 0
+      && std::abs(sliding->x + 0.75) < 1e-12 && std::abs(sliding->z + 2.0 / 3) < 1e-12
+      && std::abs(std::hypot(sliding->x, sliding->z) - cap) < 1e-12 && std::abs(work + 3.465277777777778) < 1e-12
+      && !SolveDryGridWallFriction3D(velocity, {0, 0, 4}, cap).ok();
+}
+
 bool TestWallImpulseBudget(bool compatible_floor = false) {
   constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
@@ -1357,7 +1376,7 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
+  if (!TestSandSurfaceFit() || !TestDryGridWallFriction() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
       || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
       || !TestCompatibleFloorStressWork() || !TestBoundedFloorDonorFallback() || !TestUncutStressWork()
       || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {

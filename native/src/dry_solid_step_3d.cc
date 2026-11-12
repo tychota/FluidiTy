@@ -128,6 +128,41 @@ absl::Status DurationExceeded(const char* message) {
 
 }  // namespace
 
+absl::StatusOr<Vec3> internal::SolveDryGridWallFriction3D(Vec3 velocity, Vec3 mobility, double friction_limit) {
+  const bool valid_tangents = solid_detail::Finite(velocity) && solid_detail::Finite(mobility) && velocity.y == 0
+      && mobility.y == 0 && mobility.x > 0 && mobility.z > 0;
+  if (!valid_tangents || !std::isfinite(friction_limit) || friction_limit < 0) {
+    return absl::InvalidArgumentError("invalid dry grid wall friction inputs");
+  }
+  if (friction_limit == 0) {
+    return Vec3{};
+  }
+  const auto impulse_at = [&](double multiplier) {
+    return Vec3{-velocity.x / (mobility.x + multiplier), 0, -velocity.z / (mobility.z + multiplier)};
+  };
+  const Vec3 sticking = impulse_at(0);
+  if (std::hypot(sticking.x, sticking.z) <= friction_limit) {
+    return sticking;
+  }
+  // The constrained energy minimum adds one multiplier to both diagonal
+  // mobilities. Its impulse norm decreases monotonically with the multiplier.
+  double lower = 0;
+  double upper = std::hypot(velocity.x, velocity.z) / friction_limit;
+  if (!std::isfinite(upper)) {
+    return absl::OutOfRangeError("unrepresentable dry grid wall friction multiplier");
+  }
+  for (int iteration = 0; iteration < 64; ++iteration) {
+    const double middle = lower + (upper - lower) * 0.5;
+    const Vec3 impulse = impulse_at(middle);
+    if (std::hypot(impulse.x, impulse.z) > friction_limit) {
+      lower = middle;
+    } else {
+      upper = middle;
+    }
+  }
+  return impulse_at(upper);
+}
+
 bool internal::DrySolidDurationExceeded3D(const absl::Status& status) {
   return status.GetPayload(kDrySolidDurationBound).has_value();
 }

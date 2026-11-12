@@ -37,6 +37,12 @@ Mat3 ProjectStationaryFloorVelocityGradient3D(
     double friction_coefficient
 );
 
+// Returns the maximum-dissipation tangential wall impulse (N s) for a
+// stationary contact. Components x and z are world tangent axes, and y
+// must be zero. The diagonal mobility (1/kg) maps impulse to contact
+// velocity change. The impulse magnitude is bounded by friction_limit.
+absl::StatusOr<Vec3> SolveDryGridWallFriction3D(Vec3 tangent_velocity, Vec3 tangent_mobility, double friction_limit);
+
 // Accumulates one particle's uncut reference-volume stress into private step scratch.
 // The caller provides one initialized force slot per owned face. On failure discard scratch.
 absl::Status AccumulateDrySolidStress3D(
