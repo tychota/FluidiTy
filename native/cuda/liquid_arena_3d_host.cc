@@ -79,8 +79,14 @@ bool Fits(LiquidStateCapacities3D active, LiquidStateCapacities3D capacity) {
   return active.particles <= capacity.particles && active.blocks <= capacity.blocks && active.cells <= capacity.cells
       && active.faces <= capacity.faces && active.sources <= capacity.sources;
 }
-LiquidStateCapacities3D Active(const LiquidState3D& state) {
-  return {state.particles.size(), state.blocks.size(), state.cells.size(), state.faces.size(), state.sources.size()};
+LiquidStateCapacities3D Active(const LiquidState3D& state, bool adaptive) {
+  return {
+      state.particles.size(),
+      state.blocks.size(),
+      adaptive ? state.adaptive_cells.size() : state.cells.size(),
+      adaptive ? state.adaptive_faces.size() : state.faces.size(),
+      state.sources.size(),
+  };
 }
 bool SameGeometry(UniformMacGeometry3D left, UniformMacGeometry3D right) {
   return left.cell_width == right.cell_width && left.world_origin.x == right.world_origin.x
@@ -108,11 +114,18 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
   }
   ByteLayout state;
   auto& layout = storage.state_layout;
+  layout.adaptive_state = storage.ledger->reserve_adaptive_state;
+  if (layout.adaptive_state
+      && (capacity.cells > kMaximumAdaptiveLiquidCells3D || capacity.faces > kMaximumAdaptiveLiquidFaces3D)) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  const auto cell_stride = layout.adaptive_state ? sizeof(LiquidAdaptiveCellState3D) : sizeof(LiquidCellState3D);
+  const auto face_stride = layout.adaptive_state ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D);
   const std::size_t bin_count = capacity.particles / 32 + (capacity.particles % 32 != 0 ? 1 : 0);
   if (!state.Add(bin_count, sizeof(CudaLiquidParticleBin3D), layout.particle_bins_byte_offset)
       || !state.Add(capacity.blocks, sizeof(LiquidBlockState3D), layout.block_records_byte_offset)
-      || !state.Add(capacity.cells, sizeof(LiquidCellState3D), layout.cell_records_byte_offset)
-      || !state.Add(capacity.faces, sizeof(LiquidFaceState3D), layout.face_records_byte_offset)
+      || !state.Add(capacity.cells, cell_stride, layout.cell_records_byte_offset)
+      || !state.Add(capacity.faces, face_stride, layout.face_records_byte_offset)
       || !state.Add(capacity.sources, sizeof(LiquidSourceState3D), layout.source_records_byte_offset)
       || !state.Add(1, sizeof(LiquidArenaControl3D), layout.control_record_byte_offset) || !state.Finish()) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -477,7 +490,11 @@ StageState(LiquidArenaStorage3D& storage, std::size_t bank, const LiquidState3D&
   if (storage.leases[bank] != 0) {
     return Error(absl::StatusCode::kFailedPrecondition);
   }
-  if (!Fits(Active(state), storage.capacities)) {
+  const bool adaptive = storage.state_layout.adaptive_state;
+  if (adaptive != (state.adaptive_cells.size() != 0)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (!Fits(Active(state, adaptive), storage.capacities)) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
   auto status = ValidateLiquidState3D(state);
@@ -513,26 +530,28 @@ StageState(LiquidArenaStorage3D& storage, std::size_t bank, const LiquidState3D&
   if (!status.ok()) {
     return status;
   }
-  status = Fence(storage);
+  status = Fence(storage, true);
   if (!status.ok()) {
     return status;
   }
   storage.identities[bank] = {*generation, clock};
-  storage.active[bank] = Active(state);
+  storage.active[bank] = Active(state, adaptive);
   auto& metrics = storage.ledger->metrics;
   metrics.live_physical_state_bytes -= storage.physical_state_bytes[bank];
-  storage.physical_state_bytes[bank] = cuda_internal::LiquidArenaPhysicalStateBytes3D(storage.active[bank]);
+  storage.physical_state_bytes[bank] = cuda_internal::LiquidArenaPhysicalStateBytes3D(storage.active[bank], adaptive);
   metrics.live_physical_state_bytes += storage.physical_state_bytes[bank];
   metrics.peak_physical_state_bytes = std::max(metrics.peak_physical_state_bytes, metrics.live_physical_state_bytes);
   return absl::OkStatus();
 }
 }  // namespace
 namespace cuda_internal {
-std::size_t LiquidArenaPhysicalStateBytes3D(LiquidStateCapacities3D active) {
+std::size_t LiquidArenaPhysicalStateBytes3D(LiquidStateCapacities3D active, bool adaptive) {
   const auto active_bins = active.particles / 32 + (active.particles % 32 != 0);
+  const auto cell_stride = adaptive ? sizeof(LiquidAdaptiveCellState3D) : sizeof(LiquidCellState3D);
+  const auto face_stride = adaptive ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D);
   return active_bins * sizeof(CudaLiquidParticleBin3D) + active.blocks * sizeof(LiquidBlockState3D)
-      + active.cells * sizeof(LiquidCellState3D) + active.faces * sizeof(LiquidFaceState3D)
-      + active.sources * sizeof(LiquidSourceState3D) + sizeof(LiquidArenaControl3D);
+      + active.cells * cell_stride + active.faces * face_stride + active.sources * sizeof(LiquidSourceState3D)
+      + sizeof(LiquidArenaControl3D);
 }
 LiquidArenaRuntimeCalls3D& LiquidArenaRuntimeCalls() {
   static thread_local LiquidArenaRuntimeCalls3D calls;
@@ -708,9 +727,10 @@ absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::Create(
     LiquidStateCapacities3D capacities,
     int device_ordinal,
     std::size_t byte_limit,
-    bool measure_job
+    bool measure_job,
+    bool reserve_adaptive_state
 ) {
-  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, false);
+  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, false, reserve_adaptive_state);
 }
 absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithWettedPiston(
     LiquidStateCapacities3D capacities,
@@ -718,14 +738,15 @@ absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithWettedPiston(
     std::size_t byte_limit,
     bool measure_job
 ) {
-  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, true);
+  return CreateWithScratch(capacities, device_ordinal, byte_limit, measure_job, true, false);
 }
 absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithScratch(
     LiquidStateCapacities3D capacities,
     int device_ordinal,
     std::size_t byte_limit,
     bool measure_job,
-    bool reserve_wetted_piston_scratch
+    bool reserve_wetted_piston_scratch,
+    bool reserve_adaptive_state
 ) {
   const auto properties = cuda_internal::QueryLiquidCudaDevice3D(device_ordinal);
   if (!properties.ok()) {
@@ -748,6 +769,7 @@ absl::StatusOr<CudaLiquidArena3D> CudaLiquidArena3D::CreateWithScratch(
   ledger.device_ordinal = device_ordinal;
   ledger.measure_job = measure_job;
   ledger.reserve_wetted_piston_scratch = reserve_wetted_piston_scratch;
+  ledger.reserve_adaptive_state = reserve_adaptive_state;
   auto& metrics = ledger.metrics;
   status = CheckedCuda(cudaMemGetInfo(&metrics.free_device_bytes_at_start, &metrics.total_device_bytes));
   if (!status.ok()) {
@@ -844,7 +866,11 @@ absl::Status CudaLiquidArena3D::PrepareGrowth(LiquidStateCapacities3D capacities
   if (!status.ok()) {
     return status;
   }
-  if (!Fits(Active(frame_start), capacities)) {
+  const bool adaptive = impl_->current->state_layout.adaptive_state;
+  if (adaptive != (frame_start.adaptive_cells.size() != 0)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  if (!Fits(Active(frame_start, adaptive), capacities)) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
   auto storage = BuildStorage(*impl_->ledger, capacities);
@@ -1156,11 +1182,12 @@ absl::Status CudaLiquidEpochLease3D::Readback(LiquidState3D& output) const {
   if (storage_->ledger->runtime_failed) {
     return Error(absl::StatusCode::kInternal);
   }
+  const bool adaptive = storage_->state_layout.adaptive_state;
   const LiquidStateCapacities3D capacity{
       output.particles.capacity(),
       output.blocks.capacity(),
-      output.cells.capacity(),
-      output.faces.capacity(),
+      adaptive ? output.adaptive_cells.capacity() : output.cells.capacity(),
+      adaptive ? output.adaptive_faces.capacity() : output.faces.capacity(),
       output.sources.capacity(),
   };
   if (!Fits(storage_->active[bank_], capacity)) {
@@ -1189,6 +1216,10 @@ absl::Status CudaLiquidEpochLease3D::Readback(LiquidState3D& output) const {
   );
   if (control.active != storage_->active[bank_] || control.clock != identity_.clock) {
     return Error(absl::StatusCode::kDataLoss);
+  }
+  const auto encoding = cuda_internal::ValidateLiquidArenaEncoding3D(storage_->state_layout, storage_->pinned + offset);
+  if (!encoding.ok()) {
+    return encoding;
   }
   cuda_internal::UnpackLiquidArenaState3D(storage_->state_layout, storage_->pinned + offset, output);
   return absl::OkStatus();

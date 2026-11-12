@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "fluidity/host/cuda_wetted_piston_3d.h"
 #include "liquid_geometry_stages_3d.h"
 #include "liquid_pressure_stage_3d.h"
@@ -11,12 +12,16 @@
 
 namespace fluidity {
 struct CudaLiquidSubstepBackend3D::Impl {
-  Impl(CudaLiquidArena3D storage, bool measure_job, bool needs_wetted_piston)
-      : arena(std::move(storage)), measure_job(measure_job), needs_wetted_piston(needs_wetted_piston) {
+  Impl(CudaLiquidArena3D storage, bool measure_job, bool needs_wetted_piston, bool adaptive_state)
+      : arena(std::move(storage)),
+        measure_job(measure_job),
+        needs_wetted_piston(needs_wetted_piston),
+        adaptive_state(adaptive_state) {
   }
   CudaLiquidArena3D arena;
   bool measure_job;
   bool needs_wetted_piston;
+  bool adaptive_state;
   float substep_device_timeline_ms = 0;
 };
 CudaLiquidSubstepBackend3D::CudaLiquidSubstepBackend3D(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
@@ -28,16 +33,21 @@ absl::StatusOr<CudaLiquidSubstepBackend3D> CudaLiquidSubstepBackend3D::Create(
     LiquidStateCapacities3D capacities,
     int device_ordinal,
     bool measure_job,
-    bool needs_wetted_piston
+    bool needs_wetted_piston,
+    bool reserve_adaptive_state
 ) {
+  if (reserve_adaptive_state && (needs_wetted_piston || device_ordinal != 0)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
   constexpr auto no_byte_limit = static_cast<std::size_t>(-1);
   auto arena = needs_wetted_piston
       ? CudaLiquidArena3D::CreateWithWettedPiston(capacities, device_ordinal, no_byte_limit, measure_job)
-      : CudaLiquidArena3D::Create(capacities, device_ordinal, no_byte_limit, measure_job);
+      : CudaLiquidArena3D::Create(capacities, device_ordinal, no_byte_limit, measure_job, reserve_adaptive_state);
   if (!arena.ok()) {
     return arena.status();
   }
-  auto impl = std::unique_ptr<Impl>(new (std::nothrow) Impl(std::move(*arena), measure_job, needs_wetted_piston));
+  auto impl = std::unique_ptr<Impl>(new (std::nothrow
+  ) Impl(std::move(*arena), measure_job, needs_wetted_piston, reserve_adaptive_state));
   if (!impl) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
@@ -236,6 +246,22 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
             );
           },
   };
+  if (impl_->adaptive_state) {
+    operations.project_adaptive = [](void* context,
+                                     const pressure_internal::PreparedMacPressureSystem3D& system,
+                                     MacPressureSolverOptions3D options) -> absl::StatusOr<MacPressureProjection3D> {
+      auto& arena = static_cast<Impl*>(context)->arena;
+      const auto ready = arena.BeginDeviceTimeline();
+      if (!ready.ok()) {
+        return ready;
+      }
+      auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system, options);
+      if (!result.ok()) {
+        return result.status();
+      }
+      return std::move(result->projection);
+    };
+  }
   if (!impl_->needs_wetted_piston) {
     operations.wetted_piston = nullptr;
   }
