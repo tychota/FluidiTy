@@ -2405,10 +2405,13 @@ foreach ($case in 'fine', 'fine-half') {
 
 ### Reflected deformation gradient during impact
 
-Local experiment `380e4cc` uses the full reflected-grid velocity gradient for the
+Local experiment `b2d03c6` uses the full reflected-grid gradient for the
 deformation update over an impact step. Swept particle velocity and
 stored affine velocity still use the Coulomb projection. The previous
-contact split also projected the deformation gradient after impact. The native and SM120 dry-scene targets passed, including the impact oracle for elastic compression and the bounded donor oracle for force pairing and rollback.
+contact split also projected the deformation gradient after impact.
+Both dry-scene targets passed after rebuilding the final source, including
+the impact oracle for elastic compression and the bounded donor oracle
+for force pairing and rollback.
 
 | Native case | 1.5 s angle and radius | 3 s angle and radius |
 |---|---|---|
@@ -2419,7 +2422,10 @@ contact split also projected the deformation gradient after impact. The native a
 
 The completed cases retained less than 5.1e-16 J of cut stress work
 mismatch and less than 5.6e-9 N·s of vertical momentum residual. The
-control leaves Q-SAND open.
+control leaves Q-SAND open. The native fine case rejected an X face
+carrying 1.05459119e-5 kg with 0.14972351 N of stress force. The
+pre-force velocity was −0.00075168 m/s and the post-force velocity was
+22.18253479 m/s against the 18 m/s motion bound.
 
 ```powershell
 $bin = 'out/pr-m5-sand-affine/out/floor-wall-gradient-bin'
