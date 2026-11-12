@@ -635,6 +635,9 @@ def run_ctest(run, label, required):
         f"^{label}$",
         "--output-on-failure",
         "--no-tests=error",
+        # Keep the GoogleTest completion markers after numerical fixture receipts.
+        "--test-output-size-passed",
+        "65536",
         "--output-junit",
         junit,
         check=False,
