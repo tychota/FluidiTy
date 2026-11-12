@@ -215,6 +215,30 @@ TEST(LiquidBoundaryGeometry3D, PressureLoadedSnowTrialAdvancesWithoutChangingAcc
   EXPECT_DOUBLE_EQ(accepted.front().transfer.sorted_world_position.x, 2.0);
 }
 
+TEST(LiquidBoundaryGeometry3D, AnalyticPlatenExcludesOverlappingSnowReactionArea) {
+  boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
+  for (int corner = 0; corner < 8; ++corner) {
+    cell.liquid_distance[corner] = -1.0;
+    cell.solid_distance[corner] = (corner & 1) - 0.5;
+  }
+  const boundary_internal::ClippingPlane fluid_side{.normal = {0, 1, 0}, .plane_coordinate = 0.75};
+  const auto clipped = boundary_internal::MeasureSampledSolidLiquidCell(cell, &fluid_side);
+  ASSERT_TRUE(clipped.ok());
+  EXPECT_NEAR(clipped->wet_volume, 0.375, 2e-14);
+  EXPECT_NEAR(clipped->open_area[4], 0.375, 2e-14);
+  EXPECT_EQ(clipped->open_area[3], 0.0);
+
+  const auto snow_weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5}, &fluid_side);
+  ASSERT_TRUE(snow_weights.ok());
+  constexpr std::array corner_velocity{2.0, 6.0, 2.0, 6.0};
+  EXPECT_NEAR(std::accumulate(snow_weights->begin(), snow_weights->end(), 0.0), 0.375, 2e-14);
+  EXPECT_NEAR(
+      std::inner_product(snow_weights->begin(), snow_weights->end(), corner_velocity.begin(), 0.0),
+      1.125,
+      2e-14
+  );
+}
+
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
   boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
   cell.liquid_distance.fill(-1);
