@@ -33,10 +33,7 @@ class ContactFaceBodies3D {
       return ContactFaceDepositStatus3D::kInvalid;
     }
 
-    int slot = 0;
-    while (slot < size_ && records_[slot].body_id < body_id) {
-      ++slot;
-    }
+    const int slot = LowerBound(body_id);
     const bool existing = slot < size_ && records_[slot].body_id == body_id;
     if (!existing && size_ == kCapacity) {
       return ContactFaceDepositStatus3D::kBodyCapacity;
@@ -86,7 +83,56 @@ class ContactFaceBodies3D {
     return true;
   }
 
+  // Applies a detected pair impulse in world SI units. normal_toward_first
+  // points from the second body toward the first. The caller supplies pair
+  // order and synchronization. Missing or identical IDs, invalid contact
+  // parameters or range failure preserve both the table and output.
+  FLUIDITY_HD bool ResolvePair(
+      std::uint64_t first_body_id,
+      std::uint64_t second_body_id,
+      Vec3 normal_toward_first,
+      double friction_coefficient,
+      DistinctBodyContact3D& output
+  ) noexcept {
+    const int first_slot = LowerBound(first_body_id);
+    const int second_slot = LowerBound(second_body_id);
+    ContactBodySample3D first{};
+    ContactBodySample3D second{};
+    if (!Read(first_slot, first) || first.body_id != first_body_id || !Read(second_slot, second)
+        || second.body_id != second_body_id) {
+      return false;
+    }
+    DistinctBodyContact3D candidate{};
+    if (!ResolveDistinctBodyContact3D(first, second, normal_toward_first, friction_coefficient, candidate)) {
+      return false;
+    }
+    if (candidate.incoming_relative_normal_speed < 0) {
+      namespace detail = distinct_contact_detail;
+      BodyMomentum first_record = records_[first_slot];
+      BodyMomentum second_record = records_[second_slot];
+      first_record.world_momentum = detail::AddScaled(first_record.world_momentum, candidate.impulse_on_first, 1);
+      second_record.world_momentum = detail::AddScaled(second_record.world_momentum, candidate.impulse_on_first, -1);
+      candidate.first_world_velocity = Velocity(first_record);
+      candidate.second_world_velocity = Velocity(second_record);
+      if (!detail::Finite(first_record.world_momentum) || !detail::Finite(second_record.world_momentum)
+          || !detail::Finite(candidate.first_world_velocity) || !detail::Finite(candidate.second_world_velocity)) {
+        return false;
+      }
+      records_[first_slot] = first_record;
+      records_[second_slot] = second_record;
+    }
+    output = candidate;
+    return true;
+  }
+
  private:
+  FLUIDITY_HD int LowerBound(std::uint64_t body_id) const noexcept {
+    int slot = 0;
+    while (slot < size_ && records_[slot].body_id < body_id) {
+      ++slot;
+    }
+    return slot;
+  }
   struct BodyMomentum {
     std::uint64_t body_id;
     double mass;
