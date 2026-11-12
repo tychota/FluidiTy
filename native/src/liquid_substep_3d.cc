@@ -1380,7 +1380,9 @@ struct LiquidSubstepScheduler3D::Impl {
           auto patch_pressures = pressures;
           double reconstructed_pressure = 0.0;
           double pressure_gradient_y = 0.0;
-          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && !uses_composition_density) {
+          const bool supports_hydrostatic_gradient =
+              !uses_composition_density || scene.constituent_materials.size() == 1;
+          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
             const auto geometry = grid.geometry();
             const auto cell = links->cells[patch.pressure_cell_index].cell_index;
             const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
@@ -1390,7 +1392,8 @@ struct LiquidSubstepScheduler3D::Impl {
             if (!centroid_to_cell.ok()) {
               return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
             }
-            pressure_gradient_y = scene.liquid_density * scene.world_acceleration.y;
+            const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
+            pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
             reconstructed_pressure =
                 std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
             patch_pressures = {&reconstructed_pressure, 1};

@@ -919,10 +919,20 @@ absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
     const auto normal_rate = Cross(angular_travel, world_normal);
     const double normal_curvature =
         Dot(Cross(angular_travel, normal_rate), relative_start) + 2.0 * Dot(normal_rate, relative_travel);
-    if (tangential && (!std::isfinite(normal_curvature) || std::abs(normal_curvature) <= 4.0 * roundoff)) {
+    // With a fixed orientation, an exactly tangential path has zero affine
+    // face-gap slope. Carry the point so stored normal motion is still resolved.
+    bool fixed_tangent = false;
+    if (rotation_angle == 0.0 && Norm(drift.end.angular_velocity) == 0.0) {
+      boundary_internal::ProjectedSum normal_speed;
+      normal_speed.AddRelativeMotion(world_normal, world_point_velocity, drift.end.linear_velocity, 1.0);
+      const auto direction = normal_speed.Bounds().sign();
+      fixed_tangent = direction.has_value() && *direction == 0;
+    }
+    if (tangential && !fixed_tangent
+        && (!std::isfinite(normal_curvature) || std::abs(normal_curvature) <= 4.0 * roundoff)) {
       return error(absl::StatusCode::kAborted);
     }
-    if (tangential ? normal_curvature < 0.0 : normal_travel < 0.0) {
+    if (fixed_tangent || (tangential ? normal_curvature < 0.0 : normal_travel < 0.0)) {
       return std::optional<RigidBoxSweepHit3D>{{
           .fraction_lower = 0.0,
           .fraction_upper = 0.0,

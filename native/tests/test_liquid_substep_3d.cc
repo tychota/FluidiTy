@@ -1042,7 +1042,7 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxProductionGatherBalancesHydrostaticWeight
   }
 }
 
-TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeight) {
+void ExpectOrientedFloatingBoxHydrostaticWeight(bool explicit_composition) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
   scene.world_acceleration = {0.0, -4.0, 0.0};
@@ -1051,6 +1051,15 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeig
   initial.particles[1].world_position = {1.375, 0.375, 0.375};
   initial.particles[2].world_position = {0.375, 0.375, 1.375};
   initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  constexpr std::array<LiquidConstituentMaterial3D, 1> kMaterials{{{8, 4, 1.0}}};
+  if (explicit_composition) {
+    scene.constituent_materials = kMaterials;
+    for (auto& particle : initial.particles.values()) {
+      particle.phase_id = 4;
+      particle.constituent_count = 1;
+      particle.constituents[0] = {8, 1.0};
+    }
+  }
   constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
   constexpr double kInitialDraft = 0.125;
   constexpr double kBodyMass = 0.0078125;
@@ -1099,6 +1108,13 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeig
     EXPECT_LE(max_net_force, 2e-6);
     EXPECT_LE(max_defect, 2e-5);
   }
+}
+
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherBalancesHydrostaticWeight) {
+  ExpectOrientedFloatingBoxHydrostaticWeight(false);
+}
+TEST(LiquidSubstep3D, OrientedFloatingBoxBalancesExplicitSingleConstituentHydrostaticWeight) {
+  ExpectOrientedFloatingBoxHydrostaticWeight(true);
 }
 
 TEST(LiquidSubstep3D, GuidedFloatingBoxMeasuresAddedMassAndLightBodyAmplification) {
