@@ -78,6 +78,7 @@ enum class GradedTankVariant {
   kMiscible,
   kCapillary,
   kViscous,
+  kMiscibleViscous,
 };
 
 void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
@@ -93,6 +94,9 @@ void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
   }
   if (variant == GradedTankVariant::kViscous) {
     scene.dynamic_viscosity = 2.0;
+  }
+  if (variant == GradedTankVariant::kMiscibleViscous) {
+    test::SetGradedTankMiscibleViscosity3D(state, scene);
   }
   const bool capillary = variant == GradedTankVariant::kCapillary;
   if (capillary) {
@@ -163,7 +167,9 @@ void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
   expect_device_state(scheduler->committed());
   const auto usage_after_attempts = backend->usage();
   EXPECT_EQ(usage_after_attempts.compiled_architecture, 1200);
-  if (variant == GradedTankVariant::kViscous) {
+  if (variant == GradedTankVariant::kViscous || variant == GradedTankVariant::kMiscibleViscous) {
+    ASSERT_TRUE(scheduler->diagnostics().accepted_measurement);
+    EXPECT_TRUE(scheduler->diagnostics().accepted_measurement->viscous_max_momentum_residual_kg_m_per_s);
     EXPECT_EQ(usage_after_attempts.device_allocation_count, usage_before_attempts.device_allocation_count);
     EXPECT_EQ(usage_after_attempts.device_free_count, usage_before_attempts.device_free_count);
     EXPECT_EQ(usage_after_attempts.device_reserved_bytes, usage_before_attempts.device_reserved_bytes);
@@ -188,6 +194,10 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleTrialPreservesDeviceEpoch) {
 
 TEST(CudaAdaptiveSimulate3D, RejectedGradedCapillaryTrialPreservesDeviceEpoch) {
   ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kCapillary);
+}
+
+TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleViscousTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kMiscibleViscous);
 }
 
 TEST(CudaAdaptiveSimulate3D, RejectedGradedViscousTrialPreservesDeviceEpoch) {

@@ -287,7 +287,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     initial_modes = (
         "initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level",
         "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-effects",
-        "graded-eos", "graded-miscible", "graded-viscous",
+        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous",
     )
     initial = ["--initial-state", str(scene) + ".flst"] if mode in initial_modes else []
     return scene, initial
@@ -624,12 +624,14 @@ def case_cpu_graded_replay(executable, fixture, directory, cuda):
     graded_replay_case(executable, fixture, directory / "eos", "cpu", "graded-eos")
     graded_replay_case(executable, fixture, directory / "miscible", "cpu", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "viscous", "cpu", "graded-viscous")
+    graded_replay_case(executable, fixture, directory / "graded-miscible-viscous", "cpu", "graded-miscible-viscous")
 
 
 def case_cuda_graded_replay(executable, fixture, directory, cuda):
     graded_replay_case(executable, fixture, directory / "eos", "cuda", "graded-eos")
     graded_replay_case(executable, fixture, directory / "miscible", "cuda", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "viscous", "cuda", "graded-viscous")
+    graded_replay_case(executable, fixture, directory / "graded-miscible-viscous", "cuda", "graded-miscible-viscous")
 
 def case_cpu_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cpu")
@@ -637,6 +639,7 @@ def case_cpu_replay(executable, fixture, directory, cuda):
     graded_replay_case(executable, fixture, directory / "graded-eos", "cpu", "graded-eos")
     graded_replay_case(executable, fixture, directory / "graded-miscible", "cpu", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "graded-viscous", "cpu", "graded-viscous")
+    graded_replay_case(executable, fixture, directory / "graded-miscible-viscous", "cpu", "graded-miscible-viscous")
 
 
 def case_cuda_execution(executable, fixture, directory, cuda):
@@ -652,6 +655,7 @@ def case_cuda_replay(executable, fixture, directory, cuda):
     graded_replay_case(executable, fixture, directory / "graded-eos", "cuda", "graded-eos")
     graded_replay_case(executable, fixture, directory / "graded-miscible", "cuda", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "graded-viscous", "cuda", "graded-viscous")
+    graded_replay_case(executable, fixture, directory / "graded-miscible-viscous", "cuda", "graded-miscible-viscous")
 
 
 def mixed_cli_case(executable, fixture, directory, backend):
