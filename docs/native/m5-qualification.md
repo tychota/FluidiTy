@@ -3707,7 +3707,8 @@ rows keep the previous treatment.
 | Fine | 31.546988° | 0.153024 m |
 | Fine half-step | 38.280805° | 0.148133 m |
 
-The fine nominal case passes at reference stiffness. Its eightfold
+The fine nominal case passes at reference stiffness.
+Its native and SM120 output logs match byte for byte. Its eightfold
 diagnostic also passes the geometry at 32.188881° / 0.150819 m,
 with mean log plastic Jacobian 1.041356, down from 2.527271.
 Both dry-scene targets pass their default tests. All native pile
