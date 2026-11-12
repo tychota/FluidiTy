@@ -3899,3 +3899,25 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Ignore zero-weight samples when clearing an affine row
+
+Starting at `eb8877c`, check the raw quadratic stencil weight
+before clearing a fitted row for a ghost fallback. A zero-weight
+sample can no longer clear the row. Use the raw stencil so a
+nonzero ghost contribution remains visible even when the
+compatible deposit excluded the face. The paired deformation
+gather and force transpose are unchanged.
+
+All four 3 s native output logs match the row-clearing reference
+byte for byte. The native and SM120 default dry-scene targets
+also pass. Exactly zero-weight stencil entries do not explain
+the remaining coarse failures. The temporary source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-zero-weight-affine-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
