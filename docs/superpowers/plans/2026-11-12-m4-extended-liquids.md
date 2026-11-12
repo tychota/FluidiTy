@@ -709,3 +709,7 @@ $build = 'out/build/m4-constituent-viscosity-release'
 ```
 
 This fixture uses the full-cell planar tank path. Its phase interaction and coefficients are qualified through Simulate. Curved and adaptive viscous quadratures remain outside the verified geometry.
+
+## Viscosity scratch allocation regression
+
+The full Debug suite at a47d8a0 caught one allocation/free on the inviscid attempt path. MSVC checked iterators allocate a proxy even for an empty vector. The scheduler now reserves constituent viscosity records during construction and transactional growth, includes them in its staging byte budget and borrows a span during the attempt. Legacy scenes reserve no coefficient records. The four failed allocation tests, the constituent and planar immiscible viscosity cases, and the workspace filter passed in the 75-case rerun. Receipts use out/m4-viscosity-scratch-cpu and the original failures remain in out/m4-a47d8a0-cpu-tests.log.

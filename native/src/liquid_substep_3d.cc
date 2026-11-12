@@ -7,7 +7,6 @@
 #include <numbers>
 #include <optional>
 #include <tuple>
-#include <vector>
 
 #include "absl/cleanup/cleanup.h"
 #include "liquid_boundary_backend.h"
@@ -823,7 +822,7 @@ struct LiquidSubstepScheduler3D::Impl {
       return particle.constituent_count != 0;
     });
     const bool uses_composition_density = staging.composition_density && first_explicit != particles.end();
-    const bool uses_composition_viscosity = uses_composition_density && HasConstituentViscosity(scene);
+    const bool uses_composition_viscosity = uses_composition_density && staging.composition_viscosity.has_value();
     const double sensor_viscosity = uses_composition_viscosity ? scene.dynamic_viscosity : 0.0;
     std::span<const LiquidInternalInterface3D> internal_interfaces;
     if (uses_composition_density) {
@@ -1058,12 +1057,13 @@ struct LiquidSubstepScheduler3D::Impl {
       std::span<const double> projected_face_velocities;
       MacPressureDiagnostics3D pressure_diagnostics;
       MacPressureFrozenMeasurement3D frozen_measurement;
-      std::vector<double> cell_dynamic_viscosity;
+      std::span<double> cell_dynamic_viscosity;
       if (uses_composition_viscosity) {
         if (pressure_problem.cells.size() != frozen->cells.size()) {
           return absl::InternalError("viscosity staging lost frozen cells");
         }
-        cell_dynamic_viscosity.reserve(pressure_problem.cells.size());
+        STEP_TRY(staging.composition_viscosity->Resize(pressure_problem.cells.size()));
+        cell_dynamic_viscosity = staging.composition_viscosity->values();
         for (std::size_t index = 0; index < pressure_problem.cells.size(); ++index) {
           if (CellKey(pressure_problem.cells[index].cell_index) != CellKey(frozen->cells[index].cell_index)) {
             return absl::InternalError("viscosity staging lost frozen cell order");
@@ -1075,7 +1075,7 @@ struct LiquidSubstepScheduler3D::Impl {
           if (!std::isfinite(viscosity) || viscosity < 0.0) {
             return absl::OutOfRangeError("sampled liquid viscosity is unrepresentable");
           }
-          cell_dynamic_viscosity.push_back(viscosity);
+          cell_dynamic_viscosity[index] = viscosity;
         }
       }
       const bool active_viscosity = cell_dynamic_viscosity.empty()
@@ -1493,7 +1493,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       scene.drift && scene.drift->maximum_rate > 0.0,
       scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos,
       !scene.constituent_materials.empty(),
-      !scene.phase_pairs.empty()
+      !scene.phase_pairs.empty(),
+      HasConstituentViscosity(scene)
   );
   if (!staging.ok()) {
     return staging.status();
@@ -1805,7 +1806,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           impl_->staging.drift_sensors.has_value(),
           impl_->staging.drift_pressure_cells.has_value(),
           impl_->staging.composition_density.has_value(),
-          impl_->staging.phase_crossings.has_value()
+          impl_->staging.phase_crossings.has_value(),
+          impl_->staging.composition_viscosity.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

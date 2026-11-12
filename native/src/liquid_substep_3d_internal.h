@@ -73,6 +73,7 @@ struct Staging {
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
   std::optional<LiquidRecords3D<CellVolumeRatioSensor3D>> drift_sensors;
   std::optional<LiquidRecords3D<CellCompositionDensity3D>> composition_density;
+  std::optional<LiquidRecords3D<double>> composition_viscosity;
   std::optional<LiquidRecords3D<LiquidInternalInterface3D>> phase_crossings;
   std::optional<LiquidRecords3D<MacPressureCell3D>> drift_pressure_cells;
   std::optional<LiquidRecords3D<SealedLiquidDriftCell3D>> sealed_drift_cells;
@@ -100,7 +101,8 @@ struct Staging {
       bool needs_drift_sensors = false,
       bool needs_incompressible_drift = false,
       bool needs_composition_density = false,
-      bool needs_phase_crossings = false
+      bool needs_phase_crossings = false,
+      bool needs_composition_viscosity = false
   );
 };
 bool Finite(Vec3 value);
