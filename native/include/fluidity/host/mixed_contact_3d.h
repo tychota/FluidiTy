@@ -106,8 +106,8 @@ struct PlanarSnowPressureTrial3D {
 
 using MixedPressureProjector3D = absl::StatusOr<MacPressureProjection3D> (*)(const MacPressureInputs3D&);
 
-// Solve one frozen pressure cell against a translating full sealed face
-// supported by a finite snow mass. The projector must implement the MAC
+// Solve a frozen MAC pressure system with one translating full sealed face
+// supported by a finite snow mass. The wall has one incident pressure cell. The projector must implement the MAC
 // pressure contract. Supply the wall ordinal in pressure face order and
 // the incoming snow speed along its positive MAC axis in m/s. The solve
 // balances the pressure impulse with the wall momentum and checks that
@@ -144,7 +144,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
 );
 
 // Stages pressure traction, regular-cell liquid advection and snow
-// contributor drift. Non-wall faces must be fully open or stationary
+// contributor drift in one frozen pressure cell. Non-wall faces must be fully open or stationary
 // sealed. Liquid stays in the frozen cell. Both materials stay on their
 // respective sides of the translating wall without a second impulse. Position increments are limited
 // by maximum_path_length in meters. Advances volume from the same

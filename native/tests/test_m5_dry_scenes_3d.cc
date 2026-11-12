@@ -564,6 +564,62 @@ bool TestPlanarMixedContactDetection() {
           != absl::StatusCode::kInvalidArgument) {
     return false;
   }
+  std::array connected_cells{reciprocal_cells.front(), reciprocal_cells.front()};
+  connected_cells.back().cell_index.x = 1;
+  std::vector connected_faces(pressure_faces.begin(), pressure_faces.end());
+  connected_faces[outlet_ordinal].pressure_link = fluidity::InternalMacPressureLink3D{0};
+  auto far_outlet = *outlet_face;
+  far_outlet.face_index.lattice_index.x = 2;
+  connected_faces.push_back(far_outlet);
+  for (const auto axis : {FaceNormalAxis::kY, FaceNormalAxis::kZ}) {
+    for (const int side : {0, 1}) {
+      connected_faces.push_back({
+          .face_index = {axis, {1, axis == FaceNormalAxis::kY ? side : 0, axis == FaceNormalAxis::kZ ? side : 0}},
+          .pressure_link = fluidity::SealedMacPressureLink3D{},
+      });
+    }
+  }
+  std::sort(connected_faces.begin(), connected_faces.end(), [&](const auto& first, const auto& second) {
+    return *grid->FaceSlot(first.face_index) < *grid->FaceSlot(second.face_index);
+  });
+  const auto x_face_ordinal = [&](int x) {
+    const auto face = std::find_if(connected_faces.begin(), connected_faces.end(), [x](const auto& candidate) {
+      return candidate.face_index.axis == FaceNormalAxis::kX && candidate.face_index.lattice_index.x == x;
+    });
+    return static_cast<std::size_t>(face - connected_faces.begin());
+  };
+  const auto connected_low = x_face_ordinal(0);
+  const auto connected_middle = x_face_ordinal(1);
+  const auto connected_high = x_face_ordinal(2);
+  const fluidity::MacPressureInputs3D connected_inputs{*grid, 0.125, connected_cells, connected_faces};
+  const auto connected = fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_low, 2, 4, project);
+  constexpr double kConnectedTolerance = 2e-6;
+  if (!connected.ok() || std::abs(connected->solved_wall_normal_velocity - 2) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.cell_pressures[0] - 32) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.cell_pressures[1] - 16) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.corrected_face_velocities[connected_middle] - 2) > kConnectedTolerance
+      || std::abs(connected->liquid_projection.corrected_face_velocities[connected_high] - 2) > kConnectedTolerance
+      || std::abs(connected->pressure_impulse_on_snow + 4) > kConnectedTolerance) {
+    return false;
+  }
+  connected_faces[connected_low] = far_outlet;
+  connected_faces[connected_low].face_index = low_wall->face_index;
+  connected_faces[connected_high] = *low_wall;
+  connected_faces[connected_high].face_index = far_outlet.face_index;
+  const auto reverse_connected =
+      fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_high, 2, -4, project);
+  if (!reverse_connected.ok() || std::abs(reverse_connected->solved_wall_normal_velocity + 2) > kConnectedTolerance
+      || std::abs(reverse_connected->liquid_projection.cell_pressures[0] - 16) > kConnectedTolerance
+      || std::abs(reverse_connected->liquid_projection.cell_pressures[1] - 32) > kConnectedTolerance
+      || std::abs(reverse_connected->pressure_impulse_on_snow - 4) > kConnectedTolerance) {
+    return false;
+  }
+  connected_faces[connected_middle].open_area = 0;
+  connected_faces[connected_middle].pressure_link = fluidity::SealedMacPressureLink3D{};
+  if (fluidity::SolvePlanarSnowPressureTrial3D(connected_inputs, connected_middle, 2, 4, project).status().code()
+      != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
   std::array pressure_snow{snow, snow, snow};
   pressure_snow[0].transfer.particle_mass = 0.125;
   pressure_snow[0].transfer.particle_velocity = {12, 2, 3};

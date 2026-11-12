@@ -33,7 +33,7 @@ clean Windows Release CUDA rebuild.
 | Particle-derived planar contact fronts | Pass for the bounded axis-aligned model | The fixture reconstructs a 0.25 m gap from liquid and snow particle positions and explicit 0.0625 m offsets, then reaches the analytic impact and post-impact positions. Reversed normal and conflicting tied-front velocity checks pass. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
-| Reciprocal pressure for a planar snow interface | Pass for the frozen single-cell fixture | Native and CUDA pressure solvers both recover the analytic speed, pressure, impulse, and work for the two wall orientations. The trial returns the pressure candidate and snow impulse together. |
+| Reciprocal pressure for a planar snow interface | Pass for one- and two-cell frozen fixtures | Native and CUDA recover analytic flux, pressure, speed, and impulse with either wall orientation. The two-cell case reverses which pressure row is incident to the wall. An interior wall selection rejects. |
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
 | Joint planar pressure advection | Pass for the frozen single-cell fixture | The projected regular-cell field advects liquid and updates its volume and slopes. Snow advances with its pressure-corrected velocity. A late snow path rejection preserves both original particle states. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
@@ -1027,6 +1027,18 @@ The trial owns its frozen face copy and returns the candidate without
 writing either material's state. The scheduler still needs to generate
 the snow interface, distribute pressure traction over its contributors,
 and advance and publish both materials together.
+
+The pressure solve also accepts connected MAC cells within the native
+solver capacity. The selected full sealed wall must touch exactly one
+pressure cell. Its incident pressure row supplies traction. With two
+unit cells in series, each open face carries 2 m³/s and each link
+drops 16 Pa. A 2 kg wall entering at 4 m/s solves to 2 m/s with
+32 Pa incident pressure and −4 N·s impulse. Reversing the domain puts
+the 32 Pa in the second row and reverses the impulse. Native and CUDA
+match the analytic values within 2e-6 in the measured units. Selecting
+the sealed face between the two cells rejects. The scatter uses the
+same pressure solve. The joint advection fixture below still uses
+one frozen cell.
 
 The pressure scatter uses area fractions w to interpolate the wall
 velocity. Its inverse effective mass is Σ(w²/m). Applying the

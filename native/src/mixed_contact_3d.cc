@@ -360,26 +360,41 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
     double incoming_snow_normal_velocity,
     MixedPressureProjector3D project
 ) {
-  if (inputs.pressure_cells.size() != 1 || inputs.pressure_faces.size() != 6
-      || wall_face_ordinal >= inputs.pressure_faces.size() || project == nullptr) {
-    return absl::InvalidArgumentError("planar snow pressure requires one cell and one selected wall");
+  if (inputs.pressure_cells.empty() || wall_face_ordinal >= inputs.pressure_faces.size() || project == nullptr) {
+    return absl::InvalidArgumentError("planar snow pressure requires pressure cells and a selected wall");
+  }
+  if (inputs.pressure_cells.size() > 4096 || inputs.pressure_faces.size() > 24576) {
+    return absl::ResourceExhaustedError("planar snow pressure extent exceeds solver capacity");
   }
   const auto& wall = inputs.pressure_faces[wall_face_ordinal];
   const auto axis = static_cast<std::size_t>(wall.face_index.axis);
   if (axis >= 3 || wall.open_area != 0 || !std::holds_alternative<SealedMacPressureLink3D>(wall.pressure_link)) {
     return absl::InvalidArgumentError("planar snow pressure requires a sealed wall face");
   }
-  const auto cell = inputs.pressure_cells.front().cell_index;
   const auto lattice = wall.face_index.lattice_index;
-  const std::array<std::int64_t, 3> offsets{
-      static_cast<std::int64_t>(lattice.x) - cell.x,
-      static_cast<std::int64_t>(lattice.y) - cell.y,
-      static_cast<std::int64_t>(lattice.z) - cell.z,
-  };
-  if (offsets[(axis + 1) % 3] != 0 || offsets[(axis + 2) % 3] != 0 || offsets[axis] < 0 || offsets[axis] > 1) {
-    return absl::InvalidArgumentError("planar snow pressure wall is not incident to its cell");
+  std::optional<std::size_t> wall_cell_ordinal;
+  double inward_sign = 0;
+  for (std::size_t ordinal = 0; ordinal < inputs.pressure_cells.size(); ++ordinal) {
+    const auto cell = inputs.pressure_cells[ordinal].cell_index;
+    const std::array<std::int64_t, 3> offsets{
+        static_cast<std::int64_t>(lattice.x) - cell.x,
+        static_cast<std::int64_t>(lattice.y) - cell.y,
+        static_cast<std::int64_t>(lattice.z) - cell.z,
+    };
+    const bool incident =
+        offsets[(axis + 1) % 3] == 0 && offsets[(axis + 2) % 3] == 0 && offsets[axis] >= 0 && offsets[axis] <= 1;
+    if (!incident) {
+      continue;
+    }
+    if (wall_cell_ordinal.has_value()) {
+      return absl::InvalidArgumentError("planar snow wall requires exactly one incident pressure cell");
+    }
+    wall_cell_ordinal = ordinal;
+    inward_sign = offsets[axis] == 0 ? 1 : -1;
   }
-  const double inward_sign = offsets[axis] == 0 ? 1 : -1;
+  if (!wall_cell_ordinal.has_value()) {
+    return absl::InvalidArgumentError("planar snow wall is missing its incident pressure cell");
+  }
   const double width = inputs.mac_grid.geometry().cell_width;
   const double area = width * width;
   const double impulse_per_pressure = inputs.step_duration * area;
@@ -388,8 +403,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
     return absl::InvalidArgumentError("invalid planar snow pressure mass, duration, or velocity");
   }
 
-  std::array<MacPressureFace3D, 6> pressure_faces;
-  std::ranges::copy(inputs.pressure_faces, pressure_faces.begin());
+  std::vector<MacPressureFace3D> pressure_faces(inputs.pressure_faces.begin(), inputs.pressure_faces.end());
   const MacPressureInputs3D trial_inputs{
       inputs.mac_grid,
       inputs.step_duration,
@@ -402,7 +416,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
     trial_wall.prescribed_wall_flux.reset();
     auto projection = project(trial_inputs);
     if (projection.ok()
-        && (projection->cell_pressures.size() != 1 || !std::isfinite(projection->cell_pressures.front())
+        && (projection->cell_pressures.size() != inputs.pressure_cells.size()
+            || !std::isfinite(projection->cell_pressures[*wall_cell_ordinal])
             || projection->corrected_face_velocities.size() != pressure_faces.size())) {
       return absl::FailedPreconditionError("invalid planar snow pressure projection");
     }
@@ -417,8 +432,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
   if (!probe.ok()) {
     return probe.status();
   }
-  const double stationary_pressure = stationary->cell_pressures.front();
-  const double pressure_slope = probe->cell_pressures.front() - stationary_pressure;
+  const double stationary_pressure = stationary->cell_pressures[*wall_cell_ordinal];
+  const double pressure_slope = probe->cell_pressures[*wall_cell_ordinal] - stationary_pressure;
   const double effective_mass = snow_mass + impulse_per_pressure * pressure_slope;
   const double inward_momentum = inward_sign * snow_mass * incoming_snow_normal_velocity;
   if (!std::isfinite(effective_mass) || pressure_slope < 0 || !std::isfinite(inward_momentum)) {
@@ -432,7 +447,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
   if (!accepted.ok()) {
     return accepted.status();
   }
-  const double snow_impulse = -inward_sign * impulse_per_pressure * accepted->cell_pressures.front();
+  const double snow_impulse = -inward_sign * impulse_per_pressure * accepted->cell_pressures[*wall_cell_ordinal];
   const double wall_velocity = inward_sign * inward_speed;
   const double momentum_change = snow_mass * (wall_velocity - incoming_snow_normal_velocity);
   const double work = snow_impulse * wall_velocity;
@@ -572,7 +587,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
   if (!disjoint.ok()) {
     return disjoint;
   }
-  if (!std::isfinite(maximum_path_length) || maximum_path_length <= 0 || liquid.empty()) {
+  if (!std::isfinite(maximum_path_length) || maximum_path_length <= 0 || liquid.empty()
+      || inputs.pressure_cells.size() != 1 || inputs.pressure_faces.size() != 6) {
     return absl::InvalidArgumentError("invalid planar snow pressure transport extent");
   }
   std::vector<PlasticSolidCheckpointParticle3D> plastic_trial(plastic.begin(), plastic.end());
