@@ -12,6 +12,7 @@
 
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 
 namespace fluidity::blender {
 namespace {
@@ -20,13 +21,13 @@ namespace files = liquid_cache_files_internal;
 
 constexpr std::size_t kMaximumSeedCount = 1024;
 
-absl::Status WriteNew(const fs::path& path, const LiquidCacheBytes3D& bytes) {
+absl::Status WriteNew(const fs::path& path, std::span<const std::uint8_t> bytes) {
   files::NativeFile file;
   const auto opened = file.Open(path, true);
   if (!opened.ok()) {
     return opened;
   }
-  const auto wrote = file.Write(bytes.values());
+  const auto wrote = file.Write(bytes);
   return wrote.ok() ? file.Flush() : wrote;
 }
 
@@ -213,13 +214,14 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
   double& cell_width = scene.geometry.cell_width;
   if (!(input >> version >> preview >> cell_width)
       || (version != "FLUIDITY-BLENDER-1" && version != "FLUIDITY-BLENDER-2" && version != "FLUIDITY-BLENDER-3"
-          && version != "FLUIDITY-BLENDER-4")
+          && version != "FLUIDITY-BLENDER-4" && version != "FLUIDITY-BLENDER-5")
       || preview > 1 || !std::isfinite(cell_width) || cell_width < 0.001 || cell_width > 10) {
     return absl::InvalidArgumentError("invalid packet version, Preview flag or cell width");
   }
   const bool modern_authoring = version != "FLUIDITY-BLENDER-1";
   const bool viscosity_authoring = version == "FLUIDITY-BLENDER-4";
-  const bool extended_authoring = version == "FLUIDITY-BLENDER-3" || viscosity_authoring;
+  const bool snow_authoring = version == "FLUIDITY-BLENDER-5";
+  const bool extended_authoring = version == "FLUIDITY-BLENDER-3" || viscosity_authoring || snow_authoring;
   Vec3 initial_velocity{};
   if (!ReadFiniteVector(input, scene.scene.world_acceleration)) {
     return absl::InvalidArgumentError("invalid gravity");
@@ -266,7 +268,7 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
     scene.scene.constituent_materials = extended.materials;
     scene.scene.phase_pairs = extended.pairs;
     scene.scene.sources = extended.emitters;
-    scene.options.motion_sample_intervals = 16;
+    scene.options.motion_sample_intervals = snow_authoring ? 0 : 16;
   }
   if (!(input >> count) || count == 0 || count > kMaximumSeedCount) {
     return absl::InvalidArgumentError("invalid seed count");
@@ -351,18 +353,79 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
     (*source_states)[index].source_ordinal = extended.emitters[index].source_ordinal;
   }
   state.sources = std::move(*source_states);
+  state.particles = std::move(*particles);
+  PlasticSolidCheckpointBinding3D snow_binding{};
+  SolidInteractionCheckpoint3D snow_state{};
+  if (snow_authoring) {
+    const auto* platen = std::get_if<TranslatingHalfspace3D>(&scene.scene.obstacle);
+    if (platen == nullptr || platen->unit_normal.x != 0 || platen->unit_normal.y != -1 || platen->unit_normal.z != 0
+        || platen->wall_velocity.x != 0 || platen->wall_velocity.y >= 0 || platen->wall_velocity.z != 0
+        || extended.emitters.empty()) {
+      return absl::InvalidArgumentError("snow authoring requires a descending vertical platen and a water emitter");
+    }
+    SnowParameters3D snow{};
+    double snow_density = 0;
+    double particle_volume = 0;
+    std::size_t snow_count = 0;
+    if (!(input >> snow_binding.body_id >> snow_binding.material_id >> snow.lame_lambda >> snow.shear_modulus
+          >> snow.compression_limit >> snow.stretch_limit >> snow.hardening >> snow_density >> particle_volume
+          >> snow_count)
+        || snow_count == 0 || snow_count > kMaximumSeedCount || !std::isfinite(snow_density) || snow_density <= 0
+        || !std::isfinite(particle_volume) || particle_volume <= 0) {
+      return absl::InvalidArgumentError("invalid snow material, density, volume, or seed count");
+    }
+    snow_binding.material = snow;
+    const auto bindings = std::span(&snow_binding, 1);
+    const auto valid = ValidatePlasticSolidCheckpointBindings3D(bindings);
+    if (!valid.ok()) {
+      return valid;
+    }
+    for (std::size_t index = 0; index < snow_count; ++index) {
+      Vec3 position{};
+      if (!ReadFiniteVector(input, position) || position.y < 0 || position.y >= -platen->start_plane_coordinate) {
+        return absl::InvalidArgumentError("place snow seeds between the floor and the platen");
+      }
+      const DrySolidParticle3D particle{
+          .world_position = position,
+          .mass = snow_density * particle_volume,
+          .reference_volume = particle_volume,
+          .elastic_deformation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+      };
+      const auto record = CapturePlasticSolidCheckpointParticle3D(
+          index + 1,
+          snow_binding.body_id,
+          snow_binding.material_id,
+          snow,
+          particle
+      );
+      if (!record.ok()) {
+        return record.status();
+      }
+      snow_state.plastic_particles.push_back(*record);
+    }
+    scene.model_version = kPlasticBodyResolvedModel3D;
+    scene.plastic_bodies = bindings;
+  }
   if (input >> version) {
     return absl::InvalidArgumentError("unexpected data after seed positions");
   }
-  state.particles = std::move(*particles);
-  const auto seed = EncodeLiquidState3D(state);
+  auto seed = [&]() -> absl::StatusOr<std::vector<std::uint8_t>> {
+    if (snow_authoring) {
+      return EncodeCoupledInteractionCheckpoint3D(state, snow_state, scene.plastic_bodies);
+    }
+    const auto liquid_seed = EncodeLiquidState3D(state);
+    if (!liquid_seed.ok()) {
+      return liquid_seed.status();
+    }
+    return std::vector(liquid_seed->values().begin(), liquid_seed->values().end());
+  }();
   if (!seed.ok()) {
     return seed.status();
   }
   const LiquidUpstreamContent3D initial{
       .role = LiquidUpstreamRole3D::kInitialParticles,
       .byte_length = seed->size(),
-      .digest = LiquidContentDigest3D(seed->values()),
+      .digest = LiquidContentDigest3D(*seed),
   };
   if (planar_fill) {
     scene.scene.field = *planar_fill;
@@ -383,6 +446,6 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
   if (!wrote_seed.ok()) {
     return wrote_seed;
   }
-  return WriteNew(args[4], *resolved);
+  return WriteNew(args[4], resolved->values());
 }
 }  // namespace fluidity::blender

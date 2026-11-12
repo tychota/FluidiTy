@@ -167,11 +167,18 @@ struct LiquidClock3D {
 inline constexpr std::size_t kMaximumAdaptiveLiquidCells3D = 4096;
 inline constexpr std::size_t kMaximumAdaptiveLiquidFaces3D = 24576;
 
+enum class AdaptiveLiquidMaterialOwner3D : std::uint8_t {
+  kParticles,
+  kEulerian,
+};
+
 // A graded leaf in canonical signed (z,y,x) lower-corner order. Inventory is
-// the extensive Eulerian owner in SI units; previous pressure is in Pa.
+// extensive in SI units; previous pressure is in Pa.
 struct LiquidAdaptiveCellState3D {
   AdaptiveMacCellKey3D key{};
   LiquidCellOccupancy3D occupancy = LiquidCellOccupancy3D::kLiquid;
+  // Particle-owned inventory is a snapshot of particle totals. Eulerian inventory owns material directly.
+  AdaptiveLiquidMaterialOwner3D material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
   LiquidRemapInventory3D inventory{};
   double previous_pressure = 0;
   bool operator==(const LiquidAdaptiveCellState3D& other) const;

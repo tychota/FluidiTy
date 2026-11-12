@@ -148,6 +148,23 @@ class FLUIDITY_OT_apply_preset(IdleOperator, bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FLUIDITY_OT_apply_snow_preset(IdleOperator, bpy.types.Operator):
+    bl_idname = "fluidity.apply_snow_preset"
+    bl_label = "Apply Snow Preset"
+    bl_description = "Set the Snow substance density, elastic moduli, and plastic compaction controls"
+    bl_options: ClassVar[set[str]] = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.fluidity
+        settings.snow_density = 300
+        settings.snow_shear = 1200
+        settings.snow_lambda = 700
+        settings.snow_compression = 0.025
+        settings.snow_stretch = 0.01
+        settings.snow_hardening = 4
+        return {"FINISHED"}
+
+
 class FLUIDITY_OT_help(bpy.types.Operator):
     bl_idname = "fluidity.help"
     bl_label = "FluidiTy Help"
@@ -181,5 +198,6 @@ CLASSES = (
     FLUIDITY_OT_assign_role,
     FLUIDITY_OT_add_input,
     FLUIDITY_OT_apply_preset,
+    FLUIDITY_OT_apply_snow_preset,
     FLUIDITY_OT_help,
 )

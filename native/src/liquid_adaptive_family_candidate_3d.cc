@@ -202,6 +202,9 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidFamilyCandidate3D(
   inventories.reserve(committed.adaptive_cells.size());
   pressures_pa.reserve(committed.adaptive_cells.size());
   for (const auto& cell : committed.adaptive_cells.values()) {
+    if (cell.material_owner != AdaptiveLiquidMaterialOwner3D::kParticles) {
+      return absl::UnimplementedError("graded family change has no Eulerian liquid carrier");
+    }
     if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || cell.inventory.enthalpy_j != 0
         || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0) {
       return absl::UnimplementedError("graded family change requires implicit liquid leaves");
