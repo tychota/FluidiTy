@@ -73,7 +73,14 @@ class FLUIDITY_OT_assign_role(IdleOperator, bpy.types.Operator):
     bl_label = "Assign Selected Object"
     bl_description = "Assign the active mesh to a simulation role; geometry and materials are preserved"
     bl_options: ClassVar[set[str]] = {"REGISTER", "UNDO"}
-    role: EnumProperty(items=(("domain", "Domain", ""), ("liquid", "Liquid", ""), ("collider", "Collider", "")))
+    role: EnumProperty(
+        items=(
+            ("domain", "Domain", ""),
+            ("liquid", "Liquid", ""),
+            ("collider", "Collider", ""),
+            ("cutter", "Cutter", ""),
+        )
+    )
 
     def execute(self, context):
         obj = context.object
@@ -89,6 +96,7 @@ class FLUIDITY_OT_assign_role(IdleOperator, bpy.types.Operator):
             active_roles.append("paddle")
         elif settings.boundary_mode in {"PLANE", "SLAB"}:
             active_roles.append("collider")
+        active_roles.append("cutter")
         for role in active_roles:
             if role != self.role and getattr(settings, role) == obj:
                 self.report({"WARNING"}, "Assign a different object to each simulation role.")
