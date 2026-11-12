@@ -18,6 +18,7 @@
 #include "fluidity/host/elastic_blade_deformation_3d.h"
 #include "fluidity/host/simulate_cli.h"
 #include "frame_manifest_generated.h"
+#include "gas_execution.h"
 #include "liquid_state_generated.h"
 #include "point_frame_generated.h"
 #include "resolved_scene_generated.h"
@@ -824,6 +825,9 @@ absl::Status Dispatch(const Command& command, ProtocolWriter& writer, Diagnostic
   }
   if (command.stage != CommandStage::kSimulate) {
     return ExecuteEffects(command, writer, diagnostic);
+  }
+  if (IsGasCommand(command)) {
+    return ExecuteGasCommand(command, writer, diagnostic);
   }
   if (command.kind == CommandKind::kCheck) {
     return CheckScene(command, writer, diagnostic);

@@ -12,7 +12,7 @@ add_library(fluidity_blender_resolve STATIC native/cli/blender_resolve.cc)
 target_link_libraries(fluidity_blender_resolve PRIVATE fluidity_native fluidity_native_options)
 function(fluidity_add_simulate_executable target)
   add_executable(${target}
-    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/simulate_job.cc native/cli/effects_execution.cc)
+    native/cli/fluidity_simulate.cc native/cli/simulate_execution.cc native/cli/gas_execution.cc native/cli/simulate_job.cc native/cli/effects_execution.cc)
   target_include_directories(${target} PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
   target_link_libraries(${target} PRIVATE fluidity_native fluidity_native_options
     fluidity_blender_resolve flatbuffers::flatbuffers BLAKE3::blake3 Threads::Threads)
@@ -45,6 +45,16 @@ if(BUILD_TESTING)
   target_compile_options(fluidity_simulate_cuda_identity_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
   gtest_discover_tests(fluidity_simulate_cuda_identity_tests PROPERTIES LABELS cpu)
 
+  add_test(NAME SimulateGasCli.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/run_gas_cli.py"
+      "${fluidity_cli_executable}" "${FLUIDITY_FLATC_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/schemas/simulate/gas_scene.fbs")
+  set_tests_properties(SimulateGasCli.cpu PROPERTIES LABELS "gas-cli")
+  if(FLUIDITY_ENABLE_CUDA)
+    add_test(NAME SimulateGasCli.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/run_gas_cli.py"
+        "${fluidity_cli_executable}" "${FLUIDITY_FLATC_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/schemas/simulate/gas_scene.fbs" cuda)
+    set_tests_properties(SimulateGasCli.cuda PROPERTIES LABELS "gas-cuda")
+  endif()
   add_executable(fluidity_liquid_acceptance_fixture native/tests/liquid_acceptance_fixture.cc)
   target_link_libraries(fluidity_liquid_acceptance_fixture PRIVATE fluidity_native fluidity_native_options)
   set(liquid_acceptance_backends cpu)

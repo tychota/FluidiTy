@@ -54,7 +54,10 @@ absl::StatusOr<GasSubstep3D> AdvanceGasSubstep3D(
     double ambient_pressure,
     Vec3 gravity,
     absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
-        project = ProjectMacPressure3D
+        project = static_cast<
+            absl::StatusOr<MacPressureProjection3D> (*)(const MacPressureInputs3D&, MacPressureSolverOptions3D)>(
+            ProjectMacPressure3D
+        )
 );
 
 struct GasApicMarker3D {
@@ -90,7 +93,10 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
     std::span<const double> old_face_velocities,
     std::span<const double> face_accelerations = {},
     absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
-        project = ProjectMacPressure3D
+        project = static_cast<
+            absl::StatusOr<MacPressureProjection3D> (*)(const MacPressureInputs3D&, MacPressureSolverOptions3D)>(
+            ProjectMacPressure3D
+        )
 );
 
 struct GasUniformDomainOptions3D {
@@ -167,7 +173,10 @@ absl::StatusOr<GasFrame3D> AdvanceGasFrame3D(
     std::span<const GasDraftKey3D> draft,
     GasReaction3D reaction,
     absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
-        project = ProjectMacPressure3D
+        project = static_cast<
+            absl::StatusOr<MacPressureProjection3D> (*)(const MacPressureInputs3D&, MacPressureSolverOptions3D)>(
+            ProjectMacPressure3D
+        )
 );
 
 }  // namespace fluidity
