@@ -285,6 +285,42 @@ Native and CUDA meet the 1e-11 fixture tolerance. This verifies the
 prescribed friction mapping for triaxial compression. The pile gate
 remains a separate spatial benchmark.
 
+### Paired floor reflection and grid-reaction friction
+
+The follow-up used the transpose of the reflection map for stress force.
+Each original below-floor face force was added to the selected donor with
+the same odd or even sign used by the gradient gather. The y-normal force
+on the floor plane was eliminated. The change in the signed y force sum
+times dt was accounted for as grid wall impulse. The 0.0375 m runs finished
+with envelope angles of 10.600131° and 12.914026°. Both 0.03125 m runs
+rejected after reaching the horizontal support boundary, on CPU and CUDA.
+
+Widening only the x and z block ranges to [−4, 4] let the finer runs
+finish. In these runs the grid supplied over half of the normal wall
+impulse, while the original friction law used only the swept particle
+impulse. A further control distributed the signed grid reaction through
+the original y-face weights and deposited masses, then used its positive
+per-particle portion to cap the pre-sweep tangential speed reduction by
+the existing friction coefficient. The sweep then used its own normal
+impulse for its own friction correction. Both stored and advecting
+velocities received the pre-sweep tangential correction.
+
+| h (m) | nominal dt (s) | Paired reflection envelope | With grid-reaction friction |
+|---|---:|---:|---:|
+| 0.03125 | 0.00078125 | 7.107824° | 18.438913° |
+| 0.03125 | 0.000390625 | 9.504568° | 22.874822° |
+
+Native values shown. Vertical momentum checks passed on both backends
+for the completed trials. The grid-reaction friction control restored
+some resistance to spreading, but still missed Q-SAND and did not
+qualify a full Coulomb work or torque budget. These were temporary
+solver controls. Local diffs against e65e078 are
+out/m5-paired-floor-original-halo.patch,
+out/m5-paired-floor-padded.patch and
+out/m5-paired-floor-friction.patch. The first uses the dense refined
+grid commands below. The padded variants use the same binaries with
+the experimental --q-sand-paired-floor-padded argument.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -362,6 +398,12 @@ M6 commit 1f5363e feeds accepted liquid pressure into a pressure-only,
 axially guided planar piston. Its fixture is particle-free and exercises
 accepted axial pose feedback and rollback. It leaves snow contact, general
 body motion, and mixed checkpoint replay open.
+
+M6 commit 4cebb40 adds an accepted-step FLSI envelope for the liquid and
+solid interaction histories. The guided-piston restart reproduces the
+next accepted envelope byte for byte. This provides a joint codec and
+ordinal check for that pressure-only case. Plastic material records and
+particle-contact replay remain open for the mixed scene.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
