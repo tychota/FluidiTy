@@ -2664,3 +2664,41 @@ $b = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
 cmake --build $b --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
 ctest --test-dir $b -R '^M5DryScenes\.' --no-tests=error --output-on-failure
 ```
+
+### Grid gather and transpose scatter for tangential traction
+
+Local sand commit `0d3f985` applies the isolated mass-metric solve to
+the grid before particle gathering. It normalizes each tangent stencil
+over supported face masses, gathers with those weights, and scatters
+the impulse with the transpose weights. Each tangent mobility is the
+sum of squared normalized weights divided by face mass. The existing
+per-particle positive normal reaction sets each traction cap. This
+still places traction quadrature at the stress source, including
+sources above the floor.
+
+The compressed, sliding one-particle fixture verifies a tangent impulse
+opposing motion, a magnitude matching the Coulomb cap to 1e-10 N·s,
+negative grid friction work, and paired cut stress work below 1e-12 J.
+Grid friction work is counted separately from the particle sweep.
+Both native and SM120 dry-scene targets passed this fixture. Friction
+updates also check the existing face motion bound.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 39.616695° | 0.133711 m |
+| Coarse half-step | 41.855289° | 0.132023 m |
+| Fine | 33.846351° | 0.171221 m |
+| Fine half-step | 34.730438° | 0.179730 m |
+
+All four native cases reach the endpoint with cut stress work mismatch
+below 2.6e-16 J and vertical momentum residual below 4.1e-8 N·s.
+The coarse cases fail the angle limit and the fine cases fail the
+radius limit. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-grid-friction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
+```
