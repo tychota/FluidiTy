@@ -1510,21 +1510,6 @@ void ExpectFloatingBoxPressureMeasurement(
             << std::hypot(gather_weight_difference.x, gather_weight_difference.y, gather_weight_difference.z) << '\n';
 }
 
-void ExpectInitialTankApertureImpulseDifference(const OrientedFloatingBoxLoads3D& loads, double duration) {
-  // Each vertical intercell aperture spans 7/8 m above the floor, while
-  // the actual liquid depth is 5/8 m. The box is wholly inside one column
-  // and its horizontal traction cancels for that cell's constant pressure.
-  constexpr double kWetFraction = 0.625 / 0.875;
-  const auto grid_impulse = loads.pressure_grid_impulse;
-  const auto tank_force = loads.tank_pressure->force;
-  const auto box_force = loads.pressure_force;
-  EXPECT_NEAR(duration * (tank_force.x - box_force.x), kWetFraction * grid_impulse.x, 1e-12);
-  EXPECT_NEAR(duration * (tank_force.z - box_force.z), kWetFraction * grid_impulse.z, 1e-12);
-  // The four upper MAC faces use the full horizontal cross-section of the
-  // tank. The physical free surface instead excludes the box waterplane.
-  EXPECT_NEAR(grid_impulse.y, duration * tank_force.y, 1e-12);
-}
-
 double MatchFloatingBoxSeedMassToWetVolume(LiquidState3D& state, double density, double submerged_box_volume) {
   // The four seeds represent the four horizontal cells of the qualification
   // tank. Their wet widths are 7/8 m and their wet depth is 5/8 m. Only the
@@ -1588,11 +1573,8 @@ void CheckOrientedFloatingBoxTrajectory(bool match_seed_mass) {
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
-      if (frame == 1) {
-        ExpectInitialTankApertureImpulseDifference(*attempt->oriented_loads, kDt);
-        if (match_seed_mass) {
-          EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
-        }
+      if (frame == 1 && match_seed_mass) {
+        EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
       }
       ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
       const auto particle_pressure = measured.particle_pressure_impulse;
@@ -1641,6 +1623,7 @@ void CheckOrientedFloatingBoxTrajectory(bool match_seed_mass) {
     std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
               << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
               << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
+    EXPECT_LE(max_pressure_traction_residual, 1e-12);
     EXPECT_GT(max_particle_pressure_impulse, 1e-8);
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
@@ -1734,11 +1717,8 @@ void CheckCoupledOrientedFloatingBoxTrajectory(bool match_seed_mass) {
           kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
           5e-14
       );
-      if (frame == 1) {
-        ExpectInitialTankApertureImpulseDifference(*attempt->oriented_loads, kDt);
-        if (match_seed_mass) {
-          EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
-        }
+      if (frame == 1 && match_seed_mass) {
+        EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
       }
       ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
       const auto particle_pressure = measured.particle_pressure_impulse;
@@ -1796,6 +1776,7 @@ void CheckCoupledOrientedFloatingBoxTrajectory(bool match_seed_mass) {
     std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
               << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
               << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
+    EXPECT_LE(max_pressure_traction_residual, 1e-12);
     EXPECT_GT(max_particle_pressure_impulse, 1e-8);
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
