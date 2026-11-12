@@ -2966,3 +2966,22 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Requalification against upstream 195af13
+
+The milestone branch integrated upstream `195af13` at `64a9ed3`.
+This upstream revision includes the persistent CUDA adaptive pressure
+arena, graded physical geometry and wall-strain changes, and updated
+shared liquid substep code.
+
+The clean Release SM120 build passed all 11 M5 CTest targets.
+Blender 5.2.3 repeated the authored 20-frame bake, frame-10 resume,
+and separate material playback on native and SM120. Both measured
+minimum snow volume ratio 0.648350539, minimum log plastic Jacobian
+−0.420240034, and emitted water gap 0.631821917 m. Tracked native
+sources passed clang-format 19.1.5.
+
+Use the clean-build and Blender commands from the requalification
+against 873ae68 with build directory `out/build/m5-main-195af13-clean`
+and output directories `out/authored-upstream-195af13-cpu` and
+`out/authored-upstream-195af13-cuda`. Q-SAND remains open.
