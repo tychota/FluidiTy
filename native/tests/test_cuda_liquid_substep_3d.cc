@@ -15,6 +15,7 @@
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
@@ -1159,6 +1160,24 @@ void CheckRejectedFieldBatch() {
   ASSERT_TRUE(after.ok()) << after.status();
   EXPECT_EQ(after->identity(), identity);
   EXPECT_EQ(DeviceBytes(*after), bytes);
+}
+
+TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
+  pressure_test::ExpectEosHydrostaticColumn(
+      [](const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options
+      ) -> absl::StatusOr<pressure_test::HydrostaticRun> {
+        auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+        if (!backend.ok()) {
+          return backend.status();
+        }
+        auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+        if (!scheduler.ok()) {
+          return scheduler.status();
+        }
+        EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+        return pressure_test::AdvanceHydrostaticColumn(*scheduler, options.capacities);
+      }
+  );
 }
 
 TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {

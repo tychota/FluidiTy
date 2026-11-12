@@ -13,6 +13,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
@@ -54,6 +55,19 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
   EXPECT_EQ(before_digest, after_digest);
   std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
+TEST(LiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
+  pressure_test::ExpectEosHydrostaticColumn(
+      [](const LiquidState3D& initial, const LiquidSceneInputs3D& scene, const LiquidStepOptions3D& options
+      ) -> absl::StatusOr<pressure_test::HydrostaticRun> {
+        auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+        if (!scheduler.ok()) {
+          return scheduler.status();
+        }
+        return pressure_test::AdvanceHydrostaticColumn(*scheduler, options.capacities);
+      }
+  );
 }
 
 TEST(LiquidSubstep3D, SchedulerConsumesResolvedViscosityOnFullCells) {
