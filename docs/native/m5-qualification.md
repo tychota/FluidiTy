@@ -1856,3 +1856,14 @@ recovers 2 N and 5 W for a pressure difference of 8 Pa. The native
 two-cell projection also recovers the wall-flux power from the corner
 forces and velocities. Transferring those loads to the owning particles
 and accepting both materials in one production attempt remain open.
+
+
+### Particle-derived boundary and pressure loads
+
+[PR 101](https://github.com/tychota/FluidiTy/pull/101) landed at `6031c07`.
+The particle sampler preserves the owner ID and moment arm for each
+corner. The corner-particle fixture reproduces `1 - 0.125/sqrt(6)` m³
+of wet volume. Its pressure impulse and affine work agree with the
+blocked area and signed flux, and a stale frozen flux is rejected.
+All 83 native and CUDA checks passed on the M6 base. The milestone
+integration passed six native M5 targets and three CLI checks.
