@@ -256,6 +256,35 @@ experimental source was reverted. The exact local comparison diff is
 in the worktree's out/m5-floor-reflected-gradient.patch. Apply it against
 476ce05 and run the refined-grid commands below to repeat the control.
 
+### Floor-supported release and the 30° material oracle
+
+The drop fixture gives the sand column 0.10 m of clearance above the floor.
+The floor-supported control removes only that clearance, with the same
+504 midpoint samples, grid, timestep, gravity, material, floor friction,
+end time, envelope estimator and quadrant fit.
+
+| h (m) | nominal dt (s) | Drop envelope | Floor-supported envelope | Floor-supported surface fit |
+|---|---:|---:|---:|---:|
+| 0.0375 | 0.00078125 | 21.217540° | 22.561058° | 10.739778° |
+| 0.03125 | 0.00078125 | 20.379811° | 21.083522° | 4.301806° |
+| 0.0375 | 0.000390625 | 22.110279° | 23.361683° | 15.801772° |
+| 0.03125 | 0.000390625 | 22.184540° | 23.062105° | 7.736924° |
+
+Native values shown. CUDA angle differences were at most 0.000011° at
+the reported precision. Vertical momentum checks passed on both backends.
+Removing the drop lowered mean log plastic Jacobian from 0.199–0.253 to
+0.073–0.098, but all four floor-supported angles still missed Q-SAND.
+The initial drop contributes to the material history without explaining
+the shallow pile by itself.
+
+An independent cohesionless triaxial compression test checks that the
+30° material maps to a 3:1 axial-to-radial compressive stress ratio.
+A trial with principal Kirchhoff stresses (−5, −1, −1) Pa returns
+(−4.2, −1.4, −1.4) Pa with unchanged stress trace and plastic volume.
+Native and CUDA meet the 1e-11 fixture tolerance. This verifies the
+prescribed friction mapping for triaxial compression. The pile gate
+remains a separate spatial benchmark.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -294,6 +323,8 @@ cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-particles
 & ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-dense-refined-grid
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-refined-grid
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-floor-release
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-floor-release
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources
@@ -326,6 +357,11 @@ M6 commit 2627937 also publishes the planar wetted piston pressure load
 with accepted liquid substeps. This establishes an accepted load receipt
 for that geometry. A mixed snow/liquid substep, body-state advance, and
 joint checkpoint still require separate evidence.
+
+M6 commit 1f5363e feeds accepted liquid pressure into a pressure-only,
+axially guided planar piston. Its fixture is particle-free and exercises
+accepted axial pose feedback and rollback. It leaves snow contact, general
+body motion, and mixed checkpoint replay open.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same

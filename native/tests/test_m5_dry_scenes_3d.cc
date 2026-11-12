@@ -94,7 +94,8 @@ bool TestScene(
     double duration,
     bool snow,
     double particle_energy_blend = 0,
-    int particles_per_axis_multiplier = 1
+    int particles_per_axis_multiplier = 1,
+    double sand_release_height = 0.10
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -123,7 +124,7 @@ bool TestScene(
         particles.push_back(
             {.world_position =
                  {(x - horizontal_center) * spacing,
-                  (y + 0.5) * spacing + (snow ? 0.0 : 0.10),
+                  (y + 0.5) * spacing + (snow ? 0.0 : sand_release_height),
                   (z - horizontal_center) * spacing},
              .mass = 300 * volume,
              .reference_volume = volume,
@@ -495,6 +496,13 @@ int main(int argc, char** argv) {
     const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2);
     const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2);
     const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-release") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0, 2, 0);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0, 2, 0);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0, 2, 0);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0);
     return coarse && fine && coarse_half && fine_half ? 0 : 1;
   }
   if (argc != 1) {
