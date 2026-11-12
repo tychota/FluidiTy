@@ -398,6 +398,12 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu)
   set_tests_properties(AdaptiveFamilyReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  foreach(scenario IN ITEMS eos viscous)
+    add_test(NAME AdaptiveFamilyReplay.cpu.${scenario}
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu ${scenario})
+    set_tests_properties(AdaptiveFamilyReplay.cpu.${scenario} PROPERTIES LABELS cpu TIMEOUT 60)
+  endforeach()
   add_test(NAME AdaptiveBandReplay.cpu
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu band)
@@ -409,6 +415,12 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda)
     set_tests_properties(AdaptiveFamilyReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    foreach(scenario IN ITEMS eos viscous)
+      add_test(NAME AdaptiveFamilyReplay.cuda.${scenario}
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+          "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda ${scenario})
+      set_tests_properties(AdaptiveFamilyReplay.cuda.${scenario} PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    endforeach()
     add_test(NAME AdaptiveBandReplay.cuda
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda band)

@@ -232,8 +232,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
   const bool graded_viscous = args[5] == "graded-viscous";
-  const bool graded_tank =
-      args[5] == "graded-tank" || graded_effects || graded_eos || graded_miscible || graded_viscous;
+  const bool graded_miscible_viscous = args[5] == "graded-miscible-viscous";
+  const bool graded_tank = args[5] == "graded-tank" || graded_effects || graded_eos || graded_miscible || graded_viscous
+      || graded_miscible_viscous;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -350,6 +351,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
       }
       if (graded_miscible) {
         fluidity::test::SetGradedTankMiscible3D(state, scene.scene);
+      }
+      if (graded_miscible_viscous) {
+        fluidity::test::SetGradedTankMiscibleViscosity3D(state, scene.scene);
       }
       if (graded_viscous) {
         scene.scene.dynamic_viscosity = 2.0;
