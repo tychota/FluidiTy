@@ -321,3 +321,11 @@ The adapter accepts caller-aligned inventories. Persistent matching across accep
 Inventory transfer apportions the additive quantity V_initial p_initial^(1/1.4). It combines shares in caller order and represents the result using the largest contributing reference pressure. This is the chosen equal-pressure polytropic mixing closure. It preserves the original inventory on a split followed by reunion. Overlap assignment, accepted-step identity and loss accounting still belong to the caller.
 
 The CPU fixture checked a 1:3 split, reunion, unequal reference pressures and invalid fractions against the pressure law. Nine CPU tests passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure'. Six real-device boundary regressions passed with ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. This transfer is host code. Build and test receipts use the out/m4-cavity-inventory-remap prefix, including the pre-implementation test build. clang-format 19.1.5 passed.
+
+## Cavity overlap measurement receipt
+
+Consecutive gas snapshots on the same MAC lattice now produce ordered component-pair weights. The measure sums the smaller gas volume in each coincident cell. This is a cell occupancy estimate and cannot resolve subcell motion or displacement with no coincident gas cells. Edges include any vented and unclassified recipients so downstream lineage can account for those transitions.
+
+The CPU fixture checked a simultaneous split and merge, duplicate edge reduction, unmatched cells, invalid component counts and insufficient scratch. Ten focused CPU tests and six real-device CUDA boundary regressions passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure' and ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. The overlap routine runs on the host. Receipts use the out/m4-cavity-overlap prefix. clang-format 19.1.5 passed.
+
+Inventory assignment, identity and loss accounting consume these weights in the next lineage step. Scheduler integration and Q-CAVITY remain open.

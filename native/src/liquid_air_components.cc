@@ -121,4 +121,83 @@ absl::StatusOr<std::size_t> LabelLiquidAirComponents3D(
   return component_count;
 }
 
+absl::StatusOr<std::size_t> MeasureLiquidAirComponentOverlaps3D(
+    LiquidAirComponentSnapshot3D previous,
+    LiquidAirComponentSnapshot3D current,
+    std::span<LiquidAirComponentOverlap3D> overlaps
+) {
+  const auto output = std::as_bytes(overlaps);
+  for (const auto snapshot : {previous, current}) {
+    if (snapshot.labels.size() != snapshot.cells.size() || snapshot.component_count > snapshot.cells.size()
+        || ByteViewsOverlap(output, std::as_bytes(snapshot.cells))
+        || ByteViewsOverlap(output, std::as_bytes(snapshot.labels))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    std::size_t next_component = 0;
+    for (std::size_t index = 0; index < snapshot.cells.size(); ++index) {
+      const auto& cell = snapshot.cells[index];
+      const std::size_t label = snapshot.labels[index];
+      if (!std::isfinite(cell.gas_volume) || cell.gas_volume <= 0.0 || label >= snapshot.component_count
+          || label > next_component
+          || (index > 0 && CellKey(snapshot.cells[index - 1].cell_index) >= CellKey(cell.cell_index))) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+      if (label == next_component) {
+        ++next_component;
+      }
+    }
+    if (next_component != snapshot.component_count) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+
+  std::size_t previous_index = 0;
+  std::size_t current_index = 0;
+  std::size_t overlap_count = 0;
+  while (previous_index < previous.cells.size() && current_index < current.cells.size()) {
+    const auto& previous_cell = previous.cells[previous_index];
+    const auto& current_cell = current.cells[current_index];
+    const auto previous_key = CellKey(previous_cell.cell_index);
+    const auto current_key = CellKey(current_cell.cell_index);
+    if (previous_key < current_key) {
+      ++previous_index;
+      continue;
+    }
+    if (current_key < previous_key) {
+      ++current_index;
+      continue;
+    }
+    if (overlap_count == overlaps.size()) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    overlaps[overlap_count++] = {
+        .previous_component = previous.labels[previous_index],
+        .current_component = current.labels[current_index],
+        .shared_cell_volume = std::min(previous_cell.gas_volume, current_cell.gas_volume),
+    };
+    ++previous_index;
+    ++current_index;
+  }
+
+  auto entries = overlaps.first(overlap_count);
+  // The volume tie-breaker fixes summation order without allocating sort scratch.
+  std::ranges::sort(entries, {}, [](const LiquidAirComponentOverlap3D& edge) {
+    return std::tuple{edge.previous_component, edge.current_component, edge.shared_cell_volume};
+  });
+  std::size_t edge_count = 0;
+  for (const auto edge : entries) {
+    if (edge_count > 0 && overlaps[edge_count - 1].previous_component == edge.previous_component
+        && overlaps[edge_count - 1].current_component == edge.current_component) {
+      auto& volume = overlaps[edge_count - 1].shared_cell_volume;
+      volume += edge.shared_cell_volume;
+      if (!std::isfinite(volume)) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      continue;
+    }
+    overlaps[edge_count++] = edge;
+  }
+  return edge_count;
+}
+
 }  // namespace fluidity

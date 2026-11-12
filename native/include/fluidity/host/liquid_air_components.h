@@ -70,4 +70,30 @@ absl::StatusOr<std::size_t> LabelLiquidAirComponents3D(
     std::span<LiquidAirComponent3D> components
 );
 
+struct LiquidAirComponentSnapshot3D {
+  std::span<const LiquidAirVolumeCell3D> cells;  // Unique and sorted by (z,y,x).
+  std::span<const std::size_t> labels;  // One component index per cell.
+  std::size_t component_count;
+};
+
+struct LiquidAirComponentOverlap3D {
+  std::size_t previous_component;
+  std::size_t current_component;
+  double shared_cell_volume;  // m³, sum of the smaller gas volume in each coincident cell.
+};
+
+// Estimates lineage weights between two snapshots on the same MAC lattice.
+// Coincident cell gas measures give an occupancy weight, with subcell motion
+// unresolved. All component classes participate, including vented and unknown.
+// Scratch can hold one entry per coincident cell and must be disjoint from
+// both snapshots. Returns the compacted edge count in (previous,current)
+// order. Scratch may change on failure. InvalidArgument covers malformed
+// snapshots or aliasing, ResourceExhausted covers scratch capacity, and
+// OutOfRange covers accumulated volume overflow.
+absl::StatusOr<std::size_t> MeasureLiquidAirComponentOverlaps3D(
+    LiquidAirComponentSnapshot3D previous,
+    LiquidAirComponentSnapshot3D current,
+    std::span<LiquidAirComponentOverlap3D> overlaps
+);
+
 }  // namespace fluidity

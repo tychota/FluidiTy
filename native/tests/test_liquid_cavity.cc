@@ -10,6 +10,49 @@
 namespace fluidity {
 namespace {
 
+TEST(LiquidCavity3D, MeasuresCanonicalOverlapEdgesForSplitAndMerge) {
+  constexpr std::array<LiquidAirVolumeCell3D, 5> kPrevious{{
+      {{-2, 0, 0}, 0.25},
+      {{-1, 0, 0}, 0.5},
+      {{0, 0, 0}, 0.5},
+      {{1, 0, 0}, 0.75},
+      {{3, 0, 0}, 1.0},
+  }};
+  constexpr std::array<LiquidAirVolumeCell3D, 5> kCurrent{{
+      {{-1, 0, 0}, 0.75},
+      {{0, 0, 0}, 0.25},
+      {{1, 0, 0}, 0.5},
+      {{2, 0, 0}, 1.0},
+      {{3, 0, 0}, 0.25},
+  }};
+  constexpr std::array<std::size_t, 5> kPreviousLabels{0, 0, 0, 0, 1};
+  constexpr std::array<std::size_t, 5> kCurrentLabels{0, 0, 1, 1, 1};
+  const LiquidAirComponentSnapshot3D previous{kPrevious, kPreviousLabels, 2};
+  const LiquidAirComponentSnapshot3D current{kCurrent, kCurrentLabels, 2};
+  std::array<LiquidAirComponentOverlap3D, 4> overlaps;
+  const auto count = MeasureLiquidAirComponentOverlaps3D(previous, current, overlaps);
+  ASSERT_TRUE(count.ok()) << count.status();
+  ASSERT_EQ(*count, 3);
+  EXPECT_EQ(overlaps[0].previous_component, 0);
+  EXPECT_EQ(overlaps[0].current_component, 0);
+  EXPECT_DOUBLE_EQ(overlaps[0].shared_cell_volume, 0.75);
+  EXPECT_EQ(overlaps[1].previous_component, 0);
+  EXPECT_EQ(overlaps[1].current_component, 1);
+  EXPECT_DOUBLE_EQ(overlaps[1].shared_cell_volume, 0.5);
+  EXPECT_EQ(overlaps[2].previous_component, 1);
+  EXPECT_EQ(overlaps[2].current_component, 1);
+  EXPECT_DOUBLE_EQ(overlaps[2].shared_cell_volume, 0.25);
+  EXPECT_EQ(
+      MeasureLiquidAirComponentOverlaps3D(previous, current, std::span(overlaps).first(3)).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
+  const LiquidAirComponentSnapshot3D orphaned{kPrevious, kPreviousLabels, 3};
+  EXPECT_EQ(
+      MeasureLiquidAirComponentOverlaps3D(orphaned, current, overlaps).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(LiquidCavity3D, SplitAndMergePreserveAdditivePolytropicInventory) {
   constexpr LiquidCavityInventory3D kParent{8.0, 120000.0};
   constexpr std::array<LiquidCavityInventoryShare3D, 1> kLeftShare{{{kParent, 0.25}}};
