@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "mac_pressure_3d_arithmetic.h"
 
 namespace fluidity::pressure_internal {
@@ -314,39 +315,55 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
         || face.tail_cell_ordinal == face.head_cell_ordinal) {
       return absl::InvalidArgumentError("pressure graph face requires two distinct in-range endpoints");
     }
-    if (!IsFinitePositive(face.open_area) || !IsFinitePositive(face.inverse_density)
-        || !IsFinitePositive(face.pressure_gradient_distance) || !std::isfinite(face.predicted_normal_velocity)) {
-      return absl::InvalidArgumentError("pressure graph face coefficients are invalid");
+    if (!face.full_face_area.has_value() && !IsFinitePositive(face.open_area)) {
+      return absl::InvalidArgumentError("pressure graph face without full area must be open");
     }
-
-    const double step_scaled_mobility = step_duration * face.inverse_density;
-    if (!arithmetic::IsRepresentablePressureProduct(step_duration, face.inverse_density, step_scaled_mobility)) {
-      return absl::OutOfRangeError("pressure graph step-scaled mobility is unrepresentable");
+    const double full_face_area = face.full_face_area.value_or(face.open_area);
+    if (!IsFinitePositive(full_face_area)) {
+      return absl::InvalidArgumentError("pressure graph face requires positive finite full area");
     }
-    const double pressure_to_velocity_scale = step_scaled_mobility / face.pressure_gradient_distance;
-    const double conductance = face.open_area * pressure_to_velocity_scale;
+    const MacPressureFace3D physical_face{
+        .face_index = {},
+        .open_area = face.open_area,
+        .inverse_density = face.inverse_density,
+        .pressure_gradient_distance = face.pressure_gradient_distance,
+        .predicted_normal_velocity = face.predicted_normal_velocity,
+        .wall_normal_velocity = 0.0,
+        .pressure_link = InternalMacPressureLink3D{.pressure_jump = 0.0},
+        .prescribed_wall_flux = face.prescribed_wall_flux,
+    };
+    const auto link = arithmetic::FreezeLinkFromIncidence(
+        physical_face,
+        face.face_slot,
+        full_face_area,
+        step_duration,
+        face.tail_cell_ordinal,
+        face.head_cell_ordinal
+    );
+    if (!link.ok()) {
+      return link.status();
+    }
+    if (face.open_area > 0.0) {
+      const double step_scaled_mobility = step_duration * face.inverse_density;
+      if (!std::isnormal(link->pressure_to_velocity_scale)
+          || !arithmetic::IsRepresentablePressureProduct(step_duration, face.inverse_density, step_scaled_mobility)
+          || !arithmetic::IsRepresentablePressureProduct(
+              face.open_area,
+              link->pressure_to_velocity_scale,
+              link->conductance
+          )) {
+        return absl::OutOfRangeError("pressure graph face arithmetic is unrepresentable");
+      }
+    }
     const double predicted_fluid_flux = face.open_area * face.predicted_normal_velocity;
-    if (!std::isnormal(pressure_to_velocity_scale) || !IsFinitePositive(conductance)
-        || !arithmetic::IsRepresentablePressureProduct(face.open_area, pressure_to_velocity_scale, conductance)
-        || !arithmetic::IsRepresentablePressureProduct(
+    if (!arithmetic::IsRepresentablePressureProduct(
             face.open_area,
             face.predicted_normal_velocity,
             predicted_fluid_flux
         )) {
-      return absl::OutOfRangeError("pressure graph face arithmetic is unrepresentable");
+      return absl::OutOfRangeError("pressure graph predicted fluid flux is unrepresentable");
     }
-    system.links_.push_back({
-        .face_slot = face.face_slot,
-        .tail_cell_ordinal = face.tail_cell_ordinal,
-        .head_cell_ordinal = face.head_cell_ordinal,
-        .open_area = face.open_area,
-        .blocked_area = 0.0,
-        .pressure_to_velocity_scale = pressure_to_velocity_scale,
-        .conductance = conductance,
-        .predicted_normal_velocity = face.predicted_normal_velocity,
-        .prescribed_wall_flux = 0.0,
-        .pressure_link = InternalMacPressureLink3D{.pressure_jump = 0.0},
-    });
+    system.links_.push_back(*link);
   }
 
   std::optional<std::size_t> previous_boundary_slot;
@@ -374,6 +391,78 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
   }
   system.is_explicit_graph_ = true;
   return system;
+}
+
+absl::StatusOr<PreparedMacPressureSystem3D> PrepareAdaptiveMacPressureSystem3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces
+) {
+  const auto leaves = topology.cells();
+  if (cells.size() != leaves.size()) {
+    return absl::InvalidArgumentError("pressure cells must cover the adaptive leaves");
+  }
+  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+    if (CellSortKey(cells[cell].cell_index) != CellSortKey(leaves[cell].key.lower_corner)
+        || cells[cell].fluid_volume > leaves[cell].cell_volume) {
+      return absl::InvalidArgumentError("pressure cell does not match the adaptive leaf or its volume");
+    }
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto interior_faces = topology.interior_faces();
+  if (subfaces.size() != interior_faces.size() + ownership->exterior_faces.size()) {
+    return absl::InvalidArgumentError("pressure subfaces must cover all canonical adaptive slots");
+  }
+  if (subfaces.size() > kMaxPressureFaces) {
+    return absl::ResourceExhaustedError("adaptive pressure graph exceeds face capacity");
+  }
+
+  std::vector<ExplicitMacPressureFace3D> interior;
+  interior.reserve(interior_faces.size());
+  for (std::size_t face = 0; face < interior_faces.size(); ++face) {
+    const auto& geometry = interior_faces[face];
+    const auto slot = ownership->interior_face_slots[face];
+    const auto& sample = subfaces[slot];
+    if (sample.exterior_pressure_pa.has_value() || sample.exterior_pressure_distance_m != 0) {
+      return absl::InvalidArgumentError("interior adaptive subface cannot carry exterior pressure data");
+    }
+    interior.push_back({
+        .face_slot = slot,
+        .tail_cell_ordinal = geometry.tail_cell_ordinal,
+        .head_cell_ordinal = geometry.head_cell_ordinal,
+        .open_area = sample.open_area_m2,
+        .inverse_density = sample.inverse_density_m3_per_kg,
+        .pressure_gradient_distance = geometry.cell_center_distance,
+        .predicted_normal_velocity = sample.predicted_normal_velocity_m_per_s,
+        .full_face_area = geometry.face_area,
+        .prescribed_wall_flux = sample.prescribed_wall_flux_m3_per_s,
+    });
+  }
+  std::vector<ExplicitMacPressureBoundaryFace3D> exterior;
+  exterior.reserve(ownership->exterior_faces.size());
+  for (const auto& geometry : ownership->exterior_faces) {
+    const auto& sample = subfaces[geometry.face_slot];
+    if (!sample.exterior_pressure_pa.has_value() && sample.exterior_pressure_distance_m != 0) {
+      return absl::InvalidArgumentError("sealed exterior subface cannot carry a pressure distance");
+    }
+    exterior.push_back({
+        .face_slot = geometry.face_slot,
+        .cell_ordinal = geometry.cell_ordinal,
+        .cell_is_tail = geometry.cell_is_tail,
+        .full_face_area = geometry.face_area,
+        .open_area = sample.open_area_m2,
+        .inverse_density = sample.inverse_density_m3_per_kg,
+        .pressure_gradient_distance = sample.exterior_pressure_distance_m,
+        .predicted_normal_velocity = sample.predicted_normal_velocity_m_per_s,
+        .prescribed_wall_flux = sample.prescribed_wall_flux_m3_per_s,
+        .exterior_pressure = sample.exterior_pressure_pa,
+    });
+  }
+  return PrepareExplicitMacPressureSystem3D(step_duration, cells, interior, exterior);
 }
 
 absl::StatusOr<MacPressureProjection3D>

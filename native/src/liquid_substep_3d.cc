@@ -11,6 +11,7 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "fluidity/host/small_solve.h"
+#include "liquid_adaptive_step_3d.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
 namespace fluidity {
@@ -766,6 +767,7 @@ struct LiquidSubstepScheduler3D::Impl {
   std::optional<CavityStepScratch> cavity;
   LiquidStepOptions3D options;
   LiquidSubstepBackend3D backend;
+  std::optional<liquid_step_internal::AdaptiveLiquidStep3D> adaptive;
   std::optional<ResolvedOceanBoundary3D> ocean_boundary;
   std::optional<liquid_step_internal::OceanInletParticles3D> ocean_inlet_particles;
   LiquidStepDiagnostics3D diagnostics;
@@ -796,6 +798,31 @@ struct LiquidSubstepScheduler3D::Impl {
     if (backend.set_work_phase) {
       backend.set_work_phase(backend.context, phase);
     }
+  }
+  absl::Status ExecuteAdaptive(
+      double duration,
+      LiquidState3D& trial,
+      LiquidAcceptedStepMeasurement3D& measurement,
+      LiquidWorkPhaseObserver3D work_phase
+  ) {
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, duration));
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, duration));
+    STEP_TRY(adaptive->Deposit(trial, options));
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kPressure, duration));
+    STEP_TRY(adaptive->Project(trial, duration, scene, options, backend, workspace.pressure(), measurement));
+    diagnostics.pressure_diagnostics = measurement.pressure;
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
+    SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
+    STEP_TRY(adaptive->Gather(trial));
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
+    STEP_TRY(adaptive->Update(trial, duration, scene, options, backend));
+    STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, duration));
+    STEP_TRY(ValidateLiquidState3D(trial));
+    return Enter(LiquidPhysicalStage3D::kAccept, duration);
   }
   absl::Status Execute(
       double step_duration,
@@ -2335,6 +2362,10 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     LiquidStepOptions3D options,
     const LiquidSubstepBackend3D& backend
 ) {
+  const bool adaptive_mode = initial.adaptive_cells.size() != 0;
+  if (adaptive_mode && backend.project_adaptive == nullptr && !backend.host_adaptive_pressure) {
+    return absl::UnimplementedError("selected backend has no graded pressure projection");
+  }
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   const bool needs_wetted_piston = tank && tank->piston_velocity_x != 0;
@@ -2356,7 +2387,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   }
   auto staging = liquid_step_internal::Staging::Create(
       options.capacities,
-      CanStageRegularCellTransport(scene, tank),
+      !adaptive_mode && CanStageRegularCellTransport(scene, tank),
       needs_wetted_piston,
       needs_isolated_drop,
       scene.drift && scene.drift->maximum_rate > 0.0,
@@ -2516,6 +2547,13 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       impl->reservation_bytes += inlet->reserved_bytes();
       impl->ocean_inlet_particles = std::move(*inlet);
     }
+  }
+  if (adaptive_mode) {
+    auto adaptive = liquid_step_internal::AdaptiveLiquidStep3D::Create(initial, impl->scene, options);
+    if (!adaptive.ok()) {
+      return adaptive.status();
+    }
+    impl->adaptive = std::move(*adaptive);
   }
   STEP_TRY(backend.initialize(backend.context, initial_version));
   impl->backend = backend;
@@ -2768,17 +2806,18 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.Execute(
-      step_duration,
-      **trial,
-      accepted_measurement,
-      work_phase,
-      piston_load,
-      dynamic_piston,
-      coupled_piston,
-      update_with_reaction,
-      floating_box
-  );
+  auto status = impl.adaptive ? impl.ExecuteAdaptive(step_duration, **trial, accepted_measurement, work_phase)
+                              : impl.Execute(
+                                    step_duration,
+                                    **trial,
+                                    accepted_measurement,
+                                    work_phase,
+                                    piston_load,
+                                    dynamic_piston,
+                                    coupled_piston,
+                                    update_with_reaction,
+                                    floating_box
+                                );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();

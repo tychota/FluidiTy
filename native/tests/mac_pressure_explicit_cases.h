@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -9,9 +10,73 @@
 #include <vector>
 
 #include "../src/mac_pressure_3d_system.h"
+#include "fluidity/host/adaptive_mac_topology_3d.h"
 
 namespace fluidity::pressure_test {
 
+struct AdaptiveCutPressureFixture {
+  AdaptiveMacTopology3D topology;
+  std::array<MacPressureCell3D, 2> cells;
+  std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces;
+  std::size_t internal_slot;
+  std::size_t outlet_slot;
+};
+
+// A source feeds a coarse leaf through a partly blocked subface. The moving
+// wall supplies part of the interior flux, and an open fine face drains it.
+inline absl::StatusOr<AdaptiveCutPressureFixture> MakeAdaptiveCutPressureFixture() {
+  const std::array keys{
+      AdaptiveMacCellKey3D{.lower_corner = {0, 0, 0}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {2, 0, 0}, .width_exponent = 0},
+  };
+  auto topology = AdaptiveMacTopology3D::Create(keys, 0.5);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  if (ownership->interior_face_slots.size() != 1 || ownership->exterior_faces.size() != 13) {
+    return absl::InternalError("unexpected adaptive pressure fixture ownership");
+  }
+  const auto outlet = std::ranges::find_if(ownership->exterior_faces, [](const auto& face) {
+    return face.cell_ordinal == 1 && face.cell_is_tail;
+  });
+  if (outlet == ownership->exterior_faces.end()) {
+    return absl::InternalError("missing adaptive pressure fixture outlet");
+  }
+  AdaptiveCutPressureFixture fixture{
+      .topology = std::move(*topology),
+      .cells = {{
+          {.cell_index = {0, 0, 0},
+           .fluid_volume = 1,
+           .target_divergence = 0.09375,
+           .bulk_modulus = std::numeric_limits<double>::infinity(),
+           .previous_pressure = 0},
+          {.cell_index = {2, 0, 0},
+           .fluid_volume = 0.125,
+           .target_divergence = 0,
+           .bulk_modulus = std::numeric_limits<double>::infinity(),
+           .previous_pressure = 0},
+      }},
+      .subfaces = std::vector<pressure_internal::AdaptiveMacPressureSubface3D>(14),
+      .internal_slot = ownership->interior_face_slots.front(),
+      .outlet_slot = outlet->face_slot,
+  };
+  fixture.subfaces[fixture.internal_slot] = {
+      .open_area_m2 = 0.125,
+      .inverse_density_m3_per_kg = 1,
+      .prescribed_wall_flux_m3_per_s = 0.0625,
+  };
+  fixture.subfaces[fixture.outlet_slot] = {
+      .open_area_m2 = outlet->face_area,
+      .inverse_density_m3_per_kg = 1,
+      .exterior_pressure_distance_m = 0.25,
+      .exterior_pressure_pa = 1.0,
+  };
+  return fixture;
+}
 // Gauge-fixed pressures from the independent 3D NumPy fixture.
 struct ExplicitPressureCase {
   std::array<std::size_t, 3> axes;
