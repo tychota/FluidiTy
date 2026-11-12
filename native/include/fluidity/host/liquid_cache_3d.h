@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "fluidity/host/liquid_substep_3d.h"
+#include "fluidity/host/plastic_solid_checkpoint_3d.h"
 
 namespace fluidity {
 // BLAKE3-256, raw digest bytes in algorithm order (not native integer words).
@@ -84,6 +85,9 @@ struct LiquidUpstreamContent3D {
   std::uint64_t byte_length = 0;
   LiquidDigest3D digest{};  // Exact upstream artifact bytes, never a local filename.
 };
+inline constexpr std::uint32_t kLiquidOnlyResolvedModel3D = 1;
+inline constexpr std::uint32_t kPlasticBodyResolvedModel3D = 2;
+
 // Callers resolve defaults before encoding. Omitted and explicit defaults produce
 // identical bytes. Source/upstream spans borrow through the call only. Upstream
 // order is unique ascending (role, ordinal); source order is unique ordinal order.
@@ -94,9 +98,11 @@ struct LiquidResolvedSceneView3D {
   LiquidSceneInputs3D scene;
   LiquidStepOptions3D options;
   LiquidBackend3D backend = LiquidBackend3D::kCpu;
-  std::uint32_t model_version = 1;  // Uniform single-liquid algorithm contract.
+  std::uint32_t model_version = kLiquidOnlyResolvedModel3D;
   LiquidDigest3D build_digest{};  // Content identity of the numerical build artifact.
   std::span<const LiquidUpstreamContent3D> upstream;
+  // Required in model 2, ordered by body ID. The codec owns the parameters, while execution is gated.
+  std::span<const PlasticSolidCheckpointBinding3D> plastic_bodies;
 };
 // Owning decoded scene; View() binds spans to this owner's arrays. Reacquire after
 // move; a view cannot outlive this object. No pointer into encoded bytes survives.
@@ -106,12 +112,13 @@ struct LiquidResolvedScene3D {
   LiquidSceneInputs3D scene;  // Borrowed arrays remain empty; use View().scene.
   LiquidStepOptions3D options;  // Capacity plans remain zero; read them from checkpoint.
   LiquidBackend3D backend = LiquidBackend3D::kCpu;
-  std::uint32_t model_version = 1;
+  std::uint32_t model_version = kLiquidOnlyResolvedModel3D;
   LiquidDigest3D build_digest{};
   LiquidRecords3D<LiquidEmissionSource3D> sources;
   LiquidRecords3D<LiquidConstituentMaterial3D> constituent_materials;
   LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidRecords3D<LiquidUpstreamContent3D> upstream;
+  LiquidRecords3D<PlasticSolidCheckpointBinding3D> plastic_bodies;
   LiquidResolvedSceneView3D View() const;
 };
 // Exact unkeyed BLAKE3-256 over bytes; no domain prefix (standard known answers).

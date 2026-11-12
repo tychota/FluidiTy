@@ -590,6 +590,14 @@ def case_cuda_replay(executable, fixture, directory, cuda):
 
 
 def case_execution_validation(executable, fixture, directory, cuda):
+    mixed_scene, _ = make_scene(executable, fixture, directory, "cpu", "plastic-body")
+    mixed_cache = directory / "mixed-cache"
+    rejected = execute(
+        executable, "run", "--stage", "simulate", "--scene", mixed_scene, "--cache", mixed_cache, success=False
+    )[-1]
+    assert rejected["field"] == "scene"
+    assert "coupled liquid-solid scheduler" in str(rejected)
+    assert not mixed_cache.exists()
     scene, initial = make_scene(executable, fixture, directory, "cpu")
     cache = directory / "cache"
     args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache]

@@ -1490,11 +1490,15 @@ The shared plastic binding validator checks material parameters at unit
 elastic stretch before examining the particle payload. This also checks
 a resolved body with no particles. Native and CUDA checkpoint tests reject
 an invalid snow compression limit on empty payload encode and decode, with
-the encode builder unchanged. The current resolved liquid scene codec has
-no plastic body table. The bake calls the liquid scheduler and writes
-liquid checkpoints, so a production mixed scene still needs to supply the
-validated bindings and route joint acceptance and persistence through that
-entry point.
+the encode builder unchanged.
+
+Resolved scene model 2 adds the plastic-body binding table to FLRS. It
+carries body IDs, material IDs, and one typed granular or snow material per
+entry. Model 1 retains its existing canonical bytes and fingerprint. The
+codec validates ID ordering, material admissibility, and the version and
+payload agreement. The liquid-only CLI rejects model 2 before creating a
+cache. The cache fixture feeds the decoded bindings into shared FLSI
+encode and decode and recovers the snow particle's plastic Jacobian.
 
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow

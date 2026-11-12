@@ -211,6 +211,13 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   if (args[5] != "defaults") {
     scene.scene.world_acceleration = {};
   }
+  constexpr std::array kPlasticBodies{
+      fluidity::PlasticSolidCheckpointBinding3D{9, 11, fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4}},
+  };
+  if (args[5] == "plastic-body") {
+    scene.model_version = fluidity::kPlasticBodyResolvedModel3D;
+    scene.plastic_bodies = kPlasticBodies;
+  }
   const bool slow_frame = args[5] == "slow";
   const bool whitewater_beach = args[5] == "whitewater-beach";
   const bool whitewater = args[5] == "whitewater-effects" || whitewater_beach;

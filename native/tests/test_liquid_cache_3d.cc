@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "frame_manifest_generated.h"
 #include "gtest/gtest.h"
 #include "liquid_state_generated.h"
@@ -74,6 +75,72 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, ResolvedPlasticBodiesAreVersionedAndCanonical) {
+  std::array bindings{
+      PlasticSolidCheckpointBinding3D{9, 11, SnowParameters3D{1200, 700, 0.025, 0.01, 4}},
+      PlasticSolidCheckpointBinding3D{12, 13, GranularParameters3D{450, 700, 0.5235987755982989, 0}},
+  };
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.plastic_bodies = bindings;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.model_version = kPlasticBodyResolvedModel3D;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_EQ(decoded->model_version, kPlasticBodyResolvedModel3D);
+  const auto view = decoded->View();
+  ASSERT_EQ(view.plastic_bodies.size(), bindings.size());
+  EXPECT_EQ(view.plastic_bodies[0].body_id, 9);
+  EXPECT_EQ(view.plastic_bodies[1].material_id, 13);
+  EXPECT_DOUBLE_EQ(std::get<SnowParameters3D>(view.plastic_bodies[0].material).shear_modulus, 1200);
+  EXPECT_DOUBLE_EQ(std::get<GranularParameters3D>(view.plastic_bodies[1].material).lame_lambda, 700);
+  const auto repeated = EncodeLiquidResolvedScene3D(view);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*repeated), Copy(*encoded));
+  const auto fingerprint = ResolvedSceneFingerprint(view);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+
+  const auto& snow_binding = view.plastic_bodies[0];
+  const DrySolidParticle3D compacted_snow{
+      .world_position = {1, 2, 3},
+      .mass = 300,
+      .reference_volume = 1,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  const auto particle = CapturePlasticSolidCheckpointParticle3D(
+      5,
+      snow_binding.body_id,
+      snow_binding.material_id,
+      snow_binding.material,
+      compacted_snow
+  );
+  ASSERT_TRUE(particle.ok()) << particle.status();
+  const SolidInteractionCheckpoint3D solid{.accepted_step = 0, .plastic_particles = {*particle}};
+  const LiquidState3D liquid;
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(liquid, solid, view.plastic_bodies);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint, view.plastic_bodies);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(restored->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+
+  auto wrong_version = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableResolvedScene(wrong_version.data())->mutate_model_version(kLiquidOnlyResolvedModel3D));
+  EXPECT_EQ(DecodeLiquidResolvedScene3D(wrong_version).status().code(), absl::StatusCode::kDataLoss);
+  std::swap(bindings[0], bindings[1]);
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  std::swap(bindings[0], bindings[1]);
+  std::get<SnowParameters3D>(bindings[0].material).compression_limit = 1;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  scene.plastic_bodies = {};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ResolvedPhasePairIsCanonicalAndChangesFingerprint) {
   constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
       {8, 4, 1000.0},

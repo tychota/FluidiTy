@@ -593,6 +593,10 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
     scene = std::move(*resolved);
   }
+  if (scene.model_version != kLiquidOnlyResolvedModel3D) {
+    diagnostic->cause = "resolved plastic bodies require a coupled liquid-solid scheduler";
+    return absl::FailedPreconditionError("");
+  }
   if (measurement) {
     measurement->backend = scene.backend;
   }
