@@ -93,6 +93,7 @@ add_library(fluidity_native STATIC
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
+  native/src/rigid_body_3d.cc
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
@@ -277,6 +278,7 @@ if(BUILD_TESTING)
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
     native/tests/test_transfers_3d.cc
+    native/tests/test_rigid_body_3d.cc
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
