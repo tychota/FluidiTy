@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "fluidity/base/liquid_regular_cell_transport_3d.h"
+#include "fluidity/base/solid_acoustic_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/views.h"
 #include "liquid_substep_3d_internal.h"
@@ -17,6 +18,75 @@ namespace {
 
 double PlanarWallSpeedTolerance(double solved_wall_speed) {
   return 2e-5 * std::max(1.0, std::abs(solved_wall_speed));
+}
+
+// Project the reference-volume stress work onto the layer's affine normal mode.
+// A mass-centered kick preserves translation and changes only the thickness rate.
+absl::Status KickPlanarSnowLayerStress(
+    std::span<PlasticSolidCheckpointParticle3D> particles,
+    FaceNormalAxis axis,
+    double duration,
+    const SnowParameters3D& material
+) {
+  constexpr std::array components{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  const auto normal_axis = static_cast<std::size_t>(axis);
+  if (particles.empty() || normal_axis >= components.size() || !std::isfinite(duration) || duration <= 0) {
+    return absl::InvalidArgumentError("invalid planar snow stress extent");
+  }
+  const auto component = components[normal_axis];
+  const double origin = particles.front().transfer.trial_world_position.*component;
+  double total_mass = 0;
+  double mass_moment = 0;
+  double integrated_stress = 0;
+  double stiffness_bound = 0;
+  for (const auto& particle : particles) {
+    const double mass = particle.transfer.particle_mass;
+    const double coordinate = (particle.transfer.trial_world_position.*component) - origin;
+    total_mass += mass;
+    mass_moment += mass * coordinate;
+    SolidDeformationState3D state{};
+    double speed_squared = 0;
+    if (!ReturnSnowDeformation3D(particle.elastic_deformation, particle.log_plastic_jacobian, material, state)
+        || !SnowAcousticBoundSquared3D(
+            state.elastic_stretches,
+            state.log_plastic_jacobian,
+            material,
+            mass / particle.reference_volume,
+            speed_squared
+        )) {
+      return absl::FailedPreconditionError("inadmissible planar snow elastic response");
+    }
+    integrated_stress += particle.reference_volume * ((state.kirchhoff_stress.*rows[normal_axis]).*component);
+    stiffness_bound += mass * speed_squared;
+  }
+  if (!std::isfinite(total_mass) || total_mass <= 0 || !std::isfinite(mass_moment)) {
+    return absl::OutOfRangeError("unrepresentable planar snow mass moment");
+  }
+  const double center_offset = mass_moment / total_mass;
+  double normal_inertia = 0;
+  for (const auto& particle : particles) {
+    const double distance = (particle.transfer.trial_world_position.*component) - origin - center_offset;
+    normal_inertia += particle.transfer.particle_mass * distance * distance;
+  }
+  if (!std::isfinite(normal_inertia) || normal_inertia <= 0 || !std::isfinite(integrated_stress)
+      || !std::isfinite(stiffness_bound)) {
+    return absl::InvalidArgumentError("invalid planar snow stress moment");
+  }
+  const double dimensionless_step = duration * std::sqrt(stiffness_bound / normal_inertia);
+  if (!std::isfinite(dimensionless_step) || dimensionless_step > 1) {
+    return absl::FailedPreconditionError("planar snow stress step exceeds affine mode bound");
+  }
+  const double kick_scale = -duration * integrated_stress / normal_inertia;
+  for (auto& particle : particles) {
+    const double distance = (particle.transfer.trial_world_position.*component) - origin - center_offset;
+    double& speed = particle.transfer.particle_velocity.*component;
+    speed = std::fma(kick_scale, distance, speed);
+    if (!std::isfinite(speed)) {
+      return absl::OutOfRangeError("unrepresentable planar snow stress velocity");
+    }
+  }
+  return absl::OkStatus();
 }
 
 struct ContactVelocityBinding {
@@ -707,6 +777,20 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     }
   }
   std::vector<PlasticSolidCheckpointParticle3D> plastic_trial(plastic.begin(), plastic.end());
+  if (snow_layer_material != nullptr) {
+    if (wall_face_ordinal >= inputs.pressure_faces.size()) {
+      return absl::InvalidArgumentError("missing planar snow pressure wall");
+    }
+    const auto stress = KickPlanarSnowLayerStress(
+        plastic_trial,
+        inputs.pressure_faces[wall_face_ordinal].face_index.axis,
+        inputs.step_duration,
+        *snow_layer_material
+    );
+    if (!stress.ok()) {
+      return stress;
+    }
+  }
   auto pressure = ApplyPlanarSnowPressure3D(inputs, wall_face_ordinal, contributors, plastic_trial, project);
   if (!pressure.ok()) {
     return pressure.status();

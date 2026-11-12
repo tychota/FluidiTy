@@ -1448,12 +1448,30 @@ interior particle exhausts retries and preserves the input states.
 
 The restart fixture encodes that computed two-particle state at 0.0625 s
 through the shared FLSI codec. Advancing decoded and uninterrupted state
-to 0.125 s yields byte-identical checkpoints within each backend. At the
-second endpoint the pressure is 60/11 Pa, the thickness is 3/44 m, and
-the cumulative elastic–plastic Jacobian is 3/11. The elastic Jacobian
-stays at its 0.975 clamp. The second-frame pressure, thickness, and total
-Jacobian use 2e-6 absolute tolerance in their respective units. The
-elastic clamp and rear coordinate use 1e-12.
+to 0.125 s yields byte-identical checkpoints within each backend.
+
+The compaction frame uses the accepted snow stress in the next step.
+It integrates reference volume times the normal Kirchhoff stress,
+then projects the internal force onto the affine normal mode about
+the snow center of mass. For a normal coordinate q, the force on a
+particle is -m (q - q_center) times integrated stress divided by
+the mass moment of inertia in that coordinate. Its total impulse is
+zero, and its work on an affine velocity field matches the stress
+power with opposite sign. The predictor rejects a dimensionless
+modal timestep above one using the existing frozen acoustic bound.
+The stiff-layer fixture exercises the resulting half-step retry.
+
+The analytic replay uses 12 Pa shear modulus and 7 Pa Lamé lambda
+to keep its 0.0625 s steps within the mode limit. The first step
+starts stress-free. At the second endpoint the recovered pressure
+is 5.463767 Pa, the thickness is 0.06850841 m, and the cumulative
+elastic–plastic Jacobian is 0.27403365. The elastic Jacobian stays
+at 0.975. Native and CUDA check these values and the net snow
+momentum change against the pressure impulse. The clamp tolerance
+is 1e-12. The other second-frame checks use 2e-6 in their respective
+units. This is a one-dimensional affine mode with a frozen tangent
+step limit. General three-dimensional stress transfer and stability
+remain part of the production gate.
 
 At each accepted substep, including the final one, the frame rebuilds the
 wall from the moved snow and checks that it stays in the selected cell.

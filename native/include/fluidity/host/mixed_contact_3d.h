@@ -179,8 +179,9 @@ absl::StatusOr<FrozenPlanarSnowPressureCell3D> FreezePlanarSnowPressureCell3D(
 // regular-cell field. On success both spans receive the candidate state;
 // otherwise neither span changes. Liquid retains its incoming affine enable
 // flag. A supplied snow binding must match every particle's body and
-// material IDs and contain snow parameters. With that binding, all snow
-// particles drift and the affine change of normal thickness drives a
+// material IDs and contain snow parameters. The affine normal stress kick
+// precedes the pressure solve and enforces a modal timestep bound.
+// All snow particles drift and the affine change of normal thickness drives a
 // constitutive return. Pressure contributors must be on the front layer.
 // The caller owns rebinning and acceptance.
 absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(

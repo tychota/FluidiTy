@@ -667,7 +667,7 @@ bool TestPlanarMixedContactDetection() {
       fluidity::PlasticSolidCheckpointBinding3D{
           snow.body_id,
           snow.material_id,
-          fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4}
+          fluidity::SnowParameters3D{12, 7, 0.025, 0.01, 4}
       },
   };
   const auto scene_bytes = fluidity::EncodeLiquidResolvedScene3D({
@@ -839,6 +839,23 @@ bool TestPlanarMixedContactDetection() {
     std::fprintf(stderr, "M5 wall retreat past its cell: %s\n", rejected_retreat.status().ToString().c_str());
     return false;
   }
+  auto stiff_settings = deformation_settings;
+  auto& stiff_material = std::get<fluidity::SnowParameters3D>(stiff_settings.snow_layer_binding->material);
+  stiff_material.shear_modulus = 1200;
+  stiff_material.lame_lambda = 700;
+  const auto stiff_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      single_traction,
+      stiff_settings,
+      project
+  );
+  if (!stiff_frame.ok() || stiff_frame->rejected_attempts == 0 || stiff_frame->liquid.clock.time != 0.0625
+      || accepted_liquid.clock.time != 0 || deforming_snow[0].log_plastic_jacobian != 0) {
+    std::fprintf(stderr, "M5 stiff layer retry: %s\n", stiff_frame.status().ToString().c_str());
+    return false;
+  }
   auto middle = deforming_snow[1];
   middle.particle_id = 5;
   middle.transfer.trial_world_position.x = -1;
@@ -909,17 +926,43 @@ bool TestPlanarMixedContactDetection() {
       || restarted_compression->snow.size() != deforming_snow.size()) {
     return false;
   }
-  // The rear advances by 3/16 m, while pressure limits the front advance to 3/44 m.
+  // At the second step the first compaction supplies a compressive axial stress.
+  // Equal masses and reference volumes give equal and opposite elastic kicks.
+  constexpr double elastic_stretch = 0.975;
+  constexpr double first_thickness = 0.1875;
+  constexpr double step_duration = 0.0625;
+  constexpr double snow_mass = 0.375;
+  const double hardened_scale = std::exp(4 * (1 - 0.75 / elastic_stretch));
+  const double axial_stress = hardened_scale * (2 * 12 + 7) * (elastic_stretch - 1) * elastic_stretch;
+  const double front_kick = -step_duration * 0.001 * 2 * axial_stress / (first_thickness * snow_mass);
+  const double wall_speed = (2 + front_kick) * 6.0 / 11.0;
+  const double expected_pressure = 5 * wall_speed;
+  const double expected_rear_x = -0.9375 + step_duration * (3 - front_kick);
+  const double expected_front_x = -0.75 + step_duration * wall_speed;
+  const double expected_total_jacobian = (expected_front_x - expected_rear_x) / 0.25;
   const double front_x = restarted_compression->snow.front().transfer.trial_world_position.x;
   const double rear_x = restarted_compression->snow.back().transfer.trial_world_position.x;
-  if (std::abs(rear_x + 0.75) > 1e-12 || std::abs(front_x - rear_x - 3.0 / 44.0) > kFrameTolerance
-      || std::abs(restarted_compression->liquid.cells[0].previous_pressure - 60.0 / 11.0) > kFrameTolerance) {
+  if (std::abs(rear_x - expected_rear_x) > kFrameTolerance || std::abs(front_x - expected_front_x) > kFrameTolerance
+      || std::abs(restarted_compression->liquid.cells[0].previous_pressure - expected_pressure) > kFrameTolerance) {
+    std::fprintf(
+        stderr,
+        "M5 elastic feedback pressure %.17g, expected %.17g\n",
+        restarted_compression->liquid.cells[0].previous_pressure,
+        expected_pressure
+    );
+    return false;
+  }
+  const double final_snow_momentum = snow_mass
+      * (restarted_compression->snow.front().transfer.particle_velocity.x
+         + restarted_compression->snow.back().transfer.particle_velocity.x);
+  if (std::abs(final_snow_momentum - snow_mass * 5 + step_duration * expected_pressure) > kFrameTolerance) {
     return false;
   }
   for (const auto& particle : restarted_compression->snow) {
     const double elastic_jacobian = particle.elastic_deformation.x_row.x;
-    if (std::abs(elastic_jacobian - 0.975) > 1e-12
-        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 3.0 / 11.0) > kFrameTolerance) {
+    if (std::abs(elastic_jacobian - elastic_stretch) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - expected_total_jacobian)
+            > kFrameTolerance) {
       return false;
     }
   }
