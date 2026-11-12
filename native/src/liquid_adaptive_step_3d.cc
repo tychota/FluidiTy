@@ -741,78 +741,140 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
     const LiquidStepOptions3D& options,
     std::uint64_t particle_id
 ) {
-  const auto particles = committed.particles.values();
-  const auto selected = std::ranges::find(particles, particle_id, &LiquidParticleState3D::id);
-  if (selected == particles.end()) {
-    return absl::InvalidArgumentError("quadratic transfer particle ID is absent from the committed epoch");
+  return StageQuadraticTransfer(committed, options, std::span(&particle_id, 1), true);
+}
+
+absl::StatusOr<PreparedAdaptiveQuadraticTransfer3D> AdaptiveLiquidStep3D::PrepareCertifiedQuadraticTransfer(
+    const LiquidState3D& candidate,
+    const LiquidStepOptions3D& options,
+    std::span<const std::uint64_t> replacement_ids
+) {
+  auto prepared = StageQuadraticTransfer(candidate, options, replacement_ids, false);
+  if (!prepared.ok()) {
+    return prepared.status();
   }
-  if (physical_trial_ || !core_faces_.empty() || selected->phase_id != 0 || update_volume_ratio_) {
+  if (!prepared->has_value()) {
+    return absl::InternalError("certified quadratic transfer selected an unexpected fallback");
+  }
+  return std::move(**prepared);
+}
+
+absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiquidStep3D::StageQuadraticTransfer(
+    const LiquidState3D& state,
+    const LiquidStepOptions3D& options,
+    std::span<const std::uint64_t> particle_ids,
+    bool allow_radial_fallback
+) {
+  if (particle_ids.empty() || particle_ids.size() > PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles) {
+    return absl::InvalidArgumentError("quadratic transfer requires one to eight particle IDs");
+  }
+  if (physical_trial_ || !core_faces_.empty() || update_volume_ratio_) {
     return absl::FailedPreconditionError("explicit quadratic transfer requires incompressible particle-owned liquid");
   }
-  const auto carrier_faces = committed.adaptive_faces.values();
-  const GradedQuadraticMacParticle3D particle{
-      .transfer =
-          {
-              .sorted_world_position = selected->world_position,
-              .trial_world_position = selected->world_position,
-              .particle_mass = selected->mass,
-              .particle_velocity = selected->world_velocity,
-              .particle_velocity_slopes = selected->affine_enabled ? selected->velocity_slopes : Mat3{},
-          },
-      .side_tag = selected->side_tag,
-  };
-  const auto valid_particle = internal::ValidateMacDepositParticle(particle.transfer);
-  if (!valid_particle.ok()) {
-    return valid_particle;
-  }
-  const auto bound = GradedQuadraticMacTransfer3D::BindWithLayout(
-      particle,
-      topology_,
-      transfer_,
-      committed.geometry.world_origin,
-      interior_slots_,
-      [&](std::size_t slot) {
-        return subfaces_[slot].open_area_m2;
-      },
-      carrier_faces
-  );
-  if (absl::IsFailedPrecondition(bound.status())) {
-    return std::nullopt;
-  }
-  if (!bound.ok()) {
-    return bound.status();
+  std::array<std::uint64_t, PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles> sorted_ids{};
+  const auto requested = std::span(sorted_ids).first(particle_ids.size());
+  std::ranges::copy(particle_ids, requested.begin());
+  std::ranges::sort(requested);
+  if (requested.front() == 0 || std::ranges::adjacent_find(requested) != requested.end()) {
+    return absl::InvalidArgumentError("quadratic transfer requires distinct nonzero particle IDs");
   }
 
-  // One accumulation in particle order also fixes the rounding where radial
-  // and quadratic contributions share a face. The scratch is bounded by the
-  // committed canonical face count and the old snapshot is reused by Deposit.
+  const auto particles = state.particles.values();
+  PreparedAdaptiveQuadraticTransfer3D prepared{.epoch = state.clock.epoch, .particles = {}, .particle_count = 0};
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    const auto& particle = particles[ordinal];
+    if (std::ranges::binary_search(requested, particle.id)) {
+      if (prepared.particle_count == requested.size()) {
+        return absl::InvalidArgumentError("staged state contains duplicate quadratic particle IDs");
+      }
+      prepared.particles[prepared.particle_count++] = {
+          .particle_ordinal = ordinal,
+          .particle_id = particle.id,
+          .world_position_m = particle.world_position,
+          .stencil = {},
+      };
+    }
+  }
+  if (prepared.particle_count != requested.size()) {
+    return absl::InvalidArgumentError("quadratic transfer particle ID is absent from the staged state");
+  }
+
+  const auto transfer_particle = [](const LiquidParticleState3D& particle) {
+    return MacTransferParticle3D{
+        .sorted_world_position = particle.world_position,
+        .trial_world_position = particle.world_position,
+        .particle_mass = particle.mass,
+        .particle_velocity = particle.world_velocity,
+        .particle_velocity_slopes = particle.affine_enabled ? particle.velocity_slopes : Mat3{},
+    };
+  };
+  const auto carrier_faces = state.adaptive_faces.values();
+  for (auto& selection : std::span(prepared.particles).first(prepared.particle_count)) {
+    const auto& particle = particles[selection.particle_ordinal];
+    if (particle.phase_id != 0) {
+      return absl::FailedPreconditionError("explicit quadratic transfer requires implicit liquid");
+    }
+    const GradedQuadraticMacParticle3D input{.transfer = transfer_particle(particle), .side_tag = particle.side_tag};
+    const auto valid = internal::ValidateMacDepositParticle(input.transfer);
+    if (!valid.ok()) {
+      return valid;
+    }
+    const auto bound = GradedQuadraticMacTransfer3D::BindWithLayout(
+        input,
+        topology_,
+        transfer_,
+        state.geometry.world_origin,
+        interior_slots_,
+        [&](std::size_t slot) {
+          return subfaces_[slot].open_area_m2;
+        },
+        carrier_faces
+    );
+    if (allow_radial_fallback && absl::IsFailedPrecondition(bound.status())) {
+      return std::nullopt;
+    }
+    if (!bound.ok()) {
+      return bound.status();
+    }
+    selection.stencil = *bound;
+  }
+
+  // The global particle order fixes rounding where any two contributions
+  // share a face. The normalized old snapshot is reused by Deposit.
   std::vector<MacFaceDeposit3D> deposits(old_faces_.size());
-  for (const auto& entry : particles) {
-    const auto status = entry.id == particle_id
-        ? GradedQuadraticMacTransfer3D::AccumulateBoundDeposit(particle.transfer, *bound, deposits)
-        : transfer_.AccumulateParticleDeposit(entry, carrier_faces, deposits);
+  auto selections = prepared.selections();
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    const auto& particle = particles[ordinal];
+    const bool selected = !selections.empty() && ordinal == selections.front().particle_ordinal;
+    const auto status = selected ? GradedQuadraticMacTransfer3D::AccumulateBoundDeposit(
+                                       transfer_particle(particle),
+                                       selections.front().stencil,
+                                       deposits
+                                   )
+                                 : transfer_.AccumulateParticleDeposit(particle, carrier_faces, deposits);
     if (!status.ok()) {
       return status;
     }
+    if (selected) {
+      selections = selections.subspan(1);
+    }
   }
-  const auto normalized = NormalizeDeposits(committed, options, deposits);
+  const auto normalized = NormalizeDeposits(state, options, deposits);
   if (!normalized.ok()) {
     return normalized;
   }
-  const auto carriers = GradedQuadraticMacTransfer3D::CheckBoundCarriers(*bound, particle.side_tag, old_faces_);
-  if (absl::IsFailedPrecondition(carriers)) {
-    return std::nullopt;
+  for (const auto& selection : prepared.selections()) {
+    const auto& particle = particles[selection.particle_ordinal];
+    const auto carriers =
+        GradedQuadraticMacTransfer3D::CheckBoundCarriers(selection.stencil, particle.side_tag, old_faces_);
+    if (allow_radial_fallback && absl::IsFailedPrecondition(carriers)) {
+      return std::nullopt;
+    }
+    if (!carriers.ok()) {
+      return carriers;
+    }
   }
-  if (!carriers.ok()) {
-    return carriers;
-  }
-  return PreparedAdaptiveQuadraticTransfer3D{
-      .epoch = committed.clock.epoch,
-      .particle_ordinal = static_cast<std::size_t>(selected - particles.begin()),
-      .particle_id = particle_id,
-      .world_position_m = selected->world_position,
-      .stencil = *bound,
-  };
+  return prepared;
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(
@@ -821,15 +883,20 @@ absl::Status AdaptiveLiquidStep3D::Deposit(
     const PreparedAdaptiveQuadraticTransfer3D* quadratic
 ) {
   if (quadratic != nullptr) {
-    if (trial.clock.epoch != quadratic->epoch || quadratic->particle_ordinal >= trial.particles.size()) {
-      return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial epoch or extent");
+    if (trial.clock.epoch != quadratic->epoch) {
+      return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial epoch");
     }
-    const auto& particle = trial.particles[quadratic->particle_ordinal];
-    const auto position = particle.world_position;
-    const auto expected_position = quadratic->world_position_m;
-    if (particle.id != quadratic->particle_id || position.x != expected_position.x || position.y != expected_position.y
-        || position.z != expected_position.z) {
-      return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial particle");
+    for (const auto& selection : quadratic->selections()) {
+      if (selection.particle_ordinal >= trial.particles.size()) {
+        return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial extent");
+      }
+      const auto& particle = trial.particles[selection.particle_ordinal];
+      const auto position = particle.world_position;
+      const auto expected_position = selection.world_position_m;
+      if (particle.id != selection.particle_id || position.x != expected_position.x || position.y != expected_position.y
+          || position.z != expected_position.z) {
+        return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial particle");
+      }
     }
     return absl::OkStatus();
   }
@@ -1227,12 +1294,14 @@ absl::Status AdaptiveLiquidStep3D::Project(
 
 absl::Status
 AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic) {
+  auto selections =
+      quadratic != nullptr ? quadratic->selections() : std::span<const PreparedAdaptiveQuadraticParticle3D>{};
   for (std::size_t ordinal = 0; ordinal < trial.particles.size(); ++ordinal) {
     const auto& particle = trial.particles[ordinal];
-    if (quadratic != nullptr && ordinal == quadratic->particle_ordinal) {
+    if (!selections.empty() && ordinal == selections.front().particle_ordinal) {
       Vec3 old_pic_velocity{};
       const auto gathered = GradedQuadraticMacTransfer3D::GatherBound(
-          quadratic->stencil,
+          selections.front().stencil,
           particle.side_tag,
           old_faces_,
           trial.adaptive_faces.values(),
@@ -1256,6 +1325,7 @@ AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQ
           .affine_enabled = true,
       };
       distances_[ordinal] = particle.world_position.y - surface_height_;
+      selections = selections.subspan(1);
       continue;
     }
     const auto before = transfer_.Gather(particle, old_faces_);

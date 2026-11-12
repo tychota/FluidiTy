@@ -103,6 +103,27 @@ gap, the coarsening halo restores the original 125-leaf graph and face
 history, with one fresh ID for the merged particle. A lone family without the
 required halo is refused in either direction. Duplicate child IDs fail
 preflight. The proposal is detached from accepted scheduler publication.
+### Certified family trials
+
+The explicit split and merge scheduler requests bind a committed epoch,
+the complete parent closure and the source particle IDs. The detached
+candidate owner freezes its replacement IDs and actual quadratic face rows
+before the physical stages. The split stages eight replacement particles
+and the merge stages one. A missing or ineligible row refuses the entire
+request. The old and projected grid snapshots use the same rows.
+
+The interrupted replay fixtures start from independent coarse and authored
+fine dyadic seeds. Each saves an accepted checkpoint before the certified
+operation, kills the process, and reapplies the request after restore. A late
+fault checks that the committed host and device versions retain the previous
+layout and IDs. The resumed request also reverses its input order to check
+that the accepted result follows canonical particle order.
+
+Selection in this path lasts for the requested trial. Later ordinary
+attempts need a basis policy that can be reproduced after restart or an
+explicit switch that resets incompatible affine state. The replay fixtures
+use rest seeds for their ordinary frame remainder.
+
 ### Accepted transfer basis in FLST
 
 An accepted particle may carry the quadratic adaptive basis flag. FLST v5

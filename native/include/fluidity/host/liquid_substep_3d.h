@@ -306,6 +306,25 @@ struct LiquidFloatingBoxAttempt3D {
   std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
+// Borrowed synchronously for a single certified split. The refinement
+// closure must name every required parent exactly once.
+struct LiquidAdaptiveQuadraticSplitRequest3D {
+  std::uint64_t accepted_epoch;
+  std::span<const AdaptiveMacCellKey3D> exact_refinement_closure;
+  AdaptiveMacCellKey3D split_parent;
+  std::uint64_t source_particle_id;
+};
+
+// Borrowed synchronously for a single certified merge. Supply the explicit
+// coarsening halo and all two to eight distinct source IDs for the selected
+// family. Order of the closure and IDs does not determine reduction order.
+struct LiquidAdaptiveQuadraticMergeRequest3D {
+  std::uint64_t accepted_epoch;
+  std::span<const AdaptiveMacCellKey3D> exact_coarsening_halo;
+  AdaptiveMacCellKey3D merge_parent;
+  std::span<const std::uint64_t> source_particle_ids;
+};
+
 struct LiquidAdaptivePhysicalExteriorPressure3D {
   double pressure_pa;  // Gauge pressure including any caller-supplied lift.
   double distance_m;  // Positive pressure gradient distance.
@@ -428,6 +447,20 @@ class LiquidSubstepScheduler3D {
   // the committed state and backend publication unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveQuadraticTransfer(double step_duration, std::uint64_t committed_epoch, std::uint64_t particle_id);
+
+  // Attempt a positive duration in seconds with a detached certified F3
+  // split in an inviscid incompressible graded tank. The committed epoch
+  // must match the request. All eight replacement transfers must qualify
+  // before any physical stage. Rejection leaves the previous publication.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveQuadraticSplit(double step_duration, const LiquidAdaptiveQuadraticSplitRequest3D& request);
+
+  // Attempt a positive duration in seconds with a detached certified F4
+  // merge in an inviscid incompressible graded tank. The committed epoch
+  // must match the request and the replacement transfer must qualify before
+  // any physical stage. Rejection leaves the previous publication.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveQuadraticMerge(double step_duration, const LiquidAdaptiveQuadraticMergeRequest3D& request);
 
   // Evaluate the particle-band policy at the accepted stationary planar
   // interface using the named leaf's full-volume inventory and swept margins.
@@ -583,8 +616,11 @@ class LiquidSubstepScheduler3D {
   struct AdaptiveStateTrial;
   struct AdaptivePhysicalTrial;
   struct AdaptiveWidthAgeTrial;
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptPreparedAdaptiveState(
+      double step_duration,
+      absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
+      std::size_t certified_replacement_count = 0
+  );
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
