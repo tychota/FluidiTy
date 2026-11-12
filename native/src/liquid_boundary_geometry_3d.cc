@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/host/liquid_air_components.h"
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/views.h"
 #include "liquid_boundary_backend.h"
@@ -1099,6 +1100,125 @@ absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasur
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
   return MeasureGasCell(inputs);
 }
+absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
+    UniformMacGeometry3D geometry,
+    const LiquidObstacle3D& obstacle,
+    std::span<const CellIndex3D> sampled_cells,
+    std::span<const LiquidCornerDistance3D> corners,
+    std::span<const FaceIndex3D> atmosphere_outlets,
+    std::span<LiquidAirVolumeCell3D> gas_cells
+) {
+  const auto invalid = [] {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  };
+  const auto output_bytes = std::as_bytes(gas_cells);
+  for (const auto input_bytes : {
+           std::as_bytes(sampled_cells),
+           std::as_bytes(corners),
+           std::as_bytes(atmosphere_outlets),
+       }) {
+    if (ByteViewsOverlap(output_bytes, input_bytes)) {
+      return invalid();
+    }
+  }
+  if (ByteViewsOverlap(output_bytes, std::as_bytes(std::span(&obstacle, 1)))) {
+    return invalid();
+  }
+  if (!IsPositiveFinite(geometry.cell_width) || !HasFiniteComponents(CartesianComponents(geometry.world_origin))) {
+    return invalid();
+  }
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
+  if (!obstacle_status.ok()) {
+    return obstacle_status.status();
+  }
+  const auto samples_status = ValidateSamples(corners, true);
+  if (!samples_status.ok()) {
+    return samples_status;
+  }
+  const auto face_key = [](FaceIndex3D face) {
+    return std::tuple{face.axis, face.lattice_index.z, face.lattice_index.y, face.lattice_index.x};
+  };
+  for (std::size_t outlet = 0; outlet < atmosphere_outlets.size(); ++outlet) {
+    const auto& face = atmosphere_outlets[outlet];
+    if (face.axis > FaceNormalAxis::kZ || (outlet > 0 && face_key(atmosphere_outlets[outlet - 1]) >= face_key(face))) {
+      return invalid();
+    }
+  }
+  for (std::size_t cell = 1; cell < sampled_cells.size(); ++cell) {
+    if (CellKey(sampled_cells[cell - 1]) >= CellKey(sampled_cells[cell])) {
+      return invalid();
+    }
+  }
+
+  std::size_t gas_count = 0;
+  std::size_t used_outlets = 0;
+  for (const auto cell : sampled_cells) {
+    LiquidAirCellMeasureInputs3D inputs{
+        .geometry = geometry,
+        .cell_index = cell,
+        .obstacle = obstacle,
+        .liquid_corner_distances = {},
+    };
+    for (std::size_t corner = 0; corner < inputs.liquid_corner_distances.size(); ++corner) {
+      CellIndex3D corner_index = cell;
+      for (int axis = 0; axis < 3; ++axis) {
+        const auto shifted = OffsetCellIndex(corner_index, axis, static_cast<int>((corner >> axis) & 1), true);
+        if (!shifted.ok()) {
+          return shifted.status();
+        }
+        corner_index = *shifted;
+      }
+      const auto distance = LookupSignedDistance(corners, corner_index, true);
+      if (!distance.ok()) {
+        return distance.status();
+      }
+      inputs.liquid_corner_distances[corner] = *distance;
+    }
+    const auto measures = MeasureLiquidAirCell3D(inputs);
+    if (!measures.ok()) {
+      return measures.status();
+    }
+    if (measures->gas_volume == 0.0) {
+      continue;
+    }
+    if (gas_count == gas_cells.size()) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    LiquidAirVolumeCell3D record{.cell_index = cell, .gas_volume = measures->gas_volume};
+    for (int axis = 0; axis < 3; ++axis) {
+      for (int side = 0; side < 2; ++side) {
+        const auto passage = static_cast<std::size_t>(2 * axis + side);
+        if (measures->gas_face_areas[passage] == 0.0) {
+          continue;
+        }
+        record.passages[passage] = LiquidAirPassage3D::kOpen;
+        if (atmosphere_outlets.empty()) {
+          continue;
+        }
+        const auto face = OffsetCellIndex(cell, axis, side, true);
+        if (!face.ok()) {
+          return face.status();
+        }
+        const auto key = face_key({static_cast<FaceNormalAxis>(axis), {face->x, face->y, face->z}});
+        if (!std::ranges::binary_search(atmosphere_outlets, key, {}, face_key)) {
+          continue;
+        }
+        const auto neighbor = OffsetCellIndex(cell, axis, side == 0 ? -1 : 1, true);
+        if (neighbor.ok() && std::ranges::binary_search(sampled_cells, CellKey(*neighbor), {}, CellKey<CellIndex3D>)) {
+          return invalid();
+        }
+        record.passages[passage] = LiquidAirPassage3D::kAtmosphere;
+        ++used_outlets;
+      }
+    }
+    gas_cells[gas_count++] = record;
+  }
+  if (used_outlets != atmosphere_outlets.size()) {
+    return invalid();
+  }
+  return gas_count;
+}
+
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D>
 boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, GeometryBackend backend) {
   if (inputs.cell_indices.size() > 4096) {

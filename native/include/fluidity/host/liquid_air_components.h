@@ -6,7 +6,7 @@
 #include <span>
 
 #include "absl/status/statusor.h"
-#include "fluidity/base/mac_types_3d.h"
+#include "fluidity/host/liquid_boundary_geometry_3d.h"
 
 namespace fluidity {
 
@@ -21,6 +21,24 @@ struct LiquidAirVolumeCell3D {
   double gas_volume;  // Positive geometric gas volume in m³.
   std::array<LiquidAirPassage3D, 6> passages{};  // Low/high x, low/high y, low/high z.
 };
+
+// Measures the sampled cells and emits positive-volume gas cells in the
+// same order. Supply unique (z,y,x) cells and corners, including all eight
+// corners per cell. Atmosphere outlets are optional certified outer faces,
+// ordered by (axis,z,y,x). Each must have a positive gas opening and exactly
+// one incident sampled cell. An unlisted opening into an unsampled cell
+// remains an unknown frontier. Output scratch must be disjoint from inputs.
+// Returns the number of populated gas records. Scratch may change on failure.
+// Invalid input returns InvalidArgument, insufficient output returns
+// ResourceExhausted, and clipping/sample failures propagate.
+absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
+    UniformMacGeometry3D geometry,
+    const LiquidObstacle3D& obstacle,
+    std::span<const CellIndex3D> sampled_cells,
+    std::span<const LiquidCornerDistance3D> corners,
+    std::span<const FaceIndex3D> atmosphere_outlets,
+    std::span<LiquidAirVolumeCell3D> gas_cells
+);
 
 enum class LiquidAirConnectivity3D : std::uint8_t {
   kEnclosed,

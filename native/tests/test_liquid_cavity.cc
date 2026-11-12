@@ -10,6 +10,59 @@
 namespace fluidity {
 namespace {
 
+TEST(LiquidCavity3D, SampledGasDomainSeparatesEnclosureFromUnknownAndVentedFrontiers) {
+  constexpr UniformMacGeometry3D kGeometry{{0.0, 0.0, 0.0}, 1.0};
+  std::array<CellIndex3D, 8> sampled_cells;
+  std::array<LiquidCornerDistance3D, 27> corners;
+  std::size_t cell_count = 0;
+  std::size_t corner_count = 0;
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        corners[corner_count++] = {{x, y, z}, x == 0 && y == 0 && z == 0 ? 1.0 : -1.0};
+        if (x <= 0 && y <= 0 && z <= 0) {
+          sampled_cells[cell_count++] = {x, y, z};
+        }
+      }
+    }
+  }
+  std::array<LiquidAirVolumeCell3D, 8> gas_cells;
+  std::array<std::size_t, 8> labels;
+  std::array<std::size_t, 8> queue;
+  std::array<LiquidAirComponent3D, 1> components;
+  const auto classify = [&](std::span<const CellIndex3D> cells, std::span<const FaceIndex3D> outlets) {
+    const auto built = BuildLiquidAirDomain3D(kGeometry, {}, cells, corners, outlets, gas_cells);
+    ASSERT_TRUE(built.ok()) << built.status();
+    EXPECT_EQ(*built, cells.size());
+    const auto count = LabelLiquidAirComponents3D(
+        std::span(gas_cells).first(*built),
+        std::span(labels).first(*built),
+        queue,
+        components
+    );
+    ASSERT_TRUE(count.ok()) << count.status();
+    EXPECT_EQ(*count, 1U);
+  };
+  ASSERT_NO_FATAL_FAILURE(classify(sampled_cells, {}));
+  EXPECT_EQ(components[0].connectivity, LiquidAirConnectivity3D::kEnclosed);
+  EXPECT_NEAR(components[0].gas_volume, 0.5, 1e-15);
+  const auto cropped_cells = std::span(sampled_cells).first(7);
+  ASSERT_NO_FATAL_FAILURE(classify(cropped_cells, {}));
+  EXPECT_EQ(components[0].connectivity, LiquidAirConnectivity3D::kUnclassified);
+  EXPECT_NEAR(components[0].gas_volume, 0.375, 1e-15);
+  const std::array outlets{FaceIndex3D{FaceNormalAxis::kX, {0, 0, 0}}};
+  ASSERT_NO_FATAL_FAILURE(classify(cropped_cells, outlets));
+  EXPECT_EQ(components[0].connectivity, LiquidAirConnectivity3D::kVented);
+  EXPECT_EQ(
+      BuildLiquidAirDomain3D(kGeometry, {}, sampled_cells, corners, outlets, gas_cells).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      BuildLiquidAirDomain3D(kGeometry, {}, sampled_cells, std::span(corners).first(26), {}, gas_cells).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 TEST(LiquidCavity3D, LabelsEnclosedVentedAndUnclassifiedAirComponents) {
   using Passage = LiquidAirPassage3D;
   using Connectivity = LiquidAirConnectivity3D;

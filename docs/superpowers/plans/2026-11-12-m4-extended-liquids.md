@@ -299,3 +299,11 @@ The host gas measurement now checks the connectedness of positive-volume clipped
 The analytic fixture rejected opposite gas corners and zero-area edge contact, then accepted a positive-area bridge. All 33 CPU boundary and cavity cases and all six real-device CUDA boundary regressions passed. The new connectivity certificate runs on the host. Reproduce under the locked presets with ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D on CUDA. Receipts use the out/m4-gas-connectivity prefix. The initial implicit corner-bit conversion failed the warning-as-error build and is preserved in out/m4-gas-connectivity-cpu-conversion-negative.log. clang-format 19.1.5 passed.
 
 The next dependency is constructing a bounded sampled gas domain, certifying its atmosphere outlets and connecting the cell measures to component labeling. Persistent inventories and scheduler qualification remain open.
+
+## Sampled gas domain receipt
+
+The bounded host adapter converts ordered corner samples and a frozen obstacle into positive-volume gas graph nodes. Certified in-cell connectivity is required before a node is emitted. Open gas apertures lead to represented neighbors or unclassified frontiers. An explicit atmosphere outlet must have positive gas aperture and exactly one sampled incident cell. Missing samples and inconsistent outlet declarations fail rather than fabricating trapped gas.
+
+An independent eight-cell fixture used a single positive lattice corner. Twenty-four equal tetrahedral corner cuts produced 0.5 m³ in one enclosed component. Cropping the last cell left 0.375 m³ and an unclassified frontier. Certifying one of its open outer faces changed the classification to vented, while the same declaration on the intact interior face was rejected. All 34 CPU cavity and boundary geometry cases and the real-device CUDA boundary regression passed. Reproduce with the locked Windows presets and ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle on CUDA. Receipts use the out/m4-sampled-air-domain prefix. clang-format 19.1.5 passed.
+
+The scheduler must still supply a sampled domain with certified atmosphere outlets, persist inventories across accepted topology changes, and feed resulting pressure and timestep bounds into the normal path.
