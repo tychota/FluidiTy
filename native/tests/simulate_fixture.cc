@@ -428,6 +428,33 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     upstream.digest = fluidity::LiquidContentDigest3D(initial->values());
     scene.upstream = std::span(&upstream, 1);
   }
+  if (args[5] == "plastic-body") {
+    const fluidity::DrySolidParticle3D snow{
+        .world_position = {1, 2, 3},
+        .mass = 300,
+        .reference_volume = 1,
+        .elastic_deformation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+    };
+    const auto particle = fluidity::CapturePlasticSolidCheckpointParticle3D(1, 9, 11, kPlasticBodies[0].material, snow);
+    if (!particle.ok()) {
+      return 4;
+    }
+    const fluidity::SolidInteractionCheckpoint3D solid{.accepted_step = 0, .plastic_particles = {*particle}};
+    const auto initial = fluidity::EncodeCoupledInteractionCheckpoint3D(state, solid, kPlasticBodies);
+    if (!initial.ok()) {
+      return 4;
+    }
+    auto initial_path = args[2];
+    initial_path += ".flsi";
+    std::ofstream stream(initial_path, std::ios::binary);
+    stream.write(reinterpret_cast<const char*>(initial->data()), initial->size());
+    if (!stream) {
+      return 5;
+    }
+    upstream.byte_length = initial->size();
+    upstream.digest = fluidity::LiquidContentDigest3D(*initial);
+    scene.upstream = std::span(&upstream, 1);
+  }
   if (args[1] == "wrong-clock" || args[1] == "growth-cache") {
     auto cache = fluidity::LiquidCache3D::Create(args[2], scene);
     if (!cache.ok()) {

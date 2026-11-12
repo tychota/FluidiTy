@@ -1737,3 +1737,17 @@ The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest
 commands in the checkpoint replay section above.
+
+The CLI authenticates a supplied mixed initial artifact before reporting
+the scheduler gate. A same-length byte change returns `DATA_LOSS` on
+`initial_state`. A valid artifact reaches the scheduler gate, and both
+paths leave the cache unpublished. The `SimulateCli.execution_validation`
+test covers this preflight.
+
+The extended compatible-floor CUDA runs can be invoked separately using
+`FLUIDITY_DRY_QUALIFICATION_CASE=fine`, `coarse`, `coarse-half`, or
+`fine-half` with `FLUIDITY_DRY_QUALIFICATION=1` and
+`FLUIDITY_DRY_COMPATIBLE_FLOOR=1`. Use a fresh process for each case.
+The nominal fine case reproduced the native 27.424648-degree final
+angle and 0.223715-degree late drift. The process returned a failed
+qualification because the final angle was outside the 30–35 degree band.

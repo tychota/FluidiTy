@@ -593,10 +593,6 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
     scene = std::move(*resolved);
   }
-  if (scene.model_version != kLiquidOnlyResolvedModel3D) {
-    diagnostic->cause = "resolved plastic bodies require a coupled liquid-solid scheduler";
-    return absl::FailedPreconditionError("");
-  }
   if (measurement) {
     measurement->backend = scene.backend;
   }
@@ -612,6 +608,23 @@ absl::StatusOr<std::string> ExecuteCommand(
     return absl::UnavailableError("");
   }
 #endif
+  if (scene.model_version == kPlasticBodyResolvedModel3D) {
+    if (!command.initial_state_path.empty()) {
+      diagnostic->field = "initial_state";
+      diagnostic->cause = "mixed initial state does not match the resolved scene";
+      const auto bytes = liquid_cache_files_internal::ReadBytes(command.initial_state_path, {});
+      if (!bytes.ok()) {
+        return bytes.status();
+      }
+      const auto initial = DecodeResolvedCoupledInitialState3D(scene.View(), bytes->values(), {});
+      if (!initial.ok()) {
+        return initial.status();
+      }
+    }
+    diagnostic->field = "scene";
+    diagnostic->cause = "resolved plastic bodies require a coupled liquid-solid scheduler";
+    return absl::FailedPreconditionError("");
+  }
   for (const auto& upstream : scene.upstream.values()) {
     if (upstream.role != LiquidUpstreamRole3D::kInitialParticles) {
       return absl::FailedPreconditionError("");
