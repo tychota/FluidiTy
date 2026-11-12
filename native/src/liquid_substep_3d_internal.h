@@ -15,8 +15,8 @@ using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<MacViscousPres
 
 // Builds strain rows from the same geometry as pressure, then runs the
 // coupled backend. Admits full cells with full or sealed faces, and cut
-// free surfaces with connected shear support and no obstacle. Solid cuts
-// return Unimplemented. Errors carry no projection.
+// free surfaces with connected shear support in free space or a stationary
+// full-face tank. Solid cuts return Unimplemented. Errors carry no projection.
 absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformViscosity(
     const LiquidBoundaryGeometryViewInputs3D& geometry,
     const LiquidPressureProblemView3D& problem,

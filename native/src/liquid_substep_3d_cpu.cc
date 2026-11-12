@@ -317,13 +317,18 @@ absl::StatusOr<std::vector<std::array<double, 8>>> CutViscosityOctants(
       }
       distances[corner] = found->signed_distance;
     }
-    const auto octants = MeasureLiquidCellOctants3D(geometry.mac_grid.geometry(), index, geometry.obstacle, distances);
+    // Compute the free-surface volume alone. A stationary tank may be
+    // admitted only where its solid does not clip this liquid quadrature.
+    const auto octants = MeasureLiquidCellOctants3D(geometry.mac_grid.geometry(), index, {}, distances);
     if (!octants.ok()) {
       return octants.status();
     }
     const double measured_volume = std::accumulate(octants->begin(), octants->end(), 0.0);
     constexpr double kPartitionRoundoff = 512 * std::numeric_limits<double>::epsilon();
     if (measured_volume <= 0.0 || std::abs(measured_volume / cell.fluid_volume - 1.0) > kPartitionRoundoff) {
+      if (std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle)) {
+        return absl::UnimplementedError("cut solid boundaries require viscous wall strain closure");
+      }
       return absl::FailedPreconditionError("cut strain quadratures differ from the frozen pressure volume");
     }
     volumes.push_back(*octants);
@@ -360,7 +365,10 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUnif
   const bool uses_cut_faces = std::ranges::any_of(problem.faces, [&](const auto& face) {
     return face.open_area != 0.0 && face.open_area != full_area;
   });
-  if (uses_cut_faces || (uses_cut_cells && !std::holds_alternative<std::monostate>(geometry.obstacle))) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&geometry.obstacle);
+  const bool supports_cut_free_surface =
+      std::holds_alternative<std::monostate>(geometry.obstacle) || (tank != nullptr && tank->piston_velocity_x == 0.0);
+  if (uses_cut_faces || (uses_cut_cells && !supports_cut_free_surface)) {
     return absl::UnimplementedError("cut solid boundaries require viscous wall strain closure");
   }
   const auto assemble_strain = [&]() -> absl::StatusOr<std::vector<MacStrainRow3D>> {

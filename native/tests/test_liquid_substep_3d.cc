@@ -17,6 +17,7 @@
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
+#include "liquid_viscous_tank_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
@@ -1542,6 +1543,24 @@ TEST(LiquidSubstep3D, AnalyticSpherePreservesExactRestPressureAtBothResolutions)
     ASSERT_TRUE(accepted->viscous_max_momentum_residual_kg_m_per_s.has_value());
     EXPECT_LT(*accepted->viscous_max_momentum_residual_kg_m_per_s, 1e-5);
   }
+}
+
+TEST(LiquidSubstep3D, ViscousFractionalTankFillPreservesHydrostaticRest) {
+  auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(status.ok()) << status;
+  viscous_tank_test::ExpectHydrostaticRest(*scheduler);
+
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+  tank.start_low_x = 0.25;
+  auto solid_cut = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(solid_cut.ok()) << solid_cut.status();
+  const auto rejected = solid_cut->AdvanceFrame(viscous_tank_test::kStepDuration);
+  EXPECT_EQ(rejected.code(), absl::StatusCode::kUnimplemented);
+  ExpectIdenticalSerializedState(fixture->initial, solid_cut->committed());
 }
 
 TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {

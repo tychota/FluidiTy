@@ -19,6 +19,7 @@
 #include "liquid_cavity_scheduler_cases.h"
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
+#include "liquid_viscous_tank_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
@@ -1441,6 +1442,30 @@ TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
     EXPECT_EQ(after.device_free_count, before.device_free_count);
     EXPECT_LT(std::abs(gpu->committed().particles[0].world_velocity.z), 0.125);
   }
+}
+
+TEST(CudaLiquidSubstep3D, ViscousFractionalTankFillMatchesCpuHydrostaticRest) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu =
+      LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+
+  const auto before = backend->usage();
+  const auto cpu_status = cpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  const auto gpu_status = gpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  viscous_tank_test::ExpectHydrostaticRest(*gpu);
+  ExpectState(cpu->committed(), gpu->committed());
 }
 
 TEST(CudaLiquidSubstep3D, CutViscousSphereDampsShearAndMatchesCpu) {
