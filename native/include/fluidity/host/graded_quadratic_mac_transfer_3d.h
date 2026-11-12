@@ -6,6 +6,7 @@
 #include <span>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_transfer_types_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
@@ -67,6 +68,41 @@ class GradedQuadraticMacTransfer3D {
   ) const;
 
  private:
+  friend class liquid_step_internal::AdaptiveLiquidStep3D;
+
+  // Borrow the runtime's canonical layout and apertures to bind its rows.
+  // The aperture accessor covers all canonical face slots.
+  static absl::StatusOr<GradedQuadraticMacStencil3D> BindWithLayout(
+      const GradedQuadraticMacParticle3D& particle,
+      const AdaptiveMacTopology3D& topology,
+      const GradedMacTransfer3D& transfer,
+      Vec3 world_origin,
+      std::span<const std::size_t> interior_slots,
+      absl::FunctionRef<double(std::size_t)> open_area_m2,
+      std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+  );
+  // The caller owns the prevalidated slot scratch and discards it on failure.
+  static absl::Status AccumulateBoundDeposit(
+      const MacTransferParticle3D& particle,
+      const GradedQuadraticMacStencil3D& bound,
+      std::span<MacFaceDeposit3D> deposits
+  );
+  // Check all slots in the frozen rows, including zero-weight ties.
+  static absl::Status CheckBoundCarriers(
+      const GradedQuadraticMacStencil3D& bound,
+      std::int64_t side_tag,
+      std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+  );
+  // Read both histories on the same frozen rows. Set old_pic_velocity only
+  // on success. The caller checks the old/new extents cover these rows.
+  static absl::StatusOr<MacParticleGatherResult3D> GatherBound(
+      const GradedQuadraticMacStencil3D& bound,
+      std::int64_t side_tag,
+      std::span<const LiquidAdaptiveFaceState3D> old_carrier_faces,
+      std::span<const LiquidAdaptiveFaceState3D> new_carrier_faces,
+      Vec3& old_pic_velocity
+  );
+
   GradedQuadraticMacTransfer3D(
       AdaptiveMacTopology3D topology,
       AdaptiveMacFaceOwnership3D ownership,
@@ -79,5 +115,39 @@ class GradedQuadraticMacTransfer3D {
   GradedMacTransfer3D anchors_;
   Vec3 world_origin_;
 };
+
+// Frozen canonical inputs for one side of a topology change. Spans borrow
+// the physical aperture and carrier banks in transfer slot order.
+struct GradedQuadraticMacSupportSnapshot3D {
+  const GradedQuadraticMacTransfer3D& transfer;
+  std::span<const double> open_areas_m2;
+  std::span<const LiquidAdaptiveFaceState3D> carrier_faces;
+};
+
+// Propose F3 split using the committed coarse support and candidate fine
+// support. The required callback additionally certifies particle geometry,
+// phase and constitutive admissibility. No state changes on any failure.
+absl::StatusOr<LiquidUniformSplit3D> SplitGradedQuadraticLiquidParticle3D(
+    const LiquidParticleState3D& parent,
+    std::uint64_t first_child_id,
+    double parent_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+);
+
+// Propose F4 merge with committed fine and candidate coarse support. The
+// covariance and representability gates of the uniform operator apply.
+// The required callback and failure behavior are the same as for split.
+absl::StatusOr<LiquidUniformMerge3D> MergeGradedQuadraticLiquidParticles3D(
+    std::span<const LiquidParticleState3D> children,
+    std::uint64_t target_id,
+    double fine_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+);
 
 }  // namespace fluidity

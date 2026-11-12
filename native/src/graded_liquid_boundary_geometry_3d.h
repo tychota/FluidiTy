@@ -32,6 +32,7 @@ struct FrozenGradedLiquidSubface3D {
   Vec3 world_upper_m;  // Same coordinate as lower along the normal.
   double full_area_m2;
   double wet_open_area_m2;  // Liquid intersect nonsolid; excludes dry nonsolid area.
+  std::optional<Vec3> wet_open_centroid_m;  // World-space area centroid, absent for zero wet-open area.
   double wet_solid_area_m2;  // Liquid intersect solid; excludes dry solid area.
   double wall_normal_flux_m3_per_s;  // Wet solid area times wall speed along the positive MAC axis.
 };
@@ -107,6 +108,19 @@ struct GradedLiquidPressureSubfaceFields3D {
   // of the wet aperture while retaining the measured prescribed wall flux.
   std::optional<GradedLiquidPressureExterior3D> exterior_pressure = std::nullopt;
 };
+
+struct GradedLiquidPressureInputs3D {
+  std::vector<MacPressureCell3D> cells;
+  std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces;
+};
+
+// Compose canonical pressure input rows without solving. This lets a scheduler
+// freeze aperture and wall terms before adding its trial predictor velocities.
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
 
 // Compose explicit pressure fields with frozen physical measures and canonical
 // tail/head incidence. Fields cover every frozen leaf and global face slot.

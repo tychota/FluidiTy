@@ -93,6 +93,7 @@ add_library(fluidity_native STATIC
   native/src/grid.cc
   native/src/adaptive_family_change_3d.cc
   native/src/adaptive_liquid_core_transport_3d.cc
+  native/src/adaptive_liquid_particle_exchange_3d.cc
   native/src/adaptive_liquid_remap_3d.cc
   native/src/adaptive_mac_topology_3d.cc
   native/src/sparse_mac_grid_3d.cc
@@ -363,6 +364,7 @@ if(BUILD_TESTING)
     native/tests/test_mac_pressure_workspace_3d.cc
     native/tests/test_adaptive_mac_topology_3d.cc
     native/tests/test_adaptive_liquid_core_transport_3d.cc
+    native/tests/test_adaptive_liquid_particle_exchange_3d.cc
     native/tests/test_adaptive_liquid_remap_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
@@ -433,6 +435,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu band)
   set_tests_properties(AdaptiveBandReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptivePhysicalReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu physical)
+  set_tests_properties(AdaptivePhysicalReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   add_test(NAME AdaptiveWidthReplay.cpu
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu width)
@@ -458,6 +464,10 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda band)
     set_tests_properties(AdaptiveBandReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptivePhysicalReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda physical)
+    set_tests_properties(AdaptivePhysicalReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
     add_test(NAME AdaptiveWidthReplay.cuda
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda width)

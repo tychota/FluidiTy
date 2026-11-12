@@ -5,6 +5,7 @@
 namespace fluidity::internal {
 // Complete-basis gather shared by owning and bounded callers; inputs cover every stencil slot.
 struct GatheredMacVelocityComponent {
+  double old_pic_velocity;
   double new_pic_velocity;
   double grid_velocity_increment;
   Vec3 fitted_velocity_slope_row;
@@ -59,6 +60,7 @@ inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponentFr
     return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "gathered velocity or slope is nonfinite");
   }
   return GatheredMacVelocityComponent{
+      .old_pic_velocity = old_pic_velocity,
       .new_pic_velocity = new_pic_velocity,
       .grid_velocity_increment = grid_velocity_increment,
       .fitted_velocity_slope_row = fitted_velocity_slope_row,

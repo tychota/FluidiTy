@@ -10,6 +10,8 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/host/adaptive_liquid_owner_exchange_3d.h"
+#include "liquid_exact_inventory_sum_internal.h"
 #include "liquid_remap_3d_internal.h"
 
 namespace fluidity {
@@ -46,6 +48,29 @@ InventoryLanes InventoryValues(const LiquidRemapInventory3D& inventory) {
 bool IsEulerianLiquid(const LiquidAdaptiveCellState3D& cell) {
   return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian
       && cell.occupancy == LiquidCellOccupancy3D::kLiquid;
+}
+
+bool RepresentsImplicitLiquid(const LiquidAdaptiveCellState3D& cell) {
+  if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || cell.inventory.phase_id != 0) {
+    return false;
+  }
+  const auto amounts = InventoryValues(cell.inventory);
+  if (amounts[kCurrentVolume] > 0.0) {
+    return amounts[kMass] > 0.0 && amounts[kReferenceVolume] > 0.0;
+  }
+  return std::ranges::all_of(amounts, [](double amount) {
+    return amount == 0.0;
+  });
+}
+
+LiquidRemapInventory3D TransferInventory(const InventoryLanes& amounts) {
+  return {
+      .mass_kg = amounts[kMass],
+      .reference_volume_m3 = amounts[kReferenceVolume],
+      .current_volume_m3 = amounts[kCurrentVolume],
+      .momentum_kg_m_per_s = {amounts[kMomentumX], amounts[kMomentumY], amounts[kMomentumZ]},
+      .enthalpy_j = amounts[kEnthalpy],
+  };
 }
 
 struct TransportBalance {
@@ -85,13 +110,13 @@ struct TransportErrors {
 absl::Status CheckTransportInputs(
     const AdaptiveMacTopology3D& topology,
     std::span<const LiquidAdaptiveCellState3D> committed_cells,
-    std::span<const double> interior_fluxes_m3_per_s,
+    std::size_t interior_face_count,
     double step_duration_s,
     TransportErrors errors
 ) {
   const auto leaves = topology.cells();
   const auto faces = topology.interior_faces();
-  if (leaves.empty() || committed_cells.size() != leaves.size() || interior_fluxes_m3_per_s.size() != faces.size()) {
+  if (leaves.empty() || committed_cells.size() != leaves.size() || interior_face_count != faces.size()) {
     return errors.InvalidArgument("adaptive core transport fields must cover the topology");
   }
   if (!std::isfinite(step_duration_s) || step_duration_s <= 0.0) {
@@ -108,8 +133,10 @@ absl::Status StageTransport(
     std::span<const double> interior_fluxes_m3_per_s,
     double step_duration_s,
     std::span<TransportBalance> balances,
-    TransportErrors errors
+    TransportErrors errors,
+    std::vector<AdaptiveLiquidOwnerTransfer3D>* owner_transfers = nullptr
 ) {
+  const bool allow_owner_exchange = owner_transfers != nullptr;
   const auto leaves = topology.cells();
   const auto faces = topology.interior_faces();
   for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
@@ -131,10 +158,11 @@ absl::Status StageTransport(
         || !liquid_remap_internal::ValidConstituentInventory(cell.inventory)) {
       return errors.InvalidArgument("adaptive core transport input inventory is invalid");
     }
-    if (!IsEulerianLiquid(cell)) {
+    const bool is_core = IsEulerianLiquid(cell);
+    if (!is_core && (!allow_owner_exchange || cell.occupancy != LiquidCellOccupancy3D::kLiquid)) {
       continue;
     }
-    if (cell.inventory.phase_id != 0) {
+    if (is_core && cell.inventory.phase_id != 0) {
       return errors.FailedPrecondition("adaptive core transport requires implicit single-phase inventory");
     }
     auto& balance = balances[ordinal];
@@ -155,13 +183,20 @@ absl::Status StageTransport(
     if (flux_m3_per_s == 0.0) {
       continue;
     }
-    const bool tail_in_core = IsEulerianLiquid(committed_cells[face.tail_cell_ordinal]);
-    const bool head_in_core = IsEulerianLiquid(committed_cells[face.head_cell_ordinal]);
+    const auto& tail = committed_cells[face.tail_cell_ordinal];
+    const auto& head = committed_cells[face.head_cell_ordinal];
+    const bool tail_in_core = IsEulerianLiquid(tail)
+        || (allow_owner_exchange && tail.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian);
+    const bool head_in_core = IsEulerianLiquid(head)
+        || (allow_owner_exchange && head.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian);
     if (!tail_in_core && !head_in_core) {
       continue;
     }
-    if (tail_in_core != head_in_core) {
+    if (!allow_owner_exchange && tail_in_core != head_in_core) {
       return errors.FailedPrecondition("adaptive core transport cannot exchange material with a non-core leaf");
+    }
+    if (allow_owner_exchange && (!RepresentsImplicitLiquid(tail) || !RepresentsImplicitLiquid(head))) {
+      return errors.FailedPrecondition("owner exchange requires liquid endpoints with implicit material inventories");
     }
     const double flux_magnitude_m3_per_s = std::abs(flux_m3_per_s);
     const double swept_volume_m3 = flux_magnitude_m3_per_s * step_duration_s;
@@ -195,6 +230,7 @@ absl::Status StageTransport(
       }
     }
     const bool drains_donor = outgoing_volume_excess_m3 == 0.0;
+    InventoryLanes transferred_inventory{};
     for (std::size_t lane = 0; lane < donor_amounts.size(); ++lane) {
       auto& remaining_amount = donor.remaining_inventory[lane];
       double transferred_amount = swept_volume_m3;
@@ -219,6 +255,18 @@ absl::Status StageTransport(
         remaining_amount.Add(-transferred_amount);
       }
       receiver.received_inventory[lane].Add(transferred_amount);
+      if (allow_owner_exchange) {
+        transferred_inventory[lane] = transferred_amount;
+      }
+    }
+    if (allow_owner_exchange) {
+      owner_transfers->push_back({
+          .interior_face_ordinal = ordinal,
+          .donor_leaf_ordinal = donor_ordinal,
+          .receiver_leaf_ordinal = receiver_ordinal,
+          .signed_flux_m3_per_s = flux_m3_per_s,
+          .transferred_inventory = TransferInventory(transferred_inventory),
+      });
     }
     donor.capacity_excess_m3.Add(-swept_volume_m3);
     receiver.capacity_excess_m3.Add(swept_volume_m3);
@@ -278,6 +326,83 @@ void WriteTransportInventories(
     inventory.momentum_kg_m_per_s = {amounts[kMomentumX], amounts[kMomentumY], amounts[kMomentumZ]};
     inventory.enthalpy_j = amounts[kEnthalpy];
   }
+}
+
+// At most four fine subfaces touch each of the six sides of a 2:1 leaf.
+constexpr std::size_t kMaximumIncidentTransfers = 24;
+
+struct IncidentTransfers {
+  std::array<std::size_t, kMaximumIncidentTransfers> ordinals{};
+  std::size_t count = 0;
+
+  bool Add(std::size_t ordinal) {
+    if (count == ordinals.size()) {
+      return false;
+    }
+    ordinals[count++] = ordinal;
+    return true;
+  }
+
+  std::span<const std::size_t> values() const {
+    return std::span(ordinals).first(count);
+  }
+};
+
+using ExchangeBalanceSum = liquid_exchange_internal::ExactInventorySum<kMaximumIncidentTransfers + 2>;
+
+absl::Status CheckExactExchangeBalances(
+    std::span<const LiquidAdaptiveCellState3D> committed_cells,
+    AdaptiveLiquidOwnerExchangePlan3D& plan
+) {
+  if (plan.transfers.empty()) {
+    return absl::OkStatus();
+  }
+  std::vector<IncidentTransfers> incident(committed_cells.size());
+  for (std::size_t ordinal = 0; ordinal < plan.transfers.size(); ++ordinal) {
+    const auto& transfer = plan.transfers[ordinal];
+    if (!incident[transfer.donor_leaf_ordinal].Add(ordinal) || !incident[transfer.receiver_leaf_ordinal].Add(ordinal)) {
+      return absl::InvalidArgumentError("owner exchange exceeds the graded incidence bound");
+    }
+  }
+
+  // Reconcile the actual represented debits and credits. An independently
+  // rounded leaf cannot silently absorb a transfer while its neighbor pays it.
+  for (std::size_t leaf = 0; leaf < committed_cells.size(); ++leaf) {
+    const auto transfer_ordinals = incident[leaf].values();
+    if (transfer_ordinals.empty()) {
+      continue;
+    }
+    const auto start = InventoryValues(committed_cells[leaf].inventory);
+    const auto candidate = InventoryValues(plan.candidate_cells[leaf].inventory);
+    for (std::size_t lane = 0; lane < start.size(); ++lane) {
+      ExchangeBalanceSum candidate_residual;
+      ExchangeBalanceSum donor_remaining;
+      if (!candidate_residual.Add(start[lane]) || !candidate_residual.Add(-candidate[lane])
+          || !donor_remaining.Add(start[lane])) {
+        return absl::OutOfRangeError("owner exchange balance is unrepresentable");
+      }
+      for (const auto ordinal : transfer_ordinals) {
+        const auto& transfer = plan.transfers[ordinal];
+        const auto amount = InventoryValues(transfer.transferred_inventory)[lane];
+        const bool outgoing = transfer.donor_leaf_ordinal == leaf;
+        if (!candidate_residual.Add(outgoing ? -amount : amount)
+            || (outgoing && lane <= kCurrentVolume && !donor_remaining.Add(-amount))) {
+          return absl::OutOfRangeError("owner exchange balance is unrepresentable");
+        }
+      }
+      if (lane == kCurrentVolume && donor_remaining.sign() < 0) {
+        return absl::FailedPreconditionError("owner exchange outflow exceeds step-start donor volume");
+      }
+      const bool donor_inventory_overdrawn = lane < kCurrentVolume && donor_remaining.sign() < 0;
+      if (donor_inventory_overdrawn || candidate_residual.sign() != 0) {
+        return absl::OutOfRangeError("owner exchange candidate cannot represent its exact inventory balance");
+      }
+    }
+    if (committed_cells[leaf].material_owner == AdaptiveLiquidMaterialOwner3D::kParticles) {
+      plan.particle_reconciliation_leaf_ordinals.push_back(leaf);
+    }
+  }
+  return absl::OkStatus();
 }
 
 template <typename Left, typename Right>
@@ -358,7 +483,7 @@ absl::StatusOr<std::span<const LiquidAdaptiveCellState3D>> AdaptiveLiquidCoreTra
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   const auto input_status =
-      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, errors);
+      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s.size(), step_duration_s, errors);
   if (!input_status.ok()) {
     return input_status;
   }
@@ -390,7 +515,7 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
 ) {
   constexpr TransportErrors errors{.diagnostics = TransportDiagnostics::kExplain};
   const auto input_status =
-      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, errors);
+      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s.size(), step_duration_s, errors);
   if (!input_status.ok()) {
     return input_status;
   }
@@ -403,6 +528,61 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
   std::vector<LiquidAdaptiveCellState3D> candidate(committed_cells.begin(), committed_cells.end());
   WriteTransportInventories(balances, candidate);
   return candidate;
+}
+
+absl::StatusOr<AdaptiveLiquidOwnerExchangePlan3D> PrepareAdaptiveLiquidOwnerExchange3D(
+    const AdaptiveMacTopology3D& topology,
+    std::span<const LiquidAdaptiveCellState3D> committed_cells,
+    std::span<const AdaptiveLiquidOwnerExchangeFace3D> projected_interior_faces,
+    double step_duration_s
+) {
+  constexpr TransportErrors errors{.diagnostics = TransportDiagnostics::kExplain};
+  const auto input_status =
+      CheckTransportInputs(topology, committed_cells, projected_interior_faces.size(), step_duration_s, errors);
+  if (!input_status.ok()) {
+    return input_status;
+  }
+
+  const auto interior_faces = topology.interior_faces();
+  std::vector<double> fluxes_m3_per_s(interior_faces.size());
+  for (std::size_t ordinal = 0; ordinal < interior_faces.size(); ++ordinal) {
+    const auto& face = interior_faces[ordinal];
+    const auto& sample = projected_interior_faces[ordinal];
+    const auto& carrier = sample.projected_carrier;
+    if (!std::isfinite(sample.open_area_m2) || sample.open_area_m2 < 0.0 || sample.open_area_m2 > face.face_area
+        || !std::isfinite(carrier.carrier_velocity) || carrier.validity > LiquidFaceValidity3D::kLowMass) {
+      return absl::InvalidArgumentError("owner exchange projected sample is invalid");
+    }
+    const bool touches_eulerian =
+        committed_cells[face.tail_cell_ordinal].material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian
+        || committed_cells[face.head_cell_ordinal].material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
+    if (!touches_eulerian || sample.open_area_m2 == 0.0 || carrier.carrier_velocity == 0.0) {
+      continue;
+    }
+    if (carrier.validity != LiquidFaceValidity3D::kValid || !carrier.structurally_eligible || carrier.side_tag != 0) {
+      return absl::FailedPreconditionError("owner exchange requires a valid implicit-liquid projected carrier");
+    }
+    const double flux_m3_per_s = sample.open_area_m2 * carrier.carrier_velocity;
+    if (!IsRepresentablePressureProduct(sample.open_area_m2, carrier.carrier_velocity, flux_m3_per_s)) {
+      return absl::OutOfRangeError("owner exchange projected flux is unrepresentable");
+    }
+    fluxes_m3_per_s[ordinal] = flux_m3_per_s;
+  }
+
+  AdaptiveLiquidOwnerExchangePlan3D plan;
+  std::vector<TransportBalance> balances(committed_cells.size());
+  const auto transport_status =
+      StageTransport(topology, committed_cells, fluxes_m3_per_s, step_duration_s, balances, errors, &plan.transfers);
+  if (!transport_status.ok()) {
+    return transport_status;
+  }
+  plan.candidate_cells.assign(committed_cells.begin(), committed_cells.end());
+  WriteTransportInventories(balances, plan.candidate_cells);
+  const auto exact_balance = CheckExactExchangeBalances(committed_cells, plan);
+  if (!exact_balance.ok()) {
+    return exact_balance;
+  }
+  return plan;
 }
 
 }  // namespace fluidity

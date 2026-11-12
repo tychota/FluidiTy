@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
@@ -188,6 +189,8 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
 
   double wet_open_area_m2 = 0;
   double wet_solid_area_m2 = 0;
+  double centroid_weight = 0;
+  CartesianVector centroid_fraction{};
   for (const int middle_corner : {first_bit, second_bit}) {
     const int triangle_corners[]{0, middle_corner, upper_corner};
     const ClippingPolygon triangle{vertices[0], vertices[middle_corner], vertices[upper_corner]};
@@ -202,7 +205,29 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
         .normal = boundary_internal::Scale(fluid_side.normal, -1),
         .plane_coordinate = -fluid_side.plane_coordinate,
     };
-    wet_open_area_m2 += boundary_internal::ComputeOpenFaceArea(wet, fluid_side, nominal_width_m);
+    const double open_area_m2 = boundary_internal::ComputeOpenFaceArea(wet, fluid_side, nominal_width_m);
+    wet_open_area_m2 += open_area_m2;
+    if (open_area_m2 > 0) {
+      // Take moments in normalized face coordinates to avoid world-offset
+      // cancellation and avoid changing the pressure area arithmetic.
+      const auto open = boundary_internal::ClipPolygon(wet, fluid_side);
+      const auto anchor = open[0].cell_width_position;
+      for (std::size_t corner = 1; corner + 1 < open.size(); ++corner) {
+        const auto second = open[corner].cell_width_position;
+        const auto third = open[corner + 1].cell_width_position;
+        const ClippingPolygon fan_triangle{open[0], open[corner], open[corner + 1]};
+        const double weight = boundary_internal::ComputeClippedArea(fan_triangle, nominal_width_m);
+        if (weight == 0) {
+          continue;
+        }
+        centroid_weight += weight;
+        const double relative_weight = weight / centroid_weight;
+        for (const int axis : {first_axis, second_axis}) {
+          const double triangle_centroid = (anchor[axis] + second[axis] + third[axis]) / 3.0;
+          centroid_fraction[axis] = std::lerp(centroid_fraction[axis], triangle_centroid, relative_weight);
+        }
+      }
+    }
     wet_solid_area_m2 +=
         boundary_internal::ComputeClippedArea(boundary_internal::ClipPolygon(wet, solid_side), nominal_width_m);
   }
@@ -216,6 +241,21 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
   const auto physical_solid = RescaleMeasure(wet_solid_area_m2, nominal_full_area_m2, physical_full_area_m2);
   if (!physical_solid.ok()) {
     return physical_solid.status();
+  }
+  std::optional<Vec3> wet_open_centroid_m;
+  if (*physical_open > 0) {
+    if (!std::isnormal(centroid_weight)) {
+      return absl::OutOfRangeError("Graded liquid wet centroid weight is unrepresentable");
+    }
+    auto world_centroid = bounds->lower;
+    for (const int axis : {first_axis, second_axis}) {
+      const double fraction = centroid_fraction[axis];
+      if (!std::isfinite(fraction) || fraction < -kMeasureRoundoff || fraction > 1 + kMeasureRoundoff) {
+        return absl::OutOfRangeError("Graded liquid wet centroid lies outside its subface");
+      }
+      world_centroid[axis] = std::lerp(bounds->lower[axis], bounds->upper[axis], std::clamp(fraction, 0.0, 1.0));
+    }
+    wet_open_centroid_m = ToVec3(world_centroid);
   }
   const double wall_normal_flux_m3_per_s = *physical_solid * wall_velocity[normal_axis];
   if (!pressure_internal::arithmetic::IsRepresentablePressureProduct(
@@ -233,6 +273,7 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
       .world_upper_m = ToVec3(bounds->upper),
       .full_area_m2 = physical_full_area_m2,
       .wet_open_area_m2 = *physical_open,
+      .wet_open_centroid_m = wet_open_centroid_m,
       .wet_solid_area_m2 = *physical_solid,
       .wall_normal_flux_m3_per_s = wall_normal_flux_m3_per_s,
   };
@@ -325,7 +366,7 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   return result;
 }
 
-absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
@@ -383,7 +424,24 @@ absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlan
         .pressure_jump_pa = fields.pressure_jump_pa,
     });
   }
-  return pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, geometry.step_duration_s(), cells, faces);
+  return GradedLiquidPressureInputs3D{.cells = std::move(cells), .subfaces = std::move(faces)};
+}
+
+absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+) {
+  const auto inputs = ComposeGradedPlanarLiquidPressureInputs3D(geometry, cell_fields, subface_fields);
+  if (!inputs.ok()) {
+    return inputs.status();
+  }
+  return pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+      geometry.topology(),
+      geometry.step_duration_s(),
+      inputs->cells,
+      inputs->subfaces
+  );
 }
 
 }  // namespace fluidity
