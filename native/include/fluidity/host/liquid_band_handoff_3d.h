@@ -38,6 +38,82 @@ struct LiquidHandoffCarrier3D {
   std::uint64_t phase_id = 0;  // Stable explicit phase, or zero for implicit liquid.
 };
 
+struct LiquidBandMargins3D {
+  double particle_support_radius_m = 0;  // Enclosing radius of the actual transfer or extraction support.
+  double accepted_sweep_m = 0;  // Certified maximum signed-distance increase over the accepted motion interval.
+  double reseed_radius_m = 0;  // Enclosing radius of the proposed seed offsets.
+};
+
+struct LiquidBandWidths3D {
+  double particle_depth_m = 0;  // Inward distance to the particle material ownership edge.
+  double overlap_width_m = 0;  // Width of the carrier blend ending at the ownership edge.
+};
+
+enum class LiquidBandPlacementAction3D {
+  kKeep,
+  kRetire,
+  kReseed,
+};
+
+struct LiquidBandPlacement3D {
+  LiquidBandWidths3D widths;
+  double closest_swept_depth_m;  // Lower bound on inward depth across the leaf and its accepted sweep.
+  LiquidBandPlacementAction3D action;
+  AdaptiveLiquidMaterialOwner3D target_owner;  // Install only after the corresponding handoff succeeds.
+};
+
+// Bound signed distance above across a cubic leaf using a certified upper
+// bound at its exact center and the half-diagonal. The physical signed
+// interface field must be 1-Lipschitz over the leaf and negative inside.
+// An invalid width or nonfinite center bound returns InvalidArgument.
+// An unrepresentable outward bound returns OutOfRange.
+absl::StatusOr<double> BoundLiquidBandLeafSignedDistance3D(double leaf_width_m, double center_signed_distance_upper_m);
+
+// Plan one leaf's material ownership from an upper bound in meters on
+// signed distance across the whole unswept leaf. Signed distance is negative
+// inside. The certified accepted sweep extends the bound toward the interface.
+// The particle depth is at least 6h and covers support, motion, and seed
+// offsets. The overlap is at least 2h and covers motion and seed offsets.
+// A full leaf touching the particle band requires particle ownership. A
+// deeper full particle leaf may retire. A nonfull Eulerian leaf reaching the
+// band refuses the plan. Other nonfull leaves keep their owner.
+//
+// Missing occupancy or distance, or an ownership change without a full liquid
+// leaf and certified destination carrier, returns FailedPrecondition.
+// Malformed inputs return InvalidArgument, unrepresentable arithmetic
+// returns OutOfRange. Planning moves no material and reserves no IDs.
+absl::StatusOr<LiquidBandPlacement3D> PlanLiquidBandPlacement3D(
+    const LiquidHandoffCell3D& cell,
+    AdaptiveLiquidMaterialOwner3D committed_owner,
+    std::optional<double> leaf_signed_distance_upper_m,
+    const LiquidBandMargins3D& margins,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier
+);
+
+struct LiquidBandCarrierBlend3D {
+  double normal_velocity_m_per_s;
+  double particle_weight;
+  double eulerian_weight;
+  bool reset_particle_to_pic;
+};
+
+// Blend one face's positive-normal carriers at its physical signed interface
+// distance in meters before the old-grid snapshot. The particle weight falls
+// linearly from one at the inner overlap start to zero at the band edge.
+// Only structurally eligible carriers on face_side_tag participate. Particle
+// input requires a valid deposit. Eulerian input may be valid or explicitly
+// predicted. Missing or low-mass particle support where requested falls back
+// to Eulerian with PIC reset. Any required unavailable Eulerian input returns
+// FailedPrecondition. Invalid widths, signed distance, validity or used
+// velocity return InvalidArgument. No input or material owner is modified.
+absl::StatusOr<LiquidBandCarrierBlend3D> BlendLiquidBandCarrier3D(
+    const LiquidBandWidths3D& widths,
+    double face_signed_distance_m,
+    std::int64_t face_side_tag,
+    const LiquidAdaptiveFaceState3D& particle_carrier,
+    const LiquidAdaptiveFaceState3D& eulerian_carrier
+);
+
 class LiquidBandReseed3D {
  public:
   static constexpr std::size_t kMaxParticles = 8;

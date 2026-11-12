@@ -1,7 +1,12 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <random>
+#include <tuple>
+#include <vector>
 
+#include "../src/liquid_adaptive_state_internal_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -9,6 +14,138 @@
 #include "gtest/gtest.h"
 namespace fluidity {
 namespace {
+struct AdaptiveValidationFixture {
+  std::vector<AdaptiveMacCellKey3D> keys;
+  mutable std::size_t cell_reads = 0;
+
+  absl::Status Validate(std::size_t face_count) const {
+    return liquid_state_internal::ValidateAdaptiveRecordView3D({
+        .context = this,
+        .finest_cell_width = 0.5,
+        .cell_count = keys.size(),
+        .face_count = face_count,
+        .read_cell =
+            [](const void* context, std::size_t ordinal) {
+              const auto& fixture = *static_cast<const AdaptiveValidationFixture*>(context);
+              ++fixture.cell_reads;
+              return LiquidAdaptiveCellState3D{.key = fixture.keys[ordinal]};
+            },
+        .read_face =
+            [](const void*, std::size_t) {
+              return LiquidAdaptiveFaceState3D{};
+            },
+    });
+  }
+};
+
+// Directly intersect closed lattice boxes. On a valid 2:1 mesh each covered
+// side is either whole or a union of disjoint quarters.
+std::size_t ReferenceAdaptiveFaceCount(std::span<const AdaptiveMacCellKey3D> keys) {
+  std::vector<std::array<int, 6>> covered_area(keys.size());
+  std::size_t face_count = 0;
+  for (std::size_t first = 0; first < keys.size(); ++first) {
+    const auto a = keys[first].lower_corner;
+    const std::array lower{a.x, a.y, a.z};
+    const int width = 1 << keys[first].width_exponent;
+    for (std::size_t second = first + 1; second < keys.size(); ++second) {
+      const auto b = keys[second].lower_corner;
+      const std::array other_lower{b.x, b.y, b.z};
+      const int other_width = 1 << keys[second].width_exponent;
+      for (std::size_t axis = 0; axis < lower.size(); ++axis) {
+        const bool touches_high = lower[axis] + width == other_lower[axis];
+        const bool touches_low = other_lower[axis] + other_width == lower[axis];
+        if (!touches_high && !touches_low) {
+          continue;
+        }
+        int face_area = 1;
+        for (std::size_t tangent = 0; tangent < lower.size(); ++tangent) {
+          if (tangent != axis) {
+            const int high = std::min(lower[tangent] + width, other_lower[tangent] + other_width);
+            const int low = std::max(lower[tangent], other_lower[tangent]);
+            face_area *= std::max(0, high - low);
+          }
+        }
+        if (face_area > 0) {
+          ++face_count;
+          covered_area[first][2 * axis + touches_high] += face_area;
+          covered_area[second][2 * axis + touches_low] += face_area;
+        }
+      }
+    }
+  }
+  for (std::size_t cell = 0; cell < keys.size(); ++cell) {
+    const int width = 1 << keys[cell].width_exponent;
+    for (const int covered : covered_area[cell]) {
+      face_count += covered == 0 ? 1 : 4 - 4 * covered / (width * width);
+    }
+  }
+  return face_count;
+}
+
+TEST(LiquidAdaptiveRecordView3D, MatchesGeometricOwnershipOnSeededSignedLeaves) {
+  using absl::StatusCode;
+  std::mt19937 random(8917);
+  for (int trial = 0; trial < 16; ++trial) {
+    SCOPED_TRACE(trial);
+    AdaptiveValidationFixture fixture;
+    for (int z = -4; z < 4; z += 2) {
+      for (int y = -4; y < 4; y += 2) {
+        for (int x = -4; x < 4; x += 2) {
+          if (random() % 3 == 0) {
+            fixture.keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 1});
+            continue;
+          }
+          for (int child = 0; child < 8; ++child) {
+            if (random() % 3 != 0) {
+              fixture.keys.push_back({.lower_corner = {x + (child & 1), y + ((child >> 1) & 1), z + (child >> 2)}});
+            }
+          }
+        }
+      }
+    }
+    std::ranges::sort(fixture.keys, {}, [](const AdaptiveMacCellKey3D& key) {
+      const auto lower = key.lower_corner;
+      return std::tuple{lower.z, lower.y, lower.x};
+    });
+    const auto face_count = ReferenceAdaptiveFaceCount(fixture.keys);
+    EXPECT_TRUE(fixture.Validate(face_count).ok());
+    EXPECT_EQ(fixture.cell_reads, fixture.keys.size());
+    EXPECT_EQ(fixture.Validate(face_count - 1).code(), StatusCode::kInvalidArgument);
+    EXPECT_EQ(fixture.Validate(face_count + 1).code(), StatusCode::kInvalidArgument);
+  }
+}
+
+TEST(LiquidAdaptiveRecordView3D, RejectsSignedOverlapAndFaceEdgeCornerGrading) {
+  using absl::StatusCode;
+  for (const CellIndex3D fine_lower :
+       {CellIndex3D{-3, -3, -3}, CellIndex3D{0, -3, -3}, CellIndex3D{0, 0, -3}, CellIndex3D{0, 0, 0}}) {
+    AdaptiveValidationFixture fixture{
+        .keys = {{.lower_corner = {-4, -4, -4}, .width_exponent = 2}, {.lower_corner = fine_lower}},
+    };
+    EXPECT_EQ(fixture.Validate(12).code(), StatusCode::kInvalidArgument);
+  }
+
+  AdaptiveValidationFixture separated{
+      .keys = {{.lower_corner = {-4, -4, -4}, .width_exponent = 2}, {.lower_corner = {1, 0, 0}}},
+  };
+  EXPECT_TRUE(separated.Validate(12).ok());
+}
+
+TEST(LiquidAdaptiveRecordView3D, AcceptsStrictlySeparatedSignedSlabs) {
+  const auto signed_min = std::numeric_limits<std::int32_t>::min();
+  const auto signed_max = std::numeric_limits<std::int32_t>::max();
+  AdaptiveValidationFixture fixture{
+      .keys =
+          {
+              {.lower_corner = {signed_min, 0, signed_min}, .width_exponent = 30},
+              {.lower_corner = {0, 0, 0}, .width_exponent = 29},
+              {.lower_corner = {0, 0, signed_max - 1}},
+          },
+  };
+  EXPECT_TRUE(fixture.Validate(18).ok());
+  EXPECT_EQ(fixture.cell_reads, fixture.keys.size());
+  EXPECT_EQ(fixture.Validate(17).code(), absl::StatusCode::kInvalidArgument);
+}
 constexpr LiquidStateCapacities3D kCapacity{4, 2, 2, 4, 2};
 LiquidState3D InitialState() {
   LiquidState3D state;

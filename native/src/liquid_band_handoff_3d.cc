@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -35,6 +36,35 @@ bool Finite(Mat3 value) {
 
 bool PositiveFinite(double value) {
   return value > 0.0 && std::isfinite(value);
+}
+
+constexpr double kParticleDepthInLeafWidths = 6;
+constexpr double kOverlapInLeafWidths = 2;
+// The first binary64 number above the exact half-diagonal of a unit cube.
+constexpr double kUnitCubeHalfDiagonalUpper = 0x1.bb67ae8584cabp-1;
+
+// FastTwoSum with the larger magnitude first identifies a rounded-down sum.
+// Keep exact sums unchanged so a representable band edge remains a tie.
+double AddUpperBound(double first, double second) {
+  if (std::abs(first) < std::abs(second)) {
+    std::swap(first, second);
+  }
+  const double sum = first + second;
+  if (!std::isfinite(sum)) {
+    return sum;
+  }
+  const double remainder = second - (sum - first);
+  return remainder > 0 ? std::nextafter(sum, std::numeric_limits<double>::infinity()) : sum;
+}
+
+// The scale is a positive integer, so a nonzero exact product residual is
+// at least one binary64 subnormal and its sign survives the fused operation.
+double ScaleWidthUpperBound(double width_m, double integer_scale) {
+  const double scaled_width_m = width_m * integer_scale;
+  if (!std::isfinite(scaled_width_m) || std::fma(width_m, integer_scale, -scaled_width_m) <= 0) {
+    return scaled_width_m;
+  }
+  return std::nextafter(scaled_width_m, std::numeric_limits<double>::infinity());
 }
 
 bool ValidInventory(const LiquidRemapInventory3D& inventory) {
@@ -281,6 +311,141 @@ absl::Status FillSeedGeometry(
 }
 
 }  // namespace
+
+absl::StatusOr<double> BoundLiquidBandLeafSignedDistance3D(double leaf_width_m, double center_signed_distance_upper_m) {
+  if (!PositiveFinite(leaf_width_m) || !std::isfinite(center_signed_distance_upper_m)) {
+    return absl::InvalidArgumentError("Liquid band requires a finite leaf width and center signed distance");
+  }
+  const double half_diagonal_m =
+      std::nextafter(leaf_width_m * kUnitCubeHalfDiagonalUpper, std::numeric_limits<double>::infinity());
+  const double leaf_signed_distance_upper_m = AddUpperBound(center_signed_distance_upper_m, half_diagonal_m);
+  if (!std::isfinite(leaf_signed_distance_upper_m)) {
+    return absl::OutOfRangeError("Liquid band leaf signed-distance bound is unrepresentable");
+  }
+  return leaf_signed_distance_upper_m;
+}
+
+absl::StatusOr<LiquidBandPlacement3D> PlanLiquidBandPlacement3D(
+    const LiquidHandoffCell3D& cell,
+    AdaptiveLiquidMaterialOwner3D committed_owner,
+    std::optional<double> leaf_signed_distance_upper_m,
+    const LiquidBandMargins3D& margins,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier
+) {
+  if (!PositiveFinite(cell.cell_width) || !Finite(cell.world_lower_corner)) {
+    return absl::InvalidArgumentError("Invalid liquid band leaf geometry");
+  }
+  if (cell.occupancy > LiquidHandoffOccupancy3D::kNotLiquid
+      || committed_owner > AdaptiveLiquidMaterialOwner3D::kEulerian) {
+    return absl::InvalidArgumentError("Invalid liquid band occupancy or material owner");
+  }
+  if (!leaf_signed_distance_upper_m || cell.occupancy == LiquidHandoffOccupancy3D::kMissing) {
+    return absl::FailedPreconditionError("Liquid band placement requires certified occupancy and signed distance");
+  }
+  const std::array distances{
+      margins.particle_support_radius_m,
+      margins.accepted_sweep_m,
+      margins.reseed_radius_m,
+  };
+  const bool valid_margins = std::ranges::all_of(distances, [](double distance) {
+    return std::isfinite(distance) && distance >= 0;
+  });
+  if (!std::isfinite(*leaf_signed_distance_upper_m) || !valid_margins) {
+    return absl::InvalidArgumentError("Invalid liquid band signed distance or margins");
+  }
+
+  const double movement_and_seed_margin_m = AddUpperBound(margins.accepted_sweep_m, margins.reseed_radius_m);
+  const double required_depth_m = AddUpperBound(margins.particle_support_radius_m, movement_and_seed_margin_m);
+  const double particle_depth_m =
+      std::max(ScaleWidthUpperBound(cell.cell_width, kParticleDepthInLeafWidths), required_depth_m);
+  const double overlap_width_m =
+      std::max(ScaleWidthUpperBound(cell.cell_width, kOverlapInLeafWidths), movement_and_seed_margin_m);
+  const double closest_swept_depth_m = -AddUpperBound(*leaf_signed_distance_upper_m, margins.accepted_sweep_m);
+  if (!std::isfinite(particle_depth_m) || !std::isfinite(closest_swept_depth_m)) {
+    return absl::OutOfRangeError("Liquid band depths or swept margins are unrepresentable");
+  }
+
+  LiquidBandPlacement3D placement{
+      .widths = {.particle_depth_m = particle_depth_m, .overlap_width_m = overlap_width_m},
+      .closest_swept_depth_m = closest_swept_depth_m,
+      .action = LiquidBandPlacementAction3D::kKeep,
+      .target_owner = committed_owner,
+  };
+  const bool needs_particles = closest_swept_depth_m <= particle_depth_m;
+  const bool owns_particles = committed_owner == AdaptiveLiquidMaterialOwner3D::kParticles;
+  if (needs_particles == owns_particles
+      || (!needs_particles && cell.occupancy != LiquidHandoffOccupancy3D::kFullLiquid)) {
+    return placement;
+  }
+  const auto bounds = CheckHandoffInputs(cell, destination_carrier);
+  if (!bounds.ok()) {
+    return bounds.status();
+  }
+  if (needs_particles) {
+    placement.action = LiquidBandPlacementAction3D::kReseed;
+    placement.target_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
+  } else {
+    placement.action = LiquidBandPlacementAction3D::kRetire;
+    placement.target_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  }
+  return placement;
+}
+
+absl::StatusOr<LiquidBandCarrierBlend3D> BlendLiquidBandCarrier3D(
+    const LiquidBandWidths3D& widths,
+    double face_signed_distance_m,
+    std::int64_t face_side_tag,
+    const LiquidAdaptiveFaceState3D& particle_carrier,
+    const LiquidAdaptiveFaceState3D& eulerian_carrier
+) {
+  if (!PositiveFinite(widths.particle_depth_m) || !PositiveFinite(widths.overlap_width_m)
+      || widths.overlap_width_m > widths.particle_depth_m || !std::isfinite(face_signed_distance_m)) {
+    return absl::InvalidArgumentError("Invalid liquid band widths or face signed distance");
+  }
+  if (particle_carrier.validity > LiquidFaceValidity3D::kLowMass
+      || eulerian_carrier.validity > LiquidFaceValidity3D::kLowMass) {
+    return absl::InvalidArgumentError("Invalid liquid band carrier validity");
+  }
+
+  const double inward_face_depth_m = -face_signed_distance_m;
+  const double overlap_start_m = widths.particle_depth_m - widths.overlap_width_m;
+  double requested_particle_weight = 0;
+  if (inward_face_depth_m <= overlap_start_m) {
+    requested_particle_weight = 1;
+  } else if (inward_face_depth_m < widths.particle_depth_m) {
+    requested_particle_weight =
+        std::clamp((widths.particle_depth_m - inward_face_depth_m) / widths.overlap_width_m, 0.0, 1.0);
+  }
+  const bool particle_available = particle_carrier.structurally_eligible && particle_carrier.side_tag == face_side_tag
+      && particle_carrier.validity == LiquidFaceValidity3D::kValid;
+  const double particle_weight = particle_available ? requested_particle_weight : 0;
+  const double eulerian_weight = 1 - particle_weight;
+  const bool needs_particle = particle_weight > 0;
+  const bool needs_eulerian = eulerian_weight > 0;
+  const bool eulerian_available = eulerian_carrier.structurally_eligible && eulerian_carrier.side_tag == face_side_tag
+      && (eulerian_carrier.validity == LiquidFaceValidity3D::kValid
+          || eulerian_carrier.validity == LiquidFaceValidity3D::kPredicted);
+  if (needs_eulerian && !eulerian_available) {
+    return absl::FailedPreconditionError("Liquid band blend requires an eligible Eulerian carrier");
+  }
+  if ((needs_particle && !std::isfinite(particle_carrier.carrier_velocity))
+      || (needs_eulerian && !std::isfinite(eulerian_carrier.carrier_velocity))) {
+    return absl::InvalidArgumentError("Liquid band blend requires finite carrier velocities");
+  }
+
+  double velocity_m_per_s = particle_carrier.carrier_velocity;
+  if (!needs_particle) {
+    velocity_m_per_s = eulerian_carrier.carrier_velocity;
+  } else if (needs_eulerian) {
+    velocity_m_per_s = std::lerp(eulerian_carrier.carrier_velocity, particle_carrier.carrier_velocity, particle_weight);
+  }
+  return LiquidBandCarrierBlend3D{
+      .normal_velocity_m_per_s = velocity_m_per_s,
+      .particle_weight = particle_weight,
+      .eulerian_weight = eulerian_weight,
+      .reset_particle_to_pic = requested_particle_weight > 0 && !particle_available,
+  };
+}
 
 absl::StatusOr<LiquidRemapInventory3D> RetireLiquidBandCell3D(
     const LiquidHandoffCell3D& cell,

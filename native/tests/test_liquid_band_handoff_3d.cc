@@ -579,5 +579,154 @@ TEST(AdaptiveLiquidBandHandoff3D, RejectsSixSeedsThatLoseInventoryInGradedAccumu
   );
 }
 
+TEST(LiquidBandPolicy3D, UsesClosestSweptDepthAndPreservesSingleOwnerAtBandEdge) {
+  constexpr LiquidBandMargins3D no_margin{};
+  const auto at_edge =
+      PlanLiquidBandPlacement3D(kCell, AdaptiveLiquidMaterialOwner3D::kParticles, -12.0, no_margin, std::nullopt);
+  ASSERT_TRUE(at_edge.ok()) << at_edge.status();
+  EXPECT_DOUBLE_EQ(at_edge->widths.particle_depth_m, 12);
+  EXPECT_DOUBLE_EQ(at_edge->widths.overlap_width_m, 4);
+  EXPECT_DOUBLE_EQ(at_edge->closest_swept_depth_m, 12);
+  EXPECT_EQ(at_edge->action, LiquidBandPlacementAction3D::kKeep);
+  EXPECT_EQ(at_edge->target_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+
+  const double deeper = std::nextafter(-12.0, -13.0);
+  const auto retire = PlanLiquidBandPlacement3D(kCell, AdaptiveLiquidMaterialOwner3D::kParticles, deeper, {}, kCarrier);
+  ASSERT_TRUE(retire.ok()) << retire.status();
+  EXPECT_EQ(retire->action, LiquidBandPlacementAction3D::kRetire);
+  EXPECT_EQ(retire->target_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+
+  const auto reseed = PlanLiquidBandPlacement3D(
+      kCell,
+      AdaptiveLiquidMaterialOwner3D::kEulerian,
+      -13.0,
+      {.accepted_sweep_m = 1.0},
+      kCarrier
+  );
+  ASSERT_TRUE(reseed.ok()) << reseed.status();
+  EXPECT_DOUBLE_EQ(reseed->closest_swept_depth_m, 12);
+  EXPECT_EQ(reseed->action, LiquidBandPlacementAction3D::kReseed);
+  EXPECT_EQ(reseed->target_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+}
+
+TEST(LiquidBandPolicy3D, ExpandsForActualSupportAndBoundsWholeLeafFromCenter) {
+  const auto certificate = BoundLiquidBandLeafSignedDistance3D(2.0, -10.0);
+  ASSERT_TRUE(certificate.ok()) << certificate.status();
+  EXPECT_GE(*certificate, -10.0 + std::sqrt(3.0));
+  EXPECT_LT(*certificate, -8.25);
+  const auto placement = PlanLiquidBandPlacement3D(
+      kCell,
+      AdaptiveLiquidMaterialOwner3D::kParticles,
+      *certificate,
+      {.particle_support_radius_m = 11.0, .accepted_sweep_m = 4.0, .reseed_radius_m = 1.0},
+      std::nullopt
+  );
+  ASSERT_TRUE(placement.ok()) << placement.status();
+  EXPECT_DOUBLE_EQ(placement->widths.particle_depth_m, 16);
+  EXPECT_DOUBLE_EQ(placement->widths.overlap_width_m, 5);
+  EXPECT_LE(placement->closest_swept_depth_m, 6.0 - std::sqrt(3.0));
+  EXPECT_EQ(placement->action, LiquidBandPlacementAction3D::kKeep);
+}
+
+TEST(LiquidBandPolicy3D, RefusesUnavailableGeometryAndUnsafeOwnershipChange) {
+  const auto plan = [](const LiquidHandoffCell3D& cell,
+                       AdaptiveLiquidMaterialOwner3D owner,
+                       std::optional<double> signed_distance_upper_m,
+                       const std::optional<LiquidHandoffCarrier3D>& carrier) {
+    return PlanLiquidBandPlacement3D(cell, owner, signed_distance_upper_m, {}, carrier).status().code();
+  };
+  EXPECT_EQ(
+      plan(kCell, AdaptiveLiquidMaterialOwner3D::kParticles, std::nullopt, kCarrier),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(
+      plan(kCell, AdaptiveLiquidMaterialOwner3D::kParticles, -13.0, std::nullopt),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto invalid_carrier = kCarrier;
+  invalid_carrier.volume_ratio = 0;
+  EXPECT_EQ(
+      plan(kCell, AdaptiveLiquidMaterialOwner3D::kEulerian, -3.0, invalid_carrier),
+      absl::StatusCode::kInvalidArgument
+  );
+  auto partial = kCell;
+  partial.occupancy = LiquidHandoffOccupancy3D::kPartial;
+  EXPECT_EQ(
+      plan(partial, AdaptiveLiquidMaterialOwner3D::kEulerian, -3.0, kCarrier),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(plan(partial, AdaptiveLiquidMaterialOwner3D::kParticles, -13.0, kCarrier), absl::StatusCode::kOk);
+  partial.occupancy = LiquidHandoffOccupancy3D::kMissing;
+  EXPECT_EQ(
+      plan(partial, AdaptiveLiquidMaterialOwner3D::kParticles, -3.0, kCarrier),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(
+      PlanLiquidBandPlacement3D(
+          kCell,
+          AdaptiveLiquidMaterialOwner3D::kParticles,
+          -3.0,
+          {.accepted_sweep_m = -1.0},
+          kCarrier
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      BoundLiquidBandLeafSignedDistance3D(std::numeric_limits<double>::max(), std::numeric_limits<double>::max())
+          .status()
+          .code(),
+      absl::StatusCode::kOutOfRange
+  );
+}
+
+TEST(LiquidBandPolicy3D, BlendsSameSideCarriersAndUsesEulerianPicFallback) {
+  constexpr LiquidBandWidths3D widths{.particle_depth_m = 12.0, .overlap_width_m = 4.0};
+  LiquidAdaptiveFaceState3D particle{
+      .carrier_velocity = -2.0,
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = -9,
+  };
+  LiquidAdaptiveFaceState3D eulerian{
+      .carrier_velocity = 6.0,
+      .validity = LiquidFaceValidity3D::kPredicted,
+      .side_tag = -9,
+  };
+  for (const double depth : {8.0, 9.0, 10.0, 11.0, 12.0}) {
+    const auto blend = BlendLiquidBandCarrier3D(widths, -depth, -9, particle, eulerian);
+    ASSERT_TRUE(blend.ok()) << blend.status();
+    const double weight = (12.0 - depth) / 4.0;
+    EXPECT_DOUBLE_EQ(blend->particle_weight, weight);
+    EXPECT_DOUBLE_EQ(blend->eulerian_weight, 1.0 - weight);
+    EXPECT_DOUBLE_EQ(blend->normal_velocity_m_per_s, 6.0 - 8.0 * weight);
+    EXPECT_FALSE(blend->reset_particle_to_pic);
+  }
+  particle.validity = LiquidFaceValidity3D::kLowMass;
+  const auto fallback = BlendLiquidBandCarrier3D(widths, -10.0, -9, particle, eulerian);
+  ASSERT_TRUE(fallback.ok()) << fallback.status();
+  EXPECT_DOUBLE_EQ(fallback->particle_weight, 0);
+  EXPECT_DOUBLE_EQ(fallback->eulerian_weight, 1);
+  EXPECT_DOUBLE_EQ(fallback->normal_velocity_m_per_s, 6);
+  EXPECT_TRUE(fallback->reset_particle_to_pic);
+  const auto deep = BlendLiquidBandCarrier3D(widths, -14.0, -9, particle, eulerian);
+  ASSERT_TRUE(deep.ok()) << deep.status();
+  EXPECT_FALSE(deep->reset_particle_to_pic);
+
+  particle.validity = LiquidFaceValidity3D::kValid;
+  eulerian.side_tag = 1;
+  EXPECT_EQ(
+      BlendLiquidBandCarrier3D(widths, -10.0, -9, particle, eulerian).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  const auto shallow = BlendLiquidBandCarrier3D(widths, 1.0, -9, particle, eulerian);
+  ASSERT_TRUE(shallow.ok()) << shallow.status();
+  EXPECT_DOUBLE_EQ(shallow->particle_weight, 1);
+  particle.validity = LiquidFaceValidity3D::kMissing;
+  EXPECT_EQ(
+      BlendLiquidBandCarrier3D(widths, -10.0, -9, particle, eulerian).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
 }  // namespace
 }  // namespace fluidity
