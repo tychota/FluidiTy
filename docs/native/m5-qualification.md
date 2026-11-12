@@ -3136,3 +3136,36 @@ particles, so it does not establish local free-surface traction.
 The temporary diagnostic reads the accepted state with
 `EvaluateAcceptedDrySolid3D` after the cone step loop. The source
 and fixture were restored after linking. Q-SAND remains open.
+
+### Release-shape dependence at constant cone mass
+
+Rescale the 371-particle fine nominal cone by
+`(s, 1/s², s)` with `s = cbrt(1 / tan(target_slope))`.
+This changes the footprint and height while keeping the same
+particle masses, reference volumes, total mass and density.
+The material, friction coefficient, Euler increment, grid and
+3 s endpoint stay fixed.
+
+| Initial nominal cone slope | Initial sampled envelope | Final envelope | Final radius | Final quadrant slopes |
+|---:|---:|---:|---:|---:|
+| 25° | 25.331126° | 20.347047° | 0.223779 m | 25.587645–27.620871° |
+| 35° | 35.405264° | 30.833591° | 0.180274 m | 40.218763–45.408901° |
+| 45° | 45.430165° | 39.324139° | 0.160078 m | 50.432561–53.494205° |
+
+The final envelope retains the initial shape ordering. In the 35°
+control the envelope is inside the target angle window, while all
+four quadrant fits are above it. That command returns success under
+the cone-specific criteria. The original column gate also requires
+radius below 0.16 m and remains open. Both new runs retain vertical
+momentum residual below 2.8e-8 N·s.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-cone-start-angle-bin'
+foreach ($angle in '25', '35') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-cone-start-angle $angle
+}
+```
+
+The temporary harness applies the transform to positions only and
+keeps the cone selection and particle mass unchanged. Both sources
+were restored after linking.
