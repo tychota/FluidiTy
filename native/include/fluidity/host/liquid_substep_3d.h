@@ -394,6 +394,11 @@ class LiquidSubstepScheduler3D {
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
 
+  // Attempt an ordinary graded physical step with explicit projected owner
+  // exchange. The bounded path requires a stationary implicit-liquid tank.
+  // Refusal leaves the accepted particle, core, and clock state unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveOwnerExchange(double step_duration);
+
   // Request one graded family refinement (refine=true) or coarsening before
   // the physical attempt. Preparation errors leave the current frame open
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
@@ -592,7 +597,8 @@ class LiquidSubstepScheduler3D {
       AdaptiveStateTrial* adaptive_replacement = nullptr,
       const AdaptiveWidthAgeTrial* adaptive_age = nullptr,
       AdaptivePhysicalTrial* adaptive_physical = nullptr,
-      std::optional<std::uint64_t> quadratic_particle_id = std::nullopt
+      std::optional<std::uint64_t> quadratic_particle_id = std::nullopt,
+      bool allow_owner_exchange = false
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

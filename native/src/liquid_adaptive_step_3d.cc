@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "adaptive_liquid_particle_exchange_3d_internal.h"
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 #include "fluidity/host/liquid_eos.h"
@@ -462,6 +463,8 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     result.core_transport_.emplace(std::move(*core_transport));
     result.core_faces_.resize(initial.adaptive_faces.size());
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
+    result.exchange_samples_.resize(result.topology_.interior_faces().size());
+    result.exchange_paths_.resize(initial.particles.size());
   }
   result.pressure_cells_.resize(leaves.size());
   result.update_volume_ratio_ = std::isfinite(scene.bulk_modulus) || scene.eos.has_value();
@@ -628,7 +631,9 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
-      + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes;
+      + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes
+      + exchange_samples_.capacity() * sizeof(AdaptiveLiquidOwnerExchangeFace3D)
+      + exchange_paths_.capacity() * sizeof(ExchangeParticlePath);
 }
 
 absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
@@ -1288,13 +1293,100 @@ AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQ
   return absl::OkStatus();
 }
 
+absl::Status AdaptiveLiquidStep3D::CertifyExchangePaths(
+    const LiquidState3D& trial,
+    double duration,
+    const LiquidSceneInputs3D& scene
+) {
+  for (std::size_t ordinal = 0; ordinal < trial.particles.size(); ++ordinal) {
+    const auto& particle = trial.particles[ordinal];
+    // In the gated incompressible mode, the shared update advects with PIC.
+    // A stationary zero-friction tank can stop each component, but never
+    // reverse it. A same-leaf endpoint then certifies the entire path.
+    const auto contact = ResolveLiquidWallContactBounded3D({
+        .start_world_position = particle.world_position,
+        .advecting_world_velocity = gathered_[ordinal].new_pic_velocity,
+        .obstacle = scene.obstacle,
+        .step_duration = duration,
+    });
+    if (!contact.ok()) {
+      return contact.status();
+    }
+    const auto start_leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
+    const auto end_leaf = transfer_.ParticleLeafOrdinal(contact->world_position);
+    if (!start_leaf.ok()) {
+      return start_leaf.status();
+    }
+    if (!end_leaf.ok() || *end_leaf != *start_leaf) {
+      return absl::AbortedError("projected owner exchange requires same-leaf particle paths");
+    }
+    exchange_paths_[ordinal] = {
+        .endpoint = contact->world_position,
+        .id = particle.id,
+        .mass = particle.mass,
+        .reference_volume = particle.reference_volume,
+        .volume_ratio = particle.volume_ratio,
+    };
+  }
+  return absl::OkStatus();
+}
+
+absl::Status AdaptiveLiquidStep3D::CheckExchangePaths(std::span<const LiquidParticleState3D> particles) const {
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    const auto& particle = particles[ordinal];
+    const auto& certificate = exchange_paths_[ordinal];
+    const auto position = particle.world_position;
+    const auto endpoint = certificate.endpoint;
+    if (particle.id != certificate.id || particle.mass != certificate.mass
+        || particle.reference_volume != certificate.reference_volume
+        || particle.volume_ratio != certificate.volume_ratio
+        || std::tie(position.x, position.y, position.z) != std::tie(endpoint.x, endpoint.y, endpoint.z)) {
+      return absl::FailedPreconditionError("particle update disagrees with the projected owner exchange path");
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status AdaptiveLiquidStep3D::Update(
     LiquidState3D& trial,
     double duration,
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& options,
-    const LiquidSubstepBackend3D& backend
+    const LiquidSubstepBackend3D& backend,
+    bool allow_owner_exchange
 ) {
+  std::optional<AdaptiveLiquidOwnerExchangePlan3D> exchange;
+  if (allow_owner_exchange && core_transport_) {
+    bool has_mixed_flux = false;
+    for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
+      const auto slot = interior_slots_[face];
+      const auto& interior = topology_.interior_faces()[face];
+      const auto& carrier = trial.adaptive_faces[slot];
+      const double open_area_m2 = subfaces_[slot].open_area_m2;
+      exchange_samples_[face] = {.projected_carrier = carrier, .open_area_m2 = open_area_m2};
+      const bool mixed = IsEulerian(trial.adaptive_cells[interior.tail_cell_ordinal])
+          != IsEulerian(trial.adaptive_cells[interior.head_cell_ordinal]);
+      has_mixed_flux |= mixed && open_area_m2 > 0.0 && carrier.carrier_velocity != 0.0;
+    }
+    if (has_mixed_flux) {
+      auto planned =
+          PrepareAdaptiveLiquidOwnerExchange3D(topology_, trial.adaptive_cells.values(), exchange_samples_, duration);
+      if (!planned.ok()) {
+        return planned.status();
+      }
+      for (const auto& cell : planned->candidate_cells) {
+        if (IsEulerian(cell) && cell.inventory.current_volume_m3 <= 0.0) {
+          return absl::AbortedError("projected owner exchange emptied a pressure leaf");
+        }
+      }
+      const auto paths = CertifyExchangePaths(trial, duration, scene);
+      if (!paths.ok()) {
+        return paths;
+      }
+      exchange.emplace(std::move(*planned));
+    }
+  }
+
   const auto updated = backend.update_particles(
       backend.context,
       {
@@ -1311,6 +1403,12 @@ absl::Status AdaptiveLiquidStep3D::Update(
   );
   if (!updated.ok()) {
     return updated;
+  }
+  if (exchange) {
+    const auto paths = CheckExchangePaths(trial.particles.values());
+    if (!paths.ok()) {
+      return paths;
+    }
   }
   if (physical_trial_) {
     for (const auto& particle : trial.particles.values()) {
@@ -1331,7 +1429,25 @@ absl::Status AdaptiveLiquidStep3D::Update(
       }
     }
   }
-  if (core_transport_) {
+  if (exchange) {
+    const auto reconciled = ReconcileProjectedAdaptiveOwnerExchange3D(
+        trial.adaptive_cells.values(),
+        *exchange,
+        transfer_,
+        trial.adaptive_faces.values(),
+        scene.liquid_density,
+        trial.particles.values(),
+        inventories_
+    );
+    if (!reconciled.ok()) {
+      return reconciled;
+    }
+    for (std::size_t leaf = 0; leaf < inventories_.size(); ++leaf) {
+      if (IsEulerian(trial.adaptive_cells[leaf])) {
+        inventories_[leaf] = exchange->candidate_cells[leaf].inventory;
+      }
+    }
+  } else if (core_transport_) {
     for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
       const auto slot = interior_slots_[face];
       core_fluxes_[face] = subfaces_[slot].open_area_m2 * trial.adaptive_faces[slot].carrier_velocity;
