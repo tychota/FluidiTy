@@ -46,7 +46,7 @@ dry-scene target retains the sand and snow qualification cases.
 | Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
 | Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
 | Planar snow-layer compression under water pressure | Pass for the one-cell affine layer fixture | Native and CUDA produce 12 Pa and reduce thickness from 0.25 m to 0.1875 m. The elastic Jacobian clamps at 0.975 and the combined Jacobian is 0.75. The frame rejects non-affine normal motion and preserves both input states. |
-| Joint planar snow–water checkpoint replay | Pass in the combined M5/M6 integration worktree | The moving cut-cell driver restarts liquid and compressed snow from FLSI v2. A failed frame preserves the checkpoint. The next completed checkpoint is byte-identical to uninterrupted execution on each backend. |
+| Joint planar snow–water checkpoint replay | Pass for the bounded scene on native and CUDA | An authenticated initial artifact advances through pressure compaction. Disk reopen restores FLSI v3 at frame 10 and reproduces the uninterrupted frame-20 checkpoint byte for byte on each backend. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1724,6 +1724,14 @@ compaction and scene-bound restart. Initial state uses the unbound
 format because the FLRS fingerprint already includes the initial
 artifact digest. The CLI still gates mixed execution pending production
 scheduler integration.
+
+The disk fixture publishes all twenty completed compaction frames and
+the scene-bound checkpoints at frames 0, 10, and 20. It starts from
+the authenticated mixed input, opens the cache for replay at frame 10,
+and verifies the recovered liquid, resume metadata, and compressed snow.
+The resumed state drives frames 11–20. Its persisted FLSI bytes match
+the uninterrupted run within each backend. The fixture uses the same
+bounded affine snow layer and pressure geometry as the analytic tests.
 
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow

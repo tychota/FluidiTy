@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -20,6 +21,116 @@ using fluidity::Mat3;
 using fluidity::SparseMacGrid3D;
 
 constexpr Mat3 kIdentity{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+bool TestCachedCompactionReplay(
+    const SparseMacGrid3D& grid,
+    fluidity::LiquidResolvedSceneView3D scene,
+    const fluidity::CoupledInteractionCheckpoint3D& initial,
+    std::span<const fluidity::SnowPressureContributor3D> traction,
+    fluidity::PlanarSnowPressureFrameSettings3D settings,
+    fluidity::MixedPressureProjector3D project
+) {
+  const std::filesystem::path scratch = FLUIDITY_M5_PLANAR_CACHE_SCRATCH_PATH;
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(scratch, cleanup_error);
+  if (cleanup_error) {
+    return false;
+  }
+  const auto cache = fluidity::LiquidCache3D::Create(scratch, scene);
+  const auto fingerprint = fluidity::ResolvedSceneFingerprint(scene);
+  if (!cache.ok() || !fingerprint.ok()) {
+    return false;
+  }
+  const fluidity::LiquidResumeMetadata3D resume{
+      .resolved_fingerprint = *fingerprint,
+      .execution_id = fluidity::LiquidExecutionId3D(*fingerprint),
+      .capacities = {1, 1, 1, 6},
+      .capacity_replay_reservations = {},
+  };
+  const auto publish = [&](const fluidity::LiquidState3D& liquid, const fluidity::SolidInteractionCheckpoint3D& solid) {
+    const auto points = fluidity::BuildLiquidPointFrame3D(liquid);
+    if (!points.ok()) {
+      std::fprintf(stderr, "M5 cached compaction point frame: %s\n", points.status().ToString().c_str());
+      return points.status();
+    }
+    const auto status = liquid.clock.frame_ordinal % 10 == 0
+        ? cache->PublishFrame(*points, &liquid, &resume, {}, &solid)
+        : cache->PublishFrame(*points);
+    if (!status.ok()) {
+      std::fprintf(stderr, "M5 cached compaction publish: %s\n", status.ToString().c_str());
+    }
+    return status;
+  };
+  if (!publish(initial.liquid, initial.solid).ok()) {
+    return false;
+  }
+  auto uninterrupted = cache->ReadCheckpoint();
+  if (!uninterrupted.ok() || !uninterrupted->solid.has_value()) {
+    return false;
+  }
+  constexpr double frame_duration = 0.001953125;
+  settings.nominal_step_duration = frame_duration;
+  const auto advance = [&](fluidity::LiquidCheckpoint3D& state, std::uint64_t frame) {
+    settings.target_time = frame * frame_duration;
+    auto next = fluidity::AdvancePlanarSnowPressureFrame3D(
+        grid,
+        state.state,
+        state.solid->plastic_particles,
+        traction,
+        settings,
+        project
+    );
+    if (!next.ok()) {
+      std::fprintf(
+          stderr,
+          "M5 cached compaction frame %llu: %s\n",
+          static_cast<unsigned long long>(frame),
+          next.status().ToString().c_str()
+      );
+      return false;
+    }
+    state.state = std::move(next->liquid);
+    state.solid->accepted_step = state.state.clock.accepted_step_ordinal;
+    state.solid->plastic_particles = std::move(next->snow);
+    return state.state.clock.frame_ordinal == frame;
+  };
+  for (std::uint64_t frame = 1; frame <= 10; ++frame) {
+    if (!advance(*uninterrupted, frame) || !publish(uninterrupted->state, *uninterrupted->solid).ok()) {
+      return false;
+    }
+  }
+  const auto reopened = fluidity::LiquidCache3D::OpenForReplay(scratch, *fingerprint);
+  if (!reopened.ok()) {
+    return false;
+  }
+  auto restarted = reopened->ReadCheckpoint();
+  if (!restarted.ok() || !restarted->solid.has_value() || restarted->state.clock.frame_ordinal != 10
+      || restarted->state != uninterrupted->state || restarted->resume != resume
+      || restarted->solid->plastic_particles.size() != initial.solid.plastic_particles.size()
+      || restarted->solid->plastic_particles.front().log_plastic_jacobian >= 0) {
+    return false;
+  }
+  for (std::uint64_t frame = 11; frame <= 20; ++frame) {
+    if (!advance(*uninterrupted, frame) || !advance(*restarted, frame)
+        || !publish(restarted->state, *restarted->solid).ok()) {
+      return false;
+    }
+  }
+  const auto persisted = reopened->ReadCheckpoint();
+  if (!persisted.ok() || !persisted->solid.has_value() || persisted->state.clock.frame_ordinal != 20) {
+    return false;
+  }
+  const auto expected = fluidity::EncodeResolvedCoupledCheckpoint3D(
+      scene,
+      uninterrupted->state,
+      *uninterrupted->solid,
+      uninterrupted->resume,
+      {}
+  );
+  const auto actual =
+      fluidity::EncodeResolvedCoupledCheckpoint3D(scene, persisted->state, *persisted->solid, persisted->resume, {});
+  return expected.ok() && actual.ok() && *actual == *expected;
+}
 
 bool TestPlanarMixedContactDetection() {
   fluidity::LiquidParticleState3D water{
@@ -715,6 +826,17 @@ bool TestPlanarMixedContactDetection() {
   }
   const auto checkpoint_bindings = resolved_scene->View().plastic_bodies;
   deformation_settings.snow_layer_binding = checkpoint_bindings.front();
+  if (!TestCachedCompactionReplay(
+          *grid,
+          resolved_scene->View(),
+          *initial,
+          single_traction,
+          deformation_settings,
+          project
+      )) {
+    std::fprintf(stderr, "M5 cached compaction replay failed\n");
+    return false;
+  }
   auto wrong_material_settings = deformation_settings;
   ++wrong_material_settings.snow_layer_binding->material_id;
   const auto wrong_material = fluidity::AdvancePlanarSnowPressureFrame3D(
