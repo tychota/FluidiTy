@@ -873,9 +873,9 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
   for (const double value : system->rhs) {
     rhs_norm = std::hypot(rhs_norm, value);
   }
-  const pressure_internal::MacPressureStoppingCriteria3D stopping{.integrated_residual_limit = 2e-6 + 2e-6 * rhs_norm};
-  if (!std::isfinite(rhs_norm) || !std::isfinite(stopping.integrated_residual_limit)) {
-    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  const auto stopping = pressure_internal::MacPressureStoppingCriteria(rhs_norm, system->links());
+  if (!stopping.ok()) {
+    return stopping.status();
   }
   const auto base_result = scratch.Take<double>(system->cells().size());
   if (!base_result.ok()) {
@@ -928,7 +928,7 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
       .system = *system,
       .hierarchy = *hierarchy,
       .initial_pressure = base_pressure,
-      .stopping = stopping,
+      .stopping = *stopping,
       .frozen_measurement =
           {
               .integrated_rhs_l2_m3_per_s = rhs_norm,

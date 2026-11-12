@@ -269,7 +269,7 @@ TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
 
 TEST(LiquidSubstep3D, MeasuresLaplacePressureOnCurvedParticlePhase) {
   constexpr double kRadius = 0.8;
-  constexpr double kTension = 3.1;
+  constexpr double kTension = 0.031;
   constexpr double kExpectedCurvature = 2.0 / kRadius;
   constexpr std::size_t kShellDonors = 1000;
   auto initial = Initial(kShellDonors + 1);
@@ -332,27 +332,32 @@ TEST(LiquidSubstep3D, MeasuresLaplacePressureOnCurvedParticlePhase) {
     }
     return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
   };
-  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
-  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-  const auto advanced = scheduler->AdvanceFrame(0.001);
-  ASSERT_TRUE(advanced.ok()) << advanced << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
-  ASSERT_GT(audit.crossings, 0);
-  const double relative_curvature_rms = std::sqrt(audit.square_error / static_cast<double>(audit.crossings));
-  double core_pressure = 0.0;
-  std::size_t core_cells = 0;
-  for (const auto& cell : scheduler->committed().cells.values()) {
-    const auto index = cell.cell_index;
-    if (index.x >= -1 && index.x <= 0 && index.y >= -1 && index.y <= 0 && index.z >= -1 && index.z <= 0) {
-      core_pressure += cell.previous_pressure;
-      ++core_cells;
+  for (const double viscosity : {0.0, 0.001}) {
+    SCOPED_TRACE(viscosity);
+    scene.dynamic_viscosity = viscosity;
+    audit = {};
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    const auto advanced = scheduler->AdvanceFrame(0.001);
+    ASSERT_TRUE(advanced.ok()) << advanced << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+    ASSERT_GT(audit.crossings, 0);
+    const double relative_curvature_rms = std::sqrt(audit.square_error / static_cast<double>(audit.crossings));
+    double core_pressure = 0.0;
+    std::size_t core_cells = 0;
+    for (const auto& cell : scheduler->committed().cells.values()) {
+      const auto index = cell.cell_index;
+      if (index.x >= -1 && index.x <= 0 && index.y >= -1 && index.y <= 0 && index.z >= -1 && index.z <= 0) {
+        core_pressure += cell.previous_pressure;
+        ++core_cells;
+      }
     }
+    ASSERT_EQ(core_cells, 8);
+    core_pressure /= static_cast<double>(core_cells);
+    std::cout << "curved_phase_crossings=" << audit.crossings << " relative_curvature_rms=" << relative_curvature_rms
+              << " core_pressure_pa=" << core_pressure << '\n';
+    EXPECT_LT(relative_curvature_rms, 0.25);
+    EXPECT_NEAR(core_pressure, kTension * kExpectedCurvature, 0.25 * kTension * kExpectedCurvature);
   }
-  ASSERT_EQ(core_cells, 8);
-  core_pressure /= static_cast<double>(core_cells);
-  std::cout << "curved_phase_crossings=" << audit.crossings << " relative_curvature_rms=" << relative_curvature_rms
-            << " core_pressure_pa=" << core_pressure << '\n';
-  EXPECT_LT(relative_curvature_rms, 0.25);
-  EXPECT_NEAR(core_pressure, kTension * kExpectedCurvature, 0.25 * kTension * kExpectedCurvature);
 }
 TEST(LiquidSubstep3D, DiscoversParticlePhaseCrossingAndRetriesAtItsCapillaryLimit) {
   constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{

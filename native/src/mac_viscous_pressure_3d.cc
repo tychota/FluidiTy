@@ -10,13 +10,13 @@
 #include <vector>
 
 #include "mac_pressure_3d_arithmetic.h"
+#include "mac_pressure_3d_multigrid.h"
 
 namespace fluidity {
 namespace {
 
 using pressure_internal::PreparedMacPressureSystem3D;
 
-constexpr double kConstraintTolerance = 2e-5;
 constexpr std::size_t kPressureIterationBudget = 256;
 constexpr std::size_t kRestartLength = 32;
 
@@ -215,6 +215,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
   std::vector<std::vector<double>> directions;
   std::vector<std::vector<double>> responses;
   double initial_residual_norm = 0.0;
+  pressure_internal::MacPressureStoppingCriteria3D stopping{};
   for (std::size_t iteration = 0; iteration <= max_iterations; ++iteration) {
     auto velocity = solve_velocity(pressure, true);
     if (!velocity.ok()) {
@@ -234,6 +235,11 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     }
     if (iteration == 0) {
       initial_residual_norm = residual_norm;
+      const auto criteria = pressure_internal::MacPressureStoppingCriteria(initial_residual_norm, links);
+      if (!criteria.ok()) {
+        return criteria.status();
+      }
+      stopping = *criteria;
     }
     double max_defect = 0.0;
     for (std::size_t cell = 0; cell < cells.size(); ++cell) {
@@ -243,7 +249,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
       }
       max_defect = std::max(max_defect, std::abs(defect));
     }
-    if (max_defect <= kConstraintTolerance && residual_norm <= 2e-6 + 2e-6 * initial_residual_norm) {
+    if (max_defect <= stopping.volume_scaled_limit && residual_norm <= stopping.integrated_residual_limit) {
       for (std::size_t cell = 0; cell < cells.size(); ++cell) {
         residual[cell] /= cells[cell].fluid_volume;
       }

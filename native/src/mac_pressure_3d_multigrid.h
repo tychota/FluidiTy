@@ -75,6 +75,8 @@ struct MacPressureStoppingCriteria3D {
 
 // Freeze the original-RHS global tolerance with an overflow-safe FP64 norm.
 // Returns kOutOfRange when the norm or tolerance cannot be represented.
+absl::StatusOr<MacPressureStoppingCriteria3D>
+MacPressureStoppingCriteria(double rhs_norm, std::span<const FrozenMacPressureLink3D> links);
 absl::StatusOr<MacPressureStoppingCriteria3D> MacPressureStoppingCriteria(const PreparedMacPressureSystem3D& system);
 
 // All three original-system metrics must be finite and satisfy their bounds.

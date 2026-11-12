@@ -322,13 +322,26 @@ absl::StatusOr<MacPressureStoppingCriteria3D> MacPressureStoppingCriteria(const 
   for (const double rhs : system.integrated_rhs()) {
     rhs_norm = std::hypot(rhs_norm, rhs);
   }
-  const double limit = 2e-6 + 2e-6 * rhs_norm;
-  if (!std::isfinite(rhs_norm) || !std::isfinite(limit)) {
-    return absl::OutOfRangeError("pressure RHS norm or stopping tolerance is unrepresentable");
+  return MacPressureStoppingCriteria(rhs_norm, system.links());
+}
+
+absl::StatusOr<MacPressureStoppingCriteria3D>
+MacPressureStoppingCriteria(double rhs_norm, std::span<const FrozenMacPressureLink3D> links) {
+  double limit = 2e-6 + 2e-6 * rhs_norm;
+  if (!std::isfinite(rhs_norm) || rhs_norm < 0.0 || !std::isfinite(limit)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  // A fixed flux floor can accept a zero pressure iterate even when an
+  // internal jump is the only forcing. Preserve the original local gates and
+  // bound the global residual relative to the nonzero assembled signal.
+  if (rhs_norm > 0.0 && std::ranges::any_of(links, [](const FrozenMacPressureLink3D& link) {
+        const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link);
+        return link.conductance > 0.0 && internal && internal->pressure_jump != 0.0;
+      })) {
+    limit = std::min(limit, std::max(std::numeric_limits<double>::denorm_min(), 1e-3 * rhs_norm));
   }
   return MacPressureStoppingCriteria3D{.integrated_residual_limit = limit};
 }
-
 bool MeetsMacPressureStoppingCriteria3D(
     const MacPressureDiagnostics3D& diagnostics,
     const MacPressureStoppingCriteria3D& criteria

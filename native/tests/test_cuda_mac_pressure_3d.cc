@@ -243,6 +243,36 @@ TEST(CudaMacPressure3D, MixedLinksMatchOracle) {
     if (fixture.name == "mixed") {
       std::cout << "mixed_max_pressure_error=" << std::setprecision(17) << maximum_pressure_error << '\n';
       Receipt("pressure_3d_mixed", result->measurement);
+      // Keep the operator fixed and shrink every RHS contribution below the
+      // absolute global tolerance. Linear pressure should shrink by the same factor.
+      constexpr double scale = 1e-8;
+      auto weak_cells = fixture.cells;
+      auto weak_faces = fixture.faces;
+      for (auto& cell : weak_cells) {
+        cell.target_divergence *= scale;
+        cell.previous_pressure *= scale;
+      }
+      for (auto& face : weak_faces) {
+        face.predicted_normal_velocity *= scale;
+        face.wall_normal_velocity *= scale;
+        if (face.prescribed_wall_flux) {
+          *face.prescribed_wall_flux *= scale;
+        }
+        if (auto* jump = std::get_if<InternalMacPressureLink3D>(&face.pressure_link)) {
+          jump->pressure_jump *= scale;
+        }
+        if (auto* exterior = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link)) {
+          exterior->exterior_pressure *= scale;
+        }
+      }
+      const MacPressureInputs3D weak_input{fixture.grid, fixture.step_duration, weak_cells, weak_faces};
+      const auto weak = CudaProjectMacPressure3D(weak_input);
+      ASSERT_TRUE(weak.ok()) << weak.status();
+      EXPECT_GT(weak->projection.diagnostics.iteration_count, 0);
+      for (std::size_t index = 0; index < weak_cells.size(); ++index) {
+        const double expected = scale * fixture.expected_projection.cell_pressures[index];
+        EXPECT_NEAR(weak->projection.cell_pressures[index], expected, 5e-3 * std::abs(expected) + 1e-12);
+      }
     }
   }
 }
