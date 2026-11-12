@@ -556,6 +556,7 @@ struct LiquidSubstepScheduler3D::Impl {
     if (scene.eos) {
       eos = LiquidEos3D{scene.liquid_density, scene.eos->reference_sound_speed, scene.eos->law};
     }
+    double minimum_predictor_density = scene.liquid_density;
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
     for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
@@ -569,6 +570,7 @@ struct LiquidSubstepScheduler3D::Impl {
       }
       double predicted_pressure = found->previous_pressure;
       double tangent_bulk_modulus = scene.bulk_modulus;
+      std::optional<double> predicted_density;
       if (eos) {
         const auto pressure = liquid_step_internal::AdvectLiquidPressureHistory3D(
             transaction.committed(),
@@ -585,8 +587,28 @@ struct LiquidSubstepScheduler3D::Impl {
           return predictor.status();
         }
         tangent_bulk_modulus = predictor->bulk_modulus;
+        predicted_density = predictor->density;
+        minimum_predictor_density = std::min(minimum_predictor_density, predictor->density);
       }
-      staging.pressure_fields[index] = {scene.target_divergence, tangent_bulk_modulus, predicted_pressure};
+      staging.pressure_fields[index] = {
+          .target_divergence = scene.target_divergence,
+          .bulk_modulus = tangent_bulk_modulus,
+          .previous_pressure = predicted_pressure,
+          .density = predicted_density,
+      };
+    }
+    if (eos && accepted_measurement.step_start_capillary_bound_seconds) {
+      // Freeze used reference density. Tighten its active bound when the
+      // pressure operator sees lighter liquid at the advected predictor.
+      const double density_scale = std::sqrt(minimum_predictor_density) / std::sqrt(scene.liquid_density);
+      auto& capillary_bound = *accepted_measurement.step_start_capillary_bound_seconds;
+      capillary_bound *= density_scale;
+      if (!(capillary_bound > 0.0)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      if (step_duration > capillary_bound) {
+        return Error(absl::StatusCode::kAborted);
+      }
     }
     for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
       const auto& face = frozen->faces[index];

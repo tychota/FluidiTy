@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <tuple>
 #include <utility>
 
@@ -573,7 +574,8 @@ absl::Status LinksCore(
     const auto& cell = geometry.cells[i];
     const auto& field = fields.cells[i];
     if (!std::isfinite(field.target_divergence) || !std::isfinite(field.previous_pressure)
-        || std::isnan(field.bulk_modulus) || field.bulk_modulus <= 0) {
+        || std::isnan(field.bulk_modulus) || field.bulk_modulus <= 0
+        || (field.density && !IsPositiveFinite(*field.density))) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid pressure cell field");
     }
     result.cells.push_back(
@@ -629,6 +631,22 @@ absl::Status LinksCore(
     }
     if (!has_head && !has_tail) {
       return MissingBoundarySample(bounded);
+    }
+    if (face.open_area > 0) {
+      const auto head_density = has_head ? fields.cells[head_found].density : std::nullopt;
+      const auto tail_density = has_tail ? fields.cells[tail_found].density : std::nullopt;
+      if (head_density || tail_density) {
+        const double adjacent_density = has_head ? head_density.value_or(geometry.liquid_density) : *tail_density;
+        // Internal centers contribute two equal half-cell distances. At a
+        // free surface only the liquid-side density enters the mobility.
+        const double face_density = has_head && has_tail
+            ? std::midpoint(adjacent_density, tail_density.value_or(geometry.liquid_density))
+            : adjacent_density;
+        link.inverse_density = 1.0 / face_density;
+        if (!std::isnormal(link.inverse_density)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "Pressure mobility is unrepresentable");
+        }
+      }
     }
     if (has_head && has_tail) {
       link.pressure_link = InternalMacPressureLink3D{0};

@@ -82,6 +82,7 @@ struct LiquidPressureCellFields3D {
   double target_divergence;  // s⁻¹; independent of geometric volume.
   double bulk_modulus;  // Positive Pa, or +infinity for incompressibility.
   double previous_pressure;  // Pa.
+  std::optional<double> density = std::nullopt;  // Predictor kg/m³. Absent uses the frozen reference density.
 };
 struct LiquidPressureFields3D {
   std::span<const LiquidPressureCellFields3D> cells;  // Frozen cell order.
@@ -171,6 +172,9 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 // Builds the exact incident face union with full frozen apertures and wall flux.
 // Air links use theta in [0.05,1] and ambient + sigma*curvature once; internal
 // jumps are zero. Curvature and capillary dt were checked during geometry freeze.
+// Open internal mobility is the reciprocal of the midpoint density of the two
+// liquid cells. Air links use the adjacent liquid density. An absent predictor
+// density uses the frozen reference density. Open mobility must be normal.
 // Errors carry no problem: InvalidArgument for invalid field extents/values or
 // overrides inconsistent with the frozen piston incidence or speed,
 // FailedPrecondition for missing air samples or omitted negative-distance neighbors,

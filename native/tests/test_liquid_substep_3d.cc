@@ -135,6 +135,9 @@ TEST(LiquidSubstep3D, TaitFreezesComplianceAtAdvectedPressureAndRestarts) {
       ++observed.cells;
       observed.saw_nonzero_pressure |= std::abs(cell.previous_pressure) > 1e-8;
       EXPECT_NEAR(cell.bulk_modulus, 4000.0 + 7.0 * cell.previous_pressure, 1e-10);
+      EXPECT_TRUE(cell.density.has_value());
+      const double expected_density = 1000.0 * std::pow(1.0 + 7.0 * cell.previous_pressure / 4000.0, 1.0 / 7.0);
+      EXPECT_NEAR(cell.density.value_or(0.0), expected_density, 1e-10);
     }
     return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
   };
@@ -160,6 +163,23 @@ TEST(LiquidSubstep3D, TaitFreezesComplianceAtAdvectedPressureAndRestarts) {
   ExpectIdenticalSerializedState(scheduler->committed(), resumed->committed());
   EXPECT_GT(observation.cells, 0U);
   EXPECT_TRUE(observation.saw_nonzero_pressure);
+}
+
+TEST(LiquidSubstep3D, ExpandedEosDensityTightensCapillaryStep) {
+  const auto initial = Initial();
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 1.0};
+  scene.ambient_pressure = -1000.0 * std::log(4.0);
+  scene.surface_tension = 1000.0 / (4.0 * std::numbers::pi * 0.1 * 0.1);
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.08).ok());
+  const auto attempted = scheduler->Attempt(0.08);
+  ASSERT_TRUE(attempted.ok()) << attempted.status();
+  EXPECT_EQ(attempted->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kInterface);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 
 TEST(LiquidSubstep3D, TaitRejectsCandidateOutsideDomainBeforePublication) {
