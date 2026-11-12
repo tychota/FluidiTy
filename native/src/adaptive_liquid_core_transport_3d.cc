@@ -4,7 +4,10 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <limits>
+#include <new>
+#include <utility>
 
 #include "absl/status/status.h"
 #include "liquid_remap_3d_internal.h"
@@ -51,27 +54,64 @@ struct TransportBalance {
   // Track volume relative to each bound before rounding the candidate inventory.
   CompensatedSum outgoing_volume_excess_m3;
   CompensatedSum capacity_excess_m3;
+  InventoryLanes candidate_inventory{};
   bool has_transport = false;
 };
 
-}  // namespace
+enum class TransportDiagnostics {
+  kCodeOnly,
+  kExplain
+};
 
-absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCoreTransport3D(
+struct TransportErrors {
+  TransportDiagnostics diagnostics;
+
+  absl::Status InvalidArgument(const char* message) const {
+    return Make(absl::StatusCode::kInvalidArgument, message);
+  }
+  absl::Status FailedPrecondition(const char* message) const {
+    return Make(absl::StatusCode::kFailedPrecondition, message);
+  }
+  absl::Status OutOfRange(const char* message) const {
+    return Make(absl::StatusCode::kOutOfRange, message);
+  }
+
+ private:
+  absl::Status Make(absl::StatusCode code, const char* message) const {
+    return absl::Status(code, diagnostics == TransportDiagnostics::kExplain ? message : "");
+  }
+};
+
+absl::Status CheckTransportInputs(
     const AdaptiveMacTopology3D& topology,
     std::span<const LiquidAdaptiveCellState3D> committed_cells,
     std::span<const double> interior_fluxes_m3_per_s,
-    double step_duration_s
+    double step_duration_s,
+    TransportErrors errors
 ) {
   const auto leaves = topology.cells();
   const auto faces = topology.interior_faces();
   if (leaves.empty() || committed_cells.size() != leaves.size() || interior_fluxes_m3_per_s.size() != faces.size()) {
-    return absl::InvalidArgumentError("adaptive core transport fields must cover the topology");
+    return errors.InvalidArgument("adaptive core transport fields must cover the topology");
   }
   if (!std::isfinite(step_duration_s) || step_duration_s <= 0.0) {
-    return absl::InvalidArgumentError("adaptive core transport requires a finite positive step duration");
+    return errors.InvalidArgument("adaptive core transport requires a finite positive step duration");
   }
+  return absl::OkStatus();
+}
 
-  std::vector<TransportBalance> balances(leaves.size());
+// Accumulate in canonical subface order, then stage every changed inventory
+// before the caller publishes any output records.
+absl::Status StageTransport(
+    const AdaptiveMacTopology3D& topology,
+    std::span<const LiquidAdaptiveCellState3D> committed_cells,
+    std::span<const double> interior_fluxes_m3_per_s,
+    double step_duration_s,
+    std::span<TransportBalance> balances,
+    TransportErrors errors
+) {
+  const auto leaves = topology.cells();
+  const auto faces = topology.interior_faces();
   for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
     const auto& cell = committed_cells[ordinal];
     const auto& leaf = leaves[ordinal];
@@ -80,7 +120,7 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
         || cell.key.width_exponent != leaf.key.width_exponent
         || cell.material_owner > AdaptiveLiquidMaterialOwner3D::kEulerian
         || cell.occupancy > LiquidCellOccupancy3D::kSolid) {
-      return absl::InvalidArgumentError("adaptive core transport cell metadata must match the topology");
+      return errors.InvalidArgument("adaptive core transport cell metadata must match the topology");
     }
     const auto amounts = InventoryValues(cell.inventory);
     const bool finite_amounts = std::ranges::all_of(amounts, [](double amount) {
@@ -89,13 +129,13 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
     if (!finite_amounts || amounts[kMass] < 0.0 || amounts[kReferenceVolume] < 0.0 || amounts[kCurrentVolume] < 0.0
         || amounts[kCurrentVolume] > leaf.cell_volume
         || !liquid_remap_internal::ValidConstituentInventory(cell.inventory)) {
-      return absl::InvalidArgumentError("adaptive core transport input inventory is invalid");
+      return errors.InvalidArgument("adaptive core transport input inventory is invalid");
     }
     if (!IsEulerianLiquid(cell)) {
       continue;
     }
     if (cell.inventory.phase_id != 0) {
-      return absl::FailedPreconditionError("adaptive core transport requires implicit single-phase inventory");
+      return errors.FailedPrecondition("adaptive core transport requires implicit single-phase inventory");
     }
     auto& balance = balances[ordinal];
     for (std::size_t lane = 0; lane < amounts.size(); ++lane) {
@@ -110,7 +150,7 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
     const auto& face = faces[ordinal];
     const double flux_m3_per_s = interior_fluxes_m3_per_s[ordinal];
     if (!std::isfinite(flux_m3_per_s)) {
-      return absl::InvalidArgumentError("adaptive core transport requires finite subface flux");
+      return errors.InvalidArgument("adaptive core transport requires finite subface flux");
     }
     if (flux_m3_per_s == 0.0) {
       continue;
@@ -121,12 +161,12 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
       continue;
     }
     if (tail_in_core != head_in_core) {
-      return absl::FailedPreconditionError("adaptive core transport cannot exchange material with a non-core leaf");
+      return errors.FailedPrecondition("adaptive core transport cannot exchange material with a non-core leaf");
     }
     const double flux_magnitude_m3_per_s = std::abs(flux_m3_per_s);
     const double swept_volume_m3 = flux_magnitude_m3_per_s * step_duration_s;
     if (!IsRepresentablePressureProduct(flux_magnitude_m3_per_s, step_duration_s, swept_volume_m3)) {
-      return absl::OutOfRangeError("adaptive core transport swept volume is unrepresentable");
+      return errors.OutOfRange("adaptive core transport swept volume is unrepresentable");
     }
     const bool flows_to_head = flux_m3_per_s > 0.0;
     const std::size_t donor_ordinal = flows_to_head ? face.tail_cell_ordinal : face.head_cell_ordinal;
@@ -136,10 +176,10 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
     donor.outgoing_volume_excess_m3.Add(swept_volume_m3);
     const double outgoing_volume_excess_m3 = donor.outgoing_volume_excess_m3.Total();
     if (!std::isfinite(outgoing_volume_excess_m3)) {
-      return absl::OutOfRangeError("adaptive core transport outgoing volume is unrepresentable");
+      return errors.OutOfRange("adaptive core transport outgoing volume is unrepresentable");
     }
     if (outgoing_volume_excess_m3 > 0.0) {
-      return absl::FailedPreconditionError("adaptive core transport outflow exceeds step-start donor volume");
+      return errors.FailedPrecondition("adaptive core transport outflow exceeds step-start donor volume");
     }
 
     // Every outgoing subface uses the same step-start donor inventory.
@@ -151,7 +191,7 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
       const bool exact_swept_volume =
           IsRepresentablePressureProduct(swept_fraction, donor_amounts[kCurrentVolume], reconstructed_swept_volume_m3);
       if (!exact_swept_volume || reconstructed_swept_volume_m3 != swept_volume_m3) {
-        return absl::OutOfRangeError("adaptive core transport donor fraction is unrepresentable");
+        return errors.OutOfRange("adaptive core transport donor fraction is unrepresentable");
       }
     }
     const bool drains_donor = outgoing_volume_excess_m3 == 0.0;
@@ -165,12 +205,12 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
         const bool reversed_sign =
             transferred_amount != 0.0 && std::signbit(transferred_amount) != std::signbit(donor_amounts[lane]);
         if (!std::isfinite(transferred_amount) || reversed_sign) {
-          return absl::OutOfRangeError("adaptive core transport donor remainder is unrepresentable");
+          return errors.OutOfRange("adaptive core transport donor remainder is unrepresentable");
         }
       } else if (lane != kCurrentVolume) {
         transferred_amount = swept_fraction * donor_amounts[lane];
         if (!IsRepresentablePressureProduct(swept_fraction, donor_amounts[lane], transferred_amount)) {
-          return absl::OutOfRangeError("adaptive core transport inventory transfer is unrepresentable");
+          return errors.OutOfRange("adaptive core transport inventory transfer is unrepresentable");
         }
       }
       if (drains_donor) {
@@ -186,22 +226,21 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
     receiver.has_transport = true;
   }
 
-  std::vector<LiquidAdaptiveCellState3D> candidate(committed_cells.begin(), committed_cells.end());
   for (std::size_t ordinal = 0; ordinal < balances.size(); ++ordinal) {
-    const auto& balance = balances[ordinal];
+    auto& balance = balances[ordinal];
     if (!balance.has_transport) {
       continue;
     }
     const double capacity_excess_m3 = balance.capacity_excess_m3.Total();
     if (!std::isfinite(capacity_excess_m3)) {
-      return absl::OutOfRangeError("adaptive core transport capacity balance is unrepresentable");
+      return errors.OutOfRange("adaptive core transport capacity balance is unrepresentable");
     }
     if (capacity_excess_m3 > 0.0) {
-      return absl::FailedPreconditionError("adaptive core transport candidate volume exceeds leaf capacity");
+      return errors.FailedPrecondition("adaptive core transport candidate volume exceeds leaf capacity");
     }
     if (balance.remaining_inventory[kMass].Total() < 0.0
         || balance.remaining_inventory[kReferenceVolume].Total() < 0.0) {
-      return absl::OutOfRangeError("adaptive core transport rounded outflow exceeds donor inventory");
+      return errors.OutOfRange("adaptive core transport rounded outflow exceeds donor inventory");
     }
     InventoryLanes amounts;
     for (std::size_t lane = 0; lane < amounts.size(); ++lane) {
@@ -210,13 +249,28 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
       candidate_amount.Add(balance.remaining_inventory[lane].correction);
       amounts[lane] = candidate_amount.Total();
       if (!std::isfinite(amounts[lane])) {
-        return absl::OutOfRangeError("adaptive core transport candidate inventory is unrepresentable");
+        return errors.OutOfRange("adaptive core transport candidate inventory is unrepresentable");
       }
     }
     if (amounts[kMass] < 0.0 || amounts[kReferenceVolume] < 0.0 || amounts[kCurrentVolume] < 0.0
         || amounts[kCurrentVolume] > leaves[ordinal].cell_volume) {
-      return absl::OutOfRangeError("adaptive core transport candidate inventory rounded outside its bounds");
+      return errors.OutOfRange("adaptive core transport candidate inventory rounded outside its bounds");
     }
+    balance.candidate_inventory = amounts;
+  }
+  return absl::OkStatus();
+}
+
+void WriteTransportInventories(
+    std::span<const TransportBalance> balances,
+    std::span<LiquidAdaptiveCellState3D> candidate
+) {
+  for (std::size_t ordinal = 0; ordinal < balances.size(); ++ordinal) {
+    const auto& balance = balances[ordinal];
+    if (!balance.has_transport) {
+      continue;
+    }
+    const auto& amounts = balance.candidate_inventory;
     auto& inventory = candidate[ordinal].inventory;
     inventory.mass_kg = amounts[kMass];
     inventory.reference_volume_m3 = amounts[kReferenceVolume];
@@ -224,6 +278,130 @@ absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCore
     inventory.momentum_kg_m_per_s = {amounts[kMomentumX], amounts[kMomentumY], amounts[kMomentumZ]};
     inventory.enthalpy_j = amounts[kEnthalpy];
   }
+}
+
+template <typename Left, typename Right>
+bool SpansOverlap(std::span<Left> left, std::span<Right> right) {
+  const std::less<const void*> before;
+  return !left.empty() && !right.empty() && before(left.data(), right.data() + right.size())
+      && before(right.data(), left.data() + left.size());
+}
+
+}  // namespace
+
+struct AdaptiveLiquidCoreTransportWorkspace3D::Storage {
+  LiquidRecords3D<TransportBalance> balances;
+  LiquidRecords3D<LiquidAdaptiveCellState3D> output;
+};
+
+AdaptiveLiquidCoreTransportWorkspace3D::AdaptiveLiquidCoreTransportWorkspace3D(std::unique_ptr<Storage> storage
+) noexcept
+    : storage_(std::move(storage)) {
+}
+
+AdaptiveLiquidCoreTransportWorkspace3D::
+    AdaptiveLiquidCoreTransportWorkspace3D(AdaptiveLiquidCoreTransportWorkspace3D&&) noexcept = default;
+
+AdaptiveLiquidCoreTransportWorkspace3D&
+AdaptiveLiquidCoreTransportWorkspace3D::operator=(AdaptiveLiquidCoreTransportWorkspace3D&&) noexcept = default;
+
+AdaptiveLiquidCoreTransportWorkspace3D::~AdaptiveLiquidCoreTransportWorkspace3D() = default;
+
+absl::StatusOr<AdaptiveLiquidCoreTransportWorkspace3D> AdaptiveLiquidCoreTransportWorkspace3D::Create(
+    std::size_t cell_capacity
+) {
+  if (cell_capacity > kMaximumAdaptiveLiquidCells3D) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  auto balances = LiquidRecords3D<TransportBalance>::Create(cell_capacity);
+  if (!balances.ok()) {
+    return balances.status();
+  }
+  auto output = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(cell_capacity);
+  if (!output.ok()) {
+    return output.status();
+  }
+  const auto balance_extent = balances->Resize(cell_capacity);
+  if (!balance_extent.ok()) {
+    return balance_extent;
+  }
+  const auto output_extent = output->Resize(cell_capacity);
+  if (!output_extent.ok()) {
+    return output_extent;
+  }
+  std::unique_ptr<Storage> storage(new (std::nothrow) Storage{
+      .balances = std::move(*balances),
+      .output = std::move(*output),
+  });
+  if (!storage) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return AdaptiveLiquidCoreTransportWorkspace3D(std::move(storage));
+}
+
+std::size_t AdaptiveLiquidCoreTransportWorkspace3D::reserved_bytes() const {
+  if (!storage_) {
+    return 0;
+  }
+  return sizeof(Storage) + storage_->balances.capacity() * sizeof(TransportBalance)
+      + storage_->output.capacity() * sizeof(LiquidAdaptiveCellState3D);
+}
+
+absl::StatusOr<std::span<const LiquidAdaptiveCellState3D>> AdaptiveLiquidCoreTransportWorkspace3D::Prepare(
+    const AdaptiveMacTopology3D& topology,
+    std::span<const LiquidAdaptiveCellState3D> committed_cells,
+    std::span<const double> interior_fluxes_m3_per_s,
+    double step_duration_s
+) {
+  constexpr TransportErrors errors{.diagnostics = TransportDiagnostics::kCodeOnly};
+  if (!storage_) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  const auto input_status =
+      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, errors);
+  if (!input_status.ok()) {
+    return input_status;
+  }
+  if (committed_cells.size() > storage_->balances.capacity()) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  const auto output_storage = storage_->output.values();
+  if (SpansOverlap(committed_cells, output_storage) || SpansOverlap(interior_fluxes_m3_per_s, output_storage)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto balances = storage_->balances.values().first(committed_cells.size());
+  std::ranges::fill(balances, TransportBalance{});
+  const auto transport_status =
+      StageTransport(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, balances, errors);
+  if (!transport_status.ok()) {
+    return transport_status;
+  }
+  const auto output = output_storage.first(committed_cells.size());
+  std::ranges::copy(committed_cells, output.begin());
+  WriteTransportInventories(balances, output);
+  return std::span<const LiquidAdaptiveCellState3D>(output);
+}
+
+absl::StatusOr<std::vector<LiquidAdaptiveCellState3D>> PrepareAdaptiveLiquidCoreTransport3D(
+    const AdaptiveMacTopology3D& topology,
+    std::span<const LiquidAdaptiveCellState3D> committed_cells,
+    std::span<const double> interior_fluxes_m3_per_s,
+    double step_duration_s
+) {
+  constexpr TransportErrors errors{.diagnostics = TransportDiagnostics::kExplain};
+  const auto input_status =
+      CheckTransportInputs(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, errors);
+  if (!input_status.ok()) {
+    return input_status;
+  }
+  std::vector<TransportBalance> balances(committed_cells.size());
+  const auto transport_status =
+      StageTransport(topology, committed_cells, interior_fluxes_m3_per_s, step_duration_s, balances, errors);
+  if (!transport_status.ok()) {
+    return transport_status;
+  }
+  std::vector<LiquidAdaptiveCellState3D> candidate(committed_cells.begin(), committed_cells.end());
+  WriteTransportInventories(balances, candidate);
   return candidate;
 }
 
