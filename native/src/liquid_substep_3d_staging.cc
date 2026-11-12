@@ -427,7 +427,10 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
     }
   } else {
     const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(scene.field);
-    if (!tank || !std::isfinite(plane.world_surface_height_y) || plane.world_surface_height_y <= tank->floor_y) {
+    const bool graded_halfspace =
+        initial.adaptive_cells.size() != 0 && std::holds_alternative<TranslatingHalfspace3D>(scene.obstacle);
+    if (!std::isfinite(plane.world_surface_height_y) || (!tank && !graded_halfspace)
+        || (tank && plane.world_surface_height_y <= tank->floor_y)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }

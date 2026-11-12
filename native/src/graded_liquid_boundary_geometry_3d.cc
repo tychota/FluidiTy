@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
@@ -365,7 +366,7 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   return result;
 }
 
-absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
+absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
@@ -423,7 +424,24 @@ absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlan
         .pressure_jump_pa = fields.pressure_jump_pa,
     });
   }
-  return pressure_internal::PrepareAdaptiveMacPressureSystem3D(topology, geometry.step_duration_s(), cells, faces);
+  return GradedLiquidPressureInputs3D{.cells = std::move(cells), .subfaces = std::move(faces)};
+}
+
+absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+) {
+  const auto inputs = ComposeGradedPlanarLiquidPressureInputs3D(geometry, cell_fields, subface_fields);
+  if (!inputs.ok()) {
+    return inputs.status();
+  }
+  return pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+      geometry.topology(),
+      geometry.step_duration_s(),
+      inputs->cells,
+      inputs->subfaces
+  );
 }
 
 }  // namespace fluidity

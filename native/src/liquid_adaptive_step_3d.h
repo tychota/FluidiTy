@@ -44,6 +44,12 @@ class AdaptiveLiquidStep3D {
 
   // Dynamic payload kept by the frozen step owner between trials.
   std::size_t reserved_bytes() const;
+  absl::Status PreparePhysicalTrial(
+      const LiquidState3D& accepted,
+      double duration,
+      const LiquidSceneInputs3D& scene,
+      const LiquidAdaptivePhysicalGeometryRequest3D& request
+  );
   absl::Status Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options);
   absl::Status Project(
       LiquidState3D& trial,
@@ -74,7 +80,15 @@ class AdaptiveLiquidStep3D {
     double donor_pressure = 0.0;
   };
 
+  struct PhysicalTrial3D {
+    LiquidObstacle3D start_wall;
+    LiquidObstacle3D end_wall;
+    std::vector<std::uint8_t> wet_open_faces;
+    std::vector<double> end_fluid_volumes_m3;
+  };
+
   AdaptiveMacTopology3D topology_;
+  std::optional<PhysicalTrial3D> physical_trial_;
   GradedMacTransfer3D transfer_;
   std::vector<std::size_t> interior_slots_;
   std::vector<AdaptiveMacExteriorFace3D> exterior_faces_;
