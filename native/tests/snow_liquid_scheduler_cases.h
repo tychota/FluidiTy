@@ -87,14 +87,29 @@ inline void ExpectSnowJointAcceptance(LiquidSubstepScheduler3D& scheduler, const
   EXPECT_DOUBLE_EQ(scheduler.committed().clock.time, 0.005);
 }
 
-inline void
-ExpectSnowMovingPlaten(const LiquidState3D& state, const LiquidStepOptions3D& options, LiquidSubstepBackend3D backend) {
+enum class SnowPlatenRun {
+  kExplicitSteps,
+  kRetry,
+  kCapacityReplay
+};
+
+inline void ExpectSnowMovingPlaten(
+    const LiquidState3D& state,
+    LiquidStepOptions3D options,
+    LiquidSubstepBackend3D backend,
+    SnowPlatenRun run = SnowPlatenRun::kExplicitSteps
+) {
   constexpr double start_y = 3.001;
   constexpr double wall_speed = -0.2;
   constexpr double duration = 0.005;
   LiquidSceneInputs3D scene;
   scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   scene.obstacle = TranslatingHalfspace3D{{0, -1, 0}, -start_y, {0, wall_speed, 0}};
+  const bool capacity_replay = run == SnowPlatenRun::kCapacityReplay;
+  if (capacity_replay) {
+    options.capacity_replay_reservations = options.capacities;
+    options.capacity_replay_reservations.particles *= 2;
+  }
   auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   const auto solid_grid = SnowSchedulerGrid(state.geometry);
@@ -119,6 +134,76 @@ ExpectSnowMovingPlaten(const LiquidState3D& state, const LiquidStepOptions3D& op
       .solid_step = {.duration = duration, .acoustic_cfl = 0.25},
       .support_radius = 0.35,
   };
+  if (run != SnowPlatenRun::kExplicitSteps) {
+    std::vector frame_snow{*record};
+    auto frame_inputs = inputs;
+    frame_inputs.accepted_particles = frame_snow;
+    if (capacity_replay) {
+      // The initial acoustic bound is between one half-step and a full step.
+      frame_inputs.solid_step.acoustic_cfl = 0.0045;
+    }
+    struct Observation {
+      const std::vector<PlasticSolidCheckpointParticle3D>& snow;
+      bool capacity_replay;
+      bool rejected = false;
+      int accepted = 0;
+      int rollbacks = 0;
+    } observation{frame_snow, capacity_replay};
+    scheduler->SetStageFaultHookForTesting({
+        .context = &observation,
+        .before_stage =
+            [](void* context, LiquidPhysicalStage3D stage, double) {
+              auto& observed = *static_cast<Observation*>(context);
+              if (stage == LiquidPhysicalStage3D::kAccept && !observed.rejected
+                  && (!observed.capacity_replay || observed.accepted == 1)) {
+                observed.rejected = true;
+                if (observed.capacity_replay) {
+                  EXPECT_NEAR(observed.snow.front().transfer.sorted_world_position.y, 3.0, 2e-14);
+                  return absl::ResourceExhaustedError("grow after one accepted joint step");
+                }
+                EXPECT_DOUBLE_EQ(observed.snow.front().transfer.sorted_world_position.y, 3.0005);
+                return absl::AbortedError("reject the joint full step");
+              }
+              return absl::OkStatus();
+            },
+    });
+    const auto status = scheduler->AdvanceFrameWithSnow(
+        2 * duration,
+        frame_inputs,
+        frame_snow,
+        {
+            .context = &observation,
+            .observe =
+                [](void* context, const LiquidState3D& liquid, const LiquidStepDiagnostics3D&, bool replay) {
+                  auto& observed = *static_cast<Observation*>(context);
+                  if (replay) {
+                    EXPECT_TRUE(observed.capacity_replay);
+                    EXPECT_DOUBLE_EQ(liquid.clock.time, 0.0);
+                    EXPECT_DOUBLE_EQ(observed.snow.front().transfer.sorted_world_position.y, 3.0005);
+                    EXPECT_DOUBLE_EQ(observed.snow.front().transfer.particle_velocity.y, 1.0);
+                    observed.accepted = 0;
+                    ++observed.rollbacks;
+                    return absl::OkStatus();
+                  }
+                  ++observed.accepted;
+                  EXPECT_DOUBLE_EQ(liquid.clock.time, observed.accepted * duration);
+                  const double platen_y = start_y + liquid.clock.time * wall_speed;
+                  const double snow_y = observed.snow.front().transfer.sorted_world_position.y;
+                  EXPECT_LE(snow_y, platen_y + 2e-14);
+                  EXPECT_NEAR(snow_y, platen_y, 2e-8);
+                  return absl::OkStatus();
+                },
+        }
+    );
+    ASSERT_TRUE(status.ok()) << status;
+    EXPECT_TRUE(observation.rejected);
+    EXPECT_EQ(observation.accepted, 2);
+    EXPECT_EQ(observation.rollbacks, capacity_replay ? 1 : 0);
+    EXPECT_EQ(scheduler->diagnostics().dt_retries, capacity_replay ? 0 : 1);
+    EXPECT_EQ(scheduler->committed().clock.frame_ordinal, 1);
+    return;
+  }
+
   // Snow lies outside liquid support, so the dry trajectory supplies an independent contact oracle.
   std::array dry_reference{particle};
   ASSERT_TRUE(scheduler->BeginFrame(2 * duration).ok());

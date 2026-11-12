@@ -430,6 +430,18 @@ class LiquidSubstepScheduler3D {
   // A failure preserves the latest accepted version (or replay's frame start).
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
+  // Advances liquid and snow to target_time using both materials' step bounds.
+  // Copies the initial records from inputs before advancing, so they may alias
+  // accepted_snow. On failure after the frame begins, accepted_snow matches
+  // the latest committed liquid step. Capacity replay restores both materials
+  // to the frame start before notifying the observer.
+  absl::Status AdvanceFrameWithSnow(
+      double target_time,
+      const LiquidSnowStepInputs3D& inputs,
+      std::vector<PlasticSolidCheckpointParticle3D>& accepted_snow,
+      LiquidProgressObserver3D observer = {}
+  );
+
  private:
   enum class FloatingBoxMotion {
     kVerticalGuide,
@@ -450,6 +462,13 @@ class LiquidSubstepScheduler3D {
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);
+  absl::Status ValidateSnowStep(const LiquidSnowStepInputs3D& inputs) const;
+  absl::Status AdvanceFrameImpl(
+      double target_time,
+      LiquidProgressObserver3D observer,
+      std::optional<LiquidSnowStepInputs3D> snow_inputs,
+      std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
+  );
   struct SnowTrial;
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,

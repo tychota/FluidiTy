@@ -75,6 +75,14 @@ TEST(LiquidSubstep3D, SnowAndLiquidUseSameMovingPlaten) {
   test::ExpectSnowMovingPlaten(Initial(), Options(), CpuLiquidSubstepBackend3D());
 }
 
+TEST(LiquidSubstep3D, SnowFrameRetriesAndPublishesBothMaterials) {
+  test::ExpectSnowMovingPlaten(Initial(), Options(), CpuLiquidSubstepBackend3D(), test::SnowPlatenRun::kRetry);
+}
+
+TEST(LiquidSubstep3D, SnowFrameAcousticCapAndCapacityReplayRestoreBothMaterials) {
+  test::ExpectSnowMovingPlaten(Initial(), Options(), CpuLiquidSubstepBackend3D(), test::SnowPlatenRun::kCapacityReplay);
+}
+
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

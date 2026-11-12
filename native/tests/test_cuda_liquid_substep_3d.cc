@@ -86,6 +86,20 @@ TEST(CudaLiquidSubstep3D, SnowAndLiquidUseSameMovingPlaten) {
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
+TEST(CudaLiquidSubstep3D, SnowFrameRetriesAndPublishesBothMaterials) {
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  test::ExpectSnowMovingPlaten(Initial(), options, backend->operations(), test::SnowPlatenRun::kRetry);
+}
+
+TEST(CudaLiquidSubstep3D, SnowFrameAcousticCapAndCapacityReplayRestoreBothMaterials) {
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  test::ExpectSnowMovingPlaten(Initial(), options, backend->operations(), test::SnowPlatenRun::kCapacityReplay);
+}
+
 double MaximumComponentError(Vec3 reference, Vec3 measured) {
   return std::max({
       std::abs(reference.x - measured.x),
