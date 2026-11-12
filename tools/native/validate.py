@@ -97,6 +97,8 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     GPU_PRESSURE_3D_MULTILEVEL_CASE,
     GPU_PRESSURE_3D_EXPLICIT_CASE,
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
+    "CudaMacViscosity3D.VelocityBlockMatchesCpuAndTrueResidual",
+    "CudaMacViscosity3D.RejectsExhaustionAndEliminatedMomentum",
     GPU_DEPOSIT_3D_RECEIPT_CASE,
     GPU_GATHER_3D_RECEIPT_CASE,
     "CudaMacTransfer3D.RejectionPreservesOutputs",

@@ -144,6 +144,8 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/liquid_boundary_transfer_3d_host.cc
     native/cuda/liquid_wall_contact_3d_host.cc
     native/cuda/liquid_wall_contact_3d.cu
+    native/cuda/viscosity_velocity_block_3d_host.cc
+    native/cuda/viscosity_velocity_block_3d.cu
     native/cuda/mac_pressure_3d_host.cc
     native/cuda/mac_pressure_3d.cu
     native/cuda/pressure_host.cc
@@ -329,7 +331,8 @@ if(BUILD_TESTING)
       native/tests/test_cuda_wetted_piston_3d.cc
       native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
-      native/tests/test_cuda_mac_pressure_3d.cc)
+      native/tests/test_cuda_mac_pressure_3d.cc
+      native/tests/test_cuda_viscosity.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests
