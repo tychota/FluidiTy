@@ -1,6 +1,7 @@
 #include "fluidity/host/mixed_contact_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -349,6 +350,102 @@ absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> AdvancePlanarMixedConta
   std::ranges::copy(liquid_trial, liquid.begin());
   std::ranges::copy(plastic_trial, plastic.begin());
   return std::move(*receipts);
+}
+
+absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    double snow_mass,
+    double incoming_snow_normal_velocity,
+    MixedPressureProjector3D project
+) {
+  if (inputs.pressure_cells.size() != 1 || inputs.pressure_faces.size() != 6
+      || wall_face_ordinal >= inputs.pressure_faces.size() || project == nullptr) {
+    return absl::InvalidArgumentError("planar snow pressure requires one cell and one selected wall");
+  }
+  const auto& wall = inputs.pressure_faces[wall_face_ordinal];
+  const auto axis = static_cast<std::size_t>(wall.face_index.axis);
+  if (axis >= 3 || wall.open_area != 0 || !std::holds_alternative<SealedMacPressureLink3D>(wall.pressure_link)) {
+    return absl::InvalidArgumentError("planar snow pressure requires a sealed wall face");
+  }
+  const auto cell = inputs.pressure_cells.front().cell_index;
+  const auto lattice = wall.face_index.lattice_index;
+  const std::array<std::int64_t, 3> offsets{
+      static_cast<std::int64_t>(lattice.x) - cell.x,
+      static_cast<std::int64_t>(lattice.y) - cell.y,
+      static_cast<std::int64_t>(lattice.z) - cell.z,
+  };
+  if (offsets[(axis + 1) % 3] != 0 || offsets[(axis + 2) % 3] != 0 || offsets[axis] < 0 || offsets[axis] > 1) {
+    return absl::InvalidArgumentError("planar snow pressure wall is not incident to its cell");
+  }
+  const double inward_sign = offsets[axis] == 0 ? 1 : -1;
+  const double width = inputs.mac_grid.geometry().cell_width;
+  const double area = width * width;
+  const double impulse_per_pressure = inputs.step_duration * area;
+  if (!std::isfinite(impulse_per_pressure) || impulse_per_pressure <= 0 || !std::isfinite(snow_mass) || snow_mass <= 0
+      || !std::isfinite(incoming_snow_normal_velocity)) {
+    return absl::InvalidArgumentError("invalid planar snow pressure mass, duration, or velocity");
+  }
+
+  std::array<MacPressureFace3D, 6> pressure_faces;
+  std::ranges::copy(inputs.pressure_faces, pressure_faces.begin());
+  const MacPressureInputs3D trial_inputs{
+      inputs.mac_grid,
+      inputs.step_duration,
+      inputs.pressure_cells,
+      pressure_faces,
+  };
+  const auto project_at = [&](double inward_speed) -> absl::StatusOr<MacPressureProjection3D> {
+    auto& trial_wall = pressure_faces[wall_face_ordinal];
+    trial_wall.wall_normal_velocity = inward_sign * inward_speed;
+    trial_wall.prescribed_wall_flux.reset();
+    auto projection = project(trial_inputs);
+    if (projection.ok()
+        && (projection->cell_pressures.size() != 1 || !std::isfinite(projection->cell_pressures.front())
+            || projection->corrected_face_velocities.size() != pressure_faces.size())) {
+      return absl::FailedPreconditionError("invalid planar snow pressure projection");
+    }
+    return projection;
+  };
+
+  const auto stationary = project_at(0);
+  if (!stationary.ok()) {
+    return stationary.status();
+  }
+  const auto probe = project_at(1);
+  if (!probe.ok()) {
+    return probe.status();
+  }
+  const double stationary_pressure = stationary->cell_pressures.front();
+  const double pressure_slope = probe->cell_pressures.front() - stationary_pressure;
+  const double effective_mass = snow_mass + impulse_per_pressure * pressure_slope;
+  const double inward_momentum = inward_sign * snow_mass * incoming_snow_normal_velocity;
+  if (!std::isfinite(effective_mass) || pressure_slope < 0 || !std::isfinite(inward_momentum)) {
+    return absl::FailedPreconditionError("invalid planar snow pressure response");
+  }
+  const double inward_speed = (inward_momentum - impulse_per_pressure * stationary_pressure) / effective_mass;
+  if (!std::isfinite(inward_speed)) {
+    return absl::FailedPreconditionError("unrepresentable planar snow pressure speed");
+  }
+  auto accepted = project_at(inward_speed);
+  if (!accepted.ok()) {
+    return accepted.status();
+  }
+  const double snow_impulse = -inward_sign * impulse_per_pressure * accepted->cell_pressures.front();
+  const double wall_velocity = inward_sign * inward_speed;
+  const double momentum_change = snow_mass * (wall_velocity - incoming_snow_normal_velocity);
+  const double work = snow_impulse * wall_velocity;
+  const double momentum_scale = std::max({1.0, std::abs(snow_impulse), std::abs(momentum_change)});
+  if (!std::isfinite(snow_impulse) || !std::isfinite(momentum_change) || !std::isfinite(work)
+      || std::abs(momentum_change - snow_impulse) > 2e-5 * momentum_scale) {
+    return absl::FailedPreconditionError("planar snow pressure impulse did not balance");
+  }
+  return PlanarSnowPressureTrial3D{
+      .liquid_projection = std::move(*accepted),
+      .solved_wall_normal_velocity = wall_velocity,
+      .pressure_impulse_on_snow = snow_impulse,
+      .pressure_work_on_snow = work,
+  };
 }
 
 }  // namespace fluidity

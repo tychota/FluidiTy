@@ -7,6 +7,7 @@
 #include "absl/status/statusor.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/plastic_solid_checkpoint_3d.h"
 
 namespace fluidity {
@@ -94,6 +95,31 @@ absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> AdvancePlanarMixedConta
     std::span<const PlanarMixedContactFace3D> candidates,
     double duration,
     double maximum_path_length
+);
+
+struct PlanarSnowPressureTrial3D {
+  MacPressureProjection3D liquid_projection;
+  double solved_wall_normal_velocity;  // Along the positive MAC face axis, m/s.
+  double pressure_impulse_on_snow;  // Along the same axis, N s.
+  double pressure_work_on_snow;  // Signed J at the solved wall velocity.
+};
+
+using MixedPressureProjector3D = absl::StatusOr<MacPressureProjection3D> (*)(const MacPressureInputs3D&);
+
+// Solve one frozen pressure cell against a translating full sealed face
+// supported by a finite snow mass. The projector must implement the MAC
+// pressure contract. Supply the wall ordinal in pressure face order and
+// the incoming snow speed along its positive MAC axis in m/s. The solve
+// balances the pressure impulse with the wall momentum and checks that
+// balance after reprojection. Invalid geometry or parameters return
+// InvalidArgument, invalid pressure response or balance returns
+// FailedPrecondition, and projector failures propagate. No input is modified.
+absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    double snow_mass,
+    double incoming_snow_normal_velocity,
+    MixedPressureProjector3D project
 );
 
 }  // namespace fluidity

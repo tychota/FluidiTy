@@ -33,6 +33,7 @@ clean Windows Release CUDA rebuild.
 | Particle-derived planar contact fronts | Pass for the bounded axis-aligned model | The fixture reconstructs a 0.25 m gap from liquid and snow particle positions and explicit 0.0625 m offsets, then reaches the analytic impact and post-impact positions. Reversed normal and conflicting tied-front velocity checks pass. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
+| Reciprocal pressure for a planar snow interface | Pass for the frozen single-cell fixture | Native and CUDA pressure solvers both recover the analytic speed, pressure, impulse, and work for the two wall orientations. The trial returns the pressure candidate and snow impulse together. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1006,6 +1007,24 @@ Run the fixture with both implementations.
 cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests --parallel 6
 ctest --preset windows-release-cuda -R '^M5DryScenes\.' --output-on-failure
 ```
+
+The reciprocal pressure trial uses one full sealed wall, an incompressible
+unit cell, and an open outlet with unit area and mobility. A wall moving
+inward at speed u gives outlet flux u and pressure u/dt. The local solve
+samples the stationary and unit-speed pressure responses, balances the
+snow momentum against the pressure impulse, then projects at the solved
+speed and checks the balance. The 0.25 kg snow sample entering at 10 m/s
+solves to 2 m/s, 16 Pa, and −2 N·s along the inward direction. At the
+solved wall speed the pressure work on snow is −4 J and the opposite
+work on the liquid boundary is +4 J. The reflected high-face case
+uses 2 kg at −3 m/s and gives −2 m/s, +2 N·s and the same work. Native
+and CUDA pressure projection meet the 1e-12 absolute fixture tolerances,
+and selecting an open face as the wall rejects.
+
+The trial owns its frozen face copy and returns the candidate without
+writing either material's state. The scheduler still needs to generate
+the snow interface, distribute pressure traction over its contributors,
+and advance and publish both materials together.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

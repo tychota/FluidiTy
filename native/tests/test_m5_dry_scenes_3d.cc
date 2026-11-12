@@ -515,6 +515,55 @@ bool TestPlanarMixedContactDetection() {
       || pressure.diagnostics.max_cell_constraint_defect > 1e-12) {
     return false;
   }
+  const auto project =
+      +[](const fluidity::MacPressureInputs3D& inputs) -> absl::StatusOr<fluidity::MacPressureProjection3D> {
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+    auto projected = fluidity::CudaProjectMacPressure3D(inputs);
+    if (!projected.ok()) {
+      return projected.status();
+    }
+    return std::move(projected->projection);
+#else
+    return fluidity::ProjectMacPressure3D(inputs);
+#endif
+  };
+  auto reciprocal_cells = cells;
+  reciprocal_cells.front().target_divergence = 0;
+  const auto low_wall = std::find_if(pressure_faces.begin(), pressure_faces.end(), [](const auto& pressure_face) {
+    return pressure_face.face_index.axis == FaceNormalAxis::kX && pressure_face.face_index.lattice_index.x == 0;
+  });
+  if (low_wall == pressure_faces.end()) {
+    return false;
+  }
+  const auto low_wall_ordinal = static_cast<std::size_t>(low_wall - pressure_faces.begin());
+  const fluidity::MacPressureInputs3D reciprocal_inputs{*grid, 0.125, reciprocal_cells, pressure_faces};
+  const auto light_snow =
+      fluidity::SolvePlanarSnowPressureTrial3D(reciprocal_inputs, low_wall_ordinal, 0.25, 10, project);
+  if (!light_snow.ok() || std::abs(light_snow->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(light_snow->liquid_projection.cell_pressures.front() - 16) > 1e-12
+      || std::abs(light_snow->liquid_projection.corrected_face_velocities[outlet_ordinal] - 2) > 1e-12
+      || light_snow->liquid_projection.diagnostics.max_cell_constraint_defect > 1e-12
+      || std::abs(light_snow->pressure_impulse_on_snow + 2) > 1e-12
+      || std::abs(light_snow->pressure_work_on_snow + 4) > 1e-12 || low_wall->wall_normal_velocity != 0) {
+    return false;
+  }
+  auto reflected_faces = pressure_faces;
+  auto& reflected_outlet = reflected_faces[low_wall_ordinal];
+  auto& reflected_wall = reflected_faces[outlet_ordinal];
+  reflected_outlet = *outlet_face;
+  reflected_outlet.face_index = low_wall->face_index;
+  reflected_wall = *low_wall;
+  reflected_wall.face_index = outlet;
+  const fluidity::MacPressureInputs3D reflected_inputs{*grid, 0.125, reciprocal_cells, reflected_faces};
+  const auto reflected = fluidity::SolvePlanarSnowPressureTrial3D(reflected_inputs, outlet_ordinal, 2, -3, project);
+  if (!reflected.ok() || std::abs(reflected->solved_wall_normal_velocity + 2) > 1e-12
+      || std::abs(reflected->pressure_impulse_on_snow - 2) > 1e-12
+      || std::abs(reflected->pressure_work_on_snow + 4) > 1e-12
+      || std::abs(reflected->liquid_projection.corrected_face_velocities[low_wall_ordinal] + 2) > 1e-12
+      || fluidity::SolvePlanarSnowPressureTrial3D(reciprocal_inputs, outlet_ordinal, 2, 3, project).status().code()
+          != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;
