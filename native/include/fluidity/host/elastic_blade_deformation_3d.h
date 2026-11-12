@@ -42,6 +42,28 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
     SolidInteractionCheckpoint3D& checkpoint
 );
 
+struct ElasticCutterSceneInputs3D {
+  UniformMacGeometry3D geometry;
+  Vec3 domain_low;  // World-space lower bound of the authored grid region, meters.
+  Vec3 domain_high;  // World-space upper bound, meters. Region faces exert no contact.
+  TranslatingSlab3D blade;  // Authored time-zero pose.
+  std::uint64_t blade_id;
+  std::uint64_t body_id;
+  double density;  // Kilograms per cubic meter.
+  double particle_reference_volume;  // Cubic meters per seed.
+  std::span<const Vec3> particle_positions;  // World meters, in stable seed order.
+};
+
+struct ResolvedElasticCutterScene3D {
+  SparseMacGrid3D grid;
+  SolidInteractionCheckpoint3D checkpoint;  // Frame zero with initialized side identities.
+};
+
+// Builds the bounded owned grid with a three-cell halo, and assigns each seed
+// a one-based particle ID, rest deformation, zero velocity and certified side.
+// Rejects malformed geometry/seeds, initial slab overlap and capacity/range
+// failures without returning a partial scene.
+absl::StatusOr<ResolvedElasticCutterScene3D> ResolveElasticCutterScene3D(const ElasticCutterSceneInputs3D& inputs);
 struct ElasticBladeGridStep3D {
   TranslatingSlab3D blade;  // Pose at the start of this attempt.
   std::uint64_t blade_id;
