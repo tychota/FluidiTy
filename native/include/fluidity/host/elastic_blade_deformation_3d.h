@@ -66,7 +66,8 @@ struct ElasticBladeGridStepResult3D {
 // Advances dry elastic particles on the fixed owned grid for a prescribed
 // translating slab. Deposits compatible mass and momentum, adds the explicit
 // stress force, and completes old/new same-side histories for particle
-// acceptance. Faces changing side or entering the slab carry no new-time
+// acceptance. An empty side table is initialized from the starting slab pose
+// and published on success. Faces changing side or entering the slab carry no new-time
 // donor mass. The step must satisfy dt <= acoustic_cfl * h / c_safe
 // for each particle. Contact results
 // are in particle order and failure preserves the entire checkpoint.

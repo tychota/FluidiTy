@@ -128,6 +128,7 @@ static absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladePar
     const LiquidBoundaryVelocityHistory3D& old_history,
     const LiquidBoundaryVelocityHistory3D& new_history,
     SolidInteractionCheckpoint3D& checkpoint,
+    std::span<const ElasticParticleBladeSide3D> sides,
     ElasticStepWork* work
 ) {
   const double dt = new_history.velocity_sample_time - old_history.velocity_sample_time;
@@ -135,7 +136,7 @@ static absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladePar
       && retained_velocity_fraction <= 1.0;
   const bool valid_friction = std::isfinite(friction_coefficient) && friction_coefficient >= 0.0;
   if (!valid_retention || !valid_friction || blade_id == 0 || !std::isfinite(dt) || dt <= 0.0
-      || checkpoint.elastic_particles.empty() || checkpoint.elastic_particles.size() != checkpoint.sides.size()) {
+      || checkpoint.elastic_particles.empty() || checkpoint.elastic_particles.size() != sides.size()) {
     return absl::InvalidArgumentError("invalid elastic blade step inputs");
   }
   if (checkpoint.accepted_step == std::numeric_limits<std::uint64_t>::max()) {
@@ -149,7 +150,7 @@ static absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladePar
   std::uint64_t previous_particle_id = 0;
   for (std::size_t particle_index = 0; particle_index < candidates.size(); ++particle_index) {
     auto& candidate = candidates[particle_index];
-    const auto& side = checkpoint.sides[particle_index];
+    const auto& side = sides[particle_index];
     if (candidate.particle_id <= previous_particle_id || candidate.particle_id != side.particle_id
         || side.side.blade_id != blade_id || candidate.body_id == 0 || !std::isfinite(candidate.reference_volume)
         || candidate.reference_volume <= 0.0) {
@@ -254,6 +255,7 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
       old_history,
       new_history,
       checkpoint,
+      checkpoint.sides,
       nullptr
   );
 }
@@ -266,13 +268,27 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
   const bool valid_acoustic_cfl =
       std::isfinite(settings.acoustic_cfl) && settings.acoustic_cfl > 0.0 && settings.acoustic_cfl <= 1.0;
   if (!valid_acoustic_cfl || !std::isfinite(settings.duration) || settings.duration <= 0.0
-      || checkpoint.elastic_particles.empty() || checkpoint.elastic_particles.size() != checkpoint.sides.size()) {
+      || checkpoint.elastic_particles.empty()
+      || (!checkpoint.sides.empty() && checkpoint.elastic_particles.size() != checkpoint.sides.size())) {
     return absl::InvalidArgumentError("invalid elastic grid step duration or particle state");
   }
   if (checkpoint.elastic_particles.size() > kLiquidBoundaryParticleCapacity3D
       || mac_grid.face_count() > kLiquidBoundaryFaceCapacity3D) {
     return absl::ResourceExhaustedError("elastic blade grid capacity exceeded");
   }
+  std::vector<ElasticParticleBladeSide3D> initial_sides;
+  if (checkpoint.sides.empty()) {
+    initial_sides.reserve(checkpoint.elastic_particles.size());
+    for (const auto& particle : checkpoint.elastic_particles) {
+      const auto side =
+          ClassifyInitialElasticBladeSide3D(settings.blade, settings.blade_id, particle.transfer.trial_world_position);
+      if (!side.ok()) {
+        return side.status();
+      }
+      initial_sides.push_back({.particle_id = particle.particle_id, .side = *side});
+    }
+  }
+  const auto& sides = checkpoint.sides.empty() ? initial_sides : checkpoint.sides;
   const auto old_tags = BuildElasticBladeFaceTags3D(mac_grid.view(), settings.blade, 0.0);
   if (!old_tags.ok()) {
     return old_tags.status();
@@ -287,7 +303,7 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
   stresses.reserve(checkpoint.elastic_particles.size());
   for (std::size_t particle_index = 0; particle_index < checkpoint.elastic_particles.size(); ++particle_index) {
     const auto& particle = checkpoint.elastic_particles[particle_index];
-    const auto& side = checkpoint.sides[particle_index];
+    const auto& side = sides[particle_index];
     const bool valid_side = side.side.sign == -1 || side.side.sign == 1;
     if (particle.particle_id != side.particle_id || side.side.blade_id != settings.blade_id || !valid_side
         || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0.0) {
@@ -384,10 +400,14 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
       {0.0, 0.0, old_grid->face_velocities, old_grid->validity, *old_tags, wall_samples},
       {settings.duration, settings.duration, new_velocities, new_validity, *new_tags, wall_samples},
       checkpoint,
+      sides,
       &work
   );
   if (!contacts.ok()) {
     return contacts.status();
+  }
+  if (!initial_sides.empty()) {
+    checkpoint.sides.swap(initial_sides);
   }
   result.contacts = std::move(*contacts);
   return result;

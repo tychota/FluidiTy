@@ -81,6 +81,13 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     ElasticBladeSide3D committed_side
 );
 
+// Classifies a world position in meters against the initial slab pose.
+// The blade ID must be nonzero. Exact boundary points belong to the
+// incident side. Interior points return FailedPrecondition, uncertain
+// projections return OutOfRange, and invalid inputs return InvalidArgument.
+absl::StatusOr<ElasticBladeSide3D>
+ClassifyInitialElasticBladeSide3D(const TranslatingSlab3D& blade, std::uint64_t blade_id, Vec3 world_position);
+
 // Classifies owned MAC anchors at elapsed time in seconds from the slab's
 // starting pose. The two exterior regions use the authored normal signs -1
 // and +1, including each incident plane. Interior anchors are ineligible.

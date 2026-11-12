@@ -695,7 +695,7 @@ TEST(MacTransfer3D, ObliqueBladeStepReconstructsDistantSameSideGhosts) {
   const Vec3 position = particle.trial_world_position;
   SolidInteractionCheckpoint3D state{
       .accepted_step = 0,
-      .sides = {{.particle_id = 7, .side = {.blade_id = 17, .sign = 1}}},
+      .sides = {},
       .elastic_particles = {{
           .particle_id = 7,
           .body_id = 23,
@@ -718,6 +718,21 @@ TEST(MacTransfer3D, ObliqueBladeStepReconstructsDistantSameSideGhosts) {
       .first_lame_parameter = 1.0,
       .quantization = {0x1p-40, 0x1p-40, 1},
   };
+  auto intersecting = settings;
+  intersecting.blade.start_center_coordinate = (position.x + position.y) * normal_component;
+  const auto rejected = StepElasticBladeGrid3D(*grid, intersecting, state);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(state.sides.empty());
+  EXPECT_EQ(state.accepted_step, 0);
+  const auto negative =
+      ClassifyInitialElasticBladeSide3D(settings.blade, settings.blade_id, {position.x - 1.0, position.y, position.z});
+  ASSERT_TRUE(negative.ok()) << negative.status();
+  EXPECT_EQ(negative->sign, -1);
+  auto bad_deposit = settings;
+  bad_deposit.quantization.declared_particle_capacity = 0;
+  EXPECT_FALSE(StepElasticBladeGrid3D(*grid, bad_deposit, state).ok());
+  EXPECT_TRUE(state.sides.empty());
+  EXPECT_EQ(state.accepted_step, 0);
   const auto step = StepElasticBladeGrid3D(*grid, settings, state);
   ASSERT_TRUE(step.ok()) << step.status();
   ASSERT_EQ(step->contacts.size(), 1);

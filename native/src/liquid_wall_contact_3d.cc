@@ -95,6 +95,40 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
   return result;
 }
 
+absl::StatusOr<ElasticBladeSide3D>
+ClassifyInitialElasticBladeSide3D(const TranslatingSlab3D& blade, std::uint64_t blade_id, Vec3 world_position) {
+  namespace sweep = boundary_internal;
+  const Vec3 normal = blade.unit_normal;
+  const double normal_length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+  if (blade_id == 0 || !sweep::HasFiniteComponents(world_position) || !sweep::HasFiniteComponents(normal)
+      || !sweep::HasFiniteComponents(blade.wall_velocity)
+      || std::abs(normal_length_squared - 1.0) > sweep::kUnitNormalTolerance
+      || !std::isfinite(blade.start_center_coordinate) || !std::isfinite(blade.half_width) || blade.half_width <= 0.0) {
+    return absl::InvalidArgumentError("invalid blade or particle position for initial affinity");
+  }
+  sweep::ProjectedSum center_coordinate;
+  center_coordinate.Add(blade.start_center_coordinate);
+  if (!sweep::HasRepresentablePlanes(center_coordinate.Bounds(), blade.half_width)) {
+    return absl::OutOfRangeError("unrepresentable initial blade planes");
+  }
+  for (const int side : {-1, 1}) {
+    const sweep::SweepPlane plane{
+        .outward_normal = {side * normal.x, side * normal.y, side * normal.z},
+        .start_coordinate = side * blade.start_center_coordinate,
+        .slab_half_width = blade.half_width,
+        .wall_velocity = blade.wall_velocity,
+    };
+    const auto projection = sweep::DistanceAlongPath(plane, world_position, {}, 0.0).sign();
+    if (!projection.has_value()) {
+      return absl::OutOfRangeError("uncertified initial blade side");
+    }
+    if (*projection >= 0) {
+      return ElasticBladeSide3D{.blade_id = blade_id, .sign = side};
+    }
+  }
+  return absl::FailedPreconditionError("elastic particle starts inside the blade");
+}
+
 absl::StatusOr<std::vector<LiquidBoundaryFaceTag3D>>
 BuildElasticBladeFaceTags3D(SparseMacGridView3D mac_grid, const TranslatingSlab3D& blade, double elapsed_time) {
   namespace sweep = boundary_internal;
