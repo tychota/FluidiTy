@@ -564,6 +564,31 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
       && budget.granular_plastic_volume_changes == 0;
 }
 
+bool TestUnsupportedFloorHasNoReaction() {
+  constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  DrySolidParticle3D particle{
+      .world_position = {2.25, 0.2, 2.25},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = {{0.95, 0, 0}, {0, 0.95, 0}, {0, 0, 0.95}},
+  };
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.001, .acoustic_cfl = 0.25, .compatible_floor = true};
+  fluidity::DrySolidStepBudget3D budget{};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status =
+      fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1}, &budget);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
+#endif
+  return status.ok() && budget.proposed_stress_impulse_l1 > 0 && budget.particle_wall_contacts == 0
+      && std::abs(budget.grid_wall_impulse_y) < 1e-12 && std::abs(particle.world_velocity.y) < 1e-10;
+}
+
 bool TestStoredVelocityResidual() {
   const BlockIndex3D block{0, 0, 0};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
@@ -1279,9 +1304,10 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true) || !TestStoredVelocityResidual()
-      || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
+      || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
+      || !TestCompatibleFloorStressWork() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

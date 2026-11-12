@@ -1,5 +1,3 @@
-#include "fluidity/host/dry_solid_step_3d.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -10,6 +8,7 @@
 
 #include "dry_solid_step_3d_internal.h"
 #include "fluidity/base/solid_acoustic_3d.h"
+#include "fluidity/host/dry_solid_step_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "fluidity/host/views.h"
@@ -281,6 +280,10 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   }
 
   std::vector<MacFaceDeposit3D> deposits(grid.face_count());
+  const double contact_tolerance = 1e-12 * cell_width;
+  const bool active_floor = compatible_floor && std::ranges::any_of(particles, [&](const auto& particle) {
+                              return particle.world_position.y <= contact_tolerance;
+                            });
   std::vector<LiquidBoundaryFaceTag3D> floor_tags;
   std::vector<LiquidBoundaryParticle3D> boundary_particles;
   LiquidBoundaryFaceDeposits3D boundary_deposits;
@@ -300,7 +303,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       if (!anchor.ok()) {
         return anchor.status();
       }
-      floor_tags[slot].structurally_eligible = anchor->y >= 0;
+      floor_tags[slot].structurally_eligible = !active_floor || anchor->y >= 0;
     }
     boundary_particles.reserve(particles.size());
     for (const auto& particle : transfer_particles) {
@@ -334,7 +337,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         }
         // The deformation field has zero normal velocity on the wall itself.
         // Compatible PIC still sees the unprojected incident velocity.
-        deformation_tags[slot].structurally_eligible = anchor->y > 0;
+        deformation_tags[slot].structurally_eligible = !active_floor || anchor->y > 0;
       }
     }
     std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
