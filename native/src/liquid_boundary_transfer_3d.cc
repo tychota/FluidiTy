@@ -187,7 +187,8 @@ absl::StatusOr<ContinuedVelocity> ContinueComponent(
     std::size_t component_index,
     std::int64_t side_tag,
     const LiquidPrescribedWallSample3D& wall,
-    bool bounded
+    bool bounded,
+    double squared_radius
 ) {
   std::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors{};
   std::size_t donor_count = 0;
@@ -200,7 +201,7 @@ absl::StatusOr<ContinuedVelocity> ContinueComponent(
     }
     const Vec3 offset = Difference(anchors[slot].anchor_in_cell_widths, target_in_cell_widths);
     const double squared_distance = Dot(offset, offset);
-    if (squared_distance > 4.0) {
+    if (squared_distance > squared_radius) {
       continue;
     }
     if (donor_count == donors.size()) {
@@ -246,7 +247,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
     std::size_t target_slot,
     std::size_t component_index,
     std::int64_t side_tag,
-    bool bounded
+    bool bounded,
+    double squared_radius = 4.0
 ) {
   if (IsCompatible(history.face_tags[target_slot], side_tag) && IsUsable(history.validity[target_slot])) {
     return ContinuedVelocity{history.face_velocities[target_slot], false};
@@ -259,7 +261,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
       component_index,
       side_tag,
       wall,
-      bounded
+      bounded,
+      squared_radius
   );
   if (!component.ok()) {
     return component.status();
@@ -280,7 +283,8 @@ absl::StatusOr<ContinuedVelocity> FillVelocity(
           other_component,
           side_tag,
           wall,
-          bounded
+          bounded,
+          4.0
       );
       if (!other.ok()) {
         return other.status();
@@ -515,7 +519,8 @@ absl::Status GatherCore(
     std::span<const Anchor> anchors,
     std::span<double> filled_old,
     std::span<double> filled_new,
-    bool bounded
+    bool bounded,
+    double squared_radius = 4.0
 ) {
   const auto capacity_status = ValidateCapacity(inputs.mac_grid.face_count(), inputs.particles.size(), bounded);
   if (!capacity_status.ok()) {
@@ -559,13 +564,27 @@ absl::Status GatherCore(
         return stencil.status();
       }
       for (const auto& sample : *stencil) {
-        const auto old_continued_velocity =
-            FillVelocity(inputs.old_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
+        const auto old_continued_velocity = FillVelocity(
+            inputs.old_history,
+            anchors,
+            sample.face_slot,
+            component,
+            particle.side_tag,
+            bounded,
+            squared_radius
+        );
         if (!old_continued_velocity.ok()) {
           return old_continued_velocity.status();
         }
-        const auto new_continued_velocity =
-            FillVelocity(inputs.new_history, anchors, sample.face_slot, component, particle.side_tag, bounded);
+        const auto new_continued_velocity = FillVelocity(
+            inputs.new_history,
+            anchors,
+            sample.face_slot,
+            component,
+            particle.side_tag,
+            bounded,
+            squared_radius
+        );
         if (!new_continued_velocity.ok()) {
           return new_continued_velocity.status();
         }
@@ -690,7 +709,8 @@ namespace {
 
 absl::StatusOr<LiquidBoundaryGatherResults3D> GatherBoundaryParticles(
     const LiquidBoundaryGatherInputs3D& inputs,
-    std::vector<double>* completed_new_face_velocities
+    std::vector<double>* completed_new_face_velocities,
+    double squared_radius
 ) {
   if (const auto status = ValidateCapacity(inputs.mac_grid.face_count(), inputs.particles.size(), false);
       !status.ok()) {
@@ -710,8 +730,15 @@ absl::StatusOr<LiquidBoundaryGatherResults3D> GatherBoundaryParticles(
       .old_history = inputs.old_history,
       .new_history = inputs.new_history,
   };
-  const auto status =
-      GatherCore(borrowed_inputs, result, std::span<const OwnedFaceAnchor>(anchors), old_values, new_values, false);
+  const auto status = GatherCore(
+      borrowed_inputs,
+      result,
+      std::span<const OwnedFaceAnchor>(anchors),
+      old_values,
+      new_values,
+      false,
+      squared_radius
+  );
   if (!status.ok()) {
     return status;
   }
@@ -724,17 +751,28 @@ absl::StatusOr<LiquidBoundaryGatherResults3D> GatherBoundaryParticles(
 
 absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
 ) {
-  return GatherBoundaryParticles(inputs, nullptr);
+  return GatherBoundaryParticles(inputs, nullptr, 4.0);
 }
 
-absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherElasticBoundaryParticle3D(
     const LiquidBoundaryGatherInputs3D& inputs,
-    std::vector<double>& completed_new_face_velocities
+    std::vector<double>* completed_new_face_velocities
 ) {
   if (inputs.particles.size() != 1) {
     return absl::InvalidArgumentError("completed face history requires exactly one particle");
   }
-  return GatherBoundaryParticles(inputs, &completed_new_face_velocities);
+  std::vector<double> local_completed;
+  auto* completed = completed_new_face_velocities == nullptr ? nullptr : &local_completed;
+  auto gathered = GatherBoundaryParticles(inputs, completed, 4.0);
+  // Preserve the local fit when it is full rank. Widen only for a deficient
+  // neighborhood, keeping the same side and component eligibility.
+  if (absl::IsFailedPrecondition(gathered.status()) || (gathered.ok() && !gathered->particles.front().affine_enabled)) {
+    gathered = GatherBoundaryParticles(inputs, completed, 9.0);
+  }
+  if (gathered.ok() && completed_new_face_velocities != nullptr) {
+    *completed_new_face_velocities = std::move(local_completed);
+  }
+  return gathered;
 }
 
 absl::StatusOr<LiquidBoundaryFaceDepositsView3D> LiquidBoundaryWorkspace3D::Deposit(

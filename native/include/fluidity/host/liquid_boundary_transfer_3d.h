@@ -106,12 +106,13 @@ struct LiquidBoundaryGatherResults3D {
 absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
 );
 
-// Single-particle overload also publishes the new-time completed velocities
-// in owned-slot order, with zero outside the particle's stencil. Requires
-// exactly one particle and preserves the vector on failure.
-absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(
+// Gathers one elastic particle, retrying deficient 2h fits with a 3h
+// same-component donor radius.
+// A nonnull output receives completed new-time velocities in owned-slot
+// order, with zeros outside the stencil. Failure preserves the output.
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherElasticBoundaryParticle3D(
     const LiquidBoundaryGatherInputs3D& inputs,
-    std::vector<double>& completed_new_face_velocities
+    std::vector<double>* completed_new_face_velocities
 );
 
 }  // namespace fluidity

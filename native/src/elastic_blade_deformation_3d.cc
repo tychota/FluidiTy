@@ -56,9 +56,7 @@ static absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation(
       .old_history = old_history,
       .new_history = new_history,
   };
-  const auto gathered = completed_new_face_velocities == nullptr
-      ? GatherLiquidBoundaryParticles3D(inputs)
-      : GatherLiquidBoundaryParticles3D(inputs, *completed_new_face_velocities);
+  const auto gathered = GatherElasticBoundaryParticle3D(inputs, completed_new_face_velocities);
   if (!gathered.ok()) {
     return gathered.status();
   }

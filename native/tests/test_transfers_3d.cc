@@ -685,6 +685,50 @@ TEST(MacTransfer3D, MovingBladeSceneRetainsSideAndReplaysAtTwoTimesteps) {
   }
 }
 
+TEST(MacTransfer3D, ObliqueBladeStepReconstructsDistantSameSideGhosts) {
+  const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto particle = CornerParticle(kTranslatedGeometry);
+  particle.particle_velocity = {};
+  particle.particle_velocity_slopes = {};
+  const double normal_component = std::sqrt(0.5);
+  const Vec3 position = particle.trial_world_position;
+  SolidInteractionCheckpoint3D state{
+      .accepted_step = 0,
+      .sides = {{.particle_id = 7, .side = {.blade_id = 17, .sign = 1}}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}},
+      }},
+  };
+  const ElasticBladeGridStep3D settings{
+      .blade =
+          {
+              .unit_normal = {normal_component, normal_component, 0.0},
+              .start_center_coordinate = (position.x + position.y) * normal_component - 0.1875,
+              .half_width = 0.125,
+              .wall_velocity = {0.625 * normal_component, 0.625 * normal_component, 0.0},
+          },
+      .blade_id = 17,
+      .duration = 0.125,
+      .shear_modulus = 2.0,
+      .first_lame_parameter = 1.0,
+      .quantization = {0x1p-40, 0x1p-40, 1},
+  };
+  const auto step = StepElasticBladeGrid3D(*grid, settings, state);
+  ASSERT_TRUE(step.ok()) << step.status();
+  ASSERT_EQ(step->contacts.size(), 1);
+  const auto& contact = step->contacts.front();
+  ASSERT_TRUE(contact.contact.contact_fraction.has_value());
+  EXPECT_NEAR(*contact.contact.contact_fraction, 0.8, 1e-10);
+  EXPECT_NEAR(contact.blade_work, 0.78125, 1e-10);
+  EXPECT_EQ(state.accepted_step, 1);
+  EXPECT_EQ(state.sides.front().side.sign, 1);
+}
+
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
   const auto mac_grid = SparseMacGrid3D::Create(kUnitGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
