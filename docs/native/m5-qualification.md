@@ -1419,6 +1419,15 @@ product of the elastic and plastic Jacobians is 0.75. The checks use
 absolute tolerances of 1e-12 in the respective units. An incompatible
 interior particle exhausts retries and preserves the input states.
 
+The restart fixture encodes that computed two-particle state at 0.0625 s
+through the shared FLSI codec. Advancing decoded and uninterrupted state
+to 0.125 s yields byte-identical checkpoints within each backend. At the
+second endpoint the pressure is 60/11 Pa, the thickness is 3/44 m, and
+the cumulative elastic–plastic Jacobian is 3/11. The elastic Jacobian
+stays at its 0.975 clamp. The second-frame pressure, thickness, and total
+Jacobian use 2e-6 absolute tolerance in their respective units. The
+elastic clamp and rear coordinate use 1e-12.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

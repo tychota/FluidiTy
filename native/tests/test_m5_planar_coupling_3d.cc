@@ -717,6 +717,63 @@ bool TestPlanarMixedContactDetection() {
     };
     return fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
   };
+  const auto compressed_checkpoint = save_frame(*compressed_frame);
+  if (!compressed_checkpoint.ok()) {
+    std::fprintf(stderr, "M5 compressed frame checkpoint: %s\n", compressed_checkpoint.status().ToString().c_str());
+    return false;
+  }
+  const auto restored_compression =
+      fluidity::DecodeCoupledInteractionCheckpoint3D(*compressed_checkpoint, checkpoint_bindings);
+  if (!restored_compression.ok() || restored_compression->solid.plastic_particles.size() != deforming_snow.size()) {
+    return false;
+  }
+  deformation_settings.target_time = 0.125;
+  const auto continue_compression = [&](const auto& liquid, const auto& layer) {
+    return fluidity::AdvancePlanarSnowPressureFrame3D(
+        *grid,
+        liquid,
+        layer,
+        single_traction,
+        deformation_settings,
+        project
+    );
+  };
+  const auto uninterrupted_compression = continue_compression(compressed_frame->liquid, compressed_frame->snow);
+  const auto restarted_compression =
+      continue_compression(restored_compression->liquid, restored_compression->solid.plastic_particles);
+  if (!uninterrupted_compression.ok() || !restarted_compression.ok()) {
+    std::fprintf(
+        stderr,
+        "M5 second compression frame, continuous %s, restarted %s\n",
+        uninterrupted_compression.status().ToString().c_str(),
+        restarted_compression.status().ToString().c_str()
+    );
+    return false;
+  }
+  const auto uninterrupted_compression_checkpoint = save_frame(*uninterrupted_compression);
+  const auto restarted_compression_checkpoint = save_frame(*restarted_compression);
+  if (!uninterrupted_compression_checkpoint.ok() || !restarted_compression_checkpoint.ok()
+      || *uninterrupted_compression_checkpoint != *restarted_compression_checkpoint
+      || restarted_compression->liquid.clock.time != 0.125 || restarted_compression->liquid.clock.frame_ordinal != 2
+      || restarted_compression->liquid.clock.accepted_step_ordinal != 2
+      || restarted_compression->snow.size() != deforming_snow.size()) {
+    return false;
+  }
+  // The rear advances by 3/16 m, while pressure limits the front advance to 3/44 m.
+  const double front_x = restarted_compression->snow.front().transfer.trial_world_position.x;
+  const double rear_x = restarted_compression->snow.back().transfer.trial_world_position.x;
+  if (std::abs(rear_x + 0.75) > 1e-12 || std::abs(front_x - rear_x - 3.0 / 44.0) > kFrameTolerance
+      || std::abs(restarted_compression->liquid.cells[0].previous_pressure - 60.0 / 11.0) > kFrameTolerance) {
+    return false;
+  }
+  for (const auto& particle : restarted_compression->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - 0.975) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 3.0 / 11.0) > kFrameTolerance) {
+      return false;
+    }
+  }
+
   const auto checkpoint = save_frame(*frame);
   if (!checkpoint.ok()) {
     std::fprintf(stderr, "M5 planar frame checkpoint: %s\n", checkpoint.status().ToString().c_str());
