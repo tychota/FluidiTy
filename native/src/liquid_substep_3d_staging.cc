@@ -188,7 +188,9 @@ absl::StatusOr<Staging> Staging::Create(
   }
   if (needs_isolated_drop) {
     STEP_TRY(Reserve(staging.isolated_drop_restricted_gathers.emplace(), capacities.particles, staging.reserved_bytes));
-    STEP_TRY(Reserve(staging.isolated_drop_pressure_faces.emplace(), capacities.faces, staging.reserved_bytes));
+  }
+  if (needs_isolated_drop || needs_wetted_piston) {
+    STEP_TRY(Reserve(staging.pressure_face_scratch.emplace(), capacities.faces, staging.reserved_bytes));
   }
   return staging;
 }
@@ -778,10 +780,10 @@ absl::Status SetIsolatedDropPressureLifts(
     Staging& staging,
     LiquidPressureProblemView3D& pressure
 ) {
-  if (!staging.isolated_drop || !staging.isolated_drop_pressure_faces) {
+  if (!staging.isolated_drop || !staging.pressure_face_scratch) {
     return Error(absl::StatusCode::kFailedPrecondition);
   }
-  auto& faces = *staging.isolated_drop_pressure_faces;
+  auto& faces = *staging.pressure_face_scratch;
   STEP_TRY(faces.Resize(pressure.faces.size()));
   std::ranges::copy(pressure.faces, faces.values().begin());
   for (auto& face : faces.values()) {

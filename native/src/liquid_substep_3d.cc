@@ -662,7 +662,7 @@ struct LiquidSubstepScheduler3D::Impl {
     // An empty, successfully frozen geometry has no constraint rows. All other
     // stages still execute, including transfer/forces and backend particle update.
     std::optional<double> coupled_velocity;
-    if (coupled_piston && (links->cells.size() != 1 || links->faces.size() != 6)) {
+    if (coupled_piston && links->cells.empty()) {
       return Error(absl::StatusCode::kFailedPrecondition);
     }
     if (!links->cells.empty()) {
@@ -680,43 +680,82 @@ struct LiquidSubstepScheduler3D::Impl {
         return projection.status();
       }
       if (coupled_piston) {
-        const double area = std::midpoint(piston_wetted->whole_area.lower, piston_wetted->whole_area.upper);
-        double conductance = 0.0;
-        for (const auto& face : links->faces) {
-          if (face.open_area > 0.0) {
-            if (!std::holds_alternative<DirichletMacPressureLink3D>(face.pressure_link)) {
-              return Error(absl::StatusCode::kFailedPrecondition);
-            }
-            conductance += step_duration * face.open_area * face.inverse_density / face.pressure_gradient_distance;
-          }
-        }
-        if (!(area > 0.0) || !(conductance > 0.0) || !std::isfinite(conductance)) {
-          return Error(absl::StatusCode::kFailedPrecondition);
-        }
+        auto& scratch = *staging.pressure_face_scratch;
+        STEP_TRY(scratch.Resize(links->faces.size()));
+        const auto coupled_faces = scratch.values();
+        std::ranges::copy(links->faces, coupled_faces.begin());
+        pressure_problem.faces = coupled_faces;
 
-        // The scalar Schur complement eliminates p from
-        // k*(p-p_probe) = A*(v-v_probe) and m*(v-v_probe) = dt*(F-A*(p-p_ambient)).
-        const double added_mass = step_duration * area * area / conductance;
-        const double effective_mass = piston_load->mass + added_mass;
-        const double probe_force =
-            piston_load->force.x - area * (projection->cell_pressures.front() - scene.ambient_pressure);
-        const double speed = std::fma(step_duration, probe_force / effective_mass, piston_load->linear_velocity.x);
-        if (!std::isfinite(speed) || !std::isfinite(effective_mass)) {
+        // Receiver area is aggregated once in the wetted geometry. Attached
+        // physical patches contribute their area through the same receiver.
+        const auto set_wall_speed = [&](double speed) -> absl::Status {
+          for (std::size_t face_index = 0; face_index < coupled_faces.size(); ++face_index) {
+            if (piston_wetted->face_fluxes[face_index].has_value()) {
+              auto& face = coupled_faces[face_index];
+              face.wall_normal_velocity = speed;
+              face.prescribed_wall_flux = 0.0;
+            }
+          }
+          for (const auto& patch : piston_wetted->patches) {
+            if (patch.receiver_area.upper > 0.0) {
+              if (!patch.receiver_face_ordinal || *patch.receiver_face_ordinal >= coupled_faces.size()
+                  || !piston_wetted->face_fluxes[*patch.receiver_face_ordinal].has_value()) {
+                return Error(absl::StatusCode::kFailedPrecondition);
+              }
+              const double area = std::midpoint(patch.receiver_area.lower, patch.receiver_area.upper);
+              coupled_faces[*patch.receiver_face_ordinal].prescribed_wall_flux = area * speed;
+            }
+          }
+          return absl::OkStatus();
+        };
+        auto pressure_only_body = *piston_load;
+        pressure_only_body.force = {};
+        pressure_only_body.torque = {};
+        const auto load_at = [&](std::span<const double> pressures) {
+          return AccumulatePlanarWettedPistonPressure3D(
+              *piston_inputs,
+              *piston_wetted,
+              pressures,
+              scene.ambient_pressure,
+              pressure_only_body
+          );
+        };
+        const auto initial_load = load_at(projection->cell_pressures);
+        if (!initial_load.ok()) {
+          return initial_load.status();
+        }
+        const double initial_speed = piston_load->linear_velocity.x;
+        const double speed_increment = std::copysign(0.125 * grid.geometry().cell_width / step_duration, initial_speed);
+        const double probe_speed = initial_speed + speed_increment;
+        const double probe_delta = probe_speed - initial_speed;
+        if (!std::isfinite(probe_speed) || !std::isfinite(probe_delta) || probe_delta == 0.0) {
           return Error(absl::StatusCode::kOutOfRange);
         }
-        std::array<MacPressureFace3D, 6> coupled_faces;
-        std::ranges::copy(links->faces, coupled_faces.begin());
-        std::size_t receiver_count = 0;
-        for (std::size_t face_index = 0; face_index < coupled_faces.size(); ++face_index) {
-          if (piston_wetted->face_fluxes[face_index].has_value()) {
-            ++receiver_count;
-            auto& face = coupled_faces[face_index];
-            face.wall_normal_velocity = speed;
-            face.prescribed_wall_flux = area * speed;
-          }
+        STEP_TRY(set_wall_speed(probe_speed));
+        projection = backend.project(
+            backend.context,
+            grid,
+            step_duration,
+            pressure_problem,
+            options.pressure_solver_options,
+            workspace.pressure()
+        );
+        if (!projection.ok()) {
+          return projection.status();
         }
-        if (receiver_count != 1) {
-          return Error(absl::StatusCode::kFailedPrecondition);
+        const auto probe_load = load_at(projection->cell_pressures);
+        if (!probe_load.ok()) {
+          return probe_load.status();
+        }
+
+        // Frozen linear pressure response gives the scalar Schur complement
+        // for the axial body degree of freedom, regardless of pressure-cell count.
+        const double added_mass = -step_duration * (probe_load->force.x - initial_load->force.x) / probe_delta;
+        const double effective_mass = piston_load->mass + added_mass;
+        const double total_force = piston_load->force.x + initial_load->force.x;
+        const double speed = std::fma(step_duration, total_force / effective_mass, initial_speed);
+        if (added_mass < 0.0 || !std::isfinite(speed) || !std::isfinite(effective_mass)) {
+          return Error(absl::StatusCode::kOutOfRange);
         }
         auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
         tank.piston_velocity_x = speed;
@@ -724,7 +763,7 @@ struct LiquidSubstepScheduler3D::Impl {
         new_obstacle = liquid_step_internal::ObstacleAtTime(obstacle, step_duration);
         accepted_measurement.piston_pose->step_end_low_x_m =
             std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
-        pressure_problem.faces = coupled_faces;
+        STEP_TRY(set_wall_speed(speed));
         projection = backend.project(
             backend.context,
             grid,
@@ -1415,7 +1454,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           growth,
           impl_->staging.regular_transport.has_value(),
           impl_->staging.wetted_piston.has_value(),
-          impl_->staging.isolated_drop_pressure_faces.has_value()
+          impl_->staging.isolated_drop_restricted_gathers.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

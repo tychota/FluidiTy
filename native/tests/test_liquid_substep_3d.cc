@@ -459,6 +459,27 @@ TEST(LiquidSubstep3D, GuidedPistonMeasuresAddedMassAndLightBodyAmplification) {
   EXPECT_EQ(refused->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
   EXPECT_FALSE(refused->loaded_piston.has_value());
   EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
+
+  auto wide_scene = wet::PlaneScene(kHeight, wet::kPistonSpeed);
+  auto& wide_tank = std::get<AxisAlignedLiquidTank3D>(wide_scene.obstacle);
+  wide_tank.low_z = -1.0;
+  wide_tank.high_z = 2.0;
+  auto wide = LiquidSubstepScheduler3D::Create({}, wide_scene, Options());
+  ASSERT_TRUE(wide.ok()) << wide.status();
+  ASSERT_TRUE(wide->BeginFrame(wet::kDuration).ok());
+  const auto wide_step =
+      wide->AttemptWithCoupledPlanarPiston(wet::kDuration, body(3.0 * light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(wide_step.ok()) << wide_step.status();
+  ASSERT_TRUE(wide_step->loaded_piston.has_value()) << wide->diagnostics().failure_code;
+  EXPECT_EQ(wide->committed().cells.size(), 3);
+  EXPECT_NEAR(wide_step->loaded_piston->linear_velocity.x, expected_velocity, 1e-8);
+  const auto& wide_measurement = wide->diagnostics().accepted_measurement;
+  ASSERT_TRUE(wide_measurement.has_value());
+  EXPECT_NEAR(
+      wide_measurement->step_start_inward_piston_flux_m3_per_s,
+      3.0 * kWettedArea * wide_step->loaded_piston->linear_velocity.x,
+      1e-12
+  );
 }
 
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
