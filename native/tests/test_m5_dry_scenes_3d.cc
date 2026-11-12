@@ -876,23 +876,54 @@ int main(int argc, char** argv) {
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
   }
-  if (argc == 2
+  if (argc >= 2
       && (std::string_view(argv[1]) == "--q-sand-compatible-floor"
           || std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle")) {
     const bool extended = std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle";
-    const double end_time = extended ? 1.5 : 0.75;
-    bool all_pass = true;
-    for (const double width : {0.075, 0.0625}) {
-      const bool nominal =
-          TestScene(width, width / 40, false, 0, 1, 0.10, false, end_time, 0, {}, 0.7, false, 1, 0, 700, true);
-      all_pass = all_pass && nominal;
-      if (extended) {
-        const bool half_step =
-            TestScene(width, width / 80, false, 0, 1, 0.10, false, end_time, 0, {}, 0.7, false, 1, 0, 700, true);
-        all_pass = all_pass && half_step;
-      }
+    if (argc > 3 || (argc == 3 && !extended)) {
+      return 2;
     }
-    return all_pass ? 0 : 1;
+    const std::string_view selected = argc == 3 ? argv[2] : "";
+    struct FloorCase {
+      std::string_view name;
+      double cell_width;
+      int steps_per_cell_width;
+    };
+    constexpr std::array cases{
+        FloorCase{"coarse", 0.075, 40},
+        FloorCase{"coarse-half", 0.075, 80},
+        FloorCase{"fine", 0.0625, 40},
+        FloorCase{"fine-half", 0.0625, 80},
+    };
+    bool ran_case = false;
+    bool all_pass = true;
+    for (const auto& floor_case : cases) {
+      if ((!extended && floor_case.steps_per_cell_width == 80) || (!selected.empty() && selected != floor_case.name)) {
+        continue;
+      }
+      ran_case = true;
+      const double width = floor_case.cell_width;
+      const bool pass = TestScene(
+          width,
+          width / floor_case.steps_per_cell_width,
+          false,
+          0,
+          1,
+          0.10,
+          false,
+          extended ? 1.5 : 0.75,
+          0,
+          {},
+          0.7,
+          false,
+          1,
+          0,
+          700,
+          true
+      );
+      all_pass = all_pass && pass;
+    }
+    return ran_case ? (all_pass ? 0 : 1) : 2;
   }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-grid-phase") {
     bool all_pass = true;
