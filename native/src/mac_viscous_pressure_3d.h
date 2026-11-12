@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 
 #include "absl/functional/function_ref.h"
@@ -66,6 +67,51 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
     std::span<const MacPressureCell3D> cells,
     std::span<const ExplicitMacPressureFace3D> faces,
     std::span<const MacStrainRow3D> strain_rows
+);
+
+// Runs the bounded coupled CPU solve on M3's canonical adaptive subface graph.
+// Strain terms reference open owned slots. Supply sealed velocity contributions
+// through prescribed strain and blocked pressure flux through the subfaces.
+// Returns in cell and canonical subface order, or propagates graph/solve errors.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options = {}
+);
+
+// Uses the same canonical graph and row validation with an owning velocity
+// block callback. Callback failures propagate without a projection.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressureWithVelocitySolver3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces,
+    std::span<const MacStrainRow3D> strain_rows,
+    SolveViscousVelocity3D solve_velocity_block,
+    MacPressureSolverOptions3D options = {}
+);
+
+// Reuses a checked canonical graph frozen with the same step duration.
+// Supplied rows reference open slots and the optional inverse is synchronous.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressure3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    std::optional<SolveViscousVelocity3D> solve_velocity_block = std::nullopt
+);
+
+// Same checked graph with a velocity inverse that borrows the host scratch
+// for the duration of each call and returns a temporary velocity view.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressureWithVelocityView3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    SolveViscousVelocityView3D solve_velocity_block
 );
 
 }  // namespace fluidity::pressure_internal

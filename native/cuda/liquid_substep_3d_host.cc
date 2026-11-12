@@ -272,6 +272,18 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
           },
   };
   if (impl_->adaptive_state) {
+    operations.project_adaptive_viscous = [](void* context,
+                                             const pressure_internal::PreparedMacPressureSystem3D& system,
+                                             double duration,
+                                             std::span<const MacStrainRow3D> rows,
+                                             MacPressureSolverOptions3D options) {
+      auto& arena = static_cast<Impl*>(context)->arena;
+      const auto ready = arena.BeginDeviceTimeline();
+      if (!ready.ok()) {
+        return absl::StatusOr<MacViscousPressureProjection3D>(ready);
+      }
+      return cuda_internal::ProjectArenaAdaptiveViscousPressure3D(arena, system, duration, rows, options);
+    };
     operations.project_adaptive = [](void* context,
                                      const pressure_internal::PreparedMacPressureSystem3D& system,
                                      MacPressureSolverOptions3D options) -> absl::StatusOr<MacPressureProjection3D> {

@@ -318,6 +318,9 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
     if (!face.full_face_area.has_value() && !IsFinitePositive(face.open_area)) {
       return absl::InvalidArgumentError("pressure graph face without full area must be open");
     }
+    if (face.open_area == 0.0 && face.pressure_jump_pa != 0.0) {
+      return absl::InvalidArgumentError("sealed pressure graph face cannot carry a pressure jump");
+    }
     const double full_face_area = face.full_face_area.value_or(face.open_area);
     if (!IsFinitePositive(full_face_area)) {
       return absl::InvalidArgumentError("pressure graph face requires positive finite full area");
@@ -329,7 +332,7 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareExplicitMacPressureSystem3D(
         .pressure_gradient_distance = face.pressure_gradient_distance,
         .predicted_normal_velocity = face.predicted_normal_velocity,
         .wall_normal_velocity = 0.0,
-        .pressure_link = InternalMacPressureLink3D{.pressure_jump = 0.0},
+        .pressure_link = InternalMacPressureLink3D{.pressure_jump = face.pressure_jump_pa},
         .prescribed_wall_flux = face.prescribed_wall_flux,
     };
     const auto link = arithmetic::FreezeLinkFromIncidence(
@@ -440,12 +443,16 @@ absl::StatusOr<PreparedMacPressureSystem3D> PrepareAdaptiveMacPressureSystem3D(
         .predicted_normal_velocity = sample.predicted_normal_velocity_m_per_s,
         .full_face_area = geometry.face_area,
         .prescribed_wall_flux = sample.prescribed_wall_flux_m3_per_s,
+        .pressure_jump_pa = sample.pressure_jump_pa,
     });
   }
   std::vector<ExplicitMacPressureBoundaryFace3D> exterior;
   exterior.reserve(ownership->exterior_faces.size());
   for (const auto& geometry : ownership->exterior_faces) {
     const auto& sample = subfaces[geometry.face_slot];
+    if (sample.pressure_jump_pa != 0.0) {
+      return absl::InvalidArgumentError("exterior adaptive subface cannot carry an interior pressure jump");
+    }
     if (!sample.exterior_pressure_pa.has_value() && sample.exterior_pressure_distance_m != 0) {
       return absl::InvalidArgumentError("sealed exterior subface cannot carry a pressure distance");
     }

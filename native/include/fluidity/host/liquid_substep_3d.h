@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "absl/functional/function_ref.h"
+#include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
@@ -360,6 +361,21 @@ class LiquidSubstepScheduler3D {
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
+  // Request an ownership handoff before one physical trial. The caller
+  // certifies full occupancy and a carrier at the previous accepted epoch.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(
+      double step_duration,
+      AdaptiveMacCellKey3D leaf,
+      LiquidHandoffOccupancy3D occupancy,
+      const LiquidHandoffCarrier3D& carrier
+  );
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveCoreReseed(
+      double step_duration,
+      AdaptiveMacCellKey3D leaf,
+      LiquidHandoffOccupancy3D occupancy,
+      const LiquidHandoffCarrier3D& carrier,
+      std::size_t particle_count
+  );
   // Attempts the moving planar piston scene and returns the pressure load
   // only when the liquid state commits. The body is supplied by value and
   // the piston trajectory stays prescribed for this attempt.
@@ -476,7 +492,9 @@ class LiquidSubstepScheduler3D {
       std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
   );
   struct SnowTrial;
-  struct AdaptiveFamilyTrial;
+  struct AdaptiveStateTrial;
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -486,7 +504,7 @@ class LiquidSubstepScheduler3D {
       const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
       FloatingBoxTrial* floating_box = nullptr,
       SnowTrial* snow = nullptr,
-      AdaptiveFamilyTrial* adaptive_family = nullptr
+      AdaptiveStateTrial* adaptive_replacement = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

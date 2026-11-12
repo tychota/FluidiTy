@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 def main() -> None:
-    executable, backend = sys.argv[1:]
+    executable, backend, *scenario = sys.argv[1:]
     with tempfile.TemporaryDirectory() as directory:
         checkpoint = str(Path(directory) / "refined.flst")
         uninterrupted = subprocess.check_output(
-            [executable, backend, "continuous", checkpoint], text=True, timeout=30
+            [executable, backend, "continuous", checkpoint, *scenario], text=True, timeout=30
         ).strip()
         with subprocess.Popen(
-            [executable, backend, "interrupt", checkpoint],
+            [executable, backend, "interrupt", checkpoint, *scenario],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -24,7 +24,7 @@ def main() -> None:
                 process.kill()
                 assert process.wait(timeout=10) != 0
         resumed = subprocess.check_output(
-            [executable, backend, "resume", checkpoint], text=True, timeout=30
+            [executable, backend, "resume", checkpoint, *scenario], text=True, timeout=30
         ).strip()
         assert resumed.startswith("final=") and resumed == uninterrupted, (uninterrupted, resumed)
         print(backend, checkpoint_receipt, resumed)
