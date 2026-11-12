@@ -36,16 +36,40 @@ absl::Status AdvanceFamily(LiquidSubstepScheduler3D& scheduler, double frame_end
   return scheduler.FinishFrame();
 }
 
-absl::Status Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path) {
+absl::Status AdvanceBand(LiquidSubstepScheduler3D& scheduler, double frame_end, bool retire) {
+  const auto started = scheduler.BeginFrame(frame_end);
+  if (!started.ok()) {
+    return started;
+  }
+  constexpr AdaptiveMacCellKey3D kBandLeaf{.lower_corner = {2, 0, 0}, .width_exponent = 0};
+  const LiquidHandoffCarrier3D carrier{.current_density = 2, .volume_ratio = 1};
+  constexpr auto kFull = LiquidHandoffOccupancy3D::kFullLiquid;
+  const auto attempted = retire ? scheduler.AttemptWithAdaptiveBandRetirement(0.01, kBandLeaf, kFull, carrier)
+                                : scheduler.AttemptWithAdaptiveCoreReseed(0.01, kBandLeaf, kFull, carrier, 1);
+  if (!attempted.ok()) {
+    return attempted.status();
+  }
+  const auto expected_owner =
+      retire ? AdaptiveLiquidMaterialOwner3D::kEulerian : AdaptiveLiquidMaterialOwner3D::kParticles;
+  if (attempted->disposition != LiquidAttemptDisposition3D::kAccepted
+      || scheduler.committed().particles.size() != (retire ? 4U : 5U)
+      || scheduler.committed().adaptive_cells[1].material_owner != expected_owner) {
+    return absl::FailedPreconditionError("band trial did not publish the expected ownership");
+  }
+  return scheduler.FinishFrame();
+}
+
+absl::Status Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, bool band) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
-  const auto authored = test::PopulateGradedFamilyFixture3D(state, scene);
+  const auto authored =
+      band ? test::PopulateGradedBandFixture3D(state, scene) : test::PopulateGradedFamilyFixture3D(state, scene);
   if (!authored.ok()) {
     return authored;
   }
   LiquidResumeMetadata3D resume;
-  constexpr std::uint8_t kFixtureIdentity[] = {1, 3, 12};
-  resume.resolved_fingerprint = LiquidContentDigest3D(kFixtureIdentity);
+  const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : 12)};
+  resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = kCapacities;
   if (mode == "resume") {
@@ -55,8 +79,9 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != 12) {
-      return absl::DataLossError("fixture checkpoint identity or refined topology differs");
+    if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != (band ? 5U : 12U)
+        || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
+      return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
     }
     state = std::move(checkpoint->state);
   }
@@ -85,7 +110,7 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
   }
 
   if (mode != "resume") {
-    const auto refined = AdvanceFamily(*scheduler, 0.01, true);
+    const auto refined = band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true);
     if (!refined.ok()) {
       return refined;
     }
@@ -107,7 +132,7 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
     return absl::CancelledError("expected test process termination");
   }
 
-  const auto coarsened = AdvanceFamily(*scheduler, 0.02, false);
+  const auto coarsened = band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false);
   if (!coarsened.ok()) {
     return coarsened;
   }
@@ -128,7 +153,7 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
 }  // namespace fluidity
 
 int main(int argc, char** argv) {
-  if (argc != 4) {
+  if (argc != 4 && (argc != 5 || std::string_view(argv[4]) != "band")) {
     return 2;
   }
   const std::string_view backend = argv[1];
@@ -136,7 +161,7 @@ int main(int argc, char** argv) {
   if ((backend != "cpu" && backend != "cuda") || (mode != "continuous" && mode != "interrupt" && mode != "resume")) {
     return 2;
   }
-  const auto status = fluidity::Run(backend, mode, argv[3]);
+  const auto status = fluidity::Run(backend, mode, argv[3], argc == 5);
   if (!status.ok()) {
     std::cerr << status << '\n';
     return 1;

@@ -1,9 +1,12 @@
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include "fluidity/host/liquid_band_handoff_3d.h"
+#include "fluidity/host/liquid_cache_3d.h"
 #include "gtest/gtest.h"
 
 namespace fluidity {
@@ -273,6 +276,305 @@ TEST(LiquidBandHandoff3D, RejectsInconsistentLedgerAndDuplicateOrOutOfCellPartic
   particles[1].side_tag++;
   EXPECT_EQ(
       RetireLiquidBandCell3D(kCell, particles, kCore.enthalpy_j, kCarrier).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
+constexpr AdaptiveMacCellKey3D kAdaptiveBandLeaf{.lower_corner = {-2, 0, 0}, .width_exponent = 1};
+constexpr LiquidStateCapacities3D kAdaptiveBandCapacities{9, 0, 2, 11, 0};
+constexpr auto kFullOccupancy = LiquidHandoffOccupancy3D::kFullLiquid;
+
+absl::StatusOr<LiquidState3D> AdaptiveBandState() {
+  LiquidState3D state;
+  state.geometry = {.world_origin = {0, 4, -1}, .cell_width = 1};
+  state.clock = {.time = 1, .frame_ordinal = 1, .accepted_step_ordinal = 1, .epoch = 1};
+  state.random_seed = 71;
+  state.next_particle_id = 10;
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(3);
+  if (!particles.ok()) {
+    return particles.status();
+  }
+  state.particles = std::move(*particles);
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(2);
+  if (!cells.ok()) {
+    return cells.status();
+  }
+  state.adaptive_cells = std::move(*cells);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(11);
+  if (!faces.ok()) {
+    return faces.status();
+  }
+  state.adaptive_faces = std::move(*faces);
+  (void)state.particles.Resize(3);
+  (void)state.adaptive_cells.Resize(2);
+  (void)state.adaptive_faces.Resize(11);
+  state.particles[0] = kBand[0];
+  state.particles[1] = {.id = 5, .tag = 33, .world_position = {0.5, 4.5, -0.5}};
+  state.particles[2] = kBand[1];
+  state.adaptive_cells[0] = {
+      .key = kAdaptiveBandLeaf,
+      .inventory = kCore,
+      .previous_pressure = 4,
+  };
+  state.adaptive_cells[1] = {
+      .key = {.lower_corner = {0, 0, 0}, .width_exponent = 1},
+      .inventory = {.mass_kg = 1, .reference_volume_m3 = 1, .current_volume_m3 = 1},
+      .previous_pressure = 7,
+  };
+  state.adaptive_faces[0] = {.carrier_velocity = -0.25, .validity = LiquidFaceValidity3D::kValid};
+  return state;
+}
+
+TEST(AdaptiveLiquidBandHandoff3D, ConservesInventoryAndPreservesUnrelatedRecordsAcrossFreshCheckpoint) {
+  const auto initial = AdaptiveBandState();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  const auto before = EncodeLiquidState3D(*initial);
+  ASSERT_TRUE(before.ok()) << before.status();
+  const auto core = PrepareAdaptiveLiquidBandRetirement3D(
+      *initial,
+      kAdaptiveBandCapacities,
+      kAdaptiveBandLeaf,
+      kFullOccupancy,
+      kCarrier
+  );
+  ASSERT_TRUE(core.ok()) << core.status();
+  EXPECT_EQ(core->clock, initial->clock);
+  EXPECT_EQ(core->random_seed, initial->random_seed);
+  EXPECT_EQ(core->next_particle_id, initial->next_particle_id);
+  ASSERT_EQ(core->particles.size(), 1);
+  EXPECT_EQ(core->particles[0], initial->particles[1]);
+  EXPECT_EQ(core->adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(core->adaptive_cells[0].previous_pressure, initial->adaptive_cells[0].previous_pressure);
+  ExpectInventory(core->adaptive_cells[0].inventory, kCore);
+  EXPECT_EQ(core->adaptive_cells[1], initial->adaptive_cells[1]);
+  EXPECT_EQ(core->adaptive_faces, initial->adaptive_faces);
+
+  LiquidResumeMetadata3D resume{};
+  resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
+  resume.capacities = kAdaptiveBandCapacities;
+  const auto checkpoint = EncodeLiquidCheckpoint3D(*core, resume);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeLiquidCheckpoint3D(checkpoint->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->state, *core);
+  EXPECT_EQ(restored->resume, resume);
+  const auto repeated_checkpoint = EncodeLiquidCheckpoint3D(restored->state, restored->resume);
+  ASSERT_TRUE(repeated_checkpoint.ok()) << repeated_checkpoint.status();
+  EXPECT_EQ(*repeated_checkpoint, *checkpoint);
+
+  const auto fresh_band =
+      PrepareAdaptiveLiquidCoreReseed3D(*core, kAdaptiveBandCapacities, kAdaptiveBandLeaf, kFullOccupancy, kCarrier, 8);
+  ASSERT_TRUE(fresh_band.ok()) << fresh_band.status();
+  const auto resumed_band = PrepareAdaptiveLiquidCoreReseed3D(
+      restored->state,
+      kAdaptiveBandCapacities,
+      kAdaptiveBandLeaf,
+      kFullOccupancy,
+      kCarrier,
+      8
+  );
+  ASSERT_TRUE(resumed_band.ok()) << resumed_band.status();
+  EXPECT_EQ(*fresh_band, *resumed_band);
+  EXPECT_EQ(fresh_band->clock, initial->clock);
+  EXPECT_EQ(fresh_band->next_particle_id, 18);
+  ASSERT_EQ(fresh_band->particles.size(), 9);
+  EXPECT_EQ(fresh_band->particles[0], initial->particles[1]);
+  for (std::size_t ordinal = 1; ordinal < fresh_band->particles.size(); ++ordinal) {
+    EXPECT_EQ(fresh_band->particles[ordinal].id, 9 + ordinal);
+    EXPECT_FALSE(fresh_band->particles[ordinal].pic_initialized);
+  }
+  EXPECT_EQ(fresh_band->adaptive_cells, initial->adaptive_cells);
+  EXPECT_EQ(fresh_band->adaptive_faces, initial->adaptive_faces);
+
+  const auto fresh_bytes = EncodeLiquidState3D(*fresh_band);
+  ASSERT_TRUE(fresh_bytes.ok()) << fresh_bytes.status();
+  const auto resumed_bytes = EncodeLiquidState3D(*resumed_band);
+  ASSERT_TRUE(resumed_bytes.ok()) << resumed_bytes.status();
+  EXPECT_EQ(*fresh_bytes, *resumed_bytes);
+  const auto unchanged = EncodeLiquidState3D(*initial);
+  ASSERT_TRUE(unchanged.ok()) << unchanged.status();
+  EXPECT_EQ(*before, *unchanged);
+}
+
+TEST(AdaptiveLiquidBandHandoff3D, RejectsUncertifiedOrIncompatibleCandidatesWithoutChangingInput) {
+  auto initial = AdaptiveBandState();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  const auto before = EncodeLiquidState3D(*initial);
+  ASSERT_TRUE(before.ok()) << before.status();
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(
+          *initial,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          std::nullopt
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(
+          *initial,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          LiquidHandoffOccupancy3D::kPartial,
+          kCarrier
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto absent_leaf = kAdaptiveBandLeaf;
+  absent_leaf.width_exponent = 0;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(*initial, kAdaptiveBandCapacities, absent_leaf, kFullOccupancy, kCarrier)
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto insufficient = kAdaptiveBandCapacities;
+  insufficient.faces = 10;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(*initial, insufficient, kAdaptiveBandLeaf, kFullOccupancy, kCarrier)
+          .status()
+          .code(),
+      absl::StatusCode::kResourceExhausted
+  );
+
+  auto incompatible = CloneLiquidState3D(*initial, kAdaptiveBandCapacities);
+  ASSERT_TRUE(incompatible.ok()) << incompatible.status();
+  incompatible->adaptive_cells[0].inventory.mass_kg = std::nextafter(kCore.mass_kg, 0.0);
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(
+          *incompatible,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          kCarrier
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  incompatible->adaptive_cells[0].inventory = kCore;
+  incompatible->adaptive_cells[0].inventory.current_volume_m3 = 7;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(
+          *incompatible,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          kCarrier
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  incompatible->adaptive_cells[0].inventory = kCore;
+  incompatible->adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(
+          *incompatible,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          kCarrier
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  const auto unchanged = EncodeLiquidState3D(*initial);
+  ASSERT_TRUE(unchanged.ok()) << unchanged.status();
+  EXPECT_EQ(*before, *unchanged);
+
+  const auto core = PrepareAdaptiveLiquidBandRetirement3D(
+      *initial,
+      kAdaptiveBandCapacities,
+      kAdaptiveBandLeaf,
+      kFullOccupancy,
+      kCarrier
+  );
+  ASSERT_TRUE(core.ok()) << core.status();
+  const auto core_bytes = EncodeLiquidState3D(*core);
+  ASSERT_TRUE(core_bytes.ok()) << core_bytes.status();
+  insufficient = kAdaptiveBandCapacities;
+  insufficient.particles = 8;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidCoreReseed3D(*core, insufficient, kAdaptiveBandLeaf, kFullOccupancy, kCarrier, 8)
+          .status()
+          .code(),
+      absl::StatusCode::kResourceExhausted
+  );
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidCoreReseed3D(
+          *core,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          std::nullopt,
+          8
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  const auto unchanged_core = EncodeLiquidState3D(*core);
+  ASSERT_TRUE(unchanged_core.ok()) << unchanged_core.status();
+  EXPECT_EQ(*core_bytes, *unchanged_core);
+}
+
+TEST(AdaptiveLiquidBandHandoff3D, RejectsSixSeedsThatLoseInventoryInGradedAccumulationOrder) {
+  auto core = AdaptiveBandState();
+  ASSERT_TRUE(core.ok()) << core.status();
+  core->particles[0] = core->particles[1];
+  ASSERT_TRUE(core->particles.Resize(1).ok());
+  auto& leaf = core->adaptive_cells[0];
+  leaf.material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  leaf.inventory.momentum_kg_m_per_s = {};
+  auto carrier = kCarrier;
+  carrier.cell_center_velocity = {};
+  carrier.velocity_slopes = {};
+
+  constexpr std::size_t seed_count = 6;
+  const auto seeds =
+      ReseedLiquidCoreCell3D(kCell, leaf.inventory, carrier, seed_count, seed_count, core->next_particle_id);
+  ASSERT_TRUE(seeds.ok()) << seeds.status();
+  const auto compensated = RetireLiquidBandCell3D(kCell, seeds->particles(), seeds->enthalpy_j(), carrier);
+  ASSERT_TRUE(compensated.ok()) << compensated.status();
+  EXPECT_EQ(compensated->current_volume_m3, leaf.inventory.current_volume_m3);
+  double graded_volume_m3 = 0;
+  for (const auto& seed : seeds->particles()) {
+    graded_volume_m3 += seed.reference_volume * seed.volume_ratio;
+  }
+  EXPECT_LT(graded_volume_m3, leaf.inventory.current_volume_m3);
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidCoreReseed3D(
+          *core,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          carrier,
+          seed_count
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kOutOfRange
+  );
+
+  auto band = CloneLiquidState3D(*core, kAdaptiveBandCapacities);
+  ASSERT_TRUE(band.ok()) << band.status();
+  ASSERT_TRUE(band->particles.Resize(1 + seed_count).ok());
+  for (std::size_t ordinal = 0; ordinal < seed_count; ++ordinal) {
+    band->particles[1 + ordinal] = seeds->particles()[ordinal];
+  }
+  band->next_particle_id = seeds->next_particle_id();
+  band->adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(*band, kAdaptiveBandCapacities, kAdaptiveBandLeaf, kFullOccupancy, carrier)
+          .status()
+          .code(),
       absl::StatusCode::kFailedPrecondition
   );
 }
