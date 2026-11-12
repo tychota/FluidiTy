@@ -40,7 +40,8 @@ struct LiquidHandoffCarrier3D {
 
 struct LiquidBandMargins3D {
   double particle_support_radius_m = 0;  // Enclosing radius of the actual transfer or extraction support.
-  double accepted_sweep_m = 0;  // Certified maximum signed-distance increase over the accepted motion interval.
+  // Certified upper bound on material displacement and signed-distance increase over the covered interval.
+  double accepted_sweep_m = 0;
   double reseed_radius_m = 0;  // Enclosing radius of the proposed seed offsets.
 };
 

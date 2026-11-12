@@ -424,6 +424,71 @@ TEST(LiquidSubstep3D, GradedExplicitQuadraticRejectsChangedProjectedCarrier) {
   EXPECT_TRUE(absl::IsFailedPrecondition(owner->Gather(*trial, &**prepared)));
 }
 
+TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateDeepGradedBandFixture3D(state, scene);
+  ASSERT_TRUE(authored.ok()) << authored;
+  auto options = Options();
+  options.capacities = {8, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  LiquidAdaptiveBandRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .leaf = state.adaptive_cells[0].key,
+      .margins = {},
+      .destination_carrier = std::nullopt,
+      .reseed_particle_count = 1,
+  };
+  const auto unavailable = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  EXPECT_EQ(unavailable.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+  request.destination_carrier = LiquidHandoffCarrier3D{.current_density = 2, .volume_ratio = 1};
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band placement")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retired = scheduler->AttemptWithAdaptiveBandPlacement(*rejected->retry_duration, request);
+  ASSERT_TRUE(retired.ok()) << retired.status();
+  ASSERT_EQ(retired->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(scheduler->committed().particles.size(), 7);
+  const auto& actual_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  const auto& expected_inventory = state.adaptive_cells[0].inventory;
+  EXPECT_EQ(actual_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(actual_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(actual_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+
+  EXPECT_EQ(
+      scheduler->AttemptWithAdaptiveBandPlacement(0.005, request).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  request.accepted_epoch = scheduler->committed().clock.epoch;
+  request.margins.particle_support_radius_m = 4;
+  const auto reseeded = scheduler->AttemptWithAdaptiveBandPlacement(0.005, request);
+  ASSERT_TRUE(reseeded.ok()) << reseeded.status();
+  ASSERT_EQ(reseeded->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+  EXPECT_EQ(scheduler->committed().particles.size(), 8);
+  EXPECT_EQ(scheduler->committed().particles[7].id, 9);
+  const auto& reseeded_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  EXPECT_EQ(reseeded_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(reseeded_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(reseeded_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+}
+
 TEST(LiquidSubstep3D, PublishesAdaptiveBandRetirementAndReseed) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
@@ -678,26 +743,60 @@ TEST(LiquidSubstep3D, GradedViscousTensorReproducesAffineStrain) {
     velocities.push_back(components[static_cast<std::size_t>(face.axis)]);
     subfaces[slot].open_area_m2 = face.width_m * face.width_m;
   }
-  const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_FALSE(ownership->exterior_faces.empty());
+  std::size_t wall_slot = 0;
+  for (const bool prescribed_wall : {false, true}) {
+    SCOPED_TRACE(prescribed_wall);
+    if (prescribed_wall) {
+      auto& wall = subfaces[wall_slot];
+      wall.prescribed_wall_flux_m3_per_s = wall.open_area_m2 * velocities[wall_slot];
+      wall.open_area_m2 = 0.0;
+      velocities[wall_slot] = 0.0;
+    }
+    const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+        *topology,
+        state.geometry.world_origin,
+        2.0,
+        transfer->faces(),
+        subfaces
+    );
+    ASSERT_TRUE(rows.ok()) << rows.status();
+    if (!prescribed_wall) {
+      const auto wall = std::ranges::find_if(ownership->exterior_faces, [&](const auto& face) {
+        return std::ranges::any_of(*rows, [&](const auto& row) {
+          return row.first_axis != row.second_axis
+              && std::ranges::any_of(std::span(row.terms).first(row.term_count), [&](const auto& term) {
+                   return term.face_slot == face.face_slot;
+                 });
+        });
+      });
+      ASSERT_NE(wall, ownership->exterior_faces.end());
+      wall_slot = wall->face_slot;
+    }
+    constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
+    ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
+    for (std::size_t index = 0; index < rows->size(); ++index) {
+      const auto& row = (*rows)[index];
+      double strain = row.prescribed_strain;
+      for (const auto& term : std::span(row.terms).first(row.term_count)) {
+        strain += term.coefficient * velocities[term.face_slot];
+      }
+      EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
+      const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
+      EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
+    }
+  }
+  subfaces[wall_slot].open_area_m2 = 0.5 * transfer->faces()[wall_slot].width_m * transfer->faces()[wall_slot].width_m;
+  const auto moving_cut = liquid_step_internal::AssembleGradedViscousStrainRows3D(
       *topology,
       state.geometry.world_origin,
       2.0,
       transfer->faces(),
       subfaces
   );
-  ASSERT_TRUE(rows.ok()) << rows.status();
-  constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
-  ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
-  for (std::size_t index = 0; index < rows->size(); ++index) {
-    const auto& row = (*rows)[index];
-    double strain = row.prescribed_strain;
-    for (const auto& term : std::span(row.terms).first(row.term_count)) {
-      strain += term.coefficient * velocities[term.face_slot];
-    }
-    EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
-    const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
-    EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
-  }
+  EXPECT_EQ(moving_cut.status().code(), absl::StatusCode::kUnimplemented);
 }
 
 TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) {

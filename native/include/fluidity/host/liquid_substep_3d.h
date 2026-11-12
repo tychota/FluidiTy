@@ -317,6 +317,15 @@ struct LiquidAdaptiveWidthRequest3D {
   double hysteresis_duration_s;
 };
 
+// One band placement request for the current accepted graded epoch.
+struct LiquidAdaptiveBandRequest3D {
+  std::uint64_t accepted_epoch;
+  AdaptiveMacCellKey3D leaf;
+  LiquidBandMargins3D margins;
+  std::optional<LiquidHandoffCarrier3D> destination_carrier;
+  std::size_t reseed_particle_count = 1;
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -392,13 +401,21 @@ class LiquidSubstepScheduler3D {
   AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request);
   // Attempt a positive duration in seconds with one particle's quadratic
   // MAC transfer, selected by ID in the exact committed epoch. Requires a
-  // graded, incompressible particle-only tank. Unsupported carrier/support
+  // graded, inviscid incompressible particle-only tank. Unsupported carrier/support
   // eligibility uses the ordinary radial transfer before the trial starts.
   // A stale epoch, absent ID, malformed input or later physical failure leaves
   // the committed state and backend publication unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveQuadraticTransfer(double step_duration, std::uint64_t committed_epoch, std::uint64_t particle_id);
 
+  // Evaluate the particle-band policy at the accepted stationary planar
+  // interface using the named leaf's full-volume inventory and swept margins.
+  // The caller certifies support, movement and any destination carrier. One
+  // physical trial either keeps ownership, retires the leaf, or reseeds it.
+  // Stale evidence or unavailable handoff inputs refuse without consuming a
+  // trial. Rejection leaves both committed ownership versions unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveBandPlacement(double step_duration, const LiquidAdaptiveBandRequest3D& request);
   // Request an ownership handoff before one physical trial. The caller
   // certifies full occupancy and a carrier at the previous accepted epoch.
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(

@@ -162,14 +162,15 @@ FitFaceGradient(std::span<const GradedMacFace3D> faces, Vec3 center, double widt
 }
 
 // Combine finite-volume normal rows with symmetric shear rows from affine
-// gradients at the owned staggered anchors. Zero wall velocities are lifted
-// by omitting sealed coefficients.
+// gradients at the owned staggered anchors. Fully blocked anchors contribute
+// their prescribed velocities to the strain rather than to its unknowns.
 absl::Status AppendViscousRows(
     const AdaptiveMacLeaf3D& leaf,
     Vec3 center,
     double viscosity,
     std::span<const GradedMacFace3D> faces,
     std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
+    std::span<const double> sealed_wall_velocities,
     const std::array<MacStrainRow3D, 3>& normal_rows,
     std::vector<MacStrainRow3D>& rows
 ) {
@@ -184,9 +185,15 @@ absl::Status AppendViscousRows(
   }
   const auto add_terms = [&](MacStrainRow3D& row, const auto& terms, double scale) {
     for (const auto& term : terms) {
-      if (term.coefficient != 0.0 && subfaces[term.face_slot].open_area_m2 > 0.0) {
-        row.terms[row.term_count] = {term.face_slot, scale * term.coefficient};
+      const double coefficient = scale * term.coefficient;
+      if (coefficient == 0.0) {
+        continue;
+      }
+      if (subfaces[term.face_slot].open_area_m2 > 0.0) {
+        row.terms[row.term_count] = {term.face_slot, coefficient};
         ++row.term_count;
+      } else {
+        row.prescribed_strain += coefficient * sealed_wall_velocities[term.face_slot];
       }
     }
   };
@@ -212,6 +219,9 @@ absl::Status AppendViscousRows(
       };
       add_terms(row, gradients[first][second], 0.5);
       add_terms(row, gradients[second][first], 0.5);
+      if (!std::isfinite(row.prescribed_strain)) {
+        return absl::OutOfRangeError("graded prescribed shear strain is unrepresentable");
+      }
       if (row.term_count != 0) {
         rows.push_back(row);
       }
@@ -267,6 +277,7 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
       };
     }
   }
+  std::vector<double> sealed_wall_velocities(faces.size());
   // The three normal rows sum to the pressure operator's finite-volume
   // divergence. A 2:1 leaf side contributes at most four owned subfaces.
   const auto add_normal = [&](std::size_t cell, std::size_t slot, FaceNormalAxis axis, double area, double sign) {
@@ -274,6 +285,25 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     const double open_area = subfaces[slot].open_area_m2;
     if (!std::isfinite(open_area) || open_area < 0.0 || open_area > area || faces[slot].axis != axis) {
       return absl::InvalidArgumentError("graded strain face geometry does not match its open subface");
+    }
+    const double wall_flux = subfaces[slot].prescribed_wall_flux_m3_per_s;
+    if (!std::isfinite(wall_flux) || (wall_flux != 0.0 && open_area == area)) {
+      return absl::InvalidArgumentError("graded prescribed wall flux needs finite blocked support");
+    }
+    if (wall_flux != 0.0) {
+      if (open_area > 0.0) {
+        return absl::UnimplementedError("graded moving cut strain requires separate wall quadrature");
+      }
+      const double wall_velocity = wall_flux / area;
+      const double normal_strain = sign * wall_flux / leaves[cell].cell_volume;
+      if (!std::isnormal(wall_velocity) || !std::isnormal(normal_strain)) {
+        return absl::OutOfRangeError("graded prescribed wall velocity or strain is unrepresentable");
+      }
+      sealed_wall_velocities[slot] = wall_velocity;
+      row.prescribed_strain += normal_strain;
+      if (!std::isfinite(row.prescribed_strain)) {
+        return absl::OutOfRangeError("graded prescribed normal strain is unrepresentable");
+      }
     }
     if (open_area == 0.0) {
       return absl::OkStatus();
@@ -321,7 +351,16 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
         std::fma(lower.y, finest_width, world_origin.y) + half_width,
         std::fma(lower.z, finest_width, world_origin.z) + half_width,
     };
-    const auto status = AppendViscousRows(leaf, center, dynamic_viscosity, faces, subfaces, normal_rows[cell], rows);
+    const auto status = AppendViscousRows(
+        leaf,
+        center,
+        dynamic_viscosity,
+        faces,
+        subfaces,
+        sealed_wall_velocities,
+        normal_rows[cell],
+        rows
+    );
     if (!status.ok()) {
       return status;
     }
@@ -1026,7 +1065,9 @@ absl::Status AdaptiveLiquidStep3D::Project(
       return status;
     }
   } else {
-    const auto result = workspace.ProjectPrepared(*graph, options.pressure_solver_options);
+    const auto result = backend.project_adaptive_in_arena != nullptr
+        ? backend.project_adaptive_in_arena(backend.context, *graph, options.pressure_solver_options, workspace)
+        : workspace.ProjectPrepared(*graph, options.pressure_solver_options);
     if (!result.ok()) {
       return result.status();
     }
