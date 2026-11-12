@@ -526,70 +526,80 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
 
   if (compatible_floor && settings.floor_friction > 0) {
     constexpr std::array<int, 2> kTangentAxes{0, 2};
-    for (const auto& [horizontal_position, reaction] : floor_reactions) {
-      const double friction_limit = settings.floor_friction * settings.duration * reaction;
-      if (friction_limit <= 0) {
-        continue;
-      }
-      Vec3 tangent_velocity{};
-      Vec3 tangent_mobility{};
-      std::array<double, 3> weight_sums{};
-      const Vec3 wall_position{horizontal_position.first, 0, horizontal_position.second};
-      const auto x_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kX, wall_position, wall_position);
-      const auto z_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kZ, wall_position, wall_position);
-      if (!x_stencil.ok()) {
-        return x_stencil.status();
-      }
-      if (!z_stencil.ok()) {
-        return z_stencil.status();
-      }
-      for (const int axis : kTangentAxes) {
-        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
-          if (deposits[sample.face_slot].deposited_mass >= minimum_force_mass) {
-            weight_sums[axis] += sample.weight;
-          }
-        }
-        if (weight_sums[axis] == 0) {
+    std::vector<decltype(floor_reactions)::const_iterator> reaction_order;
+    reaction_order.reserve(floor_reactions.size());
+    for (auto reaction = floor_reactions.cbegin(); reaction != floor_reactions.cend(); ++reaction) {
+      reaction_order.push_back(reaction);
+    }
+    for (int sweep = 0; sweep < 2; ++sweep) {
+      for (std::size_t index = 0; index < reaction_order.size(); ++index) {
+        const std::size_t ordered_index = sweep == 0 ? index : reaction_order.size() - index - 1;
+        const auto& [horizontal_position, reaction] = *reaction_order[ordered_index];
+        const double friction_limit = 0.5 * settings.floor_friction * settings.duration * reaction;
+        if (friction_limit <= 0) {
           continue;
         }
-        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
-          const auto slot = sample.face_slot;
-          const double mass = deposits[slot].deposited_mass;
-          if (mass < minimum_force_mass) {
-            continue;
-          }
-          const double weight = sample.weight / weight_sums[axis];
-          tangent_velocity.*kComponents[axis] += weight * velocities[slot];
-          tangent_mobility.*kComponents[axis] += weight * weight / mass;
+        Vec3 tangent_velocity{};
+        Vec3 tangent_mobility{};
+        std::array<double, 3> weight_sums{};
+        const Vec3 wall_position{horizontal_position.first, 0, horizontal_position.second};
+        const auto x_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kX, wall_position, wall_position);
+        const auto z_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kZ, wall_position, wall_position);
+        if (!x_stencil.ok()) {
+          return x_stencil.status();
         }
-      }
-      if (tangent_mobility.x == 0 || tangent_mobility.z == 0) {
-        continue;
-      }
-      const auto impulse = SolveDryGridWallFriction3D(tangent_velocity, tangent_mobility, friction_limit);
-      if (!impulse.ok()) {
-        return impulse.status();
-      }
-      for (const int axis : kTangentAxes) {
-        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
-          const auto slot = sample.face_slot;
-          const double mass = deposits[slot].deposited_mass;
-          if (mass < minimum_force_mass) {
+        if (!z_stencil.ok()) {
+          return z_stencil.status();
+        }
+        for (const int axis : kTangentAxes) {
+          for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
+            if (sample.face_offset_from_particle.y >= 0
+                && deposits[sample.face_slot].deposited_mass >= minimum_force_mass) {
+              weight_sums[axis] += sample.weight;
+            }
+          }
+          if (weight_sums[axis] == 0) {
             continue;
           }
-          const double weight = sample.weight / weight_sums[axis];
-          const double face_impulse = weight * ((*impulse).*kComponents[axis]);
-          const double before = velocities[slot];
-          velocities[slot] += face_impulse / mass;
-          if (!std::isfinite(velocities[slot])) {
-            return absl::OutOfRangeError("nonfinite dry friction face velocity");
+          for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
+            const auto slot = sample.face_slot;
+            const double mass = deposits[slot].deposited_mass;
+            if (sample.face_offset_from_particle.y < 0 || mass < minimum_force_mass) {
+              continue;
+            }
+            const double weight = sample.weight / weight_sums[axis];
+            tangent_velocity.*kComponents[axis] += weight * velocities[slot];
+            tangent_mobility.*kComponents[axis] += weight * weight / mass;
           }
-          if (std::abs(velocities[slot]) * settings.duration > maximum_displacement) {
-            return DurationExceeded("dry friction face motion bound");
-          }
-          if (budget != nullptr) {
-            trial_budget.grid_wall_tangent_impulse.*kComponents[axis] += face_impulse;
-            trial_budget.grid_wall_friction_work += face_impulse * std::midpoint(before, velocities[slot]);
+        }
+        if (tangent_mobility.x == 0 || tangent_mobility.z == 0) {
+          continue;
+        }
+        const auto impulse = SolveDryGridWallFriction3D(tangent_velocity, tangent_mobility, friction_limit);
+        if (!impulse.ok()) {
+          return impulse.status();
+        }
+        for (const int axis : kTangentAxes) {
+          for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
+            const auto slot = sample.face_slot;
+            const double mass = deposits[slot].deposited_mass;
+            if (sample.face_offset_from_particle.y < 0 || mass < minimum_force_mass) {
+              continue;
+            }
+            const double weight = sample.weight / weight_sums[axis];
+            const double face_impulse = weight * ((*impulse).*kComponents[axis]);
+            const double before = velocities[slot];
+            velocities[slot] += face_impulse / mass;
+            if (!std::isfinite(velocities[slot])) {
+              return absl::OutOfRangeError("nonfinite dry friction face velocity");
+            }
+            if (std::abs(velocities[slot]) * settings.duration > maximum_displacement) {
+              return DurationExceeded("dry friction face motion bound");
+            }
+            if (budget != nullptr) {
+              trial_budget.grid_wall_tangent_impulse.*kComponents[axis] += face_impulse;
+              trial_budget.grid_wall_friction_work += face_impulse * std::midpoint(before, velocities[slot]);
+            }
           }
         }
       }
