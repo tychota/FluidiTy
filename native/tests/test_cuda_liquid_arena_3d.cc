@@ -236,6 +236,7 @@ TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
            .constituent_count = 2,
            .constituents = {{{11, 0.25}, {21, 0.5}}}},
       .previous_pressure = -2,
+      .coarsening_eligible_duration_s = 0.25,
   };
   initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
   initial.adaptive_faces[0] = {
@@ -259,9 +260,24 @@ TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
   ASSERT_TRUE(old->Readback(*output).ok());
   EXPECT_EQ(*output, initial);
 
+  alignas(128) std::array<std::byte, 4096> invalid_packed{};
+  ASSERT_LE(old_bytes.size(), invalid_packed.size());
+  std::ranges::copy(old_bytes, invalid_packed.begin());
+  ASSERT_TRUE(cuda_internal::ValidateLiquidArenaEncoding3D(old->layout(), invalid_packed.data()).ok());
+  const double invalid_age = std::numeric_limits<double>::quiet_NaN();
+  const auto age_offset =
+      old->layout().cell_records_byte_offset + offsetof(LiquidAdaptiveCellState3D, coarsening_eligible_duration_s);
+  std::memcpy(invalid_packed.data() + age_offset, &invalid_age, sizeof(invalid_age));
+  EXPECT_EQ(
+      cuda_internal::ValidateLiquidArenaEncoding3D(old->layout(), invalid_packed.data()).code(),
+      absl::StatusCode::kDataLoss
+  );
+
   auto trial = CloneLiquidState3D(initial, capacity);
   ASSERT_TRUE(trial.ok());
   trial->adaptive_cells[0].inventory.enthalpy_j += 2;
+  trial->adaptive_cells[0].coarsening_eligible_duration_s = 0.5;
+  trial->adaptive_cells[1].coarsening_eligible_duration_s = 0.125;
   trial->adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
   trial->adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
   trial->adaptive_faces[0].carrier_velocity = 3;

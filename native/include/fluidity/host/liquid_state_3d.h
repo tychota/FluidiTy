@@ -181,6 +181,8 @@ struct LiquidAdaptiveCellState3D {
   AdaptiveLiquidMaterialOwner3D material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
   LiquidRemapInventory3D inventory{};
   double previous_pressure = 0;
+  // Accepted coarsening eligibility in seconds for this exact leaf key. Finite and nonnegative.
+  double coarsening_eligible_duration_s = 0;
   bool operator==(const LiquidAdaptiveCellState3D& other) const;
 };
 

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -20,18 +21,100 @@ namespace {
 constexpr LiquidStateCapacities3D kCapacities{12, 0, 12, 64, 0};
 constexpr AdaptiveMacCellKey3D kParent{.lower_corner = {0, 0, 0}, .width_exponent = 1};
 
-absl::Status AdvanceFamily(LiquidSubstepScheduler3D& scheduler, double frame_end, bool refine) {
+absl::Status
+AdvanceFamily(LiquidSubstepScheduler3D& scheduler, double frame_end, bool refine, std::string_view scenario) {
   const auto started = scheduler.BeginFrame(frame_end);
   if (!started.ok()) {
     return started;
   }
-  const auto attempted = scheduler.AttemptWithAdaptiveFamily(0.01, kParent, refine);
+  if (!refine && scenario == "eos") {
+    const auto before = EncodeLiquidState3D(scheduler.committed());
+    if (!before.ok()) {
+      return before.status();
+    }
+    const auto rejected = scheduler.AttemptWithAdaptiveFamily(0.01, kParent, false);
+    if (rejected.status().code() != absl::StatusCode::kOutOfRange
+        || rejected.status().message() != "adaptive exterior flux is not exactly representable on the coarse face") {
+      return absl::FailedPreconditionError("EOS coarsening did not report its unrepresentable exterior flux");
+    }
+    const auto after = EncodeLiquidState3D(scheduler.committed());
+    if (!after.ok()) {
+      return after.status();
+    }
+    if (!std::ranges::equal(before->values(), after->values())) {
+      return absl::FailedPreconditionError("refused EOS coarsening changed accepted topology or material");
+    }
+    const auto advanced = scheduler.Attempt(0.01);
+    if (!advanced.ok()) {
+      return advanced.status();
+    }
+    if (advanced->disposition != LiquidAttemptDisposition3D::kAccepted
+        || scheduler.committed().adaptive_cells.size() != 12U) {
+      return absl::FailedPreconditionError("EOS could not advance on the retained refined topology");
+    }
+    return scheduler.FinishFrame();
+  }
+  double duration = 0.01;
+  if (!scenario.empty()) {
+    const auto before = EncodeLiquidState3D(scheduler.committed());
+    if (!before.ok()) {
+      return before.status();
+    }
+    bool reached_accept = false;
+    scheduler.SetStageFaultHookForTesting({
+        .context = &reached_accept,
+        .before_stage =
+            [](void* context, LiquidPhysicalStage3D stage, double) {
+              if (stage == LiquidPhysicalStage3D::kAccept) {
+                *static_cast<bool*>(context) = true;
+                return absl::AbortedError("reject prepared family");
+              }
+              return absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler.AttemptWithAdaptiveFamily(duration, kParent, refine);
+    scheduler.SetStageFaultHookForTesting({});
+    if (!rejected.ok()) {
+      return rejected.status();
+    }
+    const auto after = EncodeLiquidState3D(scheduler.committed());
+    if (!after.ok()) {
+      return after.status();
+    }
+    if (!reached_accept || scheduler.diagnostics().failed_stage != LiquidPhysicalStage3D::kAccept
+        || rejected->disposition != LiquidAttemptDisposition3D::kRetryDt
+        || !std::ranges::equal(before->values(), after->values())) {
+      return absl::FailedPreconditionError("rejected family trial changed the accepted state or disposition");
+    }
+    duration /= 2.0;
+  }
+  const auto attempted = scheduler.AttemptWithAdaptiveFamily(duration, kParent, refine);
   if (!attempted.ok()) {
     return attempted.status();
   }
   if (attempted->disposition != LiquidAttemptDisposition3D::kAccepted
       || scheduler.committed().adaptive_cells.size() != (refine ? 12U : 5U)) {
     return absl::FailedPreconditionError("family trial did not publish the expected topology");
+  }
+  if (scenario == "viscous") {
+    const auto& measurement = scheduler.diagnostics().accepted_measurement;
+    if (!measurement || !measurement->viscous_max_momentum_residual_kg_m_per_s) {
+      return absl::FailedPreconditionError("accepted family trial did not run the viscous solve");
+    }
+  }
+  if (scenario == "eos" && std::ranges::none_of(scheduler.committed().particles.values(), [](const auto& particle) {
+        return particle.volume_ratio < 1.0;
+      })) {
+    return absl::FailedPreconditionError("accepted family trial did not compress under EOS");
+  }
+  if (!scenario.empty()) {
+    const auto settled = scheduler.Attempt(duration);
+    if (!settled.ok()) {
+      return settled.status();
+    }
+    if (settled->disposition != LiquidAttemptDisposition3D::kAccepted) {
+      return absl::FailedPreconditionError("fixed-topology remainder after family trial was rejected");
+    }
   }
   return scheduler.FinishFrame();
 }
@@ -59,7 +142,10 @@ absl::Status AdvanceBand(LiquidSubstepScheduler3D& scheduler, double frame_end, 
   return scheduler.FinishFrame();
 }
 
-absl::Status Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, bool band) {
+absl::Status
+Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
+  const bool band = scenario == "band";
+  const auto family_scenario = band ? std::string_view{} : scenario;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored =
@@ -67,9 +153,19 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
   if (!authored.ok()) {
     return authored;
   }
+  if (scenario == "eos") {
+    test::SetGradedTankEos3D(state, scene);
+  }
+  if (scenario == "viscous") {
+    scene.dynamic_viscosity = 2.0;
+  }
   LiquidResumeMetadata3D resume;
   const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : 12)};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
+  if (scenario == "eos" || scenario == "viscous") {
+    const std::uint8_t extended_identity[]{1, 4, 12, static_cast<std::uint8_t>(scenario == "eos" ? 1 : 2)};
+    resume.resolved_fingerprint = LiquidContentDigest3D(extended_identity);
+  }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = kCapacities;
   if (mode == "resume") {
@@ -110,7 +206,8 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
   }
 
   if (mode != "resume") {
-    const auto refined = band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true);
+    const auto refined =
+        band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true, family_scenario);
     if (!refined.ok()) {
       return refined;
     }
@@ -132,7 +229,8 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
     return absl::CancelledError("expected test process termination");
   }
 
-  const auto coarsened = band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false);
+  const auto coarsened =
+      band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false, family_scenario);
   if (!coarsened.ok()) {
     return coarsened;
   }
@@ -153,7 +251,11 @@ absl::Status Run(std::string_view backend_name, std::string_view mode, const cha
 }  // namespace fluidity
 
 int main(int argc, char** argv) {
-  if (argc != 4 && (argc != 5 || std::string_view(argv[4]) != "band")) {
+  if (argc != 4 && argc != 5) {
+    return 2;
+  }
+  const std::string_view scenario = argc == 5 ? argv[4] : "";
+  if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous") {
     return 2;
   }
   const std::string_view backend = argv[1];
@@ -161,7 +263,7 @@ int main(int argc, char** argv) {
   if ((backend != "cpu" && backend != "cuda") || (mode != "continuous" && mode != "interrupt" && mode != "resume")) {
     return 2;
   }
-  const auto status = fluidity::Run(backend, mode, argv[3], argc == 5);
+  const auto status = fluidity::Run(backend, mode, argv[3], scenario);
   if (!status.ok()) {
     std::cerr << status << '\n';
     return 1;
