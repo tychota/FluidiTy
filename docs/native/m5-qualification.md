@@ -90,6 +90,36 @@ case misses the existing window. Next isolate the per-step PIC velocity
 replacement and the elastic update from the spatial quadrature, before
 changing the material parameters or angle estimator.
 
+### Horizontal grid alignment
+
+Shift only the MAC origin by half a cell in x and then in both x and z.
+The initial particles, physical floor, gravity, duration, angle estimator,
+and momentum and settling limits are identical. The zero-shift controls
+reproduce the nominal reference and finer-grid cases.
+
+| h (m) | nominal dt (s) | (x, z) origin in cell widths | Native and CUDA envelope | Last 0.05 s drift |
+|---|---:|---|---:|---:|
+| 0.075 | 0.001875 | (0, 0) | 30.161149° | 0.922262° |
+| 0.075 | 0.001875 | (0.5, 0) | 30.063385° | 0.957539° |
+| 0.075 | 0.001875 | (0.5, 0.5) | 30.022695° | 0.988896° |
+| 0.0625 | 0.0015625 | (0, 0) | 27.803822° | 0.677401° |
+| 0.0625 | 0.0015625 | (0.5, 0) | 27.009983° | 0.704724° |
+| 0.0625 | 0.0015625 | (0.5, 0.5) | 25.829145° | 0.790237° |
+
+Both backends agree at the printed precision and pass all vertical momentum
+and drift checks. Both diagnostic commands return 1 for the finer cases.
+The measured
+alignment spread grows from 0.138454° to 1.974677° at the finer width.
+Every finer alignment misses the 30–35° gate. The shift mainly changes
+the height in the finer case. Its radius changes by less than 0.4 mm,
+while its height decreases by about 6.5 mm. A subsequent transfer or
+boundary change should be checked at each of these origins.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-grid-phase
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-grid-phase
+```
+
 ### Stored velocity experiment
 
 In the historical 6d31b68 experiment, the optional dry-step blend retained 0.594 of the particle velocity

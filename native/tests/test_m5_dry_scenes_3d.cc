@@ -104,7 +104,8 @@ bool TestScene(
     double sand_release_height = 0.10,
     bool release_cone = false,
     double sand_end_time = 0.75,
-    int quantized_mass_bits = 0
+    int quantized_mass_bits = 0,
+    fluidity::Vec3 grid_origin = {}
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -114,7 +115,7 @@ bool TestScene(
       }
     }
   }
-  const auto grid = SparseMacGrid3D::Create({{}, width}, blocks, blocks.size());
+  const auto grid = SparseMacGrid3D::Create({grid_origin, width}, blocks, blocks.size());
   if (!grid.ok()) {
     return false;
   }
@@ -942,6 +943,18 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-grid-phase") {
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const fluidity::Vec3 phase : {fluidity::Vec3{}, {0.5, 0, 0}, {0.5, 0, 0.5}}) {
+        std::printf("sand grid origin in cell widths x=%.1f z=%.1f\n", phase.x, phase.z);
+        const bool pass =
+            TestScene(width, width / 40, false, 0, 1, 0.10, false, 0.75, 0, {phase.x * width, 0, phase.z * width});
+        all_pass = all_pass && pass;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-refined") {
     return TestScene(0.0625, 0.0015625, false) ? 0 : 1;
   }
