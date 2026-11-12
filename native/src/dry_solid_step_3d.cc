@@ -32,6 +32,31 @@ Mat3 TrialDeformation(Mat3 accepted, Mat3 velocity_gradient, double duration) {
   return trial;
 }
 
+// Differentiate the stationary floor velocity projection on its active branch.
+Mat3 FloorProjectedGradient(Vec3 velocity, Mat3 gradient, double friction_coefficient) {
+  if (velocity.y >= 0) {
+    return gradient;
+  }
+  const Vec3 incoming_normal_gradient = gradient.y_row;
+  gradient.y_row = {};
+  if (friction_coefficient == 0) {
+    return gradient;
+  }
+  const double tangent_speed = std::hypot(velocity.x, velocity.z);
+  if (tangent_speed == 0 || friction_coefficient >= tangent_speed / -velocity.y) {
+    return {};
+  }
+  const double tangent_x = velocity.x / tangent_speed;
+  const double tangent_z = velocity.z / tangent_speed;
+  const double reduction_fraction = friction_coefficient * -velocity.y / tangent_speed;
+  const Vec3 tangent_speed_gradient = solid_detail::Combine(gradient.x_row, tangent_x, gradient.z_row, tangent_z);
+  const Vec3 radial_correction =
+      solid_detail::Combine(incoming_normal_gradient, friction_coefficient, tangent_speed_gradient, reduction_fraction);
+  gradient.x_row = solid_detail::Combine(gradient.x_row, 1 - reduction_fraction, radial_correction, tangent_x);
+  gradient.z_row = solid_detail::Combine(gradient.z_row, 1 - reduction_fraction, radial_correction, tangent_z);
+  return gradient;
+}
+
 bool ReturnState(
     Mat3 trial,
     double previous_log_plastic_jacobian,
@@ -368,8 +393,17 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     if (!contact.ok()) {
       return contact.status();
     }
-    const Mat3 trial =
-        TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, settings.duration);
+    const bool hit_granular_floor = std::holds_alternative<GranularParameters3D>(material)
+        && !settings.platen.has_value() && contact->contact_fraction.has_value();
+    Mat3 trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, settings.duration);
+    if (hit_granular_floor) {
+      const double preimpact_duration = settings.duration * *contact->contact_fraction;
+      const double postimpact_duration = settings.duration - preimpact_duration;
+      trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, preimpact_duration);
+      const Mat3 postimpact_gradient =
+          FloorProjectedGradient(velocity, particle_gather.velocity_gradient, settings.floor_friction);
+      trial = TrialDeformation(trial, postimpact_gradient, postimpact_duration);
+    }
     SolidDeformationState3D state{};
     double speed_squared = 0;
     if (!ReturnState(trial, particle.log_plastic_jacobian, material, state)
@@ -409,7 +443,13 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;
-    particle.velocity_slopes = contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
+    if (hit_granular_floor) {
+      particle.velocity_slopes =
+          FloorProjectedGradient(stored_velocity, particle_gather.fitted_velocity_slopes, settings.floor_friction);
+    } else {
+      particle.velocity_slopes =
+          contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
+    }
     particle.elastic_deformation = state.elastic_deformation;
     particle.log_plastic_jacobian = state.log_plastic_jacobian;
   }
