@@ -3769,7 +3769,8 @@ unchanged. Native and SM120 dry-scene targets pass.
 | Fine | 31.443051° | 0.159557 m | Pass |
 | Fine half-step | 34.693822° | 0.156304 m | Pass |
 
-Both fine cases pass the original checks. The nominal fine radius
+Both fine cases pass the original checks.
+Native and SM120 fine half-step logs match byte for byte. The nominal fine radius
 has 0.443 mm of margin. Across the matrix, cut stress work mismatch
 is below 1.9e-16 J, vertical momentum residual below 9.3e-9 N·s,
 and late angle drift below 0.13°. Both coarse cases remain open.
