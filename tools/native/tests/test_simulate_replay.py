@@ -494,11 +494,24 @@ def graded_replay_case(executable, fixture, directory, backend):
     records = execute(executable, *run, "--cache", uninterrupted_cache, *initial, "--frame-end", 11)
     uninterrupted = records[-1]
     assert any("accepted_measurement" in record for record in records)
-    frame_ten = execute(executable, *run, "--cache", resumed_cache, *initial, "--frame-end", 10)[-1]
+    child = RunningSimulation(executable, [*run, "--cache", resumed_cache, *initial, "--frame-end", 19])
+    try:
+        _, published = child.next_event("frame")
+        while published["frame"] < 10:
+            _, published = child.next_event("frame")
+        assert published["frame"] == 10 and published["published"]
+        child.process.kill()
+        exit_code = child.process.wait(timeout=10)
+        assert exit_code != 0
+    finally:
+        child.close()
     checkpoint = json.loads(subprocess.check_output([str(fixture), "checkpoint", str(resumed_cache)], text=True))
+    uninterrupted_checkpoint = json.loads(
+        subprocess.check_output([str(fixture), "checkpoint", str(uninterrupted_cache)], text=True)
+    )
     assert checkpoint["frame"] == 10
-    assert checkpoint["state_digest"] == frame_ten["state_digest"]
-    assert checkpoint["capacities"] == [5, 0, 5, frame_ten["face_count"], 0]
+    assert checkpoint == uninterrupted_checkpoint
+    assert checkpoint["capacities"] == [5, 0, 5, uninterrupted["face_count"], 0]
     # The resumed process has no initial-state argument. The only available
     # restart state is the authenticated frame-ten checkpoint.
     resumed = execute(executable, *run, "--cache", resumed_cache, "--resume", "--frame-end", 11)[-1]
@@ -509,7 +522,8 @@ def graded_replay_case(executable, fixture, directory, backend):
     if backend == "cuda":
         assert resumed["compiled_architecture"] == 1200, resumed
     print(json.dumps({"adaptive_checkpoint": checkpoint["state_digest"], "backend": backend,
-                      "frame": resumed["frame"], "state_digest": resumed["state_digest"]}, sort_keys=True))
+                      "frame": resumed["frame"], "interrupted_exit_code": exit_code,
+                      "state_digest": resumed["state_digest"]}, sort_keys=True))
 
 
 def case_cpu_graded_replay(executable, fixture, directory, cuda):
