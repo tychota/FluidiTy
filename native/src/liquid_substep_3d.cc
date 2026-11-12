@@ -1052,12 +1052,13 @@ struct LiquidSubstepScheduler3D::Impl {
       double duration,
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& measurement,
-      LiquidWorkPhaseObserver3D work_phase
+      LiquidWorkPhaseObserver3D work_phase,
+      const liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D* quadratic
   ) {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, duration));
-    STEP_TRY(owner.Deposit(trial, options));
+    STEP_TRY(owner.Deposit(trial, options, quadratic));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kPressure, duration));
@@ -1066,7 +1067,7 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
-    STEP_TRY(owner.Gather(trial));
+    STEP_TRY(owner.Gather(trial, quadratic));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
     STEP_TRY(owner.Update(trial, duration, scene, options, backend));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, duration));
@@ -3194,6 +3195,36 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveWidth(double step_duration, const L
   return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, nullptr, &ages);
 }
 
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveQuadraticTransfer(
+    double step_duration,
+    std::uint64_t committed_epoch,
+    std::uint64_t particle_id
+) {
+  const auto& scene = impl_->scene;
+  if (!impl_->adaptive || !std::holds_alternative<AxisAlignedLiquidTank3D>(scene.obstacle) || scene.eos
+      || std::isfinite(scene.bulk_modulus) || scene.drift || scene.dynamic_viscosity != 0 || scene.surface_tension != 0
+      || !scene.constituent_materials.empty()) {
+    return absl::FailedPreconditionError("explicit quadratic transfer requires a graded inviscid incompressible tank");
+  }
+  if (committed_epoch != committed().clock.epoch) {
+    return absl::FailedPreconditionError("explicit quadratic transfer requested a stale committed epoch");
+  }
+  return AttemptImpl(
+      step_duration,
+      {},
+      nullptr,
+      false,
+      false,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      particle_id
+  );
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandPlacement(
     double step_duration,
     const LiquidAdaptiveBandRequest3D& request
@@ -3596,7 +3627,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     SnowTrial* snow,
     AdaptiveStateTrial* adaptive_replacement,
     const AdaptiveWidthAgeTrial* adaptive_age,
-    AdaptivePhysicalTrial* adaptive_physical
+    AdaptivePhysicalTrial* adaptive_physical,
+    std::optional<std::uint64_t> quadratic_particle_id
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)
@@ -3610,6 +3642,14 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
     return Error(absl::StatusCode::kInvalidArgument);
+  }
+  std::optional<liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D> quadratic;
+  if (quadratic_particle_id.has_value()) {
+    const auto prepared = impl.adaptive->PrepareQuadraticTransfer(committed(), impl.options, *quadratic_particle_id);
+    if (!prepared.ok()) {
+      return prepared.status();
+    }
+    quadratic = *prepared;
   }
   impl.SetWorkPhase(work_phase, LiquidWorkPhase3D::kEmitActivationField);
   const absl::Cleanup end_phase = [&] {
@@ -3648,20 +3688,26 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   if (adaptive_physical != nullptr) {
     adaptive_owner = &adaptive_physical->owner;
   }
-  auto status = adaptive_owner != nullptr
-      ? impl.ExecuteAdaptive(*adaptive_owner, step_duration, **trial, accepted_measurement, work_phase)
-      : impl.Execute(
-            step_duration,
-            **trial,
-            accepted_measurement,
-            work_phase,
-            piston_load,
-            dynamic_piston,
-            coupled_piston,
-            update_with_reaction,
-            floating_box,
-            snow
-        );
+  auto status = adaptive_owner != nullptr ? impl.ExecuteAdaptive(
+                                                *adaptive_owner,
+                                                step_duration,
+                                                **trial,
+                                                accepted_measurement,
+                                                work_phase,
+                                                quadratic ? &*quadratic : nullptr
+                                            )
+                                          : impl.Execute(
+                                                step_duration,
+                                                **trial,
+                                                accepted_measurement,
+                                                work_phase,
+                                                piston_load,
+                                                dynamic_piston,
+                                                coupled_piston,
+                                                update_with_reaction,
+                                                floating_box,
+                                                snow
+                                            );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();

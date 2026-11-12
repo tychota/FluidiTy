@@ -13,6 +13,7 @@
 #include "fluidity/host/liquid_eos.h"
 #include "graded_liquid_boundary_geometry_3d.h"
 #include "liquid_substep_3d_internal.h"
+#include "mac_deposit_3d_internal.h"
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_viscous_pressure_3d.h"
 
@@ -730,7 +731,103 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
   return absl::OkStatus();
 }
 
-absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {
+absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiquidStep3D::PrepareQuadraticTransfer(
+    const LiquidState3D& committed,
+    const LiquidStepOptions3D& options,
+    std::uint64_t particle_id
+) {
+  const auto particles = committed.particles.values();
+  const auto selected = std::ranges::find(particles, particle_id, &LiquidParticleState3D::id);
+  if (selected == particles.end()) {
+    return absl::InvalidArgumentError("quadratic transfer particle ID is absent from the committed epoch");
+  }
+  if (physical_trial_ || !core_faces_.empty() || selected->phase_id != 0 || update_volume_ratio_) {
+    return absl::FailedPreconditionError("explicit quadratic transfer requires incompressible particle-owned liquid");
+  }
+  const auto carrier_faces = committed.adaptive_faces.values();
+  const GradedQuadraticMacParticle3D particle{
+      .transfer =
+          {
+              .sorted_world_position = selected->world_position,
+              .trial_world_position = selected->world_position,
+              .particle_mass = selected->mass,
+              .particle_velocity = selected->world_velocity,
+              .particle_velocity_slopes = selected->affine_enabled ? selected->velocity_slopes : Mat3{},
+          },
+      .side_tag = selected->side_tag,
+  };
+  const auto valid_particle = internal::ValidateMacDepositParticle(particle.transfer);
+  if (!valid_particle.ok()) {
+    return valid_particle;
+  }
+  const auto bound = GradedQuadraticMacTransfer3D::BindWithLayout(
+      particle,
+      topology_,
+      transfer_,
+      committed.geometry.world_origin,
+      interior_slots_,
+      [&](std::size_t slot) {
+        return subfaces_[slot].open_area_m2;
+      },
+      carrier_faces
+  );
+  if (absl::IsFailedPrecondition(bound.status())) {
+    return std::nullopt;
+  }
+  if (!bound.ok()) {
+    return bound.status();
+  }
+
+  // One accumulation in particle order also fixes the rounding where radial
+  // and quadratic contributions share a face. The scratch is bounded by the
+  // committed canonical face count and the old snapshot is reused by Deposit.
+  std::vector<MacFaceDeposit3D> deposits(old_faces_.size());
+  for (const auto& entry : particles) {
+    const auto status = entry.id == particle_id
+        ? GradedQuadraticMacTransfer3D::AccumulateBoundDeposit(particle.transfer, *bound, deposits)
+        : transfer_.AccumulateParticleDeposit(entry, carrier_faces, deposits);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  const auto normalized = NormalizeDeposits(committed, options, deposits);
+  if (!normalized.ok()) {
+    return normalized;
+  }
+  const auto carriers = GradedQuadraticMacTransfer3D::CheckBoundCarriers(*bound, particle.side_tag, old_faces_);
+  if (absl::IsFailedPrecondition(carriers)) {
+    return std::nullopt;
+  }
+  if (!carriers.ok()) {
+    return carriers;
+  }
+  return PreparedAdaptiveQuadraticTransfer3D{
+      .epoch = committed.clock.epoch,
+      .particle_ordinal = static_cast<std::size_t>(selected - particles.begin()),
+      .particle_id = particle_id,
+      .world_position_m = selected->world_position,
+      .stencil = *bound,
+  };
+}
+
+absl::Status AdaptiveLiquidStep3D::Deposit(
+    const LiquidState3D& trial,
+    const LiquidStepOptions3D& options,
+    const PreparedAdaptiveQuadraticTransfer3D* quadratic
+) {
+  if (quadratic != nullptr) {
+    if (trial.clock.epoch != quadratic->epoch || quadratic->particle_ordinal >= trial.particles.size()) {
+      return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial epoch or extent");
+    }
+    const auto& particle = trial.particles[quadratic->particle_ordinal];
+    const auto position = particle.world_position;
+    const auto expected_position = quadratic->world_position_m;
+    if (particle.id != quadratic->particle_id || position.x != expected_position.x || position.y != expected_position.y
+        || position.z != expected_position.z) {
+      return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial particle");
+    }
+    return absl::OkStatus();
+  }
   auto deposition_faces = trial.adaptive_faces.values();
   if (physical_trial_) {
     std::ranges::copy(deposition_faces, old_faces_.begin());
@@ -743,6 +840,17 @@ absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const Liq
   const auto deposits = transfer_.Deposit(trial.particles.values(), deposition_faces);
   if (!deposits.ok()) {
     return deposits.status();
+  }
+  return NormalizeDeposits(trial, options, *deposits);
+}
+
+absl::Status AdaptiveLiquidStep3D::NormalizeDeposits(
+    const LiquidState3D& trial,
+    const LiquidStepOptions3D& options,
+    std::span<const MacFaceDeposit3D> deposits
+) {
+  if (deposits.size() != old_faces_.size() || trial.adaptive_faces.size() != old_faces_.size()) {
+    return absl::InvalidArgumentError("graded deposit extent does not cover the canonical faces");
   }
   for (std::size_t face = 0; face < old_faces_.size(); ++face) {
     old_faces_[face] = trial.adaptive_faces[face];
@@ -757,7 +865,7 @@ absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const Liq
     if (!core_faces_.empty() && core_faces_[face] != 0) {
       continue;
     }
-    const auto& deposit = (*deposits)[face];
+    const auto& deposit = deposits[face];
     if (deposit.deposited_mass > 0) {
       old_faces_[face].carrier_velocity = deposit.deposited_pure_momentum / deposit.deposited_mass;
       old_faces_[face].validity = deposit.deposited_mass > options.minimum_face_mass ? LiquidFaceValidity3D::kValid
@@ -1112,9 +1220,39 @@ absl::Status AdaptiveLiquidStep3D::Project(
   return absl::OkStatus();
 }
 
-absl::Status AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial) {
+absl::Status
+AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic) {
   for (std::size_t ordinal = 0; ordinal < trial.particles.size(); ++ordinal) {
     const auto& particle = trial.particles[ordinal];
+    if (quadratic != nullptr && ordinal == quadratic->particle_ordinal) {
+      Vec3 old_pic_velocity{};
+      const auto gathered = GradedQuadraticMacTransfer3D::GatherBound(
+          quadratic->stencil,
+          particle.side_tag,
+          old_faces_,
+          trial.adaptive_faces.values(),
+          old_pic_velocity
+      );
+      if (!gathered.ok()) {
+        return gathered.status();
+      }
+      const Vec3 residual = Difference(particle.world_velocity, old_pic_velocity);
+      if (!std::isfinite(residual.x) || !std::isfinite(residual.y) || !std::isfinite(residual.z)) {
+        return absl::OutOfRangeError("quadratic old PIC residual is nonfinite");
+      }
+      gathered_[ordinal] = {
+          .new_pic_velocity = gathered->new_pic_velocity,
+          .grid_velocity_increment = gathered->grid_velocity_increment,
+          .particle_minus_old_pic_velocity = residual,
+          .fitted_velocity_slopes = gathered->fitted_velocity_slopes,
+          // The implicit incompressible path holds particle volume fixed.
+          // The spline derivative need not satisfy the leaf flux constraint.
+          .velocity_gradient = {},
+          .affine_enabled = true,
+      };
+      distances_[ordinal] = particle.world_position.y - surface_height_;
+      continue;
+    }
     const auto before = transfer_.Gather(particle, old_faces_);
     if (!before.ok()) {
       return before.status();
