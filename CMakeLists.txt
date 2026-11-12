@@ -103,6 +103,7 @@ add_library(fluidity_native STATIC
   native/src/adaptive_width_policy_3d.cc
   native/src/mac_viscous_pressure_3d.cc
   native/src/liquid_eos.cc
+  native/src/liquid_eos_sensor_3d.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
