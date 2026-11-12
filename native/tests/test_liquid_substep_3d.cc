@@ -167,6 +167,75 @@ TEST(LiquidSubstep3D, SamplesResolvedConstituentViscosityInCoupledProjection) {
   ASSERT_TRUE(actual.ok() && expected.ok());
   EXPECT_TRUE(std::ranges::equal(actual->values(), expected->values()));
 }
+TEST(LiquidSubstep3D, CouplesImmiscibleViscosityAcrossPlanarTankCells) {
+  auto initial = Initial(4);
+  for (std::size_t index = 0; index < initial.particles.size(); ++index) {
+    auto& particle = initial.particles[index];
+    const bool oil = index % 2 != 0;
+    particle.world_position = {oil ? 3.5 : 2.5, 2.5, index < 2 ? 2.5 : 3.5};
+    particle.world_velocity.z = oil ? -0.125 : 0.125;
+    particle.mass = oil ? 820.0 : 1000.0;
+    particle.phase_id = oil ? 5 : 4;
+    particle.constituent_count = 1;
+    particle.constituents[0] = {oil ? 25u : 8u, 1.0};
+  }
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {25, 5, 820.0, 120.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 0.031}}};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  scene.world_acceleration = {};
+  scene.constituent_materials = kMaterials;
+  scene.phase_pairs = kPairs;
+  struct Audit {
+    std::size_t crossings = 0;
+    std::size_t viscous_calls = 0;
+  } audit;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &audit;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    static_cast<Audit*>(context)->crossings += fields.internal_interfaces.size();
+    EXPECT_EQ(fields.internal_interfaces.size(), 2);
+    for (const auto& crossing : fields.internal_interfaces) {
+      EXPECT_DOUBLE_EQ(crossing.tail_fraction, 0.5);
+      EXPECT_NEAR(crossing.curvature_tail_to_head, 0, 1e-13);
+    }
+    return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+  };
+  backend.project_viscous = [](void* context,
+                               SparseMacGridView3D grid,
+                               double duration,
+                               const LiquidPressureProblemView3D& problem,
+                               double viscosity,
+                               std::span<const double> cell_viscosity,
+                               MacPressureSolverOptions3D controls) {
+    ++static_cast<Audit*>(context)->viscous_calls;
+    EXPECT_EQ(cell_viscosity.size(), 4);
+    for (std::size_t index = 0; index < cell_viscosity.size(); ++index) {
+      EXPECT_DOUBLE_EQ(cell_viscosity[index], problem.cells[index].cell_index.x == 2 ? 40.0 : 120.0);
+    }
+    return CpuLiquidSubstepBackend3D()
+        .project_viscous(nullptr, grid, duration, problem, viscosity, cell_viscosity, controls);
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_EQ(audit.crossings, 2);
+  EXPECT_EQ(audit.viscous_calls, 1);
+  const auto measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_LT(measurement->viscous_max_momentum_residual_kg_m_per_s.value_or(1), 1e-5);
+  for (const auto& particle : scheduler->committed().particles.values()) {
+    EXPECT_LT(std::abs(particle.world_velocity.z), 0.125);
+  }
+}
 TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
   LiquidState3D committed;
   auto blocks = LiquidRecords3D<LiquidBlockState3D>::Create(2);

@@ -843,8 +843,11 @@ struct LiquidSubstepScheduler3D::Impl {
         ));
       } else {
         const auto* pair = FindLiquidPhasePair3D(scene.phase_pairs, first_explicit->phase_id, second_phase->phase_id);
-        if (!pair || !staging.phase_crossings || !std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
-            || staging.drift_sensors) {
+        const auto* planar_tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
+        const bool supported_exterior = std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
+            || (std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field) && planar_tank
+                && planar_tank->piston_velocity_x == 0.0);
+        if (!pair || !staging.phase_crossings || !supported_exterior || staging.drift_sensors) {
           return Error(absl::StatusCode::kFailedPrecondition);
         }
         STEP_TRY(staging.phase_crossings->Resize(frozen->faces.size()));

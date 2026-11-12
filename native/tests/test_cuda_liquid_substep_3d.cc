@@ -1396,16 +1396,31 @@ TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
       {8, 4, 1000.0, 40.0},
       {14, 4, 1000.0, 120.0},
   }};
-  for (const bool constituent_viscosity : {false, true}) {
-    SCOPED_TRACE(constituent_viscosity);
-    scene.dynamic_viscosity = constituent_viscosity ? 0.0 : 100.0;
-    if (constituent_viscosity) {
-      scene.constituent_materials = kMaterials;
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kImmiscibleMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {25, 5, 820.0, 120.0},
+  }};
+  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, 0.031}}};
+  enum class MaterialMode {
+    kUniform,
+    kMiscible,
+    kImmiscible
+  };
+  for (const auto mode : {MaterialMode::kUniform, MaterialMode::kMiscible, MaterialMode::kImmiscible}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    scene.dynamic_viscosity = mode == MaterialMode::kUniform ? 100.0 : 0.0;
+    if (mode != MaterialMode::kUniform) {
+      scene.constituent_materials = mode == MaterialMode::kMiscible ? kMaterials : kImmiscibleMaterials;
+      if (mode == MaterialMode::kImmiscible) {
+        scene.phase_pairs = kPairs;
+      }
       for (std::size_t index = 0; index < initial.particles.size(); ++index) {
         auto& particle = initial.particles[index];
-        particle.phase_id = 4;
+        const auto& material = scene.constituent_materials[index];
+        particle.phase_id = material.phase_id;
+        particle.mass = material.density_kg_per_m3;
         particle.constituent_count = 1;
-        particle.constituents[0] = {kMaterials[index].substance_id, 1.0};
+        particle.constituents[0] = {material.substance_id, 1.0};
       }
     }
     auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
