@@ -413,4 +413,164 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
   return result;
 }
 
+absl::StatusOr<ResolvedElasticCutterScene3D> ResolveElasticCutterScene3D(const ElasticCutterSceneInputs3D& inputs) {
+  if (inputs.particle_positions.empty() || inputs.body_id == 0 || inputs.blade_id == 0
+      || inputs.body_id == inputs.blade_id) {
+    return absl::InvalidArgumentError("elastic Cutter requires seeds and distinct nonzero body and blade IDs");
+  }
+  if (inputs.particle_positions.size() > kLiquidBoundaryParticleCapacity3D) {
+    return absl::ResourceExhaustedError("elastic Cutter seed capacity exceeded");
+  }
+  const double mass = inputs.density * inputs.particle_reference_volume;
+  if (!std::isfinite(mass) || mass <= 0.0 || inputs.density <= 0.0 || inputs.particle_reference_volume <= 0.0) {
+    return absl::InvalidArgumentError("invalid elastic seed density or reference volume");
+  }
+
+  const double cell_width = inputs.geometry.cell_width;
+  if (!std::isfinite(cell_width) || cell_width <= 0.0) {
+    return absl::InvalidArgumentError("invalid elastic Cutter grid spacing");
+  }
+  const std::array lower{inputs.domain_low.x, inputs.domain_low.y, inputs.domain_low.z};
+  const std::array upper{inputs.domain_high.x, inputs.domain_high.y, inputs.domain_high.z};
+  const auto origin = inputs.geometry.world_origin;
+  const std::array origin_coordinates{origin.x, origin.y, origin.z};
+  std::array<std::int32_t, 3> first_cell{};
+  std::array<std::int32_t, 3> last_cell{};
+  for (std::size_t axis = 0; axis < lower.size(); ++axis) {
+    if (!std::isfinite(lower[axis]) || !std::isfinite(upper[axis]) || !std::isfinite(origin_coordinates[axis])
+        || lower[axis] >= upper[axis]) {
+      return absl::InvalidArgumentError("invalid elastic Cutter domain or grid origin");
+    }
+    const double first = std::floor((lower[axis] - origin_coordinates[axis]) / cell_width) - 3.0;
+    const double last = std::ceil((upper[axis] - origin_coordinates[axis]) / cell_width) + 3.0;
+    if (first < std::numeric_limits<std::int32_t>::min() || last > std::numeric_limits<std::int32_t>::max()) {
+      return absl::OutOfRangeError("elastic Cutter domain exceeds the signed lattice");
+    }
+    first_cell[axis] = static_cast<std::int32_t>(first);
+    last_cell[axis] = static_cast<std::int32_t>(last);
+  }
+  const auto first_block = MacOwnerBlock3D({first_cell[0], first_cell[1], first_cell[2]});
+  const auto last_block = MacOwnerBlock3D({last_cell[0], last_cell[1], last_cell[2]});
+  constexpr std::size_t kFacesPerBlock = 192;
+  constexpr std::size_t kBlockCapacity = kLiquidBoundaryFaceCapacity3D / kFacesPerBlock;
+  const std::array<std::int64_t, 3> block_extents{
+      static_cast<std::int64_t>(last_block.x) - first_block.x + 1,
+      static_cast<std::int64_t>(last_block.y) - first_block.y + 1,
+      static_cast<std::int64_t>(last_block.z) - first_block.z + 1,
+  };
+  std::size_t block_count = 1;
+  for (const auto extent : block_extents) {
+    if (extent > static_cast<std::int64_t>(kBlockCapacity / block_count)) {
+      return absl::ResourceExhaustedError("elastic Cutter owned grid capacity exceeded");
+    }
+    block_count *= static_cast<std::size_t>(extent);
+  }
+  std::vector<BlockIndex3D> blocks;
+  blocks.reserve(block_count);
+  for (auto z = first_block.z; z <= last_block.z; ++z) {
+    for (auto y = first_block.y; y <= last_block.y; ++y) {
+      for (auto x = first_block.x; x <= last_block.x; ++x) {
+        blocks.push_back({x, y, z});
+      }
+    }
+  }
+  auto grid = SparseMacGrid3D::Create(inputs.geometry, blocks, kBlockCapacity);
+  if (!grid.ok()) {
+    return grid.status();
+  }
+
+  constexpr Mat3 kRestDeformation{
+      .x_row = {1.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  SolidInteractionCheckpoint3D checkpoint{};
+  checkpoint.elastic_particles.reserve(inputs.particle_positions.size());
+  checkpoint.sides.reserve(inputs.particle_positions.size());
+  for (const Vec3 position : inputs.particle_positions) {
+    if (!(position.x >= lower[0] && position.x <= upper[0] && position.y >= lower[1] && position.y <= upper[1]
+          && position.z >= lower[2] && position.z <= upper[2])) {
+      return absl::InvalidArgumentError("elastic Cutter seed is outside the authored domain");
+    }
+    const auto side = ClassifyInitialElasticBladeSide3D(inputs.blade, inputs.blade_id, position);
+    if (!side.ok()) {
+      return side.status();
+    }
+    const std::uint64_t particle_id = checkpoint.elastic_particles.size() + 1;
+    checkpoint.sides.push_back({.particle_id = particle_id, .side = *side});
+    checkpoint.elastic_particles.push_back({
+        .particle_id = particle_id,
+        .body_id = inputs.body_id,
+        .transfer =
+            {
+                .sorted_world_position = position,
+                .trial_world_position = position,
+                .particle_mass = mass,
+                .particle_velocity = {},
+                .particle_velocity_slopes = {},
+            },
+        .reference_volume = inputs.particle_reference_volume,
+        .deformation_gradient = kRestDeformation,
+    });
+  }
+  return ResolvedElasticCutterScene3D{.grid = std::move(*grid), .checkpoint = std::move(checkpoint)};
+}
+absl::StatusOr<ElasticBladeFrameResult3D> AdvanceElasticBladeFrame3D(
+    const SparseMacGrid3D& mac_grid,
+    const ElasticBladeGridStep3D& frame_settings,
+    std::uint32_t substeps_per_frame,
+    SolidInteractionCheckpoint3D& checkpoint
+) {
+  if (substeps_per_frame == 0 || checkpoint.accepted_step % substeps_per_frame != 0) {
+    return absl::InvalidArgumentError("elastic frame requires a positive substep count and a frame-aligned checkpoint");
+  }
+  const double substep_duration = frame_settings.duration / substeps_per_frame;
+  if (!std::isfinite(substep_duration) || substep_duration <= 0.0) {
+    return absl::InvalidArgumentError("invalid elastic frame duration");
+  }
+  constexpr std::uint64_t kLargestExactOrdinal = std::uint64_t{1} << std::numeric_limits<double>::digits;
+  if (checkpoint.accepted_step > kLargestExactOrdinal - substeps_per_frame) {
+    return absl::OutOfRangeError("elastic frame step ordinal cannot be represented exactly");
+  }
+
+  // Compute every pose from the authored time-zero slab and accepted ordinal
+  // so replay never depends on a separately accumulated clock or pose.
+  const double normal_speed = Dot(frame_settings.blade.unit_normal, frame_settings.blade.wall_velocity);
+  auto step_settings = frame_settings;
+  step_settings.duration = substep_duration;
+  auto trial = checkpoint;
+  ElasticBladeFrameResult3D result;
+  for (std::uint32_t substep = 0; substep < substeps_per_frame; ++substep) {
+    const double start_time = static_cast<double>(trial.accepted_step) * substep_duration;
+    const double end_time = static_cast<double>(trial.accepted_step + 1) * substep_duration;
+    if (!std::isfinite(end_time) || end_time <= start_time) {
+      return absl::OutOfRangeError("elastic substep time cannot be resolved");
+    }
+    step_settings.blade.start_center_coordinate =
+        std::fma(start_time, normal_speed, frame_settings.blade.start_center_coordinate);
+    const auto step = StepElasticBladeGrid3D(mac_grid, step_settings, trial);
+    if (!step.ok()) {
+      return step.status();
+    }
+
+    for (const auto& contact : step->contacts) {
+      result.particle_impulse.x += contact.particle_impulse.x;
+      result.particle_impulse.y += contact.particle_impulse.y;
+      result.particle_impulse.z += contact.particle_impulse.z;
+      result.blade_work += contact.blade_work;
+    }
+    result.grid_stress_work += step->grid_stress_work;
+    result.deformation_work += step->deformation_work;
+    result.cut_work += step->cut_work;
+    result.omitted_stress_work += step->omitted_stress_work;
+  }
+  if (!std::isfinite(result.particle_impulse.x) || !std::isfinite(result.particle_impulse.y)
+      || !std::isfinite(result.particle_impulse.z) || !std::isfinite(result.blade_work)
+      || !std::isfinite(result.grid_stress_work) || !std::isfinite(result.deformation_work)
+      || !std::isfinite(result.cut_work) || !std::isfinite(result.omitted_stress_work)) {
+    return absl::OutOfRangeError("elastic frame budget exceeds the finite range");
+  }
+  checkpoint = std::move(trial);
+  return result;
+}
 }  // namespace fluidity

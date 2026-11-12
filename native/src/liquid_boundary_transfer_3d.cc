@@ -19,7 +19,9 @@ namespace {
 constexpr std::array kAxes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
 constexpr std::array kVelocityComponents{&Vec3::x, &Vec3::y, &Vec3::z};
 constexpr std::array kVelocitySlopeRows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
-constexpr std::size_t kMaxDonors = 125;
+// A 4h sphere contains at most 268 staggered anchors of one component.
+// The largest count occurs when projecting across two half-cell offsets.
+constexpr std::size_t kMaxDonors = 268;
 constexpr std::int64_t kMaximumQuantaSum = std::int64_t{1} << 62;
 
 bool IsFinite(Vec3 value) {
@@ -190,7 +192,7 @@ absl::StatusOr<ContinuedVelocity> ContinueComponent(
     bool bounded,
     double squared_radius
 ) {
-  std::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors{};
+  std::array<internal::LiquidGhostFitSample3D, kMaxDonors> donors;
   std::size_t donor_count = 0;
   std::size_t nearest_slot = anchors.size();
   double nearest_squared_distance = std::numeric_limits<double>::infinity();
@@ -764,10 +766,15 @@ absl::StatusOr<LiquidBoundaryGatherResults3D> GatherElasticBoundaryParticle3D(
   std::vector<double> local_completed;
   auto* completed = completed_new_face_velocities == nullptr ? nullptr : &local_completed;
   auto gathered = GatherBoundaryParticles(inputs, completed, 4.0);
-  // Preserve the local fit when it is full rank. Widen only for a deficient
-  // neighborhood, keeping the same side and component eligibility.
-  if (absl::IsFailedPrecondition(gathered.status()) || (gathered.ok() && !gathered->particles.front().affine_enabled)) {
-    gathered = GatherBoundaryParticles(inputs, completed, 9.0);
+  // Preserve the most local full-rank fit. A blade can remove the nearer
+  // donor plane between time samples, leaving only more distant same-side donors.
+  for (const double squared_radius : {9.0, 16.0}) {
+    const bool needs_wider_fit =
+        absl::IsFailedPrecondition(gathered.status()) || (gathered.ok() && !gathered->particles.front().affine_enabled);
+    if (!needs_wider_fit) {
+      break;
+    }
+    gathered = GatherBoundaryParticles(inputs, completed, squared_radius);
   }
   if (gathered.ok() && completed_new_face_velocities != nullptr) {
     *completed_new_face_velocities = std::move(local_completed);

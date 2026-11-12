@@ -2,6 +2,7 @@
 
 import math
 from itertools import product
+from typing import NamedTuple
 
 import bpy
 from bpy_extras.anim_utils import action_get_channelbag_for_slot
@@ -157,13 +158,13 @@ def legacy_scene_inputs(scene, preview=False):
     return "\n".join(lines) + "\n"
 
 
-def linear_motion(obj, frame_end):
+def linear_motion(obj, frame_end, field="collider"):
     """Require a static object or fully covered constant location motion."""
     data = obj.animation_data
     if not data:
         return
     if not data.action or not data.action_slot or data.drivers or data.nla_tracks:
-        raise SceneError("collider", "Use a static collider or linear location animation.")
+        raise SceneError(field, "Use linear location animation or a static object.")
     bag = action_get_channelbag_for_slot(data.action, data.action_slot)
     for curve in bag.fcurves if bag else ():
         keys = list(curve.keyframe_points)
@@ -176,7 +177,128 @@ def linear_motion(obj, frame_end):
             or keys[1].co.x < frame_end
             or keys[0].interpolation != "LINEAR"
         ):
-            raise SceneError("collider", "Use two linear location keys covering the simulation.")
+            raise SceneError(field, "Use two linear location keys covering the simulation.")
+
+
+class CutterSlab(NamedTuple):
+    """Time-zero slab geometry in solver world coordinates, in meters and m/s."""
+
+    unit_normal: tuple[float, float, float]
+    start_center_coordinate: float
+    half_width: float
+    wall_velocity: tuple[float, float, float]
+
+
+def resolve_cutter(scene):
+    """Resolve a domain-spanning X slab from the assigned Cutter's native animation."""
+    require_cadence(scene)
+    if scene.unit_settings.scale_length != 1:
+        raise SceneError("units", "Use one Blender unit per meter.")
+    if scene.frame_start != 0 or not 2 <= scene.frame_end <= 240:
+        raise SceneError("range", "Set a frame range starting at 0 and ending from 2 through 240.")
+    settings = scene.fluidity
+    cutter = settings.cutter
+    domain = settings.domain
+    if not cutter or cutter in {domain, settings.liquid, settings.collider, settings.paddle}:
+        raise SceneError("cutter", "Assign a distinct mesh object to Cutter.")
+    if not domain or domain.animation_data:
+        raise SceneError("domain", "Assign a static domain box.")
+
+    saved_frame, saved_subframe = scene.frame_current, scene.frame_subframe
+    try:
+        linear_motion(cutter, scene.frame_end, "cutter")
+        scene.frame_set(0)
+        graph = bpy.context.evaluated_depsgraph_get()
+        domain_low, domain_high = box_bounds(domain, "domain", graph)
+        low, high = box_bounds(cutter, "cutter", graph)
+        scene.frame_set(scene.frame_end)
+        graph = bpy.context.evaluated_depsgraph_get()
+        end_low, end_high = box_bounds(cutter, "cutter", graph)
+    except SceneError as error:
+        field, remedy = error.args
+        if field != "cutter":
+            raise
+        raise SceneError(field, f"{cutter.name}: {remedy}") from error
+    finally:
+        scene.frame_set(saved_frame, subframe=saved_subframe)
+
+    shift = tuple(end - start for start, end in zip(low, end_low, strict=True))
+    if any(abs(end - start - delta) > 1e-6 for start, end, delta in zip(high, end_high, shift, strict=True)):
+        raise SceneError("cutter", f"{cutter.name}: Keep dimensions fixed during translation.")
+    if any(
+        start_low[axis] > domain_low[axis] + 1e-6 or start_high[axis] < domain_high[axis] - 1e-6
+        for start_low, start_high in ((low, high), (end_low, end_high))
+        for axis in (1, 2)
+    ):
+        raise SceneError("cutter", f"{cutter.name}: Extend the box across the domain on Y and Z.")
+    seconds = scene.frame_end / 24
+    return CutterSlab(
+        (1, 0, 0),
+        (low[0] + high[0]) / 2,
+        (high[0] - low[0]) / 2,
+        (shift[0] / seconds, shift[2] / seconds, -shift[1] / seconds),
+    )
+
+
+def cutter_frame_packet(scene):
+    """Encode a dry elastic box and translating Cutter for the native frame runner."""
+    settings = scene.fluidity
+    slab = resolve_cutter(scene)
+    solid = settings.elastic_solid
+    if not solid or solid in {settings.domain, settings.cutter, settings.liquid, settings.collider, settings.paddle}:
+        raise SceneError("elastic_solid", "Assign a distinct static box to Elastic Solid.")
+    if solid.animation_data:
+        raise SceneError("elastic_solid", f"{solid.name}: Remove animation from the initial elastic solid.")
+
+    saved_frame, saved_subframe = scene.frame_current, scene.frame_subframe
+    try:
+        scene.frame_set(0)
+        graph = bpy.context.evaluated_depsgraph_get()
+        domain_low, domain_high = box_bounds(settings.domain, "domain", graph)
+        solid_low, solid_high = box_bounds(solid, "elastic_solid", graph)
+    finally:
+        scene.frame_set(saved_frame, subframe=saved_subframe)
+    if any(
+        low < domain_min or high > domain_max
+        for low, high, domain_min, domain_max in zip(solid_low, solid_high, domain_low, domain_high, strict=True)
+    ):
+        raise SceneError("elastic_solid", f"{solid.name}: Place the initial elastic solid inside the domain.")
+
+    cell = settings.cell_width
+    if not 0.001 <= cell <= 10:
+        raise SceneError("cell_width", "Choose a cell width from 0.001 to 10 meters.")
+    low = (solid_low[0], solid_low[2], -solid_high[1])
+    high = (solid_high[0], solid_high[2], -solid_low[1])
+    ranges = [
+        range(math.floor(lo / cell - 0.5) + 1, math.ceil(hi / cell - 0.5)) for lo, hi in zip(low, high, strict=True)
+    ]
+    count = math.prod(map(len, ranges))
+    if not 1 <= count <= 1024:
+        raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
+
+    def values(items):
+        return " ".join(map(repr, items))
+
+    lines = [
+        "FLUIDITY-CUTTER-1",
+        values(
+            (
+                cell,
+                settings.elastic_density,
+                settings.elastic_shear_modulus,
+                settings.elastic_first_lame_parameter,
+                settings.friction,
+                settings.elastic_substeps,
+            )
+        ),
+        values((domain_low[0], domain_low[2], -domain_high[1])),
+        values((domain_high[0], domain_high[2], -domain_low[1])),
+        values((slab.start_center_coordinate, slab.half_width, *slab.wall_velocity)),
+        str(count),
+    ]
+    for z, y, x in product(ranges[2], ranges[1], ranges[0]):
+        lines.append(values((coordinate + 0.5) * cell for coordinate in (x, y, z)))
+    return "\n".join(lines) + "\n"
 
 
 def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension, writes_viscosity):
@@ -226,6 +348,8 @@ def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension,
 def scene_inputs(scene, preview=False):
     """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
     settings = scene.fluidity
+    if settings.cutter:
+        raise SceneError("cutter", "Cutter requires an elastic bake. Clear Cutter to bake the liquid scene.")
     sources = settings.liquid_sources
     if settings.boundary_mode == "LEGACY_PADDLE":
         if sources:
