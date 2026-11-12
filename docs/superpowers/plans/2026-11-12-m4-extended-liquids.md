@@ -721,3 +721,9 @@ The production Mesh path can now rebuild a shared phase sheet when its triangle 
 The accepted CPU deformation fixture changed the oil velocity by 0.75 m/s. The next Mesh frame changed connectivity, retained some exterior IDs, allocated fresh IDs for the other vertices, and encoded successfully with a valid shared sheet. Reconstruction replay from the same predecessor and accepted motion produced identical bytes. The translation fixture still retained all IDs and measured 0.24 m/s. Six focused CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'PublishesSharedSheet|SurfaceCache3D|PartitionsTwoClosed|EvaluatesAndCachesMixed'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-retessellated-phase-replay. The previous 642579f Debug CPU build also passed all 736 cases.
 
 This qualifies retessellation of a continuing phase pair. Phase appearance/disappearance, changes in the number of connected liquid components, and curved cut-cell and adaptive viscous traction require further evidence.
+
+## Enclosed curved shared geometry receipt
+
+The common partition was checked with a 0.73 m phase sphere wholly inside a 1.63 m liquid sphere. At both 0.5 and 0.25 m lattice spacing, the internal sheet had one positive closed component, Euler characteristic two and zero open edges, nonmanifold defects, degenerate triangles, orientation defects or self-intersections. It shared no vertices with the air boundary. Halving spacing reduced inner volume error to less than 40 percent of the coarse error, with fine error below 8 percent against the analytic sphere.
+
+Three CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'EnclosedCurvedPhaseSheet|PartitionsTwoClosed|PublishesSharedSheet'. The receipt covers the geometric extraction of a prescribed curved field. It does not qualify the dynamic pressure/strain of a curved internal interface or material sampling on its two sides. Receipts use out/m4-curved-sheet.

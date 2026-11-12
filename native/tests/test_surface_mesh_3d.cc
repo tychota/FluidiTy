@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 #include "fluidity/host/surface_mesh_3d.h"
@@ -101,6 +102,78 @@ TEST(SurfaceMesh3D, PartitionsTwoClosedPhasesWithOneSharedSheet) {
       ExtractSurfacePartition3D(exterior, phase_distance, 1).status().code(),
       absl::StatusCode::kResourceExhausted
   );
+}
+TEST(SurfaceMesh3D, EnclosedCurvedPhaseSheetConvergesWithoutAnAirSeam) {
+  constexpr double kInnerRadius = 0.73;
+  constexpr double kOuterRadius = 1.63;
+  constexpr double kInnerVolume = 4 * std::numbers::pi * kInnerRadius * kInnerRadius * kInnerRadius / 3;
+  double previous_error = std::numeric_limits<double>::infinity();
+  for (const std::size_t extent : {9u, 17u}) {
+    SCOPED_TRACE(extent);
+    SurfaceLattice3D exterior{
+        .origin = {-2, -2, -2},
+        .spacing = 4.0 / static_cast<double>(extent - 1),
+        .extent = {extent, extent, extent},
+    };
+    std::vector<double> phase;
+    for (std::size_t x = 0; x < extent; ++x) {
+      for (std::size_t y = 0; y < extent; ++y) {
+        for (std::size_t z = 0; z < extent; ++z) {
+          const double distance = std::hypot(
+              exterior.origin.x + x * exterior.spacing,
+              exterior.origin.y + y * exterior.spacing,
+              exterior.origin.z + z * exterior.spacing
+          );
+          exterior.values.push_back(distance - kOuterRadius);
+          phase.push_back(distance - kInnerRadius);
+        }
+      }
+    }
+    const auto partition = ExtractSurfacePartition3D(exterior, phase, 20'000);
+    ASSERT_TRUE(partition.ok()) << partition.status();
+    SurfaceMesh3D enclosed;
+    std::vector<std::uint32_t> indices(partition->positions.size(), UINT32_MAX);
+    for (std::size_t face = 0; face < partition->triangles.size(); ++face) {
+      ASSERT_NE(partition->face_types[face], SurfacePartitionFace3D::kPhaseAToAir);
+      if (partition->face_types[face] != SurfacePartitionFace3D::kPhaseAToPhaseB) {
+        continue;
+      }
+      auto triangle = partition->triangles[face];
+      for (auto& index : triangle) {
+        auto& local = indices[index];
+        if (local == UINT32_MAX) {
+          local = static_cast<std::uint32_t>(enclosed.vertices.size());
+          enclosed.vertices.push_back({.position = partition->positions[index]});
+        }
+        index = local;
+      }
+      enclosed.triangles.push_back(triangle);
+    }
+    for (std::size_t face = 0; face < partition->triangles.size(); ++face) {
+      if (partition->face_types[face] == SurfacePartitionFace3D::kPhaseBToAir) {
+        for (const auto index : partition->triangles[face]) {
+          EXPECT_EQ(indices[index], UINT32_MAX);
+        }
+      }
+    }
+    const auto metrics = MeasureSurfaceMesh3D(enclosed);
+    ASSERT_TRUE(metrics.ok()) << metrics.status();
+    EXPECT_EQ(metrics->components, 1);
+    EXPECT_EQ(metrics->positive_volume_components, 1);
+    EXPECT_EQ(metrics->euler_characteristic, 2);
+    EXPECT_EQ(metrics->boundary_edges, 0);
+    EXPECT_EQ(metrics->nonmanifold_edges, 0);
+    EXPECT_EQ(metrics->nonmanifold_vertices, 0);
+    EXPECT_EQ(metrics->orientation_defects, 0);
+    EXPECT_EQ(metrics->degenerate_triangles, 0);
+    EXPECT_EQ(metrics->self_intersections, 0);
+    const double relative_error = std::abs(metrics->signed_volume / kInnerVolume - 1);
+    EXPECT_LT(relative_error, 0.4 * previous_error);
+    if (extent == 17) {
+      EXPECT_LT(relative_error, 0.08);
+    }
+    previous_error = relative_error;
+  }
 }
 TEST(SurfaceMesh3D, RejectsOpenOrNonfiniteLatticeBeforeAccess) {
   SurfaceLattice3D lattice{.origin = {}, .spacing = 1, .extent = {2, 2, 2}, .values = std::vector<double>(8, 1)};
