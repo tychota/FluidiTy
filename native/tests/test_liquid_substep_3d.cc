@@ -3103,6 +3103,30 @@ TEST(LiquidSubstep3D, BackendGrowthPreparationFailureKeepsLastAcceptedVersion) {
   EXPECT_EQ(observed.growth_discarded, 1);
   EXPECT_EQ(observed.growth_clock, initial.clock);
 }
+TEST(LiquidSubstep3D, ViscousCapacityReplayReservesCoupledWorkspace) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto options = fixture->options;
+  options.capacity_replay_reservations = options.capacities;
+  options.capacity_replay_reservations.cells *= 2;
+  auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  bool injected = false;
+  scheduler->SetStageFaultHookForTesting({&injected, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                            auto& hit = *static_cast<bool*>(context);
+                                            if (stage != LiquidPhysicalStage3D::kAccept || hit) {
+                                              return absl::OkStatus();
+                                            }
+                                            hit = true;
+                                            return absl::Status(absl::StatusCode::kResourceExhausted, {});
+                                          }});
+  const auto status = scheduler->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_TRUE(injected);
+  EXPECT_EQ(scheduler->committed().clock.epoch, 1u);
+  viscous_tank_test::ExpectHydrostaticRest(*scheduler);
+}
+
 TEST(LiquidSubstep3D, BackendGrowthRestoresFrameStartBeforeReplay) {
   auto initial = Initial();
   auto options = Options();

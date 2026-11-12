@@ -81,7 +81,8 @@ class MacPressureScratchMark3D {
 // stage. No inviscid setup borrow may remain live across the coupled call.
 struct CoupledPressureWorkspaceAccess3D {
   static bool Fits(const MacPressureWorkspace3D& workspace, std::size_t cells, std::size_t faces) {
-    return cells <= workspace.cell_capacity_ && faces <= workspace.face_capacity_;
+    return workspace.mode_ == MacPressureWorkspaceMode3D::kCoupledViscosity && cells <= workspace.cell_capacity_
+        && faces <= workspace.face_capacity_;
   }
 
   static std::span<std::max_align_t> Storage(MacPressureWorkspace3D& workspace) {

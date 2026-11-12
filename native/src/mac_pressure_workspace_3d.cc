@@ -694,8 +694,11 @@ absl::StatusOr<std::size_t> pressure_internal::QueryCoupledMacPressureScratchByt
   return counter.total;
 }
 
-absl::StatusOr<MacPressureWorkspaceBytes3D>
-QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_capacity) {
+absl::StatusOr<MacPressureWorkspaceBytes3D> QueryMacPressureWorkspaceBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    MacPressureWorkspaceMode3D mode
+) {
   if (cell_capacity == 0 && face_capacity == 0) {
     return MacPressureWorkspaceBytes3D{};
   }
@@ -723,19 +726,22 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
   if (!fits) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  ScratchByteCounter coupled_counter;
-  if (!CountUniformStrainScratch(coupled_counter, cell_capacity, face_capacity)
-      || !CountOriginalPressureScratch(coupled_counter, cell_capacity, face_capacity)
-      || cell_capacity > std::numeric_limits<std::size_t>::max() / pressure_internal::kMaximumUniformStrainRowsPerCell3D
-      || !CountCoupledPressureScratch(
-          coupled_counter,
-          cell_capacity,
-          face_capacity,
-          cell_capacity * pressure_internal::kMaximumUniformStrainRowsPerCell3D
-      )) {
-    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  if (mode == MacPressureWorkspaceMode3D::kCoupledViscosity) {
+    ScratchByteCounter coupled_counter;
+    if (!CountUniformStrainScratch(coupled_counter, cell_capacity, face_capacity)
+        || !CountOriginalPressureScratch(coupled_counter, cell_capacity, face_capacity)
+        || cell_capacity
+            > std::numeric_limits<std::size_t>::max() / pressure_internal::kMaximumUniformStrainRowsPerCell3D
+        || !CountCoupledPressureScratch(
+            coupled_counter,
+            cell_capacity,
+            face_capacity,
+            cell_capacity * pressure_internal::kMaximumUniformStrainRowsPerCell3D
+        )) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    counter.total = std::max(counter.total, coupled_counter.total);
   }
-  counter.total = std::max(counter.total, coupled_counter.total);
   MacPressureWorkspaceBytes3D result;
   result.scratch_bytes = counter.total;
   constexpr auto limit = static_cast<std::size_t>(std::numeric_limits<std::ptrdiff_t>::max());
@@ -757,13 +763,14 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
 }
 
 absl::StatusOr<MacPressureWorkspace3D>
-MacPressureWorkspace3D::Create(std::size_t cell_capacity, std::size_t face_capacity) {
-  const auto bytes = QueryMacPressureWorkspaceBytes3D(cell_capacity, face_capacity);
+MacPressureWorkspace3D::Create(std::size_t cell_capacity, std::size_t face_capacity, MacPressureWorkspaceMode3D mode) {
+  const auto bytes = QueryMacPressureWorkspaceBytes3D(cell_capacity, face_capacity, mode);
   if (!bytes.ok()) {
     return bytes.status();
   }
   MacPressureWorkspace3D workspace;
   workspace.bytes_ = *bytes;
+  workspace.mode_ = mode;
   workspace.cell_capacity_ = cell_capacity;
   workspace.face_capacity_ = face_capacity;
   auto status = Reserve(workspace.scratch_, bytes->scratch_bytes / sizeof(std::max_align_t));

@@ -161,6 +161,11 @@ bool CanApplyViscosity(const LiquidSceneInputs3D& scene) {
            return material.dynamic_viscosity_pa_s.value_or(0.0) > 0.0;
          });
 }
+MacPressureWorkspaceMode3D PressureWorkspaceMode(const LiquidSceneInputs3D& scene) {
+  return CanApplyViscosity(scene) ? MacPressureWorkspaceMode3D::kCoupledViscosity
+                                  : MacPressureWorkspaceMode3D::kInviscid;
+}
+
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
       && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus) && !scene.eos
@@ -1480,7 +1485,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (CanApplyViscosity(scene) && needs_wetted_piston && !needs_lattice_plane) {
     return absl::UnimplementedError("viscous projection requires certified moving-wall quadratures");
   }
-  const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);
+  const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities, PressureWorkspaceMode(scene));
   if (!bytes.ok()) {
     return bytes.status();
   }
@@ -1589,7 +1594,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (!transaction.ok()) {
     return transaction.status();
   }
-  auto workspace = LiquidStepWorkspace3D::Create(capacities, initial.geometry);
+  auto workspace = LiquidStepWorkspace3D::Create(capacities, initial.geometry, PressureWorkspaceMode(scene));
   if (!workspace.ok()) {
     return workspace.status();
   }
@@ -1811,7 +1816,7 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
       if (!staging.ok()) {
         return staging.status();
       }
-      auto workspace = LiquidStepWorkspace3D::Create(growth, committed().geometry);
+      auto workspace = LiquidStepWorkspace3D::Create(growth, committed().geometry, PressureWorkspaceMode(impl_->scene));
       if (!workspace.ok()) {
         return workspace.status();
       }
