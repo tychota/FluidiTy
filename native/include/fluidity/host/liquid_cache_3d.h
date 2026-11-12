@@ -176,6 +176,17 @@ DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3
 // ResourceExhausted and unrepresentable radius OutOfRange. No input mutation or
 // borrowed aliases; failures return no partial point frame.
 absl::StatusOr<LiquidPointFrame3D> BuildLiquidPointFrame3D(const LiquidState3D& state, LiquidCacheLimits3D limits = {});
+// Model-2 point frames append snow in checkpoint particle order. Snow IDs and
+// tags set the high bit; the remaining bits hold the original ID and material
+// ID. Liquid IDs and tags keep the high bit clear. The total volume ratio is
+// det(Fe) * Jp. Inputs are an accepted liquid and snow pair at a frame boundary.
+inline constexpr std::uint64_t kSnowPointIdBit = std::uint64_t{1} << 63;
+inline constexpr std::uint32_t kSnowPointTagBit = std::uint32_t{1} << 31;
+absl::StatusOr<LiquidPointFrame3D> BuildCoupledPointFrame3D(
+    const LiquidState3D& state,
+    const SolidInteractionCheckpoint3D& solid,
+    LiquidCacheLimits3D limits = {}
+);
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidPointFrame3D(const LiquidPointFrame3D& frame, LiquidCacheLimits3D limits = {});
 absl::StatusOr<LiquidPointFrame3D>

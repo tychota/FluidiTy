@@ -787,6 +787,68 @@ absl::StatusOr<LiquidPointFrame3D> BuildLiquidPointFrame3D(const LiquidState3D& 
   return result;
 }
 
+absl::StatusOr<LiquidPointFrame3D> BuildCoupledPointFrame3D(
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid,
+    LiquidCacheLimits3D limits
+) {
+  if (liquid.clock.accepted_step_ordinal != solid.accepted_step) {
+    return Invalid();
+  }
+  auto frame = BuildLiquidPointFrame3D(liquid, limits);
+  if (!frame.ok()) {
+    return frame.status();
+  }
+  const auto liquid_points = frame->points.values();
+  if (solid.plastic_particles.size() > SIZE_MAX - liquid_points.size()) {
+    return cache_detail::Error(absl::StatusCode::kOutOfRange);
+  }
+  const auto point_count = liquid_points.size() + solid.plastic_particles.size();
+  CACHE_TRY(BoundCounts({point_count, 0, 0, 0, 0}, limits));
+  auto points = LiquidRecords3D<LiquidPoint3D>::Create(point_count);
+  if (!points.ok()) {
+    return points.status();
+  }
+  CACHE_TRY(points->Resize(point_count));
+  for (std::size_t index = 0; index < liquid_points.size(); ++index) {
+    const auto& point = liquid_points[index];
+    if (point.id >= kSnowPointIdBit || point.tag >= kSnowPointTagBit) {
+      return absl::OutOfRangeError("liquid point identity exceeds the mixed frame namespace");
+    }
+    (*points)[index] = point;
+  }
+  std::uint64_t previous_id = 0;
+  for (std::size_t index = 0; index < solid.plastic_particles.size(); ++index) {
+    const auto& particle = solid.plastic_particles[index];
+    if (particle.particle_id <= previous_id || particle.material_id == 0) {
+      return Invalid();
+    }
+    previous_id = particle.particle_id;
+    if (particle.particle_id >= kSnowPointIdBit || particle.material_id >= kSnowPointTagBit) {
+      return absl::OutOfRangeError("snow point identity exceeds the mixed frame namespace");
+    }
+    const auto& [x, y, z] = particle.elastic_deformation;
+    const double elastic_jacobian =
+        x.x * (y.y * z.z - y.z * z.y) - x.y * (y.x * z.z - y.z * z.x) + x.z * (y.x * z.y - y.y * z.x);
+    const double volume_ratio = elastic_jacobian * std::exp(particle.log_plastic_jacobian);
+    const double radius = std::cbrt(3 * particle.reference_volume * volume_ratio / (4 * std::acos(-1.0)));
+    const LiquidPoint3D point{
+        .id = kSnowPointIdBit | particle.particle_id,
+        .tag = kSnowPointTagBit | static_cast<std::uint32_t>(particle.material_id),
+        .world_position = particle.transfer.sorted_world_position,
+        .world_velocity = particle.transfer.particle_velocity,
+        .radius = radius,
+        .volume_ratio = volume_ratio,
+    };
+    if (!ValidPoint(point)) {
+      return absl::OutOfRangeError("snow point is not representable");
+    }
+    (*points)[liquid_points.size() + index] = point;
+  }
+  frame->points = std::move(*points);
+  return frame;
+}
+
 absl::StatusOr<LiquidCacheBytes3D>
 EncodeLiquidPointFrame3D(const LiquidPointFrame3D& frame, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts({frame.points.size(), 0, 0, 0, 0}, limits));
