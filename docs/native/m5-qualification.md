@@ -257,6 +257,34 @@ Advection and deformation still use the PIC field and its derivative
 respectively. Surface separation and an independent deformation
 integration experiment remain open.
 
+### Stored velocity retention scaled by physical time
+
+Use the existing momentum-balanced stored residual, but apply a fixed
+decay rate across timesteps. For step duration dt, set the retained
+fraction to exp(−k dt), with k chosen to reproduce 0.594 at 0.001875 s.
+The existing API caps retention at 0.99. Use the actual duration of
+each split step. The advection field, deformation gradient, and
+low-mass eligibility checks remain those of the ordinary dry solver.
+
+| h (m) | Nominal dt (s) | PIC angle at 1.50 s | Time-scaled angle at 0.75 s | Time-scaled angle at 1.50 s |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 20.801830° | 25.815309° | 16.318601° |
+| 0.075 | 0.0009375 | 28.040080° | 28.460215° | 20.885390° |
+| 0.0625 | 0.0015625 | 20.580671° | 24.704364° | 17.636402° |
+| 0.0625 | 0.00078125 | 26.585383° | 27.751037° | 22.692469° |
+
+Native and CUDA match to six decimal places. Every run passes the
+vertical momentum and late-drift checks. At 1.50 s the timestep gap
+narrows from 7.24° to 4.57° at the
+reference width and from 6.00° to 5.06° at the finer width. Every
+endpoint is shallower than PIC and below the Q-SAND range. Scaling
+retention by physical time leaves substantial timestep dependence.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-time-scaled-retention
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-time-scaled-retention
+```
+
 ### Deformation and contact-affine controls
 
 Run these controls independently from commit 6d31b68. Use the ordinary

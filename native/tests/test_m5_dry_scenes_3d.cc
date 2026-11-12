@@ -108,7 +108,8 @@ bool TestScene(
     fluidity::Vec3 grid_origin = {},
     double floor_friction = 0.7,
     bool reset_column_velocity = false,
-    double granular_modulus_scale = 1
+    double granular_modulus_scale = 1,
+    double stored_velocity_decay_rate = 0
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -173,12 +174,16 @@ bool TestScene(
       phase_end = t < 0.70 ? 0.70 : 0.75;
     }
     const double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
+    const double step_duration = next_time - t;
+    const double step_energy_blend = stored_velocity_decay_rate > 0
+        ? std::min(1.0, std::exp(-stored_velocity_decay_rate * step_duration) / 0.99)
+        : particle_energy_blend;
     DrySolidStep3D settings{
-        .duration = next_time - t,
+        .duration = step_duration,
         .gravity_y = snow ? 0.0 : -9.81,
         .floor_friction = floor_friction,
         .acoustic_cfl = 0.25,
-        .particle_energy_blend = particle_energy_blend,
+        .particle_energy_blend = step_energy_blend,
     };
     if (snow && t < 0.35) {
       const double speed = t < 0.23 ? -0.4 : 0.5;
@@ -1085,6 +1090,17 @@ int main(int argc, char** argv) {
       const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
       all_pass = all_pass && reference && refined;
+    }
+    return all_pass ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-time-scaled-retention") {
+    const double decay_rate = -std::log(0.594) / 0.001875;
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double duration : {width / 40, width / 80}) {
+        const bool pass = TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, decay_rate);
+        all_pass = all_pass && pass;
+      }
     }
     return all_pass ? 0 : 1;
   }
