@@ -172,7 +172,7 @@ struct RigidBoxSweepHit3D {
 // meters, and the world point velocity is m/s. A disengaged result certifies
 // the whole path is exterior. A strictly interior start returns
 // FailedPrecondition. An approaching, uniquely resolved touching start hits at zero.
-// Ambiguous grazing, edge hits, angles above pi/2, and an
+// A separating touching start is checked for later re-entry. Ambiguous grazing, edge hits, angles above pi/2, and an
 // exhausted isolation budget request a shorter step with Aborted. Invalid
 // inputs return InvalidArgument and unrepresentable arithmetic OutOfRange.
 absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(

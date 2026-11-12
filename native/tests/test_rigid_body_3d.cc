@@ -274,6 +274,38 @@ TEST(RigidBody3D, RotatingBoxSweepFindsInteriorHitBetweenClearEndpoints) {
   const auto corner = SweepRigidBoxPoint3D(*fixed, kHalfExtent, {1.0, 0.2, 0.0}, {-0.2, -0.2, 0.0});
   EXPECT_EQ(corner.status().code(), absl::StatusCode::kAborted);
 }
+TEST(RigidBody3D, RotatingSweepChecksReentryAfterSeparatingStart) {
+  RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, std::numbers::pi / 2.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  constexpr Vec3 kHalfExtent{2.0, 0.1, 0.1};
+  constexpr Vec3 kStart{0.75, 0.1, 0.0};
+  constexpr Vec3 kVelocity{0.0, 1.5, 0.0};
+  const auto hit = SweepRigidBoxPoint3D(*drift, kHalfExtent, kStart, kVelocity);
+  ASSERT_TRUE(hit.ok()) << hit.status();
+  ASSERT_TRUE(hit->has_value());
+  EXPECT_GT((*hit)->fraction_lower, 0.0);
+  EXPECT_EQ((*hit)->body_axis, 1);
+  EXPECT_EQ((*hit)->outward_sign, 1);
+  const auto gap = [](double fraction) {
+    const double angle = fraction * std::numbers::pi / 2.0;
+    return (0.1 + 1.5 * fraction) * std::cos(angle) - 0.75 * std::sin(angle) - 0.1;
+  };
+  EXPECT_GE(gap((*hit)->fraction_lower), 0.0);
+  EXPECT_LT(gap((*hit)->fraction_upper), 0.0);
+
+  body.angular_velocity = {};
+  const auto fixed = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(fixed.ok()) << fixed.status();
+  const auto miss = SweepRigidBoxPoint3D(*fixed, kHalfExtent, kStart, kVelocity);
+  ASSERT_TRUE(miss.ok()) << miss.status();
+  EXPECT_FALSE(miss->has_value());
+}
 TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
   const RigidBody3D body{
       .body_id = 23,
