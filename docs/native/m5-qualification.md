@@ -2519,3 +2519,24 @@ The three completed cases retained cut stress work mismatch below
 the mask during the predicted impact step moves the fine nominal
 rejection from step 1152 to 1196 and leaves the qualifying cases
 unchanged. The experimental source was restored after compiling.
+
+### Radial distribution and late plastic volume
+
+At `b2d03c6`, sort the 63 final horizontal particle radii and report
+the order statistic at index `floor((count - 1) * percentile / 100)`.
+Repeat the reflected-gradient 3 s controls with the original maximum
+radius still used for acceptance. The diagnostic changed no solver
+state and was removed after compilation.
+
+| Native case at 3 s | Median radius | 90th percentile | At or beyond 0.16 m | Mean absolute log plastic volume change, final 0.05 s |
+|---|---:|---:|---:|---:|
+| Coarse | 0.094061 m | 0.131892 m | 0 of 63 | 0.00229371 |
+| Coarse half-step | 0.091762 m | 0.133758 m | 0 of 63 | 0 |
+| Fine half-step | 0.097002 m | 0.165592 m | 8 of 63 | 0 |
+
+The fine half-step radius failure affects eight particles. Both
+completed half-step cases already miss the gate with zero late plastic
+volume change. The coarse nominal case passes while still dilating in
+the floor layer. These observations narrow the remaining search to
+how the shape develops before the final window, including shear
+plasticity and earlier radial transport.
