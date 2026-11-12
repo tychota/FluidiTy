@@ -183,6 +183,18 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fluidity_m5_constitutive_tests native/tests/test_m5_constitutive_3d.cc)
+  target_include_directories(fluidity_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
+  target_compile_features(fluidity_m5_constitutive_tests PRIVATE cxx_std_20)
+  add_test(NAME M5Constitutive.native COMMAND fluidity_m5_constitutive_tests)
+  if(FLUIDITY_ENABLE_CUDA)
+    add_executable(fluidity_cuda_m5_constitutive_tests native/tests/test_cuda_m5_constitutive_3d.cu)
+    target_include_directories(fluidity_cuda_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
+    target_compile_options(fluidity_cuda_m5_constitutive_tests PRIVATE
+      "$<$<CXX_COMPILER_ID:MSVC>:-Xcompiler=/Zc:preprocessor>")
+    set_target_properties(fluidity_cuda_m5_constitutive_tests PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+    add_test(NAME M5Constitutive.cuda COMMAND fluidity_cuda_m5_constitutive_tests)
+  endif()
   find_package(GTest 1.17.0 EXACT CONFIG REQUIRED)
   include(GoogleTest)
 
