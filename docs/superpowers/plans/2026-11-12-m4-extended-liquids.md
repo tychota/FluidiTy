@@ -259,3 +259,11 @@ The one-metre column starts with uniform positive flow on the interior faces and
 The finest plateau relative error was about 4e-6 on both backends. Maximum discrete pressure and impedance-scaled velocity errors were 4.14e-4 Pa and 5.30e-4 Pa. Each backend used 450 pressure iterations across 224 projections. The fixture measured about 52.8 ms CPU wall time, 330 ms CUDA wall time and 195.9 ms CUDA solver event time. All 21 CPU and eight real-device CUDA pressure regressions passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce with the locked Windows presets and ctest -R WaterHammerValveClosure. The XML, regression and sanitizer receipts use the out/m4-water-hammer prefix.
 
 Review confirmed the mode normalization, closure sign and plateau location. This is a linear, instantaneous closure oracle for the fixed-coefficient pressure operator. Reservoir boundaries, finite valve motion, cavitation and scheduler-driven closure remain outside its evidence.
+
+## Native trapped-air constitutive receipt
+
+The native fixed-inventory evaluator implements the exponent-1.4 polytropic law, a single gauge boundary lift with signed liquid curvature, the radial timestep limit and the equivalent-radius resolution cutoff. The submerged-sphere initializer includes atmospheric, hydrostatic and Laplace pressure in the absolute inventory. Analytic tests checked equilibrium cancellation, compression and expansion, the resolution threshold, near-equilibrium gauge precision and exponent-scaled timestep arithmetic.
+
+All 14 focused native cavity and EOS checks and six Python cavity reference checks passed. The Release CUDA build and three focused real-device EOS/pressure regressions passed. clang-format 19.1.5 passed. Reproduce under the locked environment with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|LiquidEos3D' and pytest reference/tests/test_cavity.py. Receipts use the out/m4-native-cavity prefix. Review found no numerical defect in the checked constitutive slice.
+
+Resolved cavity discovery, geometric volume, persistent identity and lineage, boundary lift routing, scheduler timestep enforcement, disappearance receipts and Q-CAVITY qualification remain open.
