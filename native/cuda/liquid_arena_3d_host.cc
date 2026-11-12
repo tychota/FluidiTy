@@ -181,6 +181,7 @@ absl::Status PlanStorage(LiquidArenaStorage3D& storage) {
   const auto pressure_output_count = count_sum(capacity.cells, 4, capacity.faces, 1, 0);
   // The mutually exclusive viscosity path needs three two-term normal rows
   // and at most one four-term row per incident cut edge (twelve per cell).
+  // Graded viscosity uses at most six eight-term rows, within the same bound.
   constexpr std::size_t kNormalRowsPerCell = 3;
   constexpr std::size_t kShearRowsPerCell = 12;
   static_assert(sizeof(cuda_internal::PressureLink3D) >= sizeof(cuda_internal::ViscousVelocityFace3D));

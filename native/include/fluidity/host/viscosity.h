@@ -58,8 +58,8 @@ struct MacStrainRow3D {
   CellIndex3D low_cell;  // Cell center for normal strain, low-low cell for edge shear.
   FaceNormalAxis first_axis;
   FaceNormalAxis second_axis;  // Equal to first_axis for normal strain.
-  std::array<MacStrainTerm3D, 4> terms;
-  std::size_t term_count;  // Number of active terms, from one to four.
+  std::array<MacStrainTerm3D, 8> terms;
+  std::size_t term_count;  // Number of active terms, from one to eight.
   double quadrature_weight;  // Viscous strain quadrature, in kg m²/s, including shear multiplicity.
   double prescribed_strain = 0.0;  // Additive strain from boundary data, in s⁻¹.
 };

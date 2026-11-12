@@ -76,7 +76,8 @@ enum class GradedTankVariant {
   kInviscid,
   kEos,
   kMiscible,
-  kCapillary
+  kCapillary,
+  kViscous,
 };
 
 void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
@@ -89,6 +90,9 @@ void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
   }
   if (variant == GradedTankVariant::kMiscible) {
     test::SetGradedTankMiscible3D(state, scene);
+  }
+  if (variant == GradedTankVariant::kViscous) {
+    scene.dynamic_viscosity = 2.0;
   }
   const bool capillary = variant == GradedTankVariant::kCapillary;
   if (capillary) {
@@ -113,6 +117,7 @@ void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
             return absl::OkStatus();
           },
   });
+  const auto usage_before_attempts = backend->usage();
   const double frame_duration = capillary ? 0.02 : 0.01;
   ASSERT_TRUE(scheduler->BeginFrame(frame_duration).ok());
   const auto rejected = scheduler->Attempt(frame_duration);
@@ -156,7 +161,14 @@ void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
   const auto copied = epoch->Readback(*readback);
   ASSERT_TRUE(copied.ok()) << copied;
   expect_device_state(scheduler->committed());
-  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+  const auto usage_after_attempts = backend->usage();
+  EXPECT_EQ(usage_after_attempts.compiled_architecture, 1200);
+  if (variant == GradedTankVariant::kViscous) {
+    EXPECT_EQ(usage_after_attempts.device_allocation_count, usage_before_attempts.device_allocation_count);
+    EXPECT_EQ(usage_after_attempts.device_free_count, usage_before_attempts.device_free_count);
+    EXPECT_EQ(usage_after_attempts.device_reserved_bytes, usage_before_attempts.device_reserved_bytes);
+    EXPECT_EQ(usage_after_attempts.pinned_reserved_bytes, usage_before_attempts.pinned_reserved_bytes);
+  }
   if (variant == GradedTankVariant::kEos) {
     EXPECT_LT(readback->particles[0].volume_ratio, 1.0);
     EXPECT_GT(readback->adaptive_cells[0].previous_pressure, 0.0);
@@ -176,6 +188,10 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleTrialPreservesDeviceEpoch) {
 
 TEST(CudaAdaptiveSimulate3D, RejectedGradedCapillaryTrialPreservesDeviceEpoch) {
   ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kCapillary);
+}
+
+TEST(CudaAdaptiveSimulate3D, RejectedGradedViscousTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kViscous);
 }
 
 TEST(CudaAdaptiveSimulate3D, CoupledGradedNormalTractionMatchesManufacturedReference) {

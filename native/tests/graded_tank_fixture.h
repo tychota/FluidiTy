@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "fluidity/host/liquid_substep_3d.h"
 
@@ -120,6 +121,36 @@ inline void SetGradedTankMiscible3D(LiquidState3D& state, LiquidSceneInputs3D& s
     inventory.constituent_count = particle.constituent_count;
     inventory.constituents = {{{8, clear * particle.reference_volume}, {14, dyed * particle.reference_volume}}};
   }
+}
+
+inline absl::StatusOr<double> GradedTankCarrierEnergy3D(const LiquidState3D& state, const LiquidSceneInputs3D& scene) {
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto energy = [&](std::size_t slot, double area, double distance) {
+    const double speed = state.adaptive_faces[slot].carrier_velocity;
+    return 0.5 * scene.liquid_density * area * distance * speed * speed;
+  };
+  double result = 0.0;
+  for (std::size_t face = 0; face < topology->interior_faces().size(); ++face) {
+    const auto& geometry = topology->interior_faces()[face];
+    result += energy(ownership->interior_face_slots[face], geometry.face_area, geometry.cell_center_distance);
+  }
+  for (const auto& face : ownership->exterior_faces) {
+    if (face.face_index.axis == FaceNormalAxis::kY && face.cell_is_tail) {
+      result += energy(face.face_slot, face.face_area, topology->cells()[face.cell_ordinal].cell_width / 2.0);
+    }
+  }
+  return result;
 }
 
 }  // namespace fluidity::test

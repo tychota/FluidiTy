@@ -228,7 +228,8 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
-  const bool graded_tank = args[5] == "graded-tank" || graded_eos || graded_miscible;
+  const bool graded_viscous = args[5] == "graded-viscous";
+  const bool graded_tank = args[5] == "graded-tank" || graded_eos || graded_miscible || graded_viscous;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -342,6 +343,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
       }
       if (graded_miscible) {
         fluidity::test::SetGradedTankMiscible3D(state, scene.scene);
+      }
+      if (graded_viscous) {
+        scene.scene.dynamic_viscosity = 2.0;
       }
     } else if (bounded_wave) {
       const auto authored = SetBoundedWaveScene(scene, state, wave_column_seed);

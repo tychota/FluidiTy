@@ -5,10 +5,22 @@
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "fluidity/host/viscosity.h"
 #include "liquid_remap_3d_internal.h"
 #include "mac_pressure_3d_system.h"
 
 namespace fluidity::liquid_step_internal {
+
+// Assemble nonzero symmetric-gradient quadratures per leaf from local staggered
+// face anchors and owned apertures. Dynamic viscosity is in Pa s. Stationary sealed faces are lifted as zero velocity.
+// All geometric arrays use canonical topology order. Rank-deficient anchor support fails without rows.
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
+    const AdaptiveMacTopology3D& topology,
+    Vec3 world_origin,
+    double dynamic_viscosity,
+    std::span<const GradedMacFace3D> faces,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces
+);
 
 // Frozen graded tank ownership and staging. The owner is built at scheduler
 // admission and kept immutable across attempts and checkpoint restores.
@@ -55,6 +67,7 @@ class AdaptiveLiquidStep3D {
   std::vector<AdaptiveMacExteriorFace3D> exterior_faces_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
+  std::vector<MacStrainRow3D> strain_rows_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;
   std::vector<double> distances_;

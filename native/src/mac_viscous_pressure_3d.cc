@@ -669,8 +669,12 @@ static absl::StatusOr<MacViscousPressureProjection3D> ProjectFrozenExplicitMacVi
     double step_duration,
     const PreparedMacPressureSystem3D& system,
     std::span<const MacStrainRow3D> strain_rows,
-    std::optional<SolveViscousVelocityView3D> solve_velocity_block
+    std::optional<SolveViscousVelocityView3D> solve_velocity_block,
+    MacPressureSolverOptions3D options
 ) {
+  if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
+    return absl::InvalidArgumentError("invalid graded pressure iteration budget");
+  }
   const std::size_t face_count = system.links().size();
   auto storage = CreateCoupledScratch(system.cells().size(), face_count, strain_rows.size(), false);
   if (!storage.ok()) {
@@ -687,7 +691,7 @@ static absl::StatusOr<MacViscousPressureProjection3D> ProjectFrozenExplicitMacVi
       step_duration,
       strain_rows,
       *face_buffers,
-      kPressureIterationBudget,
+      options.max_iterations,
       solve_velocity_block,
       arena,
       {.detailed = true}
@@ -712,29 +716,58 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
   if (!system.ok()) {
     return system.status();
   }
-  return ProjectFrozenExplicitMacViscousPressure3D(step_duration, *system, strain_rows, std::nullopt);
+  return ProjectFrozenExplicitMacViscousPressure3D(step_duration, *system, strain_rows, std::nullopt, {});
 }
 
-static absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveWithVelocityView3D(
-    const AdaptiveMacTopology3D& topology,
+static absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveWithVelocityView3D(
+    const PreparedMacPressureSystem3D& system,
     double step_duration,
-    std::span<const MacPressureCell3D> cells,
-    std::span<const AdaptiveMacPressureSubface3D> subfaces,
     std::span<const MacStrainRow3D> strain_rows,
-    std::optional<SolveViscousVelocityView3D> solve_velocity_block
+    std::optional<SolveViscousVelocityView3D> solve_velocity_block,
+    MacPressureSolverOptions3D options
 ) {
-  const auto system = PrepareAdaptiveMacPressureSystem3D(topology, step_duration, cells, subfaces);
-  if (!system.ok()) {
-    return system.status();
+  if (!system.is_explicit_graph()) {
+    return absl::InvalidArgumentError("graded viscous pressure requires a checked explicit graph");
+  }
+  const auto links = system.links();
+  for (std::size_t slot = 0; slot < links.size(); ++slot) {
+    if (links[slot].face_slot != slot) {
+      return absl::InvalidArgumentError("graded viscous pressure requires dense canonical face slots");
+    }
   }
   for (const auto& row : strain_rows) {
     for (const auto& term : std::span(row.terms).first(std::min(row.term_count, row.terms.size()))) {
-      if (term.face_slot < system->links().size() && system->links()[term.face_slot].open_area == 0.0) {
+      if (term.face_slot < links.size() && links[term.face_slot].open_area == 0.0) {
         return absl::InvalidArgumentError("adaptive strain must lift sealed velocities into prescribed strain");
       }
     }
   }
-  return ProjectFrozenExplicitMacViscousPressure3D(step_duration, *system, strain_rows, solve_velocity_block);
+  return ProjectFrozenExplicitMacViscousPressure3D(step_duration, system, strain_rows, solve_velocity_block, options);
+}
+
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressureWithVelocityView3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    SolveViscousVelocityView3D solve_velocity_block
+) {
+  return ProjectPreparedAdaptiveWithVelocityView3D(system, step_duration, strain_rows, solve_velocity_block, options);
+}
+
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressure3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    std::optional<SolveViscousVelocity3D> solve_velocity_block
+) {
+  if (!solve_velocity_block) {
+    return ProjectPreparedAdaptiveWithVelocityView3D(system, step_duration, strain_rows, std::nullopt, options);
+  }
+  return ProjectWithOwningVelocity(*solve_velocity_block, [&](SolveViscousVelocityView3D solve) {
+    return ProjectPreparedAdaptiveWithVelocityView3D(system, step_duration, strain_rows, solve, options);
+  });
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure3D(
@@ -742,9 +775,14 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure
     double step_duration,
     std::span<const MacPressureCell3D> cells,
     std::span<const AdaptiveMacPressureSubface3D> subfaces,
-    std::span<const MacStrainRow3D> strain_rows
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options
 ) {
-  return ProjectAdaptiveWithVelocityView3D(topology, step_duration, cells, subfaces, strain_rows, std::nullopt);
+  const auto system = PrepareAdaptiveMacPressureSystem3D(topology, step_duration, cells, subfaces);
+  if (!system.ok()) {
+    return system.status();
+  }
+  return ProjectPreparedAdaptiveMacViscousPressure3D(*system, step_duration, strain_rows, options);
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressureWithVelocitySolver3D(
@@ -753,11 +791,20 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure
     std::span<const MacPressureCell3D> cells,
     std::span<const AdaptiveMacPressureSubface3D> subfaces,
     std::span<const MacStrainRow3D> strain_rows,
-    SolveViscousVelocity3D solve_velocity_block
+    SolveViscousVelocity3D solve_velocity_block,
+    MacPressureSolverOptions3D options
 ) {
-  return ProjectWithOwningVelocity(solve_velocity_block, [&](SolveViscousVelocityView3D solve) {
-    return ProjectAdaptiveWithVelocityView3D(topology, step_duration, cells, subfaces, strain_rows, solve);
-  });
+  const auto system = PrepareAdaptiveMacPressureSystem3D(topology, step_duration, cells, subfaces);
+  if (!system.ok()) {
+    return system.status();
+  }
+  return ProjectPreparedAdaptiveMacViscousPressure3D(
+      *system,
+      step_duration,
+      strain_rows,
+      options,
+      solve_velocity_block
+  );
 }
 
 }  // namespace pressure_internal

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 
 #include "absl/functional/function_ref.h"
@@ -77,7 +78,8 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure
     double step_duration,
     std::span<const MacPressureCell3D> cells,
     std::span<const AdaptiveMacPressureSubface3D> subfaces,
-    std::span<const MacStrainRow3D> strain_rows
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options = {}
 );
 
 // Uses the same canonical graph and row validation with an owning velocity
@@ -88,7 +90,28 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure
     std::span<const MacPressureCell3D> cells,
     std::span<const AdaptiveMacPressureSubface3D> subfaces,
     std::span<const MacStrainRow3D> strain_rows,
-    SolveViscousVelocity3D solve_velocity_block
+    SolveViscousVelocity3D solve_velocity_block,
+    MacPressureSolverOptions3D options = {}
+);
+
+// Reuses a checked canonical graph frozen with the same step duration.
+// Supplied rows reference open slots and the optional inverse is synchronous.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressure3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    std::optional<SolveViscousVelocity3D> solve_velocity_block = std::nullopt
+);
+
+// Same checked graph with a velocity inverse that borrows the host scratch
+// for the duration of each call and returns a temporary velocity view.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectPreparedAdaptiveMacViscousPressureWithVelocityView3D(
+    const PreparedMacPressureSystem3D& system,
+    double step_duration,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    SolveViscousVelocityView3D solve_velocity_block
 );
 
 }  // namespace fluidity::pressure_internal

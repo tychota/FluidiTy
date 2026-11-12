@@ -8,6 +8,7 @@
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "../src/liquid_adaptive_step_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
 #include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
@@ -172,6 +173,84 @@ TEST(LiquidSubstep3D, GradedCompressionPreservesPressureAndVolumeAcrossRollback)
       );
     }
   }
+}
+
+TEST(LiquidSubstep3D, GradedViscousTensorReproducesAffineStrain) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedTankFixture3D(state, scene).ok());
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto transfer = GradedMacTransfer3D::Create(*topology, state.geometry.world_origin);
+  ASSERT_TRUE(transfer.ok()) << transfer.status();
+  std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces(transfer->faces().size());
+  std::vector<double> velocities;
+  for (std::size_t slot = 0; slot < transfer->faces().size(); ++slot) {
+    const auto& face = transfer->faces()[slot];
+    const auto position = face.world_anchor;
+    const std::array components{
+        1.0 + 2.0 * position.x + 3.0 * position.y + 5.0 * position.z,
+        7.0 - position.x + 4.0 * position.y + 11.0 * position.z,
+        13.0 + 17.0 * position.x + 19.0 * position.y + 6.0 * position.z,
+    };
+    velocities.push_back(components[static_cast<std::size_t>(face.axis)]);
+    subfaces[slot].open_area_m2 = face.width_m * face.width_m;
+  }
+  const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+      *topology,
+      state.geometry.world_origin,
+      2.0,
+      transfer->faces(),
+      subfaces
+  );
+  ASSERT_TRUE(rows.ok()) << rows.status();
+  constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
+  ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
+  for (std::size_t index = 0; index < rows->size(); ++index) {
+    const auto& row = (*rows)[index];
+    double strain = row.prescribed_strain;
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      strain += term.coefficient * velocities[term.face_slot];
+    }
+    EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
+    const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
+    EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
+  }
+}
+
+TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) {
+  std::array<double, 2> energy{};
+  for (std::size_t mode = 0; mode < energy.size(); ++mode) {
+    LiquidState3D initial;
+    LiquidSceneInputs3D scene;
+    ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
+    scene.dynamic_viscosity = mode == 0 ? 0.0 : 2.0;
+    auto options = Options();
+    options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    const auto accepted = scheduler->Attempt(0.01);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+    ASSERT_TRUE(scheduler->FinishFrame().ok());
+    const auto carrier_energy = test::GradedTankCarrierEnergy3D(scheduler->committed(), scene);
+    ASSERT_TRUE(carrier_energy.ok()) << carrier_energy.status();
+    energy[mode] = *carrier_energy;
+    ASSERT_TRUE(scheduler->diagnostics().accepted_measurement);
+    const auto& measurement = *scheduler->diagnostics().accepted_measurement;
+    EXPECT_LE(measurement.pressure.max_cell_constraint_defect, 2e-5);
+    if (mode != 0) {
+      ASSERT_TRUE(measurement.viscous_max_momentum_residual_kg_m_per_s);
+      EXPECT_LE(*measurement.viscous_max_momentum_residual_kg_m_per_s, 2e-5);
+    }
+  }
+  EXPECT_GT(energy[1], 0.0);
+  EXPECT_LT(energy[1], energy[0]);
 }
 
 TEST(LiquidSubstep3D, GradedTaitDomainFailureKeepsTheAcceptedState) {
