@@ -23,6 +23,7 @@
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_viscous_tank_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
+#include "snow_liquid_scheduler_cases.h"
 #include "wetted_piston_pressure_3d_cases.h"
 namespace fluidity {
 namespace {
@@ -61,6 +62,13 @@ void ExpectIdenticalSerializedState(const LiquidState3D& before, const LiquidSta
   EXPECT_EQ(before_digest, after_digest);
   std::cout << "f9_state_before=" << LiquidDigestHex3D(before_digest).data()
             << " f9_state_after=" << LiquidDigestHex3D(after_digest).data() << '\n';
+}
+
+TEST(LiquidSubstep3D, SnowTrialPublishesOnlyWithLiquidAcceptance) {
+  const auto state = Initial();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, Scene(), Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  test::ExpectSnowJointAcceptance(*scheduler, state);
 }
 
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
