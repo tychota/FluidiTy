@@ -60,4 +60,27 @@ absl::Status GatherMac3D(
     std::span<MacParticleGatherResult3D> particle_gather_results
 );
 
+// Computes compressible Neo-Hookean Kirchhoff stress in pascals from a
+// dimensionless deformation gradient with positive determinant. The shear
+// modulus must be positive and the first Lame parameter nonnegative (pascals).
+// Returns InvalidArgument for invalid inputs or OutOfRange for nonfinite arithmetic.
+absl::StatusOr<Mat3>
+NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, double first_lame_parameter);
+
+// Replaces the owned normal face forces (newtons) with one elastic particle's
+// uncut stress contribution, using true physical basis derivatives. Positions
+// and support rules match BuildOwnedMacFaceStencil3D. Reference volume is in
+// cubic meters and must be finite and positive. Stress is in pascals.
+// Invalid extent or inputs return InvalidArgument. Unsupported support and
+// nonfinite arithmetic return FailedPrecondition and OutOfRange respectively.
+// Every failure preserves the output.
+absl::Status DepositElasticStress3D(
+    const SparseMacGrid3D& mac_grid,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    std::span<double> normal_face_forces
+);
+
 }  // namespace fluidity

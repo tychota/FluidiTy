@@ -259,4 +259,88 @@ absl::Status GatherMac3D(
   return absl::OkStatus();
 }
 
+absl::StatusOr<Mat3>
+NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, double first_lame_parameter) {
+  if (!IsFinite(deformation_gradient) || !std::isfinite(shear_modulus) || !std::isfinite(first_lame_parameter)
+      || shear_modulus <= 0.0 || first_lame_parameter < 0.0) {
+    return absl::InvalidArgumentError("invalid Neo-Hookean input");
+  }
+  const Vec3 x = deformation_gradient.x_row;
+  const Vec3 y = deformation_gradient.y_row;
+  const Vec3 z = deformation_gradient.z_row;
+  const Vec3 cofactor{
+      y.y * z.z - y.z * z.y,
+      y.z * z.x - y.x * z.z,
+      y.x * z.y - y.y * z.x,
+  };
+  const double volume_ratio = Dot(x, cofactor);
+  if (!std::isfinite(volume_ratio)) {
+    return absl::OutOfRangeError("nonfinite elastic volume ratio");
+  }
+  if (volume_ratio <= 0.0) {
+    return absl::InvalidArgumentError("elastic deformation requires a positive determinant");
+  }
+
+  const double volumetric_stress = first_lame_parameter * std::log(volume_ratio);
+  const double xy_stress = shear_modulus * Dot(x, y);
+  const double xz_stress = shear_modulus * Dot(x, z);
+  const double yz_stress = shear_modulus * Dot(y, z);
+  const Mat3 kirchhoff_stress{
+      .x_row = {shear_modulus * (Dot(x, x) - 1.0) + volumetric_stress, xy_stress, xz_stress},
+      .y_row = {xy_stress, shear_modulus * (Dot(y, y) - 1.0) + volumetric_stress, yz_stress},
+      .z_row = {xz_stress, yz_stress, shear_modulus * (Dot(z, z) - 1.0) + volumetric_stress},
+  };
+  if (!IsFinite(kirchhoff_stress)) {
+    return absl::OutOfRangeError("nonfinite Kirchhoff stress");
+  }
+  return kirchhoff_stress;
+}
+
+absl::Status DepositElasticStress3D(
+    const SparseMacGrid3D& mac_grid,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    std::span<double> normal_face_forces
+) {
+  const auto extent_status = ValidateExtent(normal_face_forces.size(), mac_grid.face_count());
+  if (!extent_status.ok()) {
+    return extent_status;
+  }
+  if (!IsFinite(kirchhoff_stress) || !std::isfinite(reference_volume) || reference_volume <= 0.0) {
+    return absl::InvalidArgumentError("invalid elastic stress or reference volume");
+  }
+  struct FaceForce {
+    std::size_t face_slot;
+    double stress_force_contribution;
+  };
+  std::array<FaceForce, kNormalComponentAccess.size() * MacFaceStencil3D{}.size()> staged_forces;
+  std::size_t contribution_count = 0;
+  for (const auto component : kNormalComponentAccess) {
+    const auto stencil = BuildOwnedMacFaceStencil3D(
+        mac_grid,
+        component.axis,
+        sorted_particle_world_position,
+        trial_particle_world_position
+    );
+    if (!stencil.ok()) {
+      return stencil.status();
+    }
+    const Vec3 stress_row = kirchhoff_stress.*component.velocity_slope_row;
+    for (const auto& sample : *stencil) {
+      const double stress_force_contribution = -reference_volume * Dot(stress_row, sample.weight_gradient);
+      if (!std::isfinite(stress_force_contribution)) {
+        return absl::OutOfRangeError("nonfinite elastic stress force");
+      }
+      staged_forces[contribution_count++] = {sample.face_slot, stress_force_contribution};
+    }
+  }
+  std::ranges::fill(normal_face_forces, 0.0);
+  for (const auto& contribution : staged_forces) {
+    normal_face_forces[contribution.face_slot] = contribution.stress_force_contribution;
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace fluidity

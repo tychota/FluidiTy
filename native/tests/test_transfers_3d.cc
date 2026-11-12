@@ -240,6 +240,52 @@ TEST(MacTransfer3D, QuadraticRowDistinguishesFitAndGradient) {
   }
 }
 
+TEST(MacTransfer3D, UncutElasticWorkBalancesAtTranslatedCorner) {
+  const auto mac_grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const auto particle = CornerParticle(kTranslatedGeometry);
+  const Vec3 position = particle.trial_world_position;
+  std::vector<double> face_velocities(mac_grid->face_count());
+  SampleField(
+      *mac_grid,
+      [position](std::size_t axis_index, Vec3 anchor) {
+        const double displacement = Components(anchor)[axis_index] - Components(position)[axis_index];
+        return displacement * displacement + 2.0 * displacement;
+      },
+      face_velocities
+  );
+  const Mat3 deformation_gradient{
+      .x_row = {2.0, 0.0, 0.0},
+      .y_row = {0.0, 1.0, 0.0},
+      .z_row = {0.0, 0.0, 1.0},
+  };
+  const auto stress = NeoHookeanKirchhoffStress3D(deformation_gradient, 2.0, 0.0);
+  ASSERT_TRUE(stress.ok()) << stress.status();
+  ExpectNear(stress->x_row.x, 6.0);
+
+  constexpr double kReferenceVolume = 0.25;
+  std::vector<double> stress_forces(mac_grid->face_count());
+  const auto deposition =
+      DepositElasticStress3D(*mac_grid, position, position, kReferenceVolume, *stress, stress_forces);
+  ASSERT_TRUE(deposition.ok()) << deposition;
+  MacParticleGatherResult3D gathered{};
+  const auto gather = GatherMac3D(*mac_grid, {&particle, 1}, face_velocities, face_velocities, {&gathered, 1});
+  ASSERT_TRUE(gather.ok()) << gather;
+  ExpectNear(gathered.velocity_gradient.x_row.x, 2.0);
+
+  double grid_power = 0.0;
+  for (std::size_t face_slot = 0; face_slot < stress_forces.size(); ++face_slot) {
+    grid_power += face_velocities[face_slot] * stress_forces[face_slot];
+  }
+  const double deformation_power = kReferenceVolume * stress->x_row.x * gathered.velocity_gradient.x_row.x;
+  EXPECT_NEAR(grid_power, -3.0, 3e-6);
+  EXPECT_NEAR(
+      grid_power + deformation_power,
+      0.0,
+      1e-6 * std::max({1.0, std::abs(grid_power), std::abs(deformation_power)})
+  );
+}
+
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
   const auto mac_grid = SparseMacGrid3D::Create(kUnitGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
