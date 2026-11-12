@@ -27,24 +27,24 @@
 
 ### Task 1 — Fixed-grid reference
 
-- [ ] Add reference/tests/test_gas.py and observe missing fluidity_reference.gas.
-- [ ] Implement project_heating and transport_densities in reference/src/fluidity_reference/gas.py.
-- [ ] Run the reference suite. Check open boundary displacement against the 25% oracle, sealed pressure response within 1%, isolated pressure, and signed mass and enthalpy budgets.
-- [ ] Commit the fixture and its evidence.
+- [x] Add reference/tests/test_gas.py and observe missing fluidity_reference.gas.
+- [x] Implement project_heating and transport_densities in reference/src/fluidity_reference/gas.py.
+- [x] Run the reference suite. Check open boundary displacement against the 25% oracle, sealed pressure response within 1%, isolated pressure, and signed mass and enthalpy budgets.
+- [x] Commit the fixture and its evidence.
 
 ### Task 2 — Production gas state and solver
 
-- [ ] Exercise conservative fuel/soot/enthalpy, bounded reaction, EOS density and residual buoyancy through the ordinary solver entry point.
-- [ ] Reuse MAC prescribed divergence, pressure boundaries and APIC where their interfaces satisfy gas requirements.
-- [ ] Verify native CPU and real CUDA, including rejected substep rollback.
+- [x] Exercise conservative fuel/soot/enthalpy, bounded reaction, EOS density and residual buoyancy through the ordinary solver entry point.
+- [x] Reuse MAC prescribed divergence, pressure boundaries and APIC where their interfaces satisfy gas requirements.
+- [x] Verify native CPU and real CUDA, including rejected substep rollback.
 
 ### Task 3 — Committed state and replay
 
-- [ ] Extend committed-state and checkpoint contracts for cell state, APIC history and component p0.
-- [ ] Verify uninterrupted and resumed accepted output on CPU and CUDA.
+- [x] Extend committed-state and checkpoint contracts for cell state, APIC history and component p0.
+- [x] Verify uninterrupted and resumed accepted output on CPU and CUDA.
 
 ### Task 4 — Fire in a draft
 
-- [ ] Wire authored animated fuel/heat and a supported Blender field into the bake.
-- [ ] Publish density, temperature, fuel and flame grids and check each in the native Volume.
+- [x] Wire authored animated fuel/heat and a supported Blender field into the bake.
+- [x] Publish density, temperature, fuel and flame grids and check each in the native Volume.
 - [ ] Verify render edits preserve cache identity and run final acceptance checks.

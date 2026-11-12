@@ -65,6 +65,28 @@ def main():
         damaged[-1] ^= 1
         actual_frames[-1].write_bytes(damaged)
         run(executable, "replay", resumed, "--frame", 2, "--substep", 0, expected=1)
+        # Frame one is valid. The next frame's heat pulse exceeds the fixed
+        # substep's admissible outflow, so no partial frame may be published.
+        rejected_packet = dict(packet)
+        rejected_packet["emitters"] = [dict(
+            lower_m=zero,
+            upper_m=dict(x=1.0, y=1.0, z=1.0),
+            keys=[
+                dict(time_s=0.0, fuel_kg_per_m3_s=0.0, heat_w_per_m3=0.0),
+                dict(time_s=1 / 24, fuel_kg_per_m3_s=0.0, heat_w_per_m3=0.0),
+                dict(time_s=0.05, fuel_kg_per_m3_s=0.0, heat_w_per_m3=1e12),
+            ],
+        )]
+        rejected_source = root / "rejected.json"
+        rejected_source.write_text(json.dumps(rejected_packet), encoding="utf-8")
+        subprocess.run([flatc, "-b", "-o", str(root), schema, str(rejected_source)], check=True)
+        rejected_cache = root / "rejected"
+        records = run(executable, "simulate", rejected_source.with_suffix(".flgs"), "--cache",
+                      rejected_cache, "--frame-end", 2, expected=1)
+        assert records[-1]["field"] == "gas_checkpoint", records[-1]
+        assert len(list((rejected_cache / "checkpoints").glob("*.flgc"))) == 2
+        assert run(executable, "replay", rejected_cache, "--frame", 1, "--substep", 0)[-1]["frame"] == 1
+        run(executable, "inspect", rejected_cache, "--frame", 2, expected=1)
     print(f"Gas {backend} public run, resume, inspect, and replay passed")
 
 
