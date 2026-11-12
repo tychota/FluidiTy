@@ -90,11 +90,145 @@ TEST(GradedMacTransfer3D, ReproducesAffineVelocityOnActualSubfaceAnchors) {
     EXPECT_NEAR(slopes.y, -3, 1e-12);
     EXPECT_NEAR(slopes.z, 0.25, 1e-12);
   }
+  const LiquidParticleState3D particle{.world_position = particle_position};
+  const auto witness = transfer->MeasureSupportMoments(particle, faces);
+  ASSERT_TRUE(witness.ok()) << witness.status();
+  EXPECT_TRUE(witness->has_width_transition);
+  EXPECT_FALSE(witness->has_masked_support);
+  EXPECT_FALSE(witness->matches_quadratic_moments);
+  EXPECT_FALSE(witness->matches_cubic_normal_moments);
+  for (const auto& row : witness->rows) {
+    EXPECT_TRUE(row.full_rank);
+  }
+  EXPECT_EQ(
+      transfer->CheckUniformResamplingSupport(particle, 2, LiquidUniformResamplingBasis3D::kCubicNormal, faces).code(),
+      absl::StatusCode::kFailedPrecondition
+  );
   faces.front().validity = LiquidFaceValidity3D::kLowMass;
   const auto low_mass = transfer->Gather({.world_position = particle_position}, faces);
   ASSERT_TRUE(low_mass.ok()) << low_mass.status();
   EXPECT_FALSE(low_mass->affine_enabled);
   EXPECT_DOUBLE_EQ(low_mass->velocity_slopes.x_row.x, 0);
+}
+
+TEST(GradedMacTransfer3D, MeasuresActualRadialMomentsAndRefusesUniformResampling) {
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (int z = -3; z < 3; ++z) {
+    for (int y = -3; y < 3; ++y) {
+      for (int x = -3; x < 3; ++x) {
+        keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 0});
+      }
+    }
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto transfer = GradedMacTransfer3D::Create(*topology, {4, -2, 8});
+  ASSERT_TRUE(transfer.ok()) << transfer.status();
+  const LiquidParticleState3D particle{.world_position = {3.5, -1.5, 7.5}, .side_tag = -17};
+  std::vector<LiquidAdaptiveFaceState3D> faces(
+      transfer->faces().size(),
+      {.validity = LiquidFaceValidity3D::kValid, .side_tag = particle.side_tag}
+  );
+
+  for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+    const auto anchor = transfer->faces()[slot].world_anchor;
+    faces[slot].carrier_velocity = 2 + 0.5 * (anchor.x - particle.world_position.x)
+        - 0.25 * (anchor.y - particle.world_position.y) + 3 * (anchor.z - particle.world_position.z);
+  }
+  const auto gathered = transfer->Gather(particle, faces);
+  ASSERT_TRUE(gathered.ok()) << gathered.status();
+  ASSERT_TRUE(gathered->affine_enabled);
+  for (const auto slopes :
+       {gathered->velocity_slopes.x_row, gathered->velocity_slopes.y_row, gathered->velocity_slopes.z_row}) {
+    EXPECT_NEAR(slopes.x, 0.5, 1e-12);
+    EXPECT_NEAR(slopes.y, -0.25, 1e-12);
+    EXPECT_NEAR(slopes.z, 3, 1e-12);
+  }
+
+  const auto witness = transfer->MeasureSupportMoments(particle, faces);
+  ASSERT_TRUE(witness.ok()) << witness.status();
+  EXPECT_EQ(witness->leaf_width_m, 1);
+  EXPECT_FALSE(witness->has_masked_support);
+  EXPECT_FALSE(witness->has_width_transition);
+  EXPECT_FALSE(witness->matches_quadratic_moments);
+  EXPECT_FALSE(witness->matches_cubic_normal_moments);
+  const auto deposits = transfer->Deposit(std::span(&particle, 1), faces);
+  ASSERT_TRUE(deposits.ok()) << deposits.status();
+  std::array<double, 3> deposited_mass{};
+  std::size_t first_positive_slot = faces.size();
+  for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+    const double mass = (*deposits)[slot].deposited_mass;
+    const auto axis = static_cast<std::size_t>(transfer->faces()[slot].axis);
+    deposited_mass[axis] += mass;
+    if (mass > 0) {
+      first_positive_slot = std::min(first_positive_slot, slot);
+    }
+    faces[slot].carrier_velocity = slot % 2 == 0 ? 1e200 : -1e200;
+  }
+  const auto changed_velocities = transfer->MeasureSupportMoments(particle, faces);
+  ASSERT_TRUE(changed_velocities.ok()) << changed_velocities.status();
+  for (std::size_t axis = 0; axis < witness->rows.size(); ++axis) {
+    const auto& row = witness->rows[axis];
+    EXPECT_EQ(row.positive_sample_count, 28);
+    EXPECT_EQ(row.unnormalized_weight_sum, 1980.0 / 256);
+    EXPECT_EQ(row.normalized_weight_sum, deposited_mass[axis]);
+    EXPECT_TRUE(row.full_rank);
+    EXPECT_FALSE(row.uses_low_mass);
+    EXPECT_EQ(row.mean_offset.x, 0);
+    EXPECT_EQ(row.mean_offset.y, 0);
+    EXPECT_EQ(row.mean_offset.z, 0);
+    const auto& covariance = row.centered_covariance;
+    const std::array diagonal{covariance.x_row.x, covariance.y_row.y, covariance.z_row.z};
+    for (std::size_t coordinate = 0; coordinate < diagonal.size(); ++coordinate) {
+      EXPECT_NEAR(diagonal[coordinate], coordinate == axis ? 167.0 / 396 : 76.0 / 165, 1e-15);
+    }
+    EXPECT_NEAR(covariance.x_row.y, 0, 1e-15);
+    EXPECT_NEAR(covariance.x_row.z, 0, 1e-15);
+    EXPECT_NEAR(covariance.y_row.z, 0, 1e-15);
+    const auto& other = changed_velocities->rows[axis];
+    EXPECT_EQ(other.normalized_weight_sum, row.normalized_weight_sum);
+    EXPECT_EQ(other.centered_covariance.x_row.x, covariance.x_row.x);
+    EXPECT_EQ(other.centered_covariance.y_row.y, covariance.y_row.y);
+    EXPECT_EQ(other.centered_covariance.z_row.z, covariance.z_row.z);
+    EXPECT_EQ(other.full_rank, row.full_rank);
+  }
+  for (const auto basis : {LiquidUniformResamplingBasis3D::kQuadratic, LiquidUniformResamplingBasis3D::kCubicNormal}) {
+    EXPECT_EQ(
+        transfer->CheckUniformResamplingSupport(particle, 1, basis, faces).code(),
+        absl::StatusCode::kFailedPrecondition
+    );
+  }
+
+  ASSERT_LT(first_positive_slot, faces.size());
+  const auto masked_axis = static_cast<std::size_t>(transfer->faces()[first_positive_slot].axis);
+  faces[first_positive_slot].validity = LiquidFaceValidity3D::kMissing;
+  const auto masked = transfer->MeasureSupportMoments(particle, faces);
+  ASSERT_TRUE(masked.ok()) << masked.status();
+  EXPECT_TRUE(masked->has_masked_support);
+  EXPECT_TRUE(masked->rows[masked_axis].full_rank);
+  EXPECT_EQ(masked->rows[masked_axis].positive_sample_count, 27);
+  EXPECT_EQ(
+      transfer->CheckUniformResamplingSupport(particle, 1, LiquidUniformResamplingBasis3D::kQuadratic, faces).code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  faces[first_positive_slot].validity = LiquidFaceValidity3D::kLowMass;
+  const auto low_mass = transfer->MeasureSupportMoments(particle, faces);
+  ASSERT_TRUE(low_mass.ok()) << low_mass.status();
+  EXPECT_FALSE(low_mass->has_masked_support);
+  EXPECT_TRUE(low_mass->rows[masked_axis].uses_low_mass);
+  EXPECT_TRUE(low_mass->rows[masked_axis].full_rank);
+  EXPECT_EQ(
+      transfer->CheckUniformResamplingSupport(particle, 1, LiquidUniformResamplingBasis3D::kQuadratic, faces).code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+
+  EXPECT_EQ(transfer->MeasureSupportMoments(particle, {}).status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(
+      transfer->CheckUniformResamplingSupport(particle, 0, LiquidUniformResamplingBasis3D::kQuadratic, faces).code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  faces[first_positive_slot].carrier_velocity = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(transfer->MeasureSupportMoments(particle, faces).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
 TEST(GradedMacTransfer3D, RefusesUnrepresentableTranslatedSubfaceCenter) {
