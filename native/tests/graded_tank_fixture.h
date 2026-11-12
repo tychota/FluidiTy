@@ -142,15 +142,21 @@ inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
-inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+inline absl::Status
+PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene, std::int32_t horizontal_cells = 1) {
   state.geometry.cell_width = 0.5;
   scene.field = LiquidHorizontalPlaneSurface3D{4};
-  scene.obstacle = AxisAlignedLiquidTank3D{0, 0.5, 0, 0, 0.5, 0};
+  const double tank_width_m = 0.5 * horizontal_cells;
+  scene.obstacle = AxisAlignedLiquidTank3D{0, tank_width_m, 0, 0, tank_width_m, 0};
   scene.world_acceleration = {};
   scene.liquid_density = 2;
-  std::array<AdaptiveMacCellKey3D, 8> keys{};
-  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
-    keys[ordinal].lower_corner.y = static_cast<std::int32_t>(ordinal);
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (std::int32_t z = 0; z < horizontal_cells; ++z) {
+    for (std::int32_t y = 0; y < 8; ++y) {
+      for (std::int32_t x = 0; x < horizontal_cells; ++x) {
+        keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 0});
+      }
+    }
   }
   const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
   if (!topology.ok()) {
@@ -183,7 +189,8 @@ inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, Liquid
     };
     auto& particle = (*particles)[ordinal];
     particle.id = ordinal + 1;
-    particle.world_position = {0.25, 0.5 * leaf.key.lower_corner.y + 0.25, 0.25};
+    const auto lower = leaf.key.lower_corner;
+    particle.world_position = {0.5 * lower.x + 0.25, 0.5 * lower.y + 0.25, 0.5 * lower.z + 0.25};
     particle.mass = 2 * leaf.cell_volume;
     particle.reference_volume = leaf.cell_volume;
     particle.pic_initialized = true;

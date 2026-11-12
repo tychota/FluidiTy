@@ -90,3 +90,23 @@ ctest --test-dir out/build/motion-cpu --output-on-failure -R '^MotionCarrier3D' 
 This moving-correspondence control uses the stationary planar tank's signed
 surface and target volume. The adaptive occupancy mapper still needs to be
 wired into particle-band extraction on moving, nonplanar surfaces.
+
+## Accepted planar band retirement in Mesh
+
+The native planar tank path validates each motion sample with an Eulerian
+owner. Its canonical leaves must be disjoint and entirely inside the resolved
+tank, each represented liquid volume must fill its leaf, and the inventory
+sum must cover the planar tank. The accepted endpoint sum sets the Mesh
+component volume target. A partial leaf fails closed before reconstruction.
+
+The native control retires a physically deep leaf in Simulate, completes
+the frame, and decodes that motion payload for Mesh. The 1.5 × 4 × 1.5 m tank
+retains one outward component and all seed vertex IDs with the 0.5% volume
+tolerance. Halving the accepted core volume in the decoded input is refused.
+The separate extraction fixture checks the inward boundary of a genuine
+cavity. Moving nonplanar extraction still requires complete authenticated
+air and liquid coverage and a support witness on the Mesh lattice.
+
+```powershell
+ctest --test-dir out/build/band-mesh-cpu -R 'UsesAcceptedEulerianCoreInventoryForPlanarMesh|^SurfaceOccupancy3D' --output-on-failure
+```

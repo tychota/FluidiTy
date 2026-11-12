@@ -27,6 +27,9 @@ struct SurfaceReconstructionResult3D {
 // Connects the density reference, accepted carrier, persistent tracking and
 // measured correction for a closed material component. Supports stationary
 // halfspace contact and a stationary open tank with a planar liquid field.
+// Mixed adaptive ownership requires a particle band and full accepted leaf
+// occupancy covering that planar tank. The accepted inventory sets the volume
+// target. Unknown or partial coverage fails before extraction.
 // Frame zero can also seed up to 16 separate sphere-union components, sharing
 // the lattice budget evenly. Nested or intersecting render surfaces fail closed.
 // World lattice bounds snap to fixed spacing; they do not change the query
