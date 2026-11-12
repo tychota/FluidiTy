@@ -654,3 +654,14 @@ Merged pinned main b540f2d locally as 54efed6 to adopt the accepted M3 band/core
 The full-cell ownership round trip conserved 6 m³ clear and 2 m³ dyed water through band retirement, eight-child prolongation, restriction and reseeding with oil present in the stencil. A separate nonuniform refinement fixture preserved 3 m³ and 9 m³ across child current volumes of 1.375 and 1.625 m³. Malformed constituent totals, cross-phase owners and the ninth constituent were rejected. Twenty CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidBandHandoff3D|LiquidRemap3D|LiquidUniform'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-constituent-band.
 
 Main and origin/main were both at b540f2d. M3 family-remap integration fdc3c28 and topology/exterior-ownership integration 1af7b0f remain outside main. The verified M4 APIs can carry composition through full single-phase cells. Production adaptive scheduling, checkpoint ownership and coarse/fine traction still need the accepted M3 execution path and its qualification receipts.
+
+## Full-suite and capillary requalification started at bed51fd
+
+The complete Debug CPU build and ctest --preset windows-debug-cpu -j 6 passed 734 of 734 tests. A Release incremental build produced inconsistent Mesh result layouts after header changes. Its Ninja compiler-dependency prefix was mojibake while compiler output used French inclusion lines. The affected incremental results are retained in out/m4-bed51fd-windows-release-cuda-tests.log. Reconfigure and build in a fresh directory before using Release results. The clean Release build and suite receipts use out/m4-bed51fd-release-clean.
+
+The public capillary runner now launches the frozen 216-frame oscillating-drop-l2 fixture, authenticates committed frame records through the native reader, and checks step traces, centered volume-weighted quadrupole, same-sign extrema, frequency, damping and volume drift. It stores raw process streams and binary hashes. A synthetic damped sinusoid with angular frequency 2 rad/s measured 2.000005 rad/s and damping 0.0499374, against 0.04994. The full CPU run, clean Release test suite, and pinned Lean independent proof run were still active when this receipt was recorded.
+
+```powershell
+$build = 'out/build/m4-bed51fd-release-clean'
+uv run --project reference --locked python -B tools/native/tests/run_capillary_drop.py --solver "$build/fluidity_simulate.exe" --fixture "$build/fluidity_liquid_acceptance_fixture.exe" --backend cpu --output out/m4-bed51fd-drop-cpu
+```
