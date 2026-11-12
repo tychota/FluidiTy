@@ -64,6 +64,23 @@ motion acceptance on both backends.
 Native Debug and CUDA Release report the same values at the printed precision.
 This is a differential measurement, with no bitwise replay claim.
 
+### Sand timestep sensitivity
+
+Halving only the nominal timestep, with the physical inputs and measurement
+times fixed, produced the following results on both backends.
+
+| h (m) | nominal dt (s) | angle | final 0.05 s drift | Q-SAND window |
+|---|---:|---:|---:|---|
+| 0.075 | 0.0009375 | 37.248475° | 1.036500° | Above |
+| 0.0625 | 0.00078125 | 32.699841° | 0.782335° | Within |
+
+The measured shifts are +7.087326° and +4.896019° respectively. No single
+nominal timestep factor in this pair of runs qualified both grid widths.
+The fixture exposes this as a separate command with exit 1 when either
+case misses the existing window. Next isolate the per-step PIC velocity
+replacement and the elastic update from the spatial quadrature, before
+changing the material parameters or angle estimator.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -87,6 +104,10 @@ compute-sanitizer --tool memcheck --error-exitcode 1 ./out/build/windows-release
 # Both commands intentionally retain the failing finer-grid qualification.
 & ./out/build/windows-debug-cpu/fluidity_m5_dry_scene_tests.exe --q-sand-refined
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-refined
+
+# Timestep sensitivity at the same two widths. Exit 1 records the failed reference case.
+& ./out/build/windows-debug-cpu/fluidity_m5_dry_scene_tests.exe --q-sand-half-step
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-half-step
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources

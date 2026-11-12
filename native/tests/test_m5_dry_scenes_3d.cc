@@ -117,7 +117,7 @@ bool TestScene(double width, double duration, bool snow) {
   }
   const double mean_log_plastic = log_plastic_sum / particles.size();
   std::printf(
-      "%s h=%.3f dt=%.4f height=%.6f radius=%.6f mean_log_Jpl=%.6f kinetic_J=%.6f\n",
+      "%s h=%.4f dt=%.8f height=%.6f radius=%.6f mean_log_Jpl=%.6f kinetic_J=%.6f\n",
       snow ? "snow" : "sand",
       width,
       duration,
@@ -264,6 +264,11 @@ bool TestUncutStressWork() {
 int main(int argc, char** argv) {
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-refined") {
     return TestScene(0.0625, 0.0015625, false) ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-half-step") {
+    const bool reference = TestScene(0.075, 0.0009375, false);
+    const bool refined = TestScene(0.0625, 0.00078125, false);
+    return reference && refined ? 0 : 1;
   }
   if (argc != 1) {
     return 2;
