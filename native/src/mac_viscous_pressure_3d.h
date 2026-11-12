@@ -7,8 +7,10 @@
 #include "mac_pressure_3d_system.h"
 
 namespace fluidity {
-class MacPressureWorkspace3D;
+namespace pressure_internal {
+class MacPressureScratch3D;
 }
+}  // namespace fluidity
 
 namespace fluidity::pressure_internal {
 
@@ -36,19 +38,19 @@ struct UniformViscousPressureInputs3D {
 };
 
 // Borrows the reserved pressure arena. Consume the projection before any
-// other pressure scratch use. Earlier scratch borrows expire when this starts.
+// other pressure scratch use. Earlier spans must remain disjoint from the appended solver scratch.
 // Failures leave any published inviscid projection bank intact.
-absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressure3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectScratchMacViscousPressure3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
-    MacPressureWorkspace3D& workspace
+    MacPressureScratch3D& scratch
 );
-absl::StatusOr<MacViscousPressureProjectionView3D> ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectScratchMacViscousPressureWithVelocitySolver3D(
     const UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
-    MacPressureWorkspace3D& workspace,
+    MacPressureScratch3D& scratch,
     SolveViscousVelocity3D solve_velocity_block
 );
 

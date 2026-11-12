@@ -9,7 +9,7 @@ inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
 using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<
-    MacViscousPressureProjectionView3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, MacPressureWorkspace3D&)>;
+    MacViscousPressureProjectionView3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, pressure_internal::MacPressureScratch3D&)>;
 
 // Builds strain rows from the same geometry as pressure, then runs the
 // coupled backend. Admits full cells and connected cut free surfaces. A

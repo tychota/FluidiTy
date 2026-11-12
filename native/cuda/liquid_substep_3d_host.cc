@@ -216,14 +216,8 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
                 [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
                     std::span<const MacStrainRow3D> rows,
                     MacPressureSolverOptions3D controls,
-                    MacPressureWorkspace3D& pressure_workspace) {
-                  return cuda_internal::ProjectArenaViscousPressure3D(
-                      arena,
-                      inputs,
-                      rows,
-                      controls,
-                      pressure_workspace
-                  );
+                    pressure_internal::MacPressureScratch3D& pressure_scratch) {
+                  return cuda_internal::ProjectArenaViscousPressure3D(arena, inputs, rows, controls, pressure_scratch);
                 }
             );
           },

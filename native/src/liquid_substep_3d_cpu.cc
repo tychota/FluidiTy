@@ -6,8 +6,11 @@
 #include <numeric>
 #include <tuple>
 
+#include "absl/cleanup/cleanup.h"
 #include "liquid_boundary_backend.h"
 #include "liquid_substep_3d_internal.h"
+#include "mac_pressure_3d_workspace_internal.h"
+#include "viscosity_strain_3d.h"
 namespace fluidity {
 namespace liquid_step_internal {
 absl::Status ValidateParticleUpdateRecords(
@@ -280,29 +283,21 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
 namespace {
 constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
 
-struct CutViscosityGeometry {
-  std::vector<std::array<double, 8>> octant_volumes;
-  std::vector<std::array<double, 3>> wall_normal_distances;
-};
-
-absl::StatusOr<CutViscosityGeometry> PrepareCutViscosityGeometry(
+absl::Status PrepareCutViscosityGeometry(
     const LiquidBoundaryGeometryViewInputs3D& geometry,
     std::span<const MacPressureCell3D> pressure_cells,
-    double full_volume
+    double full_volume,
+    std::span<std::array<double, 8>> octant_volumes,
+    std::span<std::array<double, 3>> wall_normal_distances
 ) {
   const auto corner_key = [](CellCornerIndex3D index) {
     return std::tuple(index.z, index.y, index.x);
   };
-  CutViscosityGeometry result;
-  result.octant_volumes.reserve(pressure_cells.size());
   const auto uniform_grid = geometry.mac_grid.geometry();
   const double width = uniform_grid.cell_width;
-  const bool has_tank = std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle);
-  if (has_tank) {
-    result.wall_normal_distances.reserve(pressure_cells.size());
-  }
-  for (const auto& cell : pressure_cells) {
-    if (has_tank) {
+  for (std::size_t ordinal = 0; ordinal < pressure_cells.size(); ++ordinal) {
+    const auto& cell = pressure_cells[ordinal];
+    if (!wall_normal_distances.empty()) {
       const boundary_internal::GeometryInput query{
           .mode = boundary_internal::GeometryMode::kCell,
           .geometry = uniform_grid,
@@ -325,10 +320,10 @@ absl::StatusOr<CutViscosityGeometry> PrepareCutViscosityGeometry(
           return absl::OutOfRangeError("viscous wall-normal derivative is unrepresentable");
         }
       }
-      result.wall_normal_distances.push_back(distances);
+      wall_normal_distances[ordinal] = distances;
     }
     if (std::abs(cell.fluid_volume / full_volume - 1.0) <= kFullCellRoundoff) {
-      auto& full_octants = result.octant_volumes.emplace_back();
+      auto& full_octants = octant_volumes[ordinal];
       full_octants.fill(full_volume / 8.0);
       continue;
     }
@@ -362,9 +357,9 @@ absl::StatusOr<CutViscosityGeometry> PrepareCutViscosityGeometry(
     if (measured_volume <= 0.0 || std::abs(measured_volume / cell.fluid_volume - 1.0) > kPartitionRoundoff) {
       return absl::FailedPreconditionError("cut strain quadratures differ from the frozen pressure volume");
     }
-    result.octant_volumes.push_back(*octants);
+    octant_volumes[ordinal] = *octants;
   }
-  return result;
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -382,8 +377,18 @@ absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::Project
   const double full_area = width * width;
   const double full_volume = full_area * width;
   bool uses_cut_cells = false;
-  std::vector<MacViscosityCell3D> material;
-  material.reserve(problem.cells.size());
+  using Access = pressure_internal::CoupledPressureWorkspaceAccess3D;
+  if (!Access::Fits(workspace, problem.cells.size(), problem.faces.size())) {
+    return Error(absl::StatusCode::kResourceExhausted);
+  }
+  pressure_internal::MacPressureScratch3D scratch(Access::Storage(workspace));
+  const absl::Cleanup record_usage = [&] {
+    Access::RecordUsage(workspace, scratch);
+  };
+  const auto material = scratch.Take<MacViscosityCell3D>(problem.cells.size());
+  if (!material.ok()) {
+    return material.status();
+  }
   if (!cell_dynamic_viscosity.empty() && cell_dynamic_viscosity.size() != problem.cells.size()) {
     return absl::InvalidArgumentError("viscosity coefficients differ from the frozen pressure cells");
   }
@@ -392,7 +397,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::Project
     // The cut-volume accumulator sums tetrahedra even for full cells.
     uses_cut_cells |= std::abs(cell.fluid_volume / full_volume - 1.0) > kFullCellRoundoff;
     const double viscosity = cell_dynamic_viscosity.empty() ? dynamic_viscosity : cell_dynamic_viscosity[index];
-    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = viscosity});
+    (*material)[index] = {.cell_index = cell.cell_index, .dynamic_viscosity = viscosity};
   }
   const bool uses_cut_faces = std::ranges::any_of(problem.faces, [&](const auto& face) {
     return face.open_area != 0.0 && face.open_area != full_area;
@@ -403,35 +408,43 @@ absl::StatusOr<MacViscousPressureProjectionView3D> liquid_step_internal::Project
   if (uses_cut_geometry && !supports_cut_geometry) {
     return absl::UnimplementedError("oblique cut solid boundaries require viscous wall strain closure");
   }
-  const auto assemble_strain = [&]() -> absl::StatusOr<std::vector<MacStrainRow3D>> {
-    if (!uses_cut_geometry) {
-      return AssembleFullCellMacStrain3D(grid, material);
+  std::span<std::array<double, 8>> octant_volumes;
+  std::span<std::array<double, 3>> wall_normal_distances;
+  if (uses_cut_geometry) {
+    const auto octants = scratch.Take<std::array<double, 8>>(problem.cells.size());
+    if (!octants.ok()) {
+      return octants.status();
     }
-    const auto cut_geometry = PrepareCutViscosityGeometry(geometry, problem.cells, full_volume);
-    if (!cut_geometry.ok()) {
-      return cut_geometry.status();
-    }
-    auto rows = AssembleCutCellMacStrainWithBoundary3D(grid, material, cut_geometry->octant_volumes, problem.faces);
-    if (!rows.ok()) {
-      return rows.status();
-    }
-    // The first three rows per cell are normal differences. In a tank the
-    // sealed slot stands for the velocity at the physical Cartesian wall.
-    for (std::size_t cell = 0; cell < cut_geometry->wall_normal_distances.size(); ++cell) {
-      for (std::size_t axis = 0; axis < 3; ++axis) {
-        auto& row = (*rows)[3 * cell + axis];
-        const double derivative = 1.0 / cut_geometry->wall_normal_distances[cell][axis];
-        row.terms[0].coefficient = -derivative;
-        row.terms[1].coefficient = derivative;
+    octant_volumes = *octants;
+    if (std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle)) {
+      const auto wall_distances = scratch.Take<std::array<double, 3>>(problem.cells.size());
+      if (!wall_distances.ok()) {
+        return wall_distances.status();
       }
+      wall_normal_distances = *wall_distances;
     }
-    return rows;
-  };
-  const auto strain = assemble_strain();
+    const auto prepared =
+        PrepareCutViscosityGeometry(geometry, problem.cells, full_volume, octant_volumes, wall_normal_distances);
+    if (!prepared.ok()) {
+      return prepared;
+    }
+  }
+  const auto strain =
+      viscosity_internal::AssembleUniformStrainInScratch3D(grid, *material, octant_volumes, problem.faces, scratch);
   if (!strain.ok()) {
     return strain.status();
   }
-  return project({grid, geometry.step_duration, problem.cells, problem.faces}, *strain, options, workspace);
+  // The first three rows per cell are normal differences. In a tank the
+  // sealed slot stands for the velocity at the physical Cartesian wall.
+  for (std::size_t cell = 0; cell < wall_normal_distances.size(); ++cell) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      auto& row = (*strain)[3 * cell + axis];
+      const double derivative = 1.0 / wall_normal_distances[cell][axis];
+      row.terms[0].coefficient = -derivative;
+      row.terms[1].coefficient = derivative;
+    }
+  }
+  return project({grid, geometry.step_duration, problem.cells, problem.faces}, *strain, options, scratch);
 }
 
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
@@ -577,7 +590,7 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
                 cell_dynamic_viscosity,
                 options,
                 workspace,
-                pressure_internal::ProjectWorkspaceMacViscousPressure3D
+                pressure_internal::ProjectScratchMacViscousPressure3D
             );
           },
       .gather =

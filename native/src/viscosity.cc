@@ -15,6 +15,8 @@
 
 #include "absl/functional/function_ref.h"
 #include "fluidity/host/views.h"
+#include "mac_pressure_3d_workspace_internal.h"
+#include "viscosity_strain_3d.h"
 #include "viscosity_velocity_block_3d.h"
 
 namespace fluidity {
@@ -749,13 +751,14 @@ absl::Status AssembleMacStrain2D(
 }
 
 namespace {
-absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
+template <typename Rows>
+absl::Status AssembleMacStrain(
     const SparseMacGridView3D& grid,
     std::span<const MacViscosityCell3D> cells,
     std::span<const std::array<double, 8>> liquid_octant_volumes,
-    bool include_complete_shear = true
+    bool include_complete_shear,
+    Rows& rows
 ) {
-  std::vector<MacStrainRow3D> rows;
   const auto maximum_rows = CheckedExtentProduct(cells.size(), 6);
   if (!maximum_rows.ok() || *maximum_rows > rows.max_size()) {
     return absl::OutOfRangeError("viscosity strain row extent is unrepresentable");
@@ -775,7 +778,7 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
     }
   }
   if (cells.empty()) {
-    return rows;
+    return absl::OkStatus();
   }
 
   const double spacing = grid.geometry().cell_width;
@@ -838,7 +841,7 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
   }
 
   if (!include_complete_shear) {
-    return rows;
+    return absl::OkStatus();
   }
   for (const auto& cell : cells) {
     for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
@@ -917,14 +920,19 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
       }
     }
   }
-  return rows;
+  return absl::OkStatus();
 }
 
 }  // namespace
 
 absl::StatusOr<std::vector<MacStrainRow3D>>
 AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells) {
-  return AssembleMacStrain(grid, cells, {});
+  std::vector<MacStrainRow3D> rows;
+  const auto status = AssembleMacStrain(grid, cells, {}, true, rows);
+  if (!status.ok()) {
+    return status;
+  }
+  return rows;
 }
 
 absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
@@ -935,7 +943,12 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
   if (liquid_octant_volumes.size() != cells.size()) {
     return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
   }
-  return AssembleMacStrain(grid, cells, liquid_octant_volumes);
+  std::vector<MacStrainRow3D> rows;
+  const auto status = AssembleMacStrain(grid, cells, liquid_octant_volumes, true, rows);
+  if (!status.ok()) {
+    return status;
+  }
+  return rows;
 }
 
 namespace {
@@ -1021,33 +1034,35 @@ std::optional<std::array<FaceIndex3D, 2>> FindCutBoundaryDerivative(
 }
 }  // namespace
 
-absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary3D(
+namespace {
+template <typename Rows>
+absl::Status AssembleCutCellStrainWithBoundary(
     const SparseMacGridView3D& grid,
     std::span<const MacViscosityCell3D> cells,
     std::span<const std::array<double, 8>> liquid_octant_volumes,
-    std::span<const MacPressureFace3D> pressure_faces
+    std::span<const MacPressureFace3D> pressure_faces,
+    std::span<std::size_t> slots,
+    Rows& rows
 ) {
   if (liquid_octant_volumes.size() != cells.size()) {
     return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
   }
-  auto rows = AssembleMacStrain(grid, cells, liquid_octant_volumes, false);
-  if (!rows.ok() || cells.empty()) {
-    return rows;
+  const auto normal_status = AssembleMacStrain(grid, cells, liquid_octant_volumes, false, rows);
+  if (!normal_status.ok() || cells.empty()) {
+    return normal_status;
   }
 
-  std::vector<std::size_t> slots;
-  slots.reserve(pressure_faces.size());
-  for (const auto& face : pressure_faces) {
-    const auto slot = grid.FaceSlot(face.face_index);
+  for (std::size_t face = 0; face < pressure_faces.size(); ++face) {
+    const auto slot = grid.FaceSlot(pressure_faces[face].face_index);
     if (!slot.ok()) {
       return slot.status();
     }
-    if (!slots.empty() && slots.back() >= *slot) {
+    if (face > 0 && slots[face - 1] >= *slot) {
       return absl::InvalidArgumentError("cut strain pressure faces must be in unique owned slot order");
     }
-    slots.push_back(*slot);
+    slots[face] = *slot;
   }
-  for (const auto& row : *rows) {
+  for (const auto& row : rows) {
     for (const auto& term : std::span(row.terms).first(row.term_count)) {
       if (!std::ranges::binary_search(slots, term.face_slot)) {
         return absl::FailedPreconditionError("cut strain normal face has no pressure owner");
@@ -1156,12 +1171,92 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary
           if (!status.ok()) {
             return status;
           }
-          rows->push_back(row);
+          rows.push_back(row);
         }
       }
     }
   }
+  return absl::OkStatus();
+}
+
+// Capacity is checked against the geometric bound before entering the assembler.
+class StrainRowSpan {
+ public:
+  explicit StrainRowSpan(std::span<MacStrainRow3D> storage) : storage_(storage) {
+  }
+  std::size_t max_size() const {
+    return storage_.size();
+  }
+  void reserve(std::size_t) {
+  }
+  void push_back(const MacStrainRow3D& row) {
+    storage_[size_++] = row;
+  }
+  auto begin() const {
+    return values().begin();
+  }
+  auto end() const {
+    return values().end();
+  }
+  std::span<MacStrainRow3D> values() const {
+    return storage_.first(size_);
+  }
+
+ private:
+  std::span<MacStrainRow3D> storage_;
+  std::size_t size_ = 0;
+};
+}  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces
+) {
+  std::vector<MacStrainRow3D> rows;
+  std::vector<std::size_t> slots(cells.empty() ? 0 : pressure_faces.size());
+  const auto status =
+      AssembleCutCellStrainWithBoundary(grid, cells, liquid_octant_volumes, pressure_faces, slots, rows);
+  if (!status.ok()) {
+    return status;
+  }
   return rows;
+}
+
+absl::StatusOr<std::span<MacStrainRow3D>> viscosity_internal::AssembleUniformStrainInScratch3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces,
+    pressure_internal::MacPressureScratch3D& scratch
+) {
+  const bool cut = !octant_volumes.empty();
+  const std::size_t rows_per_cell = cut ? pressure_internal::kMaximumUniformStrainRowsPerCell3D : 6;
+  const auto row_capacity = CheckedExtentProduct(cells.size(), rows_per_cell);
+  if (!row_capacity.ok()) {
+    return row_capacity.status();
+  }
+  const auto storage = scratch.Take<MacStrainRow3D>(*row_capacity);
+  if (!storage.ok()) {
+    return storage.status();
+  }
+  StrainRowSpan rows(*storage);
+  absl::Status status;
+  if (cut) {
+    pressure_internal::MacPressureScratchMark3D temporary(scratch);
+    const auto slots = scratch.Take<std::size_t>(pressure_faces.size());
+    if (!slots.ok()) {
+      return slots.status();
+    }
+    status = AssembleCutCellStrainWithBoundary(grid, cells, octant_volumes, pressure_faces, *slots, rows);
+  } else {
+    status = AssembleMacStrain(grid, cells, {}, true, rows);
+  }
+  if (!status.ok()) {
+    return status;
+  }
+  return rows.values();
 }
 
 absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(

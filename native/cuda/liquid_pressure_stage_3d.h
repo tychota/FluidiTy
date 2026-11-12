@@ -38,6 +38,6 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectArenaViscousPressure3D
     const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
-    MacPressureWorkspace3D& workspace
+    pressure_internal::MacPressureScratch3D& scratch
 );
 }  // namespace fluidity::cuda_internal

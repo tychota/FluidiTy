@@ -1612,7 +1612,7 @@ TEST(LiquidSubstep3D, ViscousCartesianCutPistonUsesWallNormalStrainAndFlux) {
         [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
             std::span<const MacStrainRow3D> rows,
             MacPressureSolverOptions3D controls,
-            MacPressureWorkspace3D& pressure_workspace) {
+            pressure_internal::MacPressureScratch3D& pressure_scratch) {
           if (!rows.empty() && rows[0].low_cell.x == 0 && rows[0].low_cell.y == 0 && rows[0].low_cell.z == 0
               && rows[0].first_axis == FaceNormalAxis::kX && rows[0].second_axis == FaceNormalAxis::kX) {
             EXPECT_DOUBLE_EQ(rows[0].quadrature_weight, 15.0);
@@ -1621,7 +1621,7 @@ TEST(LiquidSubstep3D, ViscousCartesianCutPistonUsesWallNormalStrainAndFlux) {
             ++static_cast<PistonAudit*>(context)->wall_rows;
           }
           const auto result =
-              pressure_internal::ProjectWorkspaceMacViscousPressure3D(inputs, rows, controls, pressure_workspace);
+              pressure_internal::ProjectScratchMacViscousPressure3D(inputs, rows, controls, pressure_scratch);
           if (result.ok()) {
             auto& observed = *static_cast<PistonAudit*>(context);
             observed.top_outward_flux = 0.0;
@@ -2482,6 +2482,48 @@ TEST(Viscosity, BoundedVelocityBlockSolveAllocatesNothingAndMatchesOwningPath) {
   EXPECT_EQ(rhs, original_rhs);
   EXPECT_EQ(scheduler_allocations, 0u);
   EXPECT_EQ(scheduler_frees, 0u);
+}
+
+TEST(LiquidSubstep3D, PositiveViscosityAttemptsAllocateAndFreeNothing) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (auto failure : {absl::StatusCode::kOk, absl::StatusCode::kAborted, absl::StatusCode::kFailedPrecondition}) {
+    auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    scheduler->SetStageFaultHookForTesting({&failure, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                              if (stage != LiquidPhysicalStage3D::kAccept) {
+                                                return absl::OkStatus();
+                                              }
+                                              return absl::Status(*static_cast<absl::StatusCode*>(context), {});
+                                            }});
+    scheduler_allocations = 0;
+    scheduler_frees = 0;
+    bool succeeded = false;
+    auto disposition = LiquidAttemptDisposition3D::kFatal;
+    scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+    {
+      const auto result = scheduler->Attempt(duration);
+      succeeded = result.ok();
+      if (succeeded) {
+        disposition = result->disposition;
+      }
+    }
+    _CrtSetAllocHook(scheduler_previous_hook);
+    ASSERT_TRUE(succeeded);
+    EXPECT_EQ(scheduler_allocations, 0u);
+    EXPECT_EQ(scheduler_frees, 0u);
+    if (failure == absl::StatusCode::kOk) {
+      EXPECT_EQ(disposition, LiquidAttemptDisposition3D::kAccepted);
+      EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, duration);
+    } else {
+      const auto expected = failure == absl::StatusCode::kAborted ? LiquidAttemptDisposition3D::kRetryDt
+                                                                  : LiquidAttemptDisposition3D::kFatal;
+      EXPECT_EQ(disposition, expected);
+      ExpectIdenticalSerializedState(fixture->initial, scheduler->committed());
+    }
+  }
 }
 
 TEST(LiquidSubstep3D, WettedPistonAttemptsAllocateAndFreeNothing) {
