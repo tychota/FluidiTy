@@ -60,3 +60,33 @@ component-volume targets from that same accepted interval.
 ```powershell
 uv run --offline --project reference --locked --group native ctest --test-dir out/build/occupancy-cpu --output-on-failure -R '^SurfaceOccupancy3D' --no-tests=error
 ```
+
+## Graded motion carrier in Mesh
+
+The existing Mesh motion interface now samples the canonical accepted graded
+subfaces. It uses valid or predicted same-side carriers and the graded affine
+fit. Rank loss selects PIC, and missing compatible support fails. At a
+stationary planar tank's open top the carrier continues the interior fit at
+most half a finest-cell width. This covers the small outward displacement from
+Mesh volume correction. The manufactured affine control passed at the 2:1
+corner and across that boundary within 1e-11 m/s.
+
+The public graded Simulate cache with five leaves and 25 subfaces published
+Mesh frames 0 through 2. Frame 2 retained all 458 vertex IDs and 912 triangles.
+The relative volume error was -0.00010954. A separate replay process regenerated
+payload BLAKE3
+`6340f73c6a36857f7876a64616ddd3979d87506840a10848e3b7b45a3b5dc049`.
+
+Run against the public graded cache from
+[the Simulate qualification](graded-simulate-runtime.md#public-cli-motion-capture),
+with a fresh output directory.
+
+```powershell
+ctest --test-dir out/build/motion-cpu --output-on-failure -R '^MotionCarrier3D' --no-tests=error
+& ./out/build/motion-cpu/fluidity_simulate.exe run --stage mesh --cache $gradedCache --output-cache $meshCache --surface-spacing 0.125 --surface-sigma 0.25 --frame-end 2
+& ./out/build/motion-cpu/fluidity_simulate.exe replay --stage mesh --cache $gradedCache --output-cache $meshCache --frame 2 --substep 0
+```
+
+This moving-correspondence control uses the stationary planar tank's signed
+surface and target volume. The adaptive occupancy mapper still needs to be
+wired into particle-band extraction on moving, nonplanar surfaces.

@@ -20,8 +20,11 @@ bool Usable(LiquidFaceValidity3D validity) {
 }
 }  // namespace
 
-FrozenMotionCarrier3D::FrozenMotionCarrier3D(SparseMacGrid3D grid, LiquidObstacle3D obstacle, std::vector<Face> faces)
-    : grid_(std::move(grid)), obstacle_(std::move(obstacle)), faces_(std::move(faces)) {
+FrozenMotionCarrier3D::FrozenMotionCarrier3D(
+    LiquidObstacle3D obstacle,
+    std::variant<UniformCarrier, AdaptiveCarrier> carrier
+)
+    : obstacle_(std::move(obstacle)), carrier_(std::move(carrier)) {
 }
 
 absl::StatusOr<FrozenMotionCarrier3D> FrozenMotionCarrier3D::Create(
@@ -32,6 +35,47 @@ absl::StatusOr<FrozenMotionCarrier3D> FrozenMotionCarrier3D::Create(
   const auto valid = ValidateLiquidState3D(state);
   if (!valid.ok()) {
     return valid;
+  }
+  const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, state.clock.time);
+  if (!state.adaptive_cells.values().empty()) {
+    std::vector<AdaptiveMacCellKey3D> keys;
+    keys.reserve(state.adaptive_cells.size());
+    for (const auto& cell : state.adaptive_cells.values()) {
+      keys.push_back(cell.key);
+    }
+    const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+    if (!topology.ok()) {
+      return topology.status();
+    }
+    std::optional<Vec3> solid_upper;
+    std::optional<PlanarTop> open_top;
+    if (const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle)) {
+      solid_upper = Vec3{tank->high_x, 0, tank->high_z};
+      const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
+      if (plane && tank->piston_velocity_x == 0 && std::isfinite(plane->world_surface_height_y)) {
+        open_top = PlanarTop{
+            .height_m = plane->world_surface_height_y,
+            .continuation_width_m = 0.5 * state.geometry.cell_width,
+        };
+      }
+    }
+    auto transfer = GradedMacTransfer3D::Create(*topology, state.geometry.world_origin, solid_upper);
+    if (!transfer.ok()) {
+      return transfer.status();
+    }
+    std::vector<LiquidAdaptiveFaceState3D> faces(
+        state.adaptive_faces.values().begin(),
+        state.adaptive_faces.values().end()
+    );
+    for (auto& face : faces) {
+      if (!Usable(face.validity)) {
+        face.validity = LiquidFaceValidity3D::kMissing;
+      }
+    }
+    return FrozenMotionCarrier3D(
+        obstacle,
+        AdaptiveCarrier{.transfer = std::move(*transfer), .faces = std::move(faces), .open_top = open_top}
+    );
   }
   std::vector<BlockIndex3D> blocks;
   for (const auto& block : state.blocks.values()) {
@@ -84,7 +128,6 @@ absl::StatusOr<FrozenMotionCarrier3D> FrozenMotionCarrier3D::Create(
     return grid.status();
   }
   std::vector<Face> faces;
-  const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, state.clock.time);
   std::vector<LiquidBoundaryFaceTag3D> tags(grid->face_count());
   const auto tagged = liquid_step_internal::FillFaceTags(grid->view(), obstacle, tags);
   if (!tagged.ok()) {
@@ -135,7 +178,7 @@ absl::StatusOr<FrozenMotionCarrier3D> FrozenMotionCarrier3D::Create(
       faces[source.face_slot].tag = {source.side_tag, source.structurally_eligible};
     }
   }
-  return FrozenMotionCarrier3D(std::move(*grid), obstacle, std::move(faces));
+  return FrozenMotionCarrier3D(obstacle, UniformCarrier{.grid = std::move(*grid), .faces = std::move(faces)});
 }
 
 absl::StatusOr<MotionCarrierSample3D> FrozenMotionCarrier3D::Sample(Vec3 position, std::int64_t side) const {
@@ -145,10 +188,44 @@ absl::StatusOr<MotionCarrierSample3D> FrozenMotionCarrier3D::Sample(Vec3 positio
   if (liquid_step_internal::SolidDistance(obstacle_, position) < 0) {
     return absl::FailedPreconditionError("motion query lies inside the obstacle");
   }
+  if (const auto* graded = std::get_if<AdaptiveCarrier>(&carrier_)) {
+    auto sample_position = position;
+    bool continue_top = false;
+    if (const auto& top = graded->open_top) {
+      const double top_clearance_m = position.y - top->height_m;
+      continue_top = top_clearance_m >= 0 && top_clearance_m <= top->continuation_width_m;
+      if (continue_top) {
+        sample_position.y = std::nextafter(top->height_m, -std::numeric_limits<double>::infinity());
+      }
+    }
+    const auto sampled = graded->transfer.Gather({.world_position = sample_position, .side_tag = side}, graded->faces);
+    if (!sampled.ok()) {
+      return sampled.status();
+    }
+    auto velocity = sampled->velocity;
+    if (continue_top && sampled->affine_enabled) {
+      const double offset_m = position.y - sample_position.y;
+      const auto& slopes = sampled->velocity_slopes;
+      velocity = {
+          std::fma(offset_m, slopes.x_row.y, velocity.x),
+          std::fma(offset_m, slopes.y_row.y, velocity.y),
+          std::fma(offset_m, slopes.z_row.y, velocity.z),
+      };
+      if (!liquid_step_internal::Finite(velocity)) {
+        return absl::OutOfRangeError("graded motion continuation overflowed");
+      }
+    }
+    return MotionCarrierSample3D{
+        .velocity = velocity,
+        .continued = continue_top || !sampled->affine_enabled,
+        .rank_fallback = !sampled->affine_enabled,
+    };
+  }
+  const auto& uniform = std::get<UniformCarrier>(carrier_);
   MotionCarrierSample3D result{.velocity = {}};
-  const double width = grid_.geometry().cell_width;
+  const double width = uniform.grid.geometry().cell_width;
   for (std::size_t component = 0; component < kAxes.size(); ++component) {
-    const auto stencil = BuildMacFaceGeometryStencil3D(grid_.geometry(), kAxes[component], position, position);
+    const auto stencil = BuildMacFaceGeometryStencil3D(uniform.grid.geometry(), kAxes[component], position, position);
     if (!stencil.ok()) {
       return stencil.status();
     }
@@ -158,13 +235,13 @@ absl::StatusOr<MotionCarrierSample3D> FrozenMotionCarrier3D::Sample(Vec3 positio
       if (node.weight == 0) {
         continue;
       }
-      const auto slot = grid_.FaceSlot(node.face_index);
-      if (!slot.ok() || !Usable(faces_[*slot].validity) || !faces_[*slot].tag.structurally_eligible
-          || faces_[*slot].tag.side_tag != side) {
+      const auto slot = uniform.grid.FaceSlot(node.face_index);
+      if (!slot.ok() || !Usable(uniform.faces[*slot].validity) || !uniform.faces[*slot].tag.structurally_eligible
+          || uniform.faces[*slot].tag.side_tag != side) {
         complete = false;
         break;
       }
-      velocity += node.weight * faces_[*slot].velocity;
+      velocity += node.weight * uniform.faces[*slot].velocity;
     }
     if (!complete) {
       result.continued = true;
@@ -172,7 +249,7 @@ absl::StatusOr<MotionCarrierSample3D> FrozenMotionCarrier3D::Sample(Vec3 positio
       std::size_t count = 0;
       double nearest_distance = std::numeric_limits<double>::infinity();
       double nearest_velocity = 0;
-      for (const auto& face : faces_) {
+      for (const auto& face : uniform.faces) {
         if (face.axis != kAxes[component] || !Usable(face.validity) || !face.tag.structurally_eligible
             || face.tag.side_tag != side) {
           continue;
