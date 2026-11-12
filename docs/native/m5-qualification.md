@@ -2425,7 +2425,9 @@ mismatch and less than 5.6e-9 N·s of vertical momentum residual. The
 control leaves Q-SAND open. The native fine case rejected an X face
 carrying 1.05459119e-5 kg with 0.14972351 N of stress force. The
 pre-force velocity was −0.00075168 m/s and the post-force velocity was
-22.18253479 m/s against the 18 m/s motion bound.
+22.18253479 m/s against the 18 m/s motion bound. The SM120 coarse and
+coarse half-step runs at 3 s matched the native angle, radius, work
+and momentum figures at the printed precision.
 
 ```powershell
 $bin = 'out/pr-m5-sand-affine/out/floor-wall-gradient-bin'
