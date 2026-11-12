@@ -285,6 +285,40 @@ MeasureSampledSolidFaceWeights(double width, const numeric::array<double, 4>& so
   return weights;
 }
 
+// Applies the transpose of the blocked-face wall-flux weights. Returns
+// the solid corner forces in N along the positive tail-to-head normal.
+// Pressures are physical endpoint pressures in Pa, with a common gauge.
+// A capillary or numerical pressure jump is not part of this load.
+// The resulting corner power equals (tail_pressure - head_pressure)
+// times the signed wall flux. Nonfinite pressures or invalid area
+// weights return kInvalid. Unrepresentable forces return kRange.
+FLUIDITY_HD inline Value<numeric::array<double, 4>> ComputeSampledSolidFacePressureForces(
+    const numeric::array<double, 4>& blocked_area_weights,
+    double tail_pressure,
+    double head_pressure
+) {
+  if (!numeric::isfinite(tail_pressure) || !numeric::isfinite(head_pressure)) {
+    return Error::kInvalid;
+  }
+  const double solid_pressure_difference = tail_pressure - head_pressure;
+  if (!numeric::isfinite(solid_pressure_difference)) {
+    return Error::kRange;
+  }
+  numeric::array<double, 4> corner_force{};
+  for (std::size_t corner = 0; corner < corner_force.size(); ++corner) {
+    const double area_weight = blocked_area_weights[corner];
+    if (!numeric::isfinite(area_weight) || area_weight < 0) {
+      return Error::kInvalid;
+    }
+    corner_force[corner] = area_weight * solid_pressure_difference;
+    if (!IsNormalOrZero(corner_force[corner])
+        || (area_weight > 0 && solid_pressure_difference != 0 && corner_force[corner] == 0)) {
+      return Error::kRange;
+    }
+  }
+  return corner_force;
+}
+
 FLUIDITY_HD inline bool IsSampledSolidMode(GeometryMode mode) {
   return mode == GeometryMode::kSampledSolidCell || mode == GeometryMode::kSampledSolidFace;
 }
