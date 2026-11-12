@@ -31,6 +31,21 @@ table ResumeMetadata {
   capacities:Capacities (required, id:2);
   replay_capacities:Capacities (required, id:3);
 }
+table CavityGasCell {
+  index:Index3 (required, id:0);
+  gas_volume:double (id:1);
+  component:uint (id:2);
+}
+table CavityInventory {
+  id:ulong (id:0);
+  initial_volume:double (id:1);
+  initial_absolute_pressure:double (id:2);
+}
+table CavitySnapshot {
+  next_id:ulong (id:0);
+  gas:[CavityGasCell] (required, id:1);
+  inventories:[CavityInventory] (required, id:2);
+}
 table LiquidState {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -45,6 +60,7 @@ table LiquidState {
   faces:[Face] (required, id:10);
   sources:[SourceState] (required, id:11);
   resume:ResumeMetadata (id:12);
+  cavity:CavitySnapshot (id:13);
 }
 root_type LiquidState;
 file_identifier "FLST";

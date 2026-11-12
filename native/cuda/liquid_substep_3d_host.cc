@@ -3,6 +3,7 @@
 #include <new>
 #include <utility>
 
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "fluidity/host/cuda_wetted_piston_3d.h"
 #include "liquid_geometry_stages_3d.h"
@@ -194,6 +195,30 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
                 problem,
                 options,
                 workspace
+            );
+          },
+      .project_viscous =
+          [](void* context,
+             const LiquidBoundaryGeometryViewInputs3D& geometry,
+             const LiquidPressureProblemView3D& problem,
+             double dynamic_viscosity,
+             std::span<const double> cell_dynamic_viscosity,
+             MacPressureSolverOptions3D options,
+             MacPressureWorkspace3D& workspace) {
+            auto& arena = static_cast<Impl*>(context)->arena;
+            return liquid_step_internal::ProjectUniformViscosity(
+                geometry,
+                problem,
+                dynamic_viscosity,
+                cell_dynamic_viscosity,
+                options,
+                workspace,
+                [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
+                    std::span<const MacStrainRow3D> rows,
+                    MacPressureSolverOptions3D controls,
+                    pressure_internal::MacPressureScratch3D& pressure_scratch) {
+                  return cuda_internal::ProjectArenaViscousPressure3D(arena, inputs, rows, controls, pressure_scratch);
+                }
             );
           },
       .gather =

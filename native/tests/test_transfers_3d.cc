@@ -385,7 +385,7 @@ TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
   EXPECT_EQ(face_forces, accepted_forces);
 }
 
-TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollapse) {
+TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsInversion) {
   const auto grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(grid.ok()) << grid.status();
   const auto particle = CornerParticle(kTranslatedGeometry);
@@ -476,11 +476,12 @@ TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollaps
   checkpoint.elastic_particles.front().deformation_gradient = {};
   EXPECT_EQ(EncodeSolidInteractionCheckpoint3D(checkpoint).status().code(), absl::StatusCode::kInvalidArgument);
 
+  // The affine step has determinant -1, away from a rounding-sensitive singularity.
   for (double& velocity : new_velocity) {
-    velocity *= -2.0;
+    velocity *= -4.0;
   }
-  const auto collapsed = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
-  EXPECT_EQ(collapsed.status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto inverted = GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, kDeformation);
+  EXPECT_EQ(inverted.status().code(), absl::StatusCode::kFailedPrecondition);
   ExpectNear(kDeformation.x_row, {1.0, 0.0, 0.0});
 
   auto accepted = *restored;
@@ -491,7 +492,7 @@ TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollaps
   EXPECT_EQ(*after_rejection, *encoded);
 
   for (double& velocity : new_velocity) {
-    velocity *= -0.0625;
+    velocity *= -0.03125;
   }
   const auto accepted_status =
       AdvanceElasticBladeParticles3D(*grid, blade, 17, 0.0, 0.0, old_history, new_history, accepted);

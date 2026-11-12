@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "mac_pressure_3d_workspace_internal.h"
 
 namespace fluidity::pressure_internal {
 namespace {
@@ -299,20 +300,32 @@ absl::StatusOr<MacPressureHierarchy3D> BuildMacPressureHierarchy3D(const Prepare
   return hierarchy;
 }
 
-absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system) {
-  std::vector<double> pin_previous_pressures(system.cells().size(), 0.0);
+absl::Status InitializeMacPressure3D(
+    const PreparedMacPressureView3D& system,
+    std::span<double> pin_previous_pressures,
+    std::span<double> pressures
+) {
+  std::ranges::fill(pin_previous_pressures, 0.0);
   for (const auto pin : system.gauge_cell_ordinals()) {
     pin_previous_pressures[system.component_ordinals()[pin]] = system.cells()[pin].previous_pressure;
   }
-  std::vector<double> pressures;
-  pressures.reserve(system.cells().size());
   for (std::size_t cell = 0; cell < system.cells().size(); ++cell) {
     const double pressure =
         system.cells()[cell].previous_pressure - pin_previous_pressures[system.component_ordinals()[cell]];
     if (!std::isfinite(pressure)) {
-      return absl::OutOfRangeError("gauge-shifted previous pressure is unrepresentable");
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
-    pressures.push_back(pressure);
+    pressures[cell] = pressure;
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<double>> InitialMacPressure3D(const PreparedMacPressureSystem3D& system) {
+  std::vector<double> pins(system.cells().size());
+  std::vector<double> pressures(system.cells().size());
+  const auto status = InitializeMacPressure3D(BorrowMacPressureSystem3D(system), pins, pressures);
+  if (!status.ok()) {
+    return status;
   }
   return pressures;
 }
@@ -322,13 +335,26 @@ absl::StatusOr<MacPressureStoppingCriteria3D> MacPressureStoppingCriteria(const 
   for (const double rhs : system.integrated_rhs()) {
     rhs_norm = std::hypot(rhs_norm, rhs);
   }
-  const double limit = 2e-6 + 2e-6 * rhs_norm;
-  if (!std::isfinite(rhs_norm) || !std::isfinite(limit)) {
-    return absl::OutOfRangeError("pressure RHS norm or stopping tolerance is unrepresentable");
+  return MacPressureStoppingCriteria(rhs_norm, system.links());
+}
+
+absl::StatusOr<MacPressureStoppingCriteria3D>
+MacPressureStoppingCriteria(double rhs_norm, std::span<const FrozenMacPressureLink3D> links) {
+  double limit = 2e-6 + 2e-6 * rhs_norm;
+  if (!std::isfinite(rhs_norm) || rhs_norm < 0.0 || !std::isfinite(limit)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  // A fixed flux floor can accept a zero pressure iterate even when an
+  // internal jump is the only forcing. Preserve the original local gates and
+  // bound the global residual relative to the nonzero assembled signal.
+  if (rhs_norm > 0.0 && std::ranges::any_of(links, [](const FrozenMacPressureLink3D& link) {
+        const auto* internal = std::get_if<InternalMacPressureLink3D>(&link.pressure_link);
+        return link.conductance > 0.0 && internal && internal->pressure_jump != 0.0;
+      })) {
+    limit = std::min(limit, std::max(std::numeric_limits<double>::denorm_min(), 1e-3 * rhs_norm));
   }
   return MacPressureStoppingCriteria3D{.integrated_residual_limit = limit};
 }
-
 bool MeetsMacPressureStoppingCriteria3D(
     const MacPressureDiagnostics3D& diagnostics,
     const MacPressureStoppingCriteria3D& criteria

@@ -25,7 +25,7 @@ struct LiquidHandoffCell3D {
   LiquidHandoffOccupancy3D occupancy = LiquidHandoffOccupancy3D::kMissing;  // Authoritative simulation occupancy.
 };
 
-// Caller-certified single-liquid destination state throughout this cell.
+// Caller-certified destination state for one phase throughout this cell.
 // A supplied carrier asserts complete admissible support and an affine
 // continuation on that support, separate from the reconstructed derivative L.
 struct LiquidHandoffCarrier3D {
@@ -35,6 +35,7 @@ struct LiquidHandoffCarrier3D {
   Mat3 velocity_slopes{};  // APIC C, inverse seconds.
   std::uint32_t tag = 0;  // Packed substance/phase/flags.
   std::int64_t side_tag = 0;  // Material/body side.
+  std::uint64_t phase_id = 0;  // Stable explicit phase, or zero for implicit liquid.
 };
 
 class LiquidBandReseed3D {
@@ -77,7 +78,8 @@ class LiquidBandReseed3D {
 // Proposes retirement of all band-owned particles in one full liquid cell.
 // The nonempty input has unique nonzero IDs and positions in the half-open cell.
 // The result sums their kg, V0, J*V0 and kg*m/s in input order, carrying signed
-// enthalpy from the cell ledger. The caller installs this inventory in place
+// enthalpy from the cell ledger. Explicit fractions become extensive
+// current constituent volumes in stable substance order. The caller installs this inventory in place
 // of the retiring particles, without advancing its ID counter.
 //
 // Both handoffs require a present certified carrier. FailedPrecondition means
@@ -94,6 +96,7 @@ absl::StatusOr<LiquidRemapInventory3D> RetireLiquidBandCell3D(
 // Proposes a replacement band owner for one full core cell. The source ledger
 // provides V, and the carrier must agree with its mass, V0 and momentum.
 // Each particle receives m=ρV/n and V0=V/(nJ), and v and C from the carrier.
+// Explicit constituents receive the same fractions derived from the core inventory.
 // Seeds are the center (for odd counts), then opposite quarter-cell octants in
 // pairs, using ascending low octant ordinal with x changing fastest. New
 // records use consecutive IDs from the caller's first unused ID and start PIC.
