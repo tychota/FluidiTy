@@ -697,3 +697,15 @@ The CPU fixture resolved a 25/75 mixture of 40 and 120 Pa s. All four pressure c
 A stationary tank with a planar free surface now supplies exterior geometry independently of its internal particle-derived phase field. The CPU scheduler fixture verified two water–oil pressure crossings, both at the center of their links, zero planar curvature, and the separate 40 and 120 Pa s cell coefficients entering the coupled solve. The accepted step damped tangential motion with a momentum residual below 1e-5 kg m/s. Eight CPU cases passed, including the high-contrast extension and Couette manufactured checks.
 
 Five real-device CUDA tests passed, including the expanded stationary-tank parity fixture with uniform, miscible and immiscible material controls. It checked agreement with the CPU committed state and unchanged device allocation/free counts during each step. Receipts use out/m4-planar-phase-viscosity. clang-format 19.1.5 and git diff --check passed. The full-cell qualification does not cover curved cut-cell, moving no-slip wall, or adaptive strain quadrature.
+
+## Authored immiscible viscosity receipt
+
+Blender sources expose an optional dynamic viscosity in Pa s. The stationary tank can use an explicit planar fill height. Packet v4 carries both settings while v3 remains the default for the earlier source workflow. The resolver validates the viscosity, tank and seed height before publication. In Blender 5.2.3, the headless fixture authored a planar tank with distinct 40 and 120 Pa s substances and a 0.031 N/m interface. The production CPU solver accepted a traced frame and all coupled momentum residuals were below 1e-5 kg m/s. The previous v3 three-emitter fixture passed through the same updated bridge. Receipts use out/m4-blender-viscous-tank and out/m4-blender-v3-viscosity-regression.log.
+
+```powershell
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$build = 'out/build/m4-constituent-viscosity-release'
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_liquid_sources.py -- viscous "$build/fluidity_blender_bridge.exe" "$build/fluidity_simulate.exe" out/m4-authored-viscosity-qualification
+```
+
+This fixture uses the full-cell planar tank path. Its phase interaction and coefficients are qualified through Simulate. Curved and adaptive viscous quadratures remain outside the verified geometry.

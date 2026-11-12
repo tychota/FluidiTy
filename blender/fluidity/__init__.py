@@ -45,6 +45,8 @@ class FluidiTyLiquidSource(PropertyGroup):
     substance_id: IntProperty(name="Substance ID", min=1, default=1)
     phase_id: IntProperty(name="Miscibility Phase", min=1, default=1)
     density: FloatProperty(name="Density (kg/m³)", min=1, default=1000)
+    override_viscosity: BoolProperty(name="Set Viscosity")
+    viscosity: FloatProperty(name="Dynamic Viscosity (Pa·s)", min=0, default=0, precision=5)
     emission_rate: FloatProperty(name="Particles per Second", min=0, default=0)
     emitted_volume: FloatProperty(name="Emitted Particle Volume (m³)", min=1e-9, default=0.001, precision=6)
 
@@ -71,6 +73,8 @@ class FLUIDITY_OT_liquid_source(Operator):
 
 class FluidiTySettings(PropertyGroup):
     liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    planar_fill: BoolProperty(name="Planar Tank Fill", update=invalidate_guidance)
+    fill_height: FloatProperty(name="Fill Surface Height (m)", default=1.0, update=invalidate_guidance)
     surface_object: PointerProperty(type=Object)
     attached_surface_cache: StringProperty()
     mesh_cache: StringProperty(name="Surface Cache", default="//FluidiTy Surface", subtype="DIR_PATH")

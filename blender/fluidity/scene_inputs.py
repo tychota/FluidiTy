@@ -179,15 +179,15 @@ def linear_motion(obj, frame_end):
             raise SceneError("collider", "Use two linear location keys covering the simulation.")
 
 
-def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension):
+def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension, writes_viscosity):
     """Build canonical registry, interaction, emitter and seed rows."""
     materials = {}
     emitters = []
     seeds = []
     for ordinal, (source, (blender_low, blender_high)) in enumerate(zip(sources, bounds, strict=True), 1):
-        material = (source.phase_id, source.density)
+        material = (source.phase_id, source.density, source.viscosity if source.override_viscosity else -1.0)
         if materials.setdefault(source.substance_id, material) != material:
-            raise SceneError("liquid", "Give each substance ID one phase and density.")
+            raise SceneError("liquid", "Give each substance ID one phase, density and viscosity.")
         low = (blender_low[0], blender_low[2], -blender_high[1])
         high = (blender_high[0], blender_high[2], -blender_low[1])
         widths = tuple(b - a for a, b in zip(low, high, strict=True))
@@ -210,12 +210,13 @@ def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension)
                 ordinal, source.substance_id, source.emission_rate, source.emitted_volume,
                 *center, 0, 0, 0, *initial_velocity,
             ))
-    phases = sorted({phase for phase, _ in materials.values()})
+    phases = sorted({material[0] for material in materials.values()})
     if len(phases) > 2:
         raise SceneError("liquid", "Assign sources to at most two miscibility phases.")
     pairs = [(*phases, phase_tension)] if len(phases) == 2 else []
     rows = [(len(materials), len(pairs), len(emitters))]
-    rows.extend((substance, *material) for substance, material in sorted(materials.items()))
+    rows.extend((substance, *material[:3 if writes_viscosity else 2])
+                for substance, material in sorted(materials.items()))
     rows.extend(pairs)
     rows.extend(emitters)
     rows.append((len(seeds),))
@@ -286,8 +287,17 @@ def scene_inputs(scene, preview=False):
         raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
     gx, gy, gz = scene.gravity if scene.use_gravity else (0, 0, 0)
     vx, vy, vz = settings.initial_velocity
+    planar_fill = bool(sources and settings.boundary_mode == "TANK" and settings.planar_fill)
+    viscosity_authoring = planar_fill or any(source.override_viscosity for source in sources)
+    if planar_fill and not domain_low[2] < settings.fill_height <= domain_high[2]:
+        raise SceneError("liquid", "Place the fill height above the tank floor and inside the domain.")
+    if planar_fill and liquid_high[2] > settings.fill_height:
+        raise SceneError("liquid", "Place each source box below the planar fill height.")
+    version = "FLUIDITY-BLENDER-2"
+    if sources:
+        version = "FLUIDITY-BLENDER-4" if viscosity_authoring else "FLUIDITY-BLENDER-3"
     lines = [
-        "FLUIDITY-BLENDER-3" if sources else "FLUIDITY-BLENDER-2",
+        version,
         f"{int(preview)} {cell!r}",
         f"{gx!r} {gz!r} {-gy!r}",
         f"{settings.density!r} {settings.surface_tension!r} {settings.friction!r}",
@@ -313,7 +323,11 @@ def scene_inputs(scene, preview=False):
             half_width = (collider_high[0] - collider_low[0]) / 2
             lines.extend(["2", f"1 0 0 {center!r} {half_width!r} {wx!r} {wz!r} {-wy!r}"])
     if sources:
-        lines.extend(extended_liquid_rows(sources, liquid_bounds, cell, (vx, vz, -vy), settings.phase_tension))
+        if viscosity_authoring:
+            lines.append(f"1 {settings.fill_height!r}" if planar_fill else "0")
+        lines.extend(extended_liquid_rows(
+            sources, liquid_bounds, cell, (vx, vz, -vy), settings.phase_tension, viscosity_authoring
+        ))
         return "\n".join(lines) + "\n"
     lines.append(str(count))
     for z, y, x in product(ranges[2], ranges[1], ranges[0]):

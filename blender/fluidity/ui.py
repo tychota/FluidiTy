@@ -128,9 +128,16 @@ class FLUIDITY_PT_fluid(ChildPanel, bpy.types.Panel):
                 row.operator("fluidity.liquid_source", text="", icon="X").index = index
                 for field in ("substance_id", "phase_id", "density", "emission_rate"):
                     box.prop(source, field)
+                box.prop(source, "override_viscosity")
+                if source.override_viscosity:
+                    box.prop(source, "viscosity")
                 if source.emission_rate > 0:
                     box.prop(source, "emitted_volume")
             column.operator("fluidity.liquid_source", text="Add Liquid Source", icon="ADD")
+            if settings.liquid_sources and settings.boundary_mode == "TANK":
+                column.prop(settings, "planar_fill")
+                if settings.planar_fill:
+                    column.prop(settings, "fill_height")
             if len({source.phase_id for source in settings.liquid_sources}) > 1:
                 interactions = column.box()
                 interactions.label(text="Interactions")

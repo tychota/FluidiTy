@@ -816,3 +816,24 @@ msgstr ""
 
 msgid "Surface build failed. Committed frames are preserved."
 msgstr ""
+
+msgid "Set Viscosity"
+msgstr ""
+
+msgid "Dynamic Viscosity (Pa·s)"
+msgstr ""
+
+msgid "Planar Tank Fill"
+msgstr ""
+
+msgid "Fill Surface Height (m)"
+msgstr ""
+
+msgid "Give each substance ID one phase, density and viscosity."
+msgstr ""
+
+msgid "Place the fill height above the tank floor and inside the domain."
+msgstr ""
+
+msgid "Place each source box below the planar fill height."
+msgstr ""

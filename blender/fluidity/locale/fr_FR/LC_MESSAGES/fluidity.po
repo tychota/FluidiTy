@@ -816,3 +816,24 @@ msgstr "Surface construite. Attachez la surface publiée pour le rendu."
 
 msgid "Surface build failed. Committed frames are preserved."
 msgstr "La construction de la surface a échoué. Les images publiées sont conservées."
+
+msgid "Set Viscosity"
+msgstr "Régler la viscosité"
+
+msgid "Dynamic Viscosity (Pa·s)"
+msgstr "Viscosité dynamique (Pa·s)"
+
+msgid "Planar Tank Fill"
+msgstr "Remplissage plan de la cuve"
+
+msgid "Fill Surface Height (m)"
+msgstr "Hauteur de la surface (m)"
+
+msgid "Give each substance ID one phase, density and viscosity."
+msgstr "Associez chaque identifiant de substance à une phase, une masse volumique et une viscosité."
+
+msgid "Place the fill height above the tank floor and inside the domain."
+msgstr "Placez la surface au-dessus du fond de la cuve et dans le domaine."
+
+msgid "Place each source box below the planar fill height."
+msgstr "Placez chaque boîte source sous la hauteur de remplissage."

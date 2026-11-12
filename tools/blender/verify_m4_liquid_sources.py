@@ -87,5 +87,66 @@ def run(bridge, solver, output):
     print("PASS Blender-authored sources and one accepted child per emitter")
 
 
+def run_viscous(bridge, solver, output):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
+    import fluidity
+    from fluidity.scene_inputs import scene_inputs
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    fluidity.register()
+    scene = bpy.context.scene
+    scene.render.fps = 24
+    scene.render.fps_base = 1
+    scene.frame_start, scene.frame_end = 0, 2
+    scene.use_gravity = False
+    settings = scene.fluidity
+    settings.boundary_mode = "TANK"
+    settings.domain = box("Tank", (3, -3, 3), (2, 2, 2))
+    settings.cell_width = 1
+    settings.planar_fill = True
+    settings.fill_height = 3
+    settings.initial_velocity = (0.125, 0, 0)
+    settings.phase_tension = 0.031
+    for name, x, substance, phase, density, viscosity in (
+        ("Water", 2.5, 8, 4, 1000, 40),
+        ("Oil", 3.5, 25, 5, 820, 120),
+    ):
+        assert bpy.ops.fluidity.liquid_source() == {"FINISHED"}
+        source = settings.liquid_sources[-1]
+        source.geometry = box(name, (x, -2.5, 2.5), (0.5, 0.5, 0.5))
+        source.substance_id = substance
+        source.phase_id = phase
+        source.density = density
+        source.override_viscosity = True
+        source.viscosity = viscosity
+
+    output.mkdir()
+    packet, resolved, initial = (output / name for name in ("scene.txt", "scene.flrs", "initial.flst"))
+    authored = scene_inputs(scene)
+    assert authored.startswith("FLUIDITY-BLENDER-4\n")
+    assert "\n8 4 1000.0 40.0\n25 5 820.0 120.0\n" in authored
+    assert "\n1 3.0\n" in authored
+    packet.write_text(authored, encoding="ascii")
+    subprocess.run([bridge, "resolve", solver, "cpu", packet, resolved, initial], check=True, timeout=30)
+    cache = output / "simulate"
+    command = subprocess.run(
+        [solver, "run", "--stage", "simulate", "--scene", resolved, "--initial-state", initial,
+         "--cache", cache, "--frame-end", "1", "--trace"],
+        capture_output=True, encoding="utf-8", timeout=90,
+    )
+    (output / "simulate.log").write_text(command.stdout + command.stderr, encoding="utf-8")
+    command.check_returncode()
+    traces = [record["accepted_measurement"] for record in map(json.loads, command.stdout.splitlines())
+              if record["event"] == "trace"]
+    assert traces and all(
+        0 <= trace["viscous_max_momentum_residual_kg_m_per_s"] < 1e-5 for trace in traces
+    ), traces
+    print("PASS Blender-authored planar tank with distinct immiscible viscosity")
+
+
 if __name__ == "__main__":
-    run(*(Path(path).resolve() for path in sys.argv[sys.argv.index("--") + 1:]))
+    args = sys.argv[sys.argv.index("--") + 1:]
+    if args[0] == "viscous":
+        run_viscous(*(Path(path).resolve() for path in args[1:]))
+    else:
+        run(*(Path(path).resolve() for path in args))

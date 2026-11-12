@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <locale>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -129,7 +130,7 @@ bool SetPureMaterial(LiquidParticleState3D& particle, const LiquidConstituentMat
 }
 
 // Version three adds bounded canonical material, phase-pair and emission rows.
-absl::Status ReadExtendedAuthoring(std::istream& input, ExtendedAuthoring3D& authoring) {
+absl::Status ReadExtendedAuthoring(std::istream& input, ExtendedAuthoring3D& authoring, bool reads_viscosity) {
   constexpr std::size_t kMaximumMaterials = 64;
   constexpr std::size_t kMaximumPhasePairs = 64;
   constexpr std::size_t kMaximumEmitters = 64;
@@ -147,6 +148,15 @@ absl::Status ReadExtendedAuthoring(std::istream& input, ExtendedAuthoring3D& aut
         || material.substance_id <= previous_substance_id || material.phase_id == 0
         || !std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0) {
       return absl::InvalidArgumentError("invalid authored liquid substance");
+    }
+    if (reads_viscosity) {
+      double viscosity = 0.0;
+      if (!(input >> viscosity) || !std::isfinite(viscosity) || (viscosity < 0.0 && viscosity != -1.0)) {
+        return absl::InvalidArgumentError("invalid authored liquid viscosity");
+      }
+      if (viscosity >= 0.0) {
+        material.dynamic_viscosity_pa_s = viscosity;
+      }
     }
     previous_substance_id = material.substance_id;
   }
@@ -202,12 +212,14 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
   LiquidResolvedSceneView3D scene;
   double& cell_width = scene.geometry.cell_width;
   if (!(input >> version >> preview >> cell_width)
-      || (version != "FLUIDITY-BLENDER-1" && version != "FLUIDITY-BLENDER-2" && version != "FLUIDITY-BLENDER-3")
+      || (version != "FLUIDITY-BLENDER-1" && version != "FLUIDITY-BLENDER-2" && version != "FLUIDITY-BLENDER-3"
+          && version != "FLUIDITY-BLENDER-4")
       || preview > 1 || !std::isfinite(cell_width) || cell_width < 0.001 || cell_width > 10) {
     return absl::InvalidArgumentError("invalid packet version, Preview flag or cell width");
   }
   const bool modern_authoring = version != "FLUIDITY-BLENDER-1";
-  const bool extended_authoring = version == "FLUIDITY-BLENDER-3";
+  const bool viscosity_authoring = version == "FLUIDITY-BLENDER-4";
+  const bool extended_authoring = version == "FLUIDITY-BLENDER-3" || viscosity_authoring;
   Vec3 initial_velocity{};
   if (!ReadFiniteVector(input, scene.scene.world_acceleration)) {
     return absl::InvalidArgumentError("invalid gravity");
@@ -229,9 +241,25 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
         .wall_velocity = {slab_velocity, 0, 0},
     };
   }
+  std::optional<LiquidHorizontalPlaneSurface3D> planar_fill;
+  if (viscosity_authoring) {
+    unsigned planar = 0;
+    if (!(input >> planar) || planar > 1) {
+      return absl::InvalidArgumentError("invalid planar tank fill setting");
+    }
+    if (planar == 1) {
+      const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.scene.obstacle);
+      double height = 0.0;
+      if (!(input >> height) || !tank || tank->piston_velocity_x != 0.0 || !std::isfinite(height)
+          || height <= tank->floor_y) {
+        return absl::InvalidArgumentError("planar fill requires a stationary tank and a surface above its floor");
+      }
+      planar_fill = LiquidHorizontalPlaneSurface3D{height};
+    }
+  }
   ExtendedAuthoring3D extended;
   if (extended_authoring) {
-    const auto parameters = ReadExtendedAuthoring(input, extended);
+    const auto parameters = ReadExtendedAuthoring(input, extended, viscosity_authoring);
     if (!parameters.ok()) {
       return parameters;
     }
@@ -263,6 +291,9 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
     Vec3 position{};
     if (!ReadFiniteVector(input, position)) {
       return absl::InvalidArgumentError("invalid seed position");
+    }
+    if (planar_fill && position.y >= planar_fill->world_surface_height_y) {
+      return absl::InvalidArgumentError("seed position is above the planar fill");
     }
     std::int64_t side_tag = 0;
     if (const auto* slab = std::get_if<TranslatingSlab3D>(&scene.scene.obstacle)) {
@@ -333,7 +364,11 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
       .byte_length = seed->size(),
       .digest = LiquidContentDigest3D(seed->values()),
   };
-  scene.scene.field = LiquidParticleSphereUnion3D{0.9 * cell_width};
+  if (planar_fill) {
+    scene.scene.field = *planar_fill;
+  } else {
+    scene.scene.field = LiquidParticleSphereUnion3D{0.9 * cell_width};
+  }
   if (preview != 0) {
     scene.options.maximum_step_duration /= 2;
   }
