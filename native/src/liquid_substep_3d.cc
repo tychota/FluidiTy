@@ -559,6 +559,16 @@ struct LiquidSubstepScheduler3D::Impl {
     double minimum_predictor_density = scene.liquid_density;
     STEP_TRY(staging.pressure_fields.Resize(frozen->cells.size()));
     STEP_TRY(staging.incident_velocities.Resize(frozen->faces.size()));
+    if (staging.drift_sensors) {
+      STEP_TRY(staging.drift_sensors->Resize(frozen->cells.size()));
+      STEP_TRY(liquid_step_internal::SampleLiquidCellVolumeRatios3D(
+          grid.geometry(),
+          frozen->cells,
+          trial.particles.values(),
+          0,
+          staging.drift_sensors->values()
+      ));
+    }
     for (std::size_t index = 0; index < frozen->cells.size(); ++index) {
       const auto cells = trial.cells.values();
       const auto key = frozen->cells[index].cell_index;
@@ -568,6 +578,7 @@ struct LiquidSubstepScheduler3D::Impl {
       if (found == cells.end() || CellKey(found->cell_index) != CellKey(key)) {
         return Error(absl::StatusCode::kInternal);
       }
+      double target_divergence = scene.target_divergence;
       double predicted_pressure = found->previous_pressure;
       double tangent_bulk_modulus = scene.bulk_modulus;
       std::optional<double> predicted_density;
@@ -588,10 +599,27 @@ struct LiquidSubstepScheduler3D::Impl {
         }
         tangent_bulk_modulus = predictor->bulk_modulus;
         predicted_density = predictor->density;
+        if (staging.drift_sensors) {
+          const auto correction = liquid_step_internal::LiquidVolumeDriftRate3D(
+              (*staging.drift_sensors)[index],
+              predictor->log_volume_ratio,
+              scene.drift->correction_time,
+              scene.drift->maximum_rate
+          );
+          if (!correction.ok()) {
+            return correction.status();
+          }
+          if (*correction != 0.0) {
+            target_divergence += *correction;
+          }
+          if (!std::isfinite(target_divergence)) {
+            return Error(absl::StatusCode::kOutOfRange);
+          }
+        }
         minimum_predictor_density = std::min(minimum_predictor_density, predictor->density);
       }
       staging.pressure_fields[index] = {
-          .target_divergence = scene.target_divergence,
+          .target_divergence = target_divergence,
           .bulk_modulus = tangent_bulk_modulus,
           .previous_pressure = predicted_pressure,
           .density = predicted_density,
@@ -1106,7 +1134,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       options.capacities,
       CanStageRegularCellTransport(scene, tank),
       needs_wetted_piston,
-      needs_isolated_drop
+      needs_isolated_drop,
+      scene.drift && scene.drift->maximum_rate > 0.0
   );
   if (!staging.ok()) {
     return staging.status();
@@ -1316,7 +1345,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           growth,
           impl_->staging.regular_transport.has_value(),
           impl_->staging.wetted_piston.has_value(),
-          impl_->staging.isolated_drop_pressure_faces.has_value()
+          impl_->staging.isolated_drop_pressure_faces.has_value(),
+          impl_->staging.drift_sensors.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

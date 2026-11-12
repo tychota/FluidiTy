@@ -267,7 +267,8 @@ absl::StatusOr<Staging> Staging::Create(
     LiquidStateCapacities3D capacities,
     bool needs_regular_transport,
     bool needs_wetted_piston,
-    bool needs_isolated_drop
+    bool needs_isolated_drop,
+    bool needs_drift_sensors
 ) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -285,6 +286,9 @@ absl::StatusOr<Staging> Staging::Create(
   STEP_TRY(Reserve(staging.old_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.new_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.pressure_fields, capacities.cells, staging.reserved_bytes));
+  if (needs_drift_sensors) {
+    STEP_TRY(Reserve(staging.drift_sensors.emplace(), capacities.cells, staging.reserved_bytes));
+  }
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));
@@ -331,6 +335,11 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
     if (!eos.ok()) {
       return eos.status();
     }
+  }
+  if (scene.drift
+      && (!scene.eos || !std::isfinite(scene.drift->correction_time) || scene.drift->correction_time <= 0.0
+          || !std::isfinite(scene.drift->maximum_rate) || scene.drift->maximum_rate < 0.0)) {
+    return Error(absl::StatusCode::kInvalidArgument);
   }
   const bool valid_step = std::isfinite(options.particle_energy_blend) && options.particle_energy_blend >= 0
       && options.particle_energy_blend <= 1 && std::isfinite(options.maximum_step_duration)
@@ -401,6 +410,12 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
       }
     }
   }
+  if (scene.drift && scene.drift->maximum_rate > 0.0
+      && std::ranges::any_of(initial.particles.values(), [](const LiquidParticleState3D& particle) {
+           return particle.side_tag != 0;
+         })) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
   if (scene.sources.size() != initial.sources.size()) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
@@ -414,7 +429,8 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
         || !Finite(particle.velocity_slopes.x_row) || !Finite(particle.velocity_slopes.y_row)
         || !Finite(particle.velocity_slopes.z_row) || !std::isfinite(particle.mass) || particle.mass <= 0
         || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0
-        || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0 || (tank && particle.side_tag != 0)) {
+        || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
+        || ((tank || (scene.drift && scene.drift->maximum_rate > 0.0)) && particle.side_tag != 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
   }

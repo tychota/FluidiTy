@@ -1,6 +1,7 @@
 #pragma once
 #include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "liquid_eos_sensor_3d.h"
 #include "liquid_isolated_drop_3d.h"
 namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
@@ -69,6 +70,7 @@ struct Staging {
   LiquidRecords3D<LiquidPrescribedWallSample3D> old_walls;
   LiquidRecords3D<LiquidPrescribedWallSample3D> new_walls;
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
+  std::optional<LiquidRecords3D<CellVolumeRatioSensor3D>> drift_sensors;
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
@@ -89,7 +91,8 @@ struct Staging {
       LiquidStateCapacities3D capacities,
       bool needs_regular_transport = false,
       bool needs_wetted_piston = false,
-      bool needs_isolated_drop = false
+      bool needs_isolated_drop = false,
+      bool needs_drift_sensors = false
   );
 };
 bool Finite(Vec3 value);

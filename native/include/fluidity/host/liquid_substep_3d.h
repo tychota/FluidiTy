@@ -49,6 +49,10 @@ struct LiquidSceneEos3D {
   double reference_sound_speed;  // Positive finite m/s at the scene's reference density.
   LiquidEosLaw law = LiquidEosLaw::kHencky;
 };
+struct LiquidSceneDrift3D {
+  double correction_time;  // Positive finite seconds.
+  double maximum_rate;  // Finite nonnegative s⁻¹.
+};
 struct LiquidSceneInputs3D {
   LiquidSceneField3D field = LiquidParticleSphereUnion3D{};
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
@@ -58,6 +62,7 @@ struct LiquidSceneInputs3D {
   double surface_tension = 0;  // N/m.
   double ambient_pressure = 0;  // Pa, gauge.
   double bulk_modulus = std::numeric_limits<double>::infinity();  // Legacy constant modulus in Pa.
+  std::optional<LiquidSceneDrift3D> drift;  // Optional finite-EOS source for side-zero liquid.
   std::optional<LiquidSceneEos3D> eos;  // Requires infinite legacy modulus. Absence keeps legacy behavior.
   double target_divergence = 0;  // 1/s, pressure constraint source.
   double friction_coefficient = 0;

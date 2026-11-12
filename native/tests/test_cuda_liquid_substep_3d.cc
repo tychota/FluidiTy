@@ -1162,12 +1162,14 @@ void CheckRejectedFieldBatch() {
 }
 
 TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {
-  const auto initial = Initial();
+  auto initial = Initial();
+  initial.particles[0].volume_ratio = 1.02;
   LiquidSceneInputs3D scene;
   scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   scene.world_acceleration = {};
   scene.ambient_pressure = 10.0;
   scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
   const auto options = Options();
   auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
   ASSERT_TRUE(backend.ok()) << backend.status();

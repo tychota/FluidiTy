@@ -182,6 +182,50 @@ TEST(LiquidSubstep3D, ExpandedEosDensityTightensCapillaryStep) {
   ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 
+TEST(LiquidSubstep3D, FiniteEosDriftUsesOnlySensedCells) {
+  struct Observation {
+    std::size_t sensed = 0;
+    std::size_t unsensed = 0;
+  } observation;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &observation;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    auto& observed = *static_cast<Observation*>(context);
+    for (std::size_t index = 0; index < geometry.cells.size(); ++index) {
+      const auto cell = geometry.cells[index].cell_index;
+      if (cell.x == 2 && cell.y == 2 && cell.z == 2) {
+        ++observed.sensed;
+        EXPECT_NEAR(fields.cells[index].target_divergence, 0.1 - 0.3, 1e-15);
+      } else {
+        ++observed.unsensed;
+        EXPECT_EQ(fields.cells[index].target_divergence, 0.1);
+      }
+    }
+    return CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+  };
+  auto initial = Initial();
+  initial.particles[0].volume_ratio = 2.0;
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.target_divergence = 0.1;
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  EXPECT_EQ(observation.sensed, 1U);
+  EXPECT_GT(observation.unsensed, 0U);
+  initial.particles[0].side_tag = 1;
+  EXPECT_EQ(
+      LiquidSubstepScheduler3D::Create(initial, scene, Options()).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(LiquidSubstep3D, TaitRejectsCandidateOutsideDomainBeforePublication) {
   std::vector<double> candidate_pressures;
   auto backend = CpuLiquidSubstepBackend3D();

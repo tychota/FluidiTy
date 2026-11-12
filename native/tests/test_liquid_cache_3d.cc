@@ -392,6 +392,7 @@ TEST(LiquidCache3D, ResolvedEosRoundTripsAndChangesFingerprint) {
   const auto baseline = ResolvedSceneFingerprint(scene);
   ASSERT_TRUE(baseline.ok()) << baseline.status();
   scene.scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  scene.scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
   const auto encoded = EncodeLiquidResolvedScene3D(scene);
   ASSERT_TRUE(encoded.ok()) << encoded.status();
   const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
@@ -400,6 +401,9 @@ TEST(LiquidCache3D, ResolvedEosRoundTripsAndChangesFingerprint) {
   ASSERT_TRUE(round_trip.scene.eos.has_value());
   EXPECT_EQ(round_trip.scene.eos->reference_sound_speed, 2.0);
   EXPECT_EQ(round_trip.scene.eos->law, LiquidEosLaw::kTait);
+  ASSERT_TRUE(round_trip.scene.drift.has_value());
+  EXPECT_EQ(round_trip.scene.drift->correction_time, 0.2);
+  EXPECT_EQ(round_trip.scene.drift->maximum_rate, 0.3);
   const auto fingerprint = ResolvedSceneFingerprint(round_trip);
   ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
   EXPECT_NE(*baseline, *fingerprint);

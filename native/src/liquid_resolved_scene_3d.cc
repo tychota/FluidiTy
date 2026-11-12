@@ -75,6 +75,11 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
       return eos.status();
     }
   }
+  if (scene.drift
+      && (!scene.eos || !detail::Positive(scene.drift->correction_time)
+          || !detail::Nonnegative(scene.drift->maximum_rate))) {
+    return Invalid();
+  }
   const bool options_valid = detail::Nonnegative(options.particle_energy_blend) && options.particle_energy_blend <= 1
       && detail::Positive(options.maximum_step_duration) && detail::Nonnegative(options.minimum_face_mass)
       && PowerOfTwo(options.mass_per_quantum) && PowerOfTwo(options.momentum_per_quantum)
@@ -153,6 +158,8 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   }
   for (std::size_t index = 0; index < scene.sources.size(); ++index) {
     if (!ValidSource(scene.sources[index])
+        || (scene.drift && scene.drift->maximum_rate > 0.0
+            && scene.sources[index].emitted_particle_template.side_tag != 0)
         || (index > 0 && scene.sources[index - 1].source_ordinal >= scene.sources[index].source_ordinal)) {
       return Invalid();
     }
@@ -234,6 +241,14 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
     };
   } else if (material->eos_law().has_value()) {
     return Invalid();
+  }
+  const auto drift_time = material->drift_correction_time();
+  const auto drift_rate = material->drift_maximum_rate();
+  if (drift_time.has_value() != drift_rate.has_value()) {
+    return Invalid();
+  }
+  if (drift_time) {
+    result.scene.drift = LiquidSceneDrift3D{*drift_time, *drift_rate};
   }
   result.scene.target_divergence = material->target_divergence();
   result.scene.friction_coefficient = material->friction();
@@ -392,6 +407,12 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             eos_law = wire::LiquidEosLaw::Tait;
           }
         }
+        flatbuffers::Optional<double> drift_time;
+        flatbuffers::Optional<double> drift_rate;
+        if (scene.drift) {
+          drift_time = scene.drift->correction_time;
+          drift_rate = detail::Canonical(scene.drift->maximum_rate);
+        }
         const auto material = wire::CreateMaterial(
             builder,
             scene.liquid_density,
@@ -403,7 +424,9 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             detail::Canonical(scene.penetration_tolerance),
             dynamic_viscosity,
             reference_sound_speed,
-            eos_law
+            eos_law,
+            drift_time,
+            drift_rate
         );
         flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
         if (const auto& capture = options.whitewater_capture) {
