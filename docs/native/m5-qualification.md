@@ -2434,3 +2434,23 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Doubled minimum face-support mass
+
+Starting at `b2d03c6`, change the `minimum_force_mass` multiplier in
+`native/src/dry_solid_step_3d.cc` from `1e-4` to `2e-4`, rebuild the
+native dry-scene target and repeat the 3 s matrix. The thin face
+identified above is below the new reconstruction threshold.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 32.392180° | 0.135394 m |
+| Coarse half-step | 36.667660° | 0.136258 m |
+| Fine | 27.170002° | 0.182763 m |
+| Fine half-step | 30.047349° | 0.178421 m |
+
+The fine nominal case now reaches the endpoint. Only the coarse
+nominal case passes all checks. All runs had late drift below 0.09°,
+kinetic energy below 0.00017 J, cut stress work mismatch below
+6.3e-16 J, and vertical momentum residual below 3.2e-9 N·s. The
+experiment restored the source multiplier after building.
