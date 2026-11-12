@@ -267,3 +267,11 @@ The native fixed-inventory evaluator implements the exponent-1.4 polytropic law,
 All 14 focused native cavity and EOS checks and six Python cavity reference checks passed. The Release CUDA build and three focused real-device EOS/pressure regressions passed. clang-format 19.1.5 passed. Reproduce under the locked environment with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|LiquidEos3D' and pytest reference/tests/test_cavity.py. Receipts use the out/m4-native-cavity prefix. Review found no numerical defect in the checked constitutive slice.
 
 Resolved cavity discovery, geometric volume, persistent identity and lineage, boundary lift routing, scheduler timestep enforcement, disappearance receipts and Q-CAVITY qualification remain open.
+
+## Cavity gas-pressure boundary receipt
+
+Pressure link assembly now accepts optional gas gauge pressures keyed by sampled air cell. Open air faces use the selected air-side pressure in either orientation and add the existing signed liquid-side capillary lift once. Unlisted air neighbors retain ambient gas pressure. The cavity evaluator exposes its gas gauge pressure before capillarity, including the near-equilibrium correction. Checked staging rejects malformed or liquid-side records, overlarge spans and aliases with unpublished pressure or CUDA scratch.
+
+The shared CPU and CUDA fixture supplied 19 and -3 Pa gas pressure with a -1 Pa capillary jump, observed Dirichlet pressures 18 and -4 Pa, and retained 6 Pa on the four ambient faces. The one-cell solve recovered 38/6 Pa and passed the physical constraint gate. Duplicate and liquid-center overrides were rejected. All 28 focused CPU and eight real-device CUDA cases passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce under the locked presets with ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D\.(EosHydrostatic|Tait)' on CUDA. Logs use the out/m4-cavity-link prefix.
+
+Review checked orientation, extent, aliasing and the single capillary lift. The caller still supplies the cavity mapping. Discovery, clipped volume, persistent lineage, timestep routing and Q-CAVITY remain open.

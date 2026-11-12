@@ -11,6 +11,7 @@ struct LiquidCavityInventory3D {
 
 struct LiquidCavityPressureState3D {
   double absolute_pressure;  // Pa.
+  double gas_gauge_pressure;  // Pa relative to atmosphere, before the capillary lift.
   double boundary_gauge_pressure;  // Pa, including the signed liquid-side Laplace jump.
   double equivalent_radius;  // m.
   double maximum_step_duration;  // s, from the radial cavity frequency.

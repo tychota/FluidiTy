@@ -295,6 +295,7 @@ TEST(CudaLiquidBoundary3D, GeometryAndCapillaryMatchOracle) {
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();
   cases.ThetaFixtureAndSignedPressureMapping();
+  cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
   cases.PlaneAndSphereCenteredCurvature();
   cases.CapillaryLiftOnceAndCorrectionMismatchControl();
   cases.RejectsMissingSamplesOwnersOrderingAndInvalidObstacle();

@@ -74,6 +74,11 @@ TEST(LiquidBoundaryGeometry3D, PredictorDensitySetsSharedAndFreeSurfaceMobility)
   );
 }
 
+TEST(LiquidBoundaryGeometry3D, CavityGasPressureAddsSignedCapillaryJumpOnce) {
+  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
+}
+
 TEST(LiquidBoundaryGeometry3D, ThetaFixtureAndSignedPressureMapping) {
   GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
   cases.ThetaFixtureAndSignedPressureMapping();

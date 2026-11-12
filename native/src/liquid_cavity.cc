@@ -100,6 +100,7 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
   }
   return LiquidCavityPressureState3D{
       .absolute_pressure = absolute_pressure,
+      .gas_gauge_pressure = gauge_pressure,
       .boundary_gauge_pressure = boundary_gauge_pressure,
       .equivalent_radius = equivalent_radius,
       .maximum_step_duration = maximum_step_duration,

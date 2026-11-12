@@ -563,6 +563,7 @@ absl::Status LinksCore(
   const bool has_wetted_piston_face_fluxes = !wetted_piston_face_fluxes.empty();
   if (fields.cells.size() != geometry.cells.size() || fields.predicted_face_velocities.size() != geometry.faces.size()
       || (has_wetted_piston_face_fluxes && wetted_piston_face_fluxes.size() != geometry.faces.size())
+      || fields.air_cell_pressures.size() > geometry.center_distances.size()
       || !std::isfinite(fields.ambient_pressure)) {
     return absl::Status(
         absl::StatusCode::kInvalidArgument,
@@ -570,6 +571,21 @@ absl::Status LinksCore(
     );
   }
   const auto distances = geometry.center_distances;
+  for (std::size_t ordinal = 0; ordinal < fields.air_cell_pressures.size(); ++ordinal) {
+    const auto& pressure = fields.air_cell_pressures[ordinal];
+    if (!std::isfinite(pressure.gas_gauge_pressure)
+        || (ordinal > 0 && CellKey(fields.air_cell_pressures[ordinal - 1].cell_index) >= CellKey(pressure.cell_index)
+        )) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid air pressure records");
+    }
+    const auto distance = LookupSignedDistance(distances, pressure.cell_index, bounded);
+    if (!distance.ok()) {
+      return distance.status();
+    }
+    if (*distance < 0.0 || FindCell(geometry.cells, pressure.cell_index) != geometry.cells.size()) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Air pressure requires an air center");
+    }
+  }
   for (std::size_t i = 0; i < geometry.cells.size(); ++i) {
     const auto& cell = geometry.cells[i];
     const auto& field = fields.cells[i];
@@ -651,7 +667,8 @@ absl::Status LinksCore(
     if (has_head && has_tail) {
       link.pressure_link = InternalMacPressureLink3D{0};
     } else if (face.open_area > 0) {
-      const auto air_distance = LookupSignedDistance(distances, has_head ? *tail : head, bounded);
+      const auto air_cell = has_head ? *tail : head;
+      const auto air_distance = LookupSignedDistance(distances, air_cell, bounded);
       if (!air_distance.ok()) {
         return air_distance.status();
       }
@@ -663,7 +680,13 @@ absl::Status LinksCore(
       query.mode = GeometryMode::kLink;
       query.geometry = geometry.mac_grid.geometry();
       query.surface_tension = geometry.surface_tension;
-      query.ambient_pressure = fields.ambient_pressure;
+      const auto air_key = CellKey(air_cell);
+      const auto pressure = std::ranges::lower_bound(fields.air_cell_pressures, air_key, {}, [](const auto& record) {
+        return CellKey(record.cell_index);
+      });
+      query.ambient_pressure = pressure != fields.air_cell_pressures.end() && CellKey(pressure->cell_index) == air_key
+          ? pressure->gas_gauge_pressure
+          : fields.ambient_pressure;
       query.interface_curvature = adjacent_liquid_cell.curvature;
       query.liquid_center_distance = adjacent_liquid_cell.center_distance;
       query.air_center_distance = *air_distance;
@@ -923,12 +946,12 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
     return view_status;
   }
   auto& bank = links_[1 - link_bank_];
-  const auto wetted_flux_bytes = std::as_bytes(fields.wetted_piston_face_fluxes);
-  if (!wetted_flux_bytes.empty()) {
+  for (const auto override_bytes :
+       {std::as_bytes(fields.wetted_piston_face_fluxes), std::as_bytes(fields.air_cell_pressures)}) {
     const auto reserved_cell_bytes = std::as_bytes(std::span(bank.cells.values().data(), bank.cells.capacity()));
     const auto reserved_face_bytes = std::as_bytes(std::span(bank.faces.values().data(), bank.faces.capacity()));
-    if (ByteViewsOverlap(wetted_flux_bytes, reserved_cell_bytes)
-        || ByteViewsOverlap(wetted_flux_bytes, reserved_face_bytes)) {
+    if (ByteViewsOverlap(override_bytes, reserved_cell_bytes)
+        || ByteViewsOverlap(override_bytes, reserved_face_bytes)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }

@@ -84,6 +84,10 @@ struct LiquidPressureCellFields3D {
   double previous_pressure;  // Pa.
   std::optional<double> density = std::nullopt;  // Predictor kg/m³. Absent uses the frozen reference density.
 };
+struct LiquidAirCellPressure3D {
+  CellIndex3D cell_index;  // Air-side center on the signed lattice.
+  double gas_gauge_pressure;  // Pa before the liquid-side capillary lift.
+};
 struct LiquidPressureFields3D {
   std::span<const LiquidPressureCellFields3D> cells;  // Frozen cell order.
   std::span<const double> predicted_face_velocities;  // Frozen face order, m/s.
@@ -92,6 +96,9 @@ struct LiquidPressureFields3D {
   // with a finite signed flux in m³/s on each closed piston face with a single
   // selected head. Zero is explicit. Other entries must be absent.
   std::span<const std::optional<double>> wetted_piston_face_fluxes{};
+  // Optional unique (z,y,x) air centers in the frozen sample halo. A listed
+  // pressure replaces ambient gas pressure on all incident open air links.
+  std::span<const LiquidAirCellPressure3D> air_cell_pressures{};
 };
 struct LiquidPressureProblem3D {
   std::vector<MacPressureCell3D> cells;
@@ -170,7 +177,7 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 );
 
 // Builds the exact incident face union with full frozen apertures and wall flux.
-// Air links use theta in [0.05,1] and ambient + sigma*curvature once; internal
+// Air links use theta in [0.05,1] and gas gauge pressure + sigma*curvature once; internal
 // jumps are zero. Curvature and capillary dt were checked during geometry freeze.
 // Open internal mobility is the reciprocal of the midpoint density of the two
 // liquid cells. Air links use the adjacent liquid density. An absent predictor
