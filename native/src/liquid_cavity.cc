@@ -41,6 +41,43 @@ double RadialStepLimit(double radius, double density, double absolute_pressure) 
 
 }  // namespace
 
+absl::StatusOr<LiquidCavityInventory3D> CombineLiquidCavityInventoryShares3D(
+    std::span<const LiquidCavityInventoryShare3D> shares
+) {
+  if (shares.empty()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+
+  double reference_pressure = 0.0;
+  for (const auto& share : shares) {
+    if (!PositiveFinite(share.parent.initial_volume) || !PositiveFinite(share.parent.initial_absolute_pressure)
+        || !PositiveFinite(share.fraction) || share.fraction > 1.0) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    reference_pressure = std::max(reference_pressure, share.parent.initial_absolute_pressure);
+  }
+
+  // Scale the additive invariant by the largest pressure root so individual
+  // volume contributions never grow. Form roots first to preserve pressure
+  // ratios that would underflow before exponentiation.
+  constexpr double kInversePolytropicExponent = 1.0 / kPolytropicExponent;
+  const double reference_pressure_root = std::pow(reference_pressure, kInversePolytropicExponent);
+  double reference_volume = 0.0;
+  for (const auto& share : shares) {
+    const double parent_pressure_root = std::pow(share.parent.initial_absolute_pressure, kInversePolytropicExponent);
+    const double pressure_root_ratio = parent_pressure_root / reference_pressure_root;
+    const double allocated_parent_volume = share.fraction * share.parent.initial_volume;
+    reference_volume = std::fma(allocated_parent_volume, pressure_root_ratio, reference_volume);
+  }
+  if (!PositiveFinite(reference_volume)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return LiquidCavityInventory3D{
+      .initial_volume = reference_volume,
+      .initial_absolute_pressure = reference_pressure,
+  };
+}
+
 absl::StatusOr<LiquidCavityInventory3D> InitializeSubmergedLiquidCavity3D(
     double volume,
     double atmospheric_absolute_pressure,

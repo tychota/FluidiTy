@@ -14,6 +14,21 @@ struct LiquidCavityInventory3D {
   double initial_absolute_pressure;  // Positive Pa.
 };
 
+struct LiquidCavityInventoryShare3D {
+  LiquidCavityInventory3D parent;
+  double fraction;  // Positive fraction of the parent's gas inventory, at most one.
+};
+
+// Combines shares in caller order into one equivalent polytropic inventory.
+// V_initial * p_initial^(1/1.4) is additive for this topology transfer.
+// The caller assigns fractions summing to one across the retained children
+// of each parent, accounting separately for any discarded share. Empty input
+// and invalid shares return InvalidArgument. An unrepresentable reference
+// volume returns OutOfRange.
+absl::StatusOr<LiquidCavityInventory3D> CombineLiquidCavityInventoryShares3D(
+    std::span<const LiquidCavityInventoryShare3D> shares
+);
+
 struct LiquidCavityPressureState3D {
   double absolute_pressure;  // Pa.
   double gas_gauge_pressure;  // Pa relative to atmosphere, before the capillary lift.

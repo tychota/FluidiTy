@@ -315,3 +315,9 @@ The host adapter consumes labeled gas cells and component-aligned inventories. R
 The CPU fixture checked polytropic pressure and the radial bound against independent calculations, excluded liquid centers and inactive components, and rejected short output and orphaned labels. The locked Windows presets passed eight CPU checks with ctest -R 'LiquidCavity3D|CavityGasPressure' and one real-device CUDA regression with ctest -R CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. Receipts use the out/m4-cavity-boundaries prefix. clang-format 19.1.5 passed. Independent review checked component eligibility, ordered output, capillary routing and aliasing.
 
 The adapter accepts caller-aligned inventories. Persistent matching across accepted steps, scheduler inputs and publication, and Q-CAVITY remain open.
+
+## Polytropic topology transfer receipt
+
+Inventory transfer apportions the additive quantity V_initial p_initial^(1/1.4). It combines shares in caller order and represents the result using the largest contributing reference pressure. This is the chosen equal-pressure polytropic mixing closure. It preserves the original inventory on a split followed by reunion. Overlap assignment, accepted-step identity and loss accounting still belong to the caller.
+
+The CPU fixture checked a 1:3 split, reunion, unequal reference pressures and invalid fractions against the pressure law. Nine CPU tests passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure'. Six real-device boundary regressions passed with ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. This transfer is host code. Build and test receipts use the out/m4-cavity-inventory-remap prefix, including the pre-implementation test build. clang-format 19.1.5 passed.

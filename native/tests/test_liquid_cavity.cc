@@ -10,6 +10,40 @@
 namespace fluidity {
 namespace {
 
+TEST(LiquidCavity3D, SplitAndMergePreserveAdditivePolytropicInventory) {
+  constexpr LiquidCavityInventory3D kParent{8.0, 120000.0};
+  constexpr std::array<LiquidCavityInventoryShare3D, 1> kLeftShare{{{kParent, 0.25}}};
+  constexpr std::array<LiquidCavityInventoryShare3D, 1> kRightShare{{{kParent, 0.75}}};
+  const auto left = CombineLiquidCavityInventoryShares3D(kLeftShare);
+  const auto right = CombineLiquidCavityInventoryShares3D(kRightShare);
+  ASSERT_TRUE(left.ok()) << left.status();
+  ASSERT_TRUE(right.ok()) << right.status();
+  EXPECT_DOUBLE_EQ(left->initial_volume, 2.0);
+  EXPECT_DOUBLE_EQ(right->initial_volume, 6.0);
+  EXPECT_DOUBLE_EQ(left->initial_absolute_pressure, kParent.initial_absolute_pressure);
+  const std::array<LiquidCavityInventoryShare3D, 2> reunion{{{*left, 1.0}, {*right, 1.0}}};
+  const auto reunited = CombineLiquidCavityInventoryShares3D(reunion);
+  ASSERT_TRUE(reunited.ok()) << reunited.status();
+  EXPECT_DOUBLE_EQ(reunited->initial_volume, kParent.initial_volume);
+  EXPECT_DOUBLE_EQ(reunited->initial_absolute_pressure, kParent.initial_absolute_pressure);
+
+  constexpr LiquidCavityInventory3D kOther{3.0, 280000.0};
+  const std::array<LiquidCavityInventoryShare3D, 2> different_pressures{{{*left, 1.0}, {kOther, 1.0}}};
+  const auto combined = CombineLiquidCavityInventoryShares3D(different_pressures);
+  ASSERT_TRUE(combined.ok()) << combined.status();
+  constexpr double kVolume = 4.0;
+  const double left_pressure_root = 2.0 * std::pow(120000.0, 1.0 / 1.4);
+  const double other_pressure_root = 3.0 * std::pow(280000.0, 1.0 / 1.4);
+  const double expected_pressure = std::pow((left_pressure_root + other_pressure_root) / kVolume, 1.4);
+  const auto pressure = EvaluateLiquidCavity3D(*combined, kVolume, 101325.0, 1000.0, 0.0, 0.0, 0.1);
+  ASSERT_TRUE(pressure.ok()) << pressure.status();
+  EXPECT_NEAR(pressure->absolute_pressure, expected_pressure, 1.0e-8);
+
+  constexpr std::array<LiquidCavityInventoryShare3D, 1> kInvalidShare{{{kParent, 1.01}}};
+  EXPECT_EQ(CombineLiquidCavityInventoryShares3D(kInvalidShare).status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(CombineLiquidCavityInventoryShares3D({}).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCavity3D, SampledGasDomainSeparatesEnclosureFromUnknownAndVentedFrontiers) {
   constexpr UniformMacGeometry3D kGeometry{{0.0, 0.0, 0.0}, 1.0};
   std::array<CellIndex3D, 8> sampled_cells;
