@@ -1106,11 +1106,17 @@ absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
     std::span<const CellIndex3D> sampled_cells,
     std::span<const LiquidCornerDistance3D> corners,
     std::span<const FaceIndex3D> atmosphere_outlets,
-    std::span<LiquidAirVolumeCell3D> gas_cells
+    std::span<LiquidAirVolumeCell3D> gas_cells,
+    LiquidAirExterior3D exterior
 ) {
   const auto invalid = [] {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   };
+  const bool certify_exterior = exterior == LiquidAirExterior3D::kUnobstructedBoundingBox;
+  if (exterior > LiquidAirExterior3D::kUnobstructedBoundingBox
+      || (certify_exterior && (!std::holds_alternative<std::monostate>(obstacle) || !atmosphere_outlets.empty()))) {
+    return invalid();
+  }
   const auto output_bytes = std::as_bytes(gas_cells);
   for (const auto input_bytes : {
            std::as_bytes(sampled_cells),
@@ -1150,6 +1156,21 @@ absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
     }
   }
 
+  std::array<std::int32_t, 3> low{};
+  std::array<std::int32_t, 3> high{};
+  if (certify_exterior && !sampled_cells.empty()) {
+    const auto& first = sampled_cells.front();
+    low = {first.x, first.y, first.z};
+    high = low;
+    for (const auto cell : sampled_cells) {
+      const std::array coordinates{cell.x, cell.y, cell.z};
+      for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+        low[axis] = std::min(low[axis], coordinates[axis]);
+        high[axis] = std::max(high[axis], coordinates[axis]);
+      }
+    }
+  }
+
   std::size_t gas_count = 0;
   std::size_t used_outlets = 0;
   for (const auto cell : sampled_cells) {
@@ -1185,6 +1206,7 @@ absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
       return absl::Status(absl::StatusCode::kResourceExhausted, {});
     }
     LiquidAirVolumeCell3D record{.cell_index = cell, .gas_volume = measures->gas_volume};
+    const std::array coordinates{cell.x, cell.y, cell.z};
     for (int axis = 0; axis < 3; ++axis) {
       for (int side = 0; side < 2; ++side) {
         const auto passage = static_cast<std::size_t>(2 * axis + side);
@@ -1192,6 +1214,14 @@ absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
           continue;
         }
         record.passages[passage] = LiquidAirPassage3D::kOpen;
+        if (certify_exterior) {
+          const auto normal_axis = static_cast<std::size_t>(axis);
+          const auto plane = side == 0 ? low[normal_axis] : high[normal_axis];
+          if (coordinates[normal_axis] == plane) {
+            record.passages[passage] = LiquidAirPassage3D::kAtmosphere;
+          }
+          continue;
+        }
         if (atmosphere_outlets.empty()) {
           continue;
         }

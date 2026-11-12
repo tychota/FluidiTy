@@ -156,6 +156,7 @@ struct LiquidCavityStepInputs3D {
   std::uint64_t next_id;
   double atmospheric_absolute_pressure;  // Pa.
   double liquid_density;  // kg/m³.
+  LiquidAirExterior3D exterior = LiquidAirExterior3D::kExplicitOutlets;
   void* initialization_context = nullptr;
   // Called only for newly detected resolved enclosed components without tracked overlap.
   absl::StatusOr<LiquidCavityInventory3D> (*initialize)(void*, const LiquidAirComponent3D&) = nullptr;

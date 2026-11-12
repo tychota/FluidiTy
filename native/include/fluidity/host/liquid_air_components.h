@@ -22,12 +22,20 @@ struct LiquidAirVolumeCell3D {
   std::array<LiquidAirPassage3D, 6> passages{};  // Low/high x, low/high y, low/high z.
 };
 
+enum class LiquidAirExterior3D : std::uint8_t {
+  kExplicitOutlets,
+  kUnobstructedBoundingBox,  // Caller certifies all liquid lies within the sampled cell bounding box.
+};
+
 // Measures the sampled cells and emits positive-volume gas cells in the
 // same order. Supply unique (z,y,x) cells and corners, including all eight
 // corners per cell. Atmosphere outlets are optional certified outer faces,
 // ordered by (axis,z,y,x). Each must have a positive gas opening and exactly
 // one incident sampled cell. An unlisted opening into an unsampled cell
-// remains an unknown frontier. Output scratch must be disjoint from inputs.
+// remains an unknown frontier with explicit outlets. An unobstructed
+// bounding box automatically vents positive apertures on its six outer
+// planes. This mode requires no obstacle and no explicit outlets.
+// Output scratch must be disjoint from inputs.
 // Returns the number of populated gas records. Scratch may change on failure.
 // Invalid input returns InvalidArgument, insufficient output returns
 // ResourceExhausted, and clipping/sample failures propagate.
@@ -37,7 +45,8 @@ absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
     std::span<const CellIndex3D> sampled_cells,
     std::span<const LiquidCornerDistance3D> corners,
     std::span<const FaceIndex3D> atmosphere_outlets,
-    std::span<LiquidAirVolumeCell3D> gas_cells
+    std::span<LiquidAirVolumeCell3D> gas_cells,
+    LiquidAirExterior3D exterior = LiquidAirExterior3D::kExplicitOutlets
 );
 
 enum class LiquidAirConnectivity3D : std::uint8_t {

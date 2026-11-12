@@ -500,6 +500,9 @@ struct CavityStepOwner {
         .next_id = prior.lineage.next_id,
         .atmospheric_absolute_pressure = settings.atmospheric_absolute_pressure,
         .liquid_density = samples.liquid_density,
+        .exterior = !settings.atmosphere_outlets && std::holds_alternative<std::monostate>(samples.obstacle)
+            ? LiquidAirExterior3D::kUnobstructedBoundingBox
+            : LiquidAirExterior3D::kExplicitOutlets,
         .initialization_context = settings.context,
         .initialize = settings.initialize,
     };

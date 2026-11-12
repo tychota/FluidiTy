@@ -361,3 +361,9 @@ Opt-in cavity settings activate bounded scheduler-owned gas snapshots. The parti
 The particle-shell CPU fixture found one resolved cavity and injected a capacity failure after the first accepted step. Replay rebuilt the initial inventory once, then preserved it through subsequent accepted steps. Fifteen CPU tests passed with ctest --preset windows-debug-cpu -R 'Cavity|CapacityReplay'. Twenty-one CUDA scheduler and boundary regressions passed after a clean windows-release-cuda build with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The owned particle-shell fixture ran on CPU. clang-format 19.1.5 passed. Receipts use out/m4-owned-cavity, including initial fixture failures from an excessive face reservation and unsampled interior cells.
 
 The opt-in API still depends on scene-provided atmosphere certification and birth initialization. Checkpoint serialization and production scene loading remain open, as does full Q-CAVITY qualification.
+
+## Unobstructed exterior certification receipt
+
+The bounded host gas domain can certify a positive gas aperture on an outer bounding-box plane when all liquid is contained inside the box and there are no obstacles. The scheduler selects this mode for its bounded unobstructed field path when there is no explicit outlet provider. Interior holes in a supplied sample set stay unclassified. Obstacle scenes continue to use explicit outlet certification.
+
+The sampled sphere fixture opened a gas channel after compression. It verified vent classification, complete inventory release, removal of the gas-pressure override and an unbounded radial timestep. Fifteen CPU checks passed with ctest --preset windows-debug-cpu -R Cavity. Twenty-one real-device CUDA regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Exterior certification runs on the host. clang-format 19.1.5 passed. Receipts use out/m4-cavity-exterior.

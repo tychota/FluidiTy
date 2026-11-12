@@ -455,7 +455,8 @@ PrepareLiquidCavityStep3D(const LiquidCavityStepInputs3D& inputs, const LiquidCa
       inputs.sampled_cells,
       inputs.corners,
       inputs.atmosphere_outlets,
-      scratch.gas_cells
+      scratch.gas_cells,
+      inputs.exterior
   );
   if (!gas_count.ok()) {
     return gas_count.status();

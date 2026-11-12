@@ -10,7 +10,7 @@
 namespace fluidity {
 namespace {
 
-TEST(LiquidCavity3D, PreparesSampledCavityThenRetainsItsInventoryUnderCompression) {
+TEST(LiquidCavity3D, PreparesSampledCavityThroughCompressionAndVenting) {
   constexpr int kHalfExtent = 4;
   constexpr std::size_t kCellCount = 512;
   constexpr std::size_t kCornerCount = 729;
@@ -64,6 +64,7 @@ TEST(LiquidCavity3D, PreparesSampledCavityThenRetainsItsInventoryUnderCompressio
       .next_id = 1,
       .atmospheric_absolute_pressure = 100000.0,
       .liquid_density = 1000.0,
+      .exterior = LiquidAirExterior3D::kUnobstructedBoundingBox,
       .initialization_context = &initializations,
       .initialize = [](void* context,
                        const LiquidAirComponent3D& component) -> absl::StatusOr<LiquidCavityInventory3D> {
@@ -98,6 +99,41 @@ TEST(LiquidCavity3D, PreparesSampledCavityThenRetainsItsInventoryUnderCompressio
       104000.0 * std::pow(first.components.front().gas_volume / second.components.front().gas_volume, 1.4);
   ASSERT_GT(compressed->boundaries.air_pressure_count, 0);
   EXPECT_NEAR(second.pressures.front().gas_gauge_pressure, pressure - 100000.0, 1.0e-8);
+
+  const std::array compressed_lineage{second.lineage.front().state};
+  inputs.previous_snapshot = {
+      std::span(second.gas).first(compressed->gas_cell_count),
+      std::span(second.labels).first(compressed->gas_cell_count),
+      compressed->component_count,
+  };
+  inputs.previous_lineage = compressed_lineage;
+  inputs.next_id = compressed->lineage.next_id;
+  // Open a positive-area gas passage through the high-x exterior plane.
+  for (auto& corner : corners) {
+    const auto index = corner.corner_index;
+    if (index.x >= 0) {
+      const double channel = 1.25 - std::hypot(static_cast<double>(index.y), static_cast<double>(index.z));
+      corner.signed_distance = std::max(corner.signed_distance, channel);
+    }
+  }
+  for (auto& center : centers) {
+    const auto index = center.cell_index;
+    if (index.x >= 0) {
+      const double channel = 1.25 - std::hypot(index.y + 0.5, index.z + 0.5);
+      center.signed_distance = std::max(center.signed_distance, channel);
+    }
+  }
+  const auto vented = PrepareLiquidCavityStep3D(inputs, first.View());
+  ASSERT_TRUE(vented.ok()) << vented.status();
+  ASSERT_EQ(vented->component_count, 1);
+  EXPECT_EQ(first.components.front().connectivity, LiquidAirConnectivity3D::kVented);
+  EXPECT_FALSE(first.lineage.front().state.inventory);
+  EXPECT_EQ(vented->boundaries.air_pressure_count, 0);
+  EXPECT_EQ(vented->boundaries.maximum_step_duration, std::numeric_limits<double>::infinity());
+  const auto& inventory = *compressed_lineage.front().inventory;
+  const double expected_release = inventory.initial_volume * std::pow(inventory.initial_absolute_pressure, 1.0 / 1.4);
+  EXPECT_DOUBLE_EQ(vented->lineage.vented_inventory, expected_release);
+  EXPECT_DOUBLE_EQ(vented->lineage.unmatched_inventory, 0.0);
 }
 
 TEST(LiquidCavity3D, LineageAssignsSplitMergeBirthAndLossDeterministically) {
