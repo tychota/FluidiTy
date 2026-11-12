@@ -802,6 +802,27 @@ unknown version. This version policy is coordinated with M6. The
 scratch schema establishes wire compatibility. It does not exercise
 the production codec or an accepted mixed restart.
 
+A detached combined worktree now exercises the owning C++ codec. Trial
+commit 74d2e91 is based on the conflict-free tree of M5 602226e and M6
+81cbd6a. Its accepted guided-piston fixture saves liquid, rigid pose
+history, and compressed snow in FLSI version 2. Missing bindings and
+inadmissible snow reject. The version 2 bytes round-trip exactly. The
+liquid scheduler restored from those bytes reproduces the next accepted
+envelope byte for byte after the uninterrupted scheduler rejects a
+trial and retries. The fixture carries the saved snow history through
+that step. Plastic evolution and reciprocal snow/liquid contact remain
+open. Both milestone branches retain their separate owning sources.
+
+In the detached worktree, the Windows Debug CPU build used the existing
+CLI11 Conan toolchain, M4 CPU qualification receipt, and the reference
+Python environment. The following run passed all 110 selected tests,
+including the owning schema conformance and existing v1 replay tests.
+
+```powershell
+cmake --build --preset windows-debug-cpu --target fluidity_native_tests fluidity_m5_dry_scene_tests --parallel 8
+ctest --preset windows-debug-cpu -R 'LiquidSubstep3D|RigidBody3D|M5DryScenes.native|LiquidCacheSchema.solid_interaction_checkpoint' --output-on-failure
+```
+
 The host mixed-contact bridge applies a supplied face batch to liquid
 and plastic candidate records. It builds a separate global particle ID
 order so the stored liquid sort order and plastic record order are
