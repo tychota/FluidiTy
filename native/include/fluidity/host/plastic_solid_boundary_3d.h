@@ -85,4 +85,57 @@ absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolid
     const LiquidObstacle3D& obstacle = {}
 );
 
+// Frozen pressure-to-wall mobility B M^-1 B^T. Each face uses the same
+// corner coefficients as pressure traction. The affine mass metric uses
+// h^2 / 4 for each slope coordinate. Prescribed analytic wall motion is fixed.
+class PlasticSolidPressureMobility3D {
+ public:
+  // Freezes the unit-pressure coefficients in face slot order. The samples
+  // and obstacle must match the frozen geometry. Accepted particles are
+  // strictly ordered by ID and supply finite positive masses. The result
+  // owns all coefficients. Failure publishes no partial operator.
+  static absl::StatusOr<PlasticSolidPressureMobility3D> Create(
+      const FrozenLiquidBoundaryGeometryView3D& geometry,
+      const PlasticSolidBoundarySamples3D& samples,
+      std::span<const PlasticSolidCheckpointParticle3D> accepted,
+      const LiquidObstacle3D& obstacle = {}
+  );
+
+  // Applies one pressure increment in frozen cell order with zero exterior
+  // increment. Returns induced wall flux in frozen face order in m³/s.
+  // The operator includes the frozen step duration. Failure returns no flux.
+  absl::StatusOr<std::vector<double>> Apply(std::span<const double> pressure_increment) const;
+
+  // Solves the integrated liquid pressure system with the frozen snow
+  // mobility. Returns the positive-normal snow flux increment for each
+  // pressure face. The ambient pressure fixes the exterior snow traction.
+  // Closed liquid components retain the checked liquid gauge convention.
+  absl::StatusOr<std::vector<double>>
+  SolveWallFlux(const MacPressureInputs3D& liquid, double ambient_pressure, std::size_t maximum_iterations) const;
+
+  // Verifies that the backend pressure produces the imposed flux increment
+  // to within the integrated per-cell tolerance expressed in inverse seconds.
+  absl::Status VerifyProjectedFlux(
+      std::span<const double> projected_pressure,
+      double ambient_pressure,
+      std::span<const double> imposed_flux,
+      std::span<const FrozenLiquidCell3D> cells
+  ) const;
+
+ private:
+  struct Corner {
+    std::size_t owner = 0;
+    std::array<double, 4> coefficients{};
+  };
+  struct Face {
+    std::size_t axis = 0;
+    std::size_t tail_cell = 0;
+    std::size_t head_cell = 0;
+    std::array<Corner, 4> corners{};
+  };
+  std::size_t particle_count_ = 0;
+  std::size_t cell_count_ = 0;
+  std::vector<Face> faces_;
+};
+
 }  // namespace fluidity

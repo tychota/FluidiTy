@@ -78,6 +78,7 @@ add_library(fluidity_native STATIC
   native/src/liquid_isolated_drop_3d.cc
   native/src/liquid_remap_3d.cc
   native/src/liquid_band_handoff_3d.cc
+  native/src/liquid_adaptive_family_candidate_3d.cc
   native/src/liquid_adaptive_step_3d.cc
   native/src/liquid_substep_3d.cc
   native/src/wetted_piston_3d.cc
@@ -399,6 +400,21 @@ if(BUILD_TESTING)
   add_executable(fluidity_surface_fixed_cache_tests native/tests/test_surface_fixed_cache_3d.cc)
   target_link_libraries(fluidity_surface_fixed_cache_tests PRIVATE fluidity_native GTest::gtest_main)
   target_compile_options(fluidity_surface_fixed_cache_tests PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+
+  add_executable(fluidity_adaptive_family_fixture native/tests/adaptive_family_fixture.cc)
+  target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_native fluidity_native_options)
+  add_test(NAME AdaptiveFamilyReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu)
+  set_tests_properties(AdaptiveFamilyReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  if(FLUIDITY_ENABLE_CUDA)
+    target_compile_definitions(fluidity_adaptive_family_fixture PRIVATE FLUIDITY_ADAPTIVE_FIXTURE_CUDA)
+    target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_cuda_operators CUDA::cudart)
+    add_test(NAME AdaptiveFamilyReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda)
+    set_tests_properties(AdaptiveFamilyReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+  endif()
 
   if(FLUIDITY_ENABLE_CUDA)
     add_executable(fluidity_cuda_probe_tests native/tests/test_cuda_probe.cc)

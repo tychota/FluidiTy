@@ -73,6 +73,13 @@ class FLUIDITY_OT_liquid_source(Operator):
 
 class FluidiTySettings(PropertyGroup):
     liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    snow_mound: PointerProperty(name="Snow Mound", type=Object, update=invalidate_guidance)
+    snow_density: FloatProperty(name="Snow Density (kg/m³)", default=300, min=1, update=invalidate_guidance)
+    snow_shear: FloatProperty(name="Snow Shear Modulus (Pa)", default=1200, min=1, update=invalidate_guidance)
+    snow_lambda: FloatProperty(name="Snow Lamé Lambda (Pa)", default=700, min=0, update=invalidate_guidance)
+    snow_compression: FloatProperty(name="Snow Compression Limit", default=0.025, min=0, max=0.99)
+    snow_stretch: FloatProperty(name="Snow Stretch Limit", default=0.01, min=0)
+    snow_hardening: FloatProperty(name="Snow Hardening", default=4, min=0)
     planar_fill: BoolProperty(name="Planar Tank Fill", update=invalidate_guidance)
     fill_height: FloatProperty(name="Fill Surface Height (m)", default=1.0, update=invalidate_guidance)
     surface_object: PointerProperty(type=Object)
@@ -91,6 +98,7 @@ class FluidiTySettings(PropertyGroup):
             ("FREE", "Free Space", "No solid boundaries; domain is initial containment only"),
             ("PLANE", "Plane Collider", "Infinite floor at the top of the collider box"),
             ("SLAB", "Slab Collider", "Infinite X slab using the collider box thickness"),
+            ("SNOW_PLATEN", "Snow Platen", "Animated overhead platen for a snow mound and water source"),
             ("LEGACY_PADDLE", "Legacy Paddle", "Original first-bake packet for existing scenes"),
         ),
         default="LEGACY_PADDLE",
@@ -244,6 +252,7 @@ class FluidiTySettings(PropertyGroup):
     )
     attached_cache: StringProperty(name="Attached Cache")
     playback_object: PointerProperty(type=Object)
+    snow_playback_object: PointerProperty(type=Object)
     point_index: IntProperty(name="Point Index", min=0, max=1023)
     committed_frame: IntProperty(default=-1, options={"SKIP_SAVE"})
     target_frame: IntProperty(default=-1, options={"SKIP_SAVE"})

@@ -67,26 +67,80 @@ void PrintBlenderVector(const Vec3& solver_vector) {
   std::cout << '[' << solver_vector.x << ',' << -solver_vector.z << ',' << solver_vector.y << ']';
 }
 
+enum class PointChannel {
+  kAll,
+  kLiquid,
+  kSnow
+};
+
+bool InPointChannel(const LiquidPoint3D& point, PointChannel channel) {
+  const bool snow = (point.tag & kSnowPointTagBit) != 0 && (point.id & kSnowPointIdBit) != 0;
+  return channel == PointChannel::kAll || (channel == PointChannel::kSnow ? snow : !snow);
+}
+
 absl::Status Inspect(const LiquidCache3D& cache, std::uint64_t frame_ordinal) {
+  const auto scene = cache.ReadResolvedScene();
+  if (!scene.ok()) {
+    return scene.status();
+  }
+  const bool mixed = scene->model_version == kPlasticBodyResolvedModel3D;
   const auto committed = ReadFrame(cache, frame_ordinal);
   if (!committed.ok()) {
     return committed.status();
   }
   std::cout << "{\"frame\":" << frame_ordinal << ",\"time_seconds\":" << committed->manifest.clock.time
             << ",\"execution_id\":\"" << LiquidDigestHex3D(committed->manifest.execution_id).data()
-            << "\",\"points_digest\":\"" << LiquidDigestHex3D(committed->manifest.points.digest).data()
-            << "\",\"points\":[";
+            << "\",\"model_version\":" << scene->model_version << ",\"points_digest\":\""
+            << LiquidDigestHex3D(committed->manifest.points.digest).data() << "\",\"points\":[";
   const char* separator = "";
   for (const auto& point : committed->points.points.values()) {
     std::cout << separator << "{\"id\":" << point.id << ",\"position\":";
     PrintBlenderVector(point.world_position);
     std::cout << ",\"velocity\":";
     PrintBlenderVector(point.world_velocity);
-    std::cout << ",\"radius\":" << point.radius << '}';
+    std::cout << ",\"radius\":" << point.radius;
+    if (mixed) {
+      std::cout << ",\"substance\":\"" << (InPointChannel(point, PointChannel::kSnow) ? "snow" : "water") << '"';
+    }
+    std::cout << '}';
     separator = ",";
   }
   std::cout << "]}\n";
   return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write inspection result");
+}
+
+absl::Status InspectSnowCheckpoint(const fs::path& root, std::uint64_t frame_ordinal) {
+  const auto inspection = LiquidCache3D::OpenForInspection(root);
+  if (!inspection.ok()) {
+    return inspection.status();
+  }
+  const auto scene = inspection->ReadResolvedScene();
+  if (!scene.ok()) {
+    return scene.status();
+  }
+  const auto fingerprint = ResolvedSceneFingerprint(scene->View());
+  if (!fingerprint.ok()) {
+    return fingerprint.status();
+  }
+  const auto cache = LiquidCache3D::OpenForReplay(root, *fingerprint);
+  if (!cache.ok()) {
+    return cache.status();
+  }
+  const auto checkpoint = cache->ReadCheckpoint(frame_ordinal);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  if (checkpoint->state.clock.frame_ordinal != frame_ordinal || !checkpoint->solid
+      || checkpoint->solid->plastic_particles.empty()) {
+    return absl::NotFoundError("no retained snow checkpoint at the requested frame");
+  }
+  double minimum_log_plastic_jacobian = std::numeric_limits<double>::infinity();
+  for (const auto& particle : checkpoint->solid->plastic_particles) {
+    minimum_log_plastic_jacobian = std::min(minimum_log_plastic_jacobian, particle.log_plastic_jacobian);
+  }
+  std::cout << "{\"frame\":" << frame_ordinal << ",\"minimum_log_plastic_jacobian\":" << minimum_log_plastic_jacobian
+            << "}\n";
+  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write snow checkpoint inspection");
 }
 
 bool FitsAlembicFloat(double value) {
@@ -106,7 +160,8 @@ abc::V3f Narrow(const Vec3& solver_vector) {
   };
 }
 
-absl::Status WriteArchive(std::ostream& output, const LiquidCache3D& cache, std::uint64_t last_frame) {
+absl::Status
+WriteArchive(std::ostream& output, const LiquidCache3D& cache, std::uint64_t last_frame, PointChannel channel) {
   abc::OArchive archive(ogawa::WriteArchive()(&output, abc::MetaData{}));
   const auto sampling = archive.addTimeSampling({1.0 / kFramesPerSecond, 0.0});
   geom::OPoints points_object(archive.getTop(), "FluidiTyPoints", sampling);
@@ -121,8 +176,11 @@ absl::Status WriteArchive(std::ostream& output, const LiquidCache3D& cache, std:
     std::vector<abc::V3f> velocities(storage_count);
     std::vector<std::uint64_t> ids(storage_count);
     std::vector<float> diameters(storage_count);
-    for (std::size_t index = 0; index < points.size(); ++index) {
-      const auto& point = points[index];
+    std::size_t index = 0;
+    for (const auto& point : points) {
+      if (!InPointChannel(point, channel)) {
+        continue;
+      }
       const double diameter = 2 * point.radius;
       if (!FitsAlembicFloat(point.world_position) || !FitsAlembicFloat(point.world_velocity)
           || !FitsAlembicFloat(diameter) || static_cast<float>(diameter) <= 0) {
@@ -132,6 +190,7 @@ absl::Status WriteArchive(std::ostream& output, const LiquidCache3D& cache, std:
       velocities[index] = Narrow(point.world_velocity);
       ids[index] = point.id;
       diameters[index] = static_cast<float>(diameter);
+      ++index;
     }
     WritePointSample(
         points_object.getSchema(),
@@ -139,7 +198,7 @@ absl::Status WriteArchive(std::ostream& output, const LiquidCache3D& cache, std:
         ids.data(),
         velocities.data(),
         diameters.data(),
-        points.size()
+        index
     );
   }
   return absl::OkStatus();
@@ -695,12 +754,16 @@ absl::Status Run(std::span<const fs::path> args) {
     return ResolveBlenderScene(args);
   }
   const bool inspect = args.size() == 3 && args[0] == "inspect";
+  const bool inspect_snow = args.size() == 3 && args[0] == "inspect-snow";
   const bool inspect_volume = args.size() == 3 && args[0] == "inspect-volume";
-  const bool export_points = args.size() == 4 && args[0] == "export";
+  const bool export_water = args.size() == 4 && args[0] == "export-water";
+  const bool export_snow = args.size() == 4 && args[0] == "export-snow";
+  const bool export_points = (args.size() == 4 && args[0] == "export") || export_water || export_snow;
   const bool export_surface = args.size() == 4 && args[0] == "export-surface";
   const bool export_surface_usd = args.size() == 4 && args[0] == "export-surface-usd";
   const bool export_foam = args.size() == 4 && args[0] == "export-foam";
-  if (!inspect && !inspect_volume && !export_points && !export_surface && !export_surface_usd && !export_foam) {
+  if (!inspect && !inspect_snow && !inspect_volume && !export_points && !export_surface && !export_surface_usd
+      && !export_foam) {
     return absl::InvalidArgumentError(
         "expected a cache and frame for inspect, inspect-volume, export, export-surface, export-surface-usd or "
         "export-foam"
@@ -709,6 +772,9 @@ absl::Status Run(std::span<const fs::path> args) {
   const auto frame = ParseFrame(args[2]);
   if (!frame.ok()) {
     return frame.status();
+  }
+  if (inspect_snow) {
+    return InspectSnowCheckpoint(args[1], *frame);
   }
   if (inspect_volume) {
     return InspectVolume(args[1], *frame);
@@ -726,8 +792,19 @@ absl::Status Run(std::span<const fs::path> args) {
   if (inspect) {
     return Inspect(*cache, *frame);
   }
+  PointChannel channel = PointChannel::kAll;
+  if (export_water || export_snow) {
+    const auto scene = cache->ReadResolvedScene();
+    if (!scene.ok()) {
+      return scene.status();
+    }
+    if (scene->model_version != kPlasticBodyResolvedModel3D) {
+      return absl::FailedPreconditionError("separate point channels require a model-2 scene");
+    }
+    channel = export_snow ? PointChannel::kSnow : PointChannel::kLiquid;
+  }
   return PublishArchive(args[3], [&](std::ostream& output) {
-    return WriteArchive(output, *cache, *frame);
+    return WriteArchive(output, *cache, *frame, channel);
   });
 }
 }  // namespace
