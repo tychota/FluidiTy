@@ -102,6 +102,12 @@ void PackLiquidArenaState3D(
       cell.inventory.momentum_kg_m_per_s.y = record.inventory.momentum_kg_m_per_s.y;
       cell.inventory.momentum_kg_m_per_s.z = record.inventory.momentum_kg_m_per_s.z;
       cell.inventory.enthalpy_j = record.inventory.enthalpy_j;
+      cell.inventory.phase_id = record.inventory.phase_id;
+      cell.inventory.constituent_count = record.inventory.constituent_count;
+      for (std::size_t constituent = 0; constituent < record.inventory.constituent_count; ++constituent) {
+        const auto& entry = record.inventory.constituents[constituent];
+        cell.inventory.constituents[constituent] = {entry.substance_id, entry.volume_m3};
+      }
       cell.previous_pressure = record.previous_pressure;
     }
     auto* adaptive_faces = At<LiquidAdaptiveFaceState3D>(destination, layout.face_records_byte_offset);

@@ -152,7 +152,7 @@ std::size_t Owner(const wire::LiquidState* state, const wire::Index3* index) {
 }
 LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
   const auto* lower = cell->lower_corner();
-  return {
+  LiquidAdaptiveCellState3D result{
       .key = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = cell->width_exponent()},
       .occupancy = static_cast<LiquidCellOccupancy3D>(cell->occupancy()),
       .inventory =
@@ -165,6 +165,15 @@ LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
           },
       .previous_pressure = cell->previous_pressure(),
   };
+  result.inventory.phase_id = cell->phase_id().value_or(0);
+  if (const auto* constituents = cell->constituents()) {
+    result.inventory.constituent_count = static_cast<std::uint8_t>(constituents->size());
+    for (flatbuffers::uoffset_t index = 0; index < constituents->size(); ++index) {
+      const auto* entry = constituents->Get(index);
+      result.inventory.constituents[index] = {entry->substance_id(), entry->volume_m3()};
+    }
+  }
+  return result;
 }
 
 LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
@@ -190,6 +199,11 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
     if (adaptive->cells()->size() == 0 || state->blocks()->size() != 0 || state->cells()->size() != 0
         || state->faces()->size() != 0) {
       return cache_detail::Corrupt();
+    }
+    for (const auto* cell : *adaptive->cells()) {
+      if (!cache_detail::ValidCompositionEncoding(cell)) {
+        return cache_detail::Corrupt();
+      }
     }
     for (const auto* face : *adaptive->faces()) {
       if (!cache_detail::ValidBoolean(face, wire::AdaptiveFace::VT_STRUCTURALLY_ELIGIBLE)) {
@@ -526,6 +540,17 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
                 const auto& inventory = cell.inventory;
                 const wire::Index3 index(lower.x, lower.y, lower.z);
                 const auto momentum = cache_detail::Pack(inventory.momentum_kg_m_per_s);
+                flatbuffers::Optional<std::uint64_t> phase_id;
+                flatbuffers::Offset<flatbuffers::Vector<const wire::AdaptiveConstituentVolume*>> constituent_volumes;
+                if (inventory.constituent_count != 0) {
+                  phase_id = inventory.phase_id;
+                  std::array<wire::AdaptiveConstituentVolume, kMaximumLiquidParticleConstituents3D> entries;
+                  for (std::size_t constituent = 0; constituent < inventory.constituent_count; ++constituent) {
+                    const auto& entry = inventory.constituents[constituent];
+                    entries[constituent] = {entry.substance_id, entry.volume_m3};
+                  }
+                  constituent_volumes = builder.CreateVectorOfStructs(entries.data(), inventory.constituent_count);
+                }
                 return wire::CreateAdaptiveCell(
                     builder,
                     &index,
@@ -536,7 +561,9 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
                     inventory.current_volume_m3,
                     &momentum,
                     inventory.enthalpy_j,
-                    cell.previous_pressure
+                    cell.previous_pressure,
+                    phase_id,
+                    constituent_volumes
                 );
               }
           );

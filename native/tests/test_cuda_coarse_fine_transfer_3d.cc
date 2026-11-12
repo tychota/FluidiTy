@@ -68,18 +68,35 @@ std::vector<CoarseFineCudaResult3D> RunKernel(std::span<const CoarseFineCoreQuer
   return run.ok() ? *run : std::vector<CoarseFineCudaResult3D>{};
 }
 
-TEST(CudaAdaptiveSimulate3D, RejectedGradedTrialPreservesDeviceEpoch) {
+enum class GradedTankVariant {
+  kInviscid,
+  kEos,
+  kMiscible,
+  kCapillary
+};
+
+void ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant variant) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored = test::PopulateGradedTankFixture3D(state, scene);
   ASSERT_TRUE(authored.ok()) << authored;
+  if (variant == GradedTankVariant::kEos) {
+    test::SetGradedTankEos3D(state, scene);
+  }
+  if (variant == GradedTankVariant::kMiscible) {
+    test::SetGradedTankMiscible3D(state, scene);
+  }
+  const bool capillary = variant == GradedTankVariant::kCapillary;
+  if (capillary) {
+    scene.surface_tension = 100.0;
+  }
   LiquidStepOptions3D options;
   options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
   auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
   ASSERT_TRUE(backend.ok()) << backend.status();
   auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-  bool reject = true;
+  bool reject = !capillary;
   scheduler->SetStageFaultHookForTesting({
       .context = &reject,
       .before_stage =
@@ -92,23 +109,39 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedTrialPreservesDeviceEpoch) {
             return absl::OkStatus();
           },
   });
-  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
-  const auto rejected = scheduler->Attempt(0.01);
+  const double frame_duration = capillary ? 0.02 : 0.01;
+  ASSERT_TRUE(scheduler->BeginFrame(frame_duration).ok());
+  const auto rejected = scheduler->Attempt(frame_duration);
   ASSERT_TRUE(rejected.ok()) << rejected.status();
   ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
   EXPECT_EQ(scheduler->committed(), state);
   auto readback = CloneLiquidState3D(state, options.capacities);
   ASSERT_TRUE(readback.ok()) << readback.status();
+  for (auto& particle : readback->particles.values()) {
+    particle.phase_id = 0;
+    particle.constituent_count = 0;
+  }
+  const auto expect_device_state = [&](const LiquidState3D& host) {
+    auto expected = CloneLiquidState3D(host, options.capacities);
+    ASSERT_TRUE(expected.ok()) << expected.status();
+    // The device particle ABI omits host composition metadata. Graded cell
+    // inventory, including composition, is part of the published device bank.
+    for (auto& particle : expected->particles.values()) {
+      particle.phase_id = 0;
+      particle.constituent_count = 0;
+    }
+    EXPECT_EQ(*readback, *expected);
+  };
   {
     const auto old = backend->AcquireCommitted();
     ASSERT_TRUE(old.ok()) << old.status();
     EXPECT_EQ(old->identity().clock, state.clock);
     const auto copied = old->Readback(*readback);
     ASSERT_TRUE(copied.ok()) << copied;
-    EXPECT_EQ(*readback, state);
+    expect_device_state(state);
   }
   for (int step = 0; step < 2; ++step) {
-    const auto accepted = scheduler->Attempt(0.005);
+    const auto accepted = scheduler->Attempt(frame_duration / 2.0);
     ASSERT_TRUE(accepted.ok()) << accepted.status();
     ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
   }
@@ -118,9 +151,29 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedTrialPreservesDeviceEpoch) {
   EXPECT_EQ(epoch->identity().clock, scheduler->committed().clock);
   const auto copied = epoch->Readback(*readback);
   ASSERT_TRUE(copied.ok()) << copied;
-  EXPECT_EQ(*readback, scheduler->committed());
+  expect_device_state(scheduler->committed());
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+  if (variant == GradedTankVariant::kEos) {
+    EXPECT_LT(readback->particles[0].volume_ratio, 1.0);
+    EXPECT_GT(readback->adaptive_cells[0].previous_pressure, 0.0);
+  }
 }
+TEST(CudaAdaptiveSimulate3D, RejectedGradedTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kInviscid);
+}
+
+TEST(CudaAdaptiveSimulate3D, RejectedGradedEosTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kEos);
+}
+
+TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kMiscible);
+}
+
+TEST(CudaAdaptiveSimulate3D, RejectedGradedCapillaryTrialPreservesDeviceEpoch) {
+  ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kCapillary);
+}
+
 TEST(CudaCoarseFineTransfer3D, OracleQueriesAndAllOrientationsMatchCpuOnSm120) {
   constexpr Vec3 origin{-4, 2, -3};
   constexpr std::array<std::array<double, 3>, 10> positions{{

@@ -284,7 +284,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-eos", "graded-miscible") else []
     return scene, initial
 
 
@@ -574,9 +574,9 @@ def case_cpu_execution(executable, fixture, directory, cuda):
     cavity_loss_execution_case(executable, fixture, directory, "cpu")
 
 
-def graded_replay_case(executable, fixture, directory, backend):
+def graded_replay_case(executable, fixture, directory, backend, mode="graded-tank"):
     directory.mkdir(exist_ok=True)
-    scene, initial = make_scene(executable, fixture, directory, backend, "graded-tank")
+    scene, initial = make_scene(executable, fixture, directory, backend, mode)
     uninterrupted_cache = directory / "graded-continuous"
     resumed_cache = directory / "graded-resumed"
     run = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, "--trace"]
@@ -611,20 +611,24 @@ def graded_replay_case(executable, fixture, directory, backend):
     if backend == "cuda":
         assert resumed["compiled_architecture"] == 1200, resumed
     print(json.dumps({"adaptive_checkpoint": checkpoint["state_digest"], "backend": backend,
-                      "frame": resumed["frame"], "interrupted_exit_code": exit_code,
+                      "frame": resumed["frame"], "interrupted_exit_code": exit_code, "mode": mode,
                       "state_digest": resumed["state_digest"]}, sort_keys=True))
 
 
 def case_cpu_graded_replay(executable, fixture, directory, cuda):
-    graded_replay_case(executable, fixture, directory, "cpu")
+    graded_replay_case(executable, fixture, directory / "eos", "cpu", "graded-eos")
+    graded_replay_case(executable, fixture, directory / "miscible", "cpu", "graded-miscible")
 
 
 def case_cuda_graded_replay(executable, fixture, directory, cuda):
-    graded_replay_case(executable, fixture, directory, "cuda")
+    graded_replay_case(executable, fixture, directory / "eos", "cuda", "graded-eos")
+    graded_replay_case(executable, fixture, directory / "miscible", "cuda", "graded-miscible")
 
 def case_cpu_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cpu")
     graded_replay_case(executable, fixture, directory / "graded", "cpu")
+    graded_replay_case(executable, fixture, directory / "graded-eos", "cpu", "graded-eos")
+    graded_replay_case(executable, fixture, directory / "graded-miscible", "cpu", "graded-miscible")
 
 
 def case_cuda_execution(executable, fixture, directory, cuda):
@@ -637,6 +641,8 @@ def case_cuda_execution(executable, fixture, directory, cuda):
 def case_cuda_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cuda")
     graded_replay_case(executable, fixture, directory / "graded", "cuda")
+    graded_replay_case(executable, fixture, directory / "graded-eos", "cuda", "graded-eos")
+    graded_replay_case(executable, fixture, directory / "graded-miscible", "cuda", "graded-miscible")
 
 
 def case_execution_validation(executable, fixture, directory, cuda):

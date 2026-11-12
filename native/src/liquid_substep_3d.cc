@@ -2363,6 +2363,13 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     const LiquidSubstepBackend3D& backend
 ) {
   const bool adaptive_mode = initial.adaptive_cells.size() != 0;
+  if (adaptive_mode
+      && (CanApplyViscosity(scene) || scene.drift || scene.cavity || scene.cavity_provider.prepare
+          || !scene.phase_pairs.empty())) {
+    return absl::UnimplementedError(
+        "graded tank viscosity, drift, cavity or immiscible settings require a graded operator"
+    );
+  }
   if (adaptive_mode && backend.project_adaptive == nullptr && !backend.host_adaptive_pressure) {
     return absl::UnimplementedError("selected backend has no graded pressure projection");
   }

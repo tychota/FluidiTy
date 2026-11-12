@@ -46,6 +46,7 @@ table CavitySnapshot {
   gas:[CavityGasCell] (required, id:1);
   inventories:[CavityInventory] (required, id:2);
 }
+struct AdaptiveConstituentVolume { substance_id:ulong; volume_m3:double; }
 table AdaptiveCell {
   lower_corner:Index3 (required, id:0);
   width_exponent:ubyte (id:1);
@@ -56,6 +57,8 @@ table AdaptiveCell {
   momentum_kg_m_per_s:Vector3 (required, id:6);
   enthalpy_j:double (id:7);
   previous_pressure:double (id:8);
+  phase_id:ulong = null (id:9);
+  constituents:[AdaptiveConstituentVolume] (id:10);
 }
 table AdaptiveFace {
   carrier_velocity:double (id:0);

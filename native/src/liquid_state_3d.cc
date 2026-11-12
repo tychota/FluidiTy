@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "liquid_adaptive_state_internal_3d.h"
+#include "liquid_remap_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -231,7 +232,7 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
     if (!IsNonnegativeFinite(inventory.mass_kg) || !IsNonnegativeFinite(inventory.reference_volume_m3)
         || !IsNonnegativeFinite(inventory.current_volume_m3) || inventory.current_volume_m3 > volume_m3
         || !Finite(inventory.momentum_kg_m_per_s) || !std::isfinite(inventory.enthalpy_j)
-        || !std::isfinite(cell.previous_pressure)) {
+        || !std::isfinite(cell.previous_pressure) || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }
@@ -381,7 +382,14 @@ bool LiquidAdaptiveCellState3D::operator==(const LiquidAdaptiveCellState3D& othe
       && inventory.reference_volume_m3 == other.inventory.reference_volume_m3
       && inventory.current_volume_m3 == other.inventory.current_volume_m3
       && Components(inventory.momentum_kg_m_per_s) == Components(other.inventory.momentum_kg_m_per_s)
-      && inventory.enthalpy_j == other.inventory.enthalpy_j && previous_pressure == other.previous_pressure;
+      && inventory.enthalpy_j == other.inventory.enthalpy_j && previous_pressure == other.previous_pressure
+      && inventory.phase_id == other.inventory.phase_id
+      && inventory.constituent_count == other.inventory.constituent_count
+      && inventory.constituent_count <= inventory.constituents.size()
+      && std::ranges::equal(
+             std::span(inventory.constituents).first(inventory.constituent_count),
+             std::span(other.inventory.constituents).first(other.inventory.constituent_count)
+      );
 }
 bool LiquidState3D::operator==(const LiquidState3D& other) const {
   return SameGeometry(geometry, other.geometry) && clock == other.clock && random_seed == other.random_seed

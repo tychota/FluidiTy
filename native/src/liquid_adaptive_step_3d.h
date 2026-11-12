@@ -5,6 +5,7 @@
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "liquid_remap_3d_internal.h"
 #include "mac_pressure_3d_system.h"
 
 namespace fluidity::liquid_step_internal {
@@ -38,15 +39,29 @@ class AdaptiveLiquidStep3D {
  private:
   AdaptiveLiquidStep3D(AdaptiveMacTopology3D topology, GradedMacTransfer3D transfer);
   absl::Status AccumulateInventories(const LiquidState3D& state);
+  absl::Status AdvectPressureHistory(const LiquidState3D& state, double duration);
+
+  struct PressureHistory3D {
+    Vec3 centered_velocity{};
+    double donor_weight = 0.0;
+    double donor_pressure = 0.0;
+  };
 
   AdaptiveMacTopology3D topology_;
   GradedMacTransfer3D transfer_;
   std::vector<std::size_t> interior_slots_;
+  std::vector<AdaptiveMacExteriorFace3D> exterior_faces_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;
   std::vector<double> distances_;
+  std::vector<double> predictor_density_;
+  std::vector<double> reference_density_;
+  std::vector<liquid_remap_internal::ConstituentSums> constituent_sums_;
+  std::vector<Vec3> normal_derivatives_;
+  std::vector<PressureHistory3D> pressure_history_;
+  bool update_volume_ratio_ = false;
   std::vector<LiquidRemapInventory3D> inventories_;
   double surface_height_ = 0;
 };

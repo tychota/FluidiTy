@@ -86,4 +86,40 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+inline void SetGradedTankEos3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0};
+  scene.ambient_pressure = 1.0;
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+}
+
+inline void SetGradedTankMiscible3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  static constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1.5}, {14, 4, 2.5}}};
+  scene.constituent_materials = kMaterials;
+  for (std::size_t ordinal = 0; ordinal < state.particles.size(); ++ordinal) {
+    auto& particle = state.particles[ordinal];
+    auto& inventory = state.adaptive_cells[ordinal].inventory;
+    const double clear = ordinal % 2 == 0 ? 0.75 : 0.25;
+    const double dyed = 1.0 - clear;
+    particle.phase_id = 4;
+    particle.constituent_count = 2;
+    particle.constituents = {{{8, clear}, {14, dyed}}};
+    particle.mass =
+        particle.reference_volume * (clear * kMaterials[0].density_kg_per_m3 + dyed * kMaterials[1].density_kg_per_m3);
+    inventory.mass_kg = particle.mass;
+    inventory.momentum_kg_m_per_s = {
+        particle.mass * particle.world_velocity.x,
+        particle.mass * particle.world_velocity.y,
+        particle.mass * particle.world_velocity.z,
+    };
+    inventory.phase_id = particle.phase_id;
+    inventory.constituent_count = particle.constituent_count;
+    inventory.constituents = {{{8, clear * particle.reference_volume}, {14, dyed * particle.reference_volume}}};
+  }
+}
+
 }  // namespace fluidity::test

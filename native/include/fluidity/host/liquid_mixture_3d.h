@@ -28,6 +28,7 @@ struct LiquidConstituentMaterial3D {
 struct LiquidConstituentVolume3D {
   std::uint64_t substance_id;
   double volume_m3;  // Nonnegative current volume, including the donor's transfer weight.
+  bool operator==(const LiquidConstituentVolume3D&) const = default;
 };
 
 struct LiquidConstituentFraction3D {
