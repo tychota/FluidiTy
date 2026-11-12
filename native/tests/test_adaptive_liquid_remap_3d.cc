@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <utility>
@@ -152,6 +153,92 @@ TEST(AdaptiveLiquidRemap3D, RefinesAffineInventoryAndPreservesSignedDivergence) 
   for (std::size_t index = 0; index < fields.inventories.size(); ++index) {
     EXPECT_EQ(InventoryValues(restored->inventories[index]), InventoryValues(fields.inventories[index]));
   }
+}
+
+TEST(AdaptiveLiquidRemap3D, ConservesApertureWeightedExteriorFluxAndChildDivergence) {
+  constexpr AdaptiveMacCellKey3D kRetained{{-2, 0, 0}, 1};
+  const auto topology = AdaptiveMacTopology3D::Create(std::array{kParent, kRetained}, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto fields = MakeFields(*topology);
+  const auto coarse_ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(coarse_ownership.ok()) << coarse_ownership.status();
+  const auto fine_family = PrepareAdaptiveRefinement3D(*topology, fields.pressures, kParent);
+  ASSERT_TRUE(fine_family.ok()) << fine_family.status();
+  const auto fine_ownership = BuildAdaptiveMacFaceOwnership3D(fine_family->topology);
+  ASSERT_TRUE(fine_ownership.ok()) << fine_ownership.status();
+
+  std::vector<double> coarse_areas;
+  std::vector<double> coarse_outward;
+  for (const auto& face : coarse_ownership->exterior_faces) {
+    const bool parent_open = face.cell_ordinal == fields.parent_ordinal && face.face_index.axis == FaceNormalAxis::kX;
+    const bool retained_open =
+        face.cell_ordinal != fields.parent_ordinal && face.face_index.axis == FaceNormalAxis::kZ && face.cell_is_tail;
+    coarse_areas.push_back(parent_open ? 0.5 : (retained_open ? 1 : 0));
+    coarse_outward.push_back(parent_open ? (face.cell_is_tail ? 8 : -4) : (retained_open ? 5 : 0));
+  }
+  std::vector<double> fine_areas;
+  for (const auto& face : fine_ownership->exterior_faces) {
+    if (fine_family->topology.cells()[face.cell_ordinal].key.width_exponent == kRetained.width_exponent) {
+      fine_areas.push_back(face.face_index.axis == FaceNormalAxis::kZ && face.cell_is_tail ? face.face_area : 0);
+      continue;
+    }
+    const auto index = face.face_index.lattice_index;
+    const auto quadrant = static_cast<std::size_t>((index.z + 2) * 2 + index.y);
+    constexpr std::array apertures{0.25, 0.125, 0.125, 0.0};
+    fine_areas.push_back(face.face_index.axis == FaceNormalAxis::kX ? apertures[quadrant] : 0);
+  }
+
+  auto committed = fields.View();
+  committed.exterior = {coarse_areas, coarse_outward, fine_areas};
+  const auto refined = PrepareAdaptiveLiquidRefinement3D(*topology, committed, kParent, fields.stencil);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  auto child_outflow = IntegratedOutflow(refined->family.topology, refined->interior_fluxes_m3_per_s);
+  ASSERT_EQ(refined->exterior_outward_fluxes_m3_per_s.size(), fine_areas.size());
+  for (std::size_t exterior = 0; exterior < fine_areas.size(); ++exterior) {
+    const auto& face = fine_ownership->exterior_faces[exterior];
+    const double outward = refined->exterior_outward_fluxes_m3_per_s[exterior];
+    const bool retained = refined->family.topology.cells()[face.cell_ordinal].key.width_exponent == 1;
+    const double flux_per_area = retained ? 5 : (face.cell_is_tail ? 16 : -8);
+    EXPECT_EQ(outward, fine_areas[exterior] * flux_per_area);
+    child_outflow[face.cell_ordinal] += outward;
+  }
+  for (const auto child : refined->family.child_ordinals) {
+    EXPECT_EQ(child_outflow[child], 3);
+  }
+  ASSERT_EQ(refined->family.retained_leaves.size(), 1u);
+  EXPECT_EQ(child_outflow[refined->family.retained_leaves.front().new_cell_ordinal], -15);
+
+  const AdaptiveLiquidRemapInput3D fine{
+      .inventories = refined->inventories,
+      .previous_pressures_pa = refined->family.previous_pressures,
+      .interior_fluxes_m3_per_s = refined->interior_fluxes_m3_per_s,
+      .exterior =
+          AdaptiveLiquidExteriorRemapInput3D{fine_areas, refined->exterior_outward_fluxes_m3_per_s, coarse_areas},
+  };
+  const auto coarsened = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+  EXPECT_EQ(coarsened->exterior_outward_fluxes_m3_per_s, coarse_outward);
+
+  const auto original_fluxes = coarse_outward;
+  const auto original_pressures = fields.pressures;
+  const auto original_inventory = InventoryValues(fields.inventories[fields.parent_ordinal]);
+  committed.exterior->candidate_open_areas_m2 = std::span(fine_areas).first(fine_areas.size() - 1);
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidRefinement3D(*topology, committed, kParent, fields.stencil).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  committed.exterior->candidate_open_areas_m2 = fine_areas;
+  const auto low_open_face = std::ranges::find(fine_areas, 0.25);
+  ASSERT_NE(low_open_face, fine_areas.end());
+  *low_open_face = 0;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidRefinement3D(*topology, committed, kParent, fields.stencil).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(coarse_outward, original_fluxes);
+  EXPECT_EQ(fields.pressures, original_pressures);
+  EXPECT_EQ(InventoryValues(fields.inventories[fields.parent_ordinal]), original_inventory);
+  EXPECT_EQ(topology->cells().size(), 2u);
 }
 
 TEST(AdaptiveLiquidRemap3D, ReplaysConstituentInventoryWithoutCrossPhaseTransfer) {
