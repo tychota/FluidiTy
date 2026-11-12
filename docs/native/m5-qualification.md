@@ -295,6 +295,37 @@ experimental source was reverted. The exact local comparison diff is
 in the worktree's out/m5-floor-reflected-gradient.patch. Apply it against
 476ce05 and run the refined-grid commands below to repeat the control.
 
+### Impact-time normal deformation control
+
+Split the granular trial deformation at the existing swept-floor impact
+time. Keep the frozen gathered velocity gradient before impact. For the
+remaining time, set the floor-normal velocity derivative row to zero and
+keep the two tangential rows. Compose the two forward-Euler increments
+and use the same constitutive return. This control isolates normal
+kinematics. It leaves out the derivative of the Coulomb tangential
+projection. Transport, impulses, APIC slope storage, and snow are unchanged.
+
+| h (m) | nominal dt (s) | Origin (x, z) in cell widths | Baseline envelope | Split envelope |
+|---|---:|---|---:|---:|
+| 0.075 | 0.001875 | (0, 0) | 30.161149° | 31.234535° |
+| 0.075 | 0.001875 | (0.5, 0) | 30.063385° | 31.141341° |
+| 0.075 | 0.001875 | (0.5, 0.5) | 30.022695° | 31.102911° |
+| 0.0625 | 0.0015625 | (0, 0) | 27.803822° | 28.757479° |
+| 0.0625 | 0.0015625 | (0.5, 0) | 27.009983° | 28.127354° |
+| 0.0625 | 0.0015625 | (0.5, 0.5) | 25.829145° | 27.222141° |
+| 0.075 | 0.0009375 | (0, 0) | 37.248475° | 37.701706° |
+| 0.0625 | 0.00078125 | (0, 0) | 32.699841° | 33.075978° |
+
+Native angles are shown. CUDA agrees within 0.000001° at the printed
+precision. All sixteen runs pass the vertical momentum and drift checks.
+The normal-only split steepens all eight envelopes and leaves all
+gate outcomes unchanged. The finer nominal grid still misses the
+angle range at every origin. The timestep gap remains above 4° on both
+centered grids. The production solver was restored. Apply
+out/m5-impact-split-gradient.patch against 820cde2, rebuild both Release
+scene targets, and run both the grid-phase and half-step commands to
+repeat the control.
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
