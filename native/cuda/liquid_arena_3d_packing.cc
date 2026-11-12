@@ -4,6 +4,10 @@
 #include "liquid_arena_3d_internal.h"
 namespace fluidity::cuda_internal {
 namespace {
+constexpr std::uint32_t kAffineEnabledFlag = 1U;
+constexpr std::uint32_t kPicInitializedFlag = 2U;
+constexpr std::uint32_t kQuadraticAdaptiveTransferFlag = 4U;
+
 template <typename Record>
 Record* At(std::byte* bytes, std::size_t offset) {
   return reinterpret_cast<Record*>(bytes + offset);
@@ -51,7 +55,9 @@ void PackLiquidArenaState3D(
     bin.particle_ids[lane] = particle.id;
     bin.side_tags[lane] = particle.side_tag;
     bin.particle_tags[lane] = particle.tag;
-    bin.affine_pic_flags[lane] = (particle.affine_enabled ? 1U : 0U) | (particle.pic_initialized ? 2U : 0U);
+    bin.affine_pic_flags[lane] = (particle.affine_enabled ? kAffineEnabledFlag : 0U)
+        | (particle.pic_initialized ? kPicInitializedFlag : 0U)
+        | (particle.quadratic_adaptive_transfer ? kQuadraticAdaptiveTransferFlag : 0U);
   }
   auto* blocks = At<LiquidBlockState3D>(destination, layout.block_records_byte_offset);
   for (std::size_t ordinal = 0; ordinal < source.blocks.size(); ++ordinal) {
@@ -152,8 +158,10 @@ absl::Status ValidateLiquidArenaEncoding3D(const CudaLiquidStateLayout3D& layout
   const auto& control = *At<LiquidArenaControl3D>(source, layout.control_record_byte_offset);
   const auto* bins = At<CudaLiquidParticleBin3D>(source, layout.particle_bins_byte_offset);
   const auto corrupt = absl::Status(absl::StatusCode::kDataLoss, {});
+  const std::uint32_t allowed_particle_flags =
+      kAffineEnabledFlag | kPicInitializedFlag | (layout.adaptive_state ? kQuadraticAdaptiveTransferFlag : 0U);
   for (std::size_t ordinal = 0; ordinal < control.active.particles; ++ordinal) {
-    if (bins[ordinal / 32].affine_pic_flags[ordinal % 32] > 3U) {
+    if ((bins[ordinal / 32].affine_pic_flags[ordinal % 32] & ~allowed_particle_flags) != 0) {
       return corrupt;
     }
   }
@@ -238,8 +246,9 @@ void UnpackLiquidArenaState3D(
     particle.id = bin.particle_ids[lane];
     particle.side_tag = bin.side_tags[lane];
     particle.tag = bin.particle_tags[lane];
-    particle.affine_enabled = (bin.affine_pic_flags[lane] & 1U) != 0;
-    particle.pic_initialized = (bin.affine_pic_flags[lane] & 2U) != 0;
+    particle.affine_enabled = (bin.affine_pic_flags[lane] & kAffineEnabledFlag) != 0;
+    particle.pic_initialized = (bin.affine_pic_flags[lane] & kPicInitializedFlag) != 0;
+    particle.quadratic_adaptive_transfer = (bin.affine_pic_flags[lane] & kQuadraticAdaptiveTransferFlag) != 0;
   }
   std::copy_n(
       At<LiquidBlockState3D>(source, layout.block_records_byte_offset),

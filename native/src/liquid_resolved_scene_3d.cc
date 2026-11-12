@@ -35,6 +35,7 @@ bool ValidSource(const LiquidEmissionSource3D& source) {
   const auto jitter = source.world_position_jitter;
   return detail::Nonnegative(source.particles_per_second) && detail::Finite(source.world_position)
       && detail::Finite(jitter) && jitter.x >= 0 && jitter.y >= 0 && jitter.z >= 0
+      && !source.emitted_particle_template.quadratic_adaptive_transfer
       && detail::ValidParticle(source.emitted_particle_template);
 }
 absl::Status CheckSceneRecordCounts(

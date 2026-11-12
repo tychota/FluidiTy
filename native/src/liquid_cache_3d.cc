@@ -20,6 +20,7 @@ namespace {
 constexpr std::uint32_t kAdaptiveLiquidStateVersion = 2;
 constexpr std::uint32_t kEulerianLiquidStateVersion = 3;
 constexpr std::uint32_t kWidthAgeLiquidStateVersion = 4;
+constexpr std::uint32_t kQuadraticBasisLiquidStateVersion = 5;
 
 // Native enums may grow independently; existing wire tags must never drift.
 static_assert(
@@ -208,7 +209,12 @@ LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
   const std::uint32_t schema_version = state->schema_version();
-  const bool width_age_version = schema_version == kWidthAgeLiquidStateVersion;
+  const bool width_age_allowed = schema_version >= kWidthAgeLiquidStateVersion;
+  const auto* quadratic_ids = state->adaptive() ? state->adaptive()->quadratic_particle_ids() : nullptr;
+  if ((schema_version == kQuadraticBasisLiquidStateVersion) != (quadratic_ids != nullptr)
+      || (quadratic_ids && (quadratic_ids->size() == 0 || quadratic_ids->size() > state->particles()->size()))) {
+    return cache_detail::Corrupt();
+  }
   if ((schema_version >= kAdaptiveLiquidStateVersion) != (state->adaptive() != nullptr)) {
     return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
   }
@@ -230,7 +236,7 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
       }
       has_eulerian_owner |= owner == wire::AdaptiveMaterialOwner::Eulerian;
       if (const auto age = cell->coarsening_eligible_duration_s()) {
-        if (!width_age_version || !cache_detail::Positive(*age)) {
+        if (!width_age_allowed || !cache_detail::Positive(*age)) {
           return cache_detail::Corrupt();
         }
         has_width_age = true;
@@ -240,7 +246,8 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
         return cache_detail::Corrupt();
       }
     }
-    if ((schema_version == kEulerianLiquidStateVersion && !has_eulerian_owner) || width_age_version != has_width_age) {
+    if ((schema_version == kEulerianLiquidStateVersion && !has_eulerian_owner)
+        || (schema_version == kWidthAgeLiquidStateVersion && !has_width_age)) {
       return cache_detail::Corrupt();
     }
     for (const auto* face : *adaptive->faces()) {
@@ -272,6 +279,7 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
       || !cache_detail::ValidClock(cache_detail::Unpack(state->clock())) || state->next_particle_id() == 0) {
     return cache_detail::Corrupt();
   }
+  flatbuffers::uoffset_t quadratic_index = 0;
   for (flatbuffers::uoffset_t index = 0; index < state->particles()->size(); ++index) {
     const auto* particle = state->particles()->Get(index);
     if (!cache_detail::ValidParticleEncoding(particle) || particle->id() == 0
@@ -279,11 +287,19 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
         || !cache_detail::ValidParticle(cache_detail::Unpack(particle))) {
       return cache_detail::Corrupt();
     }
+    if (quadratic_ids && quadratic_index < quadratic_ids->size()
+        && quadratic_ids->Get(quadratic_index) == particle->id()) {
+      ++quadratic_index;
+    }
     for (flatbuffers::uoffset_t previous = 0; previous < index; ++previous) {
       if (state->particles()->Get(previous)->id() == particle->id()) {
         return cache_detail::Corrupt();
       }
     }
+  }
+  // The optional IDs must be a subsequence of the unique physical roster.
+  if (quadratic_ids && quadratic_index != quadratic_ids->size()) {
+    return cache_detail::Corrupt();
   }
   for (flatbuffers::uoffset_t ordinal = 0; ordinal < state->blocks()->size(); ++ordinal) {
     const auto* index = state->blocks()->Get(ordinal)->index();
@@ -421,6 +437,15 @@ absl::StatusOr<LiquidState3D> MaterializeState(const wire::LiquidState* state) {
     return LiquidSourceState3D{source->ordinal(), source->next_child(), source->fractional_remainder()};
   }));
   if (const auto* adaptive = state->adaptive()) {
+    if (const auto* quadratic_ids = adaptive->quadratic_particle_ids()) {
+      flatbuffers::uoffset_t quadratic_index = 0;
+      for (auto& particle : result.particles.values()) {
+        if (quadratic_index < quadratic_ids->size() && quadratic_ids->Get(quadratic_index) == particle.id) {
+          particle.quadratic_adaptive_transfer = true;
+          ++quadratic_index;
+        }
+      }
+    }
     CACHE_TRY(cache_detail::Materialize(result.adaptive_cells, adaptive->cells(), UnpackAdaptiveCell));
     CACHE_TRY(cache_detail::Materialize(result.adaptive_faces, adaptive->faces(), UnpackAdaptiveFace));
   }
@@ -458,6 +483,12 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
     if (cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian) {
       schema_version = kEulerianLiquidStateVersion;
     }
+  }
+  const auto quadratic_count = static_cast<std::size_t>(
+      std::ranges::count_if(state.particles.values(), &LiquidParticleState3D::quadratic_adaptive_transfer)
+  );
+  if (quadratic_count != 0) {
+    schema_version = kQuadraticBasisLiquidStateVersion;
   }
   const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
       + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1)
@@ -602,7 +633,18 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
           if (!adaptive_faces.ok()) {
             return adaptive_faces.status();
           }
-          adaptive_state_offset = wire::CreateAdaptiveState(builder, *adaptive_cells, *adaptive_faces);
+          flatbuffers::Offset<flatbuffers::Vector<std::uint64_t>> quadratic_ids;
+          if (quadratic_count != 0) {
+            builder.StartVector<std::uint64_t>(quadratic_count);
+            const auto particle_roster = state.particles.values();
+            for (auto particle = particle_roster.rbegin(); particle != particle_roster.rend(); ++particle) {
+              if (particle->quadratic_adaptive_transfer) {
+                builder.PushElement(particle->id);
+              }
+            }
+            quadratic_ids = flatbuffers::Offset<flatbuffers::Vector<std::uint64_t>>(builder.EndVector(quadratic_count));
+          }
+          adaptive_state_offset = wire::CreateAdaptiveState(builder, *adaptive_cells, *adaptive_faces, quadratic_ids);
         }
         flatbuffers::Offset<wire::CavitySnapshot> cavity;
         if (state.next_cavity_id != 0) {
@@ -776,7 +818,7 @@ absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> 
       bytes,
       wire::LiquidStateIdentifier(),
       limits,
-      kWidthAgeLiquidStateVersion
+      kQuadraticBasisLiquidStateVersion
   );
   if (!state.ok()) {
     return state.status();
@@ -794,7 +836,7 @@ DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3
       bytes,
       wire::LiquidStateIdentifier(),
       limits,
-      kWidthAgeLiquidStateVersion
+      kQuadraticBasisLiquidStateVersion
   );
   if (!state.ok()) {
     return state.status();
