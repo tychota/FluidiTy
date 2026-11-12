@@ -64,6 +64,12 @@ At a cell center away from boundaries and width transitions, the measured radial
 
 `CheckUniformResamplingSupport` refuses the radial stencil, including an accidental binary64 moment match, because uniform split and merge require the complete unmasked tensor support. The checked witness leaves split and merge disabled.
 
+### Checked same-level quadratic transfer
+
+`GradedQuadraticMacTransfer3D` binds the existing FP64 quadratic geometry directly to canonical adaptive face slots. Every tensor node, including a zero-weight tie, requires an interior face with both incident leaves at the particle level, the exact represented anchor displacement, full aperture, and valid same-side carriers. Deposit and gather use the bound rows with the uniform operator's arithmetic. The signed island control matches the uniform sparse operator bit-for-bit for mass, momentum, PIC velocity, FLIP increment, affine slope and gradient. It refuses a mixed-level face and mask, side, low-mass and aperture changes.
+
+Runtime selection and F3/F4 admission still require frozen transfer selection through deposit and both gather histories, conservative binary64 moment and energy bounds, and a topology transaction with complete before-and-after support halos. A single-family edit can leave child stencils extending beyond the refined region.
+
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.
