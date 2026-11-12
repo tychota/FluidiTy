@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--solver", required=True, type=Path)
     parser.add_argument("--flatc", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root / "blender"))
@@ -83,6 +84,7 @@ def main():
     identity = command(args.solver, "schema")[-1]
     zero = dict(x=0.0, y=0.0, z=0.0)
     packet = dict(
+        backend=args.backend.capitalize(),
         build_digest=dict(bytes=list(bytes.fromhex(identity["build_digest"]))),
         world_origin_m=zero,
         extent=dict(x=8, y=12, z=8),
@@ -129,6 +131,24 @@ def main():
     shader = next(node for node in obj.data.materials[0].node_tree.nodes if node.type == "PRINCIPLED_VOLUME")
     shader.inputs["Density"].default_value *= 1.5
     assert snapshot(tracked) == before
+    camera_data = bpy.data.cameras.new("Plume Camera")
+    camera_data.type = "ORTHO"
+    camera_data.ortho_scale = 1.2
+    camera = bpy.data.objects.new("Plume Camera", camera_data)
+    scene.collection.objects.link(camera)
+    camera.location = (2.3, 1.9, 1.2)
+    target = Vector((0.48, -0.49, 0.40))
+    camera.rotation_euler = (target - camera.location).to_track_quat("-Z", "Y").to_euler()
+    scene.camera = camera
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 32
+    scene.render.resolution_x = 512
+    scene.render.resolution_y = 512
+    scene.render.resolution_percentage = 100
+    scene.world.use_nodes = True
+    scene.world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.0
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.exposure = 2.0
     obj.data.filepath = "//fire_0000.vdb"
     bpy.context.preferences.filepaths.save_version = 0
     bpy.ops.wm.save_as_mainfile(filepath=str(output / "Fire in a draft.blend"), relative_remap=False)

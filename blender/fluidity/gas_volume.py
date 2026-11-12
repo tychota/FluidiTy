@@ -77,7 +77,8 @@ def create_gas_volume_material():
     volume.inputs["Density"].default_value = 30.0
     volume.inputs["Density Attribute"].default_value = "soot"
     volume.inputs["Temperature Attribute"].default_value = "temperature"
-    volume.inputs["Blackbody Intensity"].default_value = 0.3
+    volume.inputs["Blackbody Intensity"].default_value = 0.0
+    volume.inputs["Temperature"].default_value = 1.0
     volume.inputs["Emission Color"].default_value = (1.0, 0.25, 0.02, 1.0)
     flame = tree.nodes.new("ShaderNodeAttribute")
     flame.attribute_name = "flame"
