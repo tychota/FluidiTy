@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_types_3d.h"
@@ -60,6 +61,21 @@ struct RigidPressurePatch3D {
   Vec3 outward_body_normal;  // Unit normal pointing out of the rigid body.
 };
 
+// Clips a finite world-axis-aligned box to a horizontal liquid plane (wet
+// below liquid_height). Each positive-area rectangle is assigned to the
+// exterior pressure cell, with cells strictly ordered by (z, y, x). Returns
+// patches in x-/x+/y-/y+/z-/z+ and then pressure-cell order. Coordinates are
+// meters. Invalid bounds or ordering return InvalidArgument, missing wet
+// coverage returns FailedPrecondition, and unrepresentable geometry returns
+// OutOfRange. Failure returns no patches.
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatches3D(
+    std::uint64_t body_id,
+    Vec3 box_low,
+    Vec3 box_high,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+);
 // Adds pressure traction and its moment about the body center, in patch ID
 // order. Pressure and ambient pressure share a reference and are in pascals.
 // Patches must be disjoint, strictly ordered by ID, and belong to the body.

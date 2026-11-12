@@ -1,8 +1,11 @@
 #include "fluidity/host/rigid_body_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <numeric>
+#include <tuple>
 
 namespace fluidity {
 namespace {
@@ -100,6 +103,129 @@ AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec
   return body;
 }
 
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatches3D(
+    std::uint64_t body_id,
+    Vec3 box_low,
+    Vec3 box_high,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+) {
+  if (body_id == 0 || !IsFinite(box_low) || !IsFinite(box_high) || !std::isfinite(liquid_height)
+      || !IsFinite(geometry.world_origin) || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0.0
+      || box_low.x >= box_high.x || box_low.y >= box_high.y || box_low.z >= box_high.z) {
+    return absl::InvalidArgumentError("invalid floating box or pressure grid");
+  }
+
+  struct Receiver {
+    std::array<std::int32_t, 3> index;
+    std::array<double, 3> low;
+    std::array<double, 3> high;
+  };
+  const std::array origin{geometry.world_origin.x, geometry.world_origin.y, geometry.world_origin.z};
+  std::vector<Receiver> receivers;
+  receivers.reserve(pressure_cells.size());
+  for (const auto cell : pressure_cells) {
+    Receiver receiver{.index = {cell.x, cell.y, cell.z}, .low = {}, .high = {}};
+    if (!receivers.empty()) {
+      const auto& previous = receivers.back().index;
+      if (std::tie(cell.z, cell.y, cell.x) <= std::tie(previous[2], previous[1], previous[0])) {
+        return absl::InvalidArgumentError("floating-box pressure cells must be strictly ordered");
+      }
+    }
+    for (std::size_t axis = 0; axis < origin.size(); ++axis) {
+      const double index = receiver.index[axis];
+      receiver.low[axis] = std::fma(index, geometry.cell_width, origin[axis]);
+      receiver.high[axis] = std::fma(index + 1.0, geometry.cell_width, origin[axis]);
+      if (!std::isfinite(receiver.low[axis]) || !std::isfinite(receiver.high[axis])
+          || receiver.low[axis] >= receiver.high[axis]) {
+        return absl::OutOfRangeError("floating-box pressure cell bounds cannot be resolved");
+      }
+    }
+    receivers.push_back(receiver);
+  }
+
+  const std::array lower{box_low.x, box_low.y, box_low.z};
+  const std::array upper{box_high.x, box_high.y, box_high.z};
+  auto wet_upper = upper;
+  wet_upper[1] = std::min(box_high.y, liquid_height);
+  std::vector<RigidPressurePatch3D> patches;
+  for (std::size_t axis = 0; axis < lower.size(); ++axis) {
+    const std::size_t first_tangent = (axis + 1) % lower.size();
+    const std::size_t second_tangent = (axis + 2) % lower.size();
+    const std::array tangents{first_tangent, second_tangent};
+    for (const double sign : {-1.0, 1.0}) {
+      const double plane = sign < 0.0 ? lower[axis] : upper[axis];
+      const bool dry = axis == 1 ? plane >= liquid_height : wet_upper[1] <= lower[1];
+      if (dry) {
+        continue;
+      }
+
+      const std::size_t first_patch = patches.size();
+      std::array min_index{std::numeric_limits<std::int32_t>::max(), std::numeric_limits<std::int32_t>::max()};
+      std::array max_index{std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::min()};
+      std::array min_coordinate{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+      std::array max_coordinate{-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
+      for (std::size_t cell_index = 0; cell_index < receivers.size(); ++cell_index) {
+        const auto& receiver = receivers[cell_index];
+        const bool exterior_receiver = sign < 0.0 ? receiver.low[axis] < plane && plane <= receiver.high[axis]
+                                                  : receiver.low[axis] <= plane && plane < receiver.high[axis];
+        if (!exterior_receiver) {
+          continue;
+        }
+        const double a0 = std::max(lower[first_tangent], receiver.low[first_tangent]);
+        const double a1 = std::min(wet_upper[first_tangent], receiver.high[first_tangent]);
+        const double b0 = std::max(lower[second_tangent], receiver.low[second_tangent]);
+        const double b1 = std::min(wet_upper[second_tangent], receiver.high[second_tangent]);
+        if (a0 >= a1 || b0 >= b1) {
+          continue;
+        }
+        const double area = (a1 - a0) * (b1 - b0);
+        if (!std::isfinite(area) || area <= 0.0) {
+          return absl::OutOfRangeError("floating-box wetted patch area cannot be resolved");
+        }
+
+        std::array<double, 3> centroid{};
+        centroid[axis] = plane;
+        centroid[first_tangent] = std::midpoint(a0, a1);
+        centroid[second_tangent] = std::midpoint(b0, b1);
+        std::array<double, 3> normal{};
+        normal[axis] = sign;
+        patches.push_back({
+            .patch_id = patches.size() + 1,
+            .body_id = body_id,
+            .pressure_cell_index = cell_index,
+            .wetted_area = area,
+            .world_centroid = {centroid[0], centroid[1], centroid[2]},
+            .outward_body_normal = {normal[0], normal[1], normal[2]},
+        });
+
+        const std::array overlap_low{a0, b0};
+        const std::array overlap_high{a1, b1};
+        for (std::size_t t = 0; t < tangents.size(); ++t) {
+          min_index[t] = std::min(min_index[t], receiver.index[tangents[t]]);
+          max_index[t] = std::max(max_index[t], receiver.index[tangents[t]]);
+          min_coordinate[t] = std::min(min_coordinate[t], overlap_low[t]);
+          max_coordinate[t] = std::max(max_coordinate[t], overlap_high[t]);
+        }
+      }
+
+      // Unique receivers lie in a single normal layer. Their tangent index
+      // rectangle must have no holes and its clipped edges must reach the face.
+      if (min_coordinate != std::array{lower[first_tangent], lower[second_tangent]}
+          || max_coordinate != std::array{wet_upper[first_tangent], wet_upper[second_tangent]}) {
+        return absl::FailedPreconditionError("floating-box wet surface lacks exterior pressure coverage");
+      }
+      const auto width = static_cast<std::uint64_t>(static_cast<std::int64_t>(max_index[0]) - min_index[0] + 1);
+      const auto height = static_cast<std::uint64_t>(static_cast<std::int64_t>(max_index[1]) - min_index[1] + 1);
+      const auto patch_count = patches.size() - first_patch;
+      if (patch_count % width != 0 || patch_count / width != height) {
+        return absl::FailedPreconditionError("floating-box wet pressure coverage has missing tiles");
+      }
+    }
+  }
+  return patches;
+}
 absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
     RigidBody3D body,
     std::span<const double> solved_pressures,

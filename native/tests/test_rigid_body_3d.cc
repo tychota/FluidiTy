@@ -53,6 +53,74 @@ TEST(RigidBody3D, PressureTractionUsesWettedAreaAndOffCenterMoment) {
   EXPECT_DOUBLE_EQ(body.force.y, -4.0);
 }
 
+TEST(RigidBody3D, FloatingBoxClipsWetFacesAndUsesExteriorPressureCells) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 0.5,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.5, 0.5},
+      .force = {0.0, -5.0, 0.0},
+  };
+  constexpr std::array cells{
+      CellIndex3D{0, 0, -1},
+      CellIndex3D{0, -1, 0},
+      CellIndex3D{-1, 0, 0},
+      CellIndex3D{0, 0, 0},  // Interior at the bottom and side planes.
+      CellIndex3D{1, 0, 0},
+      CellIndex3D{0, 0, 1},
+  };
+  constexpr std::array pressure{2.5, 5.0, 2.5, 1000.0, 2.5, 2.5};
+  const auto patches =
+      BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, cells);
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  ASSERT_EQ(patches->size(), 5);
+  EXPECT_DOUBLE_EQ((*patches)[0].wetted_area, 0.5);
+  EXPECT_DOUBLE_EQ((*patches)[0].world_centroid.y, 0.25);
+  EXPECT_DOUBLE_EQ((*patches)[2].wetted_area, 1.0);
+  EXPECT_EQ((*patches)[2].pressure_cell_index, 1);
+  const auto loaded = AccumulateRigidBodyPressure3D(body, pressure, 0.0, *patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  EXPECT_DOUBLE_EQ(loaded->force.x, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->force.y, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->force.z, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.x, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.y, 0.0);
+  EXPECT_DOUBLE_EQ(loaded->torque.z, 0.0);
+
+  const auto missing = BuildFloatingBoxPressurePatches3D(
+      body.body_id,
+      {0.0, 0.0, 0.0},
+      {1.0, 1.0, 1.0},
+      0.5,
+      {{}, 1.0},
+      std::span(cells).subspan(1)
+  );
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+  auto duplicate = cells;
+  duplicate[3] = duplicate[2];
+  const auto malformed =
+      BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, duplicate);
+  EXPECT_EQ(malformed.status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(RigidBody3D, FloatingBoxRejectsInteriorHoleWithCompleteOuterEdges) {
+  std::vector<CellIndex3D> cells;
+  for (int z = -1; z <= 3; ++z) {
+    for (int y = -1; y <= 0; ++y) {
+      for (int x = -1; x <= 3; ++x) {
+        if (x == 1 && y == -1 && z == 1) {
+          continue;
+        }
+        cells.push_back({x, y, z});
+      }
+    }
+  }
+  const auto missing = BuildFloatingBoxPressurePatches3D(1, {}, {3, 1, 3}, 0.5, {{}, 1.0}, cells);
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(missing.status().message(), "floating-box wet pressure coverage has missing tiles");
+  const auto dry = BuildFloatingBoxPressurePatches3D(1, {}, {3, 1, 3}, 0.0, {{}, 1.0}, {});
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  EXPECT_TRUE(dry->empty());
+}
 TEST(RigidBody3D, AdvancesRotatedAsymmetricInertiaAndOffCenterForce) {
   const double half_sqrt_two = std::numbers::sqrt2 / 2.0;
   const RigidBody3D initial{
