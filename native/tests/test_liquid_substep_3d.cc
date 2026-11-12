@@ -1541,6 +1541,63 @@ TEST(LiquidSubstep3D, GuidedFloatingBoxExcludesTankImpulseAndRetriesDoubleImpact
   const auto ambiguous = UpdateCpuLiquidParticlesWithBoxReaction3D(inputs, box, state.particles.values());
   EXPECT_EQ(ambiguous.status().code(), absl::StatusCode::kAborted);
 }
+TEST(LiquidSubstep3D, OrientedFloatingBoxMeasuresCoupledTranslationAndRotationAddedMass) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
+  auto initial = Initial(4);
+  initial.particles[0].world_position = {0.375, 0.1875, 0.375};
+  initial.particles[1].world_position = {1.375, 0.375, 0.375};
+  initial.particles[2].world_position = {0.375, 0.375, 1.375};
+  initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  constexpr double kDt = 0.03125;
+  constexpr double kSpeed = 0.125;
+  constexpr double kWaterplaneCentroidX = 1.0 / 96.0;
+  constexpr double kInertiaPerMass = 0.015625;
+  constexpr Vec3 kExtent{0.125, 0.125, 0.125};
+  const auto advance = [&](double mass, double speed) -> std::optional<RigidBody3D> {
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+    EXPECT_TRUE(scheduler.ok()) << scheduler.status();
+    if (!scheduler.ok() || !scheduler->BeginFrame(kDt).ok()) {
+      return std::nullopt;
+    }
+    const RigidBody3D body{
+        .body_id = 23,
+        .mass = mass,
+        .principal_inertia = {mass * kInertiaPerMass, mass * kInertiaPerMass, mass * kInertiaPerMass},
+        .center = {0.5, 0.625, 0.5},
+        .orientation = {.w = std::sqrt(0.9), .vector = {0.0, 0.0, std::sqrt(0.1)}},
+        .linear_velocity = {0.0, speed, 0.0},
+    };
+    const auto step = scheduler->AttemptWithOrientedFloatingBox(kDt, body, kExtent);
+    EXPECT_TRUE(step.ok()) << step.status();
+    if (step.ok()) {
+      EXPECT_TRUE(step->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
+                                          << static_cast<int>(scheduler->diagnostics().failed_stage);
+    }
+    return step.ok() ? step->body : std::nullopt;
+  };
+  const auto positive = advance(1.0, kSpeed);
+  const auto negative = advance(1.0, -kSpeed);
+  ASSERT_TRUE(positive && negative);
+  const double vertical_added_mass = 1.0 - (positive->linear_velocity.y - negative->linear_velocity.y) / (2 * kSpeed);
+  ASSERT_GT(vertical_added_mass, 0.0);
+  const double angular_impulse_per_speed =
+      kInertiaPerMass * (positive->angular_velocity.z - negative->angular_velocity.z) / (2 * kSpeed);
+  EXPECT_NEAR(angular_impulse_per_speed, -vertical_added_mass * kWaterplaneCentroidX, 1e-10);
+  const double mode_mass = vertical_added_mass * (1.0 + kWaterplaneCentroidX * kWaterplaneCentroidX / kInertiaPerMass);
+  const auto ordinary = advance(2.0 * mode_mass, kSpeed);
+  const auto light = advance(0.25 * mode_mass, kSpeed);
+  ASSERT_TRUE(ordinary && light);
+  const auto mode_speed = [&](const RigidBody3D& body) {
+    return body.linear_velocity.y + kWaterplaneCentroidX * body.angular_velocity.z;
+  };
+  const double ordinary_gain = mode_speed(*ordinary) / kSpeed;
+  const double light_gain = mode_speed(*light) / kSpeed;
+  EXPECT_NEAR(ordinary_gain, 0.5, 1e-5);
+  EXPECT_NEAR(light_gain, -3.0, 1e-5);
+  std::cout << "oriented_box_added_mass_kg=" << vertical_added_mass << " ordinary_mode_gain=" << ordinary_gain
+            << " light_mode_gain=" << light_gain << '\n';
+}
 TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsAngularPressureAndReplays) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
