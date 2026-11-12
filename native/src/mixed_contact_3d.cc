@@ -921,4 +921,117 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
   return pressure;
 }
 
+absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
+    LiquidFrameTransaction3D& transaction,
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    std::span<const SnowPressureContributor3D> contributors,
+    std::span<PlasticSolidCheckpointParticle3D> snow,
+    double maximum_path_length,
+    MixedPressureProjector3D project,
+    std::optional<double> wall_plane_coordinate
+) {
+  const auto& committed = transaction.committed();
+  const auto geometry = inputs.mac_grid.geometry();
+  const auto origin = geometry.world_origin;
+  const auto committed_origin = committed.geometry.world_origin;
+  if (geometry.cell_width != committed.geometry.cell_width || origin.x != committed_origin.x
+      || origin.y != committed_origin.y || origin.z != committed_origin.z
+      || committed.cells.size() != inputs.pressure_cells.size()
+      || committed.faces.size() != inputs.pressure_faces.size()) {
+    return absl::InvalidArgumentError("planar pressure transaction topology mismatch");
+  }
+  const auto snow_disjoint = CheckWritableViews(
+      {std::as_writable_bytes(snow)},
+      {
+          std::as_bytes(contributors),
+          std::as_bytes(inputs.pressure_cells),
+          std::as_bytes(inputs.pressure_faces),
+          std::as_bytes(committed.blocks.values()),
+          std::as_bytes(committed.sources.values()),
+          std::as_bytes(committed.cavity_gas.values()),
+          std::as_bytes(committed.cavity_components.values()),
+          std::as_bytes(committed.particles.values()),
+          std::as_bytes(committed.cells.values()),
+          std::as_bytes(committed.faces.values()),
+      }
+  );
+  if (!snow_disjoint.ok()) {
+    return snow_disjoint;
+  }
+  std::vector<MacPressureCell3D> rows(inputs.pressure_cells.begin(), inputs.pressure_cells.end());
+  for (std::size_t ordinal = 0; ordinal < rows.size(); ++ordinal) {
+    const auto index = rows[ordinal].cell_index;
+    const auto stored = committed.cells[ordinal].cell_index;
+    if (index.x != stored.x || index.y != stored.y || index.z != stored.z) {
+      return absl::InvalidArgumentError("planar pressure transaction cell mismatch");
+    }
+    rows[ordinal].previous_pressure = committed.cells[ordinal].previous_pressure;
+  }
+  for (std::size_t ordinal = 0; ordinal < inputs.pressure_faces.size(); ++ordinal) {
+    const auto index = inputs.pressure_faces[ordinal].face_index;
+    const auto stored = committed.faces[ordinal].face_index;
+    const auto slot = inputs.mac_grid.FaceSlot(index);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    if (index.axis != stored.axis || index.lattice_index.x != stored.lattice_index.x
+        || index.lattice_index.y != stored.lattice_index.y || index.lattice_index.z != stored.lattice_index.z
+        || *slot != committed.faces[ordinal].face_slot) {
+      return absl::InvalidArgumentError("planar pressure transaction face mismatch");
+    }
+  }
+
+  const auto reset = transaction.ResetTrialFromCommitted();
+  if (!reset.ok()) {
+    return reset.status();
+  }
+  auto& liquid_trial = **reset;
+  const auto prospective_clock = transaction.PreviewAcceptedClock(inputs.step_duration);
+  if (!prospective_clock.ok()) {
+    const auto rejected = transaction.FinishAttempt(LiquidAttemptDisposition3D::kFatal, inputs.step_duration);
+    return rejected.ok() ? prospective_clock.status() : rejected.status();
+  }
+  std::vector<PlasticSolidCheckpointParticle3D> snow_trial(snow.begin(), snow.end());
+  const MacPressureInputs3D trial_inputs{inputs.mac_grid, inputs.step_duration, rows, inputs.pressure_faces};
+  auto pressure = AdvancePlanarSnowPressure3D(
+      trial_inputs,
+      wall_face_ordinal,
+      contributors,
+      liquid_trial.particles.values(),
+      snow_trial,
+      maximum_path_length,
+      project,
+      wall_plane_coordinate
+  );
+  if (!pressure.ok()) {
+    const bool retry = pressure.status().code() == absl::StatusCode::kFailedPrecondition;
+    const auto decision = retry ? LiquidAttemptDisposition3D::kRetryDt : LiquidAttemptDisposition3D::kFatal;
+    const auto rejected = transaction.FinishAttempt(decision, inputs.step_duration);
+    if (!rejected.ok()) {
+      return rejected.status();
+    }
+    if (!retry) {
+      return pressure.status();
+    }
+    return PlanarSnowPressureAttempt3D{.outcome = *rejected, .pressure = std::nullopt};
+  }
+  for (std::size_t ordinal = 0; ordinal < liquid_trial.cells.size(); ++ordinal) {
+    liquid_trial.cells[ordinal].previous_pressure = pressure->liquid_projection.cell_pressures[ordinal];
+  }
+  for (std::size_t ordinal = 0; ordinal < liquid_trial.faces.size(); ++ordinal) {
+    auto& face = liquid_trial.faces[ordinal];
+    face.carrier_velocity = ordinal == wall_face_ordinal
+        ? pressure->solved_wall_normal_velocity
+        : pressure->liquid_projection.corrected_face_velocities[ordinal];
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  const auto accepted = transaction.FinishAttempt(LiquidAttemptDisposition3D::kAccepted, inputs.step_duration);
+  if (!accepted.ok()) {
+    return accepted.status();
+  }
+  std::ranges::copy(snow_trial, snow.begin());
+  return PlanarSnowPressureAttempt3D{.outcome = *accepted, .pressure = std::move(*pressure)};
+}
+
 }  // namespace fluidity

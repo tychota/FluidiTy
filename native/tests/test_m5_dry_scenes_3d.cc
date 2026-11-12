@@ -863,6 +863,81 @@ bool TestPlanarMixedContactDetection() {
       || std::abs(moving_liquid.volume_ratio - 0.95) > kMovingWallTolerance) {
     return false;
   }
+  fluidity::LiquidState3D accepted_liquid;
+  accepted_liquid.geometry = grid->geometry();
+  accepted_liquid.next_particle_id = 8;
+  const auto prepare = []<typename Record>(fluidity::LiquidRecords3D<Record>& records, std::size_t count) {
+    auto allocated = fluidity::LiquidRecords3D<Record>::Create(count);
+    if (!allocated.ok() || !allocated->Resize(count).ok()) {
+      return false;
+    }
+    records = std::move(*allocated);
+    return true;
+  };
+  if (!prepare(accepted_liquid.particles, 1) || !prepare(accepted_liquid.blocks, 1)
+      || !prepare(accepted_liquid.cells, 1) || !prepare(accepted_liquid.faces, first_frozen->faces.size())) {
+    return false;
+  }
+  accepted_liquid.particles[0] = water;
+  accepted_liquid.particles[0].world_position = {-0.5, 0.25, 0.25};
+  accepted_liquid.particles[0].world_velocity = {};
+  accepted_liquid.particles[0].volume_ratio = 0.95;
+  accepted_liquid.cells[0].cell_index = first_frozen->cell.cell_index;
+  for (std::size_t ordinal = 0; ordinal < first_frozen->faces.size(); ++ordinal) {
+    const auto index = first_frozen->faces[ordinal].face_index;
+    const auto slot = grid->FaceSlot(index);
+    if (!slot.ok()) {
+      return false;
+    }
+    accepted_liquid.faces[ordinal].face_index = index;
+    accepted_liquid.faces[ordinal].face_slot = *slot;
+  }
+  auto transaction = fluidity::LiquidFrameTransaction3D::Create(accepted_liquid, {1, 1, 1, 6});
+  if (!transaction.ok() || !transaction->BeginFrame(0.125).ok()) {
+    return false;
+  }
+  auto committed_snow = moving_snow;
+  committed_snow.transfer.trial_world_position.x = -0.875;
+  committed_snow.transfer.particle_velocity = {4, 0, 0};
+  const auto rejected_attempt = fluidity::AttemptPlanarSnowPressureStep3D(
+      *transaction,
+      first_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&committed_snow, 1},
+      0.20,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  if (!rejected_attempt.ok() || rejected_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kRetryDt
+      || rejected_attempt->outcome.retry_duration != 0.0625 || rejected_attempt->pressure.has_value()
+      || transaction->committed() != accepted_liquid || committed_snow.transfer.trial_world_position.x != -0.875
+      || committed_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  auto half_cut_inputs = first_cut_inputs;
+  half_cut_inputs.step_duration = *rejected_attempt->outcome.retry_duration;
+  const auto accepted_attempt = fluidity::AttemptPlanarSnowPressureStep3D(
+      *transaction,
+      half_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&committed_snow, 1},
+      0.20,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  const auto& committed = transaction->committed();
+  if (!accepted_attempt.ok() || accepted_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kAccepted
+      || !accepted_attempt->pressure.has_value() || committed.clock.time != 0.0625
+      || committed.clock.accepted_step_ordinal != 1 || committed.clock.epoch != 1
+      || std::abs(committed.cells[0].previous_pressure - 12) > 1e-12
+      || std::abs(committed.faces[first_frozen->wall_face_ordinal].carrier_velocity - 2) > 1e-12
+      || std::abs(committed.particles[0].world_position.x + 0.375) > 1e-12
+      || std::abs(committed_snow.transfer.trial_world_position.x + 0.75) > 1e-12
+      || std::abs(committed_snow.transfer.particle_velocity.x - 2) > 1e-12) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;

@@ -189,4 +189,28 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     std::optional<double> wall_plane_coordinate = std::nullopt
 );
 
+struct PlanarSnowPressureAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<PlanarSnowPressureTrial3D> pressure;  // Present only on acceptance.
+};
+
+// Runs a coupled pressure candidate inside an active liquid frame transaction.
+// The committed liquid topology must match the supplied pressure grid, rows
+// and faces. Starts pressure from committed row history. A recoverable motion
+// or pressure precondition failure consumes a timestep retry. Other errors
+// terminate the attempt. Liquid topology, pressure, carriers, particles and
+// clock commit before the staged snow records are published. No rejected
+// attempt modifies either committed material. The caller owns frame setup,
+// subcell geometry reconstruction and any outer joint checkpoint.
+absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
+    LiquidFrameTransaction3D& transaction,
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    std::span<const SnowPressureContributor3D> contributors,
+    std::span<PlasticSolidCheckpointParticle3D> snow,
+    double maximum_path_length,
+    MixedPressureProjector3D project,
+    std::optional<double> wall_plane_coordinate = std::nullopt
+);
+
 }  // namespace fluidity

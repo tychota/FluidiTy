@@ -37,6 +37,7 @@ clean Windows Release CUDA rebuild.
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
 | Joint planar pressure advection | Pass for one- and two-cell frozen fixtures | The projected regular-cell field updates liquid positions, volume and slopes. Snow advances with its pressure-corrected velocity. Crossing into an adjacent pressure cell succeeds. A late unsupported liquid destination or snow motion failure preserves both states. |
 | Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
+| Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1087,6 +1088,20 @@ Both native and CUDA pass. A supplied plane inconsistent with the
 wet volume rejects without changing either state. This geometry is
 limited to a planar snow front in one cell with stationary sealed
 transverse faces and a full ambient-pressure outlet.
+
+The host attempt adapter uses the existing liquid frame transaction
+with the snow records staged separately. It verifies the committed
+grid, cells and face slots and starts the solve from committed cell
+pressure. In the cut-cell fixture, a 0.20 m motion bound rejects the
+0.125 s attempt and leaves the accepted clock, pressure, carrier and
+particle values unchanged. The 0.0625 s retry commits 12 Pa, the
+2 m/s wall carrier, liquid x = −0.375 m and snow x = −0.750 m.
+The accepted ordinal and epoch each advance once. Native and CUDA
+pressure pass the same 1e-12 absolute fixture checks. The adapter
+uses a preallocated liquid transaction and host scratch for the
+coupled stage. The production scheduler still needs to select and
+drive this geometry from the authored scene and own the joint
+checkpoint.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume
