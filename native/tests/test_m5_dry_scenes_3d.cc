@@ -800,6 +800,55 @@ bool TestCompatibleFloorStressWork() {
       particle_work,
       oracle->cut_work
   );
+  std::vector<fluidity::LiquidPrescribedWallSample3D> stationary_walls(view.face_count());
+  for (std::size_t slot = 0; slot < view.face_count(); ++slot) {
+    if (!tags[slot].structurally_eligible) {
+      stationary_walls[slot] = {.available = true, .unit_normal = {0, 1, 0}};
+    }
+    if (view.FaceIndex(slot)->axis == fluidity::FaceNormalAxis::kY) {
+      velocities[slot] += 0.8;
+    }
+  }
+  auto stationary_inputs = gather_inputs;
+  stationary_inputs.old_history.wall_samples = stationary_walls;
+  stationary_inputs.new_history.wall_samples = stationary_walls;
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto stationary = fluidity::CudaGatherLiquidBoundaryParticles3D(stationary_inputs);
+  if (!stationary.ok()) {
+    return false;
+  }
+  const auto& stationary_gradient = stationary->gathered.particles.front().velocity_gradient;
+#else
+  const auto stationary = fluidity::GatherLiquidBoundaryParticles3D(stationary_inputs);
+  if (!stationary.ok()) {
+    return false;
+  }
+  const auto& stationary_gradient = stationary->particles.front().velocity_gradient;
+#endif
+  std::vector<double> paired_force(view.face_count());
+  const auto full_stress =
+      fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, paired_force);
+  if (!full_stress.ok()) {
+    return false;
+  }
+  const auto wall_force =
+      fluidity::internal::ScatterStationaryFloorGhostTranspose3D(view, validity, tags, paired_force);
+  if (!wall_force.ok()) {
+    return false;
+  }
+  double paired_grid_work = 0;
+  for (std::size_t slot = 0; slot < paired_force.size(); ++slot) {
+    paired_grid_work += duration * paired_force[slot] * velocities[slot];
+  }
+  const double paired_particle_work = duration * volume
+      * ((10 * stationary_gradient.x_row.x + 2 * stationary_gradient.x_row.y + 3 * stationary_gradient.x_row.z)
+         + (2 * stationary_gradient.y_row.x + 20 * stationary_gradient.y_row.y + 4 * stationary_gradient.y_row.z)
+         + (3 * stationary_gradient.z_row.x + 4 * stationary_gradient.z_row.y - 30 * stationary_gradient.z_row.z));
+  const double transpose_work_residual = paired_grid_work + paired_particle_work;
+  std::printf("stationary ghost transpose work residual_J=%.9g\n", transpose_work_residual);
+  if (std::abs(transpose_work_residual) >= 1e-11 || std::abs(*wall_force) < 1e-3) {
+    return false;
+  }
   constexpr double expected_particle_work = -2.125;
   return std::abs(particle_work - expected_particle_work) < 1e-11
       && std::abs(grid_work - oracle->grid_stress_work) < 1e-11

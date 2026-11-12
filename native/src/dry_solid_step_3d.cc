@@ -283,6 +283,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<LiquidBoundaryFaceTag3D> floor_tags;
   std::vector<LiquidBoundaryParticle3D> boundary_particles;
   LiquidBoundaryFaceDeposits3D boundary_deposits;
+  double ghost_wall_force_y = 0;
   if (compatible_floor) {
     floor_tags.resize(grid.face_count());
     const auto layout = grid.view();
@@ -315,9 +316,16 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
               static_cast<double>(quanta.pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
       };
     }
+    std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
+    for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
+      if (deposits[slot].deposited_mass > 0) {
+        validity[slot] = LiquidFaceValidity3D::kValid;
+      }
+    }
     for (std::size_t index = 0; index < particles.size(); ++index) {
-      const auto status = AccumulateCompatibleSolidStress3D(
-          boundary_deposits.compatible_stencils[index],
+      const auto status = AccumulateDrySolidStress3D(
+          grid,
+          particles[index].world_position,
           particles[index].reference_volume,
           particle_stresses[index],
           face_force
@@ -326,6 +334,11 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         return status;
       }
     }
+    const auto wall_force = ScatterStationaryFloorGhostTranspose3D(grid.view(), validity, floor_tags, face_force);
+    if (!wall_force.ok()) {
+      return wall_force.status();
+    }
+    ghost_wall_force_y = *wall_force;
   } else {
     const auto deposited = deposit(grid, transfer_particles, deposits);
     if (!deposited.ok()) {
@@ -338,6 +351,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   const auto layout = grid.view();
   DrySolidStepBudget3D trial_budget{};
+  trial_budget.grid_wall_impulse_y = settings.duration * ghost_wall_force_y;
   for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
     const double mass = deposits[slot].deposited_mass;
     const double stress_impulse = budget == nullptr ? 0 : settings.duration * face_force[slot];

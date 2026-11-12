@@ -1044,4 +1044,102 @@ absl::Status internal::AccumulateCompatibleSolidStress3D(
   return absl::OkStatus();
 }
 
+absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
+    SparseMacGridView3D grid,
+    std::span<const LiquidFaceValidity3D> validity,
+    std::span<const LiquidBoundaryFaceTag3D> tags,
+    std::span<double> force
+) {
+  if (force.size() != grid.face_count() || validity.size() != force.size() || tags.size() != force.size()) {
+    return absl::InvalidArgumentError("invalid floor ghost stress extents");
+  }
+  std::vector<OwnedFaceAnchor> anchors(force.size());
+  BuildOwnedAnchors(grid, std::span(anchors));
+  std::vector<std::size_t> live_slots;
+  std::vector<double> scattered_force(force.size());
+  for (std::size_t slot = 0; slot < force.size(); ++slot) {
+    if (!std::isfinite(force[slot]) || tags[slot].side_tag != 0) {
+      return absl::InvalidArgumentError("invalid single-side floor ghost force");
+    }
+    if (tags[slot].structurally_eligible && IsUsable(validity[slot])) {
+      live_slots.push_back(slot);
+      scattered_force[slot] = force[slot];
+    }
+  }
+
+  for (std::size_t target = 0; target < force.size(); ++target) {
+    const bool live = tags[target].structurally_eligible && IsUsable(validity[target]);
+    const bool fixed_normal = !tags[target].structurally_eligible && anchors[target].axis == FaceNormalAxis::kY;
+    if (force[target] == 0 || live || fixed_normal) {
+      continue;
+    }
+    constexpr std::size_t kDonorCapacity = kMaxRadiusTwoGhostDonors3D;
+    std::array<LiquidGhostFitSample3D, kDonorCapacity> samples{};
+    std::array<std::size_t, kDonorCapacity> donors{};
+    std::size_t count = 0;
+    std::size_t nearest = 0;
+    double nearest_squared_distance = std::numeric_limits<double>::infinity();
+    for (const std::size_t donor : live_slots) {
+      if (anchors[donor].axis != anchors[target].axis) {
+        continue;
+      }
+      const auto offset = Difference(anchors[donor].anchor_in_cell_widths, anchors[target].anchor_in_cell_widths);
+      const double squared_distance = Dot(offset, offset);
+      if (squared_distance > 4.0) {
+        continue;
+      }
+      if (count == samples.size()) {
+        return absl::ResourceExhaustedError("floor ghost transpose exceeds local donor capacity");
+      }
+      if (squared_distance < nearest_squared_distance) {
+        nearest_squared_distance = squared_distance;
+        nearest = donor;
+      }
+      donors[count] = donor;
+      samples[count++].offset_in_cell_widths = offset;
+    }
+    if (count == 0) {
+      if (tags[target].structurally_eligible) {
+        return absl::FailedPreconditionError("floor ghost transpose has no compatible donor");
+      }
+      continue;
+    }
+    const auto fit_input = std::span(samples).first(count);
+    const auto rank = FitBoundedLiquidGhostAffineCore3D<kDonorCapacity>(fit_input);
+    if (!rank.ok()) {
+      return absl::OutOfRangeError("floor ghost transpose rank evaluation failed");
+    }
+    if (!rank->full_rank) {
+      scattered_force[nearest] += force[target];
+      continue;
+    }
+    // For the bounded local fit, probe the exact existing QR interpolation
+    // with unit donor vectors. The rank and pivot order depend on geometry.
+    for (std::size_t index = 0; index < count; ++index) {
+      samples[index].velocity = 1;
+      const auto basis = FitBoundedLiquidGhostAffineCore3D<kDonorCapacity>(fit_input);
+      samples[index].velocity = 0;
+      if (!basis.ok()) {
+        return absl::OutOfRangeError("floor ghost transpose coefficient evaluation failed");
+      }
+      scattered_force[donors[index]] += basis->velocity_at_target * force[target];
+    }
+  }
+
+  double wall_force_y = 0;
+  for (std::size_t slot = 0; slot < force.size(); ++slot) {
+    if (!std::isfinite(scattered_force[slot])) {
+      return absl::OutOfRangeError("nonfinite floor ghost stress force");
+    }
+    if (anchors[slot].axis == FaceNormalAxis::kY) {
+      wall_force_y += scattered_force[slot] - force[slot];
+    }
+  }
+  if (!std::isfinite(wall_force_y)) {
+    return absl::OutOfRangeError("nonfinite floor ghost wall reaction");
+  }
+  std::ranges::copy(scattered_force, force.begin());
+  return wall_force_y;
+}
+
 }  // namespace fluidity

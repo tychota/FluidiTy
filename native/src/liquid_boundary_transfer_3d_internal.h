@@ -39,4 +39,15 @@ absl::Status AccumulateCompatibleSolidStress3D(
     std::span<double> face_force
 );
 
+// Applies the transpose of the single-side stationary floor continuation to
+// a full-stencil force field. Below-floor normal ghost velocities are zero.
+// All other missing samples use the radius-two affine fit or its nearest
+// donor fallback. On success, only compatible live donor slots carry force.
+absl::StatusOr<double> ScatterStationaryFloorGhostTranspose3D(
+    SparseMacGridView3D grid,
+    std::span<const LiquidFaceValidity3D> validity,
+    std::span<const LiquidBoundaryFaceTag3D> tags,
+    std::span<double> force
+);
+
 }  // namespace fluidity::internal
