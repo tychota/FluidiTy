@@ -180,5 +180,55 @@ TEST(GasSubstep3D, UniformDomainOwnsStencilsAndAdvancesAcrossCellBoundary) {
   EXPECT_NEAR(step->markers[0].world_position.x, 0.26, 1e-14);
   EXPECT_NEAR(step->gas.cells[0].density.carrier, 1.2, 1e-14);
 }
+
+TEST(GasSubstep3D, FrameRuntimeSamplesKeyframedHeatingAtSubstepMidpoints) {
+  const GasUniformDomainOptions3D options{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .extent = {1, 1, 1},
+      .open_boundary = {},
+      .ambient = {.carrier = 1.2, .enthalpy = 354637.5},
+      .ambient_pressure = 101325.0,
+      .initial_velocity = {},
+  };
+  const auto domain = CreateGasUniformDomain3D(options);
+  ASSERT_TRUE(domain.ok()) << domain.status();
+  const std::array keys{
+      GasSourceKey3D{.time = 0.0, .fuel_rate = 0.0, .heat_rate = 0.0},
+      GasSourceKey3D{.time = 0.2, .fuel_rate = 0.4, .heat_rate = 2000.0},
+  };
+  const std::array emitters{
+      GasBoxSource3D{.lower = {0.0, 0.0, 0.0}, .upper = {1.0, 1.0, 1.0}, .keys = keys},
+  };
+  const auto frame =
+      AdvanceGasFrame3D(*domain, options.ambient, options.ambient_pressure, {}, 0.0, 0.2, 2, emitters, {}, {});
+  ASSERT_TRUE(frame.ok()) << frame.status();
+  EXPECT_NEAR(frame->cells[0].density.fuel, 0.04, 1e-14);
+  EXPECT_NEAR(frame->cells[0].absolute_pressure - options.ambient_pressure, 80.0, 1e-8);
+  EXPECT_EQ(domain->cells[0].density.fuel, 0.0);
+}
+
+TEST(GasSubstep3D, FrameRuntimeAppliesAnimatedDraftToOpenFaces) {
+  const GasUniformDomainOptions3D options{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .extent = {2, 1, 1},
+      .open_boundary = {true, true, false, false, false, false},
+      .ambient = {.carrier = 1.2, .enthalpy = 354637.5},
+      .ambient_pressure = 101325.0,
+      .initial_velocity = {},
+  };
+  const auto domain = CreateGasUniformDomain3D(options);
+  ASSERT_TRUE(domain.ok()) << domain.status();
+  const std::array draft{
+      GasDraftKey3D{.time = 0.0, .acceleration = {}},
+      GasDraftKey3D{.time = 0.2, .acceleration = {1.0, 0.0, 0.0}},
+  };
+  const auto frame =
+      AdvanceGasFrame3D(*domain, options.ambient, options.ambient_pressure, {}, 0.0, 0.2, 1, {}, draft, {});
+  ASSERT_TRUE(frame.ok()) << frame.status();
+  const auto slot = domain->grid.FaceSlot({FaceNormalAxis::kX, {1, 0, 0}});
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  EXPECT_NEAR(frame->face_velocities[*slot], 0.1, 1e-14);
+  EXPECT_NEAR(frame->cells[0].density.carrier, options.ambient.carrier, 1e-14);
+}
 }  // namespace
 }  // namespace fluidity

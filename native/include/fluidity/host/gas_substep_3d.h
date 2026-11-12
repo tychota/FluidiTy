@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -115,5 +116,58 @@ struct GasUniformDomain3D {
 // return InvalidArgument, domains over 4096 cells return ResourceExhausted, and
 // unrepresentable geometry returns OutOfRange. Errors carry no domain.
 absl::StatusOr<GasUniformDomain3D> CreateGasUniformDomain3D(const GasUniformDomainOptions3D& options);
+
+inline constexpr double kGasSpecificHeat = 3.5 * 287.05;  // Dry air cp in J/(kg K).
+
+struct GasSourceKey3D {
+  double time;  // Seconds from frame zero.
+  double fuel_rate;  // kg/(m³ s).
+  double heat_rate;  // W/m³.
+};
+
+struct GasBoxSource3D {
+  Vec3 lower;  // Inclusive world-space bounds in meters, evaluated at cell centers.
+  Vec3 upper;  // Exclusive world-space bounds in meters.
+  std::span<const GasSourceKey3D> keys;  // Borrowed, in strictly increasing time order.
+};
+
+struct GasDraftKey3D {
+  double time;  // Seconds from frame zero.
+  Vec3 acceleration;  // World-space uniform field in m/s².
+};
+
+struct GasReaction3D {
+  double ignition_temperature = 300.0;  // K.
+  double burn_rate = 0.0;  // s⁻¹ above the ignition threshold.
+  double heat_per_fuel = 0.0;  // J/kg of consumed fuel.
+  double soot_yield = 0.0;  // kg/kg of consumed fuel.
+};
+
+struct GasFrame3D {
+  std::vector<GasCell3D> cells;
+  std::vector<GasApicMarker3D> markers;
+  std::vector<double> face_velocities;
+  std::vector<double> fuel_burn_rate;  // Final substep flame in kg/(m³ s), in cell order.
+};
+
+// Advances a fixed gas domain over [start_time, end_time] in seconds. Sources
+// and the draft use linear interpolation with endpoint hold at the midpoint of
+// each of 1–4096 equal steps. Overlapping source rates add. The input domain is
+// borrowed and remains valid on any failure. Invalid settings return
+// InvalidArgument, and rejected solver steps propagate their status.
+absl::StatusOr<GasFrame3D> AdvanceGasFrame3D(
+    const GasUniformDomain3D& domain,
+    GasScalars ambient,
+    double ambient_pressure,
+    Vec3 gravity,
+    double start_time,
+    double end_time,
+    std::size_t substeps,
+    std::span<const GasBoxSource3D> emitters,
+    std::span<const GasDraftKey3D> draft,
+    GasReaction3D reaction,
+    absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
+        project = ProjectMacPressure3D
+);
 
 }  // namespace fluidity
