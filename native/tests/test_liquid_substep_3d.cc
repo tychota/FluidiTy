@@ -1555,12 +1555,89 @@ TEST(LiquidSubstep3D, ViscousFractionalTankFillPreservesHydrostaticRest) {
   viscous_tank_test::ExpectHydrostaticRest(*scheduler);
 
   auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
-  tank.start_low_x = 0.25;
+  tank.start_low_x = 0.75;
+  for (auto& particle : fixture->initial.particles.values()) {
+    if (particle.world_position.x < 1.0) {
+      particle.world_position.x = 0.875;
+    }
+  }
   auto solid_cut = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
   ASSERT_TRUE(solid_cut.ok()) << solid_cut.status();
   const auto rejected = solid_cut->AdvanceFrame(viscous_tank_test::kStepDuration);
   EXPECT_EQ(rejected.code(), absl::StatusCode::kUnimplemented);
   ExpectIdenticalSerializedState(fixture->initial, solid_cut->committed());
+}
+
+TEST(LiquidSubstep3D, ViscousCartesianCutTankPreservesHydrostaticRest) {
+  const auto fixture = viscous_tank_test::CartesianCut();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(1.0 / 50.0);
+  ASSERT_TRUE(status.ok()) << status;
+  viscous_tank_test::ExpectHydrostaticRest(*scheduler);
+}
+
+TEST(LiquidSubstep3D, ViscousCartesianCutPistonUsesWallNormalStrainAndFlux) {
+  auto fixture = viscous_tank_test::CartesianCut();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+  constexpr double kWallSpeed = 0.05;
+  tank.piston_velocity_x = kWallSpeed;
+  struct PistonAudit {
+    std::size_t wall_rows = 0;
+    double top_outward_flux = 0.0;
+  } audit;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &audit;
+  backend.project_viscous = [](void* context,
+                               const LiquidBoundaryGeometryViewInputs3D& geometry,
+                               const LiquidPressureProblemView3D& problem,
+                               double viscosity,
+                               std::span<const double> cell_viscosity,
+                               MacPressureSolverOptions3D options) {
+    return liquid_step_internal::ProjectUniformViscosity(
+        geometry,
+        problem,
+        viscosity,
+        cell_viscosity,
+        options,
+        [&](const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> rows, MacPressureSolverOptions3D controls
+        ) {
+          if (!rows.empty() && rows[0].low_cell.x == 0 && rows[0].low_cell.y == 0 && rows[0].low_cell.z == 0
+              && rows[0].first_axis == FaceNormalAxis::kX && rows[0].second_axis == FaceNormalAxis::kX) {
+            EXPECT_DOUBLE_EQ(rows[0].quadrature_weight, 15.0);
+            EXPECT_DOUBLE_EQ(rows[0].terms[0].coefficient, -1.0 / 0.75);
+            EXPECT_DOUBLE_EQ(rows[0].terms[1].coefficient, 1.0 / 0.75);
+            ++static_cast<PistonAudit*>(context)->wall_rows;
+          }
+          const auto result = ProjectMacViscousPressure3D(inputs, rows, controls);
+          if (result.ok()) {
+            auto& observed = *static_cast<PistonAudit*>(context);
+            observed.top_outward_flux = 0.0;
+            for (std::size_t face = 0; face < inputs.pressure_faces.size(); ++face) {
+              const auto& link = inputs.pressure_faces[face];
+              if (link.face_index.axis == FaceNormalAxis::kY
+                  && std::holds_alternative<DirichletMacPressureLink3D>(link.pressure_link)) {
+                observed.top_outward_flux += link.open_area * result->face_velocities[face];
+              }
+            }
+          }
+          return result;
+        }
+    );
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto status = scheduler->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_GT(audit.wall_rows, 0u);
+  const auto& accepted = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(accepted.has_value());
+  const double expected_flux = kWallSpeed * 3 * viscous_tank_test::kFillHeight;
+  EXPECT_NEAR(accepted->step_start_inward_piston_flux_m3_per_s, expected_flux, 1e-12);
+  EXPECT_NEAR(audit.top_outward_flux, expected_flux, 0.01 * expected_flux);
+  EXPECT_LT(accepted->viscous_max_momentum_residual_kg_m_per_s.value_or(1.0), 1e-5);
 }
 
 TEST(LiquidSubstep3D, CapillaryAmbientAndMovingWallAreResolved) {

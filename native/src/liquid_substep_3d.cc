@@ -1123,6 +1123,7 @@ struct LiquidSubstepScheduler3D::Impl {
             .max_cell_constraint_defect = coupled.max_cell_constraint_defect,
         };
         frozen_measurement.integrated_rhs_l2_m3_per_s = coupled.initial_constraint_residual_l2;
+        frozen_measurement.inward_prescribed_wall_flux_m3_per_s = coupled.inward_prescribed_wall_flux_m3_per_s;
         for (const auto& cell : pressure_problem.cells) {
           frozen_measurement.pressure_cell_volume_m3 += cell.fluid_volume;
         }
@@ -1477,7 +1478,7 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   if (CanApplyViscosity(scene) && !backend.project_viscous) {
     return absl::UnimplementedError("backend does not support coupled viscosity");
   }
-  if (CanApplyViscosity(scene) && needs_wetted_piston) {
+  if (CanApplyViscosity(scene) && needs_wetted_piston && !needs_lattice_plane) {
     return absl::UnimplementedError("viscous projection requires certified moving-wall quadratures");
   }
   const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);

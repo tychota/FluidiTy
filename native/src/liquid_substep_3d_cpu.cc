@@ -280,7 +280,12 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
 namespace {
 constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
 
-absl::StatusOr<std::vector<std::array<double, 8>>> CutViscosityOctants(
+struct CutViscosityGeometry {
+  std::vector<std::array<double, 8>> octant_volumes;
+  std::vector<std::array<double, 3>> wall_normal_distances;
+};
+
+absl::StatusOr<CutViscosityGeometry> PrepareCutViscosityGeometry(
     const LiquidBoundaryGeometryViewInputs3D& geometry,
     std::span<const MacPressureCell3D> pressure_cells,
     double full_volume
@@ -288,11 +293,42 @@ absl::StatusOr<std::vector<std::array<double, 8>>> CutViscosityOctants(
   const auto corner_key = [](CellCornerIndex3D index) {
     return std::tuple(index.z, index.y, index.x);
   };
-  std::vector<std::array<double, 8>> volumes;
-  volumes.reserve(pressure_cells.size());
+  CutViscosityGeometry result;
+  result.octant_volumes.reserve(pressure_cells.size());
+  const auto uniform_grid = geometry.mac_grid.geometry();
+  const double width = uniform_grid.cell_width;
+  const bool has_tank = std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle);
+  if (has_tank) {
+    result.wall_normal_distances.reserve(pressure_cells.size());
+  }
   for (const auto& cell : pressure_cells) {
+    if (has_tank) {
+      const boundary_internal::GeometryInput query{
+          .mode = boundary_internal::GeometryMode::kCell,
+          .geometry = uniform_grid,
+          .index = cell.cell_index,
+          .obstacle = boundary_internal::PackObstacle(geometry.obstacle),
+      };
+      const auto bounds = boundary_internal::LocalTankBounds(query);
+      if (!bounds.ok()) {
+        return boundary_internal::ArithmeticStatus(bounds.status(), true);
+      }
+      // Tangential MAC face centers use the cell's transverse center. Refuse
+      // to use them as fluid samples when that center lies in the solid.
+      std::array<double, 3> distances{};
+      for (int axis = 0; axis < 3; ++axis) {
+        if (bounds->low[axis] >= 0.5 || bounds->high[axis] <= 0.5) {
+          return absl::UnimplementedError("viscous tank cut requires a pressure center inside the tank");
+        }
+        distances[axis] = (bounds->high[axis] - bounds->low[axis]) * width;
+        if (!std::isnormal(1.0 / distances[axis])) {
+          return absl::OutOfRangeError("viscous wall-normal derivative is unrepresentable");
+        }
+      }
+      result.wall_normal_distances.push_back(distances);
+    }
     if (std::abs(cell.fluid_volume / full_volume - 1.0) <= kFullCellRoundoff) {
-      auto& full_octants = volumes.emplace_back();
+      auto& full_octants = result.octant_volumes.emplace_back();
       full_octants.fill(full_volume / 8.0);
       continue;
     }
@@ -317,23 +353,18 @@ absl::StatusOr<std::vector<std::array<double, 8>>> CutViscosityOctants(
       }
       distances[corner] = found->signed_distance;
     }
-    // Compute the free-surface volume alone. A stationary tank may be
-    // admitted only where its solid does not clip this liquid quadrature.
-    const auto octants = MeasureLiquidCellOctants3D(geometry.mac_grid.geometry(), index, {}, distances);
+    const auto octants = MeasureLiquidCellOctants3D(uniform_grid, index, geometry.obstacle, distances);
     if (!octants.ok()) {
       return octants.status();
     }
     const double measured_volume = std::accumulate(octants->begin(), octants->end(), 0.0);
     constexpr double kPartitionRoundoff = 512 * std::numeric_limits<double>::epsilon();
     if (measured_volume <= 0.0 || std::abs(measured_volume / cell.fluid_volume - 1.0) > kPartitionRoundoff) {
-      if (std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle)) {
-        return absl::UnimplementedError("cut solid boundaries require viscous wall strain closure");
-      }
       return absl::FailedPreconditionError("cut strain quadratures differ from the frozen pressure volume");
     }
-    volumes.push_back(*octants);
+    result.octant_volumes.push_back(*octants);
   }
-  return volumes;
+  return result;
 }
 }  // namespace
 
@@ -365,21 +396,35 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUnif
   const bool uses_cut_faces = std::ranges::any_of(problem.faces, [&](const auto& face) {
     return face.open_area != 0.0 && face.open_area != full_area;
   });
-  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&geometry.obstacle);
-  const bool supports_cut_free_surface =
-      std::holds_alternative<std::monostate>(geometry.obstacle) || (tank != nullptr && tank->piston_velocity_x == 0.0);
-  if (uses_cut_faces || (uses_cut_cells && !supports_cut_free_surface)) {
-    return absl::UnimplementedError("cut solid boundaries require viscous wall strain closure");
+  const bool uses_cut_geometry = uses_cut_cells || uses_cut_faces;
+  const bool supports_cut_geometry = std::holds_alternative<std::monostate>(geometry.obstacle)
+      || std::holds_alternative<AxisAlignedLiquidTank3D>(geometry.obstacle);
+  if (uses_cut_geometry && !supports_cut_geometry) {
+    return absl::UnimplementedError("oblique cut solid boundaries require viscous wall strain closure");
   }
   const auto assemble_strain = [&]() -> absl::StatusOr<std::vector<MacStrainRow3D>> {
-    if (!uses_cut_cells) {
+    if (!uses_cut_geometry) {
       return AssembleFullCellMacStrain3D(grid, material);
     }
-    const auto volumes = CutViscosityOctants(geometry, problem.cells, full_volume);
-    if (!volumes.ok()) {
-      return volumes.status();
+    const auto cut_geometry = PrepareCutViscosityGeometry(geometry, problem.cells, full_volume);
+    if (!cut_geometry.ok()) {
+      return cut_geometry.status();
     }
-    return AssembleCutCellMacStrainWithBoundary3D(grid, material, *volumes, problem.faces);
+    auto rows = AssembleCutCellMacStrainWithBoundary3D(grid, material, cut_geometry->octant_volumes, problem.faces);
+    if (!rows.ok()) {
+      return rows.status();
+    }
+    // The first three rows per cell are normal differences. In a tank the
+    // sealed slot stands for the velocity at the physical Cartesian wall.
+    for (std::size_t cell = 0; cell < cut_geometry->wall_normal_distances.size(); ++cell) {
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        auto& row = (*rows)[3 * cell + axis];
+        const double derivative = 1.0 / cut_geometry->wall_normal_distances[cell][axis];
+        row.terms[0].coefficient = -derivative;
+        row.terms[1].coefficient = derivative;
+      }
+    }
+    return rows;
   };
   const auto strain = assemble_strain();
   if (!strain.ok()) {

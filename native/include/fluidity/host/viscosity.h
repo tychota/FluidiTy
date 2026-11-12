@@ -164,6 +164,7 @@ struct MacViscousPressureProjection3D {
   double initial_constraint_residual_l2;  // Coupled pressure RHS norm at zero pressure, m³/s.
   double max_cell_constraint_defect;  // Maximum absolute volume-scaled defect, s⁻¹.
   double max_momentum_residual;  // Maximum true inner momentum residual, kg m/s.
+  double inward_prescribed_wall_flux_m3_per_s = 0;  // Explicit geometry flux into the pressure domain.
 };
 
 // Solves the coupled backward-Euler viscosity and compliant pressure equations on CPU.

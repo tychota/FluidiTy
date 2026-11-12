@@ -652,6 +652,100 @@ TEST(MacPressure3D, CoupledViscosityPreservesMovingWallFluxAndOrientedJumps) {
   }
 }
 
+TEST(MacPressure3D, CoupledCartesianWallMatchesAnalyticTractionAndWork) {
+  constexpr double kDynamicViscosity = 10.0;
+  constexpr double kDensity = 1.0;
+  constexpr double kWallSpeed = 0.25;
+  constexpr double kExactStrain = -0.2;
+  constexpr double kExactTraction = 2.0 * kDynamicViscosity * kExactStrain;
+  for (const double width : {1.0, 0.5}) {
+    for (const double step_duration : {0.02, 0.01}) {
+      for (const double wall_offset_fraction : {0.125, 0.25, 0.375}) {
+        SCOPED_TRACE(::testing::Message() << width << ' ' << step_duration << ' ' << wall_offset_fraction);
+        const double area = width * width;
+        const double liquid_length = (1.0 - wall_offset_fraction) * width;
+        const double liquid_volume = area * liquid_length;
+        const double exact_outlet_speed = kWallSpeed + kExactStrain * liquid_length;
+        const double pressure_gradient_distance = 0.5 * width;
+        auto problem = MakeAffineProblem(0, 1, true);
+        const auto grid = SparseMacGrid3D::Create({{}, width}, problem.blocks, problem.blocks.size());
+        ASSERT_TRUE(grid.ok()) << grid.status();
+        SortFaces(problem, *grid);
+        ASSERT_EQ(problem.cells.size(), 1u);
+        auto& cell = problem.cells[0];
+        cell.fluid_volume = liquid_volume;
+        cell.target_divergence = kExactStrain;
+        cell.previous_pressure = 0.0;
+        std::size_t outlet_ordinal = problem.faces.size();
+        for (std::size_t ordinal = 0; ordinal < problem.faces.size(); ++ordinal) {
+          auto& face = problem.faces[ordinal];
+          face.open_area = 0.0;
+          face.wall_normal_velocity = 0.0;
+          face.predicted_normal_velocity = 0.0;
+          face.pressure_link = SealedMacPressureLink3D{};
+          if (face.face_index.axis != FaceNormalAxis::kX) {
+            continue;
+          }
+          if (face.face_index.lattice_index.x == 0) {
+            face.wall_normal_velocity = kWallSpeed;
+            face.prescribed_wall_flux = area * kWallSpeed;
+          } else {
+            face.open_area = area;
+            face.inverse_density = 1.0 / kDensity;
+            face.pressure_gradient_distance = pressure_gradient_distance;
+            face.predicted_normal_velocity = exact_outlet_speed;
+            face.pressure_link = DirichletMacPressureLink3D{0.0};
+            outlet_ordinal = ordinal;
+          }
+        }
+        ASSERT_LT(outlet_ordinal, problem.faces.size());
+        const auto wall_slot = grid->view().FaceSlot({FaceNormalAxis::kX, {0, 0, 0}});
+        const auto outlet_slot = grid->view().FaceSlot({FaceNormalAxis::kX, {1, 0, 0}});
+        ASSERT_TRUE(wall_slot.ok()) << wall_slot.status();
+        ASSERT_TRUE(outlet_slot.ok()) << outlet_slot.status();
+        const double inverse_length = 1.0 / liquid_length;
+        const MacStrainRow3D row{
+            .low_cell = cell.cell_index,
+            .first_axis = FaceNormalAxis::kX,
+            .second_axis = FaceNormalAxis::kX,
+            .terms =
+                {{{.face_slot = *wall_slot, .coefficient = -inverse_length},
+                  {.face_slot = *outlet_slot, .coefficient = inverse_length}}},
+            .term_count = 2,
+            .quadrature_weight = 2.0 * kDynamicViscosity * liquid_volume,
+        };
+        const auto result =
+            ProjectMacViscousPressure3D({*grid, step_duration, problem.cells, problem.faces}, std::span(&row, 1));
+        ASSERT_TRUE(result.ok()) << result.status();
+        const double outlet_speed = result->face_velocities[outlet_ordinal];
+        const double measured_strain = (outlet_speed - kWallSpeed) / liquid_length;
+        const double measured_traction = 2.0 * kDynamicViscosity * measured_strain;
+        const double pressure = result->cell_pressures[0];
+        EXPECT_NEAR(outlet_speed, exact_outlet_speed, 1e-10);
+        EXPECT_NEAR(measured_traction, kExactTraction, 1e-9);
+        EXPECT_NEAR(pressure, kExactTraction, 1e-9);
+        EXPECT_NEAR(result->inward_prescribed_wall_flux_m3_per_s, area * kWallSpeed, 1e-14);
+
+        const double inertia = area * kDensity * pressure_gradient_distance;
+        const double change_in_kinetic_energy =
+            0.5 * inertia * (outlet_speed * outlet_speed - exact_outlet_speed * exact_outlet_speed);
+        const double velocity_change = outlet_speed - exact_outlet_speed;
+        const double backward_euler_defect = 0.5 * inertia * velocity_change * velocity_change;
+        const double strain_dissipation = step_duration * row.quadrature_weight * measured_strain * measured_strain;
+        const double wall_work = -step_duration * area * measured_traction * kWallSpeed;
+        const double pressure_work = step_duration * area * pressure * outlet_speed;
+        EXPECT_GT(wall_work, 0.0);
+        EXPECT_NEAR(wall_work, -step_duration * area * kExactTraction * kWallSpeed, 1e-11);
+        EXPECT_NEAR(
+            change_in_kinetic_energy + backward_euler_defect + strain_dissipation,
+            wall_work + pressure_work,
+            1e-11
+        );
+      }
+    }
+  }
+}
+
 TEST(MacPressure3D, SolvesNegativeCoordinateMultilevelAffineFieldWithAllSixBoundaries) {
   for (const bool anchored : {false, true}) {
     SCOPED_TRACE(anchored);

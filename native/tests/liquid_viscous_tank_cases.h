@@ -55,6 +55,22 @@ inline absl::StatusOr<FractionalFillFixture> FractionalFill() {
   return fixture;
 }
 
+inline absl::StatusOr<FractionalFillFixture> CartesianCut() {
+  auto fixture = FractionalFill();
+  if (!fixture.ok()) {
+    return fixture.status();
+  }
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+  tank.start_low_x = 0.25;
+  for (auto& particle : fixture->initial.particles.values()) {
+    if (particle.world_position.x < 1.0) {
+      particle.reference_volume *= 0.75;
+      particle.mass *= 0.75;
+    }
+  }
+  return fixture;
+}
+
 inline void ExpectHydrostaticRest(const LiquidSubstepScheduler3D& scheduler) {
   ASSERT_EQ(scheduler.committed().cells.size(), 27);
   for (const auto& cell : scheduler.committed().cells.values()) {

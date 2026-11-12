@@ -364,10 +364,17 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressureWithVelo
   }
   std::vector<double> wall_normal_velocities;
   wall_normal_velocities.reserve(inputs.pressure_faces.size());
-  for (const auto& face : inputs.pressure_faces) {
+  arithmetic::CompensatedSum inward_prescribed_wall_flux;
+  for (std::size_t ordinal = 0; ordinal < inputs.pressure_faces.size(); ++ordinal) {
+    const auto& face = inputs.pressure_faces[ordinal];
     wall_normal_velocities.push_back(face.wall_normal_velocity);
+    arithmetic::AccumulateInwardExplicitWallFlux(
+        system->links()[ordinal],
+        face.prescribed_wall_flux.has_value(),
+        inward_prescribed_wall_flux
+    );
   }
-  return SolveCoupled(
+  auto result = SolveCoupled(
       *system,
       inputs.step_duration,
       strain_rows,
@@ -375,6 +382,10 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressureWithVelo
       options.max_iterations,
       solve_velocity_block
   );
+  if (result.ok()) {
+    result->inward_prescribed_wall_flux_m3_per_s = inward_prescribed_wall_flux.Total();
+  }
+  return result;
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure3D(

@@ -1478,6 +1478,41 @@ TEST(CudaLiquidSubstep3D, ViscousFractionalTankFillMatchesCpuHydrostaticRest) {
   ExpectState(cpu->committed(), gpu->committed());
 }
 
+TEST(CudaLiquidSubstep3D, ViscousCartesianCutPistonMatchesCpuAndPreservesFlux) {
+  auto fixture = viscous_tank_test::CartesianCut();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(fixture->scene.obstacle);
+  constexpr double kWallSpeed = 0.05;
+  tank.piston_velocity_x = kWallSpeed;
+  auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  auto backend = CudaLiquidSubstepBackend3D::Create(
+      fixture->options.capacities,
+      0,
+      /*measure_job=*/false,
+      /*needs_wetted_piston=*/true
+  );
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu =
+      LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+
+  const auto before = backend->usage();
+  const auto cpu_status = cpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  const auto gpu_status = gpu->AdvanceFrame(viscous_tank_test::kStepDuration);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  const auto after = backend->usage();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+  EXPECT_EQ(after.device_free_count, before.device_free_count);
+  const auto& accepted = gpu->diagnostics().accepted_measurement;
+  ASSERT_TRUE(accepted.has_value());
+  EXPECT_NEAR(accepted->step_start_inward_piston_flux_m3_per_s, kWallSpeed * 3 * viscous_tank_test::kFillHeight, 1e-12);
+  EXPECT_LT(accepted->viscous_max_momentum_residual_kg_m_per_s.value_or(1.0), 1e-5);
+  ExpectState(cpu->committed(), gpu->committed());
+}
+
 TEST(CudaLiquidSubstep3D, CutViscousSphereDampsShearAndMatchesCpu) {
   constexpr double kRadius = 0.125;
   constexpr int kCellsPerRadius = 3;
