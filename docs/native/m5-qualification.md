@@ -3409,3 +3409,36 @@ foreach ($grid in 'coarse', 'fine') {
 The temporary harness sums the grid work budget at the existing
 trace times. The solver and harness were restored after linking.
 Q-SAND remains open.
+
+### Friction capacity and incoming wall slip
+
+At each accepted wall-face solve in the Euler contact trace, sum the
+Coulomb impulse cap, the magnitude of the applied impulse, and the
+cap times incoming tangential speed. Include both half-cap sweeps.
+Divide the latter sum by the cap sum for a load-weighted speed.
+
+| Native case through ~0.35 s | Cap | Applied magnitude sum | Cap-weighted incoming speed |
+|---|---:|---:|---:|
+| Coarse | 3.781267 N·s | 3.779745 N·s | 0.163485 m/s |
+| Coarse half-step | 3.279660 N·s | 3.279174 N·s | 0.105319 m/s |
+| Fine | 3.964792 N·s | 3.956191 N·s | 0.132857 m/s |
+| Fine half-step | 3.452155 N·s | 3.451862 N·s | 0.090523 m/s |
+
+All four traces use more than 99.7% of their cumulative cap through
+this window. The half-steps reduce the cap by approximately 13% and
+the weighted incoming speed by 32–36%. The lower slip speed is the
+larger factor in the decrease in cap-times-speed. These are sums of
+local magnitudes, separate from the net horizontal impulse budget.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-cap-trace-bin'
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace $grid $step
+  }
+}
+```
+
+The temporary budget instrumentation was restored after linking.
+All four traces reproduce the previous wall work values. Q-SAND
+remains open.
