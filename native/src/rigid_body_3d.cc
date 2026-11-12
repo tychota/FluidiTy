@@ -7,6 +7,8 @@
 #include <numeric>
 #include <tuple>
 
+#include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+
 namespace fluidity {
 namespace {
 
@@ -312,6 +314,199 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
   );
   if (!status.ok()) {
     return status;
+  }
+  return patches;
+}
+namespace {
+
+using boundary_internal::CartesianVector;
+using boundary_internal::ClippingPolygon;
+
+struct WetPolygonMoment {
+  double area = 0.0;
+  Vec3 weighted_centroid{};
+};
+
+absl::StatusOr<WetPolygonMoment> MeasureWetPolygon(const ClippingPolygon& polygon) {
+  if (polygon.overflow) {
+    return absl::OutOfRangeError("oriented box clipping capacity exceeded");
+  }
+  WetPolygonMoment result;
+  if (polygon.size() < 3) {
+    return result;
+  }
+  const auto position = [&](std::size_t vertex) {
+    const auto& coordinates = polygon[vertex].cell_width_position;
+    return Vec3{coordinates[0], coordinates[1], coordinates[2]};
+  };
+  const Vec3 first = position(0);
+  for (std::size_t vertex = 1; vertex + 1 < polygon.size(); ++vertex) {
+    const Vec3 second = position(vertex);
+    const Vec3 third = position(vertex + 1);
+    const double area = 0.5 * Norm(Cross(Subtract(second, first), Subtract(third, first)));
+    const Vec3 centroid = Scale(1.0 / 3.0, Add(Add(first, second), third));
+    result.area += area;
+    result.weighted_centroid = Add(result.weighted_centroid, Scale(area, centroid));
+  }
+  if (!std::isfinite(result.area) || !IsFinite(result.weighted_centroid)) {
+    return absl::OutOfRangeError("oriented box patch moment is unrepresentable");
+  }
+  return result;
+}
+
+struct PressureReceiverBounds {
+  CartesianVector low;
+  CartesianVector high;
+};
+
+// Clip in center-relative world coordinates. Coplanar faces need exterior
+// ownership since inclusive clipping alone would assign them to both cells.
+ClippingPolygon
+ClipWetFaceToReceiver(ClippingPolygon face, const PressureReceiverBounds& receiver, CartesianVector outward_normal) {
+  for (int axis = 0; axis < 3; ++axis) {
+    if (face.empty()) {
+      break;
+    }
+    const double coordinate = face.front().cell_width_position[axis];
+    const bool coplanar = std::ranges::all_of(face, [&](const auto& vertex) {
+      return vertex.cell_width_position[axis] == coordinate;
+    });
+    if (coplanar) {
+      const bool exterior = outward_normal[axis] < 0.0
+          ? receiver.low[axis] < coordinate && coordinate <= receiver.high[axis]
+          : receiver.low[axis] <= coordinate && coordinate < receiver.high[axis];
+      if (!exterior) {
+        return {};
+      }
+      continue;
+    }
+    CartesianVector normal{};
+    normal[axis] = -1.0;
+    face = boundary_internal::ClipPolygon(face, {normal, -receiver.low[axis], false, axis});
+    normal[axis] = 1.0;
+    face = boundary_internal::ClipPolygon(face, {normal, receiver.high[axis], false, axis});
+  }
+  return face;
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+) {
+  if (!ValidBody(body) || !IsFinite(body_half_extent) || body_half_extent.x <= 0.0 || body_half_extent.y <= 0.0
+      || body_half_extent.z <= 0.0 || !std::isfinite(liquid_height) || !IsFinite(geometry.world_origin)
+      || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0.0) {
+    return absl::InvalidArgumentError("invalid oriented box or pressure grid");
+  }
+  const double liquid_level = liquid_height - body.center.y;
+  if (!std::isfinite(liquid_level)) {
+    return absl::OutOfRangeError("oriented box liquid level is unrepresentable");
+  }
+  const auto center = boundary_internal::CartesianComponents(body.center);
+  const auto origin = boundary_internal::CartesianComponents(geometry.world_origin);
+  std::vector<PressureReceiverBounds> receivers;
+  receivers.reserve(pressure_cells.size());
+  for (std::size_t index = 0; index < pressure_cells.size(); ++index) {
+    const auto cell = pressure_cells[index];
+    if (index > 0) {
+      const auto previous = pressure_cells[index - 1];
+      if (std::tie(cell.z, cell.y, cell.x) <= std::tie(previous.z, previous.y, previous.x)) {
+        return absl::InvalidArgumentError("oriented box pressure cells must be strictly ordered");
+      }
+    }
+    const std::array coordinates{cell.x, cell.y, cell.z};
+    PressureReceiverBounds bounds{};
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      const double lattice_index = coordinates[axis];
+      const auto relative_coordinate = [&](double ordinate) {
+        return boundary_internal::HorizontalPlaneLatticeDistance(
+            center[axis],
+            {origin[axis], ordinate, geometry.cell_width}
+        );
+      };
+      const auto low = relative_coordinate(lattice_index);
+      const auto high = relative_coordinate(lattice_index + 1.0);
+      if (!low.ok() || !high.ok() || *low >= *high) {
+        return absl::OutOfRangeError("oriented box pressure cell bounds are unrepresentable");
+      }
+      bounds.low[axis] = *low;
+      bounds.high[axis] = *high;
+    }
+    receivers.push_back(bounds);
+  }
+
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array<std::array<double, 2>, 4> kCornerSigns{{{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}};
+  std::vector<RigidPressurePatch3D> patches;
+  for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+    const auto normal_component = kComponents[axis];
+    const auto first_tangent = kComponents[(axis + 1) % kComponents.size()];
+    const auto second_tangent = kComponents[(axis + 2) % kComponents.size()];
+    for (const double sign : {-1.0, 1.0}) {
+      Vec3 body_normal{};
+      body_normal.*normal_component = sign;
+      const Vec3 outward_normal = Rotate(body.orientation, body_normal);
+      ClippingPolygon face;
+      bool has_wet_vertex = false;
+      for (const auto& corner : kCornerSigns) {
+        Vec3 local{};
+        local.*normal_component = sign * (body_half_extent.*normal_component);
+        local.*first_tangent = corner[0] * (body_half_extent.*first_tangent);
+        local.*second_tangent = corner[1] * (body_half_extent.*second_tangent);
+        const Vec3 rotated = Rotate(body.orientation, local);
+        const double distance = rotated.y - liquid_level;
+        if (!IsFinite(rotated) || !std::isfinite(distance)) {
+          return absl::OutOfRangeError("oriented box vertex is unrepresentable");
+        }
+        has_wet_vertex |= distance < 0.0;
+        face.push_back({boundary_internal::CartesianComponents(rotated), distance});
+      }
+      if (!has_wet_vertex) {
+        continue;
+      }
+      const auto wet_face = boundary_internal::ClipPolygon(face, {{0.0, 1.0, 0.0}, liquid_level, false, 1});
+      const auto expected = MeasureWetPolygon(wet_face);
+      if (!expected.ok()) {
+        return expected.status();
+      }
+      if (expected->area <= 0.0) {
+        return absl::OutOfRangeError("oriented box wetted face area is unrepresentable");
+      }
+      double covered_area = 0.0;
+      for (std::size_t ordinal = 0; ordinal < receivers.size(); ++ordinal) {
+        const auto clipped =
+            ClipWetFaceToReceiver(wet_face, receivers[ordinal], boundary_internal::CartesianComponents(outward_normal));
+        const auto moment = MeasureWetPolygon(clipped);
+        if (!moment.ok()) {
+          return moment.status();
+        }
+        if (moment->area == 0.0) {
+          continue;
+        }
+        const Vec3 centroid = Add(body.center, Scale(1.0 / moment->area, moment->weighted_centroid));
+        if (!IsFinite(centroid)) {
+          return absl::OutOfRangeError("oriented box pressure centroid is unrepresentable");
+        }
+        covered_area += moment->area;
+        patches.push_back({
+            .patch_id = patches.size() + 1,
+            .body_id = body.body_id,
+            .pressure_cell_index = ordinal,
+            .wetted_area = moment->area,
+            .world_centroid = centroid,
+            .outward_body_normal = outward_normal,
+        });
+      }
+      constexpr double kAreaRoundoff = 256 * std::numeric_limits<double>::epsilon();
+      if (!std::isfinite(covered_area) || std::abs(covered_area - expected->area) > kAreaRoundoff * expected->area) {
+        return absl::FailedPreconditionError("oriented box wet surface lacks exterior pressure coverage");
+      }
+    }
   }
   return patches;
 }

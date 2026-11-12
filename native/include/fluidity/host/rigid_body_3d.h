@@ -77,6 +77,19 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
     UniformMacGeometry3D geometry,
     std::span<const CellIndex3D> pressure_cells
 );
+// Clips the posed box surface against the horizontal liquid plane and the
+// selected uniform pressure cells. Half extents are in the body frame, meters.
+// Patches follow body-face and then (z,y,x) pressure-cell order. A face on a
+// lattice plane uses the exterior cell. Missing wet coverage beyond area
+// roundoff returns FailedPrecondition. Invalid inputs or unrepresentable
+// geometry return InvalidArgument or OutOfRange. No partial output is returned.
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+);
 // Streams the same patches without allocation. Callbacks borrow a stable
 // pressure-cell ordering and must stage any writes until success because a
 // later validation or visitor error can reject the visit. Errors are code-only.

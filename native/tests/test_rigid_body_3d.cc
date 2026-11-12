@@ -87,6 +87,13 @@ TEST(RigidBody3D, FloatingBoxClipsWetFacesAndUsesExteriorPressureCells) {
   EXPECT_DOUBLE_EQ(loaded->torque.y, 0.0);
   EXPECT_DOUBLE_EQ(loaded->torque.z, 0.0);
 
+  const auto oriented = BuildOrientedBoxPressurePatches3D(body, {0.5, 0.5, 0.5}, 0.5, {{}, 1.0}, cells);
+  ASSERT_TRUE(oriented.ok()) << oriented.status();
+  ASSERT_EQ(oriented->size(), patches->size());
+  for (std::size_t index = 0; index < patches->size(); ++index) {
+    EXPECT_EQ((*oriented)[index].pressure_cell_index, (*patches)[index].pressure_cell_index);
+    EXPECT_DOUBLE_EQ((*oriented)[index].wetted_area, (*patches)[index].wetted_area);
+  }
   const auto missing = BuildFloatingBoxPressurePatches3D(
       body.body_id,
       {0.0, 0.0, 0.0},
@@ -101,6 +108,38 @@ TEST(RigidBody3D, FloatingBoxClipsWetFacesAndUsesExteriorPressureCells) {
   const auto malformed =
       BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, duplicate);
   EXPECT_EQ(malformed.status().code(), absl::StatusCode::kInvalidArgument);
+}
+TEST(RigidBody3D, OrientedBoxWetPatchesRecoverLiftAndOffCenterTorque) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 2.0, 3.0},
+      .orientation = {.w = std::sqrt(0.9), .vector = {0.0, 0.0, std::sqrt(0.1)}},
+      .linear_velocity = {0.0, 0.25, 0.0},
+      .angular_velocity = {0.0, 0.0, 0.5},
+  };
+  constexpr UniformMacGeometry3D kGrid{{0.0, -2.0, -2.0}, 4.0};
+  constexpr std::array cells{CellIndex3D{-1, 0, 0}, CellIndex3D{0, 0, 0}};
+  constexpr Vec3 kHalfExtent{0.5, 0.5, 0.5};
+  const auto patches = BuildOrientedBoxPressurePatches3D(body, kHalfExtent, 0.4, kGrid, cells);
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  ASSERT_GT(patches->size(), 6);
+  constexpr std::array pressure{8.0, 8.0};
+  const auto loaded = AccumulateRigidBodyPressure3D(body, pressure, 0.0, *patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  // The horizontal section is [-0.3, 0.325] times one meter in z.
+  // Closing the wetted surface with this cap gives the uniform-pressure oracle.
+  EXPECT_NEAR(loaded->force.x, 0.0, 1e-12);
+  EXPECT_NEAR(loaded->force.y, 5.0, 1e-12);
+  EXPECT_NEAR(loaded->force.z, 0.0, 1e-12);
+  EXPECT_NEAR(loaded->torque.z, 0.0625, 1e-12);
+  const auto flux = ComputeRigidBodyInwardWallFlux3D(body, cells.size(), *patches);
+  ASSERT_TRUE(flux.ok()) << flux.status();
+  const double power = 0.25 * loaded->force.y + 0.5 * loaded->torque.z;
+  EXPECT_NEAR(power + 8.0 * ((*flux)[0] + (*flux)[1]), 0.0, 1e-12);
+
+  const auto missing = BuildOrientedBoxPressurePatches3D(body, kHalfExtent, 0.4, kGrid, std::span(cells).first(1));
+  EXPECT_EQ(missing.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
   const RigidBody3D body{
