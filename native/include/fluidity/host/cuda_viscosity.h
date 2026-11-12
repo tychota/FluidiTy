@@ -19,4 +19,13 @@ absl::StatusOr<CudaMacViscousVelocityBlockSolution3D> CudaSolveMacViscousVelocit
     MacViscousVelocityBlockOptions3D options = {}
 );
 
+// Projects the coupled viscous momentum and pressure equations. The pressure
+// iteration is host-orchestrated and every velocity inverse executes on CUDA
+// device 0. Inputs, ordering, units and failure semantics match the CPU API.
+absl::StatusOr<MacViscousPressureProjection3D> CudaProjectMacViscousPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options = {}
+);
+
 }  // namespace fluidity

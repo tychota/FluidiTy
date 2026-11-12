@@ -1,5 +1,7 @@
+#include <utility>
 #include <vector>
 
+#include "../src/mac_viscous_pressure_3d.h"
 #include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/cuda_viscosity.h"
 #include "operator_runtime.h"
@@ -139,6 +141,27 @@ absl::StatusOr<CudaMacViscousVelocityBlockSolution3D> CudaSolveMacViscousVelocit
     return execution;
   }
   return output;
+}
+
+absl::StatusOr<MacViscousPressureProjection3D> CudaProjectMacViscousPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options
+) {
+  return pressure_internal::ProjectMacViscousPressureWithVelocitySolver3D(
+      inputs,
+      strain_rows,
+      options,
+      [](const MacViscousVelocityBlockInputs3D& block,
+         std::span<const double> rhs,
+         MacViscousVelocityBlockOptions3D controls) -> absl::StatusOr<MacViscousVelocityBlockSolution3D> {
+        auto result = CudaSolveMacViscousVelocityBlock3D(block, rhs, controls);
+        if (!result.ok()) {
+          return result.status();
+        }
+        return std::move(result->solution);
+      }
+  );
 }
 
 }  // namespace fluidity

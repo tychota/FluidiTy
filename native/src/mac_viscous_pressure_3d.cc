@@ -107,7 +107,8 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
     double dt,
     std::span<const MacStrainRow3D> strain_rows,
     std::span<const double> wall_normal_velocities,
-    std::size_t max_iterations
+    std::size_t max_iterations,
+    pressure_internal::SolveViscousVelocity3D solve_velocity_block
 ) {
   const auto rows = RemapStrain(system, strain_rows);
   if (!rows.ok()) {
@@ -208,7 +209,7 @@ absl::StatusOr<MacViscousPressureProjection3D> SolveCoupled(
         momentum[face] += dt * link.open_area * (tail - head);
       }
     }
-    return SolveMacViscousVelocityBlock3D(velocity_block, momentum);
+    return solve_velocity_block(velocity_block, momentum, {});
   };
   std::vector<double> pressure(cells.size());
   std::vector<std::vector<double>> directions;
@@ -333,6 +334,24 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressure3D(
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options
 ) {
+  return pressure_internal::ProjectMacViscousPressureWithVelocitySolver3D(
+      inputs,
+      strain_rows,
+      options,
+      SolveMacViscousVelocityBlock3D
+  );
+}
+
+namespace pressure_internal {
+absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressureWithVelocitySolver3D(
+    const MacPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    SolveViscousVelocity3D solve_velocity_block
+) {
+  if (solve_velocity_block == nullptr) {
+    return absl::InvalidArgumentError("coupled pressure requires a velocity solver");
+  }
   if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
     return absl::InvalidArgumentError("invalid coupled pressure iteration budget");
   }
@@ -345,10 +364,16 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressure3D(
   for (const auto& face : inputs.pressure_faces) {
     wall_normal_velocities.push_back(face.wall_normal_velocity);
   }
-  return SolveCoupled(*system, inputs.step_duration, strain_rows, wall_normal_velocities, options.max_iterations);
+  return SolveCoupled(
+      *system,
+      inputs.step_duration,
+      strain_rows,
+      wall_normal_velocities,
+      options.max_iterations,
+      solve_velocity_block
+  );
 }
 
-namespace pressure_internal {
 absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure3D(
     double step_duration,
     std::span<const MacPressureCell3D> cells,
@@ -359,7 +384,14 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
   if (!system.ok()) {
     return system.status();
   }
-  return SolveCoupled(*system, step_duration, strain_rows, {}, kPressureIterationBudget);
+  return SolveCoupled(
+      *system,
+      step_duration,
+      strain_rows,
+      {},
+      kPressureIterationBudget,
+      SolveMacViscousVelocityBlock3D
+  );
 }
 }  // namespace pressure_internal
 

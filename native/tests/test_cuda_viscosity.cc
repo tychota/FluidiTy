@@ -8,6 +8,59 @@
 namespace fluidity {
 namespace {
 
+std::array<MacPressureFace3D, 6> SealedFacesAtX(std::int32_t x) {
+  return {{
+      {.face_index = {FaceNormalAxis::kX, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kX, {x + 1, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kY, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kY, {x, 1, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kZ, {x, 0, 0}}, .pressure_link = SealedMacPressureLink3D{}},
+      {.face_index = {FaceNormalAxis::kZ, {x, 0, 1}}, .pressure_link = SealedMacPressureLink3D{}},
+  }};
+}
+
+TEST(CudaMacViscosity3D, CoupledProjectionBalancesMomentumAndCompliantFlux) {
+  constexpr UniformMacGeometry3D kUnitGeometry{{0.0, 0.0, 0.0}, 1.0};
+  constexpr std::array kUnitBlock{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto faces = SealedFacesAtX(0);
+  for (std::size_t face = 0; face < 2; ++face) {
+    faces[face].open_area = 1.0;
+    faces[face].inverse_density = 1.0;
+    faces[face].pressure_gradient_distance = 1.0;
+  }
+  faces[0].predicted_normal_velocity = -1.0;
+  faces[0].pressure_link = DirichletMacPressureLink3D{2.0};
+  faces[1].predicted_normal_velocity = 8.0;
+  faces[1].pressure_link = DirichletMacPressureLink3D{5.0};
+  const std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1.0,
+      .target_divergence = 3.0,
+      .bulk_modulus = 2.0,
+      .previous_pressure = 2.0,
+  }};
+  const std::array viscosity{MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 1.0}};
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), viscosity);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  const MacPressureInputs3D inputs{*grid, 1.0, cells, faces};
+  const auto cpu = ProjectMacViscousPressure3D(inputs, *strain);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto result = CudaProjectMacViscousPressure3D(inputs, *strain);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->pressure_iterations, cpu->pressure_iterations);
+  EXPECT_NEAR(result->cell_pressures[0], cpu->cell_pressures[0], 1e-12);
+  for (std::size_t face = 0; face < result->face_velocities.size(); ++face) {
+    EXPECT_NEAR(result->face_velocities[face], cpu->face_velocities[face], 1e-12);
+  }
+  EXPECT_NEAR(result->cell_pressures[0], 4.0, 1e-9);
+  EXPECT_NEAR(result->face_velocities[0], 1.0, 1e-9);
+  EXPECT_NEAR(result->face_velocities[1], 3.0, 1e-9);
+  EXPECT_NEAR(result->cell_constraint_defects[0], 0.0, 1e-9);
+  EXPECT_LT(result->max_momentum_residual, 1e-9);
+}
+
 TEST(CudaMacViscosity3D, VelocityBlockMatchesCpuAndTrueResidual) {
   const std::array rows{
       MacStrainRow3D{
