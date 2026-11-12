@@ -258,6 +258,110 @@ TEST(CudaAdaptiveSimulate3D, AdaptiveInterfacePressureJumpPreservesOwnedFlux) {
   }
 }
 
+TEST(CudaAdaptiveSimulate3D, PublishesLiveFamilyAndPreservesRejectedDeviceEpoch) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedFamilyFixture3D(state, scene).ok());
+  LiquidStepOptions3D options;
+  options.capacities = {12, 0, 12, 64, 0};
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject graded family")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto parent = state.adaptive_cells[0].key;
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto rejected = scheduler->AttemptWithAdaptiveFamily(0.01, parent, true);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, state);
+    EXPECT_EQ(scheduler->committed(), state);
+  }
+  scheduler->SetStageFaultHookForTesting({});
+  const auto refined = scheduler->AttemptWithAdaptiveFamily(0.005, parent, true);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_EQ(refined->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+  {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, scheduler->committed());
+  }
+  const auto coarsened = scheduler->AttemptWithAdaptiveFamily(0.005, parent, false);
+  ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+  ASSERT_EQ(coarsened->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 5);
+  const auto epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  ASSERT_TRUE(epoch->Readback(*readback).ok());
+  EXPECT_EQ(*readback, scheduler->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaAdaptiveSimulate3D, PublishesEulerianOwnerAndReseedsDeviceEpoch) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedBandFixture3D(state, scene).ok());
+  LiquidStepOptions3D options;
+  options.capacities = {8, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  const auto key = state.adaptive_cells[1].key;
+  const LiquidHandoffCarrier3D carrier{.current_density = 2, .volume_ratio = 1};
+  constexpr auto kFull = LiquidHandoffOccupancy3D::kFullLiquid;
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band handoff")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandRetirement(0.01, key, kFull, carrier);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  const auto expect_device_state = [&](const LiquidState3D& expected) {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, expected);
+  };
+  expect_device_state(state);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retired = scheduler->AttemptWithAdaptiveBandRetirement(0.005, key, kFull, carrier);
+  ASSERT_TRUE(retired.ok()) << retired.status();
+  ASSERT_EQ(retired->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  ASSERT_EQ(scheduler->committed().adaptive_cells[1].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  ASSERT_EQ(scheduler->committed().particles.size(), 4);
+  expect_device_state(scheduler->committed());
+  const auto reseeded = scheduler->AttemptWithAdaptiveCoreReseed(0.005, key, kFull, carrier, 1);
+  ASSERT_TRUE(reseeded.ok()) << reseeded.status();
+  ASSERT_EQ(reseeded->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  ASSERT_EQ(scheduler->committed().adaptive_cells[1].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+  ASSERT_EQ(scheduler->committed().particles.size(), 5);
+  expect_device_state(scheduler->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaCoarseFineTransfer3D, OracleQueriesAndAllOrientationsMatchCpuOnSm120) {
   constexpr Vec3 origin{-4, 2, -3};
   constexpr std::array<std::array<double, 3>, 10> positions{{

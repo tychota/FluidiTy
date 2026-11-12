@@ -87,6 +87,60 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+// Start with a particle inventory that can be rebinned without resampling.
+inline absl::Status PopulateGradedFamilyFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  const auto authored = PopulateGradedTankFixture3D(state, scene);
+  if (!authored.ok()) {
+    return authored;
+  }
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(12);
+  if (!particles.ok()) {
+    return particles.status();
+  }
+  const auto resized = particles->Resize(12);
+  if (!resized.ok()) {
+    return resized;
+  }
+  for (std::size_t ordinal = 0; ordinal < particles->size(); ++ordinal) {
+    auto& particle = (*particles)[ordinal];
+    particle = state.particles[ordinal < 8 ? 0 : ordinal - 7];
+    if (ordinal < 8) {
+      particle.mass /= 8;
+      particle.reference_volume /= 8;
+      particle.world_position = {
+          (ordinal & 1) != 0 ? 0.75 : 0.25,
+          (ordinal & 2) != 0 ? 0.75 : 0.25,
+          (ordinal & 4) != 0 ? 0.75 : 0.25,
+      };
+    }
+    particle.id = ordinal + 1;
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+  state.particles = std::move(*particles);
+  state.next_particle_id = 13;
+  return ValidateLiquidState3D(state);
+}
+
+inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  const auto authored = PopulateGradedTankFixture3D(state, scene);
+  if (!authored.ok()) {
+    return authored;
+  }
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+  for (auto& face : state.adaptive_faces.values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  return ValidateLiquidState3D(state);
+}
+
 inline void SetGradedTankEos3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
   scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0};
   scene.ambient_pressure = 1.0;

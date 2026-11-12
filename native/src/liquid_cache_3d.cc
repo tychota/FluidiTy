@@ -17,7 +17,18 @@ namespace fluidity {
 namespace cache_detail = liquid_cache_internal;
 namespace wire = cache::v1;
 namespace {
+constexpr std::uint32_t kAdaptiveLiquidStateVersion = 2;
+constexpr std::uint32_t kEulerianLiquidStateVersion = 3;
+
 // Native enums may grow independently; existing wire tags must never drift.
+static_assert(
+    static_cast<int>(AdaptiveLiquidMaterialOwner3D::kParticles)
+    == static_cast<int>(wire::AdaptiveMaterialOwner::Particles)
+);
+static_assert(
+    static_cast<int>(AdaptiveLiquidMaterialOwner3D::kEulerian)
+    == static_cast<int>(wire::AdaptiveMaterialOwner::Eulerian)
+);
 static_assert(static_cast<int>(FaceNormalAxis::kX) == static_cast<int>(wire::Axis::X));
 static_assert(static_cast<int>(FaceNormalAxis::kY) == static_cast<int>(wire::Axis::Y));
 static_assert(static_cast<int>(FaceNormalAxis::kZ) == static_cast<int>(wire::Axis::Z));
@@ -158,6 +169,9 @@ LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
   LiquidAdaptiveCellState3D result{
       .key = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = cell->width_exponent()},
       .occupancy = static_cast<LiquidCellOccupancy3D>(cell->occupancy()),
+      .material_owner = static_cast<AdaptiveLiquidMaterialOwner3D>(
+          cell->material_owner().value_or(wire::AdaptiveMaterialOwner::Particles)
+      ),
       .inventory =
           {
               .mass_kg = cell->mass_kg(),
@@ -191,7 +205,8 @@ LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
 // decoded record owner. Stable particle order is checked for unique IDs, not sorted.
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
-  if ((state->schema_version() == 2) != (state->adaptive() != nullptr)) {
+  const bool eulerian_version = state->schema_version() == kEulerianLiquidStateVersion;
+  if ((state->schema_version() >= kAdaptiveLiquidStateVersion) != (state->adaptive() != nullptr)) {
     return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
   }
   if (const auto* adaptive = state->adaptive()) {
@@ -203,11 +218,20 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
         || state->faces()->size() != 0) {
       return cache_detail::Corrupt();
     }
+    bool has_eulerian_owner = false;
     for (const auto* cell : *adaptive->cells()) {
+      const auto owner = cell->material_owner();
+      if (owner.has_value() && !eulerian_version) {
+        return cache_detail::Corrupt();
+      }
+      has_eulerian_owner |= owner == wire::AdaptiveMaterialOwner::Eulerian;
       const auto* constituents = cell->constituents();
       if (constituents && (constituents->size() == 0 || constituents->size() > kMaximumLiquidParticleConstituents3D)) {
         return cache_detail::Corrupt();
       }
+    }
+    if (eulerian_version != has_eulerian_owner) {
+      return cache_detail::Corrupt();
     }
     for (const auto* face : *adaptive->faces()) {
       if (!cache_detail::ValidBoolean(face, wire::AdaptiveFace::VT_STRUCTURALLY_ELIGIBLE)) {
@@ -415,6 +439,13 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
     return Invalid();
   }
   const bool adaptive = state.adaptive_cells.size() != 0;
+  const bool has_eulerian_owner = std::ranges::any_of(state.adaptive_cells.values(), [](const auto& cell) {
+    return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
+  });
+  std::uint32_t schema_version = adaptive ? kAdaptiveLiquidStateVersion : 1;
+  if (has_eulerian_owner) {
+    schema_version = kEulerianLiquidStateVersion;
+  }
   const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
       + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1)
       + state.cavity_gas.size() + state.cavity_components.size() + (state.next_cavity_id != 0);
@@ -528,7 +559,10 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
                     inventory.enthalpy_j,
                     cell.previous_pressure,
                     inventory.phase_id,
-                    constituents
+                    constituents,
+                    cell.material_owner == AdaptiveLiquidMaterialOwner3D::kParticles
+                        ? flatbuffers::Optional<wire::AdaptiveMaterialOwner>{}
+                        : flatbuffers::Optional{static_cast<wire::AdaptiveMaterialOwner>(cell.material_owner)}
                 );
               }
           );
@@ -595,7 +629,7 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
         const auto clock = cache_detail::Pack(state.clock);
         return wire::CreateLiquidState(
             builder,
-            adaptive ? 2 : 1,
+            schema_version,
             0,
             &origin,
             state.geometry.cell_width,
@@ -722,7 +756,12 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& stat
   return EncodeState(state, nullptr, limits);
 }
 absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
+  auto state = cache_detail::Verify<wire::LiquidState>(
+      bytes,
+      wire::LiquidStateIdentifier(),
+      limits,
+      kEulerianLiquidStateVersion
+  );
   if (!state.ok()) {
     return state.status();
   }
@@ -735,7 +774,12 @@ EncodeLiquidCheckpoint3D(const LiquidState3D& state, const LiquidResumeMetadata3
 }
 absl::StatusOr<LiquidCheckpoint3D>
 DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
+  auto state = cache_detail::Verify<wire::LiquidState>(
+      bytes,
+      wire::LiquidStateIdentifier(),
+      limits,
+      kEulerianLiquidStateVersion
+  );
   if (!state.ok()) {
     return state.status();
   }
@@ -785,6 +829,68 @@ absl::StatusOr<LiquidPointFrame3D> BuildLiquidPointFrame3D(const LiquidState3D& 
   }
   result.points = std::move(*points);
   return result;
+}
+
+absl::StatusOr<LiquidPointFrame3D> BuildCoupledPointFrame3D(
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid,
+    LiquidCacheLimits3D limits
+) {
+  if (liquid.clock.accepted_step_ordinal != solid.accepted_step) {
+    return Invalid();
+  }
+  auto frame = BuildLiquidPointFrame3D(liquid, limits);
+  if (!frame.ok()) {
+    return frame.status();
+  }
+  const auto liquid_points = frame->points.values();
+  if (solid.plastic_particles.size() > SIZE_MAX - liquid_points.size()) {
+    return cache_detail::Error(absl::StatusCode::kOutOfRange);
+  }
+  const auto point_count = liquid_points.size() + solid.plastic_particles.size();
+  CACHE_TRY(BoundCounts({point_count, 0, 0, 0, 0}, limits));
+  auto points = LiquidRecords3D<LiquidPoint3D>::Create(point_count);
+  if (!points.ok()) {
+    return points.status();
+  }
+  CACHE_TRY(points->Resize(point_count));
+  for (std::size_t index = 0; index < liquid_points.size(); ++index) {
+    const auto& point = liquid_points[index];
+    if (point.id >= kSnowPointIdBit || point.tag >= kSnowPointTagBit) {
+      return absl::OutOfRangeError("liquid point identity exceeds the mixed frame namespace");
+    }
+    (*points)[index] = point;
+  }
+  std::uint64_t previous_id = 0;
+  for (std::size_t index = 0; index < solid.plastic_particles.size(); ++index) {
+    const auto& particle = solid.plastic_particles[index];
+    if (particle.particle_id <= previous_id || particle.material_id == 0) {
+      return Invalid();
+    }
+    previous_id = particle.particle_id;
+    if (particle.particle_id >= kSnowPointIdBit || particle.material_id >= kSnowPointTagBit) {
+      return absl::OutOfRangeError("snow point identity exceeds the mixed frame namespace");
+    }
+    const auto& [x, y, z] = particle.elastic_deformation;
+    const double elastic_jacobian =
+        x.x * (y.y * z.z - y.z * z.y) - x.y * (y.x * z.z - y.z * z.x) + x.z * (y.x * z.y - y.y * z.x);
+    const double volume_ratio = elastic_jacobian * std::exp(particle.log_plastic_jacobian);
+    const double radius = std::cbrt(3 * particle.reference_volume * volume_ratio / (4 * std::acos(-1.0)));
+    const LiquidPoint3D point{
+        .id = kSnowPointIdBit | particle.particle_id,
+        .tag = kSnowPointTagBit | static_cast<std::uint32_t>(particle.material_id),
+        .world_position = particle.transfer.sorted_world_position,
+        .world_velocity = particle.transfer.particle_velocity,
+        .radius = radius,
+        .volume_ratio = volume_ratio,
+    };
+    if (!ValidPoint(point)) {
+      return absl::OutOfRangeError("snow point is not representable");
+    }
+    (*points)[liquid_points.size() + index] = point;
+  }
+  frame->points = std::move(*points);
+  return frame;
 }
 
 absl::StatusOr<LiquidCacheBytes3D>

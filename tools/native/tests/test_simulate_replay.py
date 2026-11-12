@@ -649,22 +649,48 @@ def case_cuda_replay(executable, fixture, directory, cuda):
     graded_replay_case(executable, fixture, directory / "graded-viscous", "cuda", "graded-viscous")
 
 
-def case_execution_validation(executable, fixture, directory, cuda):
-    mixed_scene, _ = make_scene(executable, fixture, directory, "cpu", "plastic-body")
+def mixed_cli_case(executable, fixture, directory, backend):
+    mixed_scene, _ = make_scene(executable, fixture, directory, backend, "plastic-body")
     mixed_cache = directory / "mixed-cache"
     mixed_initial = Path(str(mixed_scene) + ".flsi")
     mixed_args = ["run", "--stage", "simulate", "--scene", mixed_scene, "--cache", mixed_cache]
-    for initial_args in ([], ["--initial-state", mixed_initial]):
-        rejected = execute(executable, *mixed_args, *initial_args, success=False)[-1]
-        assert rejected["field"] == "scene"
-        assert "coupled liquid-solid scheduler" in rejected["cause"]
+    rejected = execute(executable, *mixed_args, success=False)[-1]
+    assert rejected["field"] == "initial-state"
     corrupted = bytearray(mixed_initial.read_bytes())
     corrupted[-1] ^= 1
-    mixed_initial.write_bytes(corrupted)
-    rejected = execute(executable, *mixed_args, "--initial-state", mixed_initial, success=False)[-1]
-    assert rejected["field"] == "initial_state"
+    damaged = directory / "damaged.flsi"
+    damaged.write_bytes(corrupted)
+    rejected = execute(executable, *mixed_args, "--initial-state", damaged, success=False)[-1]
+    assert rejected["field"] == "initial-state"
     assert rejected["code"] == "E-SIMULATE-DATA_LOSS"
     assert not mixed_cache.exists()
+    mixed_run = [*mixed_args, "--initial-state", mixed_initial]
+    uninterrupted = execute(executable, *mixed_run, "--frame-end", 20)[-1]
+    assert uninterrupted["frame"] == 20
+    assert uninterrupted["source_next_child_ordinals"] == [2]
+    assert len(list((mixed_cache / "blobs").glob("*.flsi"))) == 2
+    before = immutable_cache_files(snapshot(mixed_cache))
+    restarted = execute(executable, *mixed_args, "--resume", "--frame-start", 10, "--frame-end", 20)[-1]
+    assert restarted["state_digest"] == uninterrupted["state_digest"]
+    assert immutable_cache_files(snapshot(mixed_cache)) == before
+    replayed = execute(executable, "replay", "--cache", mixed_cache, "--frame", 19, "--substep", 0)[-1]
+    assert replayed["frame"] == 19 and replayed["read_only"]
+    points = json.loads(subprocess.check_output([str(fixture), "first-point-frame", str(mixed_cache)], text=True))
+    assert points["particle_count"] == 2
+    water, snow = points["composition"]
+    assert water["id"] == 1 and water["tag"] == 0
+    assert snow["id"] == (1 << 63) | 1 and snow["tag"] == (1 << 31) | 11
+    platen_y = 3.001 - 0.02 / 24
+    assert 0 <= platen_y - snow["position"][1] < 1e-5
+    assert snow["position"][1] < 3.0005
+
+
+def case_cuda_mixed(executable, fixture, directory, cuda):
+    mixed_cli_case(executable, fixture, directory, "cuda")
+
+
+def case_execution_validation(executable, fixture, directory, cuda):
+    mixed_cli_case(executable, fixture, directory, "cpu")
     scene, initial = make_scene(executable, fixture, directory, "cpu")
     cache = directory / "cache"
     args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache]
@@ -1109,7 +1135,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "execution_validation", "cuda_execution", "cuda_replay", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "execution_validation", "cuda_execution", "cuda_replay", "cuda_mixed", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

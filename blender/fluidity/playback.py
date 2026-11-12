@@ -1,4 +1,4 @@
-"""Attach verified M1 Points to saved Blender-native datablocks."""
+"""Attach verified point channels to saved Blender-native datablocks."""
 
 import filecmp
 import json
@@ -121,13 +121,38 @@ def committed_last(cache, manifest_extension="flmf"):
     return max(frames)
 
 
+def snow_material():
+    material = bpy.data.materials.get("FluidiTy Snow Points")
+    if material is None:
+        material = bpy.data.materials.new("FluidiTy Snow Points")
+        material.diffuse_color = (0.82, 0.91, 1.0, 1.0)
+        material.use_nodes = True
+        material.node_tree.nodes.get("Principled BSDF").inputs["Base Color"].default_value = material.diffuse_color
+    return material
+
+
 def attach(scene, cache):
     require_cadence(scene)
     relative_cache = relative(cache)
     last = committed_last(cache)
     info = inspection(cache, last)
+    mixed = info.get("model_version", 1) == 2
+    attach_channel(scene, cache, relative_cache, info, "water" if mixed else None)
+    if mixed:
+        attach_channel(scene, cache, relative_cache, info, "snow")
+    snow = scene.fluidity.snow_playback_object
+    if snow:
+        snow.hide_viewport = snow.hide_render = not mixed
+    scene.fluidity.attached_cache = relative_cache
+    return last
+
+
+def attach_channel(scene, cache, relative_cache, info, channel):
+    last = info["frame"]
     identity = info["execution_id"]
-    existing = scene.fluidity.playback_object
+    snow = channel == "snow"
+    object_property = "snow_playback_object" if snow else "playback_object"
+    existing = getattr(scene.fluidity, object_property)
     if existing and not existing.get("fluidity_points"):
         raise jobs.ToolError("The saved Points binding is not a FluidiTy object.")
     if existing:
@@ -144,7 +169,8 @@ def attach(scene, cache):
 
     archive = cache / f"FluidiTyPoints-{uuid4().hex}.abc"
     archive_path = relative(archive)
-    jobs.checked("blender_bridge", "export", cache, last, archive, timeout=60)
+    command = f"export-{channel}" if channel else "export"
+    jobs.checked("blender_bridge", command, cache, last, archive, timeout=60)
     if existing and scene.fluidity.attached_cache == relative_cache and existing.get("fluidity_execution") == identity:
         old_file = Path(bpy.path.abspath(reader.cache_file.filepath)) if reader.cache_file else None
         # Export revalidated all commits. Reuse the existing datablocks when the
@@ -182,7 +208,8 @@ def attach(scene, cache):
         source.cache_file.filepath = archive_path
         scene.frame_set(last)
         evaluated = candidate.evaluated_get(bpy.context.evaluated_depsgraph_get())
-        if len(evaluated.data.points) != len(info["points"]):
+        expected_count = sum(channel is None or point.get("substance") == channel for point in info["points"])
+        if len(evaluated.data.points) != expected_count:
             raise jobs.ToolError("Blender could not read the last committed Points sample.")
         if existing:
             # Keep the object, downstream modifier and any user edits in place.
@@ -192,28 +219,29 @@ def attach(scene, cache):
                 if constraint.type == "TRANSFORM_CACHE" and constraint.cache_file == previous_cache:
                     constraint.cache_file = source.cache_file
         else:
-            candidate.name = "FluidiTy Points"
+            candidate.name = "FluidiTy Snow" if snow else "FluidiTy Points"
             modifier = candidate.modifiers.new("FluidiTy Points v1", "NODES")
             modifier.node_group = points_asset()
             tree = modifier.node_group
             inputs = modifier.properties.inputs
             getattr(inputs, tree["fluidity_size_socket"]).value = 1.0
-            getattr(inputs, tree["fluidity_material_socket"]).value = next(
+            getattr(inputs, tree["fluidity_material_socket"]).value = snow_material() if snow else next(
                 item.default_value
                 for item in tree.interface.items_tree
                 if item.identifier == tree["fluidity_material_socket"]
             )
-            collection = bpy.data.collections.new("FluidiTy Playback")
-            scene.collection.children.link(collection)
+            collection = scene.collection.children.get("FluidiTy Playback")
+            if collection is None:
+                collection = bpy.data.collections.new("FluidiTy Playback")
+                scene.collection.children.link(collection)
             for previous in list(candidate.users_collection):
                 previous.objects.unlink(candidate)
             collection.objects.link(candidate)
             keep = existing = candidate
             existing["fluidity_points"] = True
-            scene.fluidity.playback_object = existing
+            setattr(scene.fluidity, object_property, existing)
         existing["fluidity_execution"] = identity
         existing["fluidity_last"] = last
-        scene.fluidity.attached_cache = relative_cache
         complete = True
     finally:
         scene.frame_set(saved_frame, subframe=saved_subframe)

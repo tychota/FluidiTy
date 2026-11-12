@@ -44,4 +44,20 @@ absl::StatusOr<SurfaceLattice3D> ApplySurfaceOccupancy3D(
     std::size_t maximum_nodes
 );
 
+struct LiquidState3D;
+
+// Apply completed adaptive Simulate coverage to the particle density lattice.
+// The caller authenticates the state, density and support from the same
+// accepted epoch and lattice, including obstacle closure. particle_support
+// contains one 0 or 1 per node. Unsupported nodes require an explicit empty
+// air leaf or a completely occupied liquid leaf. Unknown coverage, solid
+// leaves and partial fill cannot certify an unsupported node. The status
+// contract of ApplySurfaceOccupancy3D applies after mapping. Inputs are read-only.
+absl::StatusOr<SurfaceLattice3D> ApplyAdaptiveSurfaceOccupancy3D(
+    const SurfaceLattice3D& particle_density,
+    std::span<const std::uint8_t> particle_support,
+    const LiquidState3D& accepted,
+    std::size_t maximum_nodes
+);
+
 }  // namespace fluidity

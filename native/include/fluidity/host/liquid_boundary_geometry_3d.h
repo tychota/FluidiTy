@@ -74,6 +74,22 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
     std::span<const double, 8> liquid_corner_distances
 );
 
+struct SolidCornerDistance3D {
+  CellCornerIndex3D corner_index;
+  double signed_distance;  // Physical distance, m. Positive outside the solid.
+  Vec3 wall_velocity{};  // World m/s. Used when dense face velocities are absent.
+};
+
+// Borrowed freeze-time samples. Corner keys are distinct in (z,y,x)
+// order and cover each candidate cell. Wall normal velocities are signed
+// along the positive MAC face axis in m/s and cover all owned face slots.
+// An empty face velocity span selects integration of the corner velocities.
+// A translating analytic halfspace can clip the sampled geometry.
+struct SampledSolidBoundary3D {
+  std::span<const SolidCornerDistance3D> corner_distances;
+  std::span<const double> face_normal_velocities;
+};
+
 struct LiquidBoundaryGeometryInputs3D {
   const SparseMacGrid3D& mac_grid;  // Borrowed only during freeze; result owns a copy.
   // Candidate cells, distinct and sorted (z,y,x), separate from the sample halo.
@@ -90,6 +106,7 @@ struct LiquidBoundaryGeometryInputs3D {
   // Finite signed outward curvature in inverse meters, including zero.
   // Used only at cells incident to open air links with positive surface tension.
   std::optional<double> exact_outward_interface_curvature = std::nullopt;
+  std::optional<SampledSolidBoundary3D> sampled_solid = std::nullopt;
 };
 struct AxisAlignedFloatingBoxGeometry3D {
   Vec3 world_low;  // Lower solid corner at freeze time, meters.
@@ -112,7 +129,10 @@ struct FrozenLiquidCell3D {
 struct FrozenLiquidFace3D {
   FaceIndex3D face_index;
   std::size_t face_slot;
-  double open_area;  // Full face minus solid, m²; not clipped by liquid.
+  // Pressure aperture, m². Normally the full face minus solid. The oriented
+  // planar box clips lateral faces by the liquid and uses the wet waterplane
+  // section on the upper Dirichlet link.
+  double open_area;
   double blocked_area;  // Exactly h² - open_area, m².
   double wall_normal_velocity;  // Positive Cartesian face axis, m/s, on both low and high faces.
   // Positive Cartesian orientation, m³/s. For tanks this is the piston-only

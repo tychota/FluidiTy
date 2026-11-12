@@ -107,7 +107,19 @@ absl::StatusOr<LiquidWallContactResult3D> SweepDryWalls(
   return floor;
 }
 
+constexpr char kDrySolidDurationBound[] = "type.fluidity.dev/DrySolidDurationBound";
+
+absl::Status DurationExceeded(const char* message) {
+  auto status = absl::FailedPreconditionError(message);
+  status.SetPayload(kDrySolidDurationBound, absl::Cord{});
+  return status;
+}
+
 }  // namespace
+
+bool internal::DrySolidDurationExceeded3D(const absl::Status& status) {
+  return status.GetPayload(kDrySolidDurationBound).has_value();
+}
 
 Mat3 internal::ProjectStationaryFloorVelocityGradient3D(Vec3 velocity, Mat3 gradient, double friction_coefficient) {
   if (velocity.y >= 0) {
@@ -221,7 +233,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     minimum_particle_mass = std::min(minimum_particle_mass, particle.mass);
     if (settings.duration * std::sqrt(accepted->wave_speed_squared) > settings.acoustic_cfl * cell_width) {
-      return absl::FailedPreconditionError("dry acoustic step bound");
+      return DurationExceeded("dry acoustic step bound");
     }
     const auto stress = internal::AccumulateDrySolidStress3D(
         grid,
@@ -299,7 +311,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       return absl::OutOfRangeError("nonfinite dry face velocity");
     }
     if (std::abs(velocity) * settings.duration > maximum_displacement) {
-      return absl::FailedPreconditionError("dry face motion bound");
+      return DurationExceeded("dry face motion bound");
     }
     if (budget != nullptr) {
       const double applied_impulse = stress_impulse * (mass / force_mass);
@@ -374,7 +386,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     const auto& particle_gather = gathers[index];
     const Vec3 velocity = particle_gather.new_pic_velocity;
     if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
-      return absl::FailedPreconditionError("dry particle motion bound");
+      return DurationExceeded("dry particle motion bound");
     }
     Vec3 stored_velocity = velocity;
     if (!retained_velocities.empty() && retained_velocities[index].eligible) {
@@ -413,7 +425,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
                contact->advecting_world_velocity.z
            ) * settings.duration
             > maximum_displacement) {
-      return absl::FailedPreconditionError("dry post-contact motion bound");
+      return DurationExceeded("dry post-contact motion bound");
     }
     for (const auto axis : kAxes) {
       const auto next_support =

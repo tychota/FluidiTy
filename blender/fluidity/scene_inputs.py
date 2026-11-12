@@ -397,6 +397,32 @@ def rigid_scene_packets(scene, preview=False):
     ))) + "\n"
     return liquid_packet, packet
 
+def snow_seed_rows(settings, bounds, cell):
+    low, high = bounds
+    center_x, center_y = ((low[axis] + high[axis]) / 2 for axis in (0, 1))
+    radius_x, radius_y = ((high[axis] - low[axis]) / 2 for axis in (0, 1))
+    height = high[2] - low[2]
+    spacing = 0.5 * cell
+    ranges = [range(math.floor(a / spacing - 0.5) + 1, math.ceil(b / spacing - 0.5))
+              for a, b in zip(low, high, strict=True)]
+    if math.prod(map(len, ranges)) > 8192:
+        raise SceneError("snow_mound", "Increase cell width or reduce the snow mound size.")
+    seeds = []
+    for z, y, x in product(ranges[2], ranges[1], ranges[0]):
+        px, py, pz = ((index + 0.5) * spacing for index in (x, y, z))
+        ellipsoid = ((px - center_x) / radius_x) ** 2 + ((py - center_y) / radius_y) ** 2
+        ellipsoid += ((pz - low[2]) / height) ** 2
+        if ellipsoid < 1:
+            seeds.append((px, pz, -py))
+    if not 1 <= len(seeds) <= 1024:
+        raise SceneError("snow_mound", "Choose a cell width that seeds 1 to 1024 snow particles.")
+    parameters = (
+        1, 1, settings.snow_lambda, settings.snow_shear, settings.snow_compression,
+        settings.snow_stretch, settings.snow_hardening, settings.snow_density, spacing ** 3, len(seeds),
+    )
+    return [" ".join(map(repr, row)) for row in (parameters, *seeds)]
+
+
 def scene_inputs(scene, preview=False, *, rigid=False):
     """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
     settings = scene.fluidity
@@ -423,7 +449,15 @@ def scene_inputs(scene, preview=False, *, rigid=False):
         raise SceneError("liquid", "Assign a distinct box to each liquid source.")
     if settings.domain.animation_data or any(obj.animation_data for obj in liquids):
         raise SceneError("roles", "Keep the domain and initial liquid static.")
-    using_collider = settings.boundary_mode in {"PLANE", "SLAB"}
+    snow_platen = settings.boundary_mode == "SNOW_PLATEN"
+    if snow_platen:
+        if not settings.snow_mound or settings.snow_mound in {settings.domain, settings.collider, *liquids}:
+            raise SceneError("snow_mound", "Assign a distinct Snow Mound bounds box.")
+        if settings.snow_mound.animation_data:
+            raise SceneError("snow_mound", "Keep the Snow Mound bounds static.")
+        if not any(source.emission_rate > 0 for source in sources) or any(source.override_viscosity for source in sources):
+            raise SceneError("liquid", "Use a water emitter with positive emission and no viscosity override.")
+    using_collider = settings.boundary_mode in {"PLANE", "SLAB", "SNOW_PLATEN"}
     collider = settings.collider if using_collider else None
     if using_collider and not collider:
         raise SceneError("collider", "Assign a collider for the selected boundary model.")
@@ -437,6 +471,8 @@ def scene_inputs(scene, preview=False, *, rigid=False):
         graph = bpy.context.evaluated_depsgraph_get()
         domain_low, domain_high = box_bounds(settings.domain, "domain", graph)
         liquid_bounds = [box_bounds(obj, "liquid", graph) for obj in liquids]
+        if snow_platen:
+            snow_bounds = box_bounds(settings.snow_mound, "snow_mound", graph)
         liquid_low = tuple(min(low[axis] for low, _ in liquid_bounds) for axis in range(3))
         liquid_high = tuple(max(high[axis] for _, high in liquid_bounds) for axis in range(3))
         if collider:
@@ -474,6 +510,8 @@ def scene_inputs(scene, preview=False, *, rigid=False):
     version = "FLUIDITY-BLENDER-2"
     if sources:
         version = "FLUIDITY-BLENDER-4" if viscosity_authoring else "FLUIDITY-BLENDER-3"
+    if snow_platen:
+        version = "FLUIDITY-BLENDER-5"
     lines = [
         version,
         f"{int(preview)} {cell!r}",
@@ -490,7 +528,13 @@ def scene_inputs(scene, preview=False, *, rigid=False):
         lines.append("0")
     else:
         wx, wy, wz = wall_velocity
-        if settings.boundary_mode == "PLANE":
+        if snow_platen:
+            if abs(wx) > 1e-6 or abs(wy) > 1e-6 or wz >= 0:
+                raise SceneError("collider", "Animate the overhead platen down along Blender Z.")
+            if max(liquid_high[2], snow_bounds[1][2]) > collider_low[2] or snow_bounds[0][2] < 0:
+                raise SceneError("collider", "Place water and the snow mound below the platen and snow above Z = 0.")
+            lines.extend(["1", f"0 -1 0 {-collider_low[2]!r} 0 0 {wz!r} 0"])
+        elif settings.boundary_mode == "PLANE":
             if liquid_low[2] < collider_high[2] - 1e-6:
                 raise SceneError("collider", "Place liquid above the plane collider.")
             lines.extend(["1", f"0 1 0 {collider_high[2]!r} 0 {wx!r} {wz!r} {-wy!r}"])
@@ -506,6 +550,8 @@ def scene_inputs(scene, preview=False, *, rigid=False):
         lines.extend(extended_liquid_rows(
             sources, liquid_bounds, cell, (vx, vz, -vy), settings.phase_tension, viscosity_authoring
         ))
+        if snow_platen:
+            lines.extend(snow_seed_rows(settings, snow_bounds, cell))
         return "\n".join(lines) + "\n"
     lines.append(str(count))
     for z, y, x in product(ranges[2], ranges[1], ranges[0]):

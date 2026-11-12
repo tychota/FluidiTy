@@ -7,10 +7,12 @@
 #include <iostream>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <vector>
 
 #include "fixture_data.h"
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+#include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "gtest/gtest.h"
@@ -412,6 +414,110 @@ class GeometryCases {
         EXPECT_NEAR(face.open_area, 0.5, 2e-14);
       }
     }
+  }
+
+  void SampledSolidFreezeSharesOnePressureFace() {
+    const auto grid = Grid();
+    auto samples = Sample([](double, double y, double) {
+      return y - 0.75;
+    });
+    samples.candidates.push_back({-1, -2, -2});
+    for (auto& center : samples.centers) {
+      const auto index = center.cell_index;
+      if (index.y != -2 || index.z != -2 || (index.x != -2 && index.x != -1)) {
+        center.signed_distance = 1;
+      }
+    }
+    std::vector<SolidCornerDistance3D> solid_corners;
+    for (const auto& corner : samples.corners) {
+      const auto index = corner.corner_index;
+      const double solid_distance = (index.x + index.y + 2.75) / std::sqrt(2.0);
+      solid_corners.push_back({index, solid_distance});
+    }
+    const auto shared_slot = grid.FaceSlot({FaceNormalAxis::kX, {-1, -2, -2}});
+    ASSERT_TRUE(shared_slot.ok());
+    std::vector<double> wall_velocities(grid.face_count(), 0.0);
+    wall_velocities[*shared_slot] = 0.2;
+    LiquidBoundaryGeometryInputs3D inputs{
+        .mac_grid = grid,
+        .cell_indices = samples.candidates,
+        .center_distances = samples.centers,
+        .corner_distances = samples.corners,
+        .obstacle = {},
+        .step_duration = 0.01,
+        .liquid_density = 1000.0,
+        .surface_tension = 0.0,
+        .sampled_solid = SampledSolidBoundary3D{solid_corners, wall_velocities},
+    };
+
+    const auto frozen = freeze_(inputs);
+    ASSERT_TRUE(frozen.ok()) << frozen.status();
+    ASSERT_EQ(frozen->cells().size(), 2);
+    EXPECT_NEAR(frozen->cells()[0].fluid_volume, 0.125, 2e-14);
+    EXPECT_NEAR(frozen->cells()[1].fluid_volume, 0.71875, 2e-14);
+    ASSERT_EQ(frozen->faces().size(), 11);
+    EXPECT_EQ(std::ranges::count(frozen->faces(), *shared_slot, &FrozenLiquidFace3D::face_slot), 1);
+    const auto shared = std::ranges::find(frozen->faces(), *shared_slot, &FrozenLiquidFace3D::face_slot);
+    ASSERT_NE(shared, frozen->faces().end());
+    EXPECT_NEAR(shared->open_area, 0.75, 2e-14);
+    EXPECT_NEAR(shared->blocked_area, 0.25, 2e-14);
+    EXPECT_EQ(shared->wall_normal_velocity, 0.2);
+    const auto links = Links(*frozen);
+    ASSERT_EQ(links.faces.size(), frozen->faces().size());
+    const auto& shared_link = links.faces[static_cast<std::size_t>(shared - frozen->faces().begin())];
+    EXPECT_TRUE(std::holds_alternative<InternalMacPressureLink3D>(shared_link.pressure_link));
+    EXPECT_NEAR(shared_link.open_area, 0.75, 2e-14);
+    EXPECT_NEAR((1.0 - shared_link.open_area) * shared_link.wall_normal_velocity, 0.05, 2e-14);
+
+    for (auto& corner : solid_corners) {
+      const double y = corner.corner_index.y + 2.0;
+      corner.wall_velocity.x = 2.0 + 4.0 * y;
+    }
+    inputs.sampled_solid->face_normal_velocities = {};
+    const auto affine_frozen = freeze_(inputs);
+    ASSERT_TRUE(affine_frozen.ok()) << affine_frozen.status();
+    const auto affine_links = Links(*affine_frozen);
+    ASSERT_EQ(affine_links.faces.size(), frozen->faces().size());
+    const auto& affine_link = affine_links.faces[static_cast<std::size_t>(shared - frozen->faces().begin())];
+    ASSERT_TRUE(affine_link.prescribed_wall_flux.has_value());
+    EXPECT_NEAR(affine_link.open_area, 0.75, 2e-14);
+    EXPECT_NEAR(*affine_link.prescribed_wall_flux, 0.625, 2e-14);
+    EXPECT_NEAR(affine_link.wall_normal_velocity, 2.5, 2e-14);
+    const auto projection = project_({grid, inputs.step_duration, affine_links.cells, affine_links.faces});
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    ASSERT_EQ(projection->cell_pressures.size(), 2);
+    const double tail_pressure = projection->cell_pressures[0];
+    const double head_pressure = projection->cell_pressures[1];
+    const double pressure_difference = tail_pressure - head_pressure;
+    EXPECT_GT(std::abs(pressure_difference), 1.0);
+    const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.25, 0.75, -0.25, 0.75});
+    ASSERT_TRUE(weights.ok());
+    const auto forces =
+        boundary_internal::ComputeSampledSolidFacePressureForces(*weights, tail_pressure, head_pressure);
+    ASSERT_TRUE(forces.ok());
+    constexpr std::array normal_velocities{2.0, 6.0, 2.0, 6.0};
+    const double solid_power = std::inner_product(forces->begin(), forces->end(), normal_velocities.begin(), 0.0);
+    EXPECT_NEAR(solid_power, pressure_difference * *affine_link.prescribed_wall_flux, 2e-12 * std::abs(solid_power));
+    inputs.sampled_solid->face_normal_velocities = wall_velocities;
+
+    inputs.sampled_solid->corner_distances = std::span<const SolidCornerDistance3D>(solid_corners).first(1);
+    EXPECT_EQ(freeze_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+
+    // Wet lobes at corners 1 and 6 have no shared open triangle.
+    for (auto& corner : solid_corners) {
+      const auto index = corner.corner_index;
+      const bool first_lobe = index.x == -1 && index.y == -2 && index.z == -2;
+      const bool second_lobe = index.x == -2 && index.y == -1 && index.z == -1;
+      corner.signed_distance = first_lobe || second_lobe ? 1.0 : -1.0;
+    }
+    for (auto& corner : samples.corners) {
+      corner.signed_distance = -1.0;
+    }
+    inputs.cell_indices = std::span<const CellIndex3D>(samples.candidates).first(1);
+    inputs.sampled_solid->corner_distances = solid_corners;
+    const auto split = freeze_(inputs);
+    ASSERT_FALSE(split.ok());
+    EXPECT_EQ(split.status().code(), absl::StatusCode::kFailedPrecondition);
   }
 
   Samples IsolatedLiquid(double center = -0.01) {

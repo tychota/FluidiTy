@@ -6,12 +6,15 @@
 #include <optional>
 #include <span>
 #include <variant>
+#include <vector>
 
 #include "absl/functional/function_ref.h"
+#include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
+#include "fluidity/host/plastic_solid_checkpoint_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
 #include "fluidity/host/whitewater_3d.h"
 
@@ -256,6 +259,27 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct LiquidSnowStepInputs3D {
+  const SparseMacGrid3D& solid_grid;  // Uniform complete-support MAC layout.
+  std::span<const PlasticSolidCheckpointParticle3D> accepted_particles;
+  std::uint64_t body_id;
+  std::uint64_t material_id;
+  SnowParameters3D snow;
+  DrySolidStep3D solid_step;  // Attempt duration replaces solid_step.duration.
+  double support_radius;  // Common sphere-union support radius in metres.
+};
+
+struct LiquidSnowAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  // Present only on shared acceptance and ordered by the original particle IDs.
+  std::optional<std::vector<PlasticSolidCheckpointParticle3D>> accepted_snow;
+};
+
+struct TankPressureLoad3D {
+  Vec3 force{};  // World N exerted by the stationary tank on the liquid.
+  Vec3 torque{};  // World N m about the world origin, exerted on the liquid.
+};
+
 struct OrientedFloatingBoxLoads3D {
   Vec3 external_force{};  // World N, supplied at step start.
   Vec3 external_torque{};  // World N m about the box center.
@@ -265,6 +289,13 @@ struct OrientedFloatingBoxLoads3D {
   Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
   Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
   Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+  // World N s from the velocity correction on open MAC faces, using face dual
+  // mass (aperture times gradient distance divided by inverse density).
+  Vec3 pressure_grid_impulse{};
+  std::optional<Vec3> particle_pressure_impulse;  // World N s of nonhydrostatic pressure transferred to particles.
+  Vec3 routed_pressure_angular_impulse_change{};  // World N m s from moving unsupported impulses between MAC anchors.
+  std::size_t routed_pressure_faces = 0;  // Nonzero source impulses moved to compatible wet support.
+  std::optional<TankPressureLoad3D> tank_pressure;  // Present when the pressure cells cover every wet tank wall.
 };
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;
@@ -324,6 +355,27 @@ class LiquidSubstepScheduler3D {
   // even on failure. Returns disposition/retry duration; detailed code/stage are in
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
+
+  // Request one graded family refinement (refine=true) or coarsening before
+  // the physical attempt. Preparation errors leave the current frame open
+  // and consume no attempt. Rejection preserves the accepted topology and inventories.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
+  // Request an ownership handoff before one physical trial. The caller
+  // certifies full occupancy and a carrier at the previous accepted epoch.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(
+      double step_duration,
+      AdaptiveMacCellKey3D leaf,
+      LiquidHandoffOccupancy3D occupancy,
+      const LiquidHandoffCarrier3D& carrier
+  );
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveCoreReseed(
+      double step_duration,
+      AdaptiveMacCellKey3D leaf,
+      LiquidHandoffOccupancy3D occupancy,
+      const LiquidHandoffCarrier3D& carrier,
+      std::size_t particle_count
+  );
   // Attempts the moving planar piston scene and returns the pressure load
   // only when the liquid state commits. The body is supplied by value and
   // the piston trajectory stays prescribed for this attempt.
@@ -386,12 +438,31 @@ class LiquidSubstepScheduler3D {
   // after drift. Supports the oriented CPU box without surface tension.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithCoupledOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Attempts one uniform sampled snow and liquid substep. Uses a frozen
+  // sphere-union wall and the host snow transfer with complete support.
+  // Rejects intersecting particle sweeps and publishes the snow candidate
+  // only after the liquid transaction accepts. The original snow records
+  // remain immutable. A vertically translating overhead platen uses the same
+  // start-of-step pose for liquid geometry, pressure loads, and snow contact.
+  absl::StatusOr<LiquidSnowAttempt3D> AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& snow);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
   // accepts at most two dt halvings and one configured frame capacity replay.
   // A failure preserves the latest accepted version (or replay's frame start).
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
+
+  // Advances liquid and snow to target_time using both materials' step bounds.
+  // Copies the initial records from inputs before advancing, so they may alias
+  // accepted_snow. On failure after the frame begins, accepted_snow matches
+  // the latest committed liquid step. Capacity replay restores both materials
+  // to the frame start before notifying the observer.
+  absl::Status AdvanceFrameWithSnow(
+      double target_time,
+      const LiquidSnowStepInputs3D& inputs,
+      std::vector<PlasticSolidCheckpointParticle3D>& accepted_snow,
+      LiquidProgressObserver3D observer = {}
+  );
 
  private:
   enum class FloatingBoxMotion {
@@ -413,6 +484,17 @@ class LiquidSubstepScheduler3D {
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);
+  absl::Status ValidateSnowStep(const LiquidSnowStepInputs3D& inputs) const;
+  absl::Status AdvanceFrameImpl(
+      double target_time,
+      LiquidProgressObserver3D observer,
+      std::optional<LiquidSnowStepInputs3D> snow_inputs,
+      std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
+  );
+  struct SnowTrial;
+  struct AdaptiveStateTrial;
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -420,7 +502,9 @@ class LiquidSubstepScheduler3D {
       bool dynamic_piston = false,
       bool coupled_piston = false,
       const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
-      FloatingBoxTrial* floating_box = nullptr
+      FloatingBoxTrial* floating_box = nullptr,
+      SnowTrial* snow = nullptr,
+      AdaptiveStateTrial* adaptive_replacement = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

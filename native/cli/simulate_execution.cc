@@ -8,6 +8,7 @@
 #include <optional>
 #include <sstream>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
@@ -108,20 +109,57 @@ absl::StatusOr<std::string> StateMembers(const LiquidState3D& state, const Liqui
   }
   return result + ']';
 }
+// Include the owners of every active snow stencil and a block of drift
+// clearance. The dry step checks actual support on every accepted advance.
+absl::StatusOr<SparseMacGrid3D> SnowFrameGrid(
+    UniformMacGeometry3D geometry,
+    std::span<const PlasticSolidCheckpointParticle3D> particles,
+    std::size_t block_capacity
+) {
+  const auto key = [](BlockIndex3D block) {
+    return std::tuple{block.z, block.y, block.x};
+  };
+  std::vector<BlockIndex3D> blocks;
+  for (const auto& particle : particles) {
+    const auto position = particle.transfer.sorted_world_position;
+    for (const auto axis : {FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ}) {
+      const auto stencil = BuildMacFaceGeometryStencil3D(geometry, axis, position, position);
+      if (!stencil.ok()) {
+        return stencil.status();
+      }
+      for (const auto& sample : *stencil) {
+        const auto owner = MacOwnerBlock3D(sample.face_index.lattice_index);
+        for (int z = -1; z <= 1; ++z) {
+          for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+              const BlockIndex3D block{owner.x + x, owner.y + y, owner.z + z};
+              const auto found = std::ranges::lower_bound(blocks, key(block), {}, key);
+              if (found != blocks.end() && key(*found) == key(block)) {
+                continue;
+              }
+              if (blocks.size() == block_capacity) {
+                return absl::ResourceExhaustedError("snow frame block capacity");
+              }
+              blocks.insert(found, block);
+            }
+          }
+        }
+      }
+    }
+  }
+  return SparseMacGrid3D::Create(geometry, blocks, block_capacity);
+}
+
 // Compare regenerated point bytes with the committed manifest for preview or replay.
 // Intermediate frames may lack a publication. Replay requires its final frame.
 absl::Status
-VerifyCommittedPointFrame(const LiquidCache3D& cache, const LiquidState3D& state, bool require_publication) {
-  auto committed_frame = cache.ReadCommittedFrame(state.clock.frame_ordinal);
+VerifyCommittedPointFrame(const LiquidCache3D& cache, const LiquidPointFrame3D& points, bool require_publication) {
+  auto committed_frame = cache.ReadCommittedFrame(points.clock.frame_ordinal);
   if (!committed_frame.ok()) {
     return !require_publication && absl::IsNotFound(committed_frame.status()) ? absl::OkStatus()
                                                                               : committed_frame.status();
   }
-  auto points = BuildLiquidPointFrame3D(state);
-  if (!points.ok()) {
-    return points.status();
-  }
-  auto bytes = EncodeLiquidPointFrame3D(*points);
+  auto bytes = EncodeLiquidPointFrame3D(points);
   if (!bytes.ok()) {
     return bytes.status();
   }
@@ -614,22 +652,23 @@ absl::StatusOr<std::string> ExecuteCommand(
     return absl::UnavailableError("");
   }
 #endif
-  if (scene.model_version == kPlasticBodyResolvedModel3D) {
-    if (!command.initial_state_path.empty()) {
-      diagnostic->field = "initial_state";
-      diagnostic->cause = "mixed initial state does not match the resolved scene";
-      const auto bytes = liquid_cache_files_internal::ReadBytes(command.initial_state_path, {});
-      if (!bytes.ok()) {
-        return bytes.status();
-      }
-      const auto initial = DecodeResolvedCoupledInitialState3D(scene.View(), bytes->values(), {});
-      if (!initial.ok()) {
-        return initial.status();
-      }
+  const bool mixed = scene.model_version == kPlasticBodyResolvedModel3D;
+  const SnowParameters3D* snow_parameters = nullptr;
+  if (mixed) {
+    const auto bindings = scene.plastic_bodies.values();
+    const auto* platen = std::get_if<TranslatingHalfspace3D>(&scene.scene.obstacle);
+    const bool vertical_platen = platen != nullptr && platen->unit_normal.x == 0 && platen->unit_normal.y == -1
+        && platen->unit_normal.z == 0 && platen->wall_velocity.x == 0 && platen->wall_velocity.z == 0;
+    const bool supported_obstacle = vertical_platen || std::holds_alternative<std::monostate>(scene.scene.obstacle);
+    if (bindings.size() == 1) {
+      snow_parameters = std::get_if<SnowParameters3D>(&bindings.front().material);
     }
-    diagnostic->field = "scene";
-    diagnostic->cause = "resolved plastic bodies require a coupled liquid-solid scheduler";
-    return absl::FailedPreconditionError("");
+    if (snow_parameters == nullptr || !supported_obstacle || scene.options.motion_sample_intervals != 0
+        || scene.options.ocean_boundary || scene.scene.cavity) {
+      diagnostic->field = "scene";
+      diagnostic->cause = "mixed execution requires one snow body, a uniform grid and an optional vertical platen";
+      return absl::UnimplementedError("");
+    }
   }
   for (const auto& upstream : scene.upstream.values()) {
     if (upstream.role != LiquidUpstreamRole3D::kInitialParticles) {
@@ -654,15 +693,28 @@ absl::StatusOr<std::string> ExecuteCommand(
     return target_time.status();
   }
   std::optional<LiquidState3D> initial;
+  std::optional<SolidInteractionCheckpoint3D> solid;
   if (!command.initial_state_path.empty()) {
     diagnostic->field = "initial-state";
-    diagnostic->cause =
-        "initial FLST does not match exact upstream identity, geometry, seed, sources or frame-zero clock";
-    auto decoded = ReadInitialState(command, scene.View());
-    if (!decoded.ok()) {
-      return decoded.status();
+    diagnostic->cause = "initial state does not match the resolved upstream identity and frame-zero clock";
+    if (mixed) {
+      const auto bytes = liquid_cache_files_internal::ReadBytes(command.initial_state_path, {});
+      if (!bytes.ok()) {
+        return bytes.status();
+      }
+      auto decoded = DecodeResolvedCoupledInitialState3D(scene.View(), bytes->values(), {});
+      if (!decoded.ok()) {
+        return decoded.status();
+      }
+      initial = std::move(decoded->liquid);
+      solid = std::move(decoded->solid);
+    } else {
+      auto decoded = ReadInitialState(command, scene.View());
+      if (!decoded.ok()) {
+        return decoded.status();
+      }
+      initial = std::move(*decoded);
     }
-    initial = std::move(*decoded);
   }
   std::error_code error;
   const bool exists = std::filesystem::exists(command.cache_directory, error);
@@ -754,6 +806,7 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (checkpoint.ok()) {
       starting_state = std::move(checkpoint->state);
       resume = checkpoint->resume;
+      solid = std::move(checkpoint->solid);
       loaded_checkpoint = true;
     } else if (!absl::IsNotFound(checkpoint.status()) || !initial) {
       return checkpoint.status();
@@ -763,6 +816,9 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (!initial) {
       diagnostic->field = "initial-state";
       diagnostic->cause = "a verified frame-zero upstream state is required for reconstruction";
+      if (mixed) {
+        return absl::FailedPreconditionError("verified initial mixed state is required");
+      }
       auto decoded = ReadInitialState(command, scene.View());
       if (!decoded.ok()) {
         return decoded.status();
@@ -803,6 +859,20 @@ absl::StatusOr<std::string> ExecuteCommand(
     return absl::InvalidArgumentError("effects capture requires a contiguous point-frame range");
   }
   const bool adaptive_mode = starting_state.adaptive_cells.size() != 0;
+  if (mixed) {
+    if (!solid || solid->plastic_particles.empty() || !solid->bodies.empty() || !solid->sides.empty()
+        || !solid->elastic_particles.empty() || adaptive_mode) {
+      return absl::FailedPreconditionError("mixed execution requires a uniform snow and liquid checkpoint");
+    }
+    const auto grid = SnowFrameGrid(scene.geometry, solid->plastic_particles, kCapacities.blocks);
+    if (!grid.ok()) {
+      return grid.status();
+    }
+    const auto points = BuildCoupledPointFrame3D(starting_state, *solid);
+    if (!points.ok()) {
+      return points.status();
+    }
+  }
   if (adaptive_mode && !loaded_checkpoint) {
     resume.capacities = {
         .particles = starting_state.particles.size(),
@@ -980,12 +1050,12 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (!cache) {
       return absl::OkStatus();
     }
-    if (!publish) {
-      EXEC_TRY(VerifyCommittedPointFrame(*cache, *state, replay && state->clock.frame_ordinal == target_frame));
-    }
-    auto points = BuildLiquidPointFrame3D(*state);
+    auto points = solid ? BuildCoupledPointFrame3D(*state, *solid) : BuildLiquidPointFrame3D(*state);
     if (!points.ok()) {
       return points.status();
+    }
+    if (!publish) {
+      EXEC_TRY(VerifyCommittedPointFrame(*cache, *points, replay && state->clock.frame_ordinal == target_frame));
     }
     if (source_cache) {
       const auto point_bytes = EncodeLiquidPointFrame3D(*points);
@@ -1053,7 +1123,13 @@ absl::StatusOr<std::string> ExecuteCommand(
     if (state->clock.frame_ordinal != 0) {
       EXEC_TRY(job.CheckForJobStopRequest());
     }
-    EXEC_TRY(cache->PublishFrame(*points, checkpoint ? state : nullptr, checkpoint ? &resume : nullptr));
+    EXEC_TRY(cache->PublishFrame(
+        *points,
+        checkpoint ? state : nullptr,
+        checkpoint ? &resume : nullptr,
+        {},
+        checkpoint && solid ? &*solid : nullptr
+    ));
     std::string measurements;
 #if defined(FLUIDITY_SIMULATE_CUDA)
     if (cuda_backend) {
@@ -1112,7 +1188,32 @@ absl::StatusOr<std::string> ExecuteCommand(
       observations.previous_accepted_time_seconds = scheduler->committed().clock.time;
     }
     const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
-    const auto advanced = scheduler->AdvanceFrame(*time, observer);
+    const auto advanced = [&]() -> absl::Status {
+      if (!solid) {
+        return scheduler->AdvanceFrame(*time, observer);
+      }
+      const auto grid = SnowFrameGrid(scene.geometry, solid->plastic_particles, kCapacities.blocks);
+      if (!grid.ok()) {
+        return grid.status();
+      }
+      const auto& binding = scene.plastic_bodies.values().front();
+      const LiquidSnowStepInputs3D snow{
+          .solid_grid = *grid,
+          .accepted_particles = solid->plastic_particles,
+          .body_id = binding.body_id,
+          .material_id = binding.material_id,
+          .snow = *snow_parameters,
+          .solid_step = {.gravity_y = scene.scene.world_acceleration.y, .acoustic_cfl = 0.25},
+          .support_radius = 0.875 * scene.geometry.cell_width,
+      };
+      const auto status = scheduler->AdvanceFrameWithSnow(*time, snow, solid->plastic_particles, observer);
+      solid->accepted_step = scheduler->committed().clock.accepted_step_ordinal;
+      if (!status.ok()) {
+        diagnostic->cause = "joint snow frame failed at physical stage "
+            + std::to_string(static_cast<int>(scheduler->diagnostics().failed_stage));
+      }
+      return status;
+    }();
     if (measurement && advanced.ok()) {
       measurement->settled_attempt_count +=
           scheduler->committed().clock.accepted_step_ordinal - accepted_steps_before_frame;
@@ -1274,6 +1375,8 @@ absl::Status ExecuteRigidBoxFrame(
     *initial = std::move(restored->liquid);
   }
 
+  std::size_t pressure_transfer_steps = 0;
+  std::size_t unsupported_pressure_transfer_steps = 0;
   const auto emit_pose = [&](std::string_view event, const LiquidClock3D& clock) {
     const auto vector = [](Vec3 value) {
       return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
@@ -1283,15 +1386,49 @@ absl::Status ExecuteRigidBoxFrame(
         event,
         ClockMembers(clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
             + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
+            + (inspect ? ""
+                       : ",\"pressure_transfer_steps\":" + std::to_string(pressure_transfer_steps)
+                       + ",\"unsupported_pressure_transfer_steps\":"
+                       + std::to_string(unsupported_pressure_transfer_steps))
     );
   };
   if (inspect) {
     return emit_pose("rigid_inspect", initial->clock);
   }
 
+  const auto view = scene->View().scene;
+  if (previous.empty() && view.constituent_materials.size() == 1 && initial->particles.size() != 0) {
+    const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&view.obstacle);
+    const auto* surface = std::get_if<LiquidHorizontalPlaneSurface3D>(&view.field);
+    if (tank == nullptr || surface == nullptr) {
+      return absl::FailedPreconditionError("authored rigid seed volume requires a planar tank");
+    }
+    const auto submerged =
+        ComputeRigidBoxSubmergedVolume3D({body.center, body.orientation}, extent, surface->world_surface_height_y);
+    if (!submerged.ok()) {
+      return submerged.status();
+    }
+    const double tank_volume = (tank->high_x - tank->start_low_x) * (tank->high_z - tank->low_z)
+        * (surface->world_surface_height_y - tank->floor_y);
+    double authored_volume = 0.0;
+    for (const auto& particle : initial->particles.values()) {
+      authored_volume += particle.reference_volume;
+    }
+    const double volume_scale = (tank_volume - *submerged) / authored_volume;
+    if (!std::isfinite(authored_volume) || !std::isfinite(volume_scale) || volume_scale <= 0.0) {
+      return absl::FailedPreconditionError("authored rigid seed volume cannot represent the wet tank");
+    }
+    // In a planar tank the fill height determines the liquid volume. The
+    // source boxes determine seed positions and their relative volume weights.
+    for (auto& particle : initial->particles.values()) {
+      particle.mass *= volume_scale;
+      particle.reference_volume *= volume_scale;
+    }
+  }
+
   auto options = scene->options;
   options.capacities = kCapacities;
-  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, scene->View().scene, options);
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, view, options);
   if (!scheduler.ok()) {
     return scheduler.status();
   }
@@ -1314,6 +1451,11 @@ absl::Status ExecuteRigidBoxFrame(
         return step.status();
       }
       if (step->body) {
+        if (step->oriented_loads && step->oriented_loads->particle_pressure_impulse) {
+          ++pressure_transfer_steps;
+        } else if (scheduler->committed().particles.size() != 0) {
+          ++unsupported_pressure_transfer_steps;
+        }
         previous_pose = {body.center, body.orientation};
         body = *step->body;
         break;
