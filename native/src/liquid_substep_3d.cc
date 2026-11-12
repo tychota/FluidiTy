@@ -1704,9 +1704,11 @@ struct LiquidSubstepScheduler3D::Impl {
       if ((coupled_piston || floating_box != nullptr) && active_viscosity) {
         return Error(absl::StatusCode::kFailedPrecondition);
       }
-      std::vector<MacPressureFace3D> snow_pressure_faces;
+      // MSVC Debug vectors allocate iterator metadata even when empty.
+      // Only the snow path owns these buffers.
+      std::optional<std::vector<MacPressureFace3D>> snow_pressure_faces;
       std::optional<PlasticSolidPressureMobility3D> snow_mobility;
-      std::vector<double> coupled_snow_flux;
+      std::optional<std::vector<double>> coupled_snow_flux;
       if (snow_samples && active_viscosity) {
         return absl::UnimplementedError("sampled snow pressure mobility requires inviscid liquid");
       }
@@ -1730,15 +1732,16 @@ struct LiquidSubstepScheduler3D::Impl {
           return flux.status();
         }
         snow_mobility = std::move(*mobility);
-        coupled_snow_flux = std::move(*flux);
-        snow_pressure_faces.assign(pressure_problem.faces.begin(), pressure_problem.faces.end());
-        for (std::size_t index = 0; index < snow_pressure_faces.size(); ++index) {
-          auto& face = snow_pressure_faces[index];
-          if (coupled_snow_flux[index] != 0) {
-            face.prescribed_wall_flux = face.prescribed_wall_flux.value_or(0) + coupled_snow_flux[index];
+        coupled_snow_flux.emplace(std::move(*flux));
+        snow_pressure_faces.emplace(pressure_problem.faces.begin(), pressure_problem.faces.end());
+        for (std::size_t index = 0; index < snow_pressure_faces->size(); ++index) {
+          auto& face = (*snow_pressure_faces)[index];
+          const auto wall_flux = (*coupled_snow_flux)[index];
+          if (wall_flux != 0) {
+            face.prescribed_wall_flux = face.prescribed_wall_flux.value_or(0) + wall_flux;
           }
         }
-        pressure_problem.faces = snow_pressure_faces;
+        pressure_problem.faces = *snow_pressure_faces;
       }
       if (!active_viscosity) {
         auto pressure_options = options.pressure_solver_options;
@@ -2153,7 +2156,7 @@ struct LiquidSubstepScheduler3D::Impl {
         STEP_TRY(snow_mobility->VerifyProjectedFlux(
             projected_cell_pressures,
             scene.ambient_pressure,
-            coupled_snow_flux,
+            *coupled_snow_flux,
             frozen->cells
         ));
         auto staged = StagePlasticSolidPressureLoads3D(
