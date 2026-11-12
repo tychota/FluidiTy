@@ -3,6 +3,7 @@
 #include <array>
 
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
+#include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/plastic_solid_checkpoint_3d.h"
 
@@ -68,6 +69,17 @@ absl::StatusOr<std::vector<DrySolidParticle3D>> StagePressureLoadedSnowParticles
     const SnowParameters3D& snow,
     double cell_width,
     std::span<const PlasticSolidPressureImpulse3D> loads
+);
+
+// Stages pressure impulses for all blocked faces in frozen slot order.
+// Solved pressures are in frozen cell order, in Pa. Missing fluid
+// endpoints use the supplied physical exterior pressure, in the same
+// gauge. An inconsistent face or pressure extent rejects the entire batch.
+absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolidPressureLoads3D(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    const PlasticSolidBoundarySamples3D& samples,
+    std::span<const double> solved_cell_pressures,
+    double exterior_pressure
 );
 
 }  // namespace fluidity
