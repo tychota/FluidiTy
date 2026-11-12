@@ -916,6 +916,20 @@ zero cut work for zero stress. Cut work measures the difference between
 the complete pre-contact deformation field and the normalized stress
 deposition. It does not include work from the subsequent particle sweep.
 
+The 1.50 s native sweep gives the following results at both timesteps.
+The vertical momentum and late-drift bounds still pass. The coarse
+half-step case enters the angle window. The other three miss it.
+
+| h (m) | dt (s) | Envelope at 0.75 s | Envelope at 1.50 s | Late drift | Cut stress work (J) |
+|---|---:|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 35.186895° | 29.962967° | 0.114904° | -0.097516182 |
+| 0.075 | 0.0009375 | 42.374498° | 32.042153° | 0.400340° | 0.020710864 |
+| 0.0625 | 0.0015625 | 32.361234° | 27.424648° | 0.223715° | -0.111295504 |
+| 0.0625 | 0.00078125 | 37.170504° | 29.277572° | 0.354377° | -0.026814291 |
+
+The measured slope remains sensitive to the timestep and the stopping
+time. The floor path remains opt-in, and Q-SAND remains open.
+
 ~~~powershell
 .\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-compatible-floor
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor
