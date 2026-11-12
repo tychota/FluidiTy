@@ -1258,9 +1258,39 @@ absl::Status ExecuteRigidBoxFrame(
     return emit_pose("rigid_inspect", initial->clock);
   }
 
+  const auto view = scene->View().scene;
+  if (previous.empty() && view.constituent_materials.size() == 1 && initial->particles.size() != 0) {
+    const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&view.obstacle);
+    const auto* surface = std::get_if<LiquidHorizontalPlaneSurface3D>(&view.field);
+    if (tank == nullptr || surface == nullptr) {
+      return absl::FailedPreconditionError("authored rigid seed volume requires a planar tank");
+    }
+    const auto submerged =
+        ComputeRigidBoxSubmergedVolume3D({body.center, body.orientation}, extent, surface->world_surface_height_y);
+    if (!submerged.ok()) {
+      return submerged.status();
+    }
+    const double tank_volume = (tank->high_x - tank->start_low_x) * (tank->high_z - tank->low_z)
+        * (surface->world_surface_height_y - tank->floor_y);
+    double authored_volume = 0.0;
+    for (const auto& particle : initial->particles.values()) {
+      authored_volume += particle.reference_volume;
+    }
+    const double volume_scale = (tank_volume - *submerged) / authored_volume;
+    if (!std::isfinite(authored_volume) || !std::isfinite(volume_scale) || volume_scale <= 0.0) {
+      return absl::FailedPreconditionError("authored rigid seed volume cannot represent the wet tank");
+    }
+    // In a planar tank the fill height determines the liquid volume. The
+    // source boxes determine seed positions and their relative volume weights.
+    for (auto& particle : initial->particles.values()) {
+      particle.mass *= volume_scale;
+      particle.reference_volume *= volume_scale;
+    }
+  }
+
   auto options = scene->options;
   options.capacities = kCapacities;
-  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, scene->View().scene, options);
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, view, options);
   if (!scheduler.ok()) {
     return scheduler.status();
   }

@@ -291,6 +291,49 @@ static absl::Status VisitRectangularPressurePatches(
   }
   return absl::OkStatus();
 }
+absl::StatusOr<double>
+ComputeRigidBoxSubmergedVolume3D(RigidBodyPose3D pose, Vec3 body_half_extent, double liquid_height) {
+  const auto valid_pose = ValidateRigidBodyPose3D(pose);
+  if (!valid_pose.ok()) {
+    return valid_pose;
+  }
+  if (!IsFinite(body_half_extent) || body_half_extent.x <= 0 || body_half_extent.y <= 0 || body_half_extent.z <= 0
+      || !std::isfinite(liquid_height)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  namespace clip = boundary_internal;
+  const auto offset = clip::HorizontalPlaneLatticeDistance(liquid_height, {pose.center.y, 0.0, 1.0});
+  const double full_volume = (2 * body_half_extent.x) * (2 * body_half_extent.y) * (2 * body_half_extent.z);
+  if (!offset.ok() || !std::isnormal(full_volume)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto orientation = pose.orientation;
+  const auto normal = Rotate({orientation.w, Scale(-1.0, orientation.vector)}, {0.0, 1.0, 0.0});
+  const clip::ClippingPlane waterplane{{normal.x, normal.y, normal.z}, -*offset};
+  const auto extent = clip::CartesianComponents(body_half_extent);
+  std::array<clip::ClippingVertex, 8> corners{};
+  for (std::size_t corner = 0; corner < corners.size(); ++corner) {
+    for (std::size_t axis = 0; axis < extent.size(); ++axis) {
+      corners[corner].cell_width_position[axis] = ((corner >> axis) & 1) ? extent[axis] : -extent[axis];
+    }
+  }
+  constexpr int kPermutations[6][3]{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+  double submerged_volume = 0.0;
+  for (const auto& permutation : kPermutations) {
+    const auto a = corners[0];
+    const auto b = corners[std::size_t{1} << permutation[0]];
+    const auto c = corners[(std::size_t{1} << permutation[0]) | (std::size_t{1} << permutation[1])];
+    const auto d = corners[7];
+    const clip::ClippingPolyhedron tetrahedron{{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}};
+    submerged_volume += clip::ComputeClippedVolume(clip::ClipPolyhedron(tetrahedron, waterplane), 1.0);
+  }
+  if (!std::isfinite(submerged_volume)
+      || submerged_volume / full_volume > 1.0 + 256.0 * std::numeric_limits<double>::epsilon()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return std::min(submerged_volume, full_volume);
+}
+
 absl::Status VisitStationaryTankPressurePatches3D(
     std::uint64_t tank_id,
     const AxisAlignedLiquidTank3D& tank,

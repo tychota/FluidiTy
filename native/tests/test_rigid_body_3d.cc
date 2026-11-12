@@ -374,6 +374,20 @@ TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
   EXPECT_DOUBLE_EQ(body_power + 8.0 * (*fluxes)[1], 0.0);
   EXPECT_EQ(ComputeRigidBodyInwardWallFlux3D(body, 1, patches).status().code(), absl::StatusCode::kInvalidArgument);
 }
+TEST(RigidBody3D, SubmergedVolumeMatchesTiltedBoxPrism) {
+  const RigidBodyPose3D pose{
+      .center = {0.5, 0.625, 0.5},
+      .orientation = {.w = std::sqrt(0.9), .vector = {0.0, 0.0, std::sqrt(0.1)}},
+  };
+  constexpr Vec3 kExtent{0.125, 0.125, 0.125};
+  const auto wet = ComputeRigidBoxSubmergedVolume3D(pose, kExtent, 0.75);
+  ASSERT_TRUE(wet.ok()) << wet.status();
+  EXPECT_NEAR(*wet, 0.25 * 0.25 * 0.25 - 0.25 * 0.05 * 0.05 / (2 * 0.6 * 0.8), 1e-14);
+  const auto dry = ComputeRigidBoxSubmergedVolume3D(pose, kExtent, 0.0);
+  ASSERT_TRUE(dry.ok()) << dry.status();
+  EXPECT_DOUBLE_EQ(*dry, 0.0);
+}
+
 TEST(RigidBody3D, StationaryTankPressureUsesInteriorCellsAndFiveWetWalls) {
   constexpr AxisAlignedLiquidTank3D kTank{0, 2, 0, 0, 1, 0};
   constexpr std::array<CellIndex3D, 2> kCells{{{0, 0, 0}, {1, 0, 0}}};

@@ -1431,10 +1431,9 @@ struct LiquidSubstepScheduler3D::Impl {
           const double full_displaced_mass = 8.0 * extent.x * extent.y * extent.z * scene.liquid_density;
           // A small rigid mass amplifies pressure residuals in the twist
           // solve. Refine the inner response in that inertia regime.
-          if (floating_box->body.mass < 0.005 * full_displaced_mass) {
-            pressure_options.cpu_residual_tolerance_scale =
-                std::min(pressure_options.cpu_residual_tolerance_scale, 1e-6);
-          }
+          const double residual_scale = floating_box->body.mass < 0.005 * full_displaced_mass ? 1e-6 : 1e-3;
+          pressure_options.cpu_residual_tolerance_scale =
+              std::min(pressure_options.cpu_residual_tolerance_scale, residual_scale);
         }
         auto projection = backend.project(
             backend.context,

@@ -57,6 +57,12 @@ absl::Status ValidateRigidBody3D(const RigidBody3D& body);
 absl::StatusOr<RigidBody3D>
 AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec3 world_force);
 
+// Volume in m³ of a finite box below a horizontal world-y plane in meters.
+// Requires a finite pose with a unit orientation and positive half extents.
+// Malformed inputs return InvalidArgument. Unrepresentable geometry returns OutOfRange.
+absl::StatusOr<double>
+ComputeRigidBoxSubmergedVolume3D(RigidBodyPose3D pose, Vec3 body_half_extent, double liquid_height);
+
 struct AxisAlignedLiquidTank3D;
 
 struct RigidPressurePatch3D {

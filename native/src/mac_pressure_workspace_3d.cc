@@ -11,6 +11,7 @@
 #include <tuple>
 #include <utility>
 
+#include "fluidity/host/small_solve.h"
 #include "fluidity/host/viscosity.h"
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_pressure_3d_workspace_internal.h"
@@ -488,6 +489,58 @@ absl::StatusOr<MacPressureProjectionView3D> SolvePrepared(
       .diagnostics = {},
       .frozen_measurement = upload.frozen_measurement,
   };
+  // Rigid probes on small domains need a repeatable pressure response even
+  // when the FP32 correction cannot resolve the requested force accuracy.
+  // Assemble the gauge-reduced system using the original FP64 operator.
+  constexpr std::size_t kDensePressureCells = 16;
+  const auto unknowns = hierarchy->unknown_to_cell;
+  if (options.cpu_residual_tolerance_scale < 1.0 && system->cells().size() <= kDensePressureCells
+      && !unknowns.empty()) {
+    const std::size_t count = unknowns.size();
+    std::array<double, kDensePressureCells * kDensePressureCells> matrix{};
+    std::array<double, kDensePressureCells> basis{};
+    std::array<double, kDensePressureCells> reduced_rhs{};
+    std::array<double, kDensePressureCells> solution{};
+    std::array<FluxRow, kDensePressureCells> rows{};
+    for (std::size_t column = 0; column < count; ++column) {
+      basis[unknowns[column]] = 1.0;
+      const auto applied = ApplyOriginalPressureOperatorInto(
+          *system,
+          std::span(basis).first(pressures.size()),
+          std::span(rows).first(pressures.size())
+      );
+      if (!applied.ok()) {
+        return applied;
+      }
+      basis[unknowns[column]] = 0.0;
+      for (std::size_t row = 0; row < count; ++row) {
+        matrix[row * count + column] = rows[unknowns[row]].flux.Total();
+      }
+      reduced_rhs[column] = rhs[unknowns[column]];
+    }
+    SmallSolveWorkspace dense_workspace;
+    const auto solved = SolveSmallSpd(
+        std::span(matrix).first(count * count),
+        std::span(reduced_rhs).first(count),
+        std::span(solution).first(count),
+        dense_workspace
+    );
+    if (solved.ok()) {
+      std::ranges::fill(pressures, 0.0);
+      for (std::size_t row = 0; row < count; ++row) {
+        pressures[unknowns[row]] = solution[row];
+      }
+      const auto evaluated = Evaluate(*system, pressures, velocities, residuals, defects, result.diagnostics, scratch);
+      if (!evaluated.ok()) {
+        return evaluated;
+      }
+      if (pressure_internal::MeetsMacPressureStoppingCriteria3D(result.diagnostics, *criteria)) {
+        result.diagnostics.iteration_count = 1;
+        result.diagnostics.multigrid_level_count = hierarchy->levels.size();
+        return result;
+      }
+    }
+  }
   const auto evaluate_correction = [&](std::span<const float> correction,
                                        std::size_t iterations) -> absl::StatusOr<MacPressureProjectionView3D> {
     std::ranges::copy(base_pressure, pressures.begin());
