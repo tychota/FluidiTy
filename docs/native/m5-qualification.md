@@ -1930,3 +1930,33 @@ and all fourteen CLI tests. The build includes the
 cmake --build out/build/m5-platen-integrated-clean --target fluidity_m5_dry_scene_tests fluidity_m5_planar_coupling_tests fluidity_m5_plastic_checkpoint_tests fluidity_m5_snow_compaction_tests fluidity_m5_contact_scatter_tests fluidity_m5_constitutive_tests fluidity_simulate fluidity_simulate_fixture
 ctest --test-dir out/build/m5-platen-integrated-clean -R '^M5.*\.native$|^SimulateCli' --no-tests=error --output-on-failure
 ```
+
+
+### Joint frame scheduling and retry
+
+[PR 105](https://github.com/tychota/FluidiTy/pull/105) landed at
+`8a936f6` after all 120 native and 29 SM120 scheduler tests passed.
+Hosted CI was queued at merge. The joint driver includes the snow
+acoustic limit in the existing liquid timestep calculation, publishes
+accepted snow before notifying the frame observer, and restores both
+materials before replaying a frame after capacity growth.
+
+The shared moving-platen fixture rejects a full 0.01 s attempt after
+both trials, then accepts two 0.005 s steps. The capacity fixture
+reduces the acoustic CFL to 0.0045, forcing the same half-step schedule,
+then injects capacity exhaustion after the first half-step. It checks
+that the replay observer sees the original liquid clock and original
+snow position and velocity. Both fixtures check nonpenetration and
+the completed-frame ordinal.
+
+```powershell
+cmake --build out/pr-m5-snow-frame/out/build/snow-frame-cpu --target fluidity_native_tests
+ctest --test-dir out/pr-m5-snow-frame/out/build/snow-frame-cpu -R '^LiquidSubstep3D\.' --no-tests=error --output-on-failure
+cmake --build out/pr-m5-snow-frame/out/build/snow-frame-sm120 --target fluidity_cuda_operator_tests
+ctest --test-dir out/pr-m5-snow-frame/out/build/snow-frame-sm120 -R '^CudaLiquidSubstep3D\.' --no-tests=error --output-on-failure
+```
+
+The model-2 CLI still rejects mixed execution. The authored gate needs
+the resolved snow settings and grid, a source-driven run through this
+frame driver, separate Blender material channels, and an authenticated
+restart comparison from a retained joint checkpoint.
