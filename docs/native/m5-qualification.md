@@ -823,6 +823,17 @@ cmake --build --preset windows-debug-cpu --target fluidity_native_tests fluidity
 ctest --preset windows-debug-cpu -R 'LiquidSubstep3D|RigidBody3D|M5DryScenes.native|LiquidCacheSchema.solid_interaction_checkpoint' --output-on-failure
 ```
 
+Follow-up trial commit aac27ed advances the compressed snow with the
+actual dry solver. A full-duration snow candidate moves and is discarded
+when liquid acceptance fails. The checkpoint after rejection matches the
+original version 2 envelope exactly. The retry advances both the
+uninterrupted and restored snow records over the accepted half-step.
+The resulting snow positions differ from the discarded full-duration
+candidate, and the two accepted envelopes match byte for byte.
+The focused native piston, legacy checkpoint, and M5 dry-scene checks
+all passed. The fixture stages a separate dry update and liquid pressure
+step. It exercises common checkpoint replay before reciprocal coupling.
+
 The host mixed-contact bridge applies a supplied face batch to liquid
 and plastic candidate records. It builds a separate global particle ID
 order so the stored liquid sort order and plastic record order are
