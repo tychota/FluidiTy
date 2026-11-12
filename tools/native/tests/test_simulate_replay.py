@@ -287,7 +287,8 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     initial_modes = (
         "initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level",
         "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-effects",
-        "graded-swell", "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous",
+        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous", "graded-swell",
+        "graded-width", "graded-width-stale",
     )
     initial = ["--initial-state", str(scene) + ".flst"] if mode in initial_modes else []
     return scene, initial
@@ -618,6 +619,54 @@ def graded_replay_case(executable, fixture, directory, backend, mode="graded-tan
     print(json.dumps({"adaptive_checkpoint": checkpoint["state_digest"], "backend": backend,
                       "frame": resumed["frame"], "interrupted_exit_code": exit_code, "mode": mode,
                       "state_digest": resumed["state_digest"]}, sort_keys=True))
+
+
+def graded_width_replay_case(executable, fixture, directory, backend):
+    directory.mkdir()
+    scene, initial = make_scene(executable, fixture, directory, backend, "graded-width")
+    cache = directory / "cache"
+    common = ["--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache]
+    frames = execute(executable, "run", *common, *initial, "--frame-end", 1, "--trace")
+    accepted = next(record for record in frames if record.get("substep") == 1)
+    assert accepted["cell_count"] == 19 and accepted["particle_count"] == 19, accepted
+    assert accepted["time_seconds"] == 0.005, accepted
+    endpoint = frames[-1]
+    assert endpoint["frame"] == 1 and endpoint["cell_count"] == 19, endpoint
+    assert len(list((cache / "checkpoints").glob("*.flcr"))) == 1
+    checkpoint = json.loads(subprocess.check_output([str(fixture), "checkpoint", str(cache)], text=True))
+    assert checkpoint["frame"] == 0 and checkpoint["capacities"] == [19, 0, 19, 160, 0], checkpoint
+    motion = json.loads(subprocess.check_output([str(fixture), "source-births", str(cache)], text=True))
+    assert motion["sample_count"] >= 2 and motion["last_accepted_step"] == endpoint["accepted_step"], motion
+    before = snapshot(cache)
+    # Frame zero's only retained checkpoint has five leaves. Both commands
+    # must reexecute the width action to reach these nineteen-leaf states.
+    for frame, substep, expected in [(0, 1, accepted), (1, 0, endpoint)]:
+        replay = invoke(executable, "replay", *common, "--frame", frame, "--substep", substep)
+        assert replay["cell_count"] == 19 and replay["state_digest"] == expected["state_digest"], replay
+    assert snapshot(cache) == before
+    assert (cache / "effects" / "source" / "frames" / "00000000000000000001.flem").is_file()
+
+    stale_dir = directory / "stale"
+    stale_dir.mkdir()
+    stale_scene, stale_initial = make_scene(executable, fixture, stale_dir, backend, "graded-width-stale")
+    stale = invoke(executable, "run", "--stage", "simulate", "--scene", stale_scene, "--backend", backend,
+                   "--cache", stale_dir / "cache", *stale_initial, "--frame-end", 1, success=False)
+    assert stale["code"] == "E-SIMULATE-FAILED_PRECONDITION", stale
+    assert not (stale_dir / "cache" / "frames" / "00000000000000000001.flmf").exists()
+    foreign = invoke(executable, "replay", "--stage", "simulate", "--scene", stale_scene, "--backend", backend,
+                     "--cache", cache, "--frame", 1, "--substep", 0, success=False)
+    assert foreign["code"].endswith("FAILED_PRECONDITION"), foreign
+    assert snapshot(cache) == before
+    print(json.dumps({"width_backend": backend, "first_state": accepted["state_digest"],
+                      "completed_state": endpoint["state_digest"]}, sort_keys=True))
+
+
+def case_cpu_graded_width(executable, fixture, directory, cuda):
+    graded_width_replay_case(executable, fixture, directory / "width", "cpu")
+
+
+def case_cuda_graded_width(executable, fixture, directory, cuda):
+    graded_width_replay_case(executable, fixture, directory / "width", "cuda")
 
 
 def case_cpu_graded_replay(executable, fixture, directory, cuda):
@@ -1146,7 +1195,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "execution_validation", "cuda_execution", "cuda_replay", "cuda_mixed", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "cpu_graded_width", "cuda_graded_width", "execution_validation", "cuda_execution", "cuda_replay", "cuda_mixed", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

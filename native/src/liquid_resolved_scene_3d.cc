@@ -60,7 +60,51 @@ absl::Status CheckPlasticBodyCount(std::size_t body_count, LiquidCacheLimits3D l
   return absl::OkStatus();
 }
 
+constexpr std::uint32_t kAdaptiveWidthSceneVersion = 2;
+
+absl::Status ValidateAdaptiveWidthPlan(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
+  const auto actions = input.adaptive_width_actions;
+  if (actions.empty()) {
+    return input.adaptive_width_cell_capacity == 0 && input.adaptive_width_face_capacity == 0 ? absl::OkStatus()
+                                                                                              : Invalid();
+  }
+  if (actions.size() > limits.maximum_upstream_records || actions.size() > (1 << 20)
+      || input.adaptive_width_cell_capacity > limits.maximum_records.cells
+      || input.adaptive_width_cell_capacity > kMaximumAdaptiveLiquidCells3D
+      || input.adaptive_width_face_capacity > limits.maximum_records.faces
+      || input.adaptive_width_face_capacity > kMaximumAdaptiveLiquidFaces3D) {
+    return detail::Error(absl::StatusCode::kResourceExhausted);
+  }
+  if (input.model_version != kLiquidOnlyResolvedModel3D || input.adaptive_width_cell_capacity == 0
+      || input.adaptive_width_face_capacity == 0) {
+    return Invalid();
+  }
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
+  if (tank == nullptr || tank->piston_velocity_x != 0
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(input.scene.field)) {
+    return Invalid();
+  }
+  for (std::size_t index = 0; index < actions.size(); ++index) {
+    const auto& action = actions[index];
+    const auto& demand = action.demand;
+    if (!detail::ValidClock(action.accepted_clock) || action.accepted_state_digest == LiquidDigest3D{}
+        || (index != 0 && actions[index - 1].accepted_clock.epoch >= action.accepted_clock.epoch)
+        || action.leaf.width_exponent > 30 || !detail::Positive(action.maximum_step_duration_s)
+        || !detail::Positive(demand.maximum_width) || !(demand.physical_width > 0) || !(demand.interface_width > 0)
+        || !(demand.support_width > 0) || !(demand.camera_width > 0)) {
+      return Invalid();
+    }
+    const auto lower = action.leaf.lower_corner;
+    const std::int64_t width = std::int64_t{1} << action.leaf.width_exponent;
+    if (lower.x % width != 0 || lower.y % width != 0 || lower.z % width != 0) {
+      return Invalid();
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
+  SCENE_TRY(ValidateAdaptiveWidthPlan(input, limits));
   SCENE_TRY(CheckSceneRecordCounts(
       input.scene.sources.size(),
       input.upstream.size(),
@@ -428,6 +472,9 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
       .build_digest = build_digest,
       .upstream = upstream.values(),
       .plastic_bodies = plastic_bodies.values(),
+      .adaptive_width_actions = adaptive_width_actions.values(),
+      .adaptive_width_cell_capacity = adaptive_width_cell_capacity,
+      .adaptive_width_face_capacity = adaptive_width_face_capacity,
   };
   result.scene.sources = sources.values();
   result.scene.constituent_materials = constituent_materials.values();
@@ -444,7 +491,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
   const auto tables = 4 + 2 * input.scene.sources.size() + input.upstream.size() + (plane != nullptr)
       + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
-      tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size() + input.plastic_bodies.size(),
+      tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size() + input.plastic_bodies.size()
+          + (input.adaptive_width_actions.empty() ? 0 : 1 + input.adaptive_width_actions.size()),
       limits,
       wire::ResolvedSceneIdentifier(),
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::ResolvedScene>> {
@@ -728,12 +776,54 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           }
           plastic_bodies = *records;
         }
+        flatbuffers::Offset<wire::AdaptiveWidthPlan> width_plan;
+        if (!input.adaptive_width_actions.empty()) {
+          const auto actions = detail::BuildVector<wire::AdaptiveWidthAction>(
+              builder,
+              input.adaptive_width_actions.size(),
+              [&](std::size_t index) {
+                const auto& action = input.adaptive_width_actions[index];
+                auto accepted_clock = action.accepted_clock;
+                accepted_clock.time = detail::Canonical(accepted_clock.time);
+                const auto clock = detail::Pack(accepted_clock);
+                const auto digest = detail::Pack(action.accepted_state_digest);
+                const auto corner = action.leaf.lower_corner;
+                const wire::Index3 lower(corner.x, corner.y, corner.z);
+                const auto& demand = action.demand;
+                const wire::AdaptiveWidthBounds bounds(
+                    demand.physical_width,
+                    demand.interface_width,
+                    demand.support_width,
+                    demand.camera_width,
+                    demand.maximum_width
+                );
+                return wire::CreateAdaptiveWidthAction(
+                    builder,
+                    &clock,
+                    &digest,
+                    &lower,
+                    action.leaf.width_exponent,
+                    &bounds,
+                    action.maximum_step_duration_s
+                );
+              }
+          );
+          if (!actions.ok()) {
+            return actions.status();
+          }
+          width_plan = wire::CreateAdaptiveWidthPlan(
+              builder,
+              input.adaptive_width_cell_capacity,
+              input.adaptive_width_face_capacity,
+              *actions
+          );
+        }
         const auto origin = detail::PackCanonical(input.geometry.world_origin);
         const auto acceleration = detail::PackCanonical(scene.world_acceleration);
         const auto build = detail::Pack(input.build_digest);
         return wire::CreateResolvedScene(
             builder,
-            1,
+            width_plan.o == 0 ? 1 : kAdaptiveWidthSceneVersion,
             0,
             input.model_version,
             static_cast<wire::Backend>(input.backend),
@@ -750,14 +840,16 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             *upstream,
             constituent_materials,
             phase_pairs,
-            plastic_bodies
+            plastic_bodies,
+            width_plan
         );
       }
   );
 }
 absl::StatusOr<LiquidResolvedScene3D>
 DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto verified = detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits);
+  auto verified =
+      detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits, kAdaptiveWidthSceneVersion);
   if (!verified.ok()) {
     return verified.status();
   }
@@ -862,6 +954,41 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
   }
   SCENE_TRY(detail::Materialize(result->sources, root->sources(), ReadSource));
   SCENE_TRY(detail::Materialize(result->upstream, root->upstream(), ReadUpstream));
+  const auto* width_plan = root->adaptive_width_plan();
+  if ((root->schema_version() == kAdaptiveWidthSceneVersion) != (width_plan != nullptr)) {
+    return detail::Corrupt();
+  }
+  if (width_plan != nullptr) {
+    const auto* actions = width_plan->actions();
+    if (actions->size() == 0) {
+      return detail::Corrupt();
+    }
+    if (actions->size() > limits.maximum_upstream_records || actions->size() > (1 << 20)) {
+      return detail::Error(absl::StatusCode::kResourceExhausted);
+    }
+    result->adaptive_width_cell_capacity = width_plan->cell_capacity();
+    result->adaptive_width_face_capacity = width_plan->face_capacity();
+    SCENE_TRY(detail::Materialize(result->adaptive_width_actions, actions, [](const auto* action) {
+      const auto* demand = action->demand();
+      const auto* lower = action->lower_corner();
+      return LiquidAdaptiveWidthAction3D{
+          .accepted_clock = detail::Unpack(action->accepted_clock()),
+          .accepted_state_digest = detail::Unpack(action->accepted_state()),
+          .leaf = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = action->width_exponent()},
+          .demand =
+              {demand->physical_width_m(),
+               demand->interface_width_m(),
+               demand->support_width_m(),
+               demand->camera_width_m(),
+               demand->maximum_width_m()},
+          .maximum_step_duration_s = action->maximum_step_duration_s(),
+      };
+    }));
+    const auto valid = ValidateAdaptiveWidthPlan(result->View(), limits);
+    if (!valid.ok()) {
+      return absl::IsResourceExhausted(valid) ? valid : detail::Corrupt();
+    }
+  }
   return std::move(*result);
 }
 absl::StatusOr<LiquidDigest3D> ResolvedSceneFingerprint(LiquidResolvedSceneView3D scene, LiquidCacheLimits3D limits) {

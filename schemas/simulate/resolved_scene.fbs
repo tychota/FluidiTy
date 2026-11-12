@@ -129,6 +129,26 @@ table PlasticBodyBinding {
   granular:GranularPlasticMaterial (id:2);
   snow:SnowPlasticMaterial (id:3);
 }
+struct AdaptiveWidthBounds {
+  physical_width_m:double;
+  interface_width_m:double;
+  support_width_m:double;
+  camera_width_m:double;
+  maximum_width_m:double;
+}
+table AdaptiveWidthAction {
+  accepted_clock:Clock (required, id:0);
+  accepted_state:Digest (required, id:1);
+  lower_corner:Index3 (required, id:2);
+  width_exponent:ubyte (id:3);
+  demand:AdaptiveWidthBounds (required, id:4);
+  maximum_step_duration_s:double (id:5);
+}
+table AdaptiveWidthPlan {
+  cell_capacity:uint (id:0);
+  face_capacity:uint (id:1);
+  actions:[AdaptiveWidthAction] (required, id:2);
+}
 table ResolvedScene {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -148,6 +168,7 @@ table ResolvedScene {
   constituent_materials:[ConstituentMaterial] (id:15);
   liquid_phase_pairs:[LiquidPhasePair] (id:16);
   plastic_bodies:[PlasticBodyBinding] (id:17);
+  adaptive_width_plan:AdaptiveWidthPlan (id:18);
 }
 root_type ResolvedScene;
 file_identifier "FLRS";
