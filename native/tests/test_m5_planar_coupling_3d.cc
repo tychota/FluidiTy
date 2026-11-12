@@ -703,6 +703,71 @@ bool TestPlanarMixedContactDetection() {
     std::fprintf(stderr, "M5 inconsistent wall pose: %s\n", rejected_stale_wall.status().ToString().c_str());
     return false;
   }
+  auto high_wall_snow = deforming_snow;
+  for (auto& particle : high_wall_snow) {
+    particle.transfer.trial_world_position.x = -1 - particle.transfer.trial_world_position.x;
+    particle.transfer.particle_velocity.x = -particle.transfer.particle_velocity.x;
+  }
+  auto high_wall_settings = deformation_settings;
+  high_wall_settings.wall_on_low_face = false;
+  // The water starts at x = -0.5 m, the reflection plane of the unit cell.
+  const auto high_wall_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      high_wall_snow,
+      single_traction,
+      high_wall_settings,
+      project
+  );
+  if (!high_wall_frame.ok()) {
+    std::fprintf(stderr, "M5 high-wall compression: %s\n", high_wall_frame.status().ToString().c_str());
+    return false;
+  }
+  if (high_wall_frame->snow.size() != high_wall_snow.size()
+      || std::abs(high_wall_frame->liquid.particles[0].world_position.x + 0.625) > 1e-12
+      || std::abs(high_wall_frame->liquid.cells[0].previous_pressure - 12) > 1e-12
+      || std::abs(high_wall_frame->snow[0].transfer.trial_world_position.x + 0.25) > 1e-12
+      || std::abs(high_wall_frame->snow[1].transfer.trial_world_position.x + 0.0625) > 1e-12) {
+    return false;
+  }
+  for (const auto& particle : high_wall_frame->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - 0.975) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 0.75) > 1e-12) {
+      return false;
+    }
+  }
+  high_wall_settings.snow_layer_material.reset();
+  const auto rejected_high_wall = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      high_wall_snow,
+      rear_traction,
+      high_wall_settings,
+      project
+  );
+  if (rejected_high_wall.status().message() != "planar pressure wall disagrees with the advected snow front"
+      || accepted_liquid.clock.time != 0 || high_wall_snow[0].transfer.trial_world_position.x != -0.125
+      || high_wall_snow[1].transfer.trial_world_position.x != 0.125) {
+    return false;
+  }
+  auto retreating_snow = deforming_snow[0];
+  retreating_snow.transfer.particle_velocity.x = -12;
+  auto retreat_settings = stale_wall_settings;
+  retreat_settings.maximum_path_length = 1;
+  const auto rejected_retreat = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&retreating_snow, 1},
+      single_traction,
+      retreat_settings,
+      project
+  );
+  if (rejected_retreat.status().message() != "planar snow front is outside the selected wall cell"
+      || accepted_liquid.clock.time != 0 || retreating_snow.transfer.trial_world_position.x != -0.875) {
+    std::fprintf(stderr, "M5 wall retreat past its cell: %s\n", rejected_retreat.status().ToString().c_str());
+    return false;
+  }
   auto middle = deforming_snow[1];
   middle.particle_id = 5;
   middle.transfer.trial_world_position.x = -1;

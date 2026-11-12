@@ -1436,6 +1436,14 @@ tolerance, plus 1e-10 cell widths. The rear-only traction regression
 previously accepted a moving liquid wall while the foremost snow particle
 stayed still. Native and CUDA now reject that frame and preserve the inputs.
 
+The high-face reflection also gives 12 Pa, a 0.975 elastic Jacobian,
+and a 0.75 combined Jacobian. The reflected liquid and snow positions
+agree with their analytic coordinates to 1e-12 m. The rear-only traction
+case rejects with either orientation. A separate low-face test sets
+the initial front speed to -12 m/s. The liquid stays in its pressure
+cell but the snow wall retreats past the low face on the last substep.
+Both backends reject and preserve the input states.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest
