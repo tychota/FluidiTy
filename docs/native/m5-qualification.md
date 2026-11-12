@@ -4265,3 +4265,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Limit tangent affine deposit only on cut support
+
+Apply the component-wise translation limit and the face-motion
+limit only to tangent stencils with a positive-weight sample
+outside the structurally eligible floor support. Retain the
+gathered tangent affine rows as in the other deposit limiter
+controls. Both default dry-scene tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 30.681116° | 0.173318 m |
+| Coarse half-step | 36.931411° | 0.166094 m |
+| Fine | 26.197639° | 0.172307 m |
+| Fine half-step | 30.522757° | 0.168428 m |
+
+Every radius exceeds 0.16 m. Restricting the limiter to cut
+support keeps the runs within the motion and grid bounds but
+loses both fine-grid passes of the clearing candidate. The
+maximum absolute vertical momentum residual is 9.42e-9 N·s.
+The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-cut-limit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
