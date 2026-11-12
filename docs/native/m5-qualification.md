@@ -396,6 +396,29 @@ envelope remains outside the window at 29.903758° on CPU and 29.990626°
 on CUDA. The other three envelope cases are inside. This does not close
 Q-SAND, and the production default still uses PIC.
 
+### Matched native and CUDA deposition precision
+
+The nominal fine-grid cone at energy setting 0.6 differed between the
+native floating-point path and the CUDA quantized path. The quantization
+control uses the native quantized MAC deposit with the CUDA scales, then
+uses the native gather and the same dry-step acceptance. A second run
+decreases both quanta by 256. The default production paths are unchanged.
+
+| Deposit path | Mass quantum (kg) | Momentum quantum (kg m/s) | Envelope |
+|---|---:|---:|---:|
+| Native floating point | — | — | 29.903758° |
+| Native integer | 2^-42 | 2^-38 | 29.990626° |
+| CUDA integer | 2^-42 | 2^-38 | 29.990626° |
+| Native integer | 2^-50 | 2^-46 | 29.990626° |
+| CUDA integer | 2^-50 | 2^-46 | 29.990626° |
+
+Native and CUDA printed identical angle, contact-count, and momentum
+diagnostics at each matched scale. The vertical momentum gate passed
+in every run. This identifies deposit arithmetic as the source of the
+observed native/CUDA split in this comparison. Finer quanta alone do
+not move the quantized result into the window. Matching these operators
+does not establish general bitwise backend replay or close Q-SAND.
+
 ## Reproduction
 
 Use an x64 Visual Studio developer PowerShell. Set up the pinned Conan
@@ -442,6 +465,8 @@ cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-long-settle
 & ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-stored-only
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-stored-only
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-quantization
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-quantization
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources
