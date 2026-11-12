@@ -12,6 +12,7 @@
 
 #include "../src/mac_pressure_3d_multigrid.h"
 #include "../src/mac_pressure_3d_system.h"
+#include "../src/mac_pressure_3d_workspace_internal.h"
 #include "../src/mac_viscous_pressure_3d.h"
 #include "absl/status/status.h"
 #include "fluidity/host/mac_pressure_3d.h"
@@ -736,6 +737,53 @@ TEST(MacPressure3D, CoupledPressureHistoryKeepsWeakJumpScaleAndClearsZeroForcing
   }
   for (const double velocity : unforced->face_velocities) {
     EXPECT_DOUBLE_EQ(velocity, 0.0);
+  }
+}
+
+TEST(MacPressure3D, BoundedOriginalSystemMatchesOwningAndPreservesArenaOnFailure) {
+  auto problem = MakeAffineProblem(0, 2, true);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  const auto owning = PrepareMacPressureSystem3D({*grid, 1.0, problem.cells, problem.faces});
+  ASSERT_TRUE(owning.ok()) << owning.status();
+  std::array<std::max_align_t, 1024> backing{};
+  pressure_internal::MacPressureScratch3D scratch(backing);
+  const auto sentinel = scratch.Take<double>(1);
+  ASSERT_TRUE(sentinel.ok()) << sentinel.status();
+  sentinel->front() = 43.0;
+  const auto entry_cursor = scratch.used();
+
+  const auto rejected = pressure_internal::PrepareBoundedMacPressureSystem3D(
+      grid->view(),
+      1.0,
+      problem.cells,
+      std::span(problem.faces).first(problem.faces.size() - 1),
+      scratch
+  );
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(scratch.used(), entry_cursor);
+  EXPECT_DOUBLE_EQ(sentinel->front(), 43.0);
+
+  const auto borrowed =
+      pressure_internal::PrepareBoundedMacPressureSystem3D(grid->view(), 1.0, problem.cells, problem.faces, scratch);
+  ASSERT_TRUE(borrowed.ok()) << borrowed.status();
+  EXPECT_GT(scratch.used(), entry_cursor);
+  EXPECT_DOUBLE_EQ(sentinel->front(), 43.0);
+  EXPECT_TRUE(std::ranges::equal(borrowed->integrated_rhs(), owning->integrated_rhs()));
+  EXPECT_TRUE(std::ranges::equal(borrowed->rhs_absolute_term_sums(), owning->rhs_absolute_term_sums()));
+  EXPECT_TRUE(std::ranges::equal(borrowed->component_ordinals(), owning->component_ordinals()));
+  EXPECT_TRUE(std::ranges::equal(borrowed->gauge_cell_ordinals(), owning->gauge_cell_ordinals()));
+  ASSERT_EQ(borrowed->links().size(), owning->links().size());
+  for (std::size_t face = 0; face < borrowed->links().size(); ++face) {
+    const auto& actual = borrowed->links()[face];
+    const auto& expected = owning->links()[face];
+    EXPECT_EQ(actual.face_slot, expected.face_slot);
+    EXPECT_EQ(actual.tail_cell_ordinal, expected.tail_cell_ordinal);
+    EXPECT_EQ(actual.head_cell_ordinal, expected.head_cell_ordinal);
+    EXPECT_DOUBLE_EQ(actual.open_area, expected.open_area);
+    EXPECT_DOUBLE_EQ(actual.conductance, expected.conductance);
+    EXPECT_DOUBLE_EQ(actual.prescribed_wall_flux, expected.prescribed_wall_flux);
   }
 }
 

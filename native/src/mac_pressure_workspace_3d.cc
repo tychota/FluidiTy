@@ -936,6 +936,24 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
 }
 }  // namespace
 
+absl::StatusOr<pressure_internal::PreparedMacPressureView3D> pressure_internal::PrepareBoundedMacPressureSystem3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+) {
+  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratchMark3D publication(scratch);
+  const auto system = Prepare({grid, step_duration, cells, faces}, scratch);
+  if (system.ok()) {
+    publication.KeepAllocations();
+  }
+  return system;
+}
+
 absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_internal::PrepareBoundedMacPressureUpload3D(
     SparseMacGridView3D grid,
     double step_duration,
@@ -944,12 +962,8 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
     MacPressureScratch3D& scratch,
     bool seed_uniform_dirichlet_rest_pressure
 ) {
-  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
-    return absl::Status(absl::StatusCode::kResourceExhausted, {});
-  }
   MacPressureScratchMark3D publication(scratch);
-  const BorrowedInputs inputs{grid, step_duration, cells, faces};
-  const auto system = Prepare(inputs, scratch);
+  const auto system = PrepareBoundedMacPressureSystem3D(grid, step_duration, cells, faces, scratch);
   if (!system.ok()) {
     return system.status();
   }

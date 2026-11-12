@@ -132,6 +132,19 @@ struct MacPressureHierarchyView3D {
 // hierarchy spans expire on arena rewind/reuse or backing-owner destruction.
 absl::StatusOr<MacPressureHierarchyView3D>
 BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacPressureScratch3D& scratch);
+// Freezes the checked uniform pressure coefficients and gauge incidence into
+// the caller's arena without constructing a hierarchy. Input ordering, units,
+// and status categories match ProjectMacPressure3D. Success appends borrowed
+// records until arena reuse. Failure rewinds to the entry mark. Inputs must
+// be disjoint from the unused arena suffix.
+absl::StatusOr<PreparedMacPressureView3D> PrepareBoundedMacPressureSystem3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+);
+
 // Checked assembly/hierarchy/warm-start view for a persistent device upload.
 // Requires 1..4096 unique signed-ordered cells, their exact incident face union
 // (1..24576 faces in owned-slot order), and positive finite seconds. Input units,
