@@ -240,4 +240,135 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
   return loads;
 }
 
+absl::StatusOr<std::vector<DrySolidParticle3D>> StagePressureLoadedSnowParticles3D(
+    std::span<const PlasticSolidCheckpointParticle3D> accepted,
+    std::uint64_t body_id,
+    std::uint64_t material_id,
+    const SnowParameters3D& snow,
+    double cell_width,
+    std::span<const PlasticSolidPressureImpulse3D> loads
+) {
+  if (!std::isfinite(cell_width) || cell_width <= 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  auto trial = RestoreDrySolidCheckpointParticles3D(accepted, body_id, material_id, snow);
+  if (!trial.ok()) {
+    return trial.status();
+  }
+
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  constexpr std::array kSlopeRows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  for (const auto& load : loads) {
+    const auto owner =
+        std::ranges::lower_bound(accepted, load.particle_id, {}, &PlasticSolidCheckpointParticle3D::particle_id);
+    if (owner == accepted.end() || owner->particle_id != load.particle_id || !Finite(load.impulse)
+        || !Finite(load.world_offset)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    auto& particle = (*trial)[static_cast<std::size_t>(owner - accepted.begin())];
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto component = kComponents[axis];
+      const double velocity_increment = (load.impulse.*component) / particle.mass;
+      particle.world_velocity.*component += velocity_increment;
+      auto& slope = particle.velocity_slopes.*kSlopeRows[axis];
+      for (const auto coordinate : kComponents) {
+        // The complete quadratic moment is I/4 in cell coordinates.
+        const double normalized_offset = (load.world_offset.*coordinate) / cell_width;
+        const double slope_increment = (4.0 * (velocity_increment * normalized_offset)) / cell_width;
+        slope.*coordinate += slope_increment;
+      }
+    }
+    const auto& slopes = particle.velocity_slopes;
+    if (!Finite(particle.world_velocity) || !Finite(slopes.x_row) || !Finite(slopes.y_row) || !Finite(slopes.z_row)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+  }
+  return std::move(*trial);
+}
+
+absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolidPressureLoads3D(
+    const FrozenLiquidBoundaryGeometryView3D& geometry,
+    const PlasticSolidBoundarySamples3D& samples,
+    std::span<const double> solved_cell_pressures,
+    double exterior_pressure
+) {
+  if (solved_cell_pressures.size() != geometry.cells.size() || !std::isfinite(exterior_pressure)
+      || !std::isfinite(geometry.step_duration) || geometry.step_duration <= 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto cell_key = [](const FrozenLiquidCell3D& cell) {
+    return CornerKey({cell.cell_index.x, cell.cell_index.y, cell.cell_index.z});
+  };
+  for (std::size_t i = 0; i < geometry.cells.size(); ++i) {
+    if (!std::isfinite(solved_cell_pressures[i])
+        || (i > 0 && cell_key(geometry.cells[i]) <= cell_key(geometry.cells[i - 1]))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+  std::size_t blocked_faces = 0;
+  for (std::size_t i = 0; i < geometry.faces.size(); ++i) {
+    const auto& face = geometry.faces[i];
+    if (!std::isfinite(face.blocked_area) || face.blocked_area < 0
+        || (i > 0 && face.face_slot <= geometry.faces[i - 1].face_slot)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    blocked_faces += face.blocked_area > 0;
+  }
+  if (blocked_faces > std::numeric_limits<std::size_t>::max() / 4) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  auto loads = LiquidRecords3D<PlasticSolidPressureImpulse3D>::Create(4 * blocked_faces);
+  if (!loads.ok()) {
+    return loads.status();
+  }
+  const auto extent = loads->Resize(4 * blocked_faces);
+  if (!extent.ok()) {
+    return extent;
+  }
+  const auto pressure_at = [&](const std::array<std::int32_t, 3>& cell) -> std::optional<double> {
+    const auto key = CornerKey({cell[0], cell[1], cell[2]});
+    const auto found = std::ranges::lower_bound(geometry.cells, key, {}, cell_key);
+    if (found == geometry.cells.end() || cell_key(*found) != key) {
+      return std::nullopt;
+    }
+    return solved_cell_pressures[static_cast<std::size_t>(found - geometry.cells.begin())];
+  };
+  std::size_t destination = 0;
+  for (const auto& face : geometry.faces) {
+    if (face.blocked_area == 0) {
+      continue;
+    }
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    if (axis >= 3) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    const auto lattice = face.face_index.lattice_index;
+    std::array<std::int32_t, 3> endpoint{lattice.x, lattice.y, lattice.z};
+    const auto head = pressure_at(endpoint);
+    std::optional<double> tail;
+    if (endpoint[axis] != std::numeric_limits<std::int32_t>::min()) {
+      --endpoint[axis];
+      tail = pressure_at(endpoint);
+    }
+    if (!head && !tail) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+    const auto face_loads = StagePlasticSolidPressureFace3D(
+        geometry.mac_grid,
+        samples,
+        face,
+        tail.value_or(exterior_pressure),
+        head.value_or(exterior_pressure),
+        geometry.step_duration
+    );
+    if (!face_loads.ok()) {
+      return face_loads.status();
+    }
+    for (const auto& load : *face_loads) {
+      loads->values()[destination++] = load;
+    }
+  }
+  return std::move(*loads);
+}
+
 }  // namespace fluidity
