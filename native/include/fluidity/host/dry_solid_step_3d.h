@@ -49,6 +49,7 @@ struct DrySolidStepBudget3D {
   std::size_t particle_wall_contacts = 0;  // Count of swept particle contacts.
   std::size_t granular_projected_particles = 0;  // Granular trials changed by the return above relative roundoff.
   std::size_t granular_plastic_volume_changes = 0;  // Granular returns changing log plastic volume above roundoff.
+  double particle_wall_kinetic_energy_change = 0;  // Signed translational kinetic energy change across the sweep, J.
 };
 
 // Advances a single dry body on a fixed uniform MAC layout with complete quadratic supports.

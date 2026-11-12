@@ -933,7 +933,39 @@ time. The floor path remains opt-in, and Q-SAND remains open.
 ~~~powershell
 .\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-compatible-floor
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle
 ~~~
+
+The dry-step budget now also measures the signed translational kinetic
+energy change across the particle contact sweep. The analytic fixture
+loses 0.875 J from a 1 J initial state. It passes on native and CUDA
+with either floor transfer. The two native 0.75 s compatible pile
+runs lose 1.66679019 J and 1.51219119 J through the sweep. These losses
+are separate from cut stress work and exclude affine kinetic energy.
+
+### Compatible PIC derivative control
+
+Temporarily replace the complete ghost derivative with the derivative
+of the normalized compatible PIC field. Keep the ghost APIC fit and
+particle sweep. The stress deposit and the tested deformation derivative
+then use the same weights, so the pre-contact cut-work mismatch vanishes
+to roundoff.
+
+| h (m) | dt (s) | Baseline 1.50 s envelope | Paired derivative 1.50 s envelope | Paired late dilation |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 29.962967° | 28.407709° | 0.005784775 |
+| 0.075 | 0.0009375 | 32.042153° | 31.915729° | 0.000471606 |
+| 0.0625 | 0.0015625 | 27.424648° | 26.082740° | 0.002049083 |
+| 0.0625 | 0.00078125 | 29.277572° | 29.126156° | 0.002037700 |
+
+These native runs met the momentum and late-drift checks. Late
+dilation fell in all four cases, but the final angles also fell and
+three cases still missed the gate. The production compatible path
+retains the complete derivative. To reproduce from 999366f, compute
+each deformation row as the sum of normalized weight gradient times
+face speed in the compatible PIC loop. Use that same row in the
+cut-work receipt and run the extended compatible floor command.
 
 ### Paired floor reflection and grid-reaction friction
 

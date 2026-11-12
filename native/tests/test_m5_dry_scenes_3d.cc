@@ -319,6 +319,7 @@ bool TestScene(
     total_budget.grid_wall_impulse_y += budget.grid_wall_impulse_y;
     total_budget.wall_impulse_on_particles.y += budget.wall_impulse_on_particles.y;
     total_budget.particle_wall_contacts += budget.particle_wall_contacts;
+    total_budget.particle_wall_kinetic_energy_change += budget.particle_wall_kinetic_energy_change;
     t = next_time;
   }
   double maximum_height = 0;
@@ -360,7 +361,11 @@ bool TestScene(
       total_budget.particle_wall_contacts
   );
   if (compatible_floor) {
-    std::printf("compatible floor total cut stress work_J=%.9g\n", total_budget.cut_stress_work);
+    std::printf(
+        "compatible floor cut stress work_J=%.9g wall particle kinetic change_J=%.9g\n",
+        total_budget.cut_stress_work,
+        total_budget.particle_wall_kinetic_energy_change
+    );
   }
   const double gravity_impulse_y = (snow ? 0.0 : -9.81) * (300 * volume * particles.size()) * time;
   const double vertical_residual = final_momentum_y - reset_impulse_y - gravity_impulse_y
@@ -468,7 +473,8 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
 #endif
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
-      && budget.grid_wall_impulse_y == 0 && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
+      && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
+      && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
       && budget.granular_plastic_volume_changes == 0;
 }
 
@@ -553,6 +559,7 @@ bool TestRollbackOnUnsupportedDestination() {
       .particle_wall_contacts = 42,
       .granular_projected_particles = 17,
       .granular_plastic_volume_changes = 9,
+      .particle_wall_kinetic_energy_change = -3,
   };
 #if defined(FLUIDITY_M5_CUDA_SCENES)
   const auto status =
@@ -561,8 +568,9 @@ bool TestRollbackOnUnsupportedDestination() {
   const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
   if (budget.particle_wall_contacts != 42 || budget.granular_projected_particles != 17
-      || budget.granular_plastic_volume_changes != 9 || status.code() != absl::StatusCode::kFailedPrecondition
-      || particle.world_position.x != 2.4 || particle.world_velocity.x != 1 || particle.log_plastic_jacobian != 0) {
+      || budget.granular_plastic_volume_changes != 9 || budget.particle_wall_kinetic_energy_change != -3
+      || status.code() != absl::StatusCode::kFailedPrecondition || particle.world_position.x != 2.4
+      || particle.world_velocity.x != 1 || particle.log_plastic_jacobian != 0) {
     std::fprintf(
         stderr,
         "unsupported destination rollback failed: %s x=%.6f\n",

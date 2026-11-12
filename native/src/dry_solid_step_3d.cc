@@ -540,6 +540,9 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       const Vec3 wall_velocity_change = solid_detail::Combine(contact->stored_world_velocity, 1, stored_velocity, -1);
       trial_budget.wall_impulse_on_particles =
           solid_detail::Combine(trial_budget.wall_impulse_on_particles, 1, wall_velocity_change, particle.mass);
+      const Vec3 midpoint_velocity = solid_detail::Combine(stored_velocity, 0.5, contact->stored_world_velocity, 0.5);
+      trial_budget.particle_wall_kinetic_energy_change +=
+          particle.mass * solid_detail::Dot(midpoint_velocity, wall_velocity_change);
       ++trial_budget.particle_wall_contacts;
     }
     if (budget != nullptr && std::holds_alternative<GranularParameters3D>(material)) {
@@ -560,7 +563,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       && (!solid_detail::Finite(trial_budget.wall_impulse_on_particles)
           || !std::isfinite(trial_budget.grid_wall_impulse_y) || !std::isfinite(trial_budget.proposed_stress_impulse_l1)
           || !std::isfinite(trial_budget.omitted_stress_impulse_l1) || !std::isfinite(trial_budget.applied_stress_work)
-          || !std::isfinite(trial_budget.omitted_stress_work) || !std::isfinite(trial_budget.cut_stress_work))) {
+          || !std::isfinite(trial_budget.omitted_stress_work) || !std::isfinite(trial_budget.cut_stress_work)
+          || !std::isfinite(trial_budget.particle_wall_kinetic_energy_change))) {
     return absl::OutOfRangeError("nonfinite dry step budget");
   }
   std::ranges::copy(trial_particles, particles.begin());
