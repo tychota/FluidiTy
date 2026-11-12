@@ -284,7 +284,12 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous") else []
+    initial_modes = (
+        "initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level",
+        "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-effects",
+        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous",
+    )
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in initial_modes else []
     return scene, initial
 
 

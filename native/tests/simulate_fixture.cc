@@ -1,5 +1,7 @@
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -226,12 +228,13 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool ocean = args[5] == "ocean" || ocean_level;
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
+  const bool graded_effects = args[5] == "graded-effects";
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
   const bool graded_viscous = args[5] == "graded-viscous";
   const bool graded_miscible_viscous = args[5] == "graded-miscible-viscous";
-  const bool graded_tank =
-      args[5] == "graded-tank" || graded_eos || graded_miscible || graded_viscous || graded_miscible_viscous;
+  const bool graded_tank = args[5] == "graded-tank" || graded_effects || graded_eos || graded_miscible || graded_viscous
+      || graded_miscible_viscous;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -274,6 +277,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.phase_pairs = kSharedSurfacePairs;
   }
   scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" || mixed_surface ? 16 : 0);
+  if (graded_effects) {
+    scene.options.motion_sample_intervals = 4;
+  }
   if (whitewater) {
     scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
         .source_options =
@@ -656,6 +662,46 @@ int SourceBirthFixture(const std::filesystem::path& path) {
             << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
   return 0;
 }
+int GradedSourceFixture(const std::filesystem::path& path) {
+  const auto source = fluidity::EffectsSource3D::Open(path);
+  if (!source.ok()) {
+    std::cerr << source.status() << '\n';
+    return 2;
+  }
+  std::cout << '[';
+  for (std::uint64_t ordinal = 0; ordinal <= 2; ++ordinal) {
+    const auto frame = source->ReadFrame(ordinal);
+    if (!frame.ok()) {
+      std::cerr << frame.status() << '\n';
+      return 3;
+    }
+    if (ordinal != 0) {
+      std::cout << ',';
+    }
+    std::cout << "{\"payload_digest\":\"" << fluidity::LiquidDigestHex3D(frame->source_payload).data()
+              << "\",\"samples\":[";
+    for (std::size_t index = 0; index < frame->motion.samples.size(); ++index) {
+      const auto& sample = frame->motion.samples[index];
+      const auto state = fluidity::EncodeLiquidState3D(sample);
+      if (!state.ok()) {
+        std::cerr << state.status() << '\n';
+        return 4;
+      }
+      if (index != 0) {
+        std::cout << ',';
+      }
+      std::cout << "{\"frame\":" << sample.clock.frame_ordinal << ",\"substep\":" << sample.clock.substep_ordinal
+                << ",\"state_digest\":\""
+                << fluidity::LiquidDigestHex3D(fluidity::LiquidContentDigest3D(state->values())).data()
+                << "\",\"adaptive_cell_count\":" << sample.adaptive_cells.size()
+                << ",\"adaptive_face_count\":" << sample.adaptive_faces.size()
+                << ",\"particle_count\":" << sample.particles.size() << '}';
+    }
+    std::cout << "]}";
+  }
+  std::cout << "]\n";
+  return 0;
+}
 int VolumeSettingsFixture(const std::filesystem::path& path, bool bounded_wave) {
   const fluidity::WhitewaterVolumeSettings3D settings{
       .grid = bounded_wave
@@ -677,6 +723,9 @@ int Entry(const std::vector<std::filesystem::path>& args) {
   }
   if (args.size() == 3 && args[1] == "wave-volume-settings") {
     return VolumeSettingsFixture(args[2], true);
+  }
+  if (args.size() == 3 && args[1] == "graded-source") {
+    return GradedSourceFixture(args[2]);
   }
   if (args.size() == 3 && args[1] == "source-births") {
     return SourceBirthFixture(args[2]);

@@ -347,9 +347,14 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
       || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
-      || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
-      || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
+      || options.ocean_boundary.has_value() || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
+  }
+  if (options.motion_sample_intervals != 0
+      && (scene.surface_tension != 0 || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity
+          || scene.cavity_provider.prepare || !scene.phase_pairs.empty() || !scene.constituent_materials.empty()
+          || !std::isinf(scene.bulk_modulus))) {
+    return absl::UnimplementedError("graded motion capture requires the implicit incompressible tank");
   }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
