@@ -1120,6 +1120,81 @@ bool TestBoundedFloorDonorFallback() {
   return rejected.status().code() == absl::StatusCode::kFailedPrecondition && forces == prior;
 }
 
+bool TestBoundedTangentExtrapolation() {
+  const BlockIndex3D block{0, 0, 0};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
+  if (!grid.ok()) {
+    return false;
+  }
+  using fluidity::FaceNormalAxis;
+  constexpr std::array faces{
+      fluidity::FaceIndex3D{FaceNormalAxis::kX, {0, 0, 0}},
+      fluidity::FaceIndex3D{FaceNormalAxis::kX, {1, 0, 0}},
+      fluidity::FaceIndex3D{FaceNormalAxis::kX, {2, 0, 0}},
+      fluidity::FaceIndex3D{FaceNormalAxis::kX, {1, 1, 0}},
+      fluidity::FaceIndex3D{FaceNormalAxis::kX, {1, 0, 1}},
+  };
+  std::array<std::size_t, faces.size()> slots{};
+  for (std::size_t index = 0; index < faces.size(); ++index) {
+    const auto slot = grid->FaceSlot(faces[index]);
+    if (!slot.ok()) {
+      return false;
+    }
+    slots[index] = *slot;
+  }
+  const auto target = slots.front();
+  const auto count = grid->face_count();
+  std::vector<fluidity::LiquidFaceValidity3D> validity(count, fluidity::LiquidFaceValidity3D::kMissing);
+  const std::vector<fluidity::LiquidBoundaryFaceTag3D> tags(count);
+  std::vector<double> velocity(count);
+  std::vector<std::uint8_t> needed(count);
+  needed[target] = 1;
+  for (std::size_t index = 1; index < faces.size(); ++index) {
+    validity[slots[index]] = fluidity::LiquidFaceValidity3D::kValid;
+    velocity[slots[index]] = 2.0 * faces[index].lattice_index.x;
+  }
+
+  // The four donors span three dimensions but are all on the +x side.
+  // Their affine field extrapolates to zero at the target.
+  for (const bool bounded : {false, true}) {
+    std::vector<double> force(count);
+    force[target] = 3;
+    std::vector<fluidity::internal::StationaryFloorGhostRow3D> rows;
+    const auto reaction = fluidity::internal::ScatterStationaryFloorGhostTranspose3D(
+        grid->view(),
+        validity,
+        tags,
+        force,
+        {},
+        needed,
+        &rows,
+        bounded
+    );
+    if (!reaction.ok() || *reaction != 0 || rows.size() != 1 || rows.front().target_slot != target
+        || rows.front().fallback != bounded || force[target] != 0) {
+      return false;
+    }
+    double reconstructed_velocity = 0;
+    for (const auto& term : rows.front().terms) {
+      reconstructed_velocity += term.coefficient * velocity[term.donor_slot];
+    }
+    double grid_power = 0;
+    double force_sum = 0;
+    for (const auto slot : slots) {
+      grid_power += force[slot] * velocity[slot];
+      force_sum += force[slot];
+    }
+    const double expected_velocity = bounded ? 2 : 0;
+    const double expected_nearest_force = bounded ? 3 : 6;
+    if (std::abs(reconstructed_velocity - expected_velocity) > 1e-12 || std::abs(force_sum - 3) > 1e-12
+        || std::abs(grid_power - 3 * expected_velocity) > 1e-12
+        || std::abs(force[slots[1]] - expected_nearest_force) > 1e-12) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool TestUncutStressWork() {
   const BlockIndex3D block{0, 0, 0};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
@@ -1500,7 +1575,8 @@ int main(int argc, char** argv) {
   if (!TestSandSurfaceFit() || !TestDryGridWallFriction() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
       || !TestGridWallTractionBudget() || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual()
       || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestBoundedFloorDonorFallback()
-      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+      || !TestBoundedTangentExtrapolation() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);
