@@ -154,6 +154,11 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
             column.prop(settings, "friction")
         else:
             column.label(text="Free Space", icon="INFO")
+        cutter_row = column.row()
+        cutter_row.alert = settings.issue_field == "cutter"
+        cutter_row.prop(settings, "cutter")
+        if context.object and context.object.type == "MESH":
+            column.operator("fluidity.assign_role", text="Use Selected as Cutter").role = "cutter"
 
 
 class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):

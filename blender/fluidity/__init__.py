@@ -55,6 +55,12 @@ class FluidiTySettings(PropertyGroup):
     collider: PointerProperty(
         name="Collider", type=Object, description="Box defining the analytic plane or slab", update=invalidate_guidance
     )
+    cutter: PointerProperty(
+        name="Cutter",
+        type=Object,
+        description="Animated box defining the elastic cutting slab",
+        update=invalidate_guidance,
+    )
     material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
     density: FloatProperty(
         name="Density",
