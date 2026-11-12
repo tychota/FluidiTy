@@ -7,6 +7,7 @@
 #include <span>
 #include <variant>
 
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
@@ -193,6 +194,10 @@ struct LiquidProgressObserver3D {
   LiquidWorkPhaseObserver3D work_phase{};
 };
 // Bounded single-threaded owner; sources/settings are copied and frozen at creation.
+struct LiquidParticleUpdateInputs3D;
+using LiquidPistonReactionUpdate3D =
+    absl::FunctionRef<absl::StatusOr<double>(const LiquidParticleUpdateInputs3D&, std::span<LiquidParticleState3D>)>;
+
 struct LiquidPlanarPistonAttempt3D {
   LiquidAttemptOutcome3D outcome;
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
@@ -262,6 +267,14 @@ class LiquidSubstepScheduler3D {
   // absorbs transverse loads and torque. Force and torque are cleared.
   // The returned body is present only on acceptance.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston);
+  // Uses the supplied backend's reaction update for this attempt. The
+  // callback must operate on the provided trial particles and return the
+  // low-x wall impulse in N s. It must remain valid until this call returns.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(
+      double step_duration,
+      RigidBody3D piston,
+      LiquidPistonReactionUpdate3D update_with_reaction
+  );
   // Couples the guided piston velocity to the incompressible pressure
   // domain using frozen wet areas and a pressure-response probe. This explicit
   // attempt interface supports the particle-free planar scene. The coupled
@@ -280,10 +293,15 @@ class LiquidSubstepScheduler3D {
       LiquidWorkPhaseObserver3D work_phase,
       RigidBody3D* piston_load,
       bool dynamic_piston = false,
-      bool coupled_piston = false
+      bool coupled_piston = false,
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr
   );
-  absl::StatusOr<LiquidPlanarPistonAttempt3D>
-  AttemptDynamicPistonImpl(double step_duration, RigidBody3D piston, bool coupled);
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
+      double step_duration,
+      RigidBody3D piston,
+      bool coupled,
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr
+  );
   struct Impl;
   explicit LiquidSubstepScheduler3D(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

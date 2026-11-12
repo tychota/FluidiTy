@@ -396,7 +396,8 @@ struct LiquidSubstepScheduler3D::Impl {
       LiquidWorkPhaseObserver3D work_phase,
       RigidBody3D* piston_load,
       bool dynamic_piston,
-      bool coupled_piston
+      bool coupled_piston,
+      const LiquidPistonReactionUpdate3D* update_with_reaction
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
@@ -1030,8 +1031,9 @@ struct LiquidSubstepScheduler3D::Impl {
     };
     double piston_contact_impulse = 0.0;
     if (dynamic_piston && trial.particles.size() != 0) {
-      const auto impulse =
-          UpdateCpuLiquidParticlesWithPistonReaction3D(particle_update_inputs, trial.particles.values());
+      const auto impulse = update_with_reaction == nullptr
+          ? UpdateCpuLiquidParticlesWithPistonReaction3D(particle_update_inputs, trial.particles.values())
+          : (*update_with_reaction)(particle_update_inputs, trial.particles.values());
       if (!impulse.ok()) {
         return impulse.status();
       }
@@ -1270,6 +1272,14 @@ LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(double step_duration, R
   return AttemptDynamicPistonImpl(step_duration, piston, false);
 }
 
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(
+    double step_duration,
+    RigidBody3D piston,
+    LiquidPistonReactionUpdate3D update_with_reaction
+) {
+  return AttemptDynamicPistonImpl(step_duration, piston, false, &update_with_reaction);
+}
+
 absl::StatusOr<LiquidPlanarPistonAttempt3D>
 LiquidSubstepScheduler3D::AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston) {
   if (!committed().particles.values().empty() || std::isfinite(impl_->scene.bulk_modulus)
@@ -1279,14 +1289,18 @@ LiquidSubstepScheduler3D::AttemptWithCoupledPlanarPiston(double step_duration, R
   return AttemptDynamicPistonImpl(step_duration, piston, true);
 }
 
-absl::StatusOr<LiquidPlanarPistonAttempt3D>
-LiquidSubstepScheduler3D::AttemptDynamicPistonImpl(double step_duration, RigidBody3D piston, bool coupled) {
+absl::StatusOr<LiquidPlanarPistonAttempt3D> LiquidSubstepScheduler3D::AttemptDynamicPistonImpl(
+    double step_duration,
+    RigidBody3D piston,
+    bool coupled,
+    const LiquidPistonReactionUpdate3D* update_with_reaction
+) {
   if (!impl_->staging.wetted_piston.has_value()
       || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field) || !impl_->scene.sources.empty()
       || impl_->ocean_boundary) {
     return absl::FailedPreconditionError("dynamic piston requires a moving planar piston scene without sources");
   }
-  if (!committed().particles.values().empty()
+  if (update_with_reaction == nullptr && !committed().particles.values().empty()
       && impl_->backend.update_particles != CpuLiquidSubstepBackend3D().update_particles) {
     return absl::FailedPreconditionError("dynamic piston particles require the CPU contact update");
   }
@@ -1298,7 +1312,7 @@ LiquidSubstepScheduler3D::AttemptDynamicPistonImpl(double step_duration, RigidBo
       || piston.angular_velocity.y != 0.0 || piston.angular_velocity.z != 0.0) {
     return absl::InvalidArgumentError("dynamic piston requires axial motion");
   }
-  const auto outcome = AttemptImpl(step_duration, {}, &piston, true, coupled);
+  const auto outcome = AttemptImpl(step_duration, {}, &piston, true, coupled, update_with_reaction);
   if (!outcome.ok()) {
     return outcome.status();
   }
@@ -1315,7 +1329,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     LiquidWorkPhaseObserver3D work_phase,
     RigidBody3D* piston_load,
     bool dynamic_piston,
-    bool coupled_piston
+    bool coupled_piston,
+    const LiquidPistonReactionUpdate3D* update_with_reaction
 ) {
   auto& impl = *impl_;
   auto& diagnostics = impl.diagnostics;
@@ -1349,7 +1364,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
       work_phase,
       piston_load,
       dynamic_piston,
-      coupled_piston
+      coupled_piston,
+      update_with_reaction
   );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);

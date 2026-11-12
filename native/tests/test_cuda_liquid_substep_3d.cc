@@ -289,6 +289,78 @@ TEST(CudaLiquidSubstep3D, PistonReactionMatchesCpuMovingFaceImpulse) {
   EXPECT_EQ(rejected, before);
 }
 
+TEST(CudaLiquidSubstep3D, GuidedPistonCommitsDevicePressureAndReaction) {
+  namespace wet = wetted_piston_pressure_test;
+  auto initial = Initial();
+  ASSERT_TRUE(initial.particles.Resize(1).ok());
+  initial.particles[0].world_position = {0x1p-13, 0.375, 0.5};
+  initial.particles[0].world_velocity = {};
+  initial.particles[0].mass = 2.0;
+  initial.particles[0].reference_volume = 2.0;
+  initial.particles[0].pic_initialized = false;
+  auto scene = wet::PlaneScene(0.75, wet::kPistonSpeed);
+  auto& tank = std::get<AxisAlignedLiquidTank3D>(scene.obstacle);
+  tank.high_x = 4.0;
+  tank.low_z = -1.0;
+  tank.high_z = 2.0;
+  const auto options = Options();
+  auto device = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, true);
+  ASSERT_TRUE(device.ok()) << device.status();
+  auto operations = device->operations();
+  operations.gather = [](void*,
+                         const LiquidBoundaryGatherViewInputs3D&,
+                         LiquidBoundaryWorkspace3D&) -> absl::StatusOr<LiquidBoundaryGatherView3D> {
+    static constexpr std::array kGathered{
+        LiquidBoundaryParticleGather3D{.new_pic_velocity = {-0.125, 0.0, 0.0}},
+    };
+    return LiquidBoundaryGatherView3D{.particles = kGathered};
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, operations);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  const RigidBody3D piston{
+      .body_id = 17,
+      .mass = 1000.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {wet::kPistonSpeed, 0.0, 0.0},
+  };
+  double measured_impulse = 0.0;
+  const auto update_with_reaction = [&](const LiquidParticleUpdateInputs3D& inputs,
+                                        std::span<LiquidParticleState3D> trial_particles) {
+    const auto impulse = device->UpdateParticlesWithPistonReaction(inputs, trial_particles);
+    if (impulse.ok()) {
+      measured_impulse = *impulse;
+    }
+    return impulse;
+  };
+  const auto attempt = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, piston, update_with_reaction);
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_TRUE(attempt->loaded_piston.has_value()) << scheduler->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(measured_impulse, -0.375);
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].world_velocity.x, wet::kPistonSpeed);
+  EXPECT_LT(attempt->loaded_piston->linear_velocity.x, wet::kPistonSpeed + measured_impulse / piston.mass);
+  const auto epoch = device->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  const auto accepted_identity = epoch->identity();
+  EXPECT_EQ(accepted_identity.clock, scheduler->committed().clock);
+  const auto accepted_bytes = DeviceBytes(*epoch);
+  const auto accepted_clock = scheduler->committed().clock;
+  scheduler->SetStageFaultHookForTesting({nullptr, [](void*, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("")
+                                                                                           : absl::OkStatus();
+                                          }});
+  const auto rejected =
+      scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, *attempt->loaded_piston, update_with_reaction);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(rejected->loaded_piston.has_value());
+  EXPECT_EQ(scheduler->committed().clock, accepted_clock);
+  const auto retained = device->AcquireCommitted();
+  ASSERT_TRUE(retained.ok()) << retained.status();
+  EXPECT_EQ(retained->identity(), accepted_identity);
+  EXPECT_EQ(DeviceBytes(*retained), accepted_bytes);
+}
+
 TEST(CudaLiquidSubstep3D, WettedPistonUsesClippedAndAttachedAreaInProjection) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   namespace wet = wetted_piston_pressure_test;
