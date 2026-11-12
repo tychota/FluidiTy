@@ -747,6 +747,37 @@ bool TestPlasticCheckpointHandoff() {
   if (fluidity::RestoreDrySolidCheckpointParticles3D(duplicate, 9, 11, snow).ok()) {
     return false;
   }
+  const DrySolidMaterial3D sand = fluidity::GranularParameters3D{2, 3, 0.5235987755982989, 0};
+  auto sand_particle = accepted;
+  sand_particle.elastic_deformation = kIdentity;
+  sand_particle.log_plastic_jacobian = 0;
+  const auto sand_record = fluidity::CapturePlasticSolidCheckpointParticle3D(5, 12, 13, sand, sand_particle);
+  if (!sand_record.ok()) {
+    return false;
+  }
+  const std::array bindings{
+      fluidity::PlasticSolidCheckpointBinding3D{9, 11, snow},
+      fluidity::PlasticSolidCheckpointBinding3D{12, 13, sand},
+  };
+  const std::array mixed_records{*sand_record, decoded};
+  if (!fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, bindings).ok()) {
+    return false;
+  }
+  const std::array reversed_bindings{bindings[1], bindings[0]};
+  const std::array invalid_state{*sand_record, corrupt};
+  auto duplicate_id = decoded;
+  duplicate_id.particle_id = sand_record->particle_id;
+  const std::array duplicate_ids{*sand_record, duplicate_id};
+  if (fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, reversed_bindings).code()
+          != absl::StatusCode::kInvalidArgument
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(mixed_records, {&bindings[1], 1}).code()
+          != absl::StatusCode::kInvalidArgument
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(invalid_state, bindings).code()
+          != absl::StatusCode::kFailedPrecondition
+      || fluidity::ValidatePlasticSolidCheckpointParticles3D(duplicate_ids, bindings).code()
+          != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
   auto uninterrupted = accepted;
   const DrySolidStep3D step{.duration = 0.01, .acoustic_cfl = 0.25};
 #if defined(FLUIDITY_M5_CUDA_SCENES)

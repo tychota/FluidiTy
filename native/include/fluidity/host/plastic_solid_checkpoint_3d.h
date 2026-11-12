@@ -22,6 +22,23 @@ struct PlasticSolidCheckpointParticle3D {
   double log_plastic_jacobian;  // Natural logarithm of the plastic volume ratio.
 };
 
+// Resolved material parameters for one plastic body in an accepted checkpoint.
+struct PlasticSolidCheckpointBinding3D {
+  std::uint64_t body_id;
+  std::uint64_t material_id;
+  DrySolidMaterial3D material;
+};
+
+// Validates a complete plastic payload in globally increasing particle ID order
+// against bindings in increasing body ID order. IDs must be nonzero. Each
+// record must reference its body's resolved material. Invalid IDs, ordering,
+// and transfer data return InvalidArgument. Inadmissible deformation or
+// plastic state returns FailedPrecondition. Neither span is modified.
+absl::Status ValidatePlasticSolidCheckpointParticles3D(
+    std::span<const PlasticSolidCheckpointParticle3D> records,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+);
+
 // Captures an admissible accepted dry particle with nonzero identities. The
 // dry step rebins each attempt, so both transfer positions are the accepted
 // position in world meters. Invalid records or material state return a status.

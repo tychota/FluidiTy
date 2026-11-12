@@ -737,6 +737,12 @@ in particle order and published transactionally with the particle batch.
 Its SM120 fixture matches the CPU impulse and checks rejection rollback.
 Accepted dynamic-body feedback still needs to consume that CUDA output.
 
+M6 commit 9bce891 transacts pressure-row flux, reciprocal traction,
+guided floating-box drift, and accepted checkpoint replay in the CPU
+liquid scheduler. Its attempt is particle-free. Continuous finite-box
+particle contact and the accepted plastic payload remain separate
+dependencies for the snow–water scene.
+
 M5 provides a typed plastic checkpoint record with stable nonzero particle,
 body and material IDs, the MAC transfer state, reference volume, accepted
 elastic map and log plastic Jacobian. The dry adapter restores records in
@@ -748,6 +754,15 @@ one step, and compares all state fields exactly on each backend.
 The replay now passes through the generated PlasticParticle record in a
 FlatBuffers byte vector. The owning FLSI codec and authored snow–water
 restart still need integration.
+
+The shared payload validator checks globally increasing particle IDs
+against body bindings in strictly increasing body ID order. It resolves
+each particle's material through its own body and applies the existing
+dry acceptance test before the codec can publish a payload. Both M5
+scene suites check an interleaved-by-body sand and snow vector, rejection
+of a missing body binding, unsorted bindings, duplicate IDs across
+bodies, and inadmissible snow in the later record. This host validator
+does not write the production FLSI envelope.
 
 The shared plastic wire fragment is in
 schemas/simulate/plastic_solid_particle.fbs. A scratch FLSI envelope
