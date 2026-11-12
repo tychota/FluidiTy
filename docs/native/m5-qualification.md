@@ -2694,6 +2694,8 @@ All four native cases reach the endpoint with cut stress work mismatch
 below 2.6e-16 J and vertical momentum residual below 4.1e-8 N·s.
 The coarse cases fail the angle limit and the fine cases fail the
 radius limit. Q-SAND remains open.
+The SM120 fine nominal case matched the native angle, radius, stress
+work and vertical momentum values at printed precision.
 
 ```powershell
 $bin = 'out/pr-m5-sand-affine/out/sand-grid-friction-bin'
