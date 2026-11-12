@@ -311,12 +311,27 @@ absl::Status ValidateFloatingBoxInputs(
 ) {
   const auto lower = CartesianComponents(box.world_low);
   const auto upper = CartesianComponents(box.world_high);
-  if (!std::holds_alternative<std::monostate>(obstacle) || !HasFiniteComponents(lower) || !HasFiniteComponents(upper)
-      || !std::isfinite(box.liquid_height) || lower[0] >= upper[0] || lower[1] >= upper[1] || lower[2] >= upper[2]) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&obstacle);
+  if ((tank == nullptr && !std::holds_alternative<std::monostate>(obstacle)) || !HasFiniteComponents(lower)
+      || !HasFiniteComponents(upper) || !std::isfinite(box.liquid_height) || lower[0] >= upper[0]
+      || lower[1] >= upper[1] || lower[2] >= upper[2]) {
     return absl::Status(
         absl::StatusCode::kInvalidArgument,
         bounded ? "" : "invalid finite box or conflicting obstacle"
     );
+  }
+  if (tank != nullptr) {
+    const auto tank_status = boundary_internal::CheckTankStep(*tank, 0.0);
+    if (tank_status != boundary_internal::Error::kNone) {
+      return boundary_internal::ArithmeticStatus(tank_status, bounded);
+    }
+    if (tank->piston_velocity_x != 0.0 || lower[0] <= tank->start_low_x || upper[0] >= tank->high_x
+        || lower[1] <= tank->floor_y || lower[2] <= tank->low_z || upper[2] >= tank->high_z) {
+      return absl::Status(
+          absl::StatusCode::kFailedPrecondition,
+          bounded ? "" : "finite box requires strict clearance inside a stationary tank"
+      );
+    }
   }
   for (const auto& sample : center_distances) {
     const double y_index = static_cast<double>(sample.cell_index.y) + 0.5;
@@ -395,6 +410,25 @@ ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
   const bool face_query = query.mode == GeometryMode::kFace;
   const int excluded_axis = face_query ? query.axis : -1;
   boundary_internal::GeometryOutput output{};
+  boundary_internal::TankClipBounds outer;
+  const bool has_tank = query.obstacle.kind == boundary_internal::ObstacleKind::kOpenTank;
+  if (has_tank) {
+    const auto bounds = boundary_internal::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), request.bounded);
+    }
+    outer = *bounds;
+    if (face_query) {
+      const auto tank_face = boundary_internal::ComputeTankFace(query, outer);
+      if (!tank_face.ok()) {
+        return boundary_internal::ArithmeticStatus(tank_face.status(), request.bounded);
+      }
+      output = *tank_face;
+      if (output.open_face_area == 0.0) {
+        return output;
+      }
+    }
+  }
   if (face_query) {
     const auto lattice = boundary_internal::TankAxis(query, excluded_axis);
     const auto low_sign = boundary_internal::TankPlaneOffsetSign(lower[excluded_axis], lattice);
@@ -403,14 +437,15 @@ ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
       return UnrepresentableGeometry(request.bounded);
     }
     if (*low_sign > 0 || *high_sign < 0) {
-      output.open_face_area = cell_width * cell_width;
+      if (!has_tank) {
+        output.open_face_area = cell_width * cell_width;
+      }
       return output;
     }
   } else if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
     return UnrepresentableGeometry(request.bounded);
   }
 
-  boundary_internal::TankClipBounds outer;
   boundary_internal::TankClipBounds solid;
   for (int axis = 0; axis < 3; ++axis) {
     if (axis == excluded_axis) {
@@ -441,10 +476,10 @@ ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
         );
       }
     }
-    if (*liquid_top == 0.0) {
+    outer.high[1] = std::min(outer.high[1], *liquid_top);
+    if (outer.high[1] <= outer.low[1]) {
       return output;
     }
-    outer.high[1] = *liquid_top;
   }
   const auto open_measure = BoxComplementMeasure(outer, solid, cell_width, excluded_axis, !face_query, request.bounded);
   if (!open_measure.ok()) {

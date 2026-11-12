@@ -1,4 +1,5 @@
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 #include "liquid_boundary_geometry_3d_cases.h"
 namespace fluidity::boundary_test {
 namespace {
@@ -83,6 +84,81 @@ TEST(LiquidBoundaryGeometry3D, FiniteBoxClipsPlanarLiquidVolumeAndApertures) {
   EXPECT_EQ(
       FreezeFloatingBoxLiquidBoundaryGeometry3D(overlap, box).status().code(),
       absl::StatusCode::kInvalidArgument
+  );
+}
+TEST(LiquidBoundaryGeometry3D, DisjointBoxAndTankDriveReciprocalSolvedPressure) {
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
+  const auto grid = cases.Grid();
+  const auto samples = cases.Sample([](double, double y, double) {
+    return y - 0.75;
+  });
+  const AxisAlignedLiquidTank3D tank{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
+  const LiquidBoundaryGeometryInputs3D inputs{
+      grid,
+      samples.candidates,
+      samples.centers,
+      samples.corners,
+      tank,
+      0.125,
+      1.0,
+      0.0,
+  };
+  const AxisAlignedFloatingBoxGeometry3D box{
+      .world_low = {0.25, 0.25, 0.25},
+      .world_high = {0.5, 0.875, 0.5},
+      .liquid_height = 0.75,
+  };
+  const auto frozen = FreezeFloatingBoxLiquidBoundaryGeometry3D(inputs, box);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  EXPECT_DOUBLE_EQ(frozen->cells().front().fluid_volume, 0.3203125);
+  auto problem = cases.Links(*frozen);
+  ASSERT_EQ(problem.cells.size(), 1);
+  const auto open_count = std::ranges::count_if(problem.faces, [](const auto& face) {
+    return face.open_area > 0.0;
+  });
+  EXPECT_EQ(open_count, 1);
+  for (const auto& face : problem.faces) {
+    if (face.open_area > 0.0) {
+      EXPECT_EQ(face.face_index.axis, FaceNormalAxis::kY);
+      EXPECT_DOUBLE_EQ(face.open_area, 0.5625);
+    }
+  }
+
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.375, 0.5625, 0.375},
+      .linear_velocity = {0.0, 0.5, 0.0},
+  };
+  const auto patches = BuildFloatingBoxPressurePatches3D(
+      body.body_id,
+      box.world_low,
+      box.world_high,
+      box.liquid_height,
+      grid.geometry(),
+      samples.candidates
+  );
+  ASSERT_TRUE(patches.ok()) << patches.status();
+  const auto flux = ComputeRigidBodyInwardWallFlux3D(body, problem.cells.size(), *patches);
+  ASSERT_TRUE(flux.ok()) << flux.status();
+  EXPECT_DOUBLE_EQ(flux->front(), -0.03125);
+  problem.cells.front().integrated_inward_wall_flux = flux->front();
+  const auto solved = ProjectMacPressure3D({grid, inputs.step_duration, problem.cells, problem.faces});
+  ASSERT_TRUE(solved.ok()) << solved.status();
+  EXPECT_DOUBLE_EQ(solved->integrated_rhs.front(), -0.03125);
+  EXPECT_NEAR(solved->cell_pressures.front(), -1.0 / 9.0, 1e-7);
+  const auto loaded = AccumulateRigidBodyPressure3D(body, solved->cell_pressures, 0.0, *patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  EXPECT_NEAR(loaded->force.y, -1.0 / 144.0, 1e-8);
+  EXPECT_DOUBLE_EQ(loaded->force.y * body.linear_velocity.y + solved->cell_pressures.front() * flux->front(), 0.0);
+
+  auto touching = box;
+  touching.world_low.x = tank.start_low_x;
+  EXPECT_EQ(
+      FreezeFloatingBoxLiquidBoundaryGeometry3D(inputs, touching).status().code(),
+      absl::StatusCode::kFailedPrecondition
   );
 }
 TEST(LiquidBoundaryGeometry3D, OpenTankClipsVolumeAndUsesPistonOnlyFlux) {

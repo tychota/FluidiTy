@@ -108,8 +108,9 @@ class FrozenLiquidBoundaryGeometry3D;
 // CPU freeze for a single finite box and a horizontal liquid surface. Center
 // and corner samples must be signed distances to that plane. Faces on a box
 // plane are blocked over the transverse overlap. Wall velocities remain zero
-// because wetted box patches supply the integrated pressure-row flux. Rejects
-// a second obstacle, invalid geometry, or a box that splits a wet cell.
+// because wetted box patches supply the integrated pressure-row flux. Supports
+// a stationary open tank with strict clearance around the box. Rejects other
+// obstacles, ambiguous overlap, invalid geometry and disconnected wet cells.
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs,
     const AxisAlignedFloatingBoxGeometry3D& box
