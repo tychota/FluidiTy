@@ -197,6 +197,18 @@ absl::StatusOr<LiquidState3D> ReadInitialState(const Command& command, LiquidRes
 }
 // Reject unusable diagnostics before serializing a settled physical witness.
 // The finite and sign checks do not feed back into the numerical attempt.
+// Report only settled lineage losses; rejected physical trials never reach the observer.
+absl::StatusOr<std::string> CavityInventoryLossMembers(const LiquidCavityLineageResult3D& lineage) {
+  for (const double inventory :
+       {lineage.vented_inventory, lineage.subresolution_inventory, lineage.unmatched_inventory}) {
+    if (!std::isfinite(inventory) || inventory < 0.0) {
+      return absl::DataLossError("");
+    }
+  }
+  return "\"vented_inventory\":" + Number(lineage.vented_inventory) + ",\"subresolution_inventory\":"
+      + Number(lineage.subresolution_inventory) + ",\"unmatched_inventory\":" + Number(lineage.unmatched_inventory);
+}
+
 absl::StatusOr<std::string>
 AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepMeasurement3D& measurement) {
   const double dt = measurement.accepted_dt_seconds;
@@ -229,6 +241,19 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       || (piston && (!std::isfinite(piston->step_start_low_x_m) || !std::isfinite(piston->step_end_low_x_m)))) {
     return absl::DataLossError("");
   }
+  const auto cavity_bound = measurement.step_start_cavity_bound_seconds;
+  if (cavity_bound && (!std::isfinite(*cavity_bound) || *cavity_bound < dt)) {
+    return absl::DataLossError("");
+  }
+  std::string cavity_member;
+  if (const auto& cavity = measurement.cavity) {
+    const auto losses = CavityInventoryLossMembers(cavity->lineage);
+    if (!losses.ok()) {
+      return losses.status();
+    }
+    cavity_member = ",\"cavity\":{\"active_count\":" + std::to_string(cavity->boundaries.active_cavity_count)
+        + ",\"step_start_bound_seconds\":" + OptionalNumber(cavity_bound) + ",\"inventory_loss\":{" + *losses + "}}";
+  }
   const std::string piston_start = piston ? Number(piston->step_start_low_x_m) : "null";
   const std::string piston_end = piston ? Number(piston->step_end_low_x_m) : "null";
   return "\"accepted_measurement\":{\"accepted_dt_seconds\":" + Number(dt) + ",\"step_start_capillary_bound_seconds\":"
@@ -239,7 +264,7 @@ AcceptedMeasurementMembers(const LiquidState3D& state, const LiquidAcceptedStepM
       + ",\"pressure_max_constraint_defect_per_s\":" + Number(pressure.max_cell_constraint_defect)
       + ",\"step_start_pressure_cell_volume_m3\":" + Number(pressure_volume)
       + ",\"step_start_inward_piston_flux_m3_per_s\":" + Number(inward_flux) + ",\"step_start_piston_low_x_m\":"
-      + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + viscous_member + '}';
+      + piston_start + ",\"step_end_piston_low_x_m\":" + piston_end + viscous_member + cavity_member + '}';
 }
 std::string GeometryMembers(const LiquidState3D& state) {
   std::string members = "\"geometry\":{\"particles\":[";
@@ -407,6 +432,33 @@ struct JobMeasurement {
   }
 #endif
 };
+#if defined(FLUIDITY_SIMULATE_CUDA)
+// Cavity lineage and particle composition are host-owned. Check every field
+// in the device ABI against the accepted state before attaching those fields.
+bool MatchesCudaSnapshot(const LiquidState3D& device, const LiquidState3D& accepted) {
+  const auto& device_origin = device.geometry.world_origin;
+  const auto& accepted_origin = accepted.geometry.world_origin;
+  if (device_origin.x != accepted_origin.x || device_origin.y != accepted_origin.y
+      || device_origin.z != accepted_origin.z || device.geometry.cell_width != accepted.geometry.cell_width
+      || device.clock != accepted.clock || device.random_seed != accepted.random_seed
+      || device.next_particle_id != accepted.next_particle_id || device.blocks != accepted.blocks
+      || device.cells != accepted.cells || device.faces != accepted.faces || device.sources != accepted.sources
+      || device.next_cavity_id != 0 || !device.cavity_gas.values().empty()
+      || !device.cavity_components.values().empty()) {
+    return false;
+  }
+  return std::ranges::equal(
+      device.particles.values(),
+      accepted.particles.values(),
+      [](const auto& downloaded, auto host) {
+        host.phase_id = 0;
+        host.constituent_count = 0;
+        return downloaded == host;
+      }
+  );
+}
+#endif
+
 struct Observations {
   const Command& command;
   const SimulateJob& job;
@@ -414,6 +466,7 @@ struct Observations {
   const LiquidStepOptions3D& step_options;
   JobMeasurement* measurement;
   std::vector<std::string> trace;
+  std::vector<std::string> cavity_losses;
   std::optional<std::string> selected;
   std::vector<LiquidAttemptMeasurement3D> attempts;
   MotionCapture3D* motion_capture = nullptr;
@@ -452,8 +505,21 @@ struct Observations {
     }
     if (rollback) {
       self.trace.clear();
+      self.cavity_losses.clear();
       self.selected.reset();
       return absl::OkStatus();
+    }
+    if (self.command.kind == CommandKind::kRun && diagnostics.accepted_measurement
+        && diagnostics.accepted_measurement->cavity) {
+      const auto& lineage = diagnostics.accepted_measurement->cavity->lineage;
+      if (lineage.subresolution_inventory > 0.0 || lineage.vented_inventory > 0.0
+          || lineage.unmatched_inventory > 0.0) {
+        const auto losses = CavityInventoryLossMembers(lineage);
+        if (!losses.ok()) {
+          return losses.status();
+        }
+        self.cavity_losses.push_back(ClockMembers(state.clock) + ",\"inventory_loss\":{" + *losses + '}');
+      }
     }
     if (!self.command.trace && self.command.kind == CommandKind::kRun) {
       return absl::OkStatus();
@@ -866,11 +932,15 @@ absl::StatusOr<std::string> ExecuteCommand(
       }
       writer_lease = std::move(*finished);
       previous_queue.reset();
-      state = writer_lease.state();
+      const auto& downloaded = *writer_lease.state();
       copy_milliseconds = writer_lease.copy_milliseconds();
-      if (*state != scheduler->committed()) {
+      if (downloaded == *state) {
+        state = &downloaded;
+      } else if (!MatchesCudaSnapshot(downloaded, *state)) {
         return absl::DataLossError("");
       }
+      // For host-owned metadata, state remains the same accepted epoch whose
+      // entire device payload was just compared against the snapshot lease.
     }
 #endif
     if (!cache) {
@@ -972,6 +1042,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       .step_options = options,
       .measurement = measurement,
       .trace = {},
+      .cavity_losses = {},
       .selected = {},
       .attempts = {},
   };
@@ -994,6 +1065,7 @@ absl::StatusOr<std::string> ExecuteCommand(
       return time.status();
     }
     observations.trace.clear();
+    observations.cavity_losses.clear();
     observations.selected.reset();
     observations.attempts.clear();
     if (options.motion_sample_intervals != 0) {
@@ -1032,6 +1104,9 @@ absl::StatusOr<std::string> ExecuteCommand(
     job.SetSettledClock(scene.backend, scheduler->committed().clock);
     const bool publish = !read_only && (frame >= command.frame_start || frame % 10 == 0);
     EXEC_TRY(finish_frame_snapshot(publish));
+    for (const auto& loss : observations.cavity_losses) {
+      EXEC_TRY(writer.Emit("cavity_inventory_loss", loss));
+    }
   }
   auto result = StateMembers(scheduler->committed(), scheduler->diagnostics());
   if (!result.ok()) {

@@ -269,7 +269,7 @@ def execute(executable, *args, success=True):
     if success:
         assert process.stderr == "", process.stderr
         assert output[-1]["event"] == "result"
-        events = {"heartbeat", "attempt", "trace", "frame", "result"}
+        events = {"heartbeat", "attempt", "trace", "frame", "cavity_inventory_loss", "result"}
         if "--measure-job" in args:
             events.add("job_measurement")
             assert output[-2]["event"] == "job_measurement" and output[-2]["status"] == "OK"
@@ -284,7 +284,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     scene = directory / (backend + "-" + mode + ".flrs")
     subprocess.run([str(fixture), "scene", str(scene), str(executable), backend, mode],
                    check=True, capture_output=True, timeout=30)
-    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control") else []
+    initial = ["--initial-state", str(scene) + ".flst"] if mode in ("initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level", "viscous", "viscous-control", "cavity-loss", "shared-surface") else []
     return scene, initial
 
 
@@ -519,9 +519,59 @@ def viscous_execution_case(executable, fixture, directory, backend):
 
 
 
+def cavity_loss_execution_case(executable, fixture, directory, backend):
+    work = directory / "cavity-loss"
+    work.mkdir()
+    scene, initial = make_scene(executable, fixture, work, backend, "cavity-loss")
+    args = ["run", "--stage", "simulate", "--scene", scene, "--backend", backend, *initial, "--frame-end", 1]
+    expected_loss = None
+    for trace in (False, True):
+        cache = work / ("traced" if trace else "ordinary")
+        records = execute(executable, *args, "--cache", cache, *(["--trace"] if trace else []))
+        assert records[-1]["frame"] == 1
+        losses = [record for record in records if record["event"] == "cavity_inventory_loss"]
+        assert len(losses) == 1, losses
+        loss = losses[0]["inventory_loss"]
+        assert math.isfinite(loss["subresolution_inventory"]) and loss["subresolution_inventory"] > 0
+        assert loss["vented_inventory"] == loss["unmatched_inventory"] == 0
+        if trace:
+            traces = [record for record in records if record["event"] == "trace"]
+            assert traces
+            for field in ("frame", "substep", "epoch", "accepted_step", "time_seconds"):
+                assert traces[0][field] == losses[0][field]
+            measured = [record["accepted_measurement"]["cavity"]["inventory_loss"] for record in traces]
+            assert measured and measured[0] == loss == expected_loss
+            assert all(not any(values.values()) for values in measured[1:])
+            before = snapshot(cache)
+            replay = execute(executable, "replay", "--cache", cache, "--frame", 1, "--substep", 0)[-1]
+            assert replay["state_digest"] == records[-1]["state_digest"] and snapshot(cache) == before
+        else:
+            expected_loss = loss
+
+
+def composed_snapshot_case(executable, fixture, directory, backend):
+    work = directory / "composition"
+    work.mkdir()
+    scene, initial = make_scene(executable, fixture, work, backend, "shared-surface")
+    cache = work / "cache"
+    result = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+                     *initial, "--cache", cache, "--frame-end", 1)[-1]
+    assert result["frame"] == 1
+    points = json.loads(subprocess.run([str(fixture), "first-point-frame", str(cache)],
+                                       capture_output=True, check=True, timeout=30).stdout)
+    composition = {point["id"]: point for point in points["composition"]}
+    assert {particle: point["phase_id"] for particle, point in composition.items()} == {1: 4, 2: 4, 3: 5}
+    assert composition[3]["constituents"] == [[25, 1.0]]
+    assert {key for particle in (1, 2) for key, _ in composition[particle]["constituents"]} == {8, 14}
+    before = snapshot(cache)
+    replay = execute(executable, "replay", "--cache", cache, "--frame", 1, "--substep", 0)[-1]
+    assert replay["state_digest"] == result["state_digest"] and snapshot(cache) == before
+
+
 def case_cpu_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cpu")
     viscous_execution_case(executable, fixture, directory, "cpu")
+    cavity_loss_execution_case(executable, fixture, directory, "cpu")
 
 
 def case_cpu_replay(executable, fixture, directory, cuda):
@@ -531,6 +581,8 @@ def case_cpu_replay(executable, fixture, directory, cuda):
 def case_cuda_execution(executable, fixture, directory, cuda):
     execution_case(executable, fixture, directory, "cuda")
     viscous_execution_case(executable, fixture, directory, "cuda")
+    cavity_loss_execution_case(executable, fixture, directory, "cuda")
+    composed_snapshot_case(executable, fixture, directory, "cuda")
 
 
 def case_cuda_replay(executable, fixture, directory, cuda):

@@ -6,7 +6,7 @@ namespace fluidity::cavity_test {
 
 // A filled 9³ lattice with a connected interior void. Radius 0.9 m covers
 // the lattice corners in the liquid shell at h=1 m.
-inline absl::StatusOr<LiquidState3D> ParticleShell() {
+inline absl::StatusOr<LiquidState3D> ParticleShell(int minimum_squared_radius = 15) {
   constexpr std::size_t kMaximumParticles = 729;
   auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(kMaximumParticles);
   if (!particles.ok()) {
@@ -20,7 +20,7 @@ inline absl::StatusOr<LiquidState3D> ParticleShell() {
   for (int z = -4; z <= 4; ++z) {
     for (int y = -4; y <= 4; ++y) {
       for (int x = -4; x <= 4; ++x) {
-        if (x * x + y * y + z * z >= 15) {
+        if (x * x + y * y + z * z >= minimum_squared_radius) {
           (*particles)[count] = {
               .id = count + 1,
               .world_position = {8.5 + x, 8.5 + y, 8.5 + z},

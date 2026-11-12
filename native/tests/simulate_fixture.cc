@@ -9,6 +9,7 @@
 #include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/whitewater_volume_cache_3d.h"
+#include "liquid_cavity_scheduler_cases.h"
 int Produce(int argc, const std::filesystem::path& path, bool digest, bool composition) {
   if (argc != 3) {
     return 1;
@@ -218,10 +219,11 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
+  const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
   const bool mixed_surface = args[5] == "mixed-surface" || shared_surface;
   const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean
-      || bounded_wave || shear_tank || mixed_surface;
+      || bounded_wave || shear_tank || mixed_surface || cavity_loss;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -317,6 +319,30 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         std::cerr << authored << '\n';
         return 3;
       }
+    } else if (cavity_loss) {
+      auto original = fluidity::cavity_test::ParticleShell();
+      auto shrunken = fluidity::cavity_test::ParticleShell(4);
+      if (!original.ok() || !shrunken.ok()) {
+        return 3;
+      }
+      original->random_seed = scene.random_seed;
+      scene.scene.field = fluidity::LiquidParticleSphereUnion3D{.radius = 0.9};
+      scene.scene.cavity = fluidity::LiquidSceneCavity3D{.atmospheric_absolute_pressure = 100000.0};
+      scene.options = fluidity::cavity_test::ShellOptions(shrunken->particles.size());
+      scene.options.maximum_step_duration = 0.05;
+      auto scheduler = fluidity::LiquidSubstepScheduler3D::Create(*original, scene.scene, scene.options);
+      if (!scheduler.ok()) {
+        std::cerr << scheduler.status() << '\n';
+        return 3;
+      }
+      auto seeded = fluidity::CloneLiquidState3D(scheduler->committed(), scene.options.capacities);
+      if (!seeded.ok()) {
+        return 3;
+      }
+      // Retain the resolved gas inventory while supplying the smaller sampled shell.
+      state = std::move(*seeded);
+      state.particles = std::move(shrunken->particles);
+      state.next_particle_id = shrunken->next_particle_id;
     } else if (shared_surface) {
       state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(3);
       if (!state.particles.Resize(3).ok()) {
@@ -447,7 +473,21 @@ int FirstPointFrameFixture(const std::filesystem::path& path) {
   const auto& velocity = frame->points.points[0].world_velocity;
   std::cout.precision(17);
   std::cout << "{\"frame\":1,\"particle_count\":" << frame->points.points.size() << ",\"first_velocity\":["
-            << velocity.x << ',' << velocity.y << ',' << velocity.z << "]}\n";
+            << velocity.x << ',' << velocity.y << ',' << velocity.z << "],\"composition\":[";
+  const char* particle_separator = "";
+  for (const auto& particle : frame->points.points.values()) {
+    std::cout << particle_separator << "{\"id\":" << particle.id << ",\"phase_id\":" << particle.phase_id
+              << ",\"constituents\":[";
+    const char* constituent_separator = "";
+    for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+      std::cout << constituent_separator << '[' << constituent.substance_id << ',' << constituent.volume_fraction
+                << ']';
+      constituent_separator = ",";
+    }
+    std::cout << "]}";
+    particle_separator = ",";
+  }
+  std::cout << "]}\n";
   return 0;
 }
 
