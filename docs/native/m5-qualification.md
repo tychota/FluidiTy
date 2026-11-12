@@ -3486,3 +3486,32 @@ Use the preceding clean-build and Blender commands with build
 directory `out/build/m5-main-2e96fea-clean` and output directories
 `out/authored-upstream-2e96fea-cpu` and
 `out/authored-upstream-2e96fea-cuda`. Q-SAND remains open.
+
+### Matched absolute timesteps across grids
+
+Use the zero-phase Euler wall-face solver and hold the physical
+release fixed. Run each grid with the other grid's half-step
+duration. Combine those new runs with the existing same-duration
+results.
+
+| Absolute dt | Coarse angle / radius | Fine angle / radius |
+|---:|---|---|
+| 0.0009375 s | 41.107594° / 0.153975 m | 33.288325° / 0.183801 m |
+| 0.00078125 s | 42.318401° / 0.147696 m | 34.345649° / 0.179405 m |
+
+At matched timesteps, the fine pile is 7.82–7.97° shallower and
+0.0298–0.0317 m wider. Both fine angles pass the angle check and
+both fine radii fail. Both coarse radii pass and both coarse
+angles fail. The timestep mismatch in the original matrix therefore
+does not explain these differences. The two new cases retain
+vertical momentum residual below 2.4e-8 N·s.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-matched-timestep-bin'
+foreach ($grid in 'fine', 'coarse') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-matched-timestep $grid
+}
+```
+
+The temporary fixture only swaps the absolute half-step durations.
+Both sources were restored after linking. Q-SAND remains open.
