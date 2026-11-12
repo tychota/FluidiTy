@@ -286,6 +286,8 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   LiquidBoundaryFaceDeposits3D boundary_deposits;
   double ghost_wall_force_y = 0;
   std::vector<double> particle_grid_normal_impulse;
+  std::vector<StationaryFloorGhostRow3D> ghost_rows;
+  const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   if (compatible_floor) {
     floor_tags.resize(grid.face_count());
     const auto layout = grid.view();
@@ -354,7 +356,23 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       }
       particle_grid_normal_impulse[index] = settings.duration * std::max(0.0, wall_force_y);
     }
-    const auto wall_force = ScatterStationaryFloorGhostTranspose3D(grid.view(), validity, floor_tags, face_force);
+    std::vector<std::uint8_t> needed(grid.face_count());
+    for (const auto& particle_stencils : boundary_deposits.compatible_stencils) {
+      for (const auto& stencil : particle_stencils) {
+        for (const auto& sample : stencil) {
+          needed[sample.face_slot] = 1;
+        }
+      }
+    }
+    const auto wall_force = ScatterStationaryFloorGhostTranspose3D(
+        grid.view(),
+        validity,
+        floor_tags,
+        face_force,
+        deposits,
+        needed,
+        &ghost_rows
+    );
     if (!wall_force.ok()) {
       return wall_force.status();
     }
@@ -368,7 +386,6 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<double> velocities(grid.face_count());
   const bool blend_stored_velocity = settings.particle_energy_blend > 0;
   std::vector<double> old_velocities(blend_stored_velocity ? grid.face_count() : 0);
-  const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   const auto layout = grid.view();
   DrySolidStepBudget3D trial_budget{};
   trial_budget.grid_wall_impulse_y = settings.duration * ghost_wall_force_y;
@@ -433,25 +450,26 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<MacParticleGatherResult3D> gathers(particles.size());
   const auto& history = blend_stored_velocity ? old_velocities : velocities;
   if (compatible_floor) {
-    std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
-    std::vector<LiquidPrescribedWallSample3D> walls(grid.face_count());
-    for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
-      if (deposits[slot].deposited_mass > 0) {
-        validity[slot] = LiquidFaceValidity3D::kValid;
+    auto continued_velocity = velocities;
+    std::vector<std::uint8_t> fallback(grid.face_count());
+    for (const auto& row : ghost_rows) {
+      double value = 0;
+      for (const auto& term : row.terms) {
+        value = std::fma(term.coefficient, velocities[term.donor_slot], value);
       }
-      if (!floor_tags[slot].structurally_eligible) {
-        // The continuation may extrapolate tangential velocity inside the
-        // stationary floor. It cannot extrapolate normal flow there.
-        walls[slot] = {.available = true, .unit_normal = {0, 1, 0}};
-      }
+      continued_velocity[row.target_slot] = value;
+      fallback[row.target_slot] = row.fallback;
     }
+    const std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kValid);
+    const std::vector<LiquidBoundaryFaceTag3D> continued_tags(grid.face_count());
+    const std::vector<LiquidPrescribedWallSample3D> walls(grid.face_count());
     const auto gathered = floor_transfers->gather({
         grid,
         boundary_particles,
         0,
         settings.duration,
-        {0, 0, history, validity, floor_tags, walls},
-        {settings.duration, settings.duration, velocities, validity, floor_tags, walls},
+        {0, 0, continued_velocity, validity, continued_tags, walls},
+        {settings.duration, settings.duration, continued_velocity, validity, continued_tags, walls},
     });
     if (!gathered.ok()) {
       return gathered.status();
@@ -461,7 +479,13 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       auto& result = gathers[index];
       const auto& complete = gathered->particles[index];
       result.velocity_gradient = complete.velocity_gradient;
-      result.fitted_velocity_slopes = complete.affine_enabled ? complete.fitted_velocity_slopes : Mat3{};
+      bool affine_enabled = complete.affine_enabled;
+      for (const auto& stencil : boundary_deposits.compatible_stencils[index]) {
+        for (const auto& sample : stencil) {
+          affine_enabled = affine_enabled && fallback[sample.face_slot] == 0;
+        }
+      }
+      result.fitted_velocity_slopes = affine_enabled ? complete.fitted_velocity_slopes : Mat3{};
       // Compatible PIC is the transpose of the mass deposit. Use the complete
       // ghost field for the affine fit and the true deformation derivative.
       for (std::size_t axis = 0; axis < 3; ++axis) {

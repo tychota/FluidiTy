@@ -849,6 +849,54 @@ bool TestCompatibleFloorStressWork() {
   if (std::abs(transpose_work_residual) >= 1e-11 || std::abs(*wall_force) < 1e-3) {
     return false;
   }
+  std::vector<double> weighted_force(view.face_count());
+  const auto weighted_full =
+      fluidity::internal::AccumulateDrySolidStress3D(*grid, position, volume, stress, weighted_force);
+  if (!weighted_full.ok()) {
+    return false;
+  }
+  std::vector<fluidity::MacFaceDeposit3D> masses(view.face_count());
+  std::vector<std::uint8_t> needed(view.face_count());
+  for (std::size_t slot = 0; slot < view.face_count(); ++slot) {
+    masses[slot].deposited_mass = mask[slot] ? (slot % 3 == 0 ? 1e-8 : 1.0) : 0.0;
+    needed[slot] = weighted_force[slot] != 0;
+  }
+  std::vector<fluidity::internal::StationaryFloorGhostRow3D> weighted_rows;
+  const auto weighted_wall = fluidity::internal::ScatterStationaryFloorGhostTranspose3D(
+      view,
+      validity,
+      tags,
+      weighted_force,
+      masses,
+      needed,
+      &weighted_rows
+  );
+  if (!weighted_wall.ok() || weighted_rows.empty()) {
+    return false;
+  }
+  for (const auto& row : weighted_rows) {
+    double reconstructed = 0;
+    for (const auto& term : row.terms) {
+      reconstructed = std::fma(term.coefficient, velocities[term.donor_slot], reconstructed);
+    }
+    const auto face = view.FaceIndex(row.target_slot);
+    if (!face.ok()) {
+      return false;
+    }
+    const double expected = face->axis == fluidity::FaceNormalAxis::kY ? 0.0 : velocities[row.target_slot];
+    if (row.fallback || std::abs(reconstructed - expected) > 1e-10) {
+      return false;
+    }
+  }
+  double weighted_grid_work = 0;
+  for (std::size_t slot = 0; slot < weighted_force.size(); ++slot) {
+    weighted_grid_work += duration * weighted_force[slot] * velocities[slot];
+  }
+  const double weighted_work_residual = weighted_grid_work + paired_particle_work;
+  std::printf("mass-weighted floor transpose work residual_J=%.9g\n", weighted_work_residual);
+  if (std::abs(weighted_work_residual) >= 1e-10) {
+    return false;
+  }
   constexpr double expected_particle_work = -2.125;
   return std::abs(particle_work - expected_particle_work) < 1e-11
       && std::abs(grid_work - oracle->grid_stress_work) < 1e-11

@@ -39,6 +39,17 @@ absl::Status AccumulateCompatibleSolidStress3D(
     std::span<double> face_force
 );
 
+struct StationaryFloorGhostTerm3D {
+  std::size_t donor_slot;
+  double coefficient;
+};
+
+struct StationaryFloorGhostRow3D {
+  std::size_t target_slot;
+  std::vector<StationaryFloorGhostTerm3D> terms;
+  bool fallback = false;
+};
+
 // Applies the transpose of the single-side stationary floor continuation to
 // a full-stencil force field. Below-floor normal ghost velocities are zero.
 // All other missing samples use the radius-two affine fit or its nearest
@@ -47,7 +58,10 @@ absl::StatusOr<double> ScatterStationaryFloorGhostTranspose3D(
     SparseMacGridView3D grid,
     std::span<const LiquidFaceValidity3D> validity,
     std::span<const LiquidBoundaryFaceTag3D> tags,
-    std::span<double> force
+    std::span<double> force,
+    std::span<const MacFaceDeposit3D> masses = {},
+    std::span<const std::uint8_t> needed = {},
+    std::vector<StationaryFloorGhostRow3D>* ghost_rows = nullptr
 );
 
 }  // namespace fluidity::internal

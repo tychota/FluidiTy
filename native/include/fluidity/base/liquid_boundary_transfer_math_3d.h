@@ -10,6 +10,7 @@ namespace fluidity::internal {
 struct LiquidGhostFitSample3D {
   Vec3 offset_in_cell_widths;  // Dimensionless displacement from the target.
   double velocity;  // Matching staggered-component m/s.
+  double row_scale = 1.0;  // Square root of the relative least-squares weight.
 };
 struct LiquidGhostAffineFit3D {
   bool full_rank;  // False means coefficients must not be used.
@@ -47,7 +48,16 @@ FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitBoundedLi
     if (!TransferFinite(sample.offset_in_cell_widths) || !boundary_internal::numeric::isfinite(sample.velocity)) {
       return boundary_internal::Error::kInvalid;
     }
-    matrix[row] = {1.0, sample.offset_in_cell_widths.x, sample.offset_in_cell_widths.y, sample.offset_in_cell_widths.z};
+    const double scale = sample.row_scale;
+    if (!boundary_internal::numeric::isfinite(scale) || scale <= 0) {
+      return boundary_internal::Error::kInvalid;
+    }
+    matrix[row] = {
+        scale,
+        scale * sample.offset_in_cell_widths.x,
+        scale * sample.offset_in_cell_widths.y,
+        scale * sample.offset_in_cell_widths.z,
+    };
     velocity_scale = boundary_internal::numeric::max(velocity_scale, boundary_internal::numeric::abs(sample.velocity));
   }
   if (samples.size() < 4) {
@@ -57,7 +67,7 @@ FLUIDITY_HD inline boundary_internal::Value<LiquidGhostAffineFit3D> FitBoundedLi
     velocity_scale = 1.0;
   }
   for (std::size_t row = 0; row < samples.size(); ++row) {
-    rhs[row] = samples[row].velocity / velocity_scale;
+    rhs[row] = samples[row].row_scale * (samples[row].velocity / velocity_scale);
   }
   boundary_internal::numeric::array<std::size_t, 4> column_order{0, 1, 2, 3};
   double largest_pivot = 0.0;

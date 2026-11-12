@@ -1048,9 +1048,14 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     SparseMacGridView3D grid,
     std::span<const LiquidFaceValidity3D> validity,
     std::span<const LiquidBoundaryFaceTag3D> tags,
-    std::span<double> force
+    std::span<double> force,
+    std::span<const MacFaceDeposit3D> masses,
+    std::span<const std::uint8_t> needed,
+    std::vector<StationaryFloorGhostRow3D>* ghost_rows
 ) {
-  if (force.size() != grid.face_count() || validity.size() != force.size() || tags.size() != force.size()) {
+  if (force.size() != grid.face_count() || validity.size() != force.size() || tags.size() != force.size()
+      || (!masses.empty() && masses.size() != force.size())
+      || (ghost_rows != nullptr && needed.size() != force.size())) {
     return absl::InvalidArgumentError("invalid floor ghost stress extents");
   }
   std::vector<OwnedFaceAnchor> anchors(force.size());
@@ -1067,10 +1072,19 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     }
   }
 
+  std::vector<StationaryFloorGhostRow3D> rows;
   for (std::size_t target = 0; target < force.size(); ++target) {
     const bool live = tags[target].structurally_eligible && IsUsable(validity[target]);
     const bool fixed_normal = !tags[target].structurally_eligible && anchors[target].axis == FaceNormalAxis::kY;
-    if (force[target] == 0 || live || fixed_normal) {
+    const bool gather_needed = ghost_rows != nullptr && needed[target] != 0;
+    if (live || (force[target] == 0 && !gather_needed)) {
+      continue;
+    }
+    StationaryFloorGhostRow3D row{.target_slot = target, .terms = {}};
+    if (fixed_normal) {
+      if (gather_needed) {
+        rows.push_back(std::move(row));
+      }
       continue;
     }
     constexpr std::size_t kDonorCapacity = kMaxRadiusTwoGhostDonors3D;
@@ -1079,6 +1093,7 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     std::size_t count = 0;
     std::size_t nearest = 0;
     double nearest_squared_distance = std::numeric_limits<double>::infinity();
+    double largest_mass = 0;
     for (const std::size_t donor : live_slots) {
       if (anchors[donor].axis != anchors[target].axis) {
         continue;
@@ -1095,6 +1110,9 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
         nearest_squared_distance = squared_distance;
         nearest = donor;
       }
+      if (!masses.empty()) {
+        largest_mass = std::max(largest_mass, masses[donor].deposited_mass);
+      }
       donors[count] = donor;
       samples[count++].offset_in_cell_widths = offset;
     }
@@ -1102,7 +1120,17 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       if (tags[target].structurally_eligible) {
         return absl::FailedPreconditionError("floor ghost transpose has no compatible donor");
       }
+      if (gather_needed) {
+        row.fallback = true;
+        rows.push_back(std::move(row));
+      }
       continue;
+    }
+    if (!masses.empty()) {
+      for (std::size_t index = 0; index < count; ++index) {
+        const double donor_mass = masses[donors[index]].deposited_mass;
+        samples[index].row_scale = std::sqrt(donor_mass / largest_mass);
+      }
     }
     const auto fit_input = std::span(samples).first(count);
     const auto rank = FitBoundedLiquidGhostAffineCore3D<kDonorCapacity>(fit_input);
@@ -1110,7 +1138,24 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
       return absl::OutOfRangeError("floor ghost transpose rank evaluation failed");
     }
     if (!rank->full_rank) {
+      if (!masses.empty()) {
+        nearest = donors[0];
+        double largest_score = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+          const auto offset = samples[index].offset_in_cell_widths;
+          const double score = masses[donors[index]].deposited_mass / (1 + Dot(offset, offset));
+          if (score > largest_score) {
+            largest_score = score;
+            nearest = donors[index];
+          }
+        }
+      }
       scattered_force[nearest] += force[target];
+      if (gather_needed) {
+        row.terms.push_back({nearest, 1});
+        row.fallback = true;
+        rows.push_back(std::move(row));
+      }
       continue;
     }
     // For the bounded local fit, probe the exact existing QR interpolation
@@ -1123,6 +1168,12 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
         return absl::OutOfRangeError("floor ghost transpose coefficient evaluation failed");
       }
       scattered_force[donors[index]] += basis->velocity_at_target * force[target];
+      if (gather_needed) {
+        row.terms.push_back({donors[index], basis->velocity_at_target});
+      }
+    }
+    if (gather_needed) {
+      rows.push_back(std::move(row));
     }
   }
 
@@ -1139,6 +1190,9 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     return absl::OutOfRangeError("nonfinite floor ghost wall reaction");
   }
   std::ranges::copy(scattered_force, force.begin());
+  if (ghost_rows != nullptr) {
+    *ghost_rows = std::move(rows);
+  }
   return wall_force_y;
 }
 
