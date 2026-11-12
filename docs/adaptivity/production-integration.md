@@ -64,6 +64,12 @@ At a cell center away from boundaries and width transitions, the measured radial
 
 `CheckUniformResamplingSupport` refuses the radial stencil, including an accidental binary64 moment match, because uniform split and merge require the complete unmasked tensor support. The checked witness leaves split and merge disabled.
 
+### Checked same-level quadratic transfer
+
+`GradedQuadraticMacTransfer3D` binds the existing FP64 quadratic geometry directly to canonical adaptive face slots. Every tensor node, including a zero-weight tie, requires an interior face with both incident leaves at the particle level, the exact represented anchor displacement, full aperture, and valid same-side carriers. Deposit and gather use the bound rows with the uniform operator's arithmetic. The signed island control matches the uniform sparse operator bit-for-bit for mass, momentum, PIC velocity, FLIP increment, affine slope and gradient. It refuses a mixed-level face and mask, side, low-mass and aperture changes.
+
+Runtime selection and F3/F4 admission still require frozen transfer selection through deposit and both gather histories, conservative binary64 moment and energy bounds, and a topology transaction with complete before-and-after support halos. A single-family edit can leave child stencils extending beyond the refined region.
+
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.
@@ -125,6 +131,19 @@ cmake --build out/build/matched-pressure-cuda --target fluidity_m3_matched_press
 ctest --test-dir out/build/matched-pressure-cuda -V -R '^M3MatchedPressure' --no-tests=error
 ```
 
+### Persistent CUDA pressure workspace
+
+The production adaptive pressure stage uploads the frozen graph into reserved
+arena ranges and uses the bounded pressure hierarchy and result bank. A failed
+solve leaves the last published result intact. The sealed-cube control can
+exercise this same path with `fluidity_m3_matched_pressure --cuda-arena`.
+
+On SM120, median stage times were 15.7926 ms for the 512-cell uniform graph and
+4.6444 ms for the 176-cell graded graph at the error limits above. The allocating
+CUDA control in the same run took 24.6398 ms and 8.7352 ms. Peak allocated arena
+bytes were 9,360,128 and 3,396,608 for the two capacity tiers. Peak active
+pressure scratch was 7,411,928 and 2,540,864 bytes. These measurements cover
+the sealed-cube arena. Use the full-wave procedure below for the job-wide peak.
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

@@ -16,3 +16,23 @@ The host-only `PrepareAdaptiveLiquidOwnerExchange3D` proposal uses the projected
 The detached `PrepareAdaptiveLiquidParticleExchange3D` candidate regenerates that plan for a clock-bound step-start particle snapshot. It preserves IDs, record order, and positions, then checks that the last resident in each affected leaf can represent the exact correction at the certified constitutive state. The caller certifies support for the revised carrier. Empty recipients, complete particle drains, inconsistent EOS, and mixed enthalpy are refused. A future runtime must partition the mixed-face ledger from particle trajectories so the same transfer is applied once.
 
 Automatic placement from the 6h band and 2h overlap, blended carriers and conservative cross-owner exchange remain integration work. Family remap on Eulerian-owned layouts remains unavailable. A handoff candidate currently requires half-open particle coverage, so it can refuse particles exactly on solid upper tank planes. Graded transfer and core transport still use transient host allocations. The matched-error full wave and simultaneous GPU memory gates remain open.
+
+## Certified planar placement in Simulate
+
+`AttemptWithAdaptiveBandPlacement` derives the signed distance to the frozen
+planar top and the leaf occupancy from the accepted scheduler state. The caller
+provides the accepted epoch, leaf key, duration-bound sweep and same-side carrier
+evidence. The scheduler uses the finest locally active width to apply the 6h
+particle depth and 2h carrier overlap before choosing retirement, reseeding or
+the ordinary trial. Retirement and reseeding use the existing atomic publication
+path. Missing carrier support and stale epochs fail before the trial.
+
+The deep planar fixture exercises late rejection, retirement and reseeding. CPU
+checks the committed epoch and represented inventory. SM120 reads the accepted
+device bank after rejection and both ownership transitions. The existing
+mixed-owner fixture exercises fresh-process replay.
+
+```powershell
+ctest --test-dir out/build/placement-cpu -R 'BandPlacement|AdaptiveBand|Eulerian' --output-on-failure
+ctest --test-dir out/build/placement-cuda -R 'CudaAdaptiveSimulate3D|AdaptiveBandReplay.cuda' --output-on-failure
+```

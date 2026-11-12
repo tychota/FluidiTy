@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "../cuda/liquid_pressure_stage_3d.h"
 #include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "gtest/gtest.h"
@@ -248,6 +249,43 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
     return std::move(projected->projection);
   });
   Receipt("explicit_coarse_fine_pressure", maximum_measurement);
+}
+
+TEST(CudaMacPressure3D, ExplicitAdaptiveGraphUsesPersistentArenaAndKeepsPublishedResultOnFailure) {
+  const auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto graph =
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(fixture->topology, 1, fixture->cells, fixture->subfaces);
+  ASSERT_TRUE(graph.ok()) << graph.status();
+  const auto independent = pressure_internal::CudaProjectPreparedMacPressure3D(*graph);
+  ASSERT_TRUE(independent.ok()) << independent.status();
+
+  const LiquidStateCapacities3D capacity{1, 0, graph->cells().size(), graph->links().size(), 0};
+  auto arena = CudaLiquidArena3D::Create(capacity, 0, std::numeric_limits<std::size_t>::max(), true, true);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  auto workspace = MacPressureWorkspace3D::Create(capacity.cells, capacity.faces);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  arena->SetWorkPhase(LiquidWorkPhase3D::kForcesGeometryPressure);
+  const auto before = arena->metrics();
+  const auto projection = cuda_internal::ProjectArenaAdaptivePressure3D(*arena, *graph, {}, *workspace);
+  ASSERT_TRUE(projection.ok()) << projection.status();
+  EXPECT_TRUE(std::ranges::equal(projection->cell_pressures, independent->projection.cell_pressures));
+  EXPECT_TRUE(
+      std::ranges::equal(projection->corrected_face_velocities, independent->projection.corrected_face_velocities)
+  );
+  EXPECT_EQ(projection->diagnostics.iteration_count, independent->projection.diagnostics.iteration_count);
+  EXPECT_LE(projection->diagnostics.max_cell_constraint_defect, 2e-5);
+  const auto refused = cuda_internal::ProjectArenaAdaptivePressure3D(*arena, *graph, {.max_iterations = 0}, *workspace);
+  EXPECT_EQ(refused.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_TRUE(std::ranges::equal(projection->cell_pressures, independent->projection.cell_pressures));
+  const auto after = arena->metrics();
+  EXPECT_EQ(after.device_reservations, before.device_reservations);
+  EXPECT_EQ(after.device_frees, before.device_frees);
+  EXPECT_EQ(after.live_device_bytes, before.live_device_bytes);
+  EXPECT_GT(after.peak_active_device_scratch_bytes, 0U);
+  EXPECT_LE(after.peak_device_bytes, after.device_budget_bytes);
+  std::cout << "adaptive_pressure_device_bytes=" << after.live_device_bytes
+            << " active_scratch_bytes=" << after.peak_active_device_scratch_bytes << '\n';
 }
 
 TEST(CudaMacPressure3D, MixedLinksMatchOracle) {

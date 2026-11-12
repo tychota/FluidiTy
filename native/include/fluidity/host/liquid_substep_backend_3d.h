@@ -243,6 +243,11 @@ struct LiquidSubstepBackend3D {
       const pressure_internal::PreparedMacPressureSystem3D&,
       MacPressureSolverOptions3D
   ) = nullptr;
+  // Persistent device ranges and an existing host publication workspace for
+  // the explicit graph. The successful result borrows that workspace.
+  absl::StatusOr<
+      MacPressureProjectionView3D> (*project_adaptive_in_arena)(void*, const pressure_internal::PreparedMacPressureSystem3D&, MacPressureSolverOptions3D, MacPressureWorkspace3D&) =
+      nullptr;
   bool host_adaptive_pressure = false;
   // Device-backed coupled projection on frozen graded subfaces.
   absl::StatusOr<MacViscousPressureProjection3D> (*project_adaptive_viscous)(
