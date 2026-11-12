@@ -925,4 +925,27 @@ absl::StatusOr<LiquidBoundaryVelocityHistory3D> LiquidBoundaryWorkspace3D::SaveH
       bank.walls.values(),
   };
 }
+absl::Status internal::AccumulateCompatibleSolidStress3D(
+    const std::array<CompatibleMacFaceStencil3D, 3>& stencils,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    std::span<double> face_force
+) {
+  for (std::size_t axis = 0; axis < stencils.size(); ++axis) {
+    const auto stress_row = kirchhoff_stress.*kVelocitySlopeRows[axis];
+    for (const auto& sample : stencils[axis]) {
+      if (!sample.compatible) {
+        continue;
+      }
+      const double stress_force_contribution = -reference_volume * Dot(stress_row, sample.normalized_weight_gradient);
+      auto& stress_force_sum = face_force[sample.face_slot];
+      stress_force_sum += stress_force_contribution;
+      if (!std::isfinite(stress_force_sum)) {
+        return absl::OutOfRangeError("nonfinite compatible solid face force");
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace fluidity

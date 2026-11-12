@@ -1,16 +1,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <span>
 #include <string_view>
 #include <vector>
 
 #include "../src/dry_solid_step_3d_internal.h"
+#include "../src/liquid_boundary_transfer_3d_internal.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
+#include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "fluidity/host/cuda_transfers_3d.h"
 #endif
 
@@ -587,6 +590,113 @@ bool TestRejectsInadmissibleInitialState() {
   return true;
 }
 
+bool TestCompatibleFloorStressWork() {
+  constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  constexpr fluidity::Vec3 position{2.2, 0.2, 2.3};
+  constexpr Mat3 stress{{10, 2, 3}, {2, 20, 4}, {3, 4, -30}};
+  constexpr double volume = 0.5;
+  constexpr double duration = 0.125;
+  const fluidity::LiquidBoundaryParticle3D particle{
+      .transfer = {.sorted_world_position = position, .trial_world_position = position, .particle_mass = 1},
+  };
+  const auto view = grid->view();
+  std::vector<fluidity::LiquidBoundaryFaceTag3D> tags(view.face_count());
+  std::vector<std::uint8_t> mask(view.face_count());
+  std::vector<double> velocities(view.face_count());
+  std::vector<fluidity::LiquidFaceValidity3D> validity(view.face_count());
+  const std::vector<fluidity::LiquidPrescribedWallSample3D> walls(view.face_count());
+  for (std::size_t slot = 0; slot < view.face_count(); ++slot) {
+    const auto face = view.FaceIndex(slot);
+    if (!face.ok()) {
+      return false;
+    }
+    const auto anchor = view.FaceWorldAnchor(*face);
+    if (!anchor.ok()) {
+      return false;
+    }
+    const bool compatible = anchor->y >= 0;
+    tags[slot].structurally_eligible = compatible;
+    mask[slot] = compatible;
+    validity[slot] = compatible ? fluidity::LiquidFaceValidity3D::kValid : fluidity::LiquidFaceValidity3D::kMissing;
+    const std::array components{2 * anchor->x + anchor->z, 3 * anchor->y, anchor->x + 4 * anchor->z};
+    velocities[slot] = components[static_cast<std::size_t>(face->axis)];
+  }
+  const fluidity::LiquidBoundaryDepositInputs3D deposit_inputs{*grid, {&particle, 1}, tags, {0x1p-42, 0x1p-38, 1}};
+  const fluidity::LiquidBoundaryGatherInputs3D gather_inputs{
+      *grid,
+      {&particle, 1},
+      0,
+      duration,
+      {0, 0, velocities, validity, tags, walls},
+      {duration, duration, velocities, validity, tags, walls},
+  };
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto device_deposits = fluidity::CudaDepositCompatibleMacQuanta3D(deposit_inputs);
+  const auto device_gather = fluidity::CudaGatherLiquidBoundaryParticles3D(gather_inputs);
+  if (!device_deposits.ok() || !device_gather.ok()) {
+    return false;
+  }
+  const auto& deposits = device_deposits->deposits;
+  const auto& gathered = device_gather->gathered;
+#else
+  const auto host_deposits = fluidity::DepositCompatibleMacQuanta3D(deposit_inputs);
+  const auto host_gather = fluidity::GatherLiquidBoundaryParticles3D(gather_inputs);
+  if (!host_deposits.ok() || !host_gather.ok()) {
+    return false;
+  }
+  const auto& deposits = *host_deposits;
+  const auto& gathered = *host_gather;
+#endif
+  std::vector<double> force(view.face_count());
+  const auto assembled =
+      fluidity::internal::AccumulateCompatibleSolidStress3D(deposits.compatible_stencils[0], volume, stress, force);
+  if (!assembled.ok() || gathered.new_pic_fallback_particle_count != 0 || !gathered.particles[0].affine_enabled) {
+    return false;
+  }
+  std::vector<double> oracle_force(view.face_count());
+  const auto oracle = fluidity::DepositCutElasticStress3D(
+      *grid,
+      position,
+      position,
+      volume,
+      stress,
+      duration,
+      mask,
+      velocities,
+      oracle_force
+  );
+  if (!oracle.ok()) {
+    return false;
+  }
+  double grid_work = 0;
+  for (std::size_t slot = 0; slot < force.size(); ++slot) {
+    if (std::abs(force[slot] - oracle_force[slot]) > 1e-11 || (mask[slot] == 0 && force[slot] != 0)) {
+      return false;
+    }
+    grid_work += duration * force[slot] * velocities[slot];
+  }
+  const auto& gradient = gathered.particles[0].velocity_gradient;
+  const double particle_work = duration * volume
+      * ((10 * gradient.x_row.x + 2 * gradient.x_row.y + 3 * gradient.x_row.z)
+         + (2 * gradient.y_row.x + 20 * gradient.y_row.y + 4 * gradient.y_row.z)
+         + (3 * gradient.z_row.x + 4 * gradient.z_row.y - 30 * gradient.z_row.z));
+  std::printf(
+      "cut floor stress work grid_J=%.9g particle_J=%.9g cut_J=%.9g\n",
+      grid_work,
+      particle_work,
+      oracle->cut_work
+  );
+  constexpr double expected_particle_work = -2.125;
+  return std::abs(particle_work - expected_particle_work) < 1e-11
+      && std::abs(grid_work - oracle->grid_stress_work) < 1e-11
+      && std::abs(particle_work + grid_work - oracle->cut_work) < 1e-11 && std::abs(oracle->cut_work) > 1e-3
+      && std::hypot(oracle->stress_impulse.x, oracle->stress_impulse.y, oracle->stress_impulse.z) < 1e-11;
+}
+
 bool TestUncutStressWork() {
   const BlockIndex3D block{0, 0, 0};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
@@ -807,8 +917,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
-      || !TestStoredResidualMomentum() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
-      || !TestRejectsInadmissibleInitialState()) {
+      || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestUncutStressWork()
+      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

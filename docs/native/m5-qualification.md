@@ -866,6 +866,30 @@ Native and CUDA meet the 1e-11 fixture tolerance. This verifies the
 prescribed friction mapping for triaxial compression. The pile gate
 remains a separate spatial benchmark.
 
+### Compatible floor stress quadrature
+
+The M6 elastic blade and M5 floor fixture now share one accumulator for
+reference-volume stress forces on the normalized compatible stencil.
+This keeps force assembly on exactly the same face support as mass and
+affine momentum deposition. The floor fixture excludes face anchors
+below y = 0 and uses a wall-compatible affine field with normal velocity
+3y. Native and CUDA independently form the compatible stencil and
+gather the complete velocity gradient. Force assembly runs on the host
+for both transfer paths.
+
+The analytic particle work is -2.125 J. Both paths give 3.42852101 J of
+grid stress work and 1.30352101 J of cut work. The full particle work
+plus grid work agrees with the cut work to 1e-11 J. The normalized
+forces match the independent cut oracle within 1e-11 N per face,
+with zero force below the floor and a net stress impulse within
+1e-11 N·s. No ghost fit falls back in the new history. The nonzero
+cut work measures the difference between the complete gather and
+compatible deposition. The pile solver still needs a paired
+compatible floor transfer and contact budget.
+
+Run the native and CUDA M5DryScenes tests for the floor fixture, and
+the MacTransfer3D elastic blade cases for the shared M6 caller.
+
 ### Paired floor reflection and grid-reaction friction
 
 The follow-up used the transpose of the reflection map for stress force.
