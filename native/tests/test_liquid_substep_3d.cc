@@ -690,14 +690,19 @@ TEST(LiquidSubstep3D, UnsupportedViscousGeometryPreservesCommittedState) {
       absl::StatusCode::kUnimplemented
   );
 
-  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
-  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
-  const auto attempt = scheduler->Attempt(0.01);
-  ASSERT_TRUE(attempt.ok()) << attempt.status();
-  EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
-  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kUnimplemented);
-  ExpectIdenticalSerializedState(initial, scheduler->committed());
+  const auto check_rejection = [&](absl::StatusCode expected) {
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    const auto attempt = scheduler->Attempt(0.01);
+    ASSERT_TRUE(attempt.ok()) << attempt.status();
+    EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
+    EXPECT_EQ(scheduler->diagnostics().failure_code, expected);
+    ExpectIdenticalSerializedState(initial, scheduler->committed());
+  };
+  check_rejection(absl::StatusCode::kFailedPrecondition);
+  scene.obstacle = TranslatingHalfspace3D{{0.0, 1.0, 0.0}, 2.25, {}};
+  check_rejection(absl::StatusCode::kUnimplemented);
 }
 
 TEST(LiquidSubstep3D, OceanInletRetiresDryParticleAndDiscardsRejectedBirths) {
