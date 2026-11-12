@@ -155,9 +155,14 @@ FindTailCellOrdinal(std::span<const MacPressureCell3D> cells, FaceIndex3D face_i
   return FindCellOrdinal(cells, {coordinates[0], coordinates[1], coordinates[2]});
 }
 
-template <typename Inputs>
-absl::StatusOr<FrozenMacPressureLink3D>
-FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_face_area, const Inputs& inputs) {
+inline absl::StatusOr<FrozenMacPressureLink3D> FreezeLinkFromIncidence(
+    const MacPressureFace3D& face,
+    std::size_t face_slot,
+    double full_face_area,
+    double step_duration,
+    std::optional<std::size_t> tail_cell_ordinal,
+    std::optional<std::size_t> head_cell_ordinal
+) {
   if (!std::isfinite(face.open_area) || face.open_area < 0.0 || face.open_area > full_face_area) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
@@ -166,9 +171,6 @@ FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_fac
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
 
-  const auto [x, y, z] = face.face_index.lattice_index;
-  const auto tail_cell_ordinal = FindTailCellOrdinal(inputs.pressure_cells, face.face_index);
-  const auto head_cell_ordinal = FindCellOrdinal(inputs.pressure_cells, {x, y, z});
   const bool has_both_endpoints = tail_cell_ordinal.has_value() && head_cell_ordinal.has_value();
   const bool has_one_endpoint = tail_cell_ordinal.has_value() != head_cell_ordinal.has_value();
   if (const auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link)) {
@@ -192,7 +194,7 @@ FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_fac
     if (face.inverse_density <= 0.0 || face.pressure_gradient_distance <= 0.0) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
-    const double step_scaled_mobility = inputs.step_duration * face.inverse_density;
+    const double step_scaled_mobility = step_duration * face.inverse_density;
     pressure_to_velocity_scale = step_scaled_mobility / face.pressure_gradient_distance;
     conductance = face.open_area * pressure_to_velocity_scale;
     if (!IsFinitePositive(pressure_to_velocity_scale) || !IsFinitePositive(conductance)) {
@@ -224,6 +226,20 @@ FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_fac
       .prescribed_wall_flux = prescribed_wall_flux,
       .pressure_link = face.pressure_link,
   };
+}
+
+template <typename Inputs>
+absl::StatusOr<FrozenMacPressureLink3D>
+FreezeLink(const MacPressureFace3D& face, std::size_t face_slot, double full_face_area, const Inputs& inputs) {
+  const auto [x, y, z] = face.face_index.lattice_index;
+  return FreezeLinkFromIncidence(
+      face,
+      face_slot,
+      full_face_area,
+      inputs.step_duration,
+      FindTailCellOrdinal(inputs.pressure_cells, face.face_index),
+      FindCellOrdinal(inputs.pressure_cells, {x, y, z})
+  );
 }
 
 // The original RHS uses one signed flux per physical contribution. Track

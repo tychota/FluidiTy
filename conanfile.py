@@ -6,7 +6,7 @@ from conan.tools.cmake import CMakeDeps, CMakeToolchain
 
 class FluidityNative(ConanFile):
     settings = ("os", "compiler", "build_type", "arch")
-    requires = "abseil/20250814.2", "flatbuffers/25.12.19", "blake3/1.8.5", "taywee-args/6.4.6"
+    requires = "abseil/20250814.2", "flatbuffers/25.12.19", "blake3/1.8.5", "cli11/2.7.2"
     tool_requires = "flatbuffers/25.12.19"
     test_requires = "gtest/1.17.0"
 

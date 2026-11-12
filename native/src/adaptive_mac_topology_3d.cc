@@ -198,6 +198,81 @@ absl::Status AppendInteriorFaces(
   return absl::OkStatus();
 }
 
+constexpr std::uint8_t kAllFaceQuarters = 0xF;
+using LeafSideCoverage = std::array<std::uint8_t, 6>;
+
+auto ExteriorFaceOrder(const AdaptiveMacExteriorFace3D& face) {
+  const auto& index = face.face_index.lattice_index;
+  return std::tuple{face.face_index.axis, index.z, index.y, index.x, face.width_exponent};
+}
+
+// A 2:1 interior face either occupies the whole side or one quarter of
+// a coarser side. Tangential upper halves encode the two quarter bits.
+std::uint8_t CoveredQuarters(const AdaptiveMacLeaf3D& leaf, const AdaptiveMacInteriorFace3D& face) {
+  if (leaf.key.width_exponent == face.width_exponent) {
+    return kAllFaceQuarters;
+  }
+  const auto lower = Coordinates(leaf.key.lower_corner);
+  const auto [face_x, face_y, face_z] = face.face_index.lattice_index;
+  const LatticeCoordinates face_lower{face_x, face_y, face_z};
+  const auto axis = static_cast<std::size_t>(face.face_index.axis);
+  const auto first_tangent = (axis + 1) % 3;
+  const auto second_tangent = (axis + 2) % 3;
+  const auto quarter_width = WidthInFinestCells(face.width_exponent);
+  const unsigned first_half = face_lower[first_tangent] - lower[first_tangent] >= quarter_width ? 1 : 0;
+  const unsigned second_half = face_lower[second_tangent] - lower[second_tangent] >= quarter_width ? 2 : 0;
+  return static_cast<std::uint8_t>(1U << (first_half + second_half));
+}
+
+// Emit the uncovered face or quarters in common finest-lattice coordinates.
+void AppendExteriorFaces(
+    const AdaptiveMacLeaf3D& leaf,
+    std::size_t cell_ordinal,
+    const LeafSideCoverage& coverage,
+    std::vector<AdaptiveMacExteriorFace3D>& faces
+) {
+  const auto width = WidthInFinestCells(leaf.key.width_exponent);
+  for (std::size_t side = 0; side < coverage.size(); ++side) {
+    const std::uint8_t covered = coverage[side];
+    if (covered == kAllFaceQuarters) {
+      continue;
+    }
+    const auto axis = side / 2;
+    const bool high_side = side % 2 == 1;
+    auto face_lower = Coordinates(leaf.key.lower_corner);
+    if (high_side) {
+      face_lower[axis] += width;
+    }
+    const bool split = covered != 0;
+    const auto subface_exponent = static_cast<std::uint8_t>(leaf.key.width_exponent - (split ? 1 : 0));
+    const double subface_width = split ? leaf.cell_width / 2 : leaf.cell_width;
+    for (unsigned quarter = 0; quarter < (split ? 4U : 1U); ++quarter) {
+      if ((covered & (1U << quarter)) != 0) {
+        continue;
+      }
+      auto subface_lower = face_lower;
+      subface_lower[(axis + 1) % 3] += (quarter & 1U) * (width / 2);
+      subface_lower[(axis + 2) % 3] += (quarter >> 1U) * (width / 2);
+      faces.push_back({
+          .face_index =
+              {
+                  static_cast<FaceNormalAxis>(axis),
+                  {
+                      static_cast<std::int32_t>(subface_lower[0]),
+                      static_cast<std::int32_t>(subface_lower[1]),
+                      static_cast<std::int32_t>(subface_lower[2]),
+                  },
+              },
+          .width_exponent = subface_exponent,
+          .cell_ordinal = cell_ordinal,
+          .cell_is_tail = high_side,
+          .face_area = subface_width * subface_width,
+          .face_slot = 0,
+      });
+    }
+  }
+}
+
 }  // namespace
 
 absl::StatusOr<AdaptiveMacTopology3D>
@@ -273,6 +348,43 @@ std::span<const AdaptiveMacLeaf3D> AdaptiveMacTopology3D::cells() const {
 
 std::span<const AdaptiveMacInteriorFace3D> AdaptiveMacTopology3D::interior_faces() const {
   return interior_faces_;
+}
+
+absl::StatusOr<AdaptiveMacFaceOwnership3D> BuildAdaptiveMacFaceOwnership3D(const AdaptiveMacTopology3D& topology) {
+  const auto cells = topology.cells();
+  const auto interior_faces = topology.interior_faces();
+  if (cells.empty()) {
+    return absl::InvalidArgumentError("adaptive face ownership requires a topology with leaves");
+  }
+  std::vector<LeafSideCoverage> coverage(cells.size());
+  for (const auto& face : interior_faces) {
+    const auto low_side = 2 * static_cast<std::size_t>(face.face_index.axis);
+    coverage[face.tail_cell_ordinal][low_side + 1] |= CoveredQuarters(cells[face.tail_cell_ordinal], face);
+    coverage[face.head_cell_ordinal][low_side] |= CoveredQuarters(cells[face.head_cell_ordinal], face);
+  }
+
+  AdaptiveMacFaceOwnership3D result;
+  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+    AppendExteriorFaces(cells[cell], cell, coverage[cell], result.exterior_faces);
+  }
+  std::ranges::sort(result.exterior_faces, {}, ExteriorFaceOrder);
+  result.interior_face_slots.reserve(interior_faces.size());
+  std::size_t interior = 0;
+  std::size_t exterior = 0;
+  while (interior < interior_faces.size() || exterior < result.exterior_faces.size()) {
+    const std::size_t slot = interior + exterior;
+    const bool take_interior = exterior == result.exterior_faces.size()
+        || (interior < interior_faces.size()
+            && FaceOrder(interior_faces[interior]) < ExteriorFaceOrder(result.exterior_faces[exterior]));
+    if (take_interior) {
+      result.interior_face_slots.push_back(slot);
+      ++interior;
+    } else {
+      result.exterior_faces[exterior].face_slot = slot;
+      ++exterior;
+    }
+  }
+  return result;
 }
 
 }  // namespace fluidity

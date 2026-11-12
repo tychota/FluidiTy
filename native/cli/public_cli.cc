@@ -1,12 +1,12 @@
 #include "public_cli.h"
 
 #include <algorithm>
-#include <args.hxx>
 #include <array>
 #include <cstdio>
-#include <memory>
 #include <string_view>
 #include <utility>
+
+#include "CLI/CLI.hpp"
 
 namespace fluidity::simulate {
 namespace {
@@ -75,77 +75,87 @@ constexpr std::array kOptions{
     OptionDefinition{kExecution, "measure-job", nullptr, "Emit terminal timing and resource measurements."},
 };
 
+// CLI11 treats an empty attached value as absent and accepts some explicit flag
+// values even when overrides are disabled. Preserve the public token syntax.
+absl::Status CheckAttachedValues(std::span<const std::string> option_arguments) {
+  for (const std::string_view argument : option_arguments) {
+    const auto separator = argument.find('=');
+    if (separator == std::string_view::npos) {
+      continue;
+    }
+    const auto option_name = argument.substr(0, separator);
+    if (!option_name.starts_with("--")) {
+      continue;
+    }
+    const auto definition = std::ranges::find(kOptions, option_name.substr(2), &OptionDefinition::name);
+    if (definition == kOptions.end()) {
+      continue;
+    }
+    if (definition->value_name == nullptr) {
+      return absl::InvalidArgumentError(std::string(option_name) + " takes no value");
+    }
+    if (separator + 1 == argument.size()) {
+      return absl::InvalidArgumentError(std::string(option_name) + " requires a nonempty value");
+    }
+  }
+  return absl::OkStatus();
+}
+
 class PublicCommand {
  public:
-  PublicCommand(args::ArgumentParser& parser, const CommandDefinition& definition)
-      : definition_(definition), command_(parser, definition.name, definition.description) {
+  PublicCommand(CLI::App& parser, const CommandDefinition& definition)
+      : definition_(definition), command_(parser.add_subcommand(definition.name, definition.description)) {
     if (definition.positional != nullptr) {
       const char* description = std::string_view(definition.positional) == "scene" ? "Resolved FLRS scene file."
                                                                                    : "Simulation cache directory.";
-      positional_ = std::make_unique<args::Positional<std::string>>(
-          command_,
-          definition.positional,
-          description,
-          args::Options::Required
-      );
+      positional_ = command_->add_option(definition.positional)->description(description)->required();
     }
     for (const auto& option : kOptions) {
       if ((option.commands & definition.mask) == 0) {
         continue;
       }
       std::string flag = std::string("--") + option.name;
+      CLI::Option* binding = nullptr;
       if (option.value_name == nullptr) {
-        auto binding = std::make_unique<args::Flag>(
-            command_,
-            option.name,
-            option.description,
-            args::Matcher{option.name},
-            args::Options::Single
-        );
-        flags_.emplace_back(std::move(flag), std::move(binding));
+        binding = command_->add_flag(flag, option.description);
+        binding->disable_flag_override()->multi_option_policy(CLI::MultiOptionPolicy::Throw);
       } else {
-        auto properties = args::Options::Single;
-        if (option.required) {
-          properties = properties | args::Options::Required;
-        }
-        auto binding = std::make_unique<args::ValueFlag<std::string>>(
-            command_,
-            option.value_name,
-            option.description,
-            args::Matcher{option.name},
-            properties
-        );
-        values_.push_back({std::move(flag), std::move(binding), option.is_path});
+        binding = command_->add_option(flag)->description(option.description)->type_name(option.value_name);
+        binding->required(option.required);
       }
+      options_.push_back({
+          .flag = std::move(flag),
+          .option = binding,
+          .takes_value = option.value_name != nullptr,
+          .is_path = option.is_path,
+      });
     }
   }
 
   bool Selected() const {
-    return command_.Matched();
+    return command_->parsed();
   }
 
-  std::vector<std::string> LegacyArguments(const std::vector<std::string>& public_arguments) {
+  std::vector<std::string> LegacyArguments(std::span<const std::string> public_arguments) const {
     std::vector<std::string> arguments{definition_.legacy_name};
     if (definition_.mask == kSimulate) {
       arguments.insert(arguments.end(), {"--stage", "simulate"});
     }
-    if (positional_) {
+    if (positional_ != nullptr) {
       arguments.push_back(std::string("--") + definition_.positional);
-      const auto& path = positional_->Get();
+      const auto& path = positional_->results().front();
       arguments.push_back(path.starts_with("--") ? "./" + path : path);
     }
-    for (auto& [flag, binding] : flags_) {
-      if (binding->Matched()) {
-        arguments.push_back(flag);
+    for (const auto& binding : options_) {
+      if (binding.option->empty()) {
+        continue;
       }
-    }
-    for (auto& [flag, binding, is_path] : values_) {
-      if (binding->Matched()) {
-        const auto& value = binding->Get();
-        arguments.push_back(flag);
-        // Only an attached value explicitly distinguishes a dash-leading path from a missing option value.
-        const bool attached_dash_path = is_path && value.starts_with("--")
-            && std::ranges::find(public_arguments, flag + "=" + value) != public_arguments.end();
+      arguments.push_back(binding.flag);
+      if (binding.takes_value) {
+        const auto& value = binding.option->results().front();
+        // An attached value distinguishes a dash-leading path from a missing option value.
+        const bool attached_dash_path = binding.is_path && value.starts_with("--")
+            && std::ranges::find(public_arguments, binding.flag + "=" + value) != public_arguments.end();
         arguments.push_back(attached_dash_path ? "./" + value : value);
       }
     }
@@ -153,46 +163,66 @@ class PublicCommand {
   }
 
  private:
-  const CommandDefinition& definition_;
-  args::Command command_;
-  std::unique_ptr<args::Positional<std::string>> positional_;
-  std::vector<std::pair<std::string, std::unique_ptr<args::Flag>>> flags_;
-  struct ValueBinding {
+  struct OptionBinding {
     std::string flag;
-    std::unique_ptr<args::ValueFlag<std::string>> option;
+    const CLI::Option* option;
+    bool takes_value;
     bool is_path;
   };
-  std::vector<ValueBinding> values_;
+
+  const CommandDefinition& definition_;
+  CLI::App* command_;
+  CLI::Option* positional_ = nullptr;
+  std::vector<OptionBinding> options_;
 };
+
+// CLI11 reports help as a parse result via an exception. Keep stream failures
+// visible in the same status path as other process output.
+absl::StatusOr<std::optional<std::vector<std::string>>> WriteHelp(const CLI::App& parser) {
+  const std::string text = parser.help();
+  if (std::fwrite(text.data(), 1, text.size(), stdout) != text.size() || std::fflush(stdout) != 0) {
+    return absl::UnavailableError("could not write CLI help");
+  }
+  return std::nullopt;
+}
 
 }  // namespace
 
-absl::StatusOr<std::optional<std::vector<std::string>>> ParsePublicCli(std::vector<std::string>& arguments) {
-  args::ArgumentParser parser("FluidiTy simulation engine");
-  parser.Prog("fluidity");
-  args::HelpFlag help(parser, "help", "Show command help.", {'h', "help"}, args::Options::Global);
-  std::array<std::unique_ptr<PublicCommand>, kCommands.size()> commands;
-  for (std::size_t index = 0; index < kCommands.size(); ++index) {
-    commands[index] = std::make_unique<PublicCommand>(parser, kCommands[index]);
+absl::StatusOr<std::optional<std::vector<std::string>>> ParsePublicCli(std::span<const std::string> arguments) try {
+  const auto delimiter = std::ranges::find(arguments, "--");
+  const std::span option_arguments(arguments.begin(), delimiter);
+  const auto attached_status = CheckAttachedValues(option_arguments);
+  if (!attached_status.ok()) {
+    return attached_status;
   }
-  parser.ParseArgs(arguments.begin(), arguments.end());
-  // In exception-free mode the parser can report a missing command after matching help.
-  if (help.Matched()) {
-    const std::string text = parser.Help();
-    if (std::fwrite(text.data(), 1, text.size(), stdout) != text.size() || std::fflush(stdout) != 0) {
-      return absl::UnavailableError("could not write CLI help");
+  CLI::App parser("FluidiTy simulation engine", "fluidity");
+  parser.require_subcommand(1);
+  std::vector<PublicCommand> commands;
+  commands.reserve(kCommands.size());
+  for (const auto& definition : kCommands) {
+    commands.emplace_back(parser, definition);
+  }
+  try {
+    // CLI11 consumes this overload's argument vector from the back.
+    std::vector<std::string> parse_arguments(arguments.rbegin(), arguments.rend());
+    parser.parse(parse_arguments);
+  } catch (const CLI::CallForHelp&) {
+    if (delimiter != arguments.end() && std::ranges::find(option_arguments, "--help") == option_arguments.end()
+        && std::ranges::find(option_arguments, "-h") == option_arguments.end()) {
+      return absl::InvalidArgumentError("unexpected argument after --");
     }
-    return std::nullopt;
-  }
-  if (parser.GetError() != args::Error::None) {
-    return absl::InvalidArgumentError(parser.GetErrorMsg());
+    return WriteHelp(parser);
+  } catch (const CLI::ParseError& error) {
+    return absl::InvalidArgumentError(error.what());
   }
   for (const auto& command : commands) {
-    if (command->Selected()) {
-      return command->LegacyArguments(arguments);
+    if (command.Selected()) {
+      return command.LegacyArguments(arguments);
     }
   }
-  return absl::InvalidArgumentError("a command is required; see fluidity --help");
+  return absl::InternalError("CLI11 did not select a command");
+} catch (const CLI::Error& error) {
+  return absl::InternalError(error.what());
 }
 
 }  // namespace fluidity::simulate

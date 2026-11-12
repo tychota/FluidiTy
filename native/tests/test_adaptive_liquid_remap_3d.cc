@@ -1,0 +1,239 @@
+#include <array>
+#include <limits>
+
+#include "fluidity/host/adaptive_liquid_remap_3d.h"
+#include "gtest/gtest.h"
+
+namespace fluidity {
+namespace {
+
+constexpr AdaptiveMacCellKey3D kParent{{-2, 0, -2}, 1};
+constexpr std::array<AdaptiveMacCellKey3D, 9> kLeaves{{
+    kParent,
+    {{-4, 0, -2}, 1},
+    {{0, 0, -2}, 1},
+    {{-2, 0, 0}, 1},
+    {{0, 0, 0}, 1},
+    {{-2, -1, -2}, 0},
+    {{-1, -1, -2}, 0},
+    {{-2, -1, -1}, 0},
+    {{-1, -1, -1}, 0},
+}};
+
+LiquidRemapInventory3D Affine(double x, double z) {
+  return {
+      .mass_kg = 64 + 8 * x - 4 * z,
+      .reference_volume_m3 = 8 + x,
+      .current_volume_m3 = 6 + z,
+      .momentum_kg_m_per_s = {-16 + 4 * x, 32 + 2 * z, 2 * x - 8 * z},
+      .enthalpy_j = -32 + 4 * z,
+  };
+}
+
+auto InventoryValues(const LiquidRemapInventory3D& row) {
+  return std::array{
+      row.mass_kg,
+      row.reference_volume_m3,
+      row.current_volume_m3,
+      row.momentum_kg_m_per_s.x,
+      row.momentum_kg_m_per_s.y,
+      row.momentum_kg_m_per_s.z,
+      row.enthalpy_j,
+  };
+}
+
+struct FixtureFields {
+  std::vector<LiquidRemapInventory3D> inventories;
+  std::vector<double> pressures;
+  std::vector<double> fluxes;
+  LiquidRemapStencil3D stencil{{
+      {Affine(-1, 0), Affine(1, 0)},
+      {Affine(0, 0), Affine(0, 0)},
+      {Affine(0, -1), Affine(0, 1)},
+  }};
+  std::size_t parent_ordinal = 0;
+
+  AdaptiveLiquidRemapInput3D View() const {
+    return {inventories, pressures, fluxes};
+  }
+};
+
+FixtureFields MakeFields(const AdaptiveMacTopology3D& topology) {
+  FixtureFields fields;
+  for (std::size_t ordinal = 0; ordinal < topology.cells().size(); ++ordinal) {
+    const auto key = topology.cells()[ordinal].key;
+    if (key.lower_corner.x == -2 && key.lower_corner.y == 0 && key.lower_corner.z == -2) {
+      fields.parent_ordinal = ordinal;
+      fields.inventories.push_back(Affine(0, 0));
+    } else {
+      fields.inventories.push_back(Affine(ordinal * 0.25, -1));
+    }
+    fields.pressures.push_back(10 + ordinal);
+  }
+  for (const auto& face : topology.interior_faces()) {
+    const auto index = face.face_index.lattice_index;
+    if (face.tail_cell_ordinal != fields.parent_ordinal && face.head_cell_ordinal != fields.parent_ordinal) {
+      fields.fluxes.push_back(-3.0);
+      continue;
+    }
+    switch (face.face_index.axis) {
+      case FaceNormalAxis::kX:
+        fields.fluxes.push_back(index.x == -2 ? 4 : -8);
+        break;
+      case FaceNormalAxis::kY:
+        fields.fluxes.push_back(index.x == -2 ? 1 : -1);
+        break;
+      case FaceNormalAxis::kZ:
+        fields.fluxes.push_back(20);
+        break;
+    }
+  }
+  return fields;
+}
+
+std::vector<double> IntegratedOutflow(const AdaptiveMacTopology3D& topology, std::span<const double> fluxes) {
+  std::vector<double> result(topology.cells().size());
+  for (std::size_t face = 0; face < fluxes.size(); ++face) {
+    const auto& geometry = topology.interior_faces()[face];
+    result[geometry.tail_cell_ordinal] += fluxes[face];
+    result[geometry.head_cell_ordinal] -= fluxes[face];
+  }
+  return result;
+}
+
+TEST(AdaptiveLiquidRemap3D, RefinesAffineInventoryAndPreservesSignedDivergence) {
+  const auto topology = AdaptiveMacTopology3D::Create(kLeaves, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto fields = MakeFields(*topology);
+  const auto old_outflow = IntegratedOutflow(*topology, fields.fluxes);
+  ASSERT_EQ(old_outflow[fields.parent_ordinal], 8);
+  const auto refined = PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  const auto outflow = IntegratedOutflow(refined->family.topology, refined->interior_fluxes_m3_per_s);
+  for (std::size_t ordinal : refined->family.child_ordinals) {
+    const auto corner = refined->family.topology.cells()[ordinal].key.lower_corner;
+    auto expected = InventoryValues(Affine(corner.x == -2 ? -0.25 : 0.25, corner.z == -2 ? -0.25 : 0.25));
+    for (double& amount : expected) {
+      amount /= 8;
+    }
+    EXPECT_EQ(InventoryValues(refined->inventories[ordinal]), expected);
+    EXPECT_EQ(refined->family.previous_pressures[ordinal], fields.pressures[fields.parent_ordinal]);
+    EXPECT_EQ(outflow[ordinal], 1);
+  }
+  for (const auto retained : refined->family.retained_leaves) {
+    EXPECT_EQ(
+        InventoryValues(refined->inventories[retained.new_cell_ordinal]),
+        InventoryValues(fields.inventories[retained.old_cell_ordinal])
+    );
+    EXPECT_EQ(
+        refined->family.previous_pressures[retained.new_cell_ordinal],
+        fields.pressures[retained.old_cell_ordinal]
+    );
+    EXPECT_EQ(outflow[retained.new_cell_ordinal], old_outflow[retained.old_cell_ordinal]);
+  }
+
+  const auto replay = PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil);
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  EXPECT_EQ(replay->family.child_ordinals, refined->family.child_ordinals);
+  EXPECT_EQ(replay->family.previous_pressures, refined->family.previous_pressures);
+  EXPECT_EQ(replay->interior_fluxes_m3_per_s, refined->interior_fluxes_m3_per_s);
+
+  const AdaptiveLiquidRemapInput3D fine{
+      refined->inventories,
+      refined->family.previous_pressures,
+      refined->interior_fluxes_m3_per_s
+  };
+  const auto restored = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->family.previous_pressures, fields.pressures);
+  EXPECT_EQ(restored->interior_fluxes_m3_per_s, fields.fluxes);
+  ASSERT_EQ(restored->inventories.size(), fields.inventories.size());
+  for (std::size_t index = 0; index < fields.inventories.size(); ++index) {
+    EXPECT_EQ(InventoryValues(restored->inventories[index]), InventoryValues(fields.inventories[index]));
+  }
+}
+
+TEST(AdaptiveLiquidRemap3D, CoarsensMixedSubfacesAndRejectsLossySums) {
+  const auto topology = AdaptiveMacTopology3D::Create(kLeaves, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto fields = MakeFields(*topology);
+  auto refined = PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  std::vector<std::size_t> high_x_faces;
+  const auto fine_faces = refined->family.topology.interior_faces();
+  for (std::size_t ordinal = 0; ordinal < fine_faces.size(); ++ordinal) {
+    const auto index = fine_faces[ordinal].face_index.lattice_index;
+    if (fine_faces[ordinal].face_index.axis == FaceNormalAxis::kX && index.x == 0 && index.z < 0 && index.y >= 0) {
+      high_x_faces.push_back(ordinal);
+    }
+  }
+  ASSERT_EQ(high_x_faces.size(), 4);
+  constexpr std::array mixed_fluxes{2.0, -3.0, 1.0, -8.0};
+  for (std::size_t slot = 0; slot < high_x_faces.size(); ++slot) {
+    refined->interior_fluxes_m3_per_s[high_x_faces[slot]] = mixed_fluxes[slot];
+  }
+  for (std::size_t child = 0; child < refined->family.child_ordinals.size(); ++child) {
+    refined->family.previous_pressures[refined->family.child_ordinals[child]] = 2.0 * child;
+  }
+  const AdaptiveLiquidRemapInput3D fine{
+      refined->inventories,
+      refined->family.previous_pressures,
+      refined->interior_fluxes_m3_per_s,
+  };
+  const auto coarsened = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+  EXPECT_EQ(coarsened->interior_fluxes_m3_per_s, fields.fluxes);
+  EXPECT_EQ(coarsened->family.previous_pressures[coarsened->family.parent_ordinal], 7);
+
+  constexpr std::array lossy_fluxes{1e16, 0.25, 0.0, 0.0};
+  for (std::size_t slot = 0; slot < high_x_faces.size(); ++slot) {
+    refined->interior_fluxes_m3_per_s[high_x_faces[slot]] = lossy_fluxes[slot];
+  }
+  const auto committed = refined->interior_fluxes_m3_per_s;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(refined->interior_fluxes_m3_per_s, committed);
+}
+
+TEST(AdaptiveLiquidRemap3D, RejectsLossyCandidateWithoutMutatingCommittedFields) {
+  const auto topology = AdaptiveMacTopology3D::Create(kLeaves, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  auto fields = MakeFields(*topology);
+  const auto initial_pressures = fields.pressures;
+  const auto initial_fluxes = fields.fluxes;
+  const double quantum = std::numeric_limits<double>::denorm_min();
+  fields.inventories[fields.parent_ordinal].mass_kg = quantum;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(fields.inventories[fields.parent_ordinal].mass_kg, quantum);
+  EXPECT_EQ(fields.pressures, initial_pressures);
+  EXPECT_EQ(fields.fluxes, initial_fluxes);
+
+  fields.inventories[fields.parent_ordinal] = Affine(0, 0);
+  for (std::size_t face = 0; face < fields.fluxes.size(); ++face) {
+    if (topology->interior_faces()[face].face_index.axis == FaceNormalAxis::kX && fields.fluxes[face] == 4) {
+      fields.fluxes[face] = quantum;
+    }
+  }
+  const auto lossy_fluxes = fields.fluxes;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidRefinement3D(*topology, fields.View(), kParent, fields.stencil).status().code(),
+      absl::StatusCode::kOutOfRange
+  );
+  EXPECT_EQ(fields.fluxes, lossy_fluxes);
+  EXPECT_EQ(fields.pressures, initial_pressures);
+  EXPECT_EQ(topology->cells().size(), kLeaves.size());
+  auto missing_flux = fields.View();
+  missing_flux.interior_fluxes_m3_per_s = missing_flux.interior_fluxes_m3_per_s.first(1);
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidRefinement3D(*topology, missing_flux, kParent, fields.stencil).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
+}  // namespace
+}  // namespace fluidity

@@ -21,8 +21,10 @@ if(MSVC)
 endif()
 
 target_compile_options(fluidity_native_options INTERFACE
-  "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/WX;/GR-;/EHs-c-;/fp:precise;/permissive-;/Zc:__cplusplus>"
-  "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic;-Werror;-fno-rtti;-fno-exceptions;-fno-fast-math;-ffp-contract=off>"
+  "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4;/WX;/GR-;/fp:precise;/permissive-;/Zc:__cplusplus>"
+  "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wall;-Wextra;-Wpedantic;-Werror;-fno-rtti;-fno-fast-math;-ffp-contract=off>"
+  "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:$<IF:$<BOOL:$<TARGET_PROPERTY:FLUIDITY_CLI_EXCEPTIONS>>,/EHsc,/EHs-c->>"
+  "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:$<IF:$<BOOL:$<TARGET_PROPERTY:FLUIDITY_CLI_EXCEPTIONS>>,-fexceptions,-fno-exceptions>>"
 )
 
 function(fluidity_match_qualified_executable compiler recorded)
