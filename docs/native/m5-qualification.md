@@ -2604,3 +2604,39 @@ quartering the fixed step. All four switched runs retain vertical
 momentum residual below 8.2e-9 N·s and late angle drift below 0.09°.
 The variable-step fixture was restored after compilation. The
 original fixed-step acceptance matrix still governs Q-SAND.
+
+### Contact-local grid-reaction friction
+
+The reflected-gradient candidate can apply tangential friction directly
+to an elevated particle if its stress stencil contributes to the grid
+wall reaction. Starting at `b2d03c6`, two native controls restrict that
+velocity correction to particles already touching the floor. The first
+drops the elevated contribution. The second distributes each elevated
+positive impulse to contacts within horizontal distance `1.5h`, using
+normalized weights `max(0, 1 - distance_squared / (2.25h²))` before the
+unchanged Coulomb cap. The sweep, stress transpose and acceptance checks
+are unchanged. The first control passed the default native dry scenes.
+
+| Native case at 3 s | Suppress elevated correction | Redistribute elevated correction |
+|---|---|---|
+| Coarse | Face-motion bound at step 1461 | 23.051525° / 0.165683 m |
+| Coarse half-step | 22.576002° / 0.166646 m | 25.612154° / 0.170636 m |
+| Fine | Face-motion bound at step 1144 | Face-motion bound at step 1606 |
+| Fine half-step | Face-motion bound at step 3561 | 19.864435° / 0.244496 m |
+
+The completed cases retained vertical momentum residual below
+5.7e-9 N·s. Moving friction capacity to contacts recovers some
+completed runs, but the piles spread further than in the
+reflected-gradient candidate. The coarse candidate pass is sensitive
+to damping above the floor. A qualification candidate still needs a
+wall traction discretization that transmits tangential stress through
+the grid and an isolated test of its impulse and work. Both source
+controls were restored after compiling.
+
+```powershell
+foreach ($bin in 'sand-supported-friction-bin', 'sand-contact-friction-transfer-bin') {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
