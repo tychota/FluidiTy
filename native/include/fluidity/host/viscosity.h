@@ -8,6 +8,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "fluidity/host/grid.h"
+#include "fluidity/host/mac_pressure_3d.h"
 #include "fluidity/host/small_solve.h"
 #include "fluidity/host/sparse_mac_grid_3d.h"
 
@@ -104,6 +105,27 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
     std::span<const double> rhs,
     MacViscousVelocityBlockOptions3D options = {}
 );
+
+struct MacViscousPressureProjection3D {
+  std::vector<double> cell_pressures;  // Pa, in pressure cell order.
+  std::vector<double> face_velocities;  // m/s, in incident pressure face order.
+  std::vector<double> cell_constraint_defects;  // Outward flux minus source plus compliance, divided by volume, s⁻¹.
+  std::size_t pressure_iterations;
+  double max_momentum_residual;  // Maximum true inner momentum residual, kg m/s.
+};
+
+// Solves the coupled backward-Euler viscosity and compliant pressure equations on CPU.
+// Supply the same ordered cells and incident faces as ProjectMacPressure3D, with strain
+// quadratures certified for that geometry. Every strain term must name an incident
+// owned face slot. A closed face is eliminated with its wall-normal velocity as the
+// prescribed value. Partly open faces retain one unknown and their blocked wall flux.
+// Uses pressure-link inertia A*density*distance and the same pressure gauges as the
+// inviscid projection. Returns a solution only when both the momentum solve and the
+// volume-scaled constraint check on all original cells pass. Invalid strain data
+// returns kInvalidArgument, nonfinite arithmetic kOutOfRange, and nonconvergence
+// kAborted. Propagates pressure preparation errors.
+absl::StatusOr<MacViscousPressureProjection3D>
+ProjectMacViscousPressure3D(const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> strain_rows);
 
 enum class ViscosityMode {
   kAuto,

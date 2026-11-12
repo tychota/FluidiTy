@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <set>
 #include <span>
@@ -13,6 +14,7 @@
 #include "../src/mac_pressure_3d_system.h"
 #include "absl/status/status.h"
 #include "fluidity/host/mac_pressure_3d.h"
+#include "fluidity/host/viscosity.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_3d_fixture.h"
 
@@ -45,6 +47,38 @@ std::int32_t FixtureOwnerAxis(std::int32_t index) {
   return index / 4 - (index % 4 < 0 ? 1 : 0);
 }
 
+TEST(MacPressure3D, CoupledViscosityBalancesMomentumAndCompliantFlux) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  auto faces = SealedFacesAtX(0);
+  for (std::size_t face = 0; face < 2; ++face) {
+    faces[face].open_area = 1.0;
+    faces[face].inverse_density = 1.0;
+    faces[face].pressure_gradient_distance = 1.0;
+  }
+  faces[0].predicted_normal_velocity = -1.0;
+  faces[0].pressure_link = DirichletMacPressureLink3D{2.0};
+  faces[1].predicted_normal_velocity = 8.0;
+  faces[1].pressure_link = DirichletMacPressureLink3D{5.0};
+  const std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1.0,
+      .target_divergence = 3.0,
+      .bulk_modulus = 2.0,
+      .previous_pressure = 2.0,
+  }};
+  const std::array viscosity{MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 1.0}};
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), viscosity);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  const auto result = ProjectMacViscousPressure3D({*grid, 1.0, cells, faces}, *strain);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_NEAR(result->cell_pressures[0], 4.0, 1e-9);
+  EXPECT_NEAR(result->face_velocities[0], 1.0, 1e-9);
+  EXPECT_NEAR(result->face_velocities[1], 3.0, 1e-9);
+  EXPECT_NEAR(result->cell_constraint_defects[0], 0.0, 1e-9);
+  EXPECT_LT(result->max_momentum_residual, 1e-9);
+}
+
 TEST(MacPressure3D, SolvesAllIndependentFixtureCases) {
   std::vector<pressure_test::MacPressureFixtureCase3D> cases;
   ASSERT_NO_FATAL_FAILURE(pressure_test::LoadMacPressureFixtureCases3D(cases));
@@ -75,12 +109,12 @@ double AffinePressure(CellIndex3D index) {
   return index.x + 2.0 * index.y + 4.0 * index.z;
 }
 
-AffineProblem MakeAffineProblem(std::int32_t minimum, std::int32_t extent, bool anchored) {
+AffineProblem MakeRectangularAffineProblem(std::int32_t minimum, std::array<int, 3> extents, bool anchored) {
   AffineProblem problem;
   std::set<std::tuple<int, int, int, int>> face_keys;
-  for (int z = minimum; z < minimum + extent; ++z) {
-    for (int y = minimum; y < minimum + extent; ++y) {
-      for (int x = minimum; x < minimum + extent; ++x) {
+  for (int z = minimum; z < minimum + extents[2]; ++z) {
+    for (int y = minimum; y < minimum + extents[1]; ++y) {
+      for (int x = minimum; x < minimum + extents[0]; ++x) {
         problem.cells.push_back({
             .cell_index = {x, y, z},
             .fluid_volume = 1.0,
@@ -98,7 +132,7 @@ AffineProblem MakeAffineProblem(std::int32_t minimum, std::int32_t extent, bool 
   for (const auto& [axis, x, y, z] : face_keys) {
     const std::array coordinates{x, y, z};
     const bool low = coordinates[axis] == minimum;
-    const bool high = coordinates[axis] == minimum + extent;
+    const bool high = coordinates[axis] == minimum + extents[axis];
     const bool boundary = low || high;
     MacPressureFace3D face{
         .face_index = {static_cast<FaceNormalAxis>(axis), {x, y, z}},
@@ -127,10 +161,153 @@ AffineProblem MakeAffineProblem(std::int32_t minimum, std::int32_t extent, bool 
   return problem;
 }
 
+AffineProblem MakeAffineProblem(std::int32_t minimum, std::int32_t extent, bool anchored) {
+  return MakeRectangularAffineProblem(minimum, {extent, extent, extent}, anchored);
+}
+
 void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   std::ranges::sort(problem.faces, [&](const auto& left, const auto& right) {
     return *grid.FaceSlot(left.face_index) < *grid.FaceSlot(right.face_index);
   });
+}
+
+TEST(MacPressure3D, CoupledViscosityRecoversPlanarExtensionTractionAtHighContrast) {
+  for (const int resolution : {16, 32}) {
+    SCOPED_TRACE(resolution);
+    const double cell_width = 1.0 / resolution;
+    for (const double step_duration : {0.005, 0.0025}) {
+      SCOPED_TRACE(step_duration);
+      for (const double viscosity_ratio : {1.0, 10.0, 1000.0}) {
+        SCOPED_TRACE(viscosity_ratio);
+        auto problem = MakeRectangularAffineProblem(0, {resolution, resolution, 1}, false);
+        const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, cell_width}, problem.blocks, problem.blocks.size());
+        ASSERT_TRUE(grid.ok()) << grid.status();
+        SortFaces(problem, *grid);
+        std::vector<MacViscosityCell3D> material;
+        for (auto& cell : problem.cells) {
+          cell.fluid_volume = cell_width * cell_width * cell_width;
+          const double viscosity = cell.cell_index.x < resolution / 2 ? 1.0 : viscosity_ratio;
+          material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = viscosity});
+        }
+        for (auto& face : problem.faces) {
+          const auto world_position = grid->FaceWorldAnchor(face.face_index);
+          ASSERT_TRUE(world_position.ok()) << world_position.status();
+          const std::array extension_velocity{world_position->x - 0.5, 0.5 - world_position->y, 0.0};
+          const double normal_velocity = extension_velocity[static_cast<std::size_t>(face.face_index.axis)];
+          if (face.open_area == 0.0) {
+            face.wall_normal_velocity = normal_velocity;
+          } else {
+            face.open_area = cell_width * cell_width;
+            face.pressure_gradient_distance = cell_width;
+            face.predicted_normal_velocity = normal_velocity;
+          }
+        }
+        const auto strain = AssembleFullCellMacStrain3D(grid->view(), material);
+        ASSERT_TRUE(strain.ok()) << strain.status();
+        const auto projection =
+            ProjectMacViscousPressure3D({*grid, step_duration, problem.cells, problem.faces}, *strain);
+        ASSERT_TRUE(projection.ok()) << projection.status();
+        std::vector<double> face_velocity(grid->face_count());
+        for (std::size_t face = 0; face < problem.faces.size(); ++face) {
+          const auto slot = grid->FaceSlot(problem.faces[face].face_index);
+          ASSERT_TRUE(slot.ok()) << slot.status();
+          face_velocity[*slot] = projection->face_velocities[face];
+        }
+        std::array<double, 2> normalized_normal_error_squared{};
+        double max_normal_error = 0.0;
+        std::array<std::size_t, 2> normal_sample_count{};
+        for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+          EXPECT_NEAR(projection->cell_constraint_defects[cell], 0.0, 2e-5);
+          const int cell_x = problem.cells[cell].cell_index.x;
+          if (cell_x != resolution / 2 - 1 && cell_x != resolution / 2) {
+            continue;
+          }
+          const auto& normal_row = (*strain)[3 * cell];
+          const auto& low = normal_row.terms[0];
+          const auto& high = normal_row.terms[1];
+          const double normal_strain =
+              low.coefficient * face_velocity[low.face_slot] + high.coefficient * face_velocity[high.face_slot];
+          const double pressure = 4.0 + projection->cell_pressures[cell];
+          const double traction = 2.0 * material[cell].dynamic_viscosity * normal_strain - pressure;
+          const double normalized_error = (traction + 2.0) / 2.0;
+          const std::size_t side = cell_x < resolution / 2 ? 0 : 1;
+          normalized_normal_error_squared[side] += normalized_error * normalized_error;
+          max_normal_error = std::max(max_normal_error, std::abs(normalized_error));
+          ++normal_sample_count[side];
+        }
+        double normal_rms = 0.0;
+        for (std::size_t side = 0; side < normal_sample_count.size(); ++side) {
+          ASSERT_EQ(normal_sample_count[side], static_cast<std::size_t>(resolution));
+          const double side_rms = std::sqrt(normalized_normal_error_squared[side] / normal_sample_count[side]);
+          normal_rms = std::max(normal_rms, side_rms);
+        }
+        double max_tangential_error = 0.0;
+        std::array<std::size_t, 2> shear_sample_count{};
+        for (const auto& row : *strain) {
+          const int low_x = row.low_cell.x;
+          if ((low_x != resolution / 2 - 2 && low_x != resolution / 2) || row.first_axis != FaceNormalAxis::kX
+              || row.second_axis != FaceNormalAxis::kY) {
+            continue;
+          }
+          // Use same-phase edge quadrature one cell to either side of the interface.
+          double shear = 0.0;
+          for (const auto& term : row.terms) {
+            shear += term.coefficient * face_velocity[term.face_slot];
+          }
+          const double normalized_traction =
+              row.quadrature_weight * shear / (4.0 * cell_width * cell_width * cell_width);
+          max_tangential_error = std::max(max_tangential_error, std::abs(normalized_traction));
+          const std::size_t side = low_x < resolution / 2 ? 0 : 1;
+          ++shear_sample_count[side];
+        }
+        for (const std::size_t sample_count : shear_sample_count) {
+          ASSERT_EQ(sample_count, static_cast<std::size_t>(resolution - 1));
+        }
+        EXPECT_LE(normal_rms, 0.05);
+        EXPECT_LE(max_normal_error, 0.10);
+        EXPECT_LE(max_tangential_error, 0.01);
+        std::cout << "extension resolution=" << resolution << " dt=" << step_duration
+                  << " viscosity_ratio=" << viscosity_ratio << " normal_rms=" << normal_rms
+                  << " normal_max=" << max_normal_error << " tangential_max=" << max_tangential_error
+                  << " pressure_iterations=" << projection->pressure_iterations << '\n';
+      }
+    }
+  }
+}
+
+TEST(MacPressure3D, CoupledViscosityPreservesMovingWallFluxAndOrientedJumps) {
+  auto problem = MakeAffineProblem(0, 2, false);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  for (auto& face : problem.faces) {
+    if (face.face_index.axis != FaceNormalAxis::kX) {
+      continue;
+    }
+    if (face.open_area == 0.0) {
+      face.wall_normal_velocity = 1.0;
+    } else {
+      face.pressure_link = InternalMacPressureLink3D{2.0};
+      face.predicted_normal_velocity = 0.0;
+    }
+  }
+  std::vector<MacViscosityCell3D> material;
+  for (const auto& cell : problem.cells) {
+    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = 3.0});
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), material);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  const auto result = ProjectMacViscousPressure3D({*grid, 1.0, problem.cells, problem.faces}, *strain);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_DOUBLE_EQ(result->cell_pressures.front(), 0.0);
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    EXPECT_NEAR(result->cell_pressures[cell], AffinePressure(problem.cells[cell].cell_index), 1e-4);
+    EXPECT_NEAR(result->cell_constraint_defects[cell], 0.0, 2e-5);
+  }
+  for (std::size_t face = 0; face < problem.faces.size(); ++face) {
+    const bool x_normal = problem.faces[face].face_index.axis == FaceNormalAxis::kX;
+    EXPECT_NEAR(result->face_velocities[face], x_normal ? 1.0 : 0.0, 2e-5);
+  }
 }
 
 TEST(MacPressure3D, SolvesNegativeCoordinateMultilevelAffineFieldWithAllSixBoundaries) {
