@@ -119,7 +119,9 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
 // Prepare one unpublished replacement for a canonical adaptive leaf. The
 // caller supplies authoritative occupancy and certifies the carrier over the
 // full leaf. Retirement requires particle ownership and exact agreement of
-// the leaf ledger with its resident particles. Retained particles keep order
+// the leaf ledger with its resident particles. Both directions require the
+// graded scheduler's ordered mass, volume and momentum sums to agree exactly.
+// Retained particles keep order
 // and IDs. Eulerian leaves must have no resident particles. The supplied
 // capacities must accommodate the input and result. Errors preserve input.
 absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidBandRetirement3D(

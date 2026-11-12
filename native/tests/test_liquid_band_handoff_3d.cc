@@ -525,5 +525,59 @@ TEST(AdaptiveLiquidBandHandoff3D, RejectsUncertifiedOrIncompatibleCandidatesWith
   EXPECT_EQ(*core_bytes, *unchanged_core);
 }
 
+TEST(AdaptiveLiquidBandHandoff3D, RejectsSixSeedsThatLoseInventoryInGradedAccumulationOrder) {
+  auto core = AdaptiveBandState();
+  ASSERT_TRUE(core.ok()) << core.status();
+  core->particles[0] = core->particles[1];
+  ASSERT_TRUE(core->particles.Resize(1).ok());
+  auto& leaf = core->adaptive_cells[0];
+  leaf.material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  leaf.inventory.momentum_kg_m_per_s = {};
+  auto carrier = kCarrier;
+  carrier.cell_center_velocity = {};
+  carrier.velocity_slopes = {};
+
+  constexpr std::size_t seed_count = 6;
+  const auto seeds =
+      ReseedLiquidCoreCell3D(kCell, leaf.inventory, carrier, seed_count, seed_count, core->next_particle_id);
+  ASSERT_TRUE(seeds.ok()) << seeds.status();
+  const auto compensated = RetireLiquidBandCell3D(kCell, seeds->particles(), seeds->enthalpy_j(), carrier);
+  ASSERT_TRUE(compensated.ok()) << compensated.status();
+  EXPECT_EQ(compensated->current_volume_m3, leaf.inventory.current_volume_m3);
+  double graded_volume_m3 = 0;
+  for (const auto& seed : seeds->particles()) {
+    graded_volume_m3 += seed.reference_volume * seed.volume_ratio;
+  }
+  EXPECT_LT(graded_volume_m3, leaf.inventory.current_volume_m3);
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidCoreReseed3D(
+          *core,
+          kAdaptiveBandCapacities,
+          kAdaptiveBandLeaf,
+          kFullOccupancy,
+          carrier,
+          seed_count
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kOutOfRange
+  );
+
+  auto band = CloneLiquidState3D(*core, kAdaptiveBandCapacities);
+  ASSERT_TRUE(band.ok()) << band.status();
+  ASSERT_TRUE(band->particles.Resize(1 + seed_count).ok());
+  for (std::size_t ordinal = 0; ordinal < seed_count; ++ordinal) {
+    band->particles[1 + ordinal] = seeds->particles()[ordinal];
+  }
+  band->next_particle_id = seeds->next_particle_id();
+  band->adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
+  EXPECT_EQ(
+      PrepareAdaptiveLiquidBandRetirement3D(*band, kAdaptiveBandCapacities, kAdaptiveBandLeaf, kFullOccupancy, carrier)
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 }  // namespace
 }  // namespace fluidity

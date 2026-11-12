@@ -404,6 +404,26 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
 
 namespace {
 
+// Match AdaptiveLiquidStep3D::AccumulateInventories in stored particle order.
+// The handoff's compensated sum separately checks the full material ledger.
+bool MatchesGradedParticleInventory(
+    std::span<const LiquidParticleState3D> particles,
+    const LiquidRemapInventory3D& owned
+) {
+  LiquidRemapInventory3D inventory{};
+  for (const auto& particle : particles) {
+    inventory.mass_kg += particle.mass;
+    inventory.reference_volume_m3 += particle.reference_volume;
+    inventory.current_volume_m3 += particle.reference_volume * particle.volume_ratio;
+    inventory.momentum_kg_m_per_s.x += particle.mass * particle.world_velocity.x;
+    inventory.momentum_kg_m_per_s.y += particle.mass * particle.world_velocity.y;
+    inventory.momentum_kg_m_per_s.z += particle.mass * particle.world_velocity.z;
+  }
+  return inventory.mass_kg == owned.mass_kg && inventory.reference_volume_m3 == owned.reference_volume_m3
+      && inventory.current_volume_m3 == owned.current_volume_m3
+      && Components(inventory.momentum_kg_m_per_s) == Components(owned.momentum_kg_m_per_s);
+}
+
 absl::StatusOr<LiquidState3D> PrepareAdaptiveBandHandoff(
     const LiquidState3D& committed,
     LiquidStateCapacities3D capacities,
@@ -525,6 +545,9 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveBandHandoff(
     if (particle_owned != *target) {
       return absl::OutOfRangeError("Adaptive reseed cannot represent the exact owned inventory");
     }
+    if (!MatchesGradedParticleInventory(seeds->particles(), target->inventory)) {
+      return absl::OutOfRangeError("Adaptive reseed loses owned inventory in graded accumulation order");
+    }
 
     const auto existing_particle_count = candidate->particles.size();
     const auto resized = candidate->particles.Resize(existing_particle_count + seeds->particles().size());
@@ -547,6 +570,9 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveBandHandoff(
     particle_owned.inventory = *represented;
     if (particle_owned != *target) {
       return absl::FailedPreconditionError("Adaptive band particles disagree with their owned inventory");
+    }
+    if (!MatchesGradedParticleInventory(retiring_particles, target->inventory)) {
+      return absl::FailedPreconditionError("Adaptive band particles disagree with the graded inventory sum");
     }
 
     // The selected IDs are unique and were collected in physical record order.
