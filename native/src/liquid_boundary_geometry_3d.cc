@@ -1208,9 +1208,9 @@ absl::StatusOr<std::array<double, 8>> boundary_internal::MeasureLiquidCellOctant
   const double cell_volume = width * width * width;
   const double octant_volume = cell_volume / 8.0;
   if (!std::isnormal(width * width) || !std::isnormal(octant_volume)) {
-    return UnrepresentableGeometry(detailed_errors);
+    return UnrepresentableGeometry(true);
   }
-  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, detailed_errors);
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
   if (!obstacle_status.ok()) {
     return obstacle_status.status();
   }
@@ -1225,17 +1225,17 @@ absl::StatusOr<std::array<double, 8>> boundary_internal::MeasureLiquidCellOctant
   TankClipBounds tank_bounds;
   if (open_tank) {
     if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
-      return UnrepresentableGeometry(detailed_errors);
+      return UnrepresentableGeometry(true);
     }
     const auto bounds = boundary_internal::LocalTankBounds(query);
     if (!bounds.ok()) {
-      return boundary_internal::ArithmeticStatus(bounds.status(), detailed_errors);
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
     }
     tank_bounds = *bounds;
   }
   const auto local = boundary_internal::LocalObstacle(query);
   if (!local.ok()) {
-    return boundary_internal::ArithmeticStatus(local.status(), detailed_errors);
+    return boundary_internal::ArithmeticStatus(local.status(), true);
   }
 
   std::array<ClippingVertex, 8> vertices{};
@@ -1291,7 +1291,7 @@ absl::StatusOr<std::array<double, 8>> boundary_internal::MeasureLiquidCellOctant
   constexpr double kVolumeRoundoff = 64.0 * std::numeric_limits<double>::epsilon();
   for (double& volume : volumes) {
     if (!IsNormalOrZero(volume) || volume < 0.0 || volume / octant_volume > 1.0 + kVolumeRoundoff) {
-      return UnrepresentableGeometry(detailed_errors);
+      return UnrepresentableGeometry(true);
     }
     volume = std::min(volume, octant_volume);
   }

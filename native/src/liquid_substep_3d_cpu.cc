@@ -306,7 +306,7 @@ absl::Status PrepareCutViscosityGeometry(
       };
       const auto bounds = boundary_internal::LocalTankBounds(query);
       if (!bounds.ok()) {
-        return boundary_internal::ArithmeticStatus(bounds.status(), false);
+        return boundary_internal::ArithmeticStatus(bounds.status(), true);
       }
       // Tangential MAC face centers use the cell's transverse center. Refuse
       // to use them as fluid samples when that center lies in the solid.
