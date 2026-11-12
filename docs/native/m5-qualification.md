@@ -2866,3 +2866,47 @@ foreach ($bin in 'sand-tangent-momentum-bin', 'sand-volume-increment-bin') {
   }
 }
 ```
+
+### Horizontal alignment and particle sampling with wall-face traction
+
+Use the motion-aware donor reconstruction at `7a7cef0` with the
+specified Euler deformation increment. For horizontal alignment,
+retain the 63-particle release, original timestep, and 3 s endpoint.
+Set the grid origin to `(phase * h, 0, phase * h)` while keeping the
+column and floor fixed in world coordinates.
+
+| Native case at 3 s | Zero phase angle / radius | Quarter-cell phase angle / radius | Half-cell phase angle / radius |
+|---|---|---|---|
+| Coarse | 35.932364° / 0.178563 m | 36.491562° / 0.172773 m | 35.904466° / 0.180511 m |
+| Coarse half-step | 41.107594° / 0.153975 m | 42.272557° / 0.146590 m | 40.468889° / 0.156928 m |
+| Fine | 29.704868° / 0.200837 m | 26.854028° / 0.205632 m | 28.556517° / 0.200622 m |
+| Fine half-step | 34.345649° / 0.179405 m | 31.683658° / 0.194212 m | 32.831118° / 0.195432 m |
+
+Changing the phase moves the fine-grid angles by up to 2.85°.
+Every coarse half-step angle remains above 40°, and every fine
+radius remains above 0.16 m.
+
+A separate zero-phase control doubles particles per axis, from 63
+to 504 midpoint samples at the same column dimensions and total
+mass. With the original half-step durations, the coarse result is
+33.915408° / 0.203072 m and the fine result is 29.106618° /
+0.218145 m. The fine quadrant fits range from 23.001748° to
+24.247701°. The denser sampling increases the radius on both grids.
+
+```powershell
+$root = 'out/pr-m5-sand-affine/out'
+foreach ($phase in 'quarter', 'half') {
+  foreach ($grid in 'fine', 'coarse') {
+    foreach ($step in 'nominal', 'half') {
+      & "$root/sand-grid-phase-wall-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-grid-phase $grid $step $phase
+    }
+  }
+}
+foreach ($grid in 'fine', 'coarse') {
+  & "$root/sand-dense-wall-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-dense $grid half
+}
+```
+
+These temporary harnesses use the existing fixture's grid-origin
+parameter or its particle multiplier of two. The solver and harness
+sources were restored after linking. Neither control qualifies Q-SAND.
