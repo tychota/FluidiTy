@@ -102,6 +102,7 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d_multigrid.cc
   native/src/adaptive_width_policy_3d.cc
   native/src/mac_viscous_pressure_3d.cc
+  native/src/liquid_eos.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
@@ -286,6 +287,7 @@ if(BUILD_TESTING)
     native/tests/test_adaptive_mac_topology_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
+    native/tests/test_liquid_eos.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
   target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
