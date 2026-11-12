@@ -163,6 +163,10 @@ bool TestScene(
   double final_projection_particle_seconds = 0;
   double final_plastic_volume_particle_seconds = 0;
   double final_particle_seconds = 0;
+  std::vector<double> previous_log_plastic(particles.size());
+  double final_log_plastic_change = 0;
+  double final_absolute_log_plastic_change = 0;
+  double floor_layer_absolute_log_plastic_change = 0;
   double reset_impulse_y = 0;
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
@@ -190,6 +194,12 @@ bool TestScene(
       const double speed = t < 0.23 ? -0.4 : 0.5;
       const double position = t < 0.23 ? 0.21 - 0.4 * t : 0.118 + 0.5 * (t - 0.23);
       settings.platen = fluidity::DrySolidPlaten3D{.start_y = position, .velocity_y = speed};
+    }
+    const bool in_final_window = extended_column && t >= settling_sample_time;
+    if (in_final_window) {
+      for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+        previous_log_plastic[ordinal] = particles[ordinal].log_plastic_jacobian;
+      }
     }
     fluidity::DrySolidStepBudget3D budget{};
     const int mass_bits = quantized_mass_bits == 0 ? 42 : quantized_mass_bits;
@@ -280,7 +290,16 @@ bool TestScene(
       late_projection_particle_seconds += step_duration * budget.granular_projected_particles;
       late_plastic_volume_particle_seconds += step_duration * budget.granular_plastic_volume_changes;
       late_particle_seconds += step_duration * particles.size();
-      if (t >= settling_sample_time) {
+      if (in_final_window) {
+        for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+          const auto& particle = particles[ordinal];
+          const double change = particle.log_plastic_jacobian - previous_log_plastic[ordinal];
+          final_log_plastic_change += change;
+          final_absolute_log_plastic_change += std::abs(change);
+          if (particle.world_position.y <= spacing) {
+            floor_layer_absolute_log_plastic_change += std::abs(change);
+          }
+        }
         final_projection_particle_seconds += step_duration * budget.granular_projected_particles;
         final_plastic_volume_particle_seconds += step_duration * budget.granular_plastic_volume_changes;
         final_particle_seconds += step_duration * particles.size();
@@ -358,6 +377,14 @@ bool TestScene(
         "sand final 0.05 s projected fraction=%.9f plastic volume change fraction=%.9f\n",
         final_projection_particle_seconds / final_particle_seconds,
         final_plastic_volume_particle_seconds / final_particle_seconds
+    );
+  }
+  if (final_particle_seconds > 0) {
+    std::printf(
+        "sand final 0.05 s log_Jpl mean signed=%.9g absolute path=%.9g floor layer absolute path=%.9g\n",
+        final_log_plastic_change / particles.size(),
+        final_absolute_log_plastic_change / particles.size(),
+        floor_layer_absolute_log_plastic_change / particles.size()
     );
   }
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);

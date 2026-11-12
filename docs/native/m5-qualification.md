@@ -676,12 +676,19 @@ acceptance checks and measure yield activity over the final 0.05 s.
 
 Native and CUDA match at the displayed precision. The fractions are
 time-weighted particle counts over the window, using the solver's
-existing 1e-12 scaled change threshold. They measure how frequently
-the return modifies the state, while the magnitude of each change
-remains unmeasured. The final quadrant fits were 14.44° and 18.08°.
+existing 1e-12 scaled change threshold. They measure how frequently the return modifies the state. The final quadrant fits were 14.44° and 18.08°.
 Both runs met the momentum bound on both backends. The low kinetic
 energy and small final envelope drift coexist with continuing plastic
 updates and a surface shallower than the Q-SAND window.
+
+The mean signed change in log plastic Jacobian over the same window is
+0.002756145 and 0.002007689 for the 0.075 m and 0.0625 m grids. Summing
+absolute per-step changes gives the same values to the printed precision,
+showing sustained dilation. Changes ending within one particle spacing
+(0.025 m) of the floor contribute 61.4% and 57.1% of the respective absolute
+sums. This is a share of total change across all particles. The measurement
+also shows dilation above the floor layer. Native and CUDA differ by at
+most 3e-10 in the mean signed change.
 
 ~~~powershell
 .\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-dense-three-second
