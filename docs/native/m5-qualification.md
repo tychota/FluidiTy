@@ -3546,3 +3546,28 @@ foreach ($grid in 'middle', 'finer') {
 
 The temporary entry point changes only the grid width. Both sources
 were restored after linking. Q-SAND remains open.
+
+### Dense sampling at 0.050 m grid width
+
+Repeat the finest grid-width control with 504 particles instead of
+63. Keep the column dimensions, total mass, 0.00078125 s step,
+wall-face traction, and Euler deformation increment.
+
+| Particles | Native envelope at 3 s | Radius | Mean log plastic Jacobian |
+|---:|---:|---:|---:|
+| 63 | 30.190030° | 0.172222 m | 0.139279 |
+| 504 | 24.723652° | 0.253418 m | 0.577992 |
+
+The denser release spreads another 0.081196 m and falls below 30°.
+Its quadrant surface fits are 35.251946–39.147977°. Its envelope
+changes only 0.001450° in the last 0.05 s, and the vertical momentum
+residual is 4.84e-8 N·s. The 63-particle angle improvement therefore
+does not persist under this particle refinement. The original
+column gate remains open.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-finer-dense-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-finer-dense
+```
+
+The temporary entry point sets the existing particle multiplier to
+two in the 0.050 m case. Both sources were restored after linking.
