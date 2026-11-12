@@ -38,13 +38,19 @@ absl::Status Invalid() {
   return cache_detail::Error(absl::StatusCode::kInvalidArgument);
 }
 LiquidStateCapacities3D Counts(const LiquidState3D& state) {
-  return {state.particles.size(), state.blocks.size(), state.cells.size(), state.faces.size(), state.sources.size()};
+  return {
+      state.particles.size(),
+      state.blocks.size(),
+      std::max(state.cells.size(), state.cavity_gas.size()),
+      state.faces.size(),
+      state.sources.size(),
+  };
 }
 LiquidStateCapacities3D Counts(const wire::LiquidState* state) {
   return {
       state->particles()->size(),
       state->blocks()->size(),
-      state->cells()->size(),
+      std::max(state->cells()->size(), state->cavity() ? state->cavity()->gas()->size() : 0U),
       state->faces()->size(),
       state->sources()->size(),
   };
@@ -200,6 +206,44 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
       return cache_detail::Corrupt();
     }
   }
+  if (const auto* cavity = state->cavity()) {
+    if (cavity->next_id() == 0 || cavity->inventories()->size() > cavity->gas()->size()) {
+      return cache_detail::Corrupt();
+    }
+    flatbuffers::uoffset_t next_component = 0;
+    for (flatbuffers::uoffset_t index = 0; index < cavity->gas()->size(); ++index) {
+      const auto* gas = cavity->gas()->Get(index);
+      const auto label = gas->component();
+      if (!cache_detail::Positive(gas->gas_volume()) || label >= cavity->inventories()->size() || label > next_component
+          || (index > 0 && Key(cavity->gas()->Get(index - 1)->index()) >= Key(gas->index()))) {
+        return cache_detail::Corrupt();
+      }
+      if (label == next_component) {
+        ++next_component;
+      }
+    }
+    if (next_component != cavity->inventories()->size()) {
+      return cache_detail::Corrupt();
+    }
+    for (flatbuffers::uoffset_t index = 0; index < cavity->inventories()->size(); ++index) {
+      const auto* inventory = cavity->inventories()->Get(index);
+      if (inventory->id() == 0) {
+        if (inventory->initial_volume() != 0.0 || inventory->initial_absolute_pressure() != 0.0) {
+          return cache_detail::Corrupt();
+        }
+        continue;
+      }
+      if (inventory->id() >= cavity->next_id() || !cache_detail::Positive(inventory->initial_volume())
+          || !cache_detail::Positive(inventory->initial_absolute_pressure())) {
+        return cache_detail::Corrupt();
+      }
+      for (flatbuffers::uoffset_t previous = 0; previous < index; ++previous) {
+        if (cavity->inventories()->Get(previous)->id() == inventory->id()) {
+          return cache_detail::Corrupt();
+        }
+      }
+    }
+  }
   if (state->resume()) {
     if (state->clock()->substep() != 0) {
       return cache_detail::Corrupt();
@@ -251,6 +295,20 @@ absl::StatusOr<LiquidState3D> MaterializeState(const wire::LiquidState* state) {
   CACHE_TRY(cache_detail::Materialize(result.sources, state->sources(), [](const auto* source) {
     return LiquidSourceState3D{source->ordinal(), source->next_child(), source->fractional_remainder()};
   }));
+  if (const auto* cavity = state->cavity()) {
+    result.next_cavity_id = cavity->next_id();
+    CACHE_TRY(cache_detail::Materialize(result.cavity_gas, cavity->gas(), [](const auto* gas) {
+      const auto* index = gas->index();
+      return LiquidCavityGasState3D{{index->x(), index->y(), index->z()}, gas->gas_volume(), gas->component()};
+    }));
+    CACHE_TRY(cache_detail::Materialize(result.cavity_components, cavity->inventories(), [](const auto* inventory) {
+      return LiquidCavityComponentState3D{
+          inventory->id(),
+          inventory->initial_volume(),
+          inventory->initial_absolute_pressure()
+      };
+    }));
+  }
   return result;
 }
 absl::StatusOr<LiquidCacheBytes3D>
@@ -260,8 +318,9 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
   if (resume && (state.clock.substep_ordinal != 0 || !ValidResume(*resume, Counts(state)))) {
     return Invalid();
   }
-  const auto table_count =
-      state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size() + state.sources.size() + 1;
+  const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
+      + state.sources.size() + state.cavity_gas.size() + state.cavity_components.size() + (state.next_cavity_id != 0)
+      + 1;
   return cache_detail::Build<wire::LiquidState>(
       table_count,
       limits,
@@ -340,6 +399,43 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
               &packed_replay_reservations
           );
         }
+        flatbuffers::Offset<wire::CavitySnapshot> cavity;
+        if (state.next_cavity_id != 0) {
+          const auto gas = cache_detail::BuildVector<wire::CavityGasCell>(
+              builder,
+              state.cavity_gas.size(),
+              [&](std::size_t ordinal) {
+                const auto& record = state.cavity_gas[ordinal];
+                const wire::Index3 index(record.cell_index.x, record.cell_index.y, record.cell_index.z);
+                return wire::CreateCavityGasCell(
+                    builder,
+                    &index,
+                    record.gas_volume,
+                    static_cast<std::uint32_t>(record.component)
+                );
+              }
+          );
+          if (!gas.ok()) {
+            return gas.status();
+          }
+          const auto inventories = cache_detail::BuildVector<wire::CavityInventory>(
+              builder,
+              state.cavity_components.size(),
+              [&](std::size_t ordinal) {
+                const auto& record = state.cavity_components[ordinal];
+                return wire::CreateCavityInventory(
+                    builder,
+                    record.id,
+                    cache_detail::Canonical(record.initial_volume),
+                    cache_detail::Canonical(record.initial_absolute_pressure)
+                );
+              }
+          );
+          if (!inventories.ok()) {
+            return inventories.status();
+          }
+          cavity = wire::CreateCavitySnapshot(builder, state.next_cavity_id, *gas, *inventories);
+        }
         const auto origin = cache_detail::Pack(state.geometry.world_origin);
         const auto clock = cache_detail::Pack(state.clock);
         return wire::CreateLiquidState(
@@ -356,7 +452,8 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
             *cells,
             *faces,
             *sources,
-            resume_metadata_offset
+            resume_metadata_offset,
+            cavity
         );
       }
   );

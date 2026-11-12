@@ -375,3 +375,11 @@ The resolved material wire has two optional cavity pressure fields. Together the
 Twenty-five CPU checks passed with ctest --preset windows-debug-cpu -R 'Cavity|LiquidCache3D.Resolved'. The fixture round-trips the pressure settings, checks the fingerprint, and advances a decoded particle shell with nonzero cavity pressure. A clean windows-release-cuda build produced fluidity_simulate and fluidity_cuda_operator_tests. Twenty-one real-device checks passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The executable schema exposed both fields. clang-format 19.1.5 passed. Receipts use out/m4-cavity-resolved.
 
 The current scene settings do not serialize the accepted cavity snapshot. Resuming a cavity run through a disk checkpoint still needs state codec support. Full Q-CAVITY remains open.
+
+## Cavity snapshot checkpoint codec receipt
+
+Liquid state and its optional FlatBuffers extension now carry canonical gas cells, component labels, polytropic inventory and the next cavity ID. State validation checks label coverage and unique tracked IDs. Wire validation checks the same invariants before materialization. Transaction copies reserve cavity records only for enabled states and include them in equality and capacity checks.
+
+The checkpoint fixture round-tripped a tracked and an untracked component, cloned the decoded state at resume capacity and rejected duplicate cavity IDs. Fifty CPU tests passed with ctest --preset windows-debug-cpu -R 'LiquidCache3D|LiquidState3D|Cavity'. Twenty-one real-device regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Both presets were rebuilt cleanly for the state layout change. The CUDA build also produced fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-cavity-checkpoint.
+
+The codec fixture supplies the cavity state directly. The scheduler's live owner still needs to read and publish the snapshot through LiquidState3D for process-resume continuity.

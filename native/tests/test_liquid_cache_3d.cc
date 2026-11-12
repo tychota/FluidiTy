@@ -74,6 +74,30 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, CheckpointPreservesCavitySnapshot) {
+  auto state = PopulatedState();
+  state.next_cavity_id = 12;
+  state.cavity_gas = *LiquidRecords3D<LiquidCavityGasState3D>::Create(2);
+  state.cavity_components = *LiquidRecords3D<LiquidCavityComponentState3D>::Create(2);
+  ASSERT_TRUE(state.cavity_gas.Resize(2).ok());
+  ASSERT_TRUE(state.cavity_components.Resize(2).ok());
+  state.cavity_gas[0] = {{-1, 0, 0}, 0.75, 0};
+  state.cavity_gas[1] = {{1, 0, 0}, 0.25, 1};
+  state.cavity_components[0] = {11, 1.0, 104000.0};
+
+  const auto bytes = EncodeLiquidCheckpoint3D(state, Resume());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto decoded = DecodeLiquidCheckpoint3D(bytes->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_TRUE(decoded->state == state);
+  const auto cloned = CloneLiquidState3D(decoded->state, Resume().capacities);
+  ASSERT_TRUE(cloned.ok()) << cloned.status();
+  EXPECT_TRUE(*cloned == state);
+
+  state.cavity_components[1] = state.cavity_components[0];
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(state, Resume()).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, Blake3KnownAnswersAndExactByteIdentity) {
   EXPECT_EQ(
       std::string(LiquidDigestHex3D(LiquidContentDigest3D({})).data()),
