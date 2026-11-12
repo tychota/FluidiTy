@@ -1,8 +1,13 @@
 """Exact-infinite and finite liquid equations of state for reference fixtures."""
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 import math
 import sys
+
+import numpy as np
+
+from .pressure import bounded_band_source
 
 
 _TAIT_EXPONENT = 7.0
@@ -107,3 +112,57 @@ class LiquidEOS:
         if not _positive_finite(sound_speed):
             raise ValueError('unrepresentable sound speed')
         return LiquidEOSState(volume_ratio, log_volume_ratio, density, bulk_modulus, sound_speed)
+
+
+def volume_ratio_sensor(weights, particle_volume_ratios, reference_volumes):
+    """Return the same-phase, reference-volume-weighted J sample or None.
+
+    The tiny reference reduces exact representations of the binary64 inputs
+    and rounds the resulting positive mean once.
+    """
+    if not len(weights) == len(particle_volume_ratios) == len(reference_volumes):
+        raise ValueError('inconsistent volume-ratio sensor extents')
+    weighted_volume = Fraction()
+    weighted_ratio = Fraction()
+    for weight, ratio, volume in zip(weights, particle_volume_ratios, reference_volumes):
+        if not math.isfinite(weight) or weight < 0.0:
+            raise ValueError('invalid sensor quadrature weight')
+        if not _positive_finite(ratio) or not _positive_finite(volume):
+            raise ValueError('invalid particle volume ratio or reference volume')
+        contribution = Fraction(float(weight)) * Fraction(float(volume))
+        weighted_volume += contribution
+        weighted_ratio += contribution * Fraction(float(ratio))
+    if weighted_volume == 0:
+        return None
+    return float(weighted_ratio / weighted_volume)
+
+
+def eos_drift_source(eos, predicted_pressures, sensed_volume_ratios, fluid_volumes,
+                     correction_time, maximum_rate, *, sealed):
+    """Compute bounded EOS-relative drift in one connected pressure component.
+
+    Pressures are gauge Pa, volumes are m³, correction time is seconds,
+    and maximum rate is s⁻¹. None denotes a cell without a particle sensor.
+    Only a sealed exact-incompressible component balances the drift to zero
+    mean. The physical source and wall flux are checked independently.
+    """
+    pressures = np.asarray(predicted_pressures, dtype=float)
+    volumes = np.asarray(fluid_volumes, dtype=float)
+    if pressures.shape != (len(sensed_volume_ratios),) or volumes.shape != pressures.shape:
+        raise ValueError('inconsistent EOS drift extents')
+    if not np.all(np.isfinite(pressures)) or not np.all(np.isfinite(volumes)) or np.any(volumes <= 0.0):
+        raise ValueError('invalid pressure predictor or cell volume')
+    if not _positive_finite(correction_time) or not math.isfinite(maximum_rate) or maximum_rate < 0.0:
+        raise ValueError('invalid drift correction time or rate')
+
+    band = np.array([ratio is not None for ratio in sensed_volume_ratios], dtype=bool)
+    errors = np.zeros_like(pressures)
+    for cell in np.flatnonzero(band):
+        ratio = sensed_volume_ratios[cell]
+        if not _positive_finite(ratio):
+            raise ValueError('invalid sensed volume ratio')
+        target = eos.at_pressure(float(pressures[cell])).log_volume_ratio
+        errors[cell] = (target - math.log(ratio)) / correction_time
+    if sealed and eos.reference_sound_speed == math.inf:
+        return bounded_band_source(errors, volumes, band, maximum_rate)
+    return np.clip(errors, -maximum_rate, maximum_rate)

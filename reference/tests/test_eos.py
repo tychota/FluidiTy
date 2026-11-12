@@ -83,3 +83,29 @@ def test_closed_compliant_piston_converges_to_eos_compression(law):
     assert errors[1] < 0.55 * errors[0]
     assert errors[2] < 0.55 * errors[1]
     assert errors[2] < 0.002
+
+
+def test_eos_sensor_uses_reference_volume_weights():
+    from fluidity_reference.eos import volume_ratio_sensor
+
+    assert volume_ratio_sensor([1.0, 0.5], [0.9, 1.2], [4.0, 2.0]) == pytest.approx(0.96)
+    assert volume_ratio_sensor([0.0, 0.0], [0.9, 1.2], [4.0, 2.0]) is None
+
+
+def test_eos_drift_preserves_real_compression_and_ignores_core():
+    from fluidity_reference.eos import eos_drift_source
+
+    eos = LiquidEOS(1000.0, 50.0, 'tait')
+    predictor = eos.pressure(0.97)
+    source = eos_drift_source(
+        eos, [predictor] * 3, [0.97, 0.8, None], [1.0, 2.0, 3.0], 0.2, 0.25, sealed=True)
+    assert list(source) == pytest.approx([0.0, 0.25, 0.0], abs=1e-14)
+
+
+def test_sealed_incompressible_drift_balance_uses_only_sensor_cells():
+    from fluidity_reference.eos import eos_drift_source
+
+    eos = LiquidEOS(1000.0, math.inf)
+    source = eos_drift_source(
+        eos, [0.0] * 3, [math.exp(-1), math.exp(1), None], [1.0, 2.0, 4.0], 1.0, 0.25, sealed=True)
+    assert list(source) == pytest.approx([0.25, -0.125, 0.0])
