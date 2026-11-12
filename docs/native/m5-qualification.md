@@ -3631,3 +3631,35 @@ foreach ($grid in 'fine', 'coarse') {
   }
 }
 ```
+
+### Plastic volume outliers in the stiff fine column
+
+Trace accepted particle log plastic Jacobians in the native fine
+nominal runs with fourfold and eightfold stiffness. The upper
+percentile uses sorted index floor(0.9*(count-1)). Count values
+above one separately on the floor and above it.
+
+| Time | Stiffness | Median | 90th percentile | Maximum | On floor / above floor with log J_pl > 1 |
+|---:|---:|---:|---:|---:|---:|
+| ~1.50 s | 4× | 0.131147 | 0.254552 | 0.382069 | 0 / 0 |
+| ~1.50 s | 8× | 0.130642 | 0.312290 | 0.809588 | 0 / 0 |
+| ~2.00 s | 4× | 0.211973 | 0.556112 | 1.661981 | 4 / 0 |
+| ~2.00 s | 8× | 0.255306 | 1.082394 | 4.709186 | 8 / 0 |
+| ~2.50 s | 4× | 0.264989 | 0.899296 | 1.956542 | 7 / 0 |
+| ~2.50 s | 8× | 0.269698 | 1.082394 | 10.692845 | 8 / 0 |
+
+The medians are close at 2.50 s. The eightfold control's maximum
+is much larger and all sampled values above one belong to floor
+particles. The high plastic volume therefore develops late and
+is concentrated at the floor in this trace. Both final geometries
+match the prior stiffness results.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-plastic-distribution-bin'
+foreach ($scale in 'four', 'eight') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-plastic-distribution $scale
+}
+```
+
+The temporary instrumentation was restored after linking.
+Q-SAND remains open.
