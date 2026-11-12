@@ -28,7 +28,7 @@ TEST(MacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
   auto workspace = MacPressureWorkspace3D::Create(16, 15);
   ASSERT_TRUE(workspace.ok()) << workspace.status();
   pressure_test::ExpectBackwardEulerAcousticColumn(
-      pressure_test::AcousticInitialPressure::kStandingWave,
+      pressure_test::AcousticInitialCondition::kStandingWave,
       [&](const auto& system) {
         return workspace->ProjectPrepared(system);
       }
@@ -39,7 +39,18 @@ TEST(MacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
   auto workspace = MacPressureWorkspace3D::Create(16, 15);
   ASSERT_TRUE(workspace.ok()) << workspace.status();
   pressure_test::ExpectBackwardEulerAcousticColumn(
-      pressure_test::AcousticInitialPressure::kLocalizedPulse,
+      pressure_test::AcousticInitialCondition::kLocalizedPulse,
+      [&](const auto& system) {
+        return workspace->ProjectPrepared(system);
+      }
+  );
+}
+
+TEST(MacPressure3D, WaterHammerValveClosureMatchesAcousticOracle) {
+  auto workspace = MacPressureWorkspace3D::Create(64, 63);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialCondition::kValveClosure,
       [&](const auto& system) {
         return workspace->ProjectPrepared(system);
       }

@@ -251,3 +251,11 @@ The sealed one-cell fixture supplies a prescribed wetted flux of 0.02 m³/s thro
 Both backends used 224 pressure iterations over 224 projections. The worst finest-resolution relative pressure error was 0.001352 and the worst constraint defect was 1.738402e-9 s⁻¹. The fixture measured about 4.72 ms CPU wall time, 230 ms CUDA wall time and 41.31 ms CUDA solver event time. All 20 CPU and seven real-device CUDA pressure regressions passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce with the locked Windows presets and ctest -R CompliantPistonConverges. XML, regression and sanitizer receipts use the out/m4-compliant-piston prefix.
 
 The fixture qualifies the pressure operator and EOS with prescribed moving-wall flux. It does not measure wetted geometry, swept volume or closed-chamber scheduler behavior.
+
+## Discrete water-hammer receipt
+
+The one-metre column starts with uniform positive flow on the interior faces and both ends close instantaneously. The independent oracle projects that initial velocity onto the sealed-column sine modes and evolves each coupled pressure/velocity mode with the backward-Euler phase and damping. The fixture checks the full discrete waveform and accumulated physical-defect bound. It also checks that the mean pressure in the last eighth of the column at 0.25 s approaches the 2 Pa Joukowsky plateau on 16, 32 and 64 cells at fixed Courant number.
+
+The finest plateau relative error was about 4e-6 on both backends. Maximum discrete pressure and impedance-scaled velocity errors were 4.14e-4 Pa and 5.30e-4 Pa. Each backend used 450 pressure iterations across 224 projections. The fixture measured about 52.8 ms CPU wall time, 330 ms CUDA wall time and 195.9 ms CUDA solver event time. All 21 CPU and eight real-device CUDA pressure regressions passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce with the locked Windows presets and ctest -R WaterHammerValveClosure. The XML, regression and sanitizer receipts use the out/m4-water-hammer prefix.
+
+Review confirmed the mode normalization, closure sign and plateau location. This is a linear, instantaneous closure oracle for the fixed-coefficient pressure operator. Reservoir boundaries, finite valve motion, cavitation and scheduler-driven closure remain outside its evidence.

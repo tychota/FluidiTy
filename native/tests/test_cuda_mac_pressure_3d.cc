@@ -112,7 +112,7 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
 TEST(CudaMacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
   double kernel_milliseconds = 0.0;
   pressure_test::ExpectBackwardEulerAcousticColumn(
-      pressure_test::AcousticInitialPressure::kStandingWave,
+      pressure_test::AcousticInitialCondition::kStandingWave,
       [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
         auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
         if (!result.ok()) {
@@ -129,7 +129,24 @@ TEST(CudaMacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
 TEST(CudaMacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
   double kernel_milliseconds = 0.0;
   pressure_test::ExpectBackwardEulerAcousticColumn(
-      pressure_test::AcousticInitialPressure::kLocalizedPulse,
+      pressure_test::AcousticInitialCondition::kLocalizedPulse,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, WaterHammerValveClosureMatchesAcousticOracle) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialCondition::kValveClosure,
       [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
         auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
         if (!result.ok()) {
