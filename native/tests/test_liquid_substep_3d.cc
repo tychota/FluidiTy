@@ -179,6 +179,21 @@ TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   EXPECT_NE(scheduler->committed().particles[0].world_position.x, state.particles[0].world_position.x);
 }
 
+TEST(LiquidSubstep3D, RejectsEulerianMaterialBeforeGradedSchedulerAdmission) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateGradedTankFixture3D(state, scene);
+  ASSERT_TRUE(authored.ok()) << authored;
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  state.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  const auto before = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(before.ok()) << before.status();
+  const auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  EXPECT_EQ(scheduler.status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_EQ(state, *before);
+}
+
 TEST(LiquidSubstep3D, RetainsGradedOwnershipAtSolidUpperCorner) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

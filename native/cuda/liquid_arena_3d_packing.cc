@@ -95,6 +95,7 @@ void PackLiquidArenaState3D(
       cell.key.lower_corner.z = record.key.lower_corner.z;
       cell.key.width_exponent = record.key.width_exponent;
       cell.occupancy = record.occupancy;
+      cell.material_owner = record.material_owner;
       cell.inventory.mass_kg = record.inventory.mass_kg;
       cell.inventory.reference_volume_m3 = record.inventory.reference_volume_m3;
       cell.inventory.current_volume_m3 = record.inventory.current_volume_m3;
