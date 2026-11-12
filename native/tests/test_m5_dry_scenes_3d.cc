@@ -108,7 +108,8 @@ bool TestScene(
     double granular_modulus_scale = 1,
     double stored_velocity_decay_rate = 0,
     double granular_lambda = 700,
-    bool compatible_floor = false
+    bool compatible_floor = false,
+    double symmetric_affine_decay_per_second = 0
 ) {
   std::vector<BlockIndex3D> blocks;
   const int maximum_block_y = compatible_floor ? 2 : 4;
@@ -259,6 +260,22 @@ bool TestScene(
           status.ToString().c_str()
       );
       return false;
+    }
+    if (symmetric_affine_decay_per_second > 0) {
+      // This diagnostic decays only the symmetric part of the next deposit's APIC fit.
+      const double decay = -0.5 * std::expm1(-symmetric_affine_decay_per_second * step_duration);
+      constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+      constexpr std::array coordinates{&fluidity::Vec3::x, &fluidity::Vec3::y, &fluidity::Vec3::z};
+      for (auto& particle : particles) {
+        const Mat3 previous = particle.velocity_slopes;
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+          for (std::size_t column = 0; column < coordinates.size(); ++column) {
+            const double symmetric_sum =
+                (previous.*rows[row]).*coordinates[column] + (previous.*rows[column]).*coordinates[row];
+            (particle.velocity_slopes.*rows[row]).*coordinates[column] -= decay * symmetric_sum;
+          }
+        }
+      }
     }
     const bool late_drift_sample = !snow && t < settling_sample_time && next_time == settling_sample_time;
     const bool original_endpoint = extended_column && t < 0.75 && next_time == 0.75;
@@ -875,6 +892,23 @@ int main(int argc, char** argv) {
     const bool reference = TestScene(0.075, 0.0009375, false, 0, 2, 0.10, false, 3);
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
+  }
+  if (argc == 4 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
+    const std::string_view rate_name = argv[2];
+    if (rate_name != "2" && rate_name != "8" && rate_name != "32") {
+      return 2;
+    }
+    const double rate = rate_name == "2" ? 2.0 : (rate_name == "8" ? 8.0 : 32.0);
+    const std::string_view selection = argv[3];
+    const bool coarse = selection == "coarse" || selection == "coarse-half";
+    const bool fine = selection == "fine" || selection == "fine-half";
+    if (!coarse && !fine) {
+      return 2;
+    }
+    const double width = coarse ? 0.075 : 0.0625;
+    const double duration = width / (selection.ends_with("-half") ? 80 : 40);
+    std::printf("symmetric APIC decay in inverse seconds=%.0f\n", rate);
+    return TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, 0, 700, true, rate) ? 0 : 1;
   }
   if (argc >= 2
       && (std::string_view(argv[1]) == "--q-sand-compatible-floor"
