@@ -38,6 +38,25 @@ __global__ void CheckSampledSolidGeometryOnDevice(int* result) {
       || fabs(second->wet_volume - 0.71875) > 2e-14 || fabs(first->open_area[1] - 0.75) > 2e-14
       || first->open_area[1] != second->open_area[0]) {
     *result = 90;
+    return;
+  }
+  const auto weights = fluidity::boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5});
+  if (!weights.ok()) {
+    *result = 91;
+    return;
+  }
+  constexpr double kExpectedWeights[4]{11.0 / 48, 1.0 / 48, 7.0 / 48, 5.0 / 48};
+  constexpr double kNormalVelocities[4]{2, 5, -2, 1};
+  double wall_flux = 0;
+  for (int corner = 0; corner < 4; ++corner) {
+    if (fabs((*weights)[corner] - kExpectedWeights[corner]) > 2e-14) {
+      *result = 92;
+      return;
+    }
+    wall_flux += (*weights)[corner] * kNormalVelocities[corner];
+  }
+  if (fabs(wall_flux - 0.375) > 2e-14) {
+    *result = 93;
   }
 }
 

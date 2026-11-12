@@ -204,6 +204,87 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
   return result;
 }
 
+// Integrates the four piecewise-linear corner basis functions over the
+// blocked part of a square MAC face. Samples are ordered by the two
+// transverse corner bits, in metres and positive outside solid. The shared
+// diagonal is 0 to 3. The resulting area weights in m² multiply sampled
+// normal velocities for wall flux and distribute its conjugate load by
+// the transpose. An all-zero solid plateau blocks the entire face.
+// Invalid samples or width return kInvalid. Unrepresentable weights return
+// kRange. Failure returns no partial weights.
+FLUIDITY_HD inline Value<numeric::array<double, 4>>
+MeasureSampledSolidFaceWeights(double width, const numeric::array<double, 4>& solid_distance) {
+  if (!numeric::isfinite(width) || width <= 0) {
+    return Error::kInvalid;
+  }
+  const double full_area = width * width;
+  if (!numeric::isnormal(full_area)) {
+    return Error::kRange;
+  }
+
+  double maximum_distance = 0;
+  for (const double distance : solid_distance) {
+    if (!numeric::isfinite(distance)) {
+      return Error::kInvalid;
+    }
+    maximum_distance = numeric::max(maximum_distance, numeric::abs(distance));
+  }
+  int distance_exponent = 0;
+  (void)numeric::frexp(maximum_distance, &distance_exponent);
+  numeric::array<double, 8> scaled_distance{};
+  ClippingVertex vertices[4]{};
+  for (int corner = 0; corner < 4; ++corner) {
+    scaled_distance[corner] = numeric::ldexp(solid_distance[corner], -distance_exponent);
+    if (solid_distance[corner] != 0 && !numeric::isnormal(scaled_distance[corner])) {
+      return Error::kRange;
+    }
+    vertices[corner].cell_width_position = {
+        static_cast<double>(corner & 1),
+        static_cast<double>((corner >> 1) & 1),
+        0,
+    };
+  }
+
+  numeric::array<double, 4> weights{};
+  for (int axis = 0; axis < 2; ++axis) {
+    const int middle = 1 << axis;
+    const int corners[3]{0, middle, 3};
+    const ClippingPolygon triangle{vertices[0], vertices[middle], vertices[3]};
+    const auto exterior = SampledSolidExteriorPlane(scaled_distance, corners);
+    const ClippingPlane interior{
+        .normal = Scale(exterior.normal, -1),
+        .plane_coordinate = -exterior.plane_coordinate,
+    };
+    const auto blocked = ClipPolygon(triangle, interior);
+    if (blocked.overflow) {
+      return Error::kRange;
+    }
+    for (std::size_t vertex = 1; vertex + 1 < blocked.size(); ++vertex) {
+      const ClippingPolygon piece{blocked[0], blocked[vertex], blocked[vertex + 1]};
+      const double area = ComputeClippedArea(piece, width);
+      if (!IsNormalOrZero(area)) {
+        return Error::kRange;
+      }
+      const auto centroid = Scale(
+          Add(Add(piece[0].cell_width_position, piece[1].cell_width_position), piece[2].cell_width_position),
+          1.0 / 3
+      );
+      const double along = numeric::clamp(centroid[axis], 0.0, 1.0);
+      const double across = numeric::clamp(centroid[1 - axis], 0.0, along);
+      weights[0] += area * (1 - along);
+      weights[middle] += area * (along - across);
+      weights[3] += area * across;
+    }
+  }
+
+  const double measured_area = weights[0] + weights[1] + weights[2] + weights[3];
+  constexpr double kMeasureSlack = 64 * numeric::numeric_limits<double>::epsilon();
+  if (!IsNormalOrZero(measured_area) || measured_area / full_area > 1 + kMeasureSlack) {
+    return Error::kRange;
+  }
+  return weights;
+}
+
 FLUIDITY_HD inline bool IsSampledSolidMode(GeometryMode mode) {
   return mode == GeometryMode::kSampledSolidCell || mode == GeometryMode::kSampledSolidFace;
 }
