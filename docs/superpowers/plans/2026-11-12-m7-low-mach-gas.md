@@ -47,4 +47,4 @@
 
 - [x] Wire authored animated fuel/heat and a supported Blender field into the bake.
 - [x] Publish density, temperature, fuel and flame grids and check each in the native Volume.
-- [ ] Verify render edits preserve cache identity and run final acceptance checks.
+- [x] Verify render edits preserve cache identity and run final acceptance checks.

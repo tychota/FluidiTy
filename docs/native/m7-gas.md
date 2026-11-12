@@ -35,3 +35,15 @@ Use the solver from the selected build. The script requires a fresh output path.
 ```
 
 With the extension installed, select a static domain box, a static emitter box with keyframed `Fuel Rate` and `Heat Rate` custom properties, and an optional Blender Wind field. At 24 fps with frame zero as the start, use Check Scene and Bake, then Inspect Gas Fields or Attach Gas Volume. Render styling is stored in Blender's Volume and material datablocks.
+
+## Final validation
+
+- Debug CPU CTest passed 839 of 839 tests.
+- Release CUDA CTest passed 912 of 912 tests serially, including the real-CUDA gas replay process.
+- The independent reference suite passed 357 tests with BLAS and OpenMP threads capped.
+- The CPU and CUDA Blender add-on scenes both passed the 13-frame bake, four-field inspection, native Volume attachment, and fresh-process Cycles render checks. The CPU render preserved 30 tracked files, and the CUDA render preserved 31 including its device compatibility record.
+- Clang-format 19.1.5 passed on all 386 tracked native source files.
+
+The M4 pressure/history work overlaps the MAC pressure interface. The M5 restart work and M6 interaction work overlap liquid committed state and checkpoint codecs. M7 uses the existing pressure/boundary primitives and the process and filesystem contracts, with gas-specific resolved state and completed-frame checkpoints. No active earlier milestone was needed to run the fixed-domain gas acceptance.
+
+Independent review found stale transfer halo velocities, loss of marker coverage during open flow, and a missing add-on authoring route. Regression tests cover the corrected draft halo, marker replenishment after outflow, and the packaged-solver Check Scene, Bake, Inspect, and Attach path. The remap retains the first advected marker in an occupied cell and places a projected-field marker at the center of an empty cell. This deterministic policy bounds the marker inventory, with velocity sampling error tied to the fixed cell resolution.
