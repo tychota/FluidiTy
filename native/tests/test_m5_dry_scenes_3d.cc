@@ -110,7 +110,8 @@ bool TestScene(
     double granular_lambda = 700,
     bool compatible_floor = false,
     double symmetric_affine_decay_per_second = 0,
-    std::string_view affine_decay_region = "all"
+    std::string_view affine_decay_region = "all",
+    bool trace_early_contact = false
 ) {
   std::vector<BlockIndex3D> blocks;
   const int maximum_block_y = compatible_floor ? 2 : 4;
@@ -186,6 +187,8 @@ bool TestScene(
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
+  constexpr std::array early_sample_times{0.10, 0.15, 0.20, 0.25, 0.35, 0.50};
+  std::size_t early_sample = 0;
   for (double t = 0; t < time; ++step) {
     double phase_end =
         snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < settling_sample_time ? settling_sample_time : time);
@@ -362,6 +365,30 @@ bool TestScene(
     total_budget.wall_impulse_on_particles.y += budget.wall_impulse_on_particles.y;
     total_budget.particle_wall_contacts += budget.particle_wall_contacts;
     total_budget.particle_wall_kinetic_energy_change += budget.particle_wall_kinetic_energy_change;
+    if (trace_early_contact && early_sample < early_sample_times.size()
+        && next_time >= early_sample_times[early_sample]) {
+      double height = 0;
+      double radius = 0;
+      double energy = 0;
+      for (const auto& particle : particles) {
+        height = std::max(height, particle.world_position.y);
+        radius = std::max(radius, std::hypot(particle.world_position.x, particle.world_position.z));
+        const auto velocity = particle.world_velocity;
+        energy += 0.5 * particle.mass * (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+      }
+      std::printf(
+          "sand trace t=%.8f height=%.8f radius=%.8f kinetic_J=%.8f grid_wall_Ns=%.8f swept_wall_Ns=%.8f "
+          "contacts=%zu\n",
+          next_time,
+          height,
+          radius,
+          energy,
+          total_budget.grid_wall_impulse_y,
+          total_budget.wall_impulse_on_particles.y,
+          total_budget.particle_wall_contacts
+      );
+      ++early_sample;
+    }
     t = next_time;
   }
   double maximum_height = 0;
@@ -1030,6 +1057,18 @@ int main(int argc, char** argv) {
     const bool reference = TestScene(0.075, 0.0009375, false, 0, 2, 0.10, false, 3);
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
+  }
+  if (argc == 4 && std::string_view(argv[1]) == "--q-sand-contact-trace") {
+    const std::string_view grid_name = argv[2];
+    const std::string_view step_name = argv[3];
+    if ((grid_name != "coarse" && grid_name != "fine") || (step_name != "nominal" && step_name != "half")) {
+      return 2;
+    }
+    const double width = grid_name == "coarse" ? 0.075 : 0.0625;
+    const double duration = width / (step_name == "half" ? 80 : 40);
+    return TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, 0, 700, true, 0, "all", true)
+        ? 0
+        : 1;
   }
   if (argc == 4 && std::string_view(argv[1]) == "--q-sand-reflected-timestep") {
     const std::string_view grid_name = argv[2];
