@@ -602,6 +602,27 @@ remain below 30°. The milestone branch uses the original solver.
 To reproduce, check out 92df727 on codex/m5-sand-floor-control, rebuild
 the two Release scene targets, and run the extended column commands above.
 
+Run the two changes separately to identify the source of the reduced
+late creep. The APIC-only control uses the original deformation
+integration. The deformation-only control uses the original APIC
+slope reset at impact.
+
+| h (m) | Nominal dt (s) | APIC only at 1.50 s | Deformation only at 1.50 s | Deformation-only late projected fraction |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 20.759356° | 29.113507° | 0.457301587 |
+| 0.0625 | 0.0015625 | 20.538690° | 26.761332° | 0.411904762 |
+| 0.075 | 0.0009375 | 27.848481° | 29.006384° | 0.639761905 |
+| 0.0625 | 0.00078125 | 26.408903° | 27.033753° | 0.602711640 |
+
+The final native and CUDA angles match to six decimal places and
+the momentum and late-drift checks pass. The APIC-only control
+shifts the baseline by at most 0.20°. The deformation-only control
+reproduces the combined angles within 0.13° and the reduction in
+late plastic activity. The remaining grid-width sensitivity and
+angles below 30° keep the gate open. Reproduce with 60f221a
+(deformation only) or 1696516 (APIC only) on
+codex/m5-sand-floor-control and the same extended column commands.
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
