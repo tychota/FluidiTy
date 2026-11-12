@@ -1285,6 +1285,52 @@ void ExpectStoredLiquidMomentumBudget(
   }
 }
 
+Vec3 ExpectedPressureGridImpulse(
+    const LiquidPressureProblemView3D& problem,
+    std::span<const double> pressures,
+    double duration
+) {
+  constexpr std::array kCoordinates{&CellIndex3D::x, &CellIndex3D::y, &CellIndex3D::z};
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  Vec3 impulse{};
+  for (const auto& face : problem.faces) {
+    if (face.open_area == 0.0) {
+      continue;
+    }
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    const auto index = face.face_index.lattice_index;
+    const CellIndex3D head{index.x, index.y, index.z};
+    auto tail = head;
+    --(tail.*kCoordinates[axis]);
+    const auto* boundary = std::get_if<DirichletMacPressureLink3D>(&face.pressure_link);
+    const auto pressure_at = [&](CellIndex3D coordinate) {
+      for (std::size_t ordinal = 0; ordinal < problem.cells.size(); ++ordinal) {
+        const auto cell = problem.cells[ordinal].cell_index;
+        if (cell.x == coordinate.x && cell.y == coordinate.y && cell.z == coordinate.z) {
+          return pressures[ordinal];
+        }
+      }
+      EXPECT_NE(boundary, nullptr);
+      return boundary ? boundary->exterior_pressure : 0.0;
+    };
+    const auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link);
+    const double jump = internal ? internal->pressure_jump : 0.0;
+    impulse.*kComponents[axis] += duration * face.open_area * (pressure_at(tail) - pressure_at(head) + jump);
+  }
+  return impulse;
+}
+
+double PressureTractionImpulseResidual(const OrientedFloatingBoxLoads3D& loads, double duration) {
+  const auto& tank = loads.tank_pressure->force;
+  const auto& box = loads.pressure_force;
+  const auto grid = loads.pressure_grid_impulse;
+  return std::hypot(
+      grid.x - duration * (tank.x - box.x),
+      grid.y - duration * (tank.y - box.y),
+      grid.z - duration * (tank.z - box.z)
+  );
+}
+
 TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
@@ -1311,6 +1357,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
     auto body = initial_body;
     std::vector<std::uint8_t> midpoint;
     std::vector<std::uint8_t> final;
+    double max_pressure_traction_residual = 0.0;
     bool observed_pressure = false;
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
@@ -1323,6 +1370,8 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
+      max_pressure_traction_residual =
+          std::max(max_pressure_traction_residual, PressureTractionImpulseResidual(*attempt->oriented_loads, kDt));
       ExpectStoredLiquidMomentumBudget(
           initial_momentum,
           scheduler->committed().particles.values(),
@@ -1348,6 +1397,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       }
     }
     EXPECT_GT(body.orientation.vector.z, 0.0);
+    std::cout << "pressure_traction_dt_s=" << kDt << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
     EXPECT_LT(body.linear_velocity.y, initial_body.linear_velocity.y);
@@ -1385,21 +1435,28 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
     const int frames = static_cast<int>(0.0625 / kDt);
-    double projected_wall_flux = 0.0;
+    struct ProjectionMeasurements {
+      double wall_flux{};
+      Vec3 pressure_impulse{};
+    } projected;
     auto backend = CpuLiquidSubstepBackend3D();
-    backend.context = &projected_wall_flux;
+    backend.context = &projected;
     backend.project = [](void* context,
                          SparseMacGridView3D grid,
                          double duration,
                          const LiquidPressureProblemView3D& problem,
                          MacPressureSolverOptions3D options,
                          MacPressureWorkspace3D& workspace) {
-      auto& flux = *static_cast<double*>(context);
-      flux = 0.0;
+      auto& measured = *static_cast<ProjectionMeasurements*>(context);
+      measured.wall_flux = 0.0;
       for (const auto& cell : problem.cells) {
-        flux += cell.integrated_inward_wall_flux;
+        measured.wall_flux += cell.integrated_inward_wall_flux;
       }
-      return CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
+      auto result = CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
+      if (result.ok()) {
+        measured.pressure_impulse = ExpectedPressureGridImpulse(problem, result->cell_pressures, duration);
+      }
+      return result;
     };
     auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
     ASSERT_TRUE(scheduler.ok()) << scheduler.status();
@@ -1416,6 +1473,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
     auto body = initial_body;
     std::vector<std::uint8_t> midpoint;
     std::vector<std::uint8_t> final;
+    double max_pressure_traction_residual = 0.0;
     bool observed_pressure = false;
     bool observed_particle_motion = false;
     for (int frame = 1; frame <= frames; ++frame) {
@@ -1429,6 +1487,9 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       const auto& loads = *attempt->oriented_loads;
+      for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+        EXPECT_NEAR(loads.pressure_grid_impulse.*component, projected.pressure_impulse.*component, 1e-12);
+      }
       const double momentum_change = body.mass * (attempt->body->linear_velocity.y - body.linear_velocity.y);
       const double angular_momentum_change =
           body.principal_inertia.z * (attempt->body->angular_velocity.z - body.angular_velocity.z);
@@ -1442,6 +1503,8 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
           kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
           5e-14
       );
+      max_pressure_traction_residual =
+          std::max(max_pressure_traction_residual, PressureTractionImpulseResidual(*attempt->oriented_loads, kDt));
       ExpectStoredLiquidMomentumBudget(initial_momentum, scheduler->committed().particles.values(), loads);
       EXPECT_NEAR(attempt->body->center.y, body.center.y + kDt * attempt->body->linear_velocity.y, 1e-14);
       EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
@@ -1460,7 +1523,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(patches.ok()) << patches.status();
       const auto flux = ComputeRigidBodyInwardWallFlux3D(swept_body, cells.size(), *patches);
       ASSERT_TRUE(flux.ok()) << flux.status();
-      EXPECT_NEAR(projected_wall_flux, std::accumulate(flux->begin(), flux->end(), 0.0), 1e-15);
+      EXPECT_NEAR(projected.wall_flux, std::accumulate(flux->begin(), flux->end(), 0.0), 1e-15);
       const auto position = scheduler->committed().particles[0].world_position;
       observed_particle_motion |= std::abs(position.y - initial.particles[0].world_position.y) > 1e-9;
       const auto previous_pose = RigidBodyPose3D{body.center, body.orientation};
@@ -1476,6 +1539,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       }
     }
     EXPECT_LT(body.angular_velocity.z, 0.0);
+    std::cout << "pressure_traction_dt_s=" << kDt << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
     EXPECT_TRUE(observed_pressure);
     EXPECT_TRUE(observed_particle_motion);
     EXPECT_LT(std::abs(body.linear_velocity.y), 0.04);

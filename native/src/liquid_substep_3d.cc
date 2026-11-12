@@ -1818,7 +1818,8 @@ struct LiquidSubstepScheduler3D::Impl {
         }
       }
       if (projected_cell_pressures.size() != frozen->cells.size()
-          || projected_face_velocities.size() != frozen->faces.size()) {
+          || projected_face_velocities.size() != frozen->faces.size()
+          || projected_face_velocities.size() != pressure_problem.faces.size()) {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
       }
       if (eos) {
@@ -1867,6 +1868,23 @@ struct LiquidSubstepScheduler3D::Impl {
         ));
       }
       if (oriented_box) {
+        constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+        Vec3 grid_impulse{};
+        for (std::size_t index = 0; index < pressure_problem.faces.size(); ++index) {
+          const auto& face = pressure_problem.faces[index];
+          if (face.open_area == 0.0) {
+            continue;
+          }
+          const double dual_mass = face.open_area * face.pressure_gradient_distance / face.inverse_density;
+          const double velocity_change = projected_face_velocities[index] - face.predicted_normal_velocity;
+          const auto component = kComponents[static_cast<std::size_t>(face.face_index.axis)];
+          grid_impulse.*component += dual_mass * velocity_change;
+        }
+        if (!liquid_step_internal::Finite(grid_impulse)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+        floating_box->oriented_loads->pressure_grid_impulse = grid_impulse;
+
         // Use the same checked traction accumulator for a fixed surface. The
         // zero center makes its accumulated moment relative to the world origin.
         constexpr std::uint64_t kTankPatchId = 1;

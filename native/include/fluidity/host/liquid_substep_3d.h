@@ -270,6 +270,9 @@ struct OrientedFloatingBoxLoads3D {
   Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
   Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
   Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+  // World N s from the velocity correction on open MAC faces, using face dual
+  // mass (aperture times gradient distance divided by inverse density).
+  Vec3 pressure_grid_impulse{};
   std::optional<TankPressureLoad3D> tank_pressure;  // Present when the pressure cells cover every wet tank wall.
 };
 struct LiquidFloatingBoxAttempt3D {
