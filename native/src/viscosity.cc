@@ -1203,50 +1203,71 @@ absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
   };
 }
 
-absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::PrepareVelocityBlock3D(
+namespace {
+struct VelocityBlockErrors {
+  bool detailed;
+
+  absl::Status operator()(absl::StatusCode code, const char* message) const {
+    return absl::Status(code, detailed ? message : "");
+  }
+};
+
+absl::StatusOr<double> ValidateVelocityBlockInputs(
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,
-    MacViscousVelocityBlockOptions3D options
+    MacViscousVelocityBlockOptions3D options,
+    VelocityBlockErrors errors
 ) {
   const auto inertia = inputs.face_inertias;
   const std::size_t face_count = inertia.size();
   if (rhs.size() != face_count || !std::isfinite(inputs.step_duration) || inputs.step_duration < 0.0) {
-    return absl::InvalidArgumentError("invalid velocity-block extent or timestep");
+    return errors(absl::StatusCode::kInvalidArgument, "invalid velocity-block extent or timestep");
   }
   if (options.max_iterations == 0 || !std::isfinite(options.relative_tolerance) || options.relative_tolerance <= 0.0
       || options.relative_tolerance >= 1.0) {
-    return absl::InvalidArgumentError("invalid velocity-block iteration budget or tolerance");
+    return errors(absl::StatusCode::kInvalidArgument, "invalid velocity-block iteration budget or tolerance");
   }
   double max_rhs = 0.0;
   for (std::size_t face = 0; face < face_count; ++face) {
     if (!std::isfinite(inertia[face]) || inertia[face] < 0.0 || !std::isfinite(rhs[face])) {
-      return absl::InvalidArgumentError("invalid face inertia or momentum");
+      return errors(absl::StatusCode::kInvalidArgument, "invalid face inertia or momentum");
     }
     if (inertia[face] == 0.0 && rhs[face] != 0.0) {
-      return absl::InvalidArgumentError("eliminated face must have zero momentum");
+      return errors(absl::StatusCode::kInvalidArgument, "eliminated face must have zero momentum");
     }
     max_rhs = std::max(max_rhs, std::abs(rhs[face]));
   }
 
+  return max_rhs;
+}
+
+absl::Status BuildWeightedVelocityRows(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<MacStrainRow3D> weighted_rows,
+    std::span<double> diagonal,
+    VelocityBlockErrors errors
+) {
+  const auto inertia = inputs.face_inertias;
+  const std::size_t face_count = inertia.size();
   // Store the square-root weighted rows so the operator and its Jacobi
   // diagonal use the same coefficients. Eliminate prescribed slots in E.
-  std::vector<double> diagonal(inertia.begin(), inertia.end());
-  std::vector<MacStrainRow3D> weighted_rows(inputs.strain_rows.begin(), inputs.strain_rows.end());
+  std::ranges::copy(inertia, diagonal.begin());
+  std::ranges::copy(inputs.strain_rows, weighted_rows.begin());
   const double sqrt_step = std::sqrt(inputs.step_duration);
   for (auto& row : weighted_rows) {
     if (row.term_count == 0 || row.term_count > row.terms.size() || !std::isfinite(row.quadrature_weight)
         || row.quadrature_weight < 0.0) {
-      return absl::InvalidArgumentError("invalid strain row extent or weight");
+      return errors(absl::StatusCode::kInvalidArgument, "invalid strain row extent or weight");
     }
     const double sqrt_weight = std::sqrt(row.quadrature_weight);
     for (std::size_t term_index = 0; term_index < row.term_count; ++term_index) {
       auto& term = row.terms[term_index];
       if (term.face_slot >= face_count || !std::isfinite(term.coefficient)) {
-        return absl::InvalidArgumentError("invalid strain term");
+        return errors(absl::StatusCode::kInvalidArgument, "invalid strain term");
       }
       for (std::size_t earlier = 0; earlier < term_index; ++earlier) {
         if (row.terms[earlier].face_slot == term.face_slot) {
-          return absl::InvalidArgumentError("strain row has a duplicate face slot");
+          return errors(absl::StatusCode::kInvalidArgument, "strain row has a duplicate face slot");
         }
       }
       if (inertia[term.face_slot] == 0.0 || sqrt_step == 0.0 || sqrt_weight == 0.0 || term.coefficient == 0.0) {
@@ -1255,35 +1276,31 @@ absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::
       }
       const double weighted_coefficient = ScaledProduct(sqrt_step, sqrt_weight, term.coefficient);
       if (!std::isnormal(weighted_coefficient)) {
-        return absl::OutOfRangeError("weighted strain coefficient is outside normal double range");
+        return errors(absl::StatusCode::kOutOfRange, "weighted strain coefficient is outside normal double range");
       }
       term.coefficient = weighted_coefficient;
       diagonal[term.face_slot] += weighted_coefficient * weighted_coefficient;
       if (!std::isfinite(diagonal[term.face_slot])) {
-        return absl::OutOfRangeError("velocity-block diagonal is nonfinite");
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block diagonal is nonfinite");
       }
     }
   }
 
-  return PreparedVelocityBlock3D{
-      .weighted_rows = std::move(weighted_rows),
-      .diagonal = std::move(diagonal),
-      .max_rhs = max_rhs,
-  };
+  return absl::OkStatus();
 }
 
-absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> SolvePreparedVelocityBlock(
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,
-    MacViscousVelocityBlockOptions3D options
+    MacViscousVelocityBlockOptions3D options,
+    double max_rhs,
+    viscosity_internal::VelocityBlockScratch3D scratch,
+    VelocityBlockErrors errors
 ) {
-  const auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
-  if (!prepared.ok()) {
-    return prepared.status();
-  }
   const auto inertia = inputs.face_inertias;
   const std::size_t face_count = inertia.size();
-  const auto& [weighted_rows, diagonal, max_rhs] = *prepared;
+  const auto weighted_rows = scratch.weighted_rows;
+  const auto diagonal = scratch.diagonal;
   const auto apply = [&](std::span<const double> velocity, std::span<double> momentum) {
     for (std::size_t face = 0; face < face_count; ++face) {
       momentum[face] = inertia[face] * velocity[face];
@@ -1309,8 +1326,10 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
     return std::inner_product(residual.begin(), residual.end(), preconditioned.begin(), 0.0);
   };
 
-  MacViscousVelocityBlockSolution3D solution{
-      .velocity = std::vector<double>(face_count),
+  const auto velocity = scratch.velocity;
+  std::ranges::fill(velocity, 0.0);
+  viscosity_internal::VelocityBlockViewSolution3D solution{
+      .velocity = velocity,
       .iterations = 0,
       .max_residual = 0.0,
   };
@@ -1318,43 +1337,45 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
     return solution;
   }
   const double tolerance = options.relative_tolerance * max_rhs;
-  std::vector<double> residual(rhs.begin(), rhs.end());
-  std::vector<double> preconditioned(face_count);
+  const auto residual = scratch.residual;
+  const auto preconditioned = scratch.preconditioned;
+  const auto direction = scratch.direction;
+  const auto applied = scratch.applied;
+  std::ranges::copy(rhs, residual.begin());
   double residual_product = precondition(residual, preconditioned);
-  std::vector<double> direction = preconditioned;
-  std::vector<double> applied(face_count);
+  std::ranges::copy(preconditioned, direction.begin());
   while (solution.iterations < options.max_iterations) {
     if (!std::isfinite(residual_product) || residual_product <= 0.0 || !apply(direction, applied)) {
-      return absl::OutOfRangeError("velocity-block search direction is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "velocity-block search direction is unrepresentable");
     }
     const double curvature = std::inner_product(direction.begin(), direction.end(), applied.begin(), 0.0);
     if (!std::isfinite(curvature) || curvature <= 0.0) {
-      return absl::AbortedError("velocity-block search curvature is not finite and positive");
+      return errors(absl::StatusCode::kAborted, "velocity-block search curvature is not finite and positive");
     }
     const double step = residual_product / curvature;
     if (!std::isnormal(step)) {
-      return absl::OutOfRangeError("velocity-block iteration step is unrepresentable");
+      return errors(absl::StatusCode::kOutOfRange, "velocity-block iteration step is unrepresentable");
     }
     double max_residual = 0.0;
     for (std::size_t face = 0; face < face_count; ++face) {
-      solution.velocity[face] += step * direction[face];
+      velocity[face] += step * direction[face];
       residual[face] -= step * applied[face];
-      if (!std::isfinite(solution.velocity[face]) || !std::isfinite(residual[face])) {
-        return absl::OutOfRangeError("velocity-block iterate is nonfinite");
+      if (!std::isfinite(velocity[face]) || !std::isfinite(residual[face])) {
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block iterate is nonfinite");
       }
       max_residual = std::max(max_residual, std::abs(residual[face]));
     }
     ++solution.iterations;
     const bool check_true_residual = max_residual <= tolerance || solution.iterations == options.max_iterations;
     if (check_true_residual) {
-      if (!apply(solution.velocity, applied)) {
-        return absl::OutOfRangeError("velocity-block true residual is unrepresentable");
+      if (!apply(velocity, applied)) {
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block true residual is unrepresentable");
       }
       max_residual = 0.0;
       for (std::size_t face = 0; face < face_count; ++face) {
         residual[face] = rhs[face] - applied[face];
         if (!std::isfinite(residual[face])) {
-          return absl::OutOfRangeError("velocity-block true residual is nonfinite");
+          return errors(absl::StatusCode::kOutOfRange, "velocity-block true residual is nonfinite");
         }
         max_residual = std::max(max_residual, std::abs(residual[face]));
       }
@@ -1370,7 +1391,123 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
     }
     residual_product = next_product;
   }
-  return absl::AbortedError("velocity-block iteration budget exhausted");
+  return errors(absl::StatusCode::kAborted, "velocity-block iteration budget exhausted");
+}
+}  // namespace
+
+absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::PrepareVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  constexpr VelocityBlockErrors kErrors{.detailed = true};
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  PreparedVelocityBlock3D result{
+      .weighted_rows = std::vector<MacStrainRow3D>(inputs.strain_rows.size()),
+      .diagonal = std::vector<double>(inputs.face_inertias.size()),
+      .max_rhs = *max_rhs,
+  };
+  const auto status = BuildWeightedVelocityRows(inputs, result.weighted_rows, result.diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return result;
+}
+
+absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> viscosity_internal::SolveVelocityBlockWithScratch3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    VelocityBlockScratch3D scratch
+) {
+  constexpr VelocityBlockErrors kErrors{.detailed = false};
+  const auto face_count = inputs.face_inertias.size();
+  const std::array face_views{
+      scratch.diagonal,
+      scratch.velocity,
+      scratch.residual,
+      scratch.preconditioned,
+      scratch.direction,
+      scratch.applied
+  };
+  if (scratch.weighted_rows.size() != inputs.strain_rows.size()
+      || std::ranges::any_of(face_views, [&](const auto view) {
+           return view.size() != face_count;
+         })) {
+    return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block scratch has invalid extents");
+  }
+  const std::array readable{
+      std::as_bytes(inputs.strain_rows),
+      std::as_bytes(inputs.face_inertias),
+      std::as_bytes(rhs),
+      std::as_bytes(std::span(&inputs, 1)),
+  };
+  std::array<ByteView, face_views.size() + 1> writable{};
+  writable[0] = std::as_bytes(scratch.weighted_rows);
+  for (std::size_t index = 0; index < face_views.size(); ++index) {
+    writable[index + 1] = std::as_bytes(face_views[index]);
+  }
+  for (std::size_t index = 0; index < writable.size(); ++index) {
+    const auto overlaps = [&](ByteView other) {
+      return ByteViewsOverlap(writable[index], other);
+    };
+    if (std::ranges::any_of(readable, overlaps) || std::ranges::any_of(std::span(writable).first(index), overlaps)) {
+      return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block scratch aliases another view");
+    }
+  }
+
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  const auto status = BuildWeightedVelocityRows(inputs, scratch.weighted_rows, scratch.diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return SolvePreparedVelocityBlock(inputs, rhs, options, *max_rhs, scratch, kErrors);
+}
+
+absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  const auto face_count = inputs.face_inertias.size();
+  MacViscousVelocityBlockSolution3D solution{
+      .velocity = std::vector<double>(face_count),
+      .iterations = 0,
+      .max_residual = 0.0,
+  };
+  if (prepared->max_rhs == 0.0) {
+    return solution;
+  }
+  std::vector<double> residual(face_count);
+  std::vector<double> preconditioned(face_count);
+  std::vector<double> direction(face_count);
+  std::vector<double> applied(face_count);
+  const viscosity_internal::VelocityBlockScratch3D scratch{
+      .weighted_rows = prepared->weighted_rows,
+      .diagonal = prepared->diagonal,
+      .velocity = solution.velocity,
+      .residual = residual,
+      .preconditioned = preconditioned,
+      .direction = direction,
+      .applied = applied,
+  };
+  const auto bounded = SolvePreparedVelocityBlock(inputs, rhs, options, prepared->max_rhs, scratch, {.detailed = true});
+  if (!bounded.ok()) {
+    return bounded.status();
+  }
+  solution.iterations = bounded->iterations;
+  solution.max_residual = bounded->max_residual;
+  return solution;
 }
 
 absl::Status

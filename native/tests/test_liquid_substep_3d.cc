@@ -9,6 +9,7 @@
 #include <crtdbg.h>
 #endif
 #include "../src/liquid_substep_3d_internal.h"
+#include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
@@ -2404,6 +2405,76 @@ int SchedulerAllocationHook(
   return scheduler_previous_hook ? scheduler_previous_hook(operation, data, size, block_type, request, filename, line)
                                  : 1;
 }
+TEST(Viscosity, BoundedVelocityBlockSolveAllocatesNothingAndMatchesOwningPath) {
+  const std::array<double, 3> inertia{2.0, 3.0, 0.0};
+  std::array<double, 3> rhs{2.0, -1.0, 0.0};
+  const std::array rows{MacStrainRow3D{
+      .low_cell = {},
+      .first_axis = FaceNormalAxis::kX,
+      .second_axis = FaceNormalAxis::kY,
+      .terms =
+          {{{.face_slot = 0, .coefficient = -1.0},
+            {.face_slot = 1, .coefficient = 1.0},
+            {.face_slot = 2, .coefficient = 0.5}}},
+      .term_count = 3,
+      .quadrature_weight = 4.0,
+  }};
+  const MacViscousVelocityBlockInputs3D inputs{rows, inertia, 0.2};
+  const auto owning = SolveMacViscousVelocityBlock3D(inputs, rhs);
+  ASSERT_TRUE(owning.ok()) << owning.status();
+  std::array<MacStrainRow3D, 1> weighted_rows;
+  std::array<double, 3> diagonal{}, velocity{}, residual{}, preconditioned{}, direction{}, applied{};
+  const viscosity_internal::VelocityBlockScratch3D scratch{
+      .weighted_rows = weighted_rows,
+      .diagonal = diagonal,
+      .velocity = velocity,
+      .residual = residual,
+      .preconditioned = preconditioned,
+      .direction = direction,
+      .applied = applied,
+  };
+  scheduler_allocations = 0;
+  scheduler_frees = 0;
+  scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+  const auto bounded = viscosity_internal::SolveVelocityBlockWithScratch3D(inputs, rhs, {}, scratch);
+  _CrtSetAllocHook(scheduler_previous_hook);
+  ASSERT_TRUE(bounded.ok()) << bounded.status();
+  EXPECT_TRUE(std::ranges::equal(bounded->velocity, owning->velocity));
+  EXPECT_EQ(bounded->iterations, owning->iterations);
+  EXPECT_DOUBLE_EQ(bounded->max_residual, owning->max_residual);
+  EXPECT_EQ(scheduler_allocations, 0u);
+  EXPECT_EQ(scheduler_frees, 0u);
+
+  auto alias = scratch;
+  alias.velocity = residual;
+  scheduler_allocations = 0;
+  scheduler_frees = 0;
+  scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+  const auto rejected = viscosity_internal::SolveVelocityBlockWithScratch3D(inputs, rhs, {}, alias);
+  _CrtSetAllocHook(scheduler_previous_hook);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(scheduler_allocations, 0u);
+  EXPECT_EQ(scheduler_frees, 0u);
+  const auto original_rhs = rhs;
+  scheduler_allocations = 0;
+  scheduler_frees = 0;
+  auto failure_code = absl::StatusCode::kOk;
+  bool empty_message = false;
+  scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+  {
+    const auto exhausted =
+        viscosity_internal::SolveVelocityBlockWithScratch3D(inputs, rhs, {.max_iterations = 1}, scratch);
+    failure_code = exhausted.status().code();
+    empty_message = exhausted.status().message().empty();
+  }
+  _CrtSetAllocHook(scheduler_previous_hook);
+  EXPECT_EQ(failure_code, absl::StatusCode::kAborted);
+  EXPECT_TRUE(empty_message);
+  EXPECT_EQ(rhs, original_rhs);
+  EXPECT_EQ(scheduler_allocations, 0u);
+  EXPECT_EQ(scheduler_frees, 0u);
+}
+
 TEST(LiquidSubstep3D, WettedPistonAttemptsAllocateAndFreeNothing) {
   namespace wet = wetted_piston_pressure_test;
   for (const bool overflow : {false, true}) {
