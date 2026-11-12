@@ -9,6 +9,7 @@
 
 #include "absl/status/status.h"
 #include "fixture_data.h"
+#include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "gtest/gtest.h"
 
@@ -309,13 +310,28 @@ TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
       },
       completed_face_velocities
   );
-  std::vector<std::uint8_t> compatible_faces(mac_grid->face_count(), 1);
+  const TranslatingSlab3D blade{
+      .unit_normal = {1.0, 0.0, 0.0},
+      .start_center_coordinate = 6.5,
+      .half_width = 1.0,
+      .wall_velocity = {2.0, 0.0, 0.0},
+  };
+  const auto invalid_time = BuildElasticBladeFaceTags3D(mac_grid->view(), blade, -0.25);
+  EXPECT_EQ(invalid_time.status().code(), absl::StatusCode::kInvalidArgument);
+  const auto tags = BuildElasticBladeFaceTags3D(mac_grid->view(), blade, 0.25);
+  ASSERT_TRUE(tags.ok()) << tags.status();
+  std::vector<std::uint8_t> compatible_faces(mac_grid->face_count());
   for (std::size_t face_slot = 0; face_slot < compatible_faces.size(); ++face_slot) {
-    const auto face_index = mac_grid->view().FaceIndex(face_slot);
-    ASSERT_TRUE(face_index.ok()) << face_index.status();
-    if (face_index->axis == FaceNormalAxis::kX && face_index->lattice_index.x < 4) {
-      compatible_faces[face_slot] = 0;
-    }
+    const auto face = mac_grid->view().FaceIndex(face_slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    const auto anchor = mac_grid->FaceWorldAnchor(*face);
+    ASSERT_TRUE(anchor.ok()) << anchor.status();
+    const auto tag = (*tags)[face_slot];
+    const bool expected_positive = anchor->x >= 8.0;
+    const bool expected_negative = anchor->x <= 6.0;
+    EXPECT_EQ(tag.structurally_eligible, expected_positive || expected_negative);
+    EXPECT_EQ(tag.side_tag, expected_positive ? 1 : expected_negative ? -1 : 0);
+    compatible_faces[face_slot] = tag.structurally_eligible && tag.side_tag == 1;
   }
   constexpr Mat3 kStress{
       .x_row = {6.0, 0.0, 0.0},

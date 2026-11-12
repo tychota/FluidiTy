@@ -78,4 +78,61 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
   return result;
 }
 
+absl::StatusOr<std::vector<LiquidBoundaryFaceTag3D>>
+BuildElasticBladeFaceTags3D(SparseMacGridView3D mac_grid, const TranslatingSlab3D& blade, double elapsed_time) {
+  namespace sweep = boundary_internal;
+  const Vec3 normal = blade.unit_normal;
+  const double normal_length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+  if (!sweep::HasFiniteComponents(normal) || !sweep::HasFiniteComponents(blade.wall_velocity)
+      || std::abs(normal_length_squared - 1.0) > sweep::kUnitNormalTolerance
+      || !std::isfinite(blade.start_center_coordinate) || !std::isfinite(blade.half_width) || blade.half_width <= 0.0
+      || !std::isfinite(elapsed_time) || elapsed_time < 0.0) {
+    return absl::InvalidArgumentError("invalid blade pose or time for face classification");
+  }
+
+  sweep::ProjectedSum center_coordinate;
+  center_coordinate.Add(blade.start_center_coordinate);
+  center_coordinate.AddRelativeMotion(normal, blade.wall_velocity, {}, elapsed_time);
+  if (!sweep::HasRepresentablePlanes(center_coordinate.Bounds(), blade.half_width)) {
+    return absl::OutOfRangeError("unrepresentable blade planes at face sample time");
+  }
+  const sweep::SweepPlane positive_plane{
+      .outward_normal = normal,
+      .start_coordinate = blade.start_center_coordinate,
+      .slab_half_width = blade.half_width,
+      .wall_velocity = blade.wall_velocity,
+  };
+  const sweep::SweepPlane negative_plane{
+      .outward_normal = {-normal.x, -normal.y, -normal.z},
+      .start_coordinate = -blade.start_center_coordinate,
+      .slab_half_width = blade.half_width,
+      .wall_velocity = blade.wall_velocity,
+  };
+
+  std::vector<LiquidBoundaryFaceTag3D> tags(mac_grid.face_count());
+  for (std::size_t face_slot = 0; face_slot < tags.size(); ++face_slot) {
+    const auto face = mac_grid.FaceIndex(face_slot);
+    if (!face.ok()) {
+      return face.status();
+    }
+    const auto anchor = mac_grid.FaceWorldAnchor(*face);
+    if (!anchor.ok()) {
+      return anchor.status();
+    }
+    const auto positive_side = sweep::DistanceAlongPath(positive_plane, *anchor, {}, elapsed_time).sign();
+    const auto negative_side = sweep::DistanceAlongPath(negative_plane, *anchor, {}, elapsed_time).sign();
+    if (!positive_side.has_value() || !negative_side.has_value()) {
+      return absl::OutOfRangeError("ambiguous face projection at blade");
+    }
+    if (*positive_side >= 0) {
+      tags[face_slot] = {.side_tag = 1, .structurally_eligible = true};
+    } else if (*negative_side >= 0) {
+      tags[face_slot] = {.side_tag = -1, .structurally_eligible = true};
+    } else {
+      tags[face_slot] = {.side_tag = 0, .structurally_eligible = false};
+    }
+  }
+  return tags;
+}
+
 }  // namespace fluidity

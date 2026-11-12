@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "absl/status/statusor.h"
+#include "fluidity/base/liquid_boundary_transfer_types_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
 
 namespace fluidity {
@@ -78,5 +80,14 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     std::uint64_t blade_id,
     ElasticBladeSide3D committed_side
 );
+
+// Classifies owned MAC anchors at elapsed time in seconds from the slab's
+// starting pose. The two exterior regions use the authored normal signs -1
+// and +1, including each incident plane. Interior anchors are ineligible.
+// Tags describe one blade and use owned-slot order. Invalid pose or time
+// returns InvalidArgument. Unrepresentable planes or an ambiguous projection
+// returns OutOfRange. Failure returns no tags.
+absl::StatusOr<std::vector<LiquidBoundaryFaceTag3D>>
+BuildElasticBladeFaceTags3D(SparseMacGridView3D mac_grid, const TranslatingSlab3D& blade, double elapsed_time);
 
 }  // namespace fluidity
