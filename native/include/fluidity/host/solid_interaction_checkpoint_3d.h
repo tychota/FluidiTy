@@ -6,6 +6,7 @@
 
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_transfer_types_3d.h"
+#include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/rigid_body_3d.h"
 
@@ -49,5 +50,21 @@ absl::StatusOr<std::vector<std::uint8_t>> EncodeSolidInteractionCheckpoint3D(con
 // Invalid bytes or state return InvalidArgument. Unsupported version returns
 // FailedPrecondition. Record limits match EncodeSolidInteractionCheckpoint3D.
 absl::StatusOr<SolidInteractionCheckpoint3D> DecodeSolidInteractionCheckpoint3D(std::span<const std::uint8_t> bytes);
+
+struct CoupledInteractionCheckpoint3D {
+  LiquidState3D liquid;
+  SolidInteractionCheckpoint3D solid;
+};
+
+// Encodes liquid and solid accepted state in one FLSI record. Their accepted
+// step ordinals must match. Uses the liquid codec's validation and a 32 MiB
+// envelope limit. Resolved scene settings remain the caller's responsibility.
+absl::StatusOr<std::vector<std::uint8_t>>
+EncodeCoupledInteractionCheckpoint3D(const LiquidState3D& liquid, const SolidInteractionCheckpoint3D& solid);
+
+// Decodes an aligned FLSI envelope with both states present, rejecting a
+// missing liquid state or mismatched accepted step ordinal.
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeCoupledInteractionCheckpoint3D(std::span<const std::uint8_t> bytes
+);
 
 }  // namespace fluidity

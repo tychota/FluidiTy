@@ -48,6 +48,7 @@ table SolidInteractionCheckpoint {
   bodies:[BodyHistory] (required, id:2);
   sides:[BladeSide] (required, id:3);
   elastic_particles:[ElasticParticle] (id:4);
+  liquid_state:[ubyte] (id:5, force_align:8);
 }
 
 root_type SolidInteractionCheckpoint;

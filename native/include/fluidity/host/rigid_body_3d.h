@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_types_3d.h"
@@ -48,6 +50,27 @@ absl::Status ValidateRigidBody3D(const RigidBody3D& body);
 // and OutOfRange on overflow. Does not modify the input.
 absl::StatusOr<RigidBody3D>
 AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec3 world_force);
+
+struct RigidPressurePatch3D {
+  std::uint64_t patch_id;  // Stable nonzero identity within the frozen geometry.
+  std::uint64_t body_id;
+  std::size_t pressure_cell_index;  // Index in the solved pressure vector.
+  double wetted_area;  // Certified wet surface area in m².
+  Vec3 world_centroid;  // Meters.
+  Vec3 outward_body_normal;  // Unit normal pointing out of the rigid body.
+};
+
+// Adds pressure traction and its moment about the body center, in patch ID
+// order. Pressure and ambient pressure share a reference and are in pascals.
+// Patches must be disjoint, strictly ordered by ID, and belong to the body.
+// Malformed patches or pressure indices return InvalidArgument. Nonfinite
+// load arithmetic returns OutOfRange. Input body and spans stay unchanged.
+absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
+    RigidBody3D body,
+    std::span<const double> solved_pressures,
+    double ambient_pressure,
+    std::span<const RigidPressurePatch3D> patches
+);
 
 // Evaluates force and the gyroscopic term at the start, updates velocities,
 // and drifts with the resulting constant world linear and angular velocities.
