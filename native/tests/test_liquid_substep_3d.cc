@@ -15,6 +15,7 @@
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_cavity_scheduler_cases.h"
+#include "liquid_curved_phase_cases.h"
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
@@ -270,44 +271,11 @@ TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
 }
 
 TEST(LiquidSubstep3D, MeasuresLaplacePressureOnCurvedParticlePhase) {
-  constexpr double kRadius = 0.8;
-  constexpr double kTension = 0.031;
-  constexpr double kExpectedCurvature = 2.0 / kRadius;
-  constexpr std::size_t kShellDonors = 1000;
-  auto initial = Initial(kShellDonors + 1);
-  initial.geometry.cell_width = 0.5;
-  initial.particles[0].world_position = {};
-  initial.particles[0].mass = 1000;
-  initial.particles[0].phase_id = 4;
-  initial.particles[0].constituent_count = 1;
-  initial.particles[0].constituents[0] = {8, 1};
-  constexpr double kGoldenAngle = std::numbers::pi * (3.0 - 2.2360679774997896964);
-  for (std::size_t index = 0; index < kShellDonors; ++index) {
-    const double latitude = 1.0 - (2.0 * static_cast<double>(index) + 1.0) / kShellDonors;
-    const double azimuth = static_cast<double>(index) * kGoldenAngle;
-    const double radial = std::sqrt(1.0 - latitude * latitude);
-    auto& particle = initial.particles[index + 1];
-    particle.world_position = {
-        2 * kRadius * radial * std::cos(azimuth),
-        2 * kRadius * latitude,
-        2 * kRadius * radial * std::sin(azimuth),
-    };
-    particle.reference_volume = 0.01;
-    particle.mass = 820 * particle.reference_volume;
-    particle.phase_id = 5;
-    particle.constituent_count = 1;
-    particle.constituents[0] = {25, 1};
-  }
-  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000}, {25, 5, 820}}};
-  constexpr std::array<LiquidPhasePair3D, 1> kPairs{{{4, 5, kTension}}};
-  LiquidSceneInputs3D scene;
-  scene.field = LiquidHorizontalPlaneSurface3D{2};
-  scene.obstacle = AxisAlignedLiquidTank3D{-2, 2, -2, -2, 2, 0};
-  scene.world_acceleration = {};
-  scene.constituent_materials = kMaterials;
-  scene.phase_pairs = kPairs;
-  auto options = Options();
-  options.capacities = {kShellDonors + 1, 64, 1024, 12288, 1};
+  using curved_phase_test::kExpectedCurvature;
+  using curved_phase_test::kTension;
+  const auto fixture = curved_phase_test::MakeFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto scene = fixture->scene;
   struct Audit {
     std::size_t crossings = 0;
     double square_error = 0.0;
@@ -338,23 +306,15 @@ TEST(LiquidSubstep3D, MeasuresLaplacePressureOnCurvedParticlePhase) {
     SCOPED_TRACE(viscosity);
     scene.dynamic_viscosity = viscosity;
     audit = {};
-    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend);
+    auto scheduler = LiquidSubstepScheduler3D::Create(fixture->initial, scene, fixture->options, backend);
     ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-    const auto advanced = scheduler->AdvanceFrame(0.001);
+    const auto advanced = scheduler->AdvanceFrame(curved_phase_test::kStepDuration);
     ASSERT_TRUE(advanced.ok()) << advanced << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
     ASSERT_GT(audit.crossings, 0);
     const double relative_curvature_rms = std::sqrt(audit.square_error / static_cast<double>(audit.crossings));
-    double core_pressure = 0.0;
-    std::size_t core_cells = 0;
-    for (const auto& cell : scheduler->committed().cells.values()) {
-      const auto index = cell.cell_index;
-      if (index.x >= -1 && index.x <= 0 && index.y >= -1 && index.y <= 0 && index.z >= -1 && index.z <= 0) {
-        core_pressure += cell.previous_pressure;
-        ++core_cells;
-      }
-    }
-    ASSERT_EQ(core_cells, 8);
-    core_pressure /= static_cast<double>(core_cells);
+    const auto [pressure_sum, core_cells] = curved_phase_test::CorePressureSum(scheduler->committed());
+    ASSERT_EQ(core_cells, 8u);
+    const double core_pressure = pressure_sum / static_cast<double>(core_cells);
     std::cout << "curved_phase_crossings=" << audit.crossings << " relative_curvature_rms=" << relative_curvature_rms
               << " core_pressure_pa=" << core_pressure << '\n';
     EXPECT_LT(relative_curvature_rms, 0.25);

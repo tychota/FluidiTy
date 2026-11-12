@@ -19,6 +19,7 @@
 #include "fluidity/host/liquid_cache_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_cavity_scheduler_cases.h"
+#include "liquid_curved_phase_cases.h"
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_viscous_tank_cases.h"
@@ -1196,6 +1197,35 @@ TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
         return pressure_test::AdvanceHydrostaticColumn(*scheduler, options.capacities);
       }
   );
+}
+
+TEST(CudaLiquidSubstep3D, ResolvesWeakCurvedPhasePressureWithAndWithoutViscosity) {
+  const auto fixture = curved_phase_test::MakeFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double kAnalyticPressure = curved_phase_test::kTension * curved_phase_test::kExpectedCurvature;
+  for (const double viscosity : {0.0, 0.001}) {
+    SCOPED_TRACE(viscosity);
+    auto scene = fixture->scene;
+    scene.dynamic_viscosity = viscosity;
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto gpu = LiquidSubstepScheduler3D::Create(fixture->initial, scene, fixture->options, backend->operations());
+    auto cpu = LiquidSubstepScheduler3D::Create(fixture->initial, scene, fixture->options);
+    ASSERT_TRUE(gpu.ok()) << gpu.status();
+    ASSERT_TRUE(cpu.ok()) << cpu.status();
+    ASSERT_TRUE(gpu->BeginFrame(curved_phase_test::kStepDuration).ok());
+    MeasuredAttempt(*gpu, *backend, curved_phase_test::kStepDuration, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_TRUE(gpu->FinishFrame().ok());
+    const auto advanced = cpu->AdvanceFrame(curved_phase_test::kStepDuration);
+    ASSERT_TRUE(advanced.ok()) << advanced;
+    const auto [pressure_sum, core_cells] = curved_phase_test::CorePressureSum(gpu->committed());
+    ASSERT_EQ(core_cells, 8u);
+    const double core_pressure = pressure_sum / static_cast<double>(core_cells);
+    EXPECT_NEAR(core_pressure, kAnalyticPressure, 0.25 * kAnalyticPressure);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    std::cout << "curved_phase_viscosity_pa_s=" << viscosity << " core_pressure_pa=" << core_pressure << '\n';
+    ExpectState(cpu->committed(), gpu->committed());
+  }
 }
 
 TEST(CudaLiquidSubstep3D, ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry) {
