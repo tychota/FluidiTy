@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/views.h"
 #include "viscosity_velocity_block_3d.h"
 
@@ -57,6 +59,15 @@ auto ViscosityCellKey(CellIndex3D cell) {
 CellIndex3D NextViscosityCell(CellIndex3D cell, std::size_t axis) {
   std::array coordinates{&cell.x, &cell.y, &cell.z};
   ++*coordinates[axis];
+  return cell;
+}
+
+std::optional<CellIndex3D> PreviousViscosityCell(CellIndex3D cell, std::size_t axis) {
+  std::array coordinates{&cell.x, &cell.y, &cell.z};
+  if (*coordinates[axis] == std::numeric_limits<std::int32_t>::min()) {
+    return std::nullopt;
+  }
+  --*coordinates[axis];
   return cell;
 }
 
@@ -921,6 +932,225 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
     return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
   }
   return AssembleMacStrain(grid, cells, liquid_octant_volumes);
+}
+
+namespace {
+using FindCutPressureFace = absl::FunctionRef<const MacPressureFace3D*(FaceIndex3D)>;
+
+bool IsOpenCutConnection(const MacPressureFace3D* face) {
+  return face != nullptr && face->open_area > 0.0
+      && std::holds_alternative<InternalMacPressureLink3D>(face->pressure_link);
+}
+
+bool CutEdgeLiquidIsConnected(
+    unsigned liquid_quadrants,
+    const std::array<FaceIndex3D, 4>& separating_faces,
+    FindCutPressureFace find_face
+) {
+  constexpr std::array<unsigned, 4> kAdjacentQuadrants{0b0011, 0b1100, 0b0101, 0b1010};
+  std::array<unsigned, 4> connections{};
+  for (std::size_t index = 0; index < connections.size(); ++index) {
+    const auto pair = kAdjacentQuadrants[index];
+    if ((liquid_quadrants & pair) == pair && IsOpenCutConnection(find_face(separating_faces[index]))) {
+      connections[index] = pair;
+    }
+  }
+  unsigned reached = liquid_quadrants & (0u - liquid_quadrants);
+  for (int pass = 0; pass < 3 && reached != liquid_quadrants; ++pass) {
+    for (const auto connection : connections) {
+      if ((reached & connection) != 0u) {
+        reached |= connection;
+      }
+    }
+  }
+  return reached == liquid_quadrants;
+}
+
+// Move the derivative, rather than a velocity component independently, to a
+// neighboring pair that shares an open liquid connection with this edge.
+std::optional<std::array<FaceIndex3D, 2>> FindCutBoundaryDerivative(
+    std::span<const MacViscosityCell3D> cells,
+    const std::array<const MacViscosityCell3D*, 4>& incident_cells,
+    std::size_t component_axis,
+    std::size_t derivative_axis,
+    CellIndex3D nominal_low_index,
+    FindCutPressureFace find_face
+) {
+  std::optional<std::array<FaceIndex3D, 2>> best;
+  auto best_distance = std::numeric_limits<std::int64_t>::max();
+  for (const auto* cell : incident_cells) {
+    if (cell == nullptr) {
+      continue;
+    }
+    const auto index = cell->cell_index;
+    for (const bool positive_side : {false, true}) {
+      const auto neighbor = positive_side ? std::optional{NextViscosityCell(index, derivative_axis)}
+                                          : PreviousViscosityCell(index, derivative_axis);
+      if (!neighbor.has_value() || FindViscosityCell(cells, *neighbor) == nullptr) {
+        continue;
+      }
+      const auto low = positive_side ? index : *neighbor;
+      const auto high = positive_side ? *neighbor : index;
+      if (!IsOpenCutConnection(find_face(ViscosityFace(derivative_axis, high)))) {
+        continue;
+      }
+      for (const bool high_component_face : {false, true}) {
+        const auto low_face_index = high_component_face ? NextViscosityCell(low, component_axis) : low;
+        const auto high_face_index = high_component_face ? NextViscosityCell(high, component_axis) : high;
+        const auto low_face = ViscosityFace(component_axis, low_face_index);
+        const auto high_face = ViscosityFace(component_axis, high_face_index);
+        if (find_face(low_face) == nullptr || find_face(high_face) == nullptr) {
+          continue;
+        }
+        const std::int64_t dx = static_cast<std::int64_t>(low_face_index.x) - nominal_low_index.x;
+        const std::int64_t dy = static_cast<std::int64_t>(low_face_index.y) - nominal_low_index.y;
+        const std::int64_t dz = static_cast<std::int64_t>(low_face_index.z) - nominal_low_index.z;
+        const auto distance = dx * dx + dy * dy + dz * dz;
+        if (distance < best_distance) {
+          best_distance = distance;
+          best = std::array{low_face, high_face};
+        }
+      }
+    }
+  }
+  return best;
+}
+}  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces
+) {
+  auto rows = AssembleCutCellMacStrain3D(grid, cells, liquid_octant_volumes);
+  if (!rows.ok() || cells.empty()) {
+    return rows;
+  }
+
+  std::vector<std::size_t> slots;
+  slots.reserve(pressure_faces.size());
+  for (const auto& face : pressure_faces) {
+    const auto slot = grid.FaceSlot(face.face_index);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    if (!slots.empty() && slots.back() >= *slot) {
+      return absl::InvalidArgumentError("cut strain pressure faces must be in unique owned slot order");
+    }
+    slots.push_back(*slot);
+  }
+  const auto find_face = [&](FaceIndex3D index) -> const MacPressureFace3D* {
+    const auto slot = grid.FaceSlot(index);
+    if (!slot.ok()) {
+      return nullptr;
+    }
+    const auto found = std::ranges::lower_bound(slots, *slot);
+    return found != slots.end() && *found == *slot ? &pressure_faces[found - slots.begin()] : nullptr;
+  };
+
+  const double coefficient = 0.5 / grid.geometry().cell_width;
+  if (!std::isnormal(coefficient)) {
+    return absl::OutOfRangeError("cut shear coefficient is outside normal double range");
+  }
+  for (const auto& cell : cells) {
+    for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
+      for (std::size_t second_axis = first_axis + 1; second_axis < 3; ++second_axis) {
+        const auto first_bit = std::size_t{1} << first_axis;
+        const auto second_bit = std::size_t{1} << second_axis;
+        const auto edge_bit = 7 ^ (first_bit | second_bit);
+        for (std::size_t cell_quadrant = 0; cell_quadrant < 4; ++cell_quadrant) {
+          std::optional<CellIndex3D> low_cell = cell.cell_index;
+          if ((cell_quadrant & 1u) != 0) {
+            low_cell = PreviousViscosityCell(*low_cell, first_axis);
+          }
+          if (low_cell.has_value() && (cell_quadrant & 2u) != 0) {
+            low_cell = PreviousViscosityCell(*low_cell, second_axis);
+          }
+          if (!low_cell.has_value()) {
+            return absl::OutOfRangeError("cut strain edge has an unrepresentable low cell");
+          }
+          const auto first_cell = NextViscosityCell(*low_cell, first_axis);
+          const auto second_cell = NextViscosityCell(*low_cell, second_axis);
+          const auto diagonal_cell = NextViscosityCell(first_cell, second_axis);
+          const std::array incident_cells{
+              FindViscosityCell(cells, *low_cell),
+              FindViscosityCell(cells, first_cell),
+              FindViscosityCell(cells, second_cell),
+              FindViscosityCell(cells, diagonal_cell),
+          };
+          const auto owner = std::ranges::find_if(incident_cells, [](const auto* candidate) {
+            return candidate != nullptr;
+          });
+          if (owner == incident_cells.end() || *owner != &cell) {
+            continue;
+          }
+          const std::array quadrant_octants{first_bit | second_bit, second_bit, first_bit, std::size_t{0}};
+          std::array<double, 4> volumes{};
+          std::array<double, 4> viscosities{};
+          auto support_cells = incident_cells;
+          unsigned liquid_quadrants = 0;
+          for (std::size_t quadrant = 0; quadrant < incident_cells.size(); ++quadrant) {
+            const auto* adjacent_cell = incident_cells[quadrant];
+            if (adjacent_cell == nullptr) {
+              continue;
+            }
+            const auto& octants = liquid_octant_volumes[adjacent_cell - cells.data()];
+            const auto octant = quadrant_octants[quadrant];
+            volumes[quadrant] = octants[octant] + octants[octant | edge_bit];
+            viscosities[quadrant] = adjacent_cell->dynamic_viscosity;
+            if (volumes[quadrant] > 0.0) {
+              liquid_quadrants |= 1u << quadrant;
+            } else {
+              support_cells[quadrant] = nullptr;
+            }
+          }
+          const auto weight = CutShearWeight(volumes, viscosities);
+          if (!weight.ok()) {
+            return weight.status();
+          }
+          if (*weight == 0.0) {
+            continue;
+          }
+          const std::array separating_faces{
+              ViscosityFace(first_axis, first_cell),
+              ViscosityFace(first_axis, diagonal_cell),
+              ViscosityFace(second_axis, second_cell),
+              ViscosityFace(second_axis, diagonal_cell),
+          };
+          if (!CutEdgeLiquidIsConnected(liquid_quadrants, separating_faces, find_face)) {
+            return absl::FailedPreconditionError("cut shear edge spans disconnected liquid quadrants");
+          }
+          if (std::ranges::find(incident_cells, nullptr) == incident_cells.end()) {
+            continue;
+          }
+          const auto first =
+              FindCutBoundaryDerivative(cells, support_cells, first_axis, second_axis, first_cell, find_face);
+          const auto second =
+              FindCutBoundaryDerivative(cells, support_cells, second_axis, first_axis, second_cell, find_face);
+          if (!first.has_value() || !second.has_value()) {
+            return absl::FailedPreconditionError("positive cut shear edge lacks connected pressure-owned velocity pairs"
+            );
+          }
+          const std::array faces{(*first)[0], (*first)[1], (*second)[0], (*second)[1]};
+          MacStrainRow3D row{
+              .low_cell = *low_cell,
+              .first_axis = static_cast<FaceNormalAxis>(first_axis),
+              .second_axis = static_cast<FaceNormalAxis>(second_axis),
+              .terms = {},
+              .term_count = 0,
+              .quadrature_weight = *weight,
+          };
+          const auto status = SetStrainTerms(grid, faces, coefficient, row);
+          if (!status.ok()) {
+            return status;
+          }
+          rows->push_back(row);
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(

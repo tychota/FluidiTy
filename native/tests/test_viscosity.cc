@@ -414,6 +414,92 @@ TEST(Viscosity, CutCell3DStrainWeightsCompleteEdgeWithLiquidVolume) {
   );
 }
 
+TEST(Viscosity, CutBoundary3DStrainUsesOwnedPairsAndReproducesAffineVelocity) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::vector<MacViscosityCell3D> cells;
+  std::vector<std::array<double, 8>> octants;
+  for (int z = 0; z < 2; ++z) {
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        cells.push_back({.cell_index = {x, y, z}, .dynamic_viscosity = 2.0});
+        octants.push_back({0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625, 0.0625});
+      }
+    }
+  }
+  std::vector<std::pair<std::size_t, MacPressureFace3D>> ordered_faces;
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    std::array<int, 3> end{2, 2, 2};
+    end[axis] = 3;
+    for (int z = 0; z < end[2]; ++z) {
+      for (int y = 0; y < end[1]; ++y) {
+        for (int x = 0; x < end[0]; ++x) {
+          const FaceIndex3D face{static_cast<FaceNormalAxis>(axis), {x, y, z}};
+          const auto slot = grid->view().FaceSlot(face);
+          ASSERT_TRUE(slot.ok()) << slot.status();
+          const std::array coordinate{x, y, z};
+          MacPressureFace3D link{
+              .face_index = face,
+              .open_area = 1.0,
+              .inverse_density = 1.0,
+              .pressure_gradient_distance = 1.0,
+              .predicted_normal_velocity = 0.0,
+              .wall_normal_velocity = 0.0,
+              .pressure_link = InternalMacPressureLink3D{0.0},
+          };
+          if (coordinate[axis] != 1) {
+            link.pressure_link = DirichletMacPressureLink3D{0.0};
+          }
+          ordered_faces.emplace_back(*slot, link);
+        }
+      }
+    }
+  }
+  std::ranges::sort(ordered_faces, {}, &decltype(ordered_faces)::value_type::first);
+  std::vector<MacPressureFace3D> faces;
+  for (const auto& entry : ordered_faces) {
+    faces.push_back(entry.second);
+  }
+  const auto rows = AssembleCutCellMacStrainWithBoundary3D(grid->view(), cells, octants, faces);
+  ASSERT_TRUE(rows.ok()) << rows.status();
+  ASSERT_EQ(rows->size(), 24 + 54);
+  constexpr std::array<std::array<double, 3>, 3> kAffineGradient{{
+      {2.0, 3.0, 5.0},
+      {-1.0, 7.0, 11.0},
+      {1.0, -3.0, 13.0},
+  }};
+  for (const auto& row : *rows) {
+    double affine_strain = 0.0;
+    double rigid_strain = 0.0;
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      const auto face = grid->view().FaceIndex(term.face_slot);
+      ASSERT_TRUE(face.ok()) << face.status();
+      const auto point = grid->FaceWorldAnchor(*face);
+      ASSERT_TRUE(point.ok()) << point.status();
+      const auto component = static_cast<std::size_t>(face->axis);
+      const auto& affine = kAffineGradient[component];
+      affine_strain += term.coefficient * (affine[0] * point->x + affine[1] * point->y + affine[2] * point->z);
+      const std::array rigid{2.0 + point->y, -1.0 - point->x, 3.0};
+      rigid_strain += term.coefficient * rigid[component];
+    }
+    const auto first = static_cast<std::size_t>(row.first_axis);
+    const auto second = static_cast<std::size_t>(row.second_axis);
+    EXPECT_DOUBLE_EQ(affine_strain, 0.5 * (kAffineGradient[first][second] + kAffineGradient[second][first]));
+    EXPECT_DOUBLE_EQ(rigid_strain, 0.0);
+  }
+  for (auto& face : faces) {
+    if (face.face_index.axis == FaceNormalAxis::kY && face.face_index.lattice_index.y == 1) {
+      face.open_area = 0.0;
+      face.pressure_link = SealedMacPressureLink3D{};
+    }
+  }
+  EXPECT_EQ(
+      AssembleCutCellMacStrainWithBoundary3D(grid->view(), cells, octants, faces).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 TEST(Viscosity, FullCell3DStrainRejectsDuplicatesAndMissingFaceOwners) {
   const std::array blocks{BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());

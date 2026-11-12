@@ -92,6 +92,20 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
     std::span<const std::array<double, 8>> liquid_octant_volumes
 );
 
+// Also assembles positive-volume incomplete edge rows. For each derivative,
+// selects the nearest axis-aligned face pair with a supporting open pressure
+// link from an incident cell. A one-sided difference uses the same h spacing,
+// reproducing affine fields. Supply the exact incident pressure-face union in
+// owned slot order. Unsupported positive-weight edges return FailedPrecondition.
+// This is the geometric strain stencil; pressure applies the prescribed wall
+// normal velocities on sealed slots. No partial rows are returned on failure.
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces
+);
+
 // Builds one half-cell shear row for a flat, grid-aligned wall.
 // The normal velocity derivative along the tangent is prescribed in s⁻¹. The face slot carries the tangential
 // component at h/2 from the wall. Wall speed is signed along that component,
