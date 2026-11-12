@@ -38,6 +38,39 @@ __global__ void CheckSampledSolidGeometryOnDevice(int* result) {
       || fabs(second->wet_volume - 0.71875) > 2e-14 || fabs(first->open_area[1] - 0.75) > 2e-14
       || first->open_area[1] != second->open_area[0]) {
     *result = 90;
+    return;
+  }
+  const auto weights = fluidity::boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5});
+  if (!weights.ok()) {
+    *result = 91;
+    return;
+  }
+  constexpr double kExpectedWeights[4]{11.0 / 48, 1.0 / 48, 7.0 / 48, 5.0 / 48};
+  constexpr double kNormalVelocities[4]{2, 5, -2, 1};
+  double wall_flux = 0;
+  for (int corner = 0; corner < 4; ++corner) {
+    if (fabs((*weights)[corner] - kExpectedWeights[corner]) > 2e-14) {
+      *result = 92;
+      return;
+    }
+    wall_flux += (*weights)[corner] * kNormalVelocities[corner];
+  }
+  if (fabs(wall_flux - 0.375) > 2e-14) {
+    *result = 93;
+    return;
+  }
+  using fluidity::boundary_internal::GeometryInput;
+  using fluidity::boundary_internal::GeometryMode;
+  GeometryInput query{.mode = GeometryMode::kSampledSolidFace, .geometry = {{}, 1.0}};
+  for (int corner = 0; corner < 8; corner += 2) {
+    const double y = (corner >> 1) & 1;
+    query.derivative_distances[corner] = y - 0.25;
+    query.corner_distances[corner] = 2.0 + 4.0 * y;
+  }
+  const auto geometry = fluidity::boundary_internal::ComputeSampledSolidGeometry(query);
+  if (!geometry.ok() || fabs(geometry->prescribed_wall_flux - 0.625) > 2e-14
+      || fabs(geometry->open_face_area - 0.75) > 2e-14) {
+    *result = 94;
   }
 }
 

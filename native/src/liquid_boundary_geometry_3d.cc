@@ -808,7 +808,8 @@ absl::Status FreezeCore(
   const auto sampled_solid = inputs.sampled_solid;
   if (sampled_solid) {
     if (!std::holds_alternative<std::monostate>(inputs.obstacle)
-        || sampled_solid->face_normal_velocities.size() != inputs.mac_grid.face_count()
+        || (!sampled_solid->face_normal_velocities.empty()
+            && sampled_solid->face_normal_velocities.size() != inputs.mac_grid.face_count())
         || !std::ranges::all_of(sampled_solid->face_normal_velocities, [](double velocity) {
              return std::isfinite(velocity);
            })) {
@@ -940,11 +941,16 @@ absl::Status FreezeCore(
           }
           corner_index = *shifted;
         }
-        const auto distance = LookupSignedDistance(sampled_solid->corner_distances, corner_index, bounded);
-        if (!distance.ok()) {
-          return distance.status();
+        const auto samples = sampled_solid->corner_distances;
+        const auto key = CellKey(corner_index);
+        const auto sample = std::ranges::lower_bound(samples, key, {}, SampleKey<SolidCornerDistance3D>);
+        if (sample == samples.end() || SampleKey(*sample) != key) {
+          return MissingBoundarySample(bounded);
         }
-        query.derivative_distances[corner] = *distance;
+        query.derivative_distances[corner] = sample->signed_distance;
+        if (sampled_solid->face_normal_velocities.empty()) {
+          query.corner_distances[corner] = CartesianComponents(sample->wall_velocity)[query.axis];
+        }
       }
     }
     return true;
@@ -954,10 +960,15 @@ absl::Status FreezeCore(
     frozen_face.open_area = areas.open_face_area;
     frozen_face.blocked_area = areas.blocked_face_area;
     if (sampled_solid) {
-      frozen_face.wall_normal_velocity = sampled_solid->face_normal_velocities[frozen_face.face_slot];
+      if (sampled_solid->face_normal_velocities.empty()) {
+        frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
+        frozen_face.prescribed_wall_flux = areas.prescribed_wall_flux;
+      } else {
+        frozen_face.wall_normal_velocity = sampled_solid->face_normal_velocities[frozen_face.face_slot];
+      }
     } else if (packed_obstacle.kind == boundary_internal::ObstacleKind::kOpenTank) {
       frozen_face.wall_normal_velocity = areas.piston_normal_velocity;
-      frozen_face.prescribed_wall_flux = areas.piston_flux;
+      frozen_face.prescribed_wall_flux = areas.prescribed_wall_flux;
       frozen_face.is_low_x_piston_face = areas.is_low_x_piston_face;
     } else {
       frozen_face.wall_normal_velocity = obstacle->velocity[static_cast<int>(frozen_face.face_index.axis)];

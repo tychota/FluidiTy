@@ -56,6 +56,25 @@ TEST(LiquidBoundaryGeometry3D, SampledSolidCornerKeepsPiecewiseLinearMeasure) {
   }
 }
 
+TEST(LiquidBoundaryGeometry3D, SampledSolidFaceWeightsIntegrateAffineWallFlux) {
+  const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5});
+  ASSERT_TRUE(weights.ok());
+  constexpr std::array expected_weights{11.0 / 48, 1.0 / 48, 7.0 / 48, 5.0 / 48};
+  constexpr std::array normal_velocities{2.0, 5.0, -2.0, 1.0};
+  for (std::size_t corner = 0; corner < weights->size(); ++corner) {
+    EXPECT_NEAR((*weights)[corner], expected_weights[corner], 2e-14);
+  }
+  EXPECT_NEAR(std::accumulate(weights->begin(), weights->end(), 0.0), 0.5, 2e-14);
+  EXPECT_NEAR(std::inner_product(weights->begin(), weights->end(), normal_velocities.begin(), 0.0), 0.375, 2e-14);
+
+  const auto closed = boundary_internal::MeasureSampledSolidFaceWeights(2.0, {0.0, 0.0, 0.0, 0.0});
+  ASSERT_TRUE(closed.ok());
+  EXPECT_NEAR(std::accumulate(closed->begin(), closed->end(), 0.0), 4.0, 2e-14);
+  const auto open = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {1.0, 1.0, 1.0, 1.0});
+  ASSERT_TRUE(open.ok());
+  EXPECT_EQ(std::accumulate(open->begin(), open->end(), 0.0), 0.0);
+}
+
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
   boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
   cell.liquid_distance.fill(-1);

@@ -77,11 +77,13 @@ absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
 struct SolidCornerDistance3D {
   CellCornerIndex3D corner_index;
   double signed_distance;  // Physical distance, m. Positive outside the solid.
+  Vec3 wall_velocity{};  // World m/s. Used when dense face velocities are absent.
 };
 
 // Borrowed freeze-time samples. Corner keys are distinct in (z,y,x)
 // order and cover each candidate cell. Wall normal velocities are signed
 // along the positive MAC face axis in m/s and cover all owned face slots.
+// An empty face velocity span selects integration of the corner velocities.
 // Sampled geometry is exclusive with the analytic obstacle variants.
 struct SampledSolidBoundary3D {
   std::span<const SolidCornerDistance3D> corner_distances;
