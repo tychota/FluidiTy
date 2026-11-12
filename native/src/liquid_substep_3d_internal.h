@@ -23,6 +23,20 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
     MacPressureSolverOptions3D options,
     ProjectViscousPressure3D project
 );
+// Backtraces a uniform cell center in the committed MAC carrier field, then
+// interpolates liquid pressure in Pa over available committed trilinear donors.
+// Uses one eligible face if its opposite is missing, or zero if both are
+// missing. With no pressure donor it carries the old local pressure or uses
+// ambient gauge pressure for a newly wet cell. Input state and positive step
+// duration in seconds must already be validated. An unrepresentable
+// displacement returns OutOfRange.
+absl::StatusOr<double> AdvectLiquidPressureHistory3D(
+    const LiquidState3D& committed,
+    CellIndex3D cell,
+    double step_duration,
+    double ambient_pressure
+);
+
 class OceanInletParticles3D {
  public:
   static absl::StatusOr<OceanInletParticles3D> Create(const OceanBoundarySettings3D& settings, double density);

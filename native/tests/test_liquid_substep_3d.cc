@@ -8,6 +8,7 @@
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
@@ -87,7 +88,38 @@ TEST(LiquidSubstep3D, SchedulerConsumesResolvedViscosityOnFullCells) {
   );
 }
 
-TEST(LiquidSubstep3D, TaitFreezesComplianceAtCarriedPressure) {
+TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
+  LiquidState3D committed;
+  auto blocks = LiquidRecords3D<LiquidBlockState3D>::Create(2);
+  auto cells = LiquidRecords3D<LiquidCellState3D>::Create(2);
+  auto faces = LiquidRecords3D<LiquidFaceState3D>::Create(2);
+  ASSERT_TRUE(blocks.ok() && cells.ok() && faces.ok());
+  committed.blocks = std::move(*blocks);
+  committed.cells = std::move(*cells);
+  committed.faces = std::move(*faces);
+  ASSERT_TRUE(committed.blocks.Resize(2).ok());
+  ASSERT_TRUE(committed.cells.Resize(2).ok());
+  ASSERT_TRUE(committed.faces.Resize(2).ok());
+  committed.blocks[0].block_index = {-1, 0, 0};
+  committed.blocks[1].block_index = {0, 0, 0};
+  committed.cells[0] = {{-1, 0, 0}, LiquidCellOccupancy3D::kLiquid, 4.0};
+  committed.cells[1] = {{0, 0, 0}, LiquidCellOccupancy3D::kLiquid, 8.0};
+  committed.faces[0] = {{FaceNormalAxis::kX, {0, 0, 0}}, 192, 1.0, LiquidFaceValidity3D::kPredicted};
+  committed.faces[1] = {{FaceNormalAxis::kX, {1, 0, 0}}, 193, 3.0, LiquidFaceValidity3D::kValid};
+  ASSERT_TRUE(ValidateLiquidState3D(committed).ok());
+  const auto transported = liquid_step_internal::AdvectLiquidPressureHistory3D(committed, {0, 0, 0}, 0.125, 1.0);
+  ASSERT_TRUE(transported.ok()) << transported.status();
+  EXPECT_EQ(*transported, 7.0);
+  committed.cells[0].occupancy = LiquidCellOccupancy3D::kSolid;
+  const auto clipped = liquid_step_internal::AdvectLiquidPressureHistory3D(committed, {0, 0, 0}, 0.125, 1.0);
+  ASSERT_TRUE(clipped.ok()) << clipped.status();
+  EXPECT_EQ(*clipped, 8.0);
+  const auto new_cell = liquid_step_internal::AdvectLiquidPressureHistory3D(committed, {2, 0, 0}, 0.125, 1.0);
+  ASSERT_TRUE(new_cell.ok()) << new_cell.status();
+  EXPECT_EQ(*new_cell, 1.0);
+}
+
+TEST(LiquidSubstep3D, TaitFreezesComplianceAtAdvectedPressureAndRestarts) {
   struct Observation {
     std::size_t cells = 0;
     bool saw_nonzero_pressure = false;
@@ -114,8 +146,18 @@ TEST(LiquidSubstep3D, TaitFreezesComplianceAtCarriedPressure) {
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   const auto first = scheduler->AdvanceFrame(0.01);
   ASSERT_TRUE(first.ok()) << first;
+  const auto checkpoint = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeLiquidState3D(checkpoint->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto resumed = LiquidSubstepScheduler3D::Create(*restored, scene, Options());
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  observation = {};
   const auto second = scheduler->AdvanceFrame(0.02);
   ASSERT_TRUE(second.ok()) << second;
+  const auto resumed_step = resumed->AdvanceFrame(0.02);
+  ASSERT_TRUE(resumed_step.ok()) << resumed_step;
+  ExpectIdenticalSerializedState(scheduler->committed(), resumed->committed());
   EXPECT_GT(observation.cells, 0U);
   EXPECT_TRUE(observation.saw_nonzero_pressure);
 }

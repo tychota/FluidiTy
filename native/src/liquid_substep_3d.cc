@@ -567,16 +567,26 @@ struct LiquidSubstepScheduler3D::Impl {
       if (found == cells.end() || CellKey(found->cell_index) != CellKey(key)) {
         return Error(absl::StatusCode::kInternal);
       }
+      double predicted_pressure = found->previous_pressure;
       double tangent_bulk_modulus = scene.bulk_modulus;
       if (eos) {
-        // Freeze the tangent at the current cell's carried pressure for this solve.
-        const auto predictor = EvaluateLiquidEosAtPressure3D(*eos, found->previous_pressure);
+        const auto pressure = liquid_step_internal::AdvectLiquidPressureHistory3D(
+            transaction.committed(),
+            key,
+            step_duration,
+            scene.ambient_pressure
+        );
+        if (!pressure.ok()) {
+          return pressure.status();
+        }
+        predicted_pressure = *pressure;
+        const auto predictor = EvaluateLiquidEosAtPressure3D(*eos, predicted_pressure);
         if (!predictor.ok()) {
           return predictor.status();
         }
         tangent_bulk_modulus = predictor->bulk_modulus;
       }
-      staging.pressure_fields[index] = {scene.target_divergence, tangent_bulk_modulus, found->previous_pressure};
+      staging.pressure_fields[index] = {scene.target_divergence, tangent_bulk_modulus, predicted_pressure};
     }
     for (std::size_t index = 0; index < frozen->faces.size(); ++index) {
       const auto& face = frozen->faces[index];

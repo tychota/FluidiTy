@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <tuple>
 
 #include "liquid_boundary_backend.h"
@@ -32,6 +33,124 @@ namespace liquid_step_internal {
       return status; \
     } \
   } while (false)
+namespace {
+
+auto PressureCellKey(CellIndex3D cell) {
+  return std::tuple{cell.z, cell.y, cell.x};
+}
+
+// Matches the owned-slot order even when the set of active blocks changes.
+auto CarrierFaceKey(FaceIndex3D face) {
+  const auto owner = MacOwnerBlock3D(face.lattice_index);
+  const auto index = face.lattice_index;
+  return std::tuple{owner.z, owner.y, owner.x, face.axis, index.z, index.y, index.x};
+}
+
+std::optional<double> CommittedCarrierVelocity(std::span<const LiquidFaceState3D> faces, FaceIndex3D face) {
+  const auto key = CarrierFaceKey(face);
+  const auto found = std::ranges::lower_bound(faces, key, {}, [](const LiquidFaceState3D& record) {
+    return CarrierFaceKey(record.face_index);
+  });
+  if (found == faces.end() || CarrierFaceKey(found->face_index) != key || !found->structurally_eligible) {
+    return std::nullopt;
+  }
+  if (found->validity != LiquidFaceValidity3D::kValid && found->validity != LiquidFaceValidity3D::kPredicted) {
+    return std::nullopt;
+  }
+  return found->carrier_velocity;
+}
+
+std::optional<double> CommittedLiquidPressure(std::span<const LiquidCellState3D> cells, CellIndex3D cell) {
+  const auto key = PressureCellKey(cell);
+  const auto found = std::ranges::lower_bound(cells, key, {}, [](const LiquidCellState3D& record) {
+    return PressureCellKey(record.cell_index);
+  });
+  if (found == cells.end() || PressureCellKey(found->cell_index) != key
+      || found->occupancy != LiquidCellOccupancy3D::kLiquid) {
+    return std::nullopt;
+  }
+  return found->previous_pressure;
+}
+
+}  // namespace
+
+absl::StatusOr<double> AdvectLiquidPressureHistory3D(
+    const LiquidState3D& committed,
+    CellIndex3D cell,
+    double step_duration,
+    double ambient_pressure
+) {
+  const auto cells = committed.cells.values();
+  const auto faces = committed.faces.values();
+  const auto fallback = CommittedLiquidPressure(cells, cell).value_or(ambient_pressure);
+  if (cells.empty()) {
+    return fallback;
+  }
+  const std::array coordinates{cell.x, cell.y, cell.z};
+  constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
+  std::array<std::int64_t, 3> low_donor{};
+  std::array<double, 3> fraction{};
+  const double lattice_step = step_duration / committed.geometry.cell_width;
+  constexpr auto kMinIndex = std::numeric_limits<std::int32_t>::min();
+  constexpr auto kMaxIndex = std::numeric_limits<std::int32_t>::max();
+  for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+    const auto low_velocity = CommittedCarrierVelocity(faces, {axes[axis], {cell.x, cell.y, cell.z}});
+    std::optional<double> high_velocity;
+    if (coordinates[axis] < kMaxIndex) {
+      auto high_face = coordinates;
+      ++high_face[axis];
+      high_velocity = CommittedCarrierVelocity(faces, {axes[axis], {high_face[0], high_face[1], high_face[2]}});
+    }
+    double centered_velocity = low_velocity.value_or(high_velocity.value_or(0.0));
+    if (low_velocity && high_velocity) {
+      centered_velocity = std::midpoint(*low_velocity, *high_velocity);
+    }
+    const double displacement = centered_velocity == 0.0 ? 0.0 : lattice_step * centered_velocity;
+    if (!std::isfinite(displacement)) {
+      return absl::OutOfRangeError("pressure backtrace displacement is unrepresentable");
+    }
+    // Keep the fractional departure separate from the large signed cell index.
+    const double low_offset = std::floor(-displacement);
+    if (low_offset < static_cast<double>(kMinIndex) - coordinates[axis] - 1.0
+        || low_offset > static_cast<double>(kMaxIndex) - coordinates[axis]) {
+      return fallback;
+    }
+    low_donor[axis] = static_cast<std::int64_t>(coordinates[axis]) + static_cast<std::int64_t>(low_offset);
+    fraction[axis] = -displacement - low_offset;
+  }
+  double predicted_pressure = 0.0;
+  double total_weight = 0.0;
+  for (std::size_t corner = 0; corner < 8; ++corner) {
+    const std::array upper{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1};
+    const std::array index{
+        low_donor[0] + static_cast<std::int64_t>(upper[0]),
+        low_donor[1] + static_cast<std::int64_t>(upper[1]),
+        low_donor[2] + static_cast<std::int64_t>(upper[2]),
+    };
+    if (std::ranges::any_of(index, [](std::int64_t coordinate) {
+          return coordinate < kMinIndex || coordinate > kMaxIndex;
+        })) {
+      continue;
+    }
+    const double x_weight = upper[0] ? fraction[0] : 1.0 - fraction[0];
+    const double y_weight = upper[1] ? fraction[1] : 1.0 - fraction[1];
+    const double z_weight = upper[2] ? fraction[2] : 1.0 - fraction[2];
+    const double weight = x_weight * y_weight * z_weight;
+    if (weight == 0.0) {
+      continue;
+    }
+    const auto pressure = CommittedLiquidPressure(
+        cells,
+        {static_cast<std::int32_t>(index[0]), static_cast<std::int32_t>(index[1]), static_cast<std::int32_t>(index[2])}
+    );
+    if (pressure) {
+      total_weight += weight;
+      predicted_pressure = std::lerp(predicted_pressure, *pressure, weight / total_weight);
+    }
+  }
+  return total_weight == 0.0 ? fallback : predicted_pressure;
+}
+
 bool Finite(Vec3 v) {
   return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
