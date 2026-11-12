@@ -178,7 +178,11 @@ absl::StatusOr<GasFrame3D> AdvanceGasFrame3D(
       return advanced.status();
     }
     frame.cells = std::move(advanced->gas.cells);
-    frame.markers = std::move(advanced->markers);
+    auto markers = RemapGasApicMarkers3D(domain.grid, frame.cells, advanced->markers, advanced->face_velocities);
+    if (!markers.ok()) {
+      return markers.status();
+    }
+    frame.markers = std::move(*markers);
     frame.face_velocities = std::move(advanced->face_velocities);
     frame.fuel_burn_rate = std::move(advanced->gas.fuel_burn_rate);
   }

@@ -234,5 +234,25 @@ TEST(GasSubstep3D, FrameRuntimeAppliesAnimatedDraftToOpenFaces) {
   EXPECT_NEAR(frame->markers[0].velocity.x, 0.1, 1e-14);
   EXPECT_NEAR(frame->cells[0].density.carrier, options.ambient.carrier, 1e-14);
 }
+
+TEST(GasSubstep3D, FrameRuntimeReplenishesApicMarkersAfterOpenOutflow) {
+  const GasUniformDomainOptions3D options{
+      .geometry = {{0.0, 0.0, 0.0}, 1.0},
+      .extent = {1, 1, 1},
+      .open_boundary = {true, true, false, false, false, false},
+      .ambient = {.carrier = 1.2, .enthalpy = 354637.5},
+      .ambient_pressure = 101325.0,
+      .initial_velocity = {0.5, 0.0, 0.0},
+  };
+  const auto domain = CreateGasUniformDomain3D(options);
+  ASSERT_TRUE(domain.ok()) << domain.status();
+  const auto frame = AdvanceGasFrame3D(*domain, options.ambient, options.ambient_pressure, {}, 0.0, 2.0, 8, {}, {}, {});
+  ASSERT_TRUE(frame.ok()) << frame.status();
+  ASSERT_EQ(frame->markers.size(), 1);
+  EXPECT_NEAR(frame->markers[0].velocity.x, 0.5, 1e-14);
+  EXPECT_GE(frame->markers[0].world_position.x, 0.5);
+  EXPECT_LT(frame->markers[0].world_position.x, 1.0);
+  EXPECT_NEAR(frame->cells[0].density.carrier, options.ambient.carrier, 1e-14);
+}
 }  // namespace
 }  // namespace fluidity

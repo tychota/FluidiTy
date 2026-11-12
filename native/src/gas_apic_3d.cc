@@ -243,4 +243,78 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
   return update;
 }
 
+absl::StatusOr<std::vector<GasApicMarker3D>> RemapGasApicMarkers3D(
+    const SparseMacGrid3D& grid,
+    std::span<const GasCell3D> cells,
+    std::span<const GasApicMarker3D> markers,
+    std::span<const double> projected_velocity
+) {
+  const auto key_of = [](const GasCell3D& cell) {
+    return CellKey(cell.cell_index);
+  };
+  if (cells.empty() || projected_velocity.size() != grid.face_count() || !std::ranges::is_sorted(cells, {}, key_of)) {
+    return absl::InvalidArgumentError("invalid gas marker remap layout");
+  }
+  std::vector<GasApicMarker3D> remapped(cells.size());
+  const auto geometry = grid.geometry();
+  for (const auto& marker : markers) {
+    if (!std::isfinite(marker.weight) || marker.weight <= 0.0) {
+      return absl::InvalidArgumentError("gas marker remap requires positive finite weights");
+    }
+    CellIndex3D cell{};
+    for (std::size_t axis = 0; axis < kCoordinates.size(); ++axis) {
+      const auto index = AxisCellIndex(geometry, axis, marker.world_position.*kCoordinates[axis]);
+      if (!index.ok()) {
+        return index.status();
+      }
+      cell.*kCellIndices[axis] = *index;
+    }
+    const auto key = CellKey(cell);
+    const auto position = std::ranges::lower_bound(cells, key, {}, key_of);
+    if (position == cells.end() || CellKey(position->cell_index) != key) {
+      return absl::InvalidArgumentError("gas marker remap received a marker outside the domain");
+    }
+    const auto ordinal = static_cast<std::size_t>(position - cells.begin());
+    if (remapped[ordinal].weight == 0.0) {
+      remapped[ordinal] = marker;
+    }
+  }
+  std::vector<std::size_t> empty_ordinals;
+  std::vector<MacTransferParticle3D> seeds;
+  for (std::size_t ordinal = 0; ordinal < cells.size(); ++ordinal) {
+    if (remapped[ordinal].weight != 0.0) {
+      continue;
+    }
+    const auto center = grid.CellWorldCenter(cells[ordinal].cell_index);
+    if (!center.ok()) {
+      return center.status();
+    }
+    empty_ordinals.push_back(ordinal);
+    seeds.push_back({
+        .sorted_world_position = *center,
+        .trial_world_position = *center,
+        .particle_mass = 1.0,
+        .particle_velocity = {},
+        .particle_velocity_slopes = {},
+    });
+  }
+  if (seeds.empty()) {
+    return remapped;
+  }
+  std::vector<MacParticleGatherResult3D> gathered(seeds.size());
+  const auto status = GatherMac3D(grid, seeds, projected_velocity, projected_velocity, gathered);
+  if (!status.ok()) {
+    return status;
+  }
+  for (std::size_t seed = 0; seed < seeds.size(); ++seed) {
+    remapped[empty_ordinals[seed]] = {
+        .world_position = seeds[seed].trial_world_position,
+        .weight = 1.0,
+        .velocity = gathered[seed].new_pic_velocity,
+        .velocity_slopes = gathered[seed].fitted_velocity_slopes,
+    };
+  }
+  return remapped;
+}
+
 }  // namespace fluidity

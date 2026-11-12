@@ -98,6 +98,16 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
         )
 );
 
+// Keeps the first marker in each occupied cell and samples new unit-weight
+// center markers from the projected field for empty cells. Results follow
+// cell order. A malformed layout or transfer failure publishes no markers.
+absl::StatusOr<std::vector<GasApicMarker3D>> RemapGasApicMarkers3D(
+    const SparseMacGrid3D& grid,
+    std::span<const GasCell3D> cells,
+    std::span<const GasApicMarker3D> markers,
+    std::span<const double> projected_velocity
+);
+
 struct GasUniformDomainOptions3D {
   UniformMacGeometry3D geometry;
   std::array<std::int32_t, 3> extent;  // Cell counts in x, y, z order, starting at lattice zero.
