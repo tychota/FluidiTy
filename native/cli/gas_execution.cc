@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,6 +78,33 @@ std::string Result(std::string_view command, std::uint64_t frame, std::size_t ce
       + ",\"cells\":" + std::to_string(cells);
 }
 
+std::string VolumeFields(
+    const GasCheckpoint3D& checkpoint,
+    const GasUniformDomainOptions3D& options,
+    const LiquidDigest3D& digest
+) {
+  std::ostringstream output;
+  output.imbue(std::locale::classic());
+  output << std::setprecision(std::numeric_limits<double>::max_digits10);
+  const auto& [nx, ny, nz] = options.extent;
+  const auto origin = options.geometry.world_origin;
+  const double spacing = options.geometry.cell_width;
+  output << ",\"scene_digest\":" << JsonString(LiquidDigestHex3D(digest).data()) << ",\"extent\":[" << nx << ',' << ny
+         << ',' << nz << "],\"spacing_m\":" << spacing << ",\"origin_m\":[" << origin.x << ',' << origin.y << ','
+         << origin.z << "],\"gas_fields\":[";
+  for (std::size_t index = 0; index < checkpoint.state.cells.size(); ++index) {
+    if (index != 0) {
+      output << ',';
+    }
+    const auto& cell = checkpoint.state.cells[index];
+    const double temperature = (cell.density.enthalpy / cell.density.carrier) / kGasSpecificHeat;
+    output << '[' << cell.density.carrier << ',' << temperature << ',' << cell.density.fuel << ','
+           << checkpoint.state.fuel_burn_rate[index] << ',' << cell.density.soot << ']';
+  }
+  output << ']';
+  return output.str();
+}
+
 absl::StatusOr<std::string> RunGas(const Command& command, SimulateJob& job, Diagnostic* diagnostic) {
   diagnostic->field = "gas_scene";
   diagnostic->cause = "gas scene, model version, build digest, or backend is incompatible";
@@ -134,7 +164,7 @@ absl::StatusOr<std::string> RunGas(const Command& command, SimulateJob& job, Dia
     if (!checked.ok()) {
       return checked.status();
     }
-    return Result("check", frame, checked->state.cells.size());
+    return Result("check", frame, checked->state.cells.size()) + VolumeFields(*checked, options, digest);
   }
 
   std::vector<std::vector<GasSourceKey3D>> key_storage;
