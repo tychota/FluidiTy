@@ -1155,7 +1155,8 @@ absl::Status ExecuteRigidBoxFrame(
     const std::filesystem::path& rigid_packet,
     const std::filesystem::path& previous,
     const std::filesystem::path& output,
-    ProtocolWriter& writer
+    ProtocolWriter& writer,
+    bool inspect
 ) {
   namespace files = liquid_cache_files_internal;
   constexpr LiquidCacheLimits3D kPacketLimits{.maximum_bytes = 4096};
@@ -1233,6 +1234,21 @@ absl::Status ExecuteRigidBoxFrame(
     *initial = std::move(restored->liquid);
   }
 
+  const auto emit_pose = [&](std::string_view event, const LiquidClock3D& clock) {
+    const auto vector = [](Vec3 value) {
+      return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
+    };
+    const auto q = body.orientation;
+    return writer.Emit(
+        event,
+        ClockMembers(clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
+            + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
+    );
+  };
+  if (inspect) {
+    return emit_pose("rigid_inspect", initial->clock);
+  }
+
   auto options = scene->options;
   options.capacities = kCapacities;
   auto scheduler = LiquidSubstepScheduler3D::Create(*initial, scene->View().scene, options);
@@ -1263,7 +1279,11 @@ absl::Status ExecuteRigidBoxFrame(
         break;
       }
       if (!step->outcome.retry_duration) {
-        return absl::Status(scheduler->diagnostics().failure_code, "rigid frame attempt failed");
+        return absl::Status(
+            scheduler->diagnostics().failure_code,
+            "rigid frame attempt failed at stage "
+                + std::to_string(static_cast<int>(scheduler->diagnostics().failed_stage))
+        );
       }
       duration = *step->outcome.retry_duration;
     }
@@ -1282,16 +1302,9 @@ absl::Status ExecuteRigidBoxFrame(
     prefix.insert(prefix.end(), checkpoint->begin(), checkpoint->end());
     EXEC_TRY(files::PublishBytes(output, prefix, kCheckpointLimits, {}));
   }
-  const auto vector = [](Vec3 value) {
-    return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
-  };
-  const auto q = body.orientation;
-  return writer.Emit(
-      "rigid_frame",
-      ClockMembers(state.clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
-          + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
-  );
+  return emit_pose("rigid_frame", state.clock);
 }
+
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
   std::optional<JobMeasurement> measurement;
   if (command.measure_job) {

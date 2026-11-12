@@ -173,13 +173,11 @@ def check_cutter(packet):
         checked("simulate", "cutter-frame", inputs, "-", "-", event="cutter_frame")
 
 
-class CutterJob:
-    def __init__(self, scene, cache, packet, last_frame, resume):
+class FrameJob:
+    def __init__(self, scene, cache, last_frame):
         self.scene = scene
         self.cache = cache
-        self.inputs = cache / "cutter.txt"
         self.last_frame = last_frame
-        self.substeps = int(packet.splitlines()[1].split()[-1])
         self.process = None
         self.output = None
         self.terminal = None
@@ -187,20 +185,6 @@ class CutterJob:
         self.started_at = time.monotonic()
         self.committed_frame = 0
         binary("simulate")
-        if resume:
-            if not self.inputs.is_file() or self.inputs.read_bytes() != packet.encode("ascii"):
-                raise ToolError("The Cutter settings changed. Choose a fresh Bake cache.")
-            while self.committed_frame < last_frame and cutter_checkpoint(cache, self.committed_frame + 1).is_file():
-                self.committed_frame += 1
-            if self.committed_frame:
-                checkpoint = cutter_checkpoint(cache, self.committed_frame)
-                record = checked("simulate", "cutter-inspect", checkpoint, self.inputs, event="cutter_inspect")
-                if record["accepted_step"] != self.committed_frame * self.substeps:
-                    raise ToolError("The Cutter checkpoint has an unexpected accepted step.")
-        else:
-            cache.mkdir(parents=True)
-            with self.inputs.open("x", encoding="ascii", newline="\n") as stream:
-                stream.write(packet)
 
     def cancel(self):
         self.cancelled = True
@@ -216,13 +200,12 @@ class CutterJob:
                 if code is None:
                     return False
                 self.output.seek(0)
-                record = simulate_record(self.output.read(131073).decode("utf-8"), code, "cutter_frame")
+                record = simulate_record(self.output.read(131073).decode("utf-8"), code, self.frame_event)
                 self.output.close()
                 self.output = None
                 self.process = None
                 next_frame = self.committed_frame + 1
-                if record["accepted_step"] != next_frame * self.substeps:
-                    raise ToolError("The Cutter solver returned an unexpected accepted step.")
+                self.check_record(record, next_frame)
                 self.committed_frame = next_frame
                 settings.committed_frame = next_frame
                 return False
@@ -232,18 +215,16 @@ class CutterJob:
             if self.committed_frame == self.last_frame:
                 self.terminal = {"event": "result", "frame": self.committed_frame}
                 return True
-            previous = cutter_checkpoint(self.cache, self.committed_frame) if self.committed_frame else "-"
-            output = cutter_checkpoint(self.cache, self.committed_frame + 1)
             self.output = tempfile.TemporaryFile()
             self.process = subprocess.Popen(
-                [binary("simulate"), "cutter-frame", self.inputs, previous, output],
+                self.frame_command(),
                 stdout=self.output,
                 stderr=subprocess.DEVNULL,
                 creationflags=NO_WINDOW,
             )
             return False
         except (OSError, ValueError, subprocess.SubprocessError, ToolError) as error:
-            self.terminal = {"event": "error", "field": "cutter", "cause": str(error)}
+            self.terminal = {"event": "error", "field": self.field, "cause": str(error)}
             return True
 
     def close(self):
@@ -253,6 +234,105 @@ class CutterJob:
         if self.output is not None:
             self.output.close()
 
+
+class CutterJob(FrameJob):
+    field = "cutter"
+    frame_event = "cutter_frame"
+
+    def __init__(self, scene, cache, packet, last_frame, resume):
+        super().__init__(scene, cache, last_frame)
+        self.inputs = cache / "cutter.txt"
+        self.substeps = int(packet.splitlines()[1].split()[-1])
+        if resume:
+            if not self.inputs.is_file() or self.inputs.read_bytes() != packet.encode("ascii"):
+                raise ToolError("The Cutter settings changed. Choose a fresh Bake cache.")
+            while self.committed_frame < last_frame and cutter_checkpoint(cache, self.committed_frame + 1).is_file():
+                self.committed_frame += 1
+            if self.committed_frame:
+                checkpoint = cutter_checkpoint(cache, self.committed_frame)
+                record = checked("simulate", "cutter-inspect", checkpoint, self.inputs, event="cutter_inspect")
+                if record["accepted_step"] != self.committed_frame * self.substeps:
+                    raise ToolError("The Cutter checkpoint has an unexpected accepted step.")
+        else:
+            cache.mkdir(parents=True)
+            with self.inputs.open("x", encoding="ascii", newline="\n") as stream:
+                stream.write(packet)
+
+
+    def check_record(self, record, frame):
+        if record["accepted_step"] != frame * self.substeps:
+            raise ToolError("The Cutter solver returned an unexpected accepted step.")
+
+    def frame_command(self):
+        previous = cutter_checkpoint(self.cache, self.committed_frame) if self.committed_frame else "-"
+        return [binary("simulate"), "cutter-frame", self.inputs, previous,
+                cutter_checkpoint(self.cache, self.committed_frame + 1)]
+
+
+def rigid_checkpoint(cache, frame):
+    return cache / f"rigid-{frame:06d}.chk"
+
+
+def prepare_rigid(packets, directory):
+    liquid, rigid = packets
+    inputs, scene, seed, body = (directory / name for name in ("scene.txt", "scene.flrs", "state.flst", "rigid.txt"))
+    inputs.write_text(liquid, encoding="ascii", newline="\n")
+    body.write_text(rigid, encoding="ascii", newline="\n")
+    checked("simulate", "blender-resolve", binary("simulate"), inputs, scene, seed, event="blender_resolved")
+    return scene, seed, body
+
+
+def check_rigid(packets):
+    with tempfile.TemporaryDirectory(prefix="fluidity-rigid-check-") as directory:
+        paths = prepare_rigid(packets, Path(directory))
+        checked("simulate", "rigid-frame", *paths, "-", "-", event="rigid_frame")
+
+
+def inspect_rigid(cache, frame):
+    paths = (cache / name for name in ("scene.flrs", "state.flst", "rigid.txt"))
+    return checked("simulate", "rigid-inspect", *paths, rigid_checkpoint(cache, frame), event="rigid_inspect")
+
+
+class RigidJob(FrameJob):
+    field = "rigid_box"
+    frame_event = "rigid_frame"
+
+    def __init__(self, scene, cache, packets, last_frame, resume):
+        super().__init__(scene, cache, last_frame)
+        self.paths = tuple(cache / name for name in ("scene.flrs", "state.flst", "rigid.txt"))
+        if resume:
+            for path, packet in zip((cache / "scene.txt", self.paths[2]), packets, strict=True):
+                if not path.is_file() or path.read_bytes() != packet.encode("ascii"):
+                    raise ToolError("The rigid bake settings changed. Choose a fresh Bake cache.")
+            while self.committed_frame < last_frame and rigid_checkpoint(cache, self.committed_frame + 1).is_file():
+                self.committed_frame += 1
+            if self.committed_frame:
+                self.check_record(inspect_rigid(cache, self.committed_frame), self.committed_frame)
+        else:
+            # Resolve and validate before creating a persistent bake directory.
+            with tempfile.TemporaryDirectory(prefix="fluidity-rigid-prepare-") as directory:
+                staging = Path(directory)
+                paths = prepare_rigid(packets, staging)
+                checked("simulate", "rigid-frame", *paths, "-", "-", event="rigid_frame")
+                cache.mkdir(parents=True)
+                for path in (*paths, staging / "scene.txt"):
+                    with (cache / path.name).open("xb") as output:
+                        output.write(path.read_bytes())
+
+    def check_record(self, record, frame):
+        if record["frame"] != frame or record["substep"] != 0:
+            raise ToolError("The rigid solver returned an unexpected frame.")
+
+    def frame_command(self):
+        previous = rigid_checkpoint(self.cache, self.committed_frame) if self.committed_frame else "-"
+        return [binary("simulate"), "rigid-frame", *self.paths, previous,
+                rigid_checkpoint(self.cache, self.committed_frame + 1)]
+
+
+def start_rigid(scene, cache, packets, last_frame, resume):
+    if is_running(scene):
+        raise ToolError("This scene already has a running job.")
+    _JOBS[scene.as_pointer()] = RigidJob(scene, cache, packets, last_frame, resume)
 
 def start_cutter(scene, cache, packet, last_frame, resume):
     if is_running(scene):
@@ -314,11 +394,13 @@ def tick():
             continue
         record = job.terminal or {}
         settings = job.scene.fluidity
-        cutter = isinstance(job, CutterJob)
-        if record.get("event") == "result" and (cutter or job.process.returncode == 0):
+        frame_job = isinstance(job, FrameJob)
+        if record.get("event") == "result" and (frame_job or job.process.returncode == 0):
             settings.committed_frame = max(settings.committed_frame, record["frame"])
-            if cutter:
+            if isinstance(job, CutterJob):
                 settings.message = "Cutter bake complete. Inspect a committed frame for particle sides."
+            elif isinstance(job, RigidJob):
+                settings.message = "Rigid bake complete."
             elif job.stage == "mesh":
                 settings.message = "Surface build complete. Attach the committed surface to render."
             else:
@@ -328,7 +410,7 @@ def tick():
         elif record.get("event") == "error":
             settings.message = (
                 "Surface build failed. Committed frames are preserved."
-                if not cutter and job.stage == "mesh"
+                if not frame_job and job.stage == "mesh"
                 else "Bake failed. Committed frames are preserved."
             )
             settings.diagnostic = " ".join(str(record.get(key, "")) for key in ("code", "field", "cause")).strip()

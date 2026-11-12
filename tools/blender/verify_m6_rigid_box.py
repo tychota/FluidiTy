@@ -3,6 +3,8 @@
 import math
 from pathlib import Path
 import sys
+import tempfile
+import time
 
 import bpy
 from mathutils import Quaternion, Vector
@@ -69,3 +71,64 @@ else:
     raise AssertionError("Driven box accepted conflicting transform animation")
 
 print("PASS authored rigid box, native pose and inertia, and transform conflicts")
+
+if "--" in sys.argv:
+    solver = Path(sys.argv[sys.argv.index("--") + 1]).resolve()
+    fluidity.jobs.BIN_DIR = solver.parent
+    box.animation_data_clear()
+    settings.cell_width = 1
+    scene.use_gravity = False
+    scene.frame_end = 2
+    for index, (x, y) in enumerate(((1.375, -0.375), (0.375, -1.375), (1.375, -1.375))):
+        source = settings.liquid_sources.add()
+        source.geometry = fluidity.authoring.box(f"Water {index}", (x, y, 0.375), (0.25, 0.25, 0.25))
+
+    def poll_until(condition):
+        deadline = time.monotonic() + 30
+        while not condition() and time.monotonic() < deadline:
+            fluidity.jobs.tick()
+            time.sleep(0.01)
+        assert condition(), (settings.message, settings.diagnostic)
+
+    with tempfile.TemporaryDirectory(prefix="fluidity-blender-rigid-") as directory:
+        root = Path(directory)
+        cache = root / "Bake"
+        settings.bake_cache = str(cache)
+        settings.preview_cache = str(root / "Preview")
+        bpy.ops.wm.save_as_mainfile(filepath=str(root / "Rigid bake.blend"))
+        assert bpy.ops.fluidity.check_scene() == {"FINISHED"}, (settings.message, settings.diagnostic)
+        assert not cache.exists()
+        assert bpy.ops.fluidity.bake() == {"FINISHED"}, (settings.message, settings.diagnostic)
+        poll_until(lambda: settings.committed_frame == 1 or not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 1, settings.diagnostic
+        assert bpy.ops.fluidity.cancel() == {"FINISHED"}
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        first = fluidity.jobs.rigid_checkpoint(cache, 1)
+        second = fluidity.jobs.rigid_checkpoint(cache, 2)
+        first_bytes = first.read_bytes()
+        assert not second.exists()
+
+        project = root / "Interrupted rigid bake.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(project))
+        bpy.ops.wm.open_mainfile(filepath=str(project))
+        scene = bpy.context.scene
+        settings = scene.fluidity
+        settings.rigid_mass = 1
+        assert bpy.ops.fluidity.resume() == {"CANCELLED"}
+        assert "settings changed" in settings.message
+        settings.rigid_mass = 0.5
+        assert bpy.ops.fluidity.resume() == {"FINISHED"}, (settings.message, settings.diagnostic)
+        poll_until(lambda: not fluidity.jobs.is_running(scene))
+        assert settings.committed_frame == 2, settings.diagnostic
+        assert first.read_bytes() == first_bytes
+        receipt = fluidity.jobs.inspect_rigid(cache, 2)
+        assert receipt["frame"] == 2
+        scene.frame_set(2)
+        assert bpy.ops.fluidity.inspect() == {"FINISHED"}, settings.message
+        assert settings.inspect_frame == 2 and "Rigid Box" in settings.point_detail
+        replay = root / "Replay.chk"
+        paths = tuple(cache / name for name in ("scene.flrs", "state.flst", "rigid.txt"))
+        fluidity.jobs.checked("simulate", "rigid-frame", *paths, first, replay, event="rigid_frame")
+        assert replay.read_bytes() == second.read_bytes()
+
+    print("PASS rigid Check, Bake, Cancel, saved-project Resume, and byte-identical replay")

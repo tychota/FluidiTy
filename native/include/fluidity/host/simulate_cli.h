@@ -94,7 +94,8 @@ absl::Status ExecuteRigidBoxFrame(
     const std::filesystem::path& rigid_packet,
     const std::filesystem::path& previous,
     const std::filesystem::path& output,
-    ProtocolWriter& writer
+    ProtocolWriter& writer,
+    bool inspect = false
 );
 /// Executes a run, advances one accepted substep, or replays a requested clock.
 /// @pre command is a run, step, or replay returned by ParseCommand. diagnostic is non-null.

@@ -239,7 +239,7 @@ class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
         column.prop(scene.fluidity, "preview_cache")
         row = column.row(align=True)
         row.operator("fluidity.preview", icon="PLAY")
-        if not scene.fluidity.cutter:
+        if not scene.fluidity.cutter and not scene.fluidity.rigid_box:
             row.operator("fluidity.attach", text="Attach Preview", icon="POINTCLOUD_DATA").preview = True
         column.separator()
         column.prop(scene.fluidity, "bake_cache")
