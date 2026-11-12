@@ -48,4 +48,17 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
     std::uint64_t split_particle_id
 );
 
+// Coarsen the requested full families and replace the selected fine roster
+// by its certified quadratic F4 particle. The selected family must be the
+// final edit. IDs must identify two to eight distinct committed particles in
+// that family. The source, including its next ID, is read-only on all results.
+absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+    const LiquidState3D& committed,
+    const LiquidSceneInputs3D& scene,
+    LiquidStateCapacities3D capacities,
+    std::span<const AdaptiveMacCellKey3D> requested_parents,
+    AdaptiveMacCellKey3D merge_parent,
+    std::span<const std::uint64_t> children
+);
+
 }  // namespace fluidity::liquid_step_internal
