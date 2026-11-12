@@ -129,6 +129,36 @@ TEST(LiquidCache3D, ResolvedPlasticBodiesAreVersionedAndCanonical) {
   ASSERT_EQ(restored->solid.plastic_particles.size(), 1);
   EXPECT_DOUBLE_EQ(restored->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
 
+  const auto bound_checkpoint = EncodeResolvedCoupledCheckpoint3D(view, liquid, solid);
+  ASSERT_TRUE(bound_checkpoint.ok()) << bound_checkpoint.status();
+  const auto bound_restored = DecodeResolvedCoupledCheckpoint3D(view, *bound_checkpoint);
+  ASSERT_TRUE(bound_restored.ok()) << bound_restored.status();
+  ASSERT_EQ(bound_restored->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(bound_restored->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+  EXPECT_EQ(
+      DecodeResolvedCoupledCheckpoint3D(view, *checkpoint).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(
+      DecodeCoupledInteractionCheckpoint3D(*bound_checkpoint, view.plastic_bodies).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto alternate_bindings = bindings;
+  std::get<SnowParameters3D>(alternate_bindings[0].material).hardening = 5;
+  auto alternate_scene = scene;
+  alternate_scene.plastic_bodies = alternate_bindings;
+  ASSERT_TRUE(ValidatePlasticSolidCheckpointParticles3D(solid.plastic_particles, alternate_bindings).ok());
+  EXPECT_EQ(
+      DecodeResolvedCoupledCheckpoint3D(alternate_scene, *bound_checkpoint).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  alternate_scene = scene;
+  ++alternate_scene.random_seed;
+  EXPECT_EQ(
+      EncodeResolvedCoupledCheckpoint3D(alternate_scene, liquid, solid).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+
   auto wrong_version = Copy(*encoded);
   ASSERT_TRUE(wire::GetMutableResolvedScene(wrong_version.data())->mutate_model_version(kLiquidOnlyResolvedModel3D));
   EXPECT_EQ(DecodeLiquidResolvedScene3D(wrong_version).status().code(), absl::StatusCode::kDataLoss);

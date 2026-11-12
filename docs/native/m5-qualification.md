@@ -1514,6 +1514,16 @@ scheduler integration. The box-specific impulse update has no plastic
 particle or snow constitutive path. The M5 binding change uses the shared
 FLSI interface and leaves that branch's scheduler files untouched.
 
+The resolved compaction replay now uses FLSI v3. It embeds the canonical
+FLRS fingerprint and requires the caller's scene to match before restoring
+either material. Geometry, random seed, and accepted-step ordinals also
+agree before publication. The test changes snow hardening while keeping
+the saved particle admissible. The scene-bound decoder rejects the change,
+and native and CUDA replay byte-identical second-frame checkpoints when
+the scene matches. Existing unbound FLSI v1 and v2 callers retain their
+codec. The production cache still needs a path to store and retrieve
+these scene-bound bytes alongside published frames.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

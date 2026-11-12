@@ -857,22 +857,23 @@ bool TestPlanarMixedContactDetection() {
     return false;
   }
 
-  const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved) {
+  const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved, bool bind_scene = false) {
     const fluidity::SolidInteractionCheckpoint3D solid{
         .accepted_step = saved.liquid.clock.accepted_step_ordinal,
         .bodies = {},
         .sides = {},
         .plastic_particles = saved.snow,
     };
-    return fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
+    return bind_scene ? fluidity::EncodeResolvedCoupledCheckpoint3D(resolved_scene->View(), saved.liquid, solid)
+                      : fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
   };
-  const auto compressed_checkpoint = save_frame(*compressed_frame);
+  const auto compressed_checkpoint = save_frame(*compressed_frame, true);
   if (!compressed_checkpoint.ok()) {
     std::fprintf(stderr, "M5 compressed frame checkpoint: %s\n", compressed_checkpoint.status().ToString().c_str());
     return false;
   }
   const auto restored_compression =
-      fluidity::DecodeCoupledInteractionCheckpoint3D(*compressed_checkpoint, checkpoint_bindings);
+      fluidity::DecodeResolvedCoupledCheckpoint3D(resolved_scene->View(), *compressed_checkpoint);
   if (!restored_compression.ok() || restored_compression->solid.plastic_particles.size() != deforming_snow.size()) {
     return false;
   }
@@ -899,8 +900,8 @@ bool TestPlanarMixedContactDetection() {
     );
     return false;
   }
-  const auto uninterrupted_compression_checkpoint = save_frame(*uninterrupted_compression);
-  const auto restarted_compression_checkpoint = save_frame(*restarted_compression);
+  const auto uninterrupted_compression_checkpoint = save_frame(*uninterrupted_compression, true);
+  const auto restarted_compression_checkpoint = save_frame(*restarted_compression, true);
   if (!uninterrupted_compression_checkpoint.ok() || !restarted_compression_checkpoint.ok()
       || *uninterrupted_compression_checkpoint != *restarted_compression_checkpoint
       || restarted_compression->liquid.clock.time != 0.125 || restarted_compression->liquid.clock.frame_ordinal != 2
