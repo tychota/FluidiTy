@@ -1,6 +1,7 @@
 #include "fluidity/host/surface_reconstruction_3d.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -258,6 +259,65 @@ absl::Status SampleVertexComposition(
   }
   return absl::OkStatus();
 }
+
+double TankFillVolume(const AxisAlignedLiquidTank3D& tank, const LiquidHorizontalPlaneSurface3D& plane) {
+  return (tank.high_x - tank.start_low_x) * (plane.world_surface_height_y - tank.floor_y) * (tank.high_z - tank.low_z);
+}
+
+// The planar scaffold can represent the accepted mixed-owner fill only
+// when the disjoint wet leaves cover that tank and each inventory fills its
+// represented volume. A missing or partial leaf cannot certify deep liquid.
+absl::StatusOr<double> CertifiedAdaptiveTankVolume(
+    const LiquidState3D& state,
+    const AxisAlignedLiquidTank3D& tank,
+    const LiquidHorizontalPlaneSurface3D& plane
+) {
+  const auto origin = state.geometry.world_origin;
+  const double finest_width_m = state.geometry.cell_width;
+  const std::array tank_lower_m{tank.start_low_x, tank.floor_y, tank.low_z};
+  const std::array tank_upper_m{tank.high_x, plane.world_surface_height_y, tank.high_z};
+  const std::array origin_m{origin.x, origin.y, origin.z};
+  double accepted_volume_m3 = 0;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    const double lattice_width = std::ldexp(1.0, cell.key.width_exponent);
+    const double width_m = std::ldexp(finest_width_m, cell.key.width_exponent);
+    const double leaf_volume_m3 = width_m * width_m * width_m;
+    if (!std::isfinite(leaf_volume_m3) || leaf_volume_m3 <= 0) {
+      return absl::OutOfRangeError("adaptive surface leaf volume is unrepresentable");
+    }
+    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || cell.inventory.current_volume_m3 != leaf_volume_m3) {
+      return absl::FailedPreconditionError("adaptive planar surface requires completely occupied liquid leaves");
+    }
+    const auto corner = cell.key.lower_corner;
+    const std::array lower_indices{corner.x, corner.y, corner.z};
+    for (std::size_t axis = 0; axis < lower_indices.size(); ++axis) {
+      const double lower_m = std::fma(static_cast<double>(lower_indices[axis]), finest_width_m, origin_m[axis]);
+      const double upper_m = std::fma(lower_indices[axis] + lattice_width, finest_width_m, origin_m[axis]);
+      if (!std::isfinite(lower_m) || !std::isfinite(upper_m) || lower_m >= upper_m) {
+        return absl::OutOfRangeError("adaptive surface leaf bounds are unrepresentable");
+      }
+      if (lower_m < tank_lower_m[axis] || upper_m > tank_upper_m[axis]) {
+        return absl::FailedPreconditionError("adaptive surface leaves cross the certified tank bounds");
+      }
+    }
+    accepted_volume_m3 += cell.inventory.current_volume_m3;
+  }
+
+  const double tank_volume_m3 = TankFillVolume(tank, plane);
+  if (!std::isfinite(accepted_volume_m3) || !std::isfinite(tank_volume_m3) || tank_volume_m3 <= 0) {
+    return absl::OutOfRangeError("adaptive surface tank volume is unrepresentable");
+  }
+  // Both volumes use positive terms and canonical leaf order. Allow for the
+  // three width factors and the rounded sum while checking complete coverage.
+  constexpr double kSummationRoundoff = 16 * std::numeric_limits<double>::epsilon();
+  const double coverage_tolerance_m3 =
+      kSummationRoundoff * static_cast<double>(state.adaptive_cells.size()) * tank_volume_m3;
+  if (std::abs(accepted_volume_m3 - tank_volume_m3) > coverage_tolerance_m3) {
+    return absl::FailedPreconditionError("adaptive surface leaves do not cover the certified tank volume");
+  }
+  return accepted_volume_m3;
+}
+
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
       && a.world_origin.z == b.world_origin.z;
@@ -419,6 +479,7 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     return absl::OkStatus();
   };
   std::vector<MotionStamp3D> stamps;
+  std::optional<double> accepted_adaptive_material_m3;
   for (const auto& sample : source.samples) {
     const auto limits = options.limits.cache.maximum_records;
     constexpr std::size_t hard_limit = std::size_t{1} << 20;
@@ -427,6 +488,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
         || sample.cells.size() > std::min(limits.cells, hard_limit)
         || sample.cavity_gas.size() > std::min(limits.cells, hard_limit)
         || sample.cavity_components.size() > std::min(limits.cells, hard_limit)
+        || sample.adaptive_cells.size() > std::min(limits.cells, hard_limit)
+        || sample.adaptive_faces.size() > std::min(limits.faces, hard_limit)
         || sample.faces.size() > std::min(limits.faces, hard_limit)
         || sample.sources.size() > std::min(limits.sources, hard_limit)) {
       return absl::ResourceExhaustedError("surface source record budget exceeded");
@@ -435,6 +498,24 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     if (!checked.ok()) {
       return checked;
     }
+
+    const bool has_eulerian_core = std::ranges::any_of(sample.adaptive_cells.values(), [](const auto& cell) {
+      return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
+    });
+    if (has_eulerian_core) {
+      if (!stationary_tank || sample.particles.size() == 0) {
+        return absl::FailedPreconditionError("adaptive core surface requires a certified planar tank and particle band"
+        );
+      }
+      const auto material_volume_m3 = CertifiedAdaptiveTankVolume(sample, *tank, *plane);
+      if (!material_volume_m3.ok()) {
+        return material_volume_m3.status();
+      }
+      if (&sample == &endpoint) {
+        accepted_adaptive_material_m3 = *material_volume_m3;
+      }
+    }
+
     if (!SameGeometry(sample.geometry, endpoint.geometry) || sample.random_seed != endpoint.random_seed) {
       return absl::InvalidArgumentError("inconsistent surface source geometry or seed");
     }
@@ -724,10 +805,9 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     }
   }
   if (stationary_tank) {
-    // The stationary planar fill defines a physical volume even where the
-    // interface band has no particles in the deep liquid.
-    material_volume = (tank->high_x - tank->start_low_x) * (plane->world_surface_height_y - tank->floor_y)
-        * (tank->high_z - tank->low_z);
+    // Mixed-owner motion supplies the volume of both owners at the accepted
+    // endpoint. The analytic tank remains the control for particle-only runs.
+    material_volume = accepted_adaptive_material_m3.value_or(TankFillVolume(*tank, *plane));
   }
   if (!std::isfinite(material_volume) || material_volume <= 0.0) {
     return absl::OutOfRangeError("surface material volume overflowed");
