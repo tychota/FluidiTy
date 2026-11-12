@@ -39,18 +39,35 @@ RestoreCheckpointParticle(const PlasticSolidCheckpointParticle3D& record, const 
 
 }  // namespace
 
-absl::Status ValidatePlasticSolidCheckpointParticles3D(
-    std::span<const PlasticSolidCheckpointParticle3D> records,
-    std::span<const PlasticSolidCheckpointBinding3D> bindings
-) {
+absl::Status ValidatePlasticSolidCheckpointBindings3D(std::span<const PlasticSolidCheckpointBinding3D> bindings) {
   std::uint64_t previous_body_id = 0;
   for (const auto& binding : bindings) {
     if (binding.body_id <= previous_body_id || binding.material_id == 0) {
       return absl::InvalidArgumentError("invalid plastic checkpoint body binding");
     }
+    constexpr Vec3 rest_stretches{1, 1, 1};
+    PrincipalSolidState3D rest_state{};
+    const auto* granular = std::get_if<GranularParameters3D>(&binding.material);
+    const bool valid_material = granular != nullptr
+        ? ReturnGranularPrincipal3D(rest_stretches, 0, *granular, rest_state)
+        : ReturnSnowPrincipal3D(rest_stretches, 0, std::get<SnowParameters3D>(binding.material), rest_state);
+    if (!valid_material) {
+      return absl::InvalidArgumentError("invalid resolved plastic checkpoint material");
+    }
     previous_body_id = binding.body_id;
   }
 
+  return absl::OkStatus();
+}
+
+absl::Status ValidatePlasticSolidCheckpointParticles3D(
+    std::span<const PlasticSolidCheckpointParticle3D> records,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings
+) {
+  const auto binding_status = ValidatePlasticSolidCheckpointBindings3D(bindings);
+  if (!binding_status.ok()) {
+    return binding_status;
+  }
   std::uint64_t previous_particle_id = 0;
   for (const auto& record : records) {
     if (record.particle_id <= previous_particle_id) {

@@ -110,6 +110,25 @@ table LiquidPhasePair {
   phase_b:ulong (id:1);
   surface_tension:double (id:2);
 }
+struct GranularPlasticMaterial {
+  lame_lambda_pa:double;
+  shear_modulus_pa:double;
+  friction_angle_rad:double;
+  cohesion_log_strain:double;
+}
+struct SnowPlasticMaterial {
+  lame_lambda_pa:double;
+  shear_modulus_pa:double;
+  compression_limit:double;
+  stretch_limit:double;
+  hardening:double;
+}
+table PlasticBodyBinding {
+  body_id:ulong (id:0);
+  material_id:ulong (id:1);
+  granular:GranularPlasticMaterial (id:2);
+  snow:SnowPlasticMaterial (id:3);
+}
 table ResolvedScene {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -128,6 +147,7 @@ table ResolvedScene {
   upstream:[UpstreamContent] (required, id:14);
   constituent_materials:[ConstituentMaterial] (id:15);
   liquid_phase_pairs:[LiquidPhasePair] (id:16);
+  plastic_bodies:[PlasticBodyBinding] (id:17);
 }
 root_type ResolvedScene;
 file_identifier "FLRS";

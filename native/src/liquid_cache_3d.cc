@@ -523,7 +523,7 @@ std::array<char, 65> LiquidDigestHex3D(const LiquidDigest3D& digest) {
   return result;
 }
 absl::StatusOr<std::array<char, 76>> LiquidContentName3D(const LiquidContentReference3D& reference) {
-  constexpr std::array<std::string_view, 4> extensions{".flst", ".flpt", ".flrs", ".flmf"};
+  constexpr std::array<std::string_view, 5> extensions{".flst", ".flpt", ".flrs", ".flmf", ".flsi"};
   const auto kind = static_cast<std::size_t>(reference.kind);
   if (kind >= extensions.size()) {
     return Invalid();
@@ -551,7 +551,7 @@ absl::Status VerifyLiquidContent3D(
     LiquidContentKind3D expected_kind,
     LiquidCacheLimits3D limits
 ) {
-  if (static_cast<std::uint8_t>(expected_kind) > 3 || reference.kind != expected_kind) {
+  if (expected_kind > LiquidContentKind3D::kCoupledState || reference.kind != expected_kind) {
     return Invalid();
   }
   if (bytes.size() > limits.maximum_bytes || bytes.size() >= FLATBUFFERS_MAX_BUFFER_SIZE) {
