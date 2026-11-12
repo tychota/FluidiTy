@@ -461,8 +461,30 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.upstream = std::span(&upstream, 1);
   }
   if (args[5] == "plastic-body") {
+    scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+    scene.scene.obstacle = fluidity::TranslatingHalfspace3D{{0, -1, 0}, -3.001, {0, -0.02, 0}};
+    source.source_ordinal = 7;
+    source.particles_per_second = 3;
+    source.world_position = {2.5, 2.5, 2.5};
+    scene.scene.sources = std::span(&source, 1);
+    auto counters = fluidity::LiquidRecords3D<fluidity::LiquidSourceState3D>::Create(1);
+    if (!counters.ok() || !counters->Resize(1).ok()) {
+      return 4;
+    }
+    (*counters)[0].source_ordinal = source.source_ordinal;
+    state.sources = std::move(*counters);
+    auto particles = fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(1);
+    if (!particles.ok() || !particles->Resize(1).ok()) {
+      return 4;
+    }
+    (*particles)[0].id = 1;
+    (*particles)[0].world_position = source.world_position;
+    (*particles)[0].pic_initialized = true;
+    state.next_particle_id = 2;
+    state.particles = std::move(*particles);
     const fluidity::DrySolidParticle3D snow{
-        .world_position = {1, 2, 3},
+        .world_position = {5.5, 3.0005, 2.5},
+        .world_velocity = {0, 0.1, 0},
         .mass = 300,
         .reference_volume = 1,
         .elastic_deformation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
@@ -543,7 +565,8 @@ int FirstPointFrameFixture(const std::filesystem::path& path) {
   const char* particle_separator = "";
   for (const auto& particle : frame->points.points.values()) {
     std::cout << particle_separator << "{\"id\":" << particle.id << ",\"phase_id\":" << particle.phase_id
-              << ",\"constituents\":[";
+              << ",\"tag\":" << particle.tag << ",\"position\":[" << particle.world_position.x << ','
+              << particle.world_position.y << ',' << particle.world_position.z << ']' << ",\"constituents\":[";
     const char* constituent_separator = "";
     for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
       std::cout << constituent_separator << '[' << constituent.substance_id << ',' << constituent.volume_fraction

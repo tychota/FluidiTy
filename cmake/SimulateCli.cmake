@@ -97,7 +97,7 @@ if(BUILD_TESTING)
         --executable $<TARGET_FILE:fluidity_simulate> --fault-executable $<TARGET_FILE:fluidity_simulate_fault_fixture>
         --fixture $<TARGET_FILE:fluidity_simulate_fixture>)
     set_tests_properties(SimulateReliability.InterruptionCampaign PROPERTIES LABELS cuda-reliability TIMEOUT 300)
-    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_lifecycle cuda_effects cuda_ocean)
+    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_mixed cuda_lifecycle cuda_effects cuda_ocean)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
