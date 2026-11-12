@@ -13,6 +13,29 @@ enum class ContactFaceDepositStatus3D : std::uint8_t {
   kBodyCapacity,
 };
 
+// Scatters one face impulse to a contributing particle in world m/s.
+// The weight is in (0, 1] and body_face_mass is the sum of weighted
+// particle masses in kg. Invalid or unrepresentable data preserve output.
+FLUIDITY_HD inline bool
+ScatterContactFaceImpulse3D(Vec3 body_impulse, double particle_weight, double body_face_mass, Vec3& output) noexcept {
+  namespace detail = distinct_contact_detail;
+  namespace numeric = detail::numeric;
+  if (!detail::Finite(body_impulse) || !numeric::isfinite(particle_weight) || particle_weight <= 0
+      || particle_weight > 1 || !numeric::isfinite(body_face_mass) || body_face_mass <= 0) {
+    return false;
+  }
+  const Vec3 candidate{
+      (body_impulse.x * particle_weight) / body_face_mass,
+      (body_impulse.y * particle_weight) / body_face_mass,
+      (body_impulse.z * particle_weight) / body_face_mass,
+  };
+  if (!detail::Finite(candidate)) {
+    return false;
+  }
+  output = candidate;
+  return true;
+}
+
 // Holds only the active body records for one MAC face. Velocities are kept
 // separate by stable body ID and are reconstructed from mass and momentum.
 class ContactFaceBodies3D {

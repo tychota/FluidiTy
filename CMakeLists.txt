@@ -42,6 +42,7 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
+  native/src/contact_face_bodies_3d.cc
   native/src/dry_solid_step_3d.cc
   native/src/plastic_solid_checkpoint_3d.cc
     native/src/effects_source_3d.cc

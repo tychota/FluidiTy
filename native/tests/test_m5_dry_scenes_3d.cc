@@ -329,6 +329,30 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
+bool TestContactFaceParticleScatter() {
+  constexpr std::array particles{
+      fluidity::ContactFaceParticle3D{1, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{2, 9, 4, 0.25, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{3, 11, 6, 1, {2, 0, 0}},
+      fluidity::ContactFaceParticle3D{4, 13, 1, 1, {9, 0, 0}},
+  };
+  const auto scattered = fluidity::ResolveContactFaceParticles3D(particles, 9, 11, {1, 0, 0}, 0.25);
+  if (!scattered.ok() || scattered->velocity_deltas.size() != particles.size()) {
+    return false;
+  }
+  const auto& deltas = scattered->velocity_deltas;
+  const double impulse_x = 2 * deltas[0].x + 4 * deltas[1].x;
+  const double impulse_y = 2 * deltas[0].y + 4 * deltas[1].y;
+  if (std::abs(impulse_x - 6) > 1e-12 || std::abs(impulse_y + 1.5) > 1e-12
+      || std::abs(impulse_x + 6 * deltas[2].x) > 1e-12 || std::abs(impulse_y + 6 * deltas[2].y) > 1e-12
+      || deltas[3].x != 0 || deltas[3].y != 0) {
+    return false;
+  }
+  auto invalid = particles;
+  invalid.back().particle_id = 3;
+  return !fluidity::ResolveContactFaceParticles3D(invalid, 9, 11, {1, 0, 0}, 0.25).ok();
+}
+
 bool TestPlasticCheckpointHandoff() {
   const BlockIndex3D block{0, 0, 0};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
@@ -689,9 +713,9 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestPlasticCheckpointHandoff() || !TestSandSurfaceFit() || !TestWallImpulseBudget()
-      || !TestStoredVelocityResidual() || !TestStoredResidualMomentum() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit()
+      || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
+      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

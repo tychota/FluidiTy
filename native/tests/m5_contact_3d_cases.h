@@ -87,6 +87,11 @@ FLUIDITY_HD inline int CheckContactCases() {
   if (!interface_face.ResolvePair(11, 9, {-1, 0, 0}, 0.25, result) || !Near(result.impulse_on_first.x, 0)) {
     return 23;
   }
+  Vec3 delta{};
+  if (!ScatterContactFaceImpulse3D({6, -1.5, 0}, 0.25, 2, delta) || !Near(delta.x, 0.75) || !Near(delta.y, -0.1875)
+      || ScatterContactFaceImpulse3D({6, -1.5, 0}, 0.25, 0, delta) || !Near(delta.x, 0.75)) {
+    return 24;
+  }
   return 0;
 }
 
