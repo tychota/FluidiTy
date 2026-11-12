@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -19,6 +21,129 @@ namespace {
 bool Safe(const SurfaceMetrics3D& m) {
   return m.boundary_edges == 0 && m.nonmanifold_edges == 0 && m.nonmanifold_vertices == 0 && m.orientation_defects == 0
       && m.degenerate_triangles == 0 && m.self_intersections == 0;
+}
+std::vector<std::uint8_t> IncidentExteriorPhases(const SurfaceFrame3D& frame) {
+  std::vector<std::uint8_t> phases(frame.mesh.vertices.size());
+  for (std::size_t face = 0; face < frame.mesh.triangles.size(); ++face) {
+    const auto side = frame.phase_interface->exterior_sides[face];
+    for (const auto vertex : frame.mesh.triangles[face]) {
+      phases[vertex] |= static_cast<std::uint8_t>(1u << side);
+    }
+  }
+  return phases;
+}
+
+double PositionDistance(Vec3 a, Vec3 b) {
+  return std::hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+// Reuse indexed correspondence for unchanged sheets. When the sheet is
+// retessellated, only reciprocal nearest matches with the same incident
+// exterior phase signature can inherit identity. The caller still validates
+// both closed phase boundaries before publication.
+absl::StatusOr<std::vector<std::size_t>> MatchSharedSurfaceVertices(
+    const SurfaceFrame3D& previous,
+    const SurfaceFrame3D& current,
+    std::span<const std::uint8_t> current_phases,
+    double duration,
+    double cell_width
+) {
+  const auto& old = previous.mesh.vertices;
+  const auto& now = current.mesh.vertices;
+  std::vector<std::size_t> matches(now.size(), SIZE_MAX);
+  const auto& old_sheet = *previous.phase_interface;
+  const auto& sheet = *current.phase_interface;
+  if (old_sheet.phase_a != sheet.phase_a || old_sheet.phase_b != sheet.phase_b) {
+    return absl::FailedPreconditionError("shared surface phase pair changed without lineage");
+  }
+  if (old.size() == now.size() && previous.mesh.triangles == current.mesh.triangles
+      && old_sheet.exterior_sides == sheet.exterior_sides && old_sheet.triangles == sheet.triangles) {
+    bool indexed = true;
+    for (std::size_t index = 0; index < now.size(); ++index) {
+      indexed &= PositionDistance(old[index].position, now[index].position) <= cell_width;
+    }
+    if (indexed) {
+      std::iota(matches.begin(), matches.end(), std::size_t{0});
+      return matches;
+    }
+  }
+  const auto old_phases = IncidentExteriorPhases(previous);
+  const double radius = 0.5 * cell_width;
+  const Vec3 origin = now.front().position;
+  using Bucket = std::array<std::int64_t, 3>;
+  const auto bucket = [&](Vec3 position) -> absl::StatusOr<Bucket> {
+    const std::array coordinates{
+        (position.x - origin.x) / radius,
+        (position.y - origin.y) / radius,
+        (position.z - origin.z) / radius,
+    };
+    Bucket result;
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      if (!std::isfinite(coordinates[axis]) || std::abs(coordinates[axis]) > 0x1p52) {
+        return absl::OutOfRangeError("shared surface correspondence bucket is unrepresentable");
+      }
+      result[axis] = static_cast<std::int64_t>(std::floor(coordinates[axis]));
+    }
+    return result;
+  };
+  std::map<Bucket, std::vector<std::size_t>> new_vertices;
+  for (std::size_t index = 0; index < now.size(); ++index) {
+    const auto key = bucket(now[index].position);
+    if (!key.ok()) {
+      return key.status();
+    }
+    new_vertices[*key].push_back(index);
+  }
+  std::vector<std::size_t> old_to_new(old.size(), SIZE_MAX);
+  std::vector<double> new_distances(now.size(), std::numeric_limits<double>::infinity());
+  for (std::size_t prior = 0; prior < old.size(); ++prior) {
+    const auto& vertex = old[prior];
+    const Vec3 predicted{
+        std::fma(duration, vertex.geometric_velocity.x, vertex.position.x),
+        std::fma(duration, vertex.geometric_velocity.y, vertex.position.y),
+        std::fma(duration, vertex.geometric_velocity.z, vertex.position.z),
+    };
+    const auto key = bucket(predicted);
+    if (!key.ok()) {
+      return key.status();
+    }
+    double nearest = std::numeric_limits<double>::infinity();
+    for (const auto x : {-1, 0, 1}) {
+      for (const auto y : {-1, 0, 1}) {
+        for (const auto z : {-1, 0, 1}) {
+          const auto candidates = new_vertices.find({(*key)[0] + x, (*key)[1] + y, (*key)[2] + z});
+          if (candidates == new_vertices.end()) {
+            continue;
+          }
+          for (const auto index : candidates->second) {
+            if (old_phases[prior] != current_phases[index]) {
+              continue;
+            }
+            const double distance = PositionDistance(predicted, now[index].position);
+            if (distance > radius) {
+              continue;
+            }
+            if (distance < nearest || (distance == nearest && index < old_to_new[prior])) {
+              nearest = distance;
+              old_to_new[prior] = index;
+            }
+            const auto incumbent = matches[index];
+            if (distance < new_distances[index]
+                || (distance == new_distances[index] && old[prior].id < old[incumbent].id)) {
+              new_distances[index] = distance;
+              matches[index] = prior;
+            }
+          }
+        }
+      }
+    }
+  }
+  for (std::size_t index = 0; index < matches.size(); ++index) {
+    if (matches[index] != SIZE_MAX && old_to_new[matches[index]] != index) {
+      matches[index] = SIZE_MAX;
+    }
+  }
+  return matches;
 }
 bool MatchesCavityBoundaries(const SurfaceMetrics3D& metrics, std::size_t cavity_count) {
   return metrics.positive_volume_components == 1 && metrics.negative_volume_components == cavity_count
@@ -609,13 +734,6 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     // Anchor at the lowest persistent particle ID so a common translation
     // does not itself create a different triangulation on a fixed grid.
     const auto anchor = std::ranges::min_element(endpoint.particles.values(), {}, &LiquidParticleState3D::id);
-    if (previous) {
-      const auto old_particles = source.samples.front().particles.values();
-      const auto old_anchor = std::ranges::min_element(old_particles, {}, &LiquidParticleState3D::id);
-      if (old_anchor == old_particles.end() || old_anchor->id != anchor->id) {
-        return absl::FailedPreconditionError("shared surface lattice anchor changed without seam lineage");
-      }
-    }
     lattice_anchor = {anchor->world_position.x, anchor->world_position.y, anchor->world_position.z};
   }
   std::array<std::size_t, 3> extent;
@@ -847,32 +965,6 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     return velocity;
   };
   if (phase_pair) {
-    if (previous) {
-      const auto& old_sheet = *previous->phase_interface;
-      const auto& sheet = *result.frame.phase_interface;
-      if (previous->mesh.triangles != raw_mesh->triangles || previous->mesh.vertices.size() != raw_mesh->vertices.size()
-          || old_sheet.phase_a != sheet.phase_a || old_sheet.phase_b != sheet.phase_b
-          || old_sheet.exterior_sides != sheet.exterior_sides || old_sheet.triangles != sheet.triangles) {
-        return absl::FailedPreconditionError("shared surface connectivity change requires phase seam tracking");
-      }
-      raw_mesh->next_id = previous->mesh.next_id;
-      const double duration = source.last_clock.time - source.first_clock.time;
-      for (std::size_t index = 0; index < raw_mesh->vertices.size(); ++index) {
-        auto& vertex = raw_mesh->vertices[index];
-        const auto& old_vertex = previous->mesh.vertices[index];
-        const Vec3 displacement{
-            vertex.position.x - old_vertex.position.x,
-            vertex.position.y - old_vertex.position.y,
-            vertex.position.z - old_vertex.position.z,
-        };
-        if (std::hypot(displacement.x, displacement.y, displacement.z) > cell_width_m) {
-          return absl::FailedPreconditionError("shared surface identity moved outside its correspondence neighborhood");
-        }
-        vertex.id = old_vertex.id;
-        vertex.age_seconds = old_vertex.age_seconds + duration;
-      }
-      result.retained_ids = raw_mesh->vertices.size();
-    }
     result.frame.mesh = std::move(*raw_mesh);
   } else if (previous != nullptr) {
     const auto metrics = MeasureSurfaceMesh3D(previous->mesh);
@@ -969,12 +1061,32 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   result.corrected_metrics = *corrected;
   result.frame.volumes.push_back({component, material_volume, raw_metrics->signed_volume, corrected->signed_volume});
   std::vector<std::uint8_t> incident_phases;
+  std::vector<std::size_t> shared_matches;
   if (result.frame.phase_interface) {
-    incident_phases.resize(result.frame.mesh.vertices.size());
-    for (std::size_t face = 0; face < result.frame.mesh.triangles.size(); ++face) {
-      const auto side = result.frame.phase_interface->exterior_sides[face];
-      for (const auto vertex : result.frame.mesh.triangles[face]) {
-        incident_phases[vertex] |= static_cast<std::uint8_t>(1u << side);
+    incident_phases = IncidentExteriorPhases(result.frame);
+    if (previous) {
+      const double duration = source.last_clock.time - source.first_clock.time;
+      auto matches = MatchSharedSurfaceVertices(*previous, result.frame, incident_phases, duration, cell_width_m);
+      if (!matches.ok()) {
+        return matches.status();
+      }
+      shared_matches = std::move(*matches);
+      result.frame.mesh.next_id = previous->mesh.next_id;
+      for (std::size_t index = 0; index < shared_matches.size(); ++index) {
+        auto& vertex = result.frame.mesh.vertices[index];
+        const auto prior = shared_matches[index];
+        if (prior == SIZE_MAX) {
+          if (result.frame.mesh.next_id == UINT64_MAX) {
+            return absl::OutOfRangeError("shared surface vertex identity exhausted");
+          }
+          vertex.id = result.frame.mesh.next_id++;
+          continue;
+        }
+        const auto& old_vertex = previous->mesh.vertices[prior];
+        vertex.id = old_vertex.id;
+        vertex.age_seconds = old_vertex.age_seconds + duration;
+        vertex.parent_id = old_vertex.parent_id;
+        ++result.retained_ids;
       }
     }
   }
@@ -1007,8 +1119,9 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
         return composition;
       }
     }
-    if (previous != nullptr) {
-      const auto original = previous->mesh.vertices[index].position;
+    const auto prior = shared_matches.empty() ? index : shared_matches[index];
+    if (previous != nullptr && prior != SIZE_MAX) {
+      const auto original = previous->mesh.vertices[prior].position;
       const double duration = source.last_clock.time - source.first_clock.time;
       vertex.geometric_velocity = {
           (vertex.position.x - original.x) / duration,

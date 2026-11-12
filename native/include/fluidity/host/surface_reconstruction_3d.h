@@ -40,7 +40,10 @@ struct SurfaceReconstructionResult3D {
 // missing samples. Records field discrepancy rather than certifying it.
 // Seed requires one zero-clock sample and no predecessor. Later intervals must
 // match the supplied checked SurfaceFrame clock and preserve raw component count
-// and Euler characteristic. Moving obstacles and multi-component tracking or repair
+// and Euler characteristic. Two-phase sheets may be retessellated with
+// reciprocal correspondence within half a source cell width and identical
+// incident phase labels. Unmatched exterior vertices receive new IDs.
+// Moving obstacles and multi-component tracking or repair
 // return Unimplemented/FailedPrecondition until their repair adapters qualify.
 // Missing support propagates; volume or unsafe geometry failure publishes no
 // result. Inputs are borrowed and never modified. At most 65 source samples and

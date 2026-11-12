@@ -1,4 +1,5 @@
 #include <cmath>
+#include <set>
 
 #include "fluidity/host/surface_reconstruction_3d.h"
 #include "gtest/gtest.h"
@@ -129,6 +130,41 @@ TEST(SurfaceReconstruction3D, PublishesSharedSheetFromTwoParticlePhases) {
     EXPECT_EQ(vertex.id, reconstructed->frame.mesh.vertices[index].id);
     EXPECT_NEAR(vertex.geometric_velocity.x, 0.24, 1e-8);
   }
+
+  seed.particles[1].world_velocity.x += 0.75;
+  auto deforming = LiquidSubstepScheduler3D::Create(seed, scene, step);
+  ASSERT_TRUE(deforming.ok()) << deforming.status();
+  auto deformation_capture = MotionCapture3D::Create(deforming->committed(), 1.0 / 24, 16);
+  ASSERT_TRUE(deformation_capture.ok()) << deformation_capture.status();
+  auto deformation_observer = observer;
+  deformation_observer.context = &*deformation_capture;
+  const auto deformed_step = deforming->AdvanceFrame(1.0 / 24, deformation_observer);
+  ASSERT_TRUE(deformed_step.ok()) << deformed_step;
+  const auto deformed_bytes = deformation_capture->Finish(deforming->committed());
+  ASSERT_TRUE(deformed_bytes.ok()) << deformed_bytes.status();
+  const auto deformed_source = DecodeMotionFrame3D(deformed_bytes->values());
+  ASSERT_TRUE(deformed_source.ok()) << deformed_source.status();
+  const auto deformed = ReconstructSurfaceFrame3D(*deformed_source, scene, step, &reconstructed->frame, options);
+  ASSERT_TRUE(deformed.ok()) << deformed.status();
+  ASSERT_TRUE(deformed->frame.phase_interface);
+  EXPECT_NE(deformed->frame.mesh.triangles, reconstructed->frame.mesh.triangles);
+  EXPECT_GT(deformed->retained_ids, 0);
+  EXPECT_LT(deformed->retained_ids, deformed->frame.mesh.vertices.size());
+  std::set<std::uint64_t> ids;
+  for (const auto& vertex : deformed->frame.mesh.vertices) {
+    EXPECT_TRUE(ids.insert(vertex.id).second);
+    if (vertex.id >= reconstructed->frame.mesh.next_id) {
+      EXPECT_DOUBLE_EQ(vertex.age_seconds, 0);
+      EXPECT_DOUBLE_EQ(vertex.geometric_velocity.x, 0);
+    }
+  }
+  const auto encoded_deformation = EncodeSurfaceFrame3D(deformed->frame);
+  ASSERT_TRUE(encoded_deformation.ok()) << encoded_deformation.status();
+  const auto replayed = ReconstructSurfaceFrame3D(*deformed_source, scene, step, &reconstructed->frame, options);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  const auto replayed_bytes = EncodeSurfaceFrame3D(replayed->frame);
+  ASSERT_TRUE(replayed_bytes.ok()) << replayed_bytes.status();
+  EXPECT_TRUE(std::ranges::equal(replayed_bytes->values(), encoded_deformation->values()));
 }
 TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
   constexpr int kWidth = 8;

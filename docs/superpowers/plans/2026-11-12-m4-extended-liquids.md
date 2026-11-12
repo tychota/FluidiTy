@@ -713,3 +713,11 @@ This fixture uses the full-cell planar tank path. Its phase interaction and coef
 ## Viscosity scratch allocation regression
 
 The full Debug suite at a47d8a0 caught one allocation/free on the inviscid attempt path. MSVC checked iterators allocate a proxy even for an empty vector. The scheduler now reserves constituent viscosity records during construction and transactional growth, includes them in its staging byte budget and borrows a span during the attempt. Legacy scenes reserve no coefficient records. The four failed allocation tests, the constituent and planar immiscible viscosity cases, and the workspace filter passed in the 75-case rerun. Receipts use out/m4-viscosity-scratch-cpu and the original failures remain in out/m4-a47d8a0-cpu-tests.log.
+
+## Shared-surface retessellation receipt
+
+The production Mesh path can now rebuild a shared phase sheet when its triangle connectivity changes. After volume correction it matches predicted old vertices to reciprocal nearest new vertices within half a source cell width and with the same incident exterior phase labels. Matches retain IDs and age, and unmatched vertices receive fresh IDs with zero initial geometric velocity. The cache still checks closure and intersection for both phase regions. The unchanged-connectivity path retains the previous indexed correspondence for bounded motion.
+
+The accepted CPU deformation fixture changed the oil velocity by 0.75 m/s. The next Mesh frame changed connectivity, retained some exterior IDs, allocated fresh IDs for the other vertices, and encoded successfully with a valid shared sheet. Reconstruction replay from the same predecessor and accepted motion produced identical bytes. The translation fixture still retained all IDs and measured 0.24 m/s. Six focused CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'PublishesSharedSheet|SurfaceCache3D|PartitionsTwoClosed|EvaluatesAndCachesMixed'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-retessellated-phase-replay. The previous 642579f Debug CPU build also passed all 736 cases.
+
+This qualifies retessellation of a continuing phase pair. Phase appearance/disappearance, changes in the number of connected liquid components, and curved cut-cell and adaptive viscous traction require further evidence.
