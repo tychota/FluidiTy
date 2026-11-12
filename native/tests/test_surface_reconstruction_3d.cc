@@ -187,6 +187,27 @@ TEST(SurfaceReconstruction3D, PublishesSharedSheetFromTwoParticlePhases) {
   const auto replayed_bytes = EncodeSurfaceFrame3D(replayed->frame);
   ASSERT_TRUE(replayed_bytes.ok()) << replayed_bytes.status();
   EXPECT_TRUE(std::ranges::equal(replayed_bytes->values(), encoded_deformation->values()));
+  // The same exterior can enclose an extra oil pocket in the predecessor.
+  // Its disappearance requires a phase event even though both frames close.
+  auto pocket_predecessor = reconstructed->frame;
+  auto& pocket_sheet = *pocket_predecessor.phase_interface;
+  const auto first_pocket_vertex =
+      static_cast<std::uint32_t>(pocket_predecessor.mesh.vertices.size() + pocket_sheet.interior_positions.size());
+  pocket_sheet.interior_positions.insert(
+      pocket_sheet.interior_positions.end(),
+      {{2.35, 2.43, 2.44}, {2.39, 2.43, 2.44}, {2.35, 2.47, 2.44}, {2.35, 2.43, 2.48}}
+  );
+  for (auto triangle : std::array<std::array<std::uint32_t, 3>, 4>{{{0, 1, 2}, {0, 3, 1}, {0, 2, 3}, {1, 3, 2}}}) {
+    for (auto& vertex : triangle) {
+      vertex += first_pocket_vertex;
+    }
+    pocket_sheet.triangles.push_back(triangle);
+  }
+  pocket_sheet.side_compositions.clear();
+  const auto encoded_pocket = EncodeSurfaceFrame3D(pocket_predecessor);
+  ASSERT_TRUE(encoded_pocket.ok()) << encoded_pocket.status();
+  const auto lost_pocket = ReconstructSurfaceFrame3D(*moving, scene, step, &pocket_predecessor, options);
+  EXPECT_EQ(lost_pocket.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
   constexpr int kWidth = 8;

@@ -15,6 +15,7 @@
 #include "fluidity/host/surface_material_components_3d.h"
 #include "liquid_eos_sensor_3d.h"
 #include "liquid_substep_3d_internal.h"
+#include "surface_cache_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -45,8 +46,10 @@ absl::StatusOr<std::vector<std::size_t>> MatchSharedSurfaceVertices(
     const SurfaceFrame3D& previous,
     const SurfaceFrame3D& current,
     std::span<const std::uint8_t> current_phases,
+    const SurfaceMetrics3D& current_exterior,
     double duration,
-    double cell_width
+    double cell_width,
+    SurfaceCacheLimits3D limits
 ) {
   const auto& old = previous.mesh.vertices;
   const auto& now = current.mesh.vertices;
@@ -66,6 +69,11 @@ absl::StatusOr<std::vector<std::size_t>> MatchSharedSurfaceVertices(
       std::iota(matches.begin(), matches.end(), std::size_t{0});
       return matches;
     }
+  }
+  const auto topology =
+      surface_cache_internal::CheckSharedSurfaceTopology3D(previous, current, current_exterior, limits);
+  if (!topology.ok()) {
+    return topology;
   }
   const auto old_phases = IncidentExteriorPhases(previous);
   const double radius = 0.5 * cell_width;
@@ -1066,7 +1074,15 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     incident_phases = IncidentExteriorPhases(result.frame);
     if (previous) {
       const double duration = source.last_clock.time - source.first_clock.time;
-      auto matches = MatchSharedSurfaceVertices(*previous, result.frame, incident_phases, duration, cell_width_m);
+      auto matches = MatchSharedSurfaceVertices(
+          *previous,
+          result.frame,
+          incident_phases,
+          *corrected,
+          duration,
+          cell_width_m,
+          options.limits
+      );
       if (!matches.ok()) {
         return matches.status();
       }

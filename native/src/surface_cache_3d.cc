@@ -4,6 +4,7 @@
 #include <set>
 
 #include "liquid_cache_3d_internal.h"
+#include "surface_cache_3d_internal.h"
 #include "surface_frame_generated.h"
 
 namespace fluidity {
@@ -21,7 +22,11 @@ bool Safe(const SurfaceMetrics3D& m) {
   return m.boundary_edges == 0 && m.nonmanifold_edges == 0 && m.nonmanifold_vertices == 0 && m.orientation_defects == 0
       && m.degenerate_triangles == 0 && m.self_intersections == 0;
 }
-absl::Status ValidatePhaseInterface(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) {
+absl::Status ValidatePhaseInterface(
+    const SurfaceFrame3D& frame,
+    SurfaceCacheLimits3D limits,
+    std::array<SurfaceMetrics3D, 2>* measured_phases = nullptr
+) {
   if (!frame.phase_interface) {
     return absl::OkStatus();
   }
@@ -119,6 +124,9 @@ absl::Status ValidatePhaseInterface(const SurfaceFrame3D& frame, SurfaceCacheLim
     if (!Safe(*metrics) || !detail::Positive(metrics->signed_volume)) {
       return absl::InvalidArgumentError("shared surface phase is open, intersecting or incorrectly oriented");
     }
+    if (measured_phases != nullptr) {
+      (*measured_phases)[side] = *metrics;
+    }
   }
   return absl::OkStatus();
 }
@@ -193,6 +201,44 @@ absl::Status Validate(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) 
   return ValidatePhaseInterface(frame, limits);
 }
 }  // namespace
+
+absl::Status surface_cache_internal::CheckSharedSurfaceTopology3D(
+    const SurfaceFrame3D& previous,
+    const SurfaceFrame3D& current,
+    const SurfaceMetrics3D& current_exterior,
+    SurfaceCacheLimits3D limits
+) {
+  const auto same_topology = [](const SurfaceMetrics3D& first, const SurfaceMetrics3D& second) {
+    return first.components == second.components
+        && first.positive_volume_components == second.positive_volume_components
+        && first.negative_volume_components == second.negative_volume_components
+        && first.euler_characteristic == second.euler_characteristic;
+  };
+  const auto previous_exterior = MeasureSurfaceMesh3D(previous.mesh);
+  if (!previous_exterior.ok()) {
+    return previous_exterior.status();
+  }
+  if (!same_topology(*previous_exterior, current_exterior)) {
+    return absl::FailedPreconditionError("shared surface exterior topology change requires lineage");
+  }
+
+  std::array<SurfaceMetrics3D, 2> previous_phases;
+  const auto previous_status = ValidatePhaseInterface(previous, limits, &previous_phases);
+  if (!previous_status.ok()) {
+    return previous_status;
+  }
+  std::array<SurfaceMetrics3D, 2> current_phases;
+  const auto current_status = ValidatePhaseInterface(current, limits, &current_phases);
+  if (!current_status.ok()) {
+    return current_status;
+  }
+  for (std::size_t side = 0; side < previous_phases.size(); ++side) {
+    if (!same_topology(previous_phases[side], current_phases[side])) {
+      return absl::FailedPreconditionError("shared surface phase topology change requires lineage");
+    }
+  }
+  return absl::OkStatus();
+}
 
 absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) {
   const auto status = Validate(frame, limits);
