@@ -3197,3 +3197,33 @@ foreach ($grid in 'fine', 'coarse') {
   }
 }
 ```
+
+### Swept deformation split with wall-face traction
+
+Use the zero-phase Euler reference with wall-face traction and
+motion-aware donor reconstruction. Enable the existing granular
+deformation split on the compatible floor. The incoming gradient
+advances to the sweep's impact fraction, followed by the
+Coulomb-projected gradient for the remaining interval. The stored
+velocity and affine update are unchanged.
+
+| Native case at 3 s | Full reflected gradient angle / radius | Swept split angle / radius |
+|---|---|---|
+| Coarse | 35.932364° / 0.178563 m | 21.358074° / 0.323951 m |
+| Coarse half-step | 41.107594° / 0.153975 m | 39.898691° / 0.160444 m |
+| Fine | 29.704868° / 0.200837 m | 25.393760° / 0.206636 m |
+| Fine half-step | 34.345649° / 0.179405 m | 31.742018° / 0.176048 m |
+
+The nominal cases spread further and fall below the angle range.
+The fine half-step stays in the angular window and exceeds the
+radius bound. The reported cut-stress pairing still tests the
+reflected gather and transpose. It does not account for the
+subsequent projected strain increment. The temporary source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-split-deformation-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
