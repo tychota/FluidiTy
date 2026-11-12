@@ -425,7 +425,7 @@ TEST(LiquidSubstep3D, GradedExplicitQuadraticRejectsChangedProjectedCarrier) {
   EXPECT_TRUE(absl::IsFailedPrecondition(owner->Gather(*trial, &**prepared)));
 }
 
-TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
+TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitAndMergeWithFullHalo) {
   LiquidState3D state;
   state.geometry.cell_width = 0.5;
   LiquidSceneInputs3D scene;
@@ -519,7 +519,7 @@ TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
       parent_id
   );
   EXPECT_EQ(unsupported.status().code(), absl::StatusCode::kFailedPrecondition);
-  const auto staged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+  auto staged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
       state,
       scene,
       kCapacities,
@@ -541,6 +541,62 @@ TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
   const auto after = EncodeLiquidState3D(state);
   ASSERT_TRUE(after.ok()) << after.status();
   EXPECT_TRUE(std::ranges::equal(before->values(), after->values()));
+
+  // A strict F4 covariance witness uses dyadic child centers. The symmetric
+  // F3 offsets alone do not certify a positive covariance gap on reversal.
+  std::array<std::uint64_t, 8> child_ids{};
+  for (std::size_t ordinal = 0; ordinal < child_ids.size(); ++ordinal) {
+    auto& child = staged->particles[parent_id - 1 + ordinal];
+    child_ids[ordinal] = child.id;
+    child.world_position = {
+        (ordinal & 1u) == 0 ? 0.25 : 0.75,
+        (ordinal & 2u) == 0 ? 0.25 : 0.75,
+        (ordinal & 4u) == 0 ? 0.25 : 0.75,
+    };
+  }
+  const auto fine_before = EncodeLiquidState3D(*staged);
+  ASSERT_TRUE(fine_before.ok()) << fine_before.status();
+  const auto missing_merge_halo = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      std::span(&kCenter, 1),
+      kCenter,
+      child_ids
+  );
+  EXPECT_EQ(missing_merge_halo.status().code(), absl::StatusCode::kFailedPrecondition);
+  auto repeated_ids = child_ids;
+  repeated_ids.back() = repeated_ids.front();
+  const auto duplicate = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      requested,
+      kCenter,
+      repeated_ids
+  );
+  EXPECT_EQ(duplicate.status().code(), absl::StatusCode::kInvalidArgument);
+  std::ranges::reverse(child_ids);
+  const auto merged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      requested,
+      kCenter,
+      child_ids
+  );
+  ASSERT_TRUE(merged.ok()) << merged.status();
+  EXPECT_EQ(merged->adaptive_cells.size(), state.adaptive_cells.size());
+  EXPECT_EQ(merged->particles.size(), state.particles.size());
+  EXPECT_EQ(merged->next_particle_id, staged->next_particle_id + 1);
+  auto expected_parent = state.particles[parent_id - 1];
+  expected_parent.id = staged->next_particle_id;
+  EXPECT_EQ(merged->particles[parent_id - 1], expected_parent);
+  EXPECT_EQ(merged->adaptive_cells, state.adaptive_cells);
+  EXPECT_EQ(merged->adaptive_faces, state.adaptive_faces);
+  const auto fine_after = EncodeLiquidState3D(*staged);
+  ASSERT_TRUE(fine_after.ok()) << fine_after.status();
+  EXPECT_TRUE(std::ranges::equal(fine_before->values(), fine_after->values()));
 }
 
 TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
@@ -724,6 +780,163 @@ TEST(LiquidSubstep3D, RejectsEulerianDrainThatWouldInvalidateRestart) {
   ASSERT_TRUE(rejected.ok()) << rejected.status();
   EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
   ExpectIdenticalSerializedState(state, scheduler->committed());
+}
+
+void PopulateGradedPhysicalTrialFixture(
+    LiquidState3D& state,
+    LiquidSceneInputs3D& scene,
+    double wall_speed_m_per_s = 0.03125
+) {
+  ASSERT_TRUE(
+      test::PopulateGradedPhysicalHalfspaceFixture3D(
+          state,
+          scene,
+          {.unit_normal = {1, 0, 0}, .start_plane_coordinate = 0.125, .wall_velocity = {wall_speed_m_per_s, 0, 0}}
+      )
+          .ok()
+  );
+}
+
+TEST(LiquidSubstep3D, ReappliesGradedPhysicalGeometryAcrossRollbackAndFreshReplay) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_NO_FATAL_FAILURE(PopulateGradedPhysicalTrialFixture(state, scene));
+  LiquidStepOptions3D options;
+  options.capacities = {5, 0, 5, state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double frame_duration_s = 0.125;
+  EXPECT_EQ(scheduler->AdvanceFrame(frame_duration_s).code(), absl::StatusCode::kFailedPrecondition);
+  ASSERT_TRUE(scheduler->BeginFrame(frame_duration_s).ok());
+  EXPECT_EQ(scheduler->Attempt(frame_duration_s).status().code(), absl::StatusCode::kFailedPrecondition);
+  bool fail_once = true;
+  scheduler->SetStageFaultHookForTesting({
+      .context = &fail_once,
+      .before_stage =
+          [](void* context, LiquidPhysicalStage3D stage, double) {
+            if (stage == LiquidPhysicalStage3D::kParticleUpdate && *static_cast<bool*>(context)) {
+              *static_cast<bool*>(context) = false;
+              return absl::AbortedError("injected after physical pressure publication to trial");
+            }
+            return absl::OkStatus();
+          },
+  });
+  const auto& wall = std::get<TranslatingHalfspace3D>(scene.obstacle);
+  std::array<double, 5> source_divergences{};
+  std::vector<std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures;
+  auto attempt = [&](LiquidSubstepScheduler3D& run, double duration_s) {
+    const auto clock = run.committed().clock;
+    const double wall_x = wall.start_plane_coordinate + clock.time * wall.wall_velocity.x;
+    source_divergences[0] = -wall.wall_velocity.x / (1.0 - wall_x);
+    return run.AttemptWithAdaptivePhysicalGeometry(
+        duration_s,
+        {
+            .accepted_clock = clock,
+            .target_divergences_s_inv = source_divergences,
+            .exterior_pressures = exterior_pressures,
+        }
+    );
+  };
+
+  const auto rejected = attempt(*scheduler, frame_duration_s);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_EQ(rejected->retry_duration, frame_duration_s / 2);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kParticleUpdate);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  const auto first = attempt(*scheduler, *rejected->retry_duration);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_EQ(first->disposition, LiquidAttemptDisposition3D::kAccepted)
+      << static_cast<int>(scheduler->diagnostics().failure_code);
+  ASSERT_TRUE(scheduler->diagnostics().accepted_measurement.has_value());
+  EXPECT_NEAR(scheduler->diagnostics().accepted_measurement->step_start_pressure_cell_volume_m3, 1.375, 1e-14);
+  EXPECT_NEAR(scheduler->diagnostics().accepted_measurement->pressure_rhs_l2_m3_per_s, 0, 1e-14);
+  EXPECT_EQ(scheduler->Attempt(*rejected->retry_duration).status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(
+      scheduler
+          ->AttemptWithAdaptivePhysicalGeometry(
+              *rejected->retry_duration,
+              {.accepted_clock = state.clock, .target_divergences_s_inv = source_divergences}
+          )
+          .status()
+          .code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  const auto second = attempt(*scheduler, *rejected->retry_duration);
+  ASSERT_TRUE(second.ok()) << second.status();
+  ASSERT_EQ(second->disposition, LiquidAttemptDisposition3D::kAccepted)
+      << static_cast<int>(scheduler->diagnostics().failure_code);
+  ASSERT_TRUE(scheduler->diagnostics().accepted_measurement.has_value());
+  EXPECT_NEAR(
+      scheduler->diagnostics().accepted_measurement->step_start_pressure_cell_volume_m3,
+      1.375 - wall.wall_velocity.x * *rejected->retry_duration,
+      1e-14
+  );
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+
+  LiquidResumeMetadata3D resume{.capacities = options.capacities};
+  resume.resolved_fingerprint[0] = 1;
+  resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
+  const auto bytes = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto checkpoint = DecodeLiquidCheckpoint3D(bytes->values());
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  auto restored = LiquidSubstepScheduler3D::Create(checkpoint->state, scene, options);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : checkpoint->state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, checkpoint->state.geometry.cell_width);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  const auto outlet = std::ranges::find_if(ownership->exterior_faces, [](const AdaptiveMacExteriorFace3D& face) {
+    return face.face_index.axis == FaceNormalAxis::kX && face.cell_is_tail;
+  });
+  ASSERT_NE(outlet, ownership->exterior_faces.end());
+  exterior_pressures.resize(checkpoint->state.adaptive_faces.size());
+  exterior_pressures[outlet->face_slot] =
+      LiquidAdaptivePhysicalExteriorPressure3D{.pressure_pa = 0.5, .distance_m = 0.25};
+  for (auto* run : {&*scheduler, &*restored}) {
+    ASSERT_TRUE(run->BeginFrame(2 * frame_duration_s).ok());
+    EXPECT_EQ(run->Attempt(frame_duration_s).status().code(), absl::StatusCode::kFailedPrecondition);
+    const auto continued = attempt(*run, frame_duration_s);
+    ASSERT_TRUE(continued.ok()) << continued.status();
+    ASSERT_EQ(continued->disposition, LiquidAttemptDisposition3D::kAccepted)
+        << static_cast<int>(run->diagnostics().failure_code);
+    EXPECT_NEAR(run->committed().adaptive_cells[0].previous_pressure, 0.5, 2e-5);
+    ASSERT_TRUE(run->FinishFrame().ok());
+  }
+  ExpectIdenticalSerializedState(scheduler->committed(), restored->committed());
+}
+
+TEST(LiquidSubstep3D, RefusesGradedPhysicalTopologyChangeAndIncompatibleSource) {
+  for (const double wall_speed : {0.03125, 8.0}) {
+    LiquidState3D state;
+    LiquidSceneInputs3D scene;
+    ASSERT_NO_FATAL_FAILURE(PopulateGradedPhysicalTrialFixture(state, scene, wall_speed));
+    LiquidStepOptions3D options;
+    options.capacities = {5, 0, 5, state.adaptive_faces.size(), 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.125).ok());
+    const std::array<double, 5> no_source{};
+    const auto attempt = scheduler->AttemptWithAdaptivePhysicalGeometry(
+        0.125,
+        {.accepted_clock = state.clock, .target_divergences_s_inv = no_source}
+    );
+    if (wall_speed == 8.0) {
+      EXPECT_EQ(attempt.status().code(), absl::StatusCode::kFailedPrecondition);
+    } else {
+      ASSERT_TRUE(attempt.ok()) << attempt.status();
+      EXPECT_EQ(attempt->disposition, LiquidAttemptDisposition3D::kFatal);
+      EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+      EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+    }
+    ExpectIdenticalSerializedState(state, scheduler->committed());
+  }
 }
 
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {

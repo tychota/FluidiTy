@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -289,16 +290,160 @@ AdvanceRefinementClosure(LiquidSubstepScheduler3D& scheduler, absl::FunctionRef<
   return scheduler.FinishFrame();
 }
 
+constexpr TranslatingHalfspace3D kPhysicalReplayWall{
+    .unit_normal = {0, 1, 0},
+    .start_plane_coordinate = 0.125,
+    .wall_velocity = {0.015625, 0.03125, 0},
+};
+
+absl::Status AdvancePhysical(
+    LiquidSubstepScheduler3D& scheduler,
+    double frame_end,
+    bool first_frame,
+    absl::FunctionRef<absl::Status()> check_device_epoch
+) {
+  const auto started = scheduler.BeginFrame(frame_end);
+  if (!started.ok()) {
+    return started;
+  }
+  const auto initial_duration = frame_end - scheduler.committed().clock.time;
+  if (scheduler.Attempt(initial_duration).status().code() != absl::StatusCode::kFailedPrecondition) {
+    return absl::FailedPreconditionError("Physical replay allowed an implicit attempt");
+  }
+  const auto& state = scheduler.committed();
+  std::vector<AdaptiveMacCellKey3D> keys;
+  keys.reserve(state.adaptive_cells.size());
+  for (const auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  std::vector<std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior;
+  std::vector<std::size_t> cut_slots;
+  if (!first_frame) {
+    const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+    if (!ownership.ok()) {
+      return ownership.status();
+    }
+    exterior.resize(state.adaptive_faces.size());
+    std::size_t outlet_count = 0;
+    for (const auto& face : ownership->exterior_faces) {
+      const auto index = face.face_index.lattice_index;
+      if (face.face_index.axis == FaceNormalAxis::kX && face.cell_is_tail && index.y == index.z) {
+        const double pressure_pa = index.y == 0 ? 0.5 : -0.5;
+        exterior[face.face_slot] = LiquidAdaptivePhysicalExteriorPressure3D{
+            .pressure_pa = pressure_pa,
+            .distance_m = 0.25,
+        };
+        ++outlet_count;
+      }
+    }
+    if (outlet_count != 2) {
+      return absl::FailedPreconditionError("Physical replay lacks its two canonical outlets");
+    }
+    for (std::size_t ordinal = 0; ordinal < topology->interior_faces().size(); ++ordinal) {
+      const auto& face = topology->interior_faces()[ordinal];
+      if (face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.y == 0) {
+        cut_slots.push_back(ownership->interior_face_slots[ordinal]);
+      }
+    }
+  }
+  const auto wall_coordinate = [](double time) {
+    return kPhysicalReplayWall.start_plane_coordinate + time * kPhysicalReplayWall.wall_velocity.y;
+  };
+  std::vector<double> sources(topology->cells().size());
+  const auto attempt = [&](double duration) {
+    const auto clock = scheduler.committed().clock;
+    const double wall_y = wall_coordinate(clock.time);
+    // The normal wall sweeps the bottom of each incident leaf. Tangential
+    // wall motion also gives equal and opposite flux on the cut x subfaces.
+    for (std::size_t cell = 0; cell < sources.size(); ++cell) {
+      const auto& leaf = topology->cells()[cell];
+      if (leaf.key.lower_corner.y == 0) {
+        sources[cell] = -kPhysicalReplayWall.wall_velocity.y / (leaf.cell_width - wall_y);
+      }
+    }
+    return scheduler.AttemptWithAdaptivePhysicalGeometry(
+        duration,
+        {.accepted_clock = clock, .target_divergences_s_inv = sources, .exterior_pressures = exterior}
+    );
+  };
+
+  if (first_frame) {
+    const auto before = EncodeLiquidState3D(scheduler.committed());
+    if (!before.ok()) {
+      return before.status();
+    }
+    scheduler.SetStageFaultHookForTesting({
+        .before_stage =
+            [](void*, LiquidPhysicalStage3D stage, double) {
+              return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject physical trial at acceptance")
+                                                             : absl::OkStatus();
+            },
+    });
+    const auto rejected = attempt(initial_duration);
+    scheduler.SetStageFaultHookForTesting({});
+    if (!rejected.ok()) {
+      return rejected.status();
+    }
+    const auto after = EncodeLiquidState3D(scheduler.committed());
+    if (!after.ok()) {
+      return after.status();
+    }
+    if (rejected->disposition != LiquidAttemptDisposition3D::kRetryDt || !rejected->retry_duration
+        || scheduler.diagnostics().failed_stage != LiquidPhysicalStage3D::kAccept
+        || !std::ranges::equal(before->values(), after->values())) {
+      return absl::FailedPreconditionError("Rejected physical trial changed the committed checkpoint");
+    }
+    const auto checked = check_device_epoch();
+    if (!checked.ok()) {
+      return checked;
+    }
+    const auto retried = attempt(*rejected->retry_duration);
+    if (!retried.ok()) {
+      return retried.status();
+    }
+    if (retried->disposition != LiquidAttemptDisposition3D::kAccepted) {
+      return absl::Status(scheduler.diagnostics().failure_code, "Physical replay retry was rejected");
+    }
+  }
+  const double step_start = scheduler.committed().clock.time;
+  const auto accepted = attempt(frame_end - step_start);
+  if (!accepted.ok()) {
+    return accepted.status();
+  }
+  if (accepted->disposition != LiquidAttemptDisposition3D::kAccepted) {
+    return absl::Status(scheduler.diagnostics().failure_code, "Physical replay continuation was rejected");
+  }
+  const auto& measurement = scheduler.diagnostics().accepted_measurement;
+  const double expected_volume_m3 = 1.5 * (1 - wall_coordinate(step_start));
+  if (!measurement || std::abs(measurement->step_start_pressure_cell_volume_m3 - expected_volume_m3) > 1e-13) {
+    return absl::FailedPreconditionError("Physical replay did not use the measured pressure volume");
+  }
+  if (!first_frame && std::ranges::none_of(cut_slots, [&](std::size_t slot) {
+        return std::abs(scheduler.committed().adaptive_faces[slot].carrier_velocity) > 1e-6;
+      })) {
+    return absl::FailedPreconditionError("Physical replay did not drive flow through a cut coarse/fine subface");
+  }
+  return scheduler.FinishFrame();
+}
+
 absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
+  const bool physical = scenario == "physical";
   const bool width = scenario == "width";
   const bool batch = scenario == "closure";
-  const auto family_scenario = band || width || batch ? std::string_view{} : scenario;
+  const auto family_scenario = band || width || batch || physical ? std::string_view{} : scenario;
   const auto capacities = batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored = [&] {
+    if (physical) {
+      return test::PopulateGradedPhysicalHalfspaceFixture3D(state, scene, kPhysicalReplayWall);
+    }
     if (batch) {
       return test::PopulateGradedRefinementClosureFixture3D(state, scene, true);
     }
@@ -331,7 +476,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_tag = batch ? 19 : (band ? 5 : (width ? 13 : 12));
+  const std::uint8_t fixture_tag = physical ? 23 : (batch ? 19 : (band ? 5 : (width ? 13 : 12)));
   const std::uint8_t fixture_identity[] = {1, 3, fixture_tag};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
@@ -351,7 +496,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells = batch ? 19 : (band ? 5 : 12);
+    const std::size_t expected_cells = batch ? 19 : (band || physical ? 5 : 12);
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
@@ -378,6 +523,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
     device = std::move(*created);
     operations = device->operations();
+    if (physical && (operations.project_adaptive_in_arena == nullptr || operations.project_adaptive != nullptr)) {
+      return absl::FailedPreconditionError("Physical replay requires CUDA adaptive arena projection");
+    }
   }
 #else
   if (backend_name != "cpu") {
@@ -442,7 +590,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
         return copied;
       }
       if (*readback != scheduler->committed()) {
-        return absl::DataLossError("device width state differs from the committed host epoch");
+        return absl::DataLossError("Device replay state differs from the committed host epoch");
       }
     }
 #endif
@@ -451,6 +599,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 
   if (mode != "resume") {
     const auto refined = [&] {
+      if (physical) {
+        return AdvancePhysical(*scheduler, 0.01, true, check_device_epoch);
+      }
       if (batch) {
         return AdvanceRefinementClosure(*scheduler, check_device_epoch);
       }
@@ -466,7 +617,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
     }
   }
-  if (width || batch) {
+  if (width || batch || physical) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -490,6 +641,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 
   const auto continued = [&] {
+    if (physical) {
+      return AdvancePhysical(*scheduler, 0.02, false, check_device_epoch);
+    }
     if (batch) {
       return scheduler->AdvanceFrame(0.02);
     }
@@ -501,7 +655,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!continued.ok()) {
     return continued;
   }
-  if (batch) {
+  if (batch || physical) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -529,7 +683,7 @@ int main(int argc, char** argv) {
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
-      && scenario != "width" && scenario != "closure") {
+      && scenario != "width" && scenario != "closure" && scenario != "physical") {
     return 2;
   }
   const std::string_view backend = argv[1];

@@ -281,6 +281,28 @@ inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, Liquid
   return ValidateLiquidState3D(state);
 }
 
+inline absl::Status PopulateGradedPhysicalHalfspaceFixture3D(
+    LiquidState3D& state,
+    LiquidSceneInputs3D& scene,
+    TranslatingHalfspace3D wall
+) {
+  const auto authored = PopulateGradedBandFixture3D(state, scene);
+  if (!authored.ok()) {
+    return authored;
+  }
+  scene.obstacle = wall;
+  for (std::size_t cell = 0; cell < state.adaptive_cells.size(); ++cell) {
+    auto& particle = state.particles[cell];
+    auto& inventory = state.adaptive_cells[cell].inventory;
+    particle.mass *= 0.5;
+    particle.reference_volume *= 0.5;
+    inventory.mass_kg = particle.mass;
+    inventory.reference_volume_m3 = particle.reference_volume;
+    inventory.current_volume_m3 = particle.reference_volume;
+  }
+  return ValidateLiquidState3D(state);
+}
+
 inline void SetGradedTankEos3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
   scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0};
   scene.ambient_pressure = 1.0;

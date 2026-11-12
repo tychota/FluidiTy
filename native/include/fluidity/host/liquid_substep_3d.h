@@ -29,7 +29,8 @@ struct LiquidParticleSphereUnion3D {
   double radius = 1;  // Positive world meters; min in stable trial particle order.
 };
 // World signed distance is y minus this fixed height in meters. The scheduler
-// requires an open tank with a strictly lower floor to bound pressure support.
+// uses an open tank with a strictly lower floor or an explicitly requested
+// graded translating-halfspace trial to bound pressure support.
 struct LiquidHorizontalPlaneSurface3D {
   double world_surface_height_y = 0;
 };
@@ -305,6 +306,21 @@ struct LiquidFloatingBoxAttempt3D {
   std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
+struct LiquidAdaptivePhysicalExteriorPressure3D {
+  double pressure_pa;  // Gauge pressure including any caller-supplied lift.
+  double distance_m;  // Positive pressure gradient distance.
+};
+
+// Borrowed for one synchronous attempt. The resolved scene supplies the
+// translating halfspace at time zero and the horizontal planar liquid surface.
+struct LiquidAdaptivePhysicalGeometryRequest3D {
+  LiquidClock3D accepted_clock;  // Must equal the current committed clock.
+  std::span<const double> target_divergences_s_inv;  // One independent source per canonical leaf.
+  // Empty seals all exteriors. Otherwise supply one optional entry per
+  // canonical global subface slot. Interior slots must be absent.
+  std::span<const std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures{};
+};
+
 // Width evidence for one accepted leaf and its candidate sibling family.
 struct LiquidAdaptiveWidthRequest3D {
   std::uint64_t accepted_epoch;
@@ -416,6 +432,18 @@ class LiquidSubstepScheduler3D {
   // trial. Rejection leaves both committed ownership versions unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveBandPlacement(double step_duration, const LiquidAdaptiveBandRequest3D& request);
+
+  // Attempt an admitted graded halfspace scene on its unchanged leaf layout.
+  // Every such attempt, including retries and restored continuations, requires
+  // a clock-bound request with canonical source and exterior fields.
+  // The wall pose is derived from the same resolved scene and accepted time.
+  // The geometry requires positive wet volume on every leaf at both interval
+  // endpoints. Unsupported activation, stale requests, and malformed fields
+  // fail without publishing any trial state. Geometry and an independent
+  // graded owner are allocated before the transaction enters its stages.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptivePhysicalGeometry(double step_duration, const LiquidAdaptivePhysicalGeometryRequest3D& request);
+
   // Request an ownership handoff before one physical trial. The caller
   // certifies full occupancy and a carrier at the previous accepted epoch.
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(
@@ -548,6 +576,7 @@ class LiquidSubstepScheduler3D {
   );
   struct SnowTrial;
   struct AdaptiveStateTrial;
+  struct AdaptivePhysicalTrial;
   struct AdaptiveWidthAgeTrial;
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
@@ -562,6 +591,7 @@ class LiquidSubstepScheduler3D {
       SnowTrial* snow = nullptr,
       AdaptiveStateTrial* adaptive_replacement = nullptr,
       const AdaptiveWidthAgeTrial* adaptive_age = nullptr,
+      AdaptivePhysicalTrial* adaptive_physical = nullptr,
       std::optional<std::uint64_t> quadratic_particle_id = std::nullopt
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(

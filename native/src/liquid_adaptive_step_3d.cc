@@ -11,6 +11,8 @@
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 #include "fluidity/host/liquid_eos.h"
+#include "graded_liquid_boundary_geometry_3d.h"
+#include "liquid_substep_3d_internal.h"
 #include "mac_deposit_3d_internal.h"
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_viscous_pressure_3d.h"
@@ -385,10 +387,18 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
 ) {
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
-  if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
-      || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
-      || options.ocean_boundary.has_value() || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
-    return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
+  const bool physical = std::holds_alternative<TranslatingHalfspace3D>(scene.obstacle);
+  const bool stationary_tank = tank != nullptr && tank->piston_velocity_x == 0;
+  if (plane == nullptr || (!physical && !stationary_tank) || scene.target_divergence != 0 || initial.next_cavity_id != 0
+      || options.whitewater_capture || !scene.sources.empty() || options.ocean_boundary.has_value()
+      || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
+    return absl::UnimplementedError("graded Simulate requires a conforming tank or explicit physical halfspace");
+  }
+  if (physical
+      && (options.motion_sample_intervals != 0 || scene.surface_tension != 0 || scene.dynamic_viscosity != 0
+          || scene.eos || !std::isinf(scene.bulk_modulus) || !scene.constituent_materials.empty()
+          || std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian))) {
+    return absl::UnimplementedError("graded physical halfspace requires implicit incompressible particle-owned liquid");
   }
   if (options.motion_sample_intervals != 0
       && (scene.surface_tension != 0 || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity
@@ -401,6 +411,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   }
   const auto phase_id = initial.particles[0].phase_id;
   for (const auto& particle : initial.particles.values()) {
+    if (physical && (particle.phase_id != 0 || particle.side_tag != 0)) {
+      return absl::UnimplementedError("graded physical halfspace requires side-zero implicit particles");
+    }
     if (particle.phase_id != phase_id) {
       return absl::UnimplementedError("graded tank requires one miscible phase");
     }
@@ -426,8 +439,8 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   if (!topology.ok()) {
     return topology.status();
   }
-  auto transfer =
-      GradedMacTransfer3D::Create(*topology, initial.geometry.world_origin, Vec3{tank->high_x, 0, tank->high_z});
+  const auto solid_upper = tank ? std::optional{Vec3{tank->high_x, 0, tank->high_z}} : std::nullopt;
+  auto transfer = GradedMacTransfer3D::Create(*topology, initial.geometry.world_origin, solid_upper);
   if (!transfer.ok()) {
     return transfer.status();
   }
@@ -481,9 +494,11 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
         std::fma(lower.y + lattice_width, finest_width, origin.y),
         std::fma(lower.z + lattice_width, finest_width, origin.z),
     };
-    if (world_lower.x < tank->start_low_x || world_upper.x > tank->high_x || world_lower.y < tank->floor_y
-        || world_upper.y > result.surface_height_ || world_lower.z < tank->low_z || world_upper.z > tank->high_z
-        || world_lower.x >= world_upper.x || world_lower.y >= world_upper.y || world_lower.z >= world_upper.z) {
+    const bool crosses_tank = tank
+        && (world_lower.x < tank->start_low_x || world_upper.x > tank->high_x || world_lower.y < tank->floor_y
+            || world_upper.y > result.surface_height_ || world_lower.z < tank->low_z || world_upper.z > tank->high_z);
+    if (crosses_tank || world_lower.x >= world_upper.x || world_lower.y >= world_upper.y
+        || world_lower.z >= world_upper.z) {
       return absl::InvalidArgumentError("graded leaf crosses a tank plane or has unrepresentable bounds");
     }
     if (IsEulerian(initial.adaptive_cells[cell]) && initial.adaptive_cells[cell].inventory.current_volume_m3 <= 0) {
@@ -515,6 +530,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     };
   }
   for (const auto& face : ownership->exterior_faces) {
+    if (physical) {
+      continue;
+    }
     const auto axis = face.face_index.axis;
     const double coordinate = NormalComponent(result.transfer_.faces()[face.face_slot].world_anchor, axis);
     if (IsWall(*tank, face, coordinate)) {
@@ -598,8 +616,12 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
 
 std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
   const std::size_t core_transport_bytes = core_transport_ ? core_transport_->reserved_bytes() : 0;
+  const std::size_t physical_trial_bytes = physical_trial_
+      ? physical_trial_->wet_open_faces.capacity() * sizeof(std::uint8_t)
+          + physical_trial_->end_fluid_volumes_m3.capacity() * sizeof(double)
+      : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
-      + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
+      + physical_trial_bytes + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
       + (strain_rows_.capacity() + unit_strain_rows_.capacity()) * sizeof(MacStrainRow3D)
       + leaf_strain_row_offsets_.capacity() * sizeof(std::size_t)
@@ -607,6 +629,106 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
       + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes;
+}
+
+absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
+    const LiquidState3D& accepted,
+    double duration,
+    const LiquidSceneInputs3D& scene,
+    const LiquidAdaptivePhysicalGeometryRequest3D& request
+) {
+  if (request.target_divergences_s_inv.size() != topology_.cells().size()
+      || (!request.exterior_pressures.empty() && request.exterior_pressures.size() != subfaces_.size())) {
+    return absl::InvalidArgumentError("Graded physical request fields must cover the canonical layout");
+  }
+  const double end_time = accepted.clock.time + duration;
+  if (!std::isfinite(end_time) || end_time <= accepted.clock.time) {
+    return absl::OutOfRangeError("Graded physical trial end time is unrepresentable");
+  }
+  const auto start_wall = ObstacleAtTime(scene.obstacle, accepted.clock.time);
+  const auto end_wall = ObstacleAtTime(scene.obstacle, end_time);
+  const auto* start_halfspace = std::get_if<TranslatingHalfspace3D>(&start_wall);
+  const auto* end_halfspace = std::get_if<TranslatingHalfspace3D>(&end_wall);
+  if (start_halfspace == nullptr || end_halfspace == nullptr) {
+    return absl::FailedPreconditionError("Graded physical requests require a translating halfspace scene");
+  }
+  const GradedLiquidPlanarSurface3D surface{
+      .unit_normal = {0, 1, 0},
+      .plane_coordinate_m = surface_height_,
+  };
+  const auto start_geometry = FreezeGradedPlanarLiquidGeometry3D(
+      topology_,
+      accepted.geometry.world_origin,
+      *start_halfspace,
+      surface,
+      duration
+  );
+  if (!start_geometry.ok()) {
+    return start_geometry.status();
+  }
+  auto frozen_end_wall = *end_halfspace;
+  frozen_end_wall.wall_velocity = {};
+  const auto end_geometry =
+      FreezeGradedPlanarLiquidGeometry3D(topology_, accepted.geometry.world_origin, frozen_end_wall, surface, duration);
+  if (!end_geometry.ok()) {
+    return end_geometry.status();
+  }
+
+  PhysicalTrial3D physical{
+      .start_wall = start_wall,
+      .end_wall = end_wall,
+      .wet_open_faces = {},
+      .end_fluid_volumes_m3 = {},
+  };
+  physical.end_fluid_volumes_m3.reserve(topology_.cells().size());
+  std::vector<GradedLiquidPressureCellFields3D> cells;
+  cells.reserve(topology_.cells().size());
+  for (std::size_t cell = 0; cell < topology_.cells().size(); ++cell) {
+    const double start_volume_m3 = start_geometry->leaves()[cell].fluid_volume_m3;
+    const double end_volume_m3 = end_geometry->leaves()[cell].fluid_volume_m3;
+    if (start_volume_m3 <= 0 || end_volume_m3 <= 0) {
+      return absl::FailedPreconditionError("Graded physical trial requires positive wet volume throughout the sweep");
+    }
+    if (accepted.adaptive_cells[cell].inventory.current_volume_m3 > start_volume_m3) {
+      return absl::FailedPreconditionError("Graded physical trial inventory exceeds its initial wet volume");
+    }
+    physical.end_fluid_volumes_m3.push_back(end_volume_m3);
+    cells.push_back({
+        .target_divergence_s_inv = request.target_divergences_s_inv[cell],
+        .previous_pressure_pa = accepted.adaptive_cells[cell].previous_pressure,
+    });
+  }
+  for (const auto& particle : accepted.particles.values()) {
+    const double wall_distance = SolidDistance(start_wall, particle.world_position);
+    if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= surface_height_) {
+      return absl::FailedPreconditionError("Graded physical trial starts with a particle outside the liquid");
+    }
+  }
+
+  physical.wet_open_faces.reserve(subfaces_.size());
+  std::vector<GradedLiquidPressureSubfaceFields3D> faces;
+  faces.reserve(subfaces_.size());
+  const double inverse_density = 1 / scene.liquid_density;
+  for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+    std::optional<GradedLiquidPressureExterior3D> exterior;
+    if (!request.exterior_pressures.empty() && request.exterior_pressures[slot]) {
+      const auto& input = *request.exterior_pressures[slot];
+      exterior = GradedLiquidPressureExterior3D{.pressure_pa = input.pressure_pa, .distance_m = input.distance_m};
+    }
+    physical.wet_open_faces.push_back(start_geometry->subfaces()[slot].wet_open_area_m2 > 0);
+    faces.push_back({
+        .inverse_density_m3_per_kg = inverse_density,
+        .exterior_pressure = exterior,
+    });
+  }
+  auto pressure = ComposeGradedPlanarLiquidPressureInputs3D(*start_geometry, cells, faces);
+  if (!pressure.ok()) {
+    return pressure.status();
+  }
+  pressure_cells_ = std::move(pressure->cells);
+  subfaces_ = std::move(pressure->subfaces);
+  physical_trial_ = std::move(physical);
+  return absl::OkStatus();
 }
 
 absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiquidStep3D::PrepareQuadraticTransfer(
@@ -619,7 +741,7 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
   if (selected == particles.end()) {
     return absl::InvalidArgumentError("quadratic transfer particle ID is absent from the committed epoch");
   }
-  if (!core_faces_.empty() || selected->phase_id != 0 || update_volume_ratio_) {
+  if (physical_trial_ || !core_faces_.empty() || selected->phase_id != 0 || update_volume_ratio_) {
     return absl::FailedPreconditionError("explicit quadratic transfer requires incompressible particle-owned liquid");
   }
   const auto carrier_faces = committed.adaptive_faces.values();
@@ -706,7 +828,16 @@ absl::Status AdaptiveLiquidStep3D::Deposit(
     }
     return absl::OkStatus();
   }
-  const auto deposits = transfer_.Deposit(trial.particles.values(), trial.adaptive_faces.values());
+  auto deposition_faces = trial.adaptive_faces.values();
+  if (physical_trial_) {
+    std::ranges::copy(deposition_faces, old_faces_.begin());
+    for (std::size_t face = 0; face < old_faces_.size(); ++face) {
+      old_faces_[face].structurally_eligible =
+          old_faces_[face].structurally_eligible && physical_trial_->wet_open_faces[face] != 0;
+    }
+    deposition_faces = old_faces_;
+  }
+  const auto deposits = transfer_.Deposit(trial.particles.values(), deposition_faces);
   if (!deposits.ok()) {
     return deposits.status();
   }
@@ -725,7 +856,9 @@ absl::Status AdaptiveLiquidStep3D::NormalizeDeposits(
     old_faces_[face] = trial.adaptive_faces[face];
     if (subfaces_[face].open_area_m2 == 0) {
       old_faces_[face].carrier_velocity = 0;
-      old_faces_[face].validity = LiquidFaceValidity3D::kValid;
+      const bool absent_physical_carrier = physical_trial_ && physical_trial_->wet_open_faces[face] == 0;
+      old_faces_[face].validity =
+          absent_physical_carrier ? LiquidFaceValidity3D::kMissing : LiquidFaceValidity3D::kValid;
       continue;
     }
     // The accepted Eulerian carrier is authoritative inside the core.
@@ -1167,7 +1300,7 @@ absl::Status AdaptiveLiquidStep3D::Update(
       {
           .gathered = gathered_,
           .liquid_distances = distances_,
-          .obstacle = scene.obstacle,
+          .obstacle = physical_trial_ ? physical_trial_->start_wall : scene.obstacle,
           .cell_width = trial.geometry.cell_width,
           .step_duration = duration,
           .particle_energy_blend = options.particle_energy_blend,
@@ -1179,9 +1312,24 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!updated.ok()) {
     return updated;
   }
+  if (physical_trial_) {
+    for (const auto& particle : trial.particles.values()) {
+      const double wall_distance = SolidDistance(physical_trial_->end_wall, particle.world_position);
+      if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= surface_height_) {
+        return absl::AbortedError("Graded physical trial moved a particle outside the liquid");
+      }
+    }
+  }
   const auto material = AccumulateInventories(trial);
   if (!material.ok()) {
     return material;
+  }
+  if (physical_trial_) {
+    for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+      if (inventories_[cell].current_volume_m3 > physical_trial_->end_fluid_volumes_m3[cell]) {
+        return absl::AbortedError("Graded physical trial particle inventory exceeds its final wet volume");
+      }
+    }
   }
   if (core_transport_) {
     for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
