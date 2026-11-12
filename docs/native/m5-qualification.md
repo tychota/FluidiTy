@@ -3921,3 +3921,31 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Mass-and-distance selection for bounded tangent donors
+
+Starting at `eb8877c`, choose the unit-weight tangent fallback donor
+by maximum `deposited_mass / (1 + distance_in_cells²)`. This is the
+same score used by the rank-deficient fallback. The grid gather,
+stress transpose, and component-wise affine clearing still use
+the same bounded row. Native and SM120 default dry-scene targets
+pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.903882° | 0.181555 m |
+| Coarse half-step | 41.090262° | 0.161172 m |
+| Fine | 32.307622° | 0.170290 m |
+| Fine half-step | 37.102970° | 0.161970 m |
+
+The mass-biased choice increases all four radii and loses both fine
+passes. Vertical momentum residual stays below 6.2e-9 N·s and
+cut stress work mismatch below 4.6e-16 J. The nearest-donor
+candidate was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-mass-tangent-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
