@@ -2079,6 +2079,26 @@ TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
     EXPECT_DOUBLE_EQ(measurement->cavity->lineage.unmatched_inventory, 0.0);
   }
   EXPECT_EQ(initializations, 2);
+
+  LiquidResolvedSceneView3D resolved;
+  resolved.scene = scene;
+  resolved.scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .birth_hydrostatic_gauge_pressure = 100.0,
+  };
+  resolved.options = options;
+  const auto encoded = EncodeLiquidResolvedScene3D(resolved);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto loaded = LiquidSubstepScheduler3D::Create(initial, decoded->scene, options);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  const auto loaded_step = loaded->AdvanceFrame(0.001);
+  ASSERT_TRUE(loaded_step.ok()) << loaded_step;
+  const auto& loaded_measurement = loaded->diagnostics().accepted_measurement;
+  ASSERT_TRUE(loaded_measurement && loaded_measurement->cavity);
+  EXPECT_EQ(loaded_measurement->cavity->boundaries.active_cavity_count, 1);
+  EXPECT_GT(loaded_measurement->pressure_rhs_l2_m3_per_s, 0.0);
 }
 
 TEST(LiquidSubstep3D, PreparedCavityPressuresApplyOnlyAfterRadialRetry) {

@@ -73,6 +73,7 @@ struct LiquidStepCavityProvider3D {
 
 struct LiquidSceneCavity3D {
   double atmospheric_absolute_pressure;  // Positive absolute Pa.
+  double birth_hydrostatic_gauge_pressure = 0.0;  // Nonnegative Pa for default spherical birth equilibrium.
   void* context = nullptr;
   // Optional certification of atmosphere outlets for the current samples.
   // The returned span is borrowed until the end of step preparation.
@@ -80,7 +81,7 @@ struct LiquidSceneCavity3D {
       void* context,
       const LiquidBoundaryGeometryViewInputs3D& samples
   ) = nullptr;
-  // Supplies equilibrium inventory for a newly resolved cavity. Both callbacks
+  // Overrides spherical birth equilibrium from scene pressures and surface tension. Both callbacks
   // may be repeated after a rejected step or a frame replay.
   absl::StatusOr<LiquidCavityInventory3D> (*initialize)(void* context, const LiquidAirComponent3D& component) = nullptr;
 };

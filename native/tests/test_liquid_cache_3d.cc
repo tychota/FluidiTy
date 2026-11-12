@@ -387,6 +387,28 @@ TEST(LiquidCache3D, ResolvedViscosityRoundTripsAndChangesFingerprint) {
   EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidCache3D, ResolvedCavityEquilibriumRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .birth_hydrostatic_gauge_pressure = 4000.0,
+  };
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_TRUE(decoded->scene.cavity);
+  EXPECT_DOUBLE_EQ(decoded->scene.cavity->atmospheric_absolute_pressure, 100000.0);
+  EXPECT_DOUBLE_EQ(decoded->scene.cavity->birth_hydrostatic_gauge_pressure, 4000.0);
+  const auto fingerprint = ResolvedSceneFingerprint(decoded->View());
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+  scene.scene.cavity->birth_hydrostatic_gauge_pressure = -1.0;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, ResolvedEosRoundTripsAndChangesFingerprint) {
   LiquidResolvedSceneView3D scene;
   const auto baseline = ResolvedSceneFingerprint(scene);

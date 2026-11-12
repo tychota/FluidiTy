@@ -80,6 +80,13 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
           || !detail::Nonnegative(scene.drift->maximum_rate))) {
     return Invalid();
   }
+  if (scene.cavity_provider.prepare
+      || (scene.cavity
+          && (!detail::Positive(scene.cavity->atmospheric_absolute_pressure)
+              || !detail::Nonnegative(scene.cavity->birth_hydrostatic_gauge_pressure) || scene.cavity->initialize
+              || scene.cavity->atmosphere_outlets))) {
+    return Invalid();
+  }
   const bool options_valid = detail::Nonnegative(options.particle_energy_blend) && options.particle_energy_blend <= 1
       && detail::Positive(options.maximum_step_duration) && detail::Nonnegative(options.minimum_face_mass)
       && PowerOfTwo(options.mass_per_quantum) && PowerOfTwo(options.momentum_per_quantum)
@@ -251,6 +258,17 @@ absl::StatusOr<LiquidResolvedScene3D> DecodeResolvedSceneHeader(const wire::Reso
   if (drift_time) {
     result.scene.drift = LiquidSceneDrift3D{*drift_time, *drift_rate};
   }
+  const auto cavity_atmosphere = material->cavity_atmospheric_absolute_pressure();
+  const auto cavity_hydrostatic = material->cavity_birth_hydrostatic_gauge_pressure();
+  if (cavity_atmosphere.has_value() != cavity_hydrostatic.has_value()) {
+    return Invalid();
+  }
+  if (cavity_atmosphere) {
+    result.scene.cavity = LiquidSceneCavity3D{
+        .atmospheric_absolute_pressure = *cavity_atmosphere,
+        .birth_hydrostatic_gauge_pressure = *cavity_hydrostatic,
+    };
+  }
   result.scene.target_divergence = material->target_divergence();
   result.scene.friction_coefficient = material->friction();
   result.scene.penetration_tolerance = material->penetration_tolerance();
@@ -414,6 +432,12 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           drift_time = scene.drift->correction_time;
           drift_rate = detail::Canonical(scene.drift->maximum_rate);
         }
+        flatbuffers::Optional<double> cavity_atmosphere;
+        flatbuffers::Optional<double> cavity_hydrostatic;
+        if (scene.cavity) {
+          cavity_atmosphere = scene.cavity->atmospheric_absolute_pressure;
+          cavity_hydrostatic = detail::Canonical(scene.cavity->birth_hydrostatic_gauge_pressure);
+        }
         const auto material = wire::CreateMaterial(
             builder,
             scene.liquid_density,
@@ -427,7 +451,9 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             reference_sound_speed,
             eos_law,
             drift_time,
-            drift_rate
+            drift_rate,
+            cavity_atmosphere,
+            cavity_hydrostatic
         );
         flatbuffers::Offset<wire::WhitewaterCapture> whitewater;
         if (const auto& capture = options.whitewater_capture) {

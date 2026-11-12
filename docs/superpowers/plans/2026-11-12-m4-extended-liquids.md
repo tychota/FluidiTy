@@ -367,3 +367,11 @@ The opt-in API still depends on scene-provided atmosphere certification and birt
 The bounded host gas domain can certify a positive gas aperture on an outer bounding-box plane when all liquid is contained inside the box and there are no obstacles. The scheduler selects this mode for its bounded unobstructed field path when there is no explicit outlet provider. Interior holes in a supplied sample set stay unclassified. Obstacle scenes continue to use explicit outlet certification.
 
 The sampled sphere fixture opened a gas channel after compression. It verified vent classification, complete inventory release, removal of the gas-pressure override and an unbounded radial timestep. Fifteen CPU checks passed with ctest --preset windows-debug-cpu -R Cavity. Twenty-one real-device CUDA regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Exterior certification runs on the host. clang-format 19.1.5 passed. Receipts use out/m4-cavity-exterior.
+
+## Resolved cavity scene receipt
+
+The resolved material wire has two optional cavity pressure fields. Together they enable scheduler-owned trapped air and give the absolute atmosphere and the hydrostatic gauge pressure for spherical birth equilibrium. The scheduler adds the Laplace term from scene surface tension and clipped equivalent radius. A decoded scene needs no host initialization callback. The hydrostatic value is scene-supplied and constant across births. The optional pair preserves the disabled path for old scenes.
+
+Twenty-five CPU checks passed with ctest --preset windows-debug-cpu -R 'Cavity|LiquidCache3D.Resolved'. The fixture round-trips the pressure settings, checks the fingerprint, and advances a decoded particle shell with nonzero cavity pressure. A clean windows-release-cuda build produced fluidity_simulate and fluidity_cuda_operator_tests. Twenty-one real-device checks passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The executable schema exposed both fields. clang-format 19.1.5 passed. Receipts use out/m4-cavity-resolved.
+
+The current scene settings do not serialize the accepted cavity snapshot. Resuming a cavity run through a disk checkpoint still needs state codec support. Full Q-CAVITY remains open.

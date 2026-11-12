@@ -484,6 +484,19 @@ struct CavityStepOwner {
       }
       outlets = *supplied;
     }
+    struct BirthEquilibrium {
+      const LiquidSceneCavity3D& settings;
+      double surface_tension;
+    } equilibrium{settings, samples.surface_tension};
+    const auto default_initialize = [](void* context, const LiquidAirComponent3D& component) {
+      const auto& birth = *static_cast<const BirthEquilibrium*>(context);
+      return InitializeSubmergedLiquidCavity3D(
+          component.gas_volume,
+          birth.settings.atmospheric_absolute_pressure,
+          birth.settings.birth_hydrostatic_gauge_pressure,
+          birth.surface_tension
+      );
+    };
     const auto& prior = committed.result;
     const LiquidCavityStepInputs3D inputs{
         .geometry = samples.mac_grid.geometry(),
@@ -503,8 +516,8 @@ struct CavityStepOwner {
         .exterior = !settings.atmosphere_outlets && std::holds_alternative<std::monostate>(samples.obstacle)
             ? LiquidAirExterior3D::kUnobstructedBoundingBox
             : LiquidAirExterior3D::kExplicitOutlets,
-        .initialization_context = settings.context,
-        .initialize = settings.initialize,
+        .initialization_context = settings.initialize ? settings.context : &equilibrium,
+        .initialize = settings.initialize ? settings.initialize : +default_initialize,
     };
     const LiquidCavityStepScratch3D scratch{
         .gas_cells = trial.gas.values(),
@@ -1384,7 +1397,9 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   impl->options = options;
   if (scene.cavity) {
     if (scene.cavity_provider.prepare || !std::isfinite(scene.cavity->atmospheric_absolute_pressure)
-        || scene.cavity->atmospheric_absolute_pressure <= 0.0) {
+        || scene.cavity->atmospheric_absolute_pressure <= 0.0
+        || !std::isfinite(scene.cavity->birth_hydrostatic_gauge_pressure)
+        || scene.cavity->birth_hydrostatic_gauge_pressure < 0.0) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
     const auto cavity_capacity = std::max(capacities.cells, options.capacity_replay_reservations.cells);
