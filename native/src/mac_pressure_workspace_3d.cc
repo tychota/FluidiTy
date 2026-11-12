@@ -471,7 +471,10 @@ absl::StatusOr<MacPressureProjectionView3D> SolvePrepared(
 ) {
   const auto* system = &upload.system;
   const auto* hierarchy = &upload.hierarchy;
-  const auto* criteria = &upload.stopping;
+  auto scaled_criteria = upload.stopping;
+  scaled_criteria.integrated_residual_limit *= options.cpu_residual_tolerance_scale;
+  scaled_criteria.volume_scaled_limit *= options.cpu_residual_tolerance_scale;
+  const auto* criteria = &scaled_criteria;
   auto base_pressure = upload.initial_pressure;
   std::ranges::copy(system->rhs, rhs.begin());
   std::ranges::copy(system->gauges, gauges.begin());
@@ -817,7 +820,9 @@ absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectWithP
     MacPressureSolverOptions3D options,
     PrepareUpload prepare_upload
 ) {
-  if (options.max_iterations == 0 || options.max_iterations > 256) {
+  if (options.max_iterations == 0 || options.max_iterations > 256
+      || !std::isfinite(options.cpu_residual_tolerance_scale) || options.cpu_residual_tolerance_scale < 1e-12
+      || options.cpu_residual_tolerance_scale > 1.0) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   if (cell_count > cell_capacity_ || face_count > face_capacity_ || cell_count > kMaxPressureCells

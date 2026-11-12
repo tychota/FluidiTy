@@ -181,6 +181,7 @@ struct BoxParticleReaction {
   const TranslatingContactBox3D* box = nullptr;
   const RigidBodyStep3D* drift = nullptr;
   Vec3 half_extent{};
+  std::span<const Vec3> stored_velocities;
   LiquidBoxImpulse3D impulse{};
 };
 
@@ -245,10 +246,12 @@ absl::Status UpdateParticle(
   const auto& gather = inputs.gathered[index];
   const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
   const double alpha = particle.pic_initialized && !fallback ? 0.99 * inputs.particle_energy_blend : 0;
-  const auto stored = liquid_step_internal::Add(
-      gather.new_pic_velocity,
-      liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, alpha)
-  );
+  const auto stored = box_reaction != nullptr && !box_reaction->stored_velocities.empty()
+      ? box_reaction->stored_velocities[index]
+      : liquid_step_internal::Add(
+            gather.new_pic_velocity,
+            liquid_step_internal::Scale(gather.particle_minus_old_pic_velocity, alpha)
+        );
   Vec3 advecting;
   double divergence;
   if (!inputs.regular_cell_transport.empty() && inputs.regular_cell_transport[index].active) {
@@ -469,6 +472,7 @@ absl::StatusOr<LiquidBoxImpulse3D> UpdateParticlesWithBoxImpulse(
   const auto particle_bytes = std::as_bytes(trial_particles);
   if (Overlap(particle_bytes, std::as_bytes(inputs.gathered))
       || Overlap(particle_bytes, std::as_bytes(inputs.liquid_distances))
+      || Overlap(particle_bytes, std::as_bytes(reaction.stored_velocities))
       || Overlap(particle_bytes, std::as_bytes(std::span(reaction.box, reaction.box != nullptr ? 1 : 0)))
       || Overlap(particle_bytes, std::as_bytes(std::span(reaction.drift, reaction.drift != nullptr ? 1 : 0)))) {
     return Error(absl::StatusCode::kInvalidArgument);
@@ -504,9 +508,17 @@ absl::StatusOr<LiquidBoxImpulse3D> UpdateCpuLiquidParticlesWithRotatingBoxImpuls
     const LiquidParticleUpdateInputs3D& inputs,
     const RigidBodyStep3D& drift,
     Vec3 half_extent,
-    std::span<LiquidParticleState3D> trial_particles
+    std::span<LiquidParticleState3D> trial_particles,
+    std::span<const Vec3> stored_velocities
 ) {
-  return UpdateParticlesWithBoxImpulse(inputs, {.drift = &drift, .half_extent = half_extent}, trial_particles);
+  if (!stored_velocities.empty() && stored_velocities.size() != trial_particles.size()) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  return UpdateParticlesWithBoxImpulse(
+      inputs,
+      {.drift = &drift, .half_extent = half_extent, .stored_velocities = stored_velocities},
+      trial_particles
+  );
 }
 absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
     const LiquidParticleUpdateInputs3D& inputs,

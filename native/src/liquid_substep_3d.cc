@@ -820,6 +820,7 @@ struct LiquidSubstepScheduler3D::Impl {
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
     std::optional<RigidBodyStep3D> oriented_box_candidate;
+    bool use_compatible_pressure_transfer = false;
     const auto record_oriented_pressure_load = [&](const RigidBody3D& loaded) {
       auto& loads = *floating_box->oriented_loads;
       loads.pressure_force =
@@ -1424,12 +1425,23 @@ struct LiquidSubstepScheduler3D::Impl {
         return Error(absl::StatusCode::kFailedPrecondition);
       }
       if (!active_viscosity) {
+        auto pressure_options = options.pressure_solver_options;
+        if (oriented_box && floating_box->coupled) {
+          const auto extent = floating_box->half_extent;
+          const double full_displaced_mass = 8.0 * extent.x * extent.y * extent.z * scene.liquid_density;
+          // A small rigid mass amplifies pressure residuals in the twist
+          // solve. Refine the inner response in that inertia regime.
+          if (floating_box->body.mass < 0.005 * full_displaced_mass) {
+            pressure_options.cpu_residual_tolerance_scale =
+                std::min(pressure_options.cpu_residual_tolerance_scale, 1e-6);
+          }
+        }
         auto projection = backend.project(
             backend.context,
             grid,
             step_duration,
             pressure_problem,
-            options.pressure_solver_options,
+            pressure_options,
             workspace.pressure()
         );
         if (!projection.ok()) {
@@ -1485,7 +1497,7 @@ struct LiquidSubstepScheduler3D::Impl {
                 grid,
                 step_duration,
                 pressure_problem,
-                options.pressure_solver_options,
+                pressure_options,
                 workspace.pressure()
             );
             return projection.status();
@@ -1870,6 +1882,12 @@ struct LiquidSubstepScheduler3D::Impl {
       if (oriented_box) {
         constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
         Vec3 grid_impulse{};
+        STEP_TRY(staging.face_pressure_impulses.Resize(grid.face_count()));
+        std::ranges::fill(staging.face_pressure_impulses.values(), 0.0);
+        const bool reconstruct_hydrostatic_pressure =
+            !eos && (!uses_composition_density || scene.constituent_materials.size() == 1);
+        const double hydrostatic_velocity_correction =
+            reconstruct_hydrostatic_pressure ? -step_duration * scene.world_acceleration.y : 0.0;
         for (std::size_t index = 0; index < pressure_problem.faces.size(); ++index) {
           const auto& face = pressure_problem.faces[index];
           if (face.open_area == 0.0) {
@@ -1878,12 +1896,52 @@ struct LiquidSubstepScheduler3D::Impl {
           const double dual_mass = face.open_area * face.pressure_gradient_distance / face.inverse_density;
           const double velocity_change = projected_face_velocities[index] - face.predicted_normal_velocity;
           const auto component = kComponents[static_cast<std::size_t>(face.face_index.axis)];
-          grid_impulse.*component += dual_mass * velocity_change;
+          const double impulse = dual_mass * velocity_change;
+          grid_impulse.*component += impulse;
+          const double hydrostatic_correction =
+              face.face_index.axis == FaceNormalAxis::kY ? hydrostatic_velocity_correction : 0.0;
+          staging.face_pressure_impulses[frozen->faces[index].face_slot] =
+              dual_mass * (velocity_change - hydrostatic_correction);
         }
         if (!liquid_step_internal::Finite(grid_impulse)) {
           return Error(absl::StatusCode::kOutOfRange);
         }
         floating_box->oriented_loads->pressure_grid_impulse = grid_impulse;
+        if (!trial.particles.values().empty()) {
+          STEP_TRY(staging.pressure_transfer_mass_scratch.Resize(grid.face_count()));
+          STEP_TRY(staging.pressure_particle_impulses.Resize(trial.particles.size()));
+          const auto distribution = DistributeCompatiblePressureImpulse3D(
+              grid,
+              staging.particles.values(),
+              deposits->compatible_stencils,
+              staging.face_pressure_impulses.values(),
+              staging.pressure_transfer_mass_scratch.values(),
+              staging.pressure_particle_impulses.values()
+          );
+          if (distribution.ok()) {
+            use_compatible_pressure_transfer = true;
+            STEP_TRY(staging.prepressure_velocities.Resize(grid.face_count()));
+            STEP_TRY(staging.pressure_stored_velocities.Resize(trial.particles.size()));
+            std::ranges::copy(staging.new_velocities.values(), staging.prepressure_velocities.values().begin());
+            for (std::size_t index = 0; index < pressure_problem.faces.size(); ++index) {
+              const auto& face = pressure_problem.faces[index];
+              const double hydrostatic_correction = face.open_area > 0.0 && face.face_index.axis == FaceNormalAxis::kY
+                  ? hydrostatic_velocity_correction
+                  : 0.0;
+              staging.prepressure_velocities[frozen->faces[index].face_slot] =
+                  face.predicted_normal_velocity + hydrostatic_correction;
+            }
+            Vec3 distributed_impulse{};
+            for (const auto impulse : staging.pressure_particle_impulses.values()) {
+              distributed_impulse = liquid_step_internal::Add(distributed_impulse, impulse);
+            }
+            floating_box->oriented_loads->particle_pressure_impulse = distributed_impulse;
+            // A sparse face without compatible particles uses the existing
+            // complete gather. The absent receipt identifies that path.
+          } else if (distribution.code() != absl::StatusCode::kFailedPrecondition) {
+            return distribution;
+          }
+        }
 
         // Use the same checked traction accumulator for a fixed surface. The
         // zero center makes its accumulated moment relative to the world origin.
@@ -2044,6 +2102,28 @@ struct LiquidSubstepScheduler3D::Impl {
       if (use_projected_history) {
         gather_inputs.new_history.validity = projected_gather_validity;
       }
+      if (use_compatible_pressure_transfer) {
+        auto baseline_inputs = gather_inputs;
+        baseline_inputs.new_history.face_velocities = staging.prepressure_velocities.values();
+        const auto baseline = backend.gather(backend.context, baseline_inputs, boundary);
+        if (!baseline.ok()) {
+          return baseline.status();
+        }
+        if (baseline->particles.size() != 1) {
+          return Error(absl::StatusCode::kInternal);
+        }
+        const auto& sample = baseline->particles.front();
+        const bool fallback = sample.old_pic_fallback || sample.new_pic_fallback || sample.low_mass_fallback;
+        const double alpha = particle.pic_initialized && !fallback ? 0.99 * options.particle_energy_blend : 0.0;
+        const auto prepressure_velocity = liquid_step_internal::Add(
+            sample.new_pic_velocity,
+            liquid_step_internal::Scale(sample.particle_minus_old_pic_velocity, alpha)
+        );
+        staging.pressure_stored_velocities[index] = liquid_step_internal::Add(
+            prepressure_velocity,
+            liquid_step_internal::Scale(staging.pressure_particle_impulses[index], 1.0 / particle.mass)
+        );
+      }
       const bool continues_projected_change = use_projected_history && continue_isolated_projection;
       if (backend.gather_run && index >= attempted_run_end) {
         attempted_run_end = index + 1;
@@ -2195,7 +2275,8 @@ struct LiquidSubstepScheduler3D::Impl {
           particle_update_inputs,
           *oriented_box_candidate,
           floating_box->half_extent,
-          trial.particles.values()
+          trial.particles.values(),
+          use_compatible_pressure_transfer ? staging.pressure_stored_velocities.values() : std::span<const Vec3>{}
       );
       if (!impulse.ok()) {
         return impulse.status();

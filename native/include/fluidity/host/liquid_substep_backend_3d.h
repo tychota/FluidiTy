@@ -271,12 +271,15 @@ struct LiquidBoxImpulse3D {
 };
 
 // Updates trial particles against the prescribed rotating drift in a
-// stationary tank. The caller discards the trial on failure.
+// stationary tank. Optional stored velocities (world m/s) replace only the
+// pre-contact stored velocity in particle order. The caller discards the trial
+// on failure.
 absl::StatusOr<LiquidBoxImpulse3D> UpdateCpuLiquidParticlesWithRotatingBoxImpulse3D(
     const LiquidParticleUpdateInputs3D& inputs,
     const RigidBodyStep3D& drift,
     Vec3 half_extent,
-    std::span<LiquidParticleState3D> trial_particles
+    std::span<LiquidParticleState3D> trial_particles,
+    std::span<const Vec3> stored_velocities = {}
 );
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity

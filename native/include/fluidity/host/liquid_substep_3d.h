@@ -273,6 +273,7 @@ struct OrientedFloatingBoxLoads3D {
   // World N s from the velocity correction on open MAC faces, using face dual
   // mass (aperture times gradient distance divided by inverse density).
   Vec3 pressure_grid_impulse{};
+  std::optional<Vec3> particle_pressure_impulse;  // World N s of nonhydrostatic pressure transferred to particles.
   std::optional<TankPressureLoad3D> tank_pressure;  // Present when the pressure cells cover every wet tank wall.
 };
 struct LiquidFloatingBoxAttempt3D {

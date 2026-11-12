@@ -1444,6 +1444,12 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
     // Hold the final wall history and validity fixed, changing only the face
     // velocities supplied by projection. The production gather runs last.
     const auto velocities = inputs.new_history.face_velocities;
+    const bool has_pressure_correction = std::ranges::any_of(measured.pressure_faces, [&](const auto& face) {
+      return velocities[face.slot] != face.predicted_velocity;
+    });
+    if (!has_pressure_correction) {
+      return CpuLiquidSubstepBackend3D().gather(nullptr, inputs, workspace);
+    }
     measured.prepressure_velocities.assign(velocities.begin(), velocities.end());
     for (const auto& face : measured.pressure_faces) {
       measured.prepressure_velocities[face.slot] = face.predicted_velocity;
@@ -1500,6 +1506,7 @@ void ExpectFloatingBoxPressureMeasurement(
     const FloatingBoxPressureMeasurements& measured
 ) {
   constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
   Vec3 mass_weight_difference{};
   Vec3 gather_weight_difference{};
   Vec3 reconstructed_gather{};
@@ -1520,6 +1527,7 @@ void ExpectFloatingBoxPressureMeasurement(
       distributed_impulse += particle_impulse.*component;
     }
     EXPECT_NEAR(distributed_impulse, measured.grid_impulse.*component, 1e-12);
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, distributed_impulse, 1e-12);
     EXPECT_NEAR(
         mass_weight_difference.*component + gather_weight_difference.*component,
         measured.particle_pressure_impulse.*component - measured.grid_impulse.*component,
@@ -1527,7 +1535,7 @@ void ExpectFloatingBoxPressureMeasurement(
     );
     EXPECT_NEAR(
         loads.liquid_gather_impulse.*component,
-        measured.particle_pressure_impulse.*component + measured.particle_prepressure_impulse.*component,
+        distributed_impulse + measured.particle_prepressure_impulse.*component,
         1e-12
     );
   }
