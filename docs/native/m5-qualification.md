@@ -3688,3 +3688,38 @@ The temporary trace reads the accepted state and deformation
 gradient immediately before saving the new plastic Jacobian.
 Both experimental sources were restored after linking. The final
 pile geometry matches the previous eightfold stiffness control.
+
+### Bound extrapolating tangential ghost rows
+
+Local sand commit `abf860b` uses the specified Euler deformation
+increment. If a tangential ghost fit contains a coefficient below
+−1e-12, replace that row with a unit coefficient on the nearest
+local donor. Use the same row in the gather and stress transpose.
+The fallback preserves constants and bounds the ghost velocity
+by donor values. It gives up affine reproduction on that row and
+uses the existing fallback flag for affine feedback. Normal ghost
+rows keep the previous treatment.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 35.006469° | 0.165391 m |
+| Coarse half-step | 42.000223° | 0.149039 m |
+| Fine | 31.546988° | 0.153024 m |
+| Fine half-step | 38.280805° | 0.148133 m |
+
+The fine nominal case passes at reference stiffness. Its eightfold
+diagnostic also passes the geometry at 32.188881° / 0.150819 m,
+with mean log plastic Jacobian 1.041356, down from 2.527271.
+Both dry-scene targets pass their default tests. All native pile
+runs retain stress-work mismatch below 5e-16 J and vertical
+momentum residual below 1.6e-8 N·s. The other three original cases
+still miss at least one geometric check.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-bounded-tangent-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-bounded-tangent-stiff
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
+```
