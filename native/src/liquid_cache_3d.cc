@@ -19,6 +19,7 @@ namespace wire = cache::v1;
 namespace {
 constexpr std::uint32_t kAdaptiveLiquidStateVersion = 2;
 constexpr std::uint32_t kEulerianLiquidStateVersion = 3;
+constexpr std::uint32_t kWidthAgeLiquidStateVersion = 4;
 
 // Native enums may grow independently; existing wire tags must never drift.
 static_assert(
@@ -182,6 +183,7 @@ LiquidAdaptiveCellState3D UnpackAdaptiveCell(const wire::AdaptiveCell* cell) {
               .phase_id = cell->phase_id(),
           },
       .previous_pressure = cell->previous_pressure(),
+      .coarsening_eligible_duration_s = cell->coarsening_eligible_duration_s().value_or(0),
   };
   if (const auto* constituents = cell->constituents()) {
     result.inventory.constituent_count = static_cast<std::uint8_t>(constituents->size());
@@ -205,8 +207,9 @@ LiquidAdaptiveFaceState3D UnpackAdaptiveFace(const wire::AdaptiveFace* face) {
 // decoded record owner. Stable particle order is checked for unique IDs, not sorted.
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
-  const bool eulerian_version = state->schema_version() == kEulerianLiquidStateVersion;
-  if ((state->schema_version() >= kAdaptiveLiquidStateVersion) != (state->adaptive() != nullptr)) {
+  const std::uint32_t schema_version = state->schema_version();
+  const bool width_age_version = schema_version == kWidthAgeLiquidStateVersion;
+  if ((schema_version >= kAdaptiveLiquidStateVersion) != (state->adaptive() != nullptr)) {
     return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
   }
   if (const auto* adaptive = state->adaptive()) {
@@ -219,18 +222,25 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
       return cache_detail::Corrupt();
     }
     bool has_eulerian_owner = false;
+    bool has_width_age = false;
     for (const auto* cell : *adaptive->cells()) {
       const auto owner = cell->material_owner();
-      if (owner.has_value() && !eulerian_version) {
+      if (owner.has_value() && schema_version < kEulerianLiquidStateVersion) {
         return cache_detail::Corrupt();
       }
       has_eulerian_owner |= owner == wire::AdaptiveMaterialOwner::Eulerian;
+      if (const auto age = cell->coarsening_eligible_duration_s()) {
+        if (!width_age_version || !cache_detail::Positive(*age)) {
+          return cache_detail::Corrupt();
+        }
+        has_width_age = true;
+      }
       const auto* constituents = cell->constituents();
       if (constituents && (constituents->size() == 0 || constituents->size() > kMaximumLiquidParticleConstituents3D)) {
         return cache_detail::Corrupt();
       }
     }
-    if (eulerian_version != has_eulerian_owner) {
+    if ((schema_version == kEulerianLiquidStateVersion && !has_eulerian_owner) || width_age_version != has_width_age) {
       return cache_detail::Corrupt();
     }
     for (const auto* face : *adaptive->faces()) {
@@ -439,12 +449,15 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
     return Invalid();
   }
   const bool adaptive = state.adaptive_cells.size() != 0;
-  const bool has_eulerian_owner = std::ranges::any_of(state.adaptive_cells.values(), [](const auto& cell) {
-    return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
-  });
   std::uint32_t schema_version = adaptive ? kAdaptiveLiquidStateVersion : 1;
-  if (has_eulerian_owner) {
-    schema_version = kEulerianLiquidStateVersion;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    if (cell.coarsening_eligible_duration_s > 0) {
+      schema_version = kWidthAgeLiquidStateVersion;
+      break;
+    }
+    if (cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian) {
+      schema_version = kEulerianLiquidStateVersion;
+    }
   }
   const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
       + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1)
@@ -562,7 +575,10 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
                     constituents,
                     cell.material_owner == AdaptiveLiquidMaterialOwner3D::kParticles
                         ? flatbuffers::Optional<wire::AdaptiveMaterialOwner>{}
-                        : flatbuffers::Optional{static_cast<wire::AdaptiveMaterialOwner>(cell.material_owner)}
+                        : flatbuffers::Optional{static_cast<wire::AdaptiveMaterialOwner>(cell.material_owner)},
+                    cell.coarsening_eligible_duration_s == 0
+                        ? flatbuffers::nullopt
+                        : flatbuffers::Optional{cell.coarsening_eligible_duration_s}
                 );
               }
           );
@@ -760,7 +776,7 @@ absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> 
       bytes,
       wire::LiquidStateIdentifier(),
       limits,
-      kEulerianLiquidStateVersion
+      kWidthAgeLiquidStateVersion
   );
   if (!state.ok()) {
     return state.status();
@@ -778,7 +794,7 @@ DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3
       bytes,
       wire::LiquidStateIdentifier(),
       limits,
-      kEulerianLiquidStateVersion
+      kWidthAgeLiquidStateVersion
   );
   if (!state.ok()) {
     return state.status();
