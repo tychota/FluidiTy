@@ -266,6 +266,8 @@ absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
 struct LiquidBoxImpulse3D {
   Vec3 linear{};  // World N s.
   Vec3 angular{};  // World N m s about the body center at each impact.
+  Vec3 liquid_gather_impulse{};  // World N s, stored momentum change before contact.
+  Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
 };
 
 // Updates trial particles against the prescribed rotating drift in a

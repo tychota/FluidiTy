@@ -124,6 +124,7 @@ TEST(LiquidWallContact3D, RotatingBoxInTankSeparatesReactionsAndRetriesCompeting
   ASSERT_TRUE(tank_only.ok()) << tank_only.status();
   EXPECT_DOUBLE_EQ(tank_only->contact.world_position.x, 3.0);
   EXPECT_DOUBLE_EQ(tank_only->body_impulse.x, 0.0);
+  EXPECT_DOUBLE_EQ(tank_only->tank_impulse_on_particle.x, -1.0);
   EXPECT_DOUBLE_EQ(tank_only->body_angular_impulse.z, 0.0);
 
   input.start_world_position = {-2.0, 0.125, 0.0};

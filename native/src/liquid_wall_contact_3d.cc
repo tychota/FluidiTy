@@ -487,7 +487,22 @@ absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxInTankContact3D(
       const double high = sweep::AddUp(std::max(drift.start.center.*component, end_pose->center.*component), radius);
       if (std::max({start.*component, recovered.*component, end.*component}) < low
           || std::min({start.*component, recovered.*component, end.*component}) > high) {
-        return RigidBoxContact3D{.contact = tank_contact, .body_impulse = {}, .body_angular_impulse = {}};
+        const auto stored = inputs.stored_world_velocity;
+        const auto corrected = tank_contact.stored_world_velocity;
+        const Vec3 tank_impulse{
+            particle_mass * (corrected.x - stored.x),
+            particle_mass * (corrected.y - stored.y),
+            particle_mass * (corrected.z - stored.z),
+        };
+        if (!sweep::HasFiniteComponents(tank_impulse)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
+        }
+        return RigidBoxContact3D{
+            .contact = tank_contact,
+            .body_impulse = {},
+            .body_angular_impulse = {},
+            .tank_impulse_on_particle = tank_impulse,
+        };
       }
     }
   }
