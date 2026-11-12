@@ -9,9 +9,11 @@
 #include <numeric>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "fluidity/host/views.h"
+#include "viscosity_velocity_block_3d.h"
 
 namespace fluidity {
 namespace {
@@ -846,7 +848,7 @@ absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
   };
 }
 
-absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::PrepareVelocityBlock3D(
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,
     MacViscousVelocityBlockOptions3D options
@@ -908,6 +910,25 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D
     }
   }
 
+  return PreparedVelocityBlock3D{
+      .weighted_rows = std::move(weighted_rows),
+      .diagonal = std::move(diagonal),
+      .max_rhs = max_rhs,
+  };
+}
+
+absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  const auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  const auto inertia = inputs.face_inertias;
+  const std::size_t face_count = inertia.size();
+  const auto& [weighted_rows, diagonal, max_rhs] = *prepared;
   const auto apply = [&](std::span<const double> velocity, std::span<double> momentum) {
     for (std::size_t face = 0; face < face_count; ++face) {
       momentum[face] = inertia[face] * velocity[face];
