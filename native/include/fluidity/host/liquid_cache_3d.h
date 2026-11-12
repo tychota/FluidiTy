@@ -4,11 +4,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 
 #include "fluidity/host/liquid_substep_3d.h"
-#include "fluidity/host/plastic_solid_checkpoint_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 
 namespace fluidity {
 // BLAKE3-256, raw digest bytes in algorithm order (not native integer words).
@@ -19,6 +20,7 @@ enum class LiquidContentKind3D : std::uint8_t {
   kPoints = 1,
   kResolvedScene = 2,
   kManifest = 3,
+  kCoupledState = 4,
 };
 enum class LiquidBackend3D : std::uint8_t {
   kCpu = 0,
@@ -56,6 +58,7 @@ struct LiquidResumeMetadata3D {
 struct LiquidCheckpoint3D {
   LiquidState3D state;
   LiquidResumeMetadata3D resume;
+  std::optional<SolidInteractionCheckpoint3D> solid;  // Present for a resolved mixed scene.
 };
 struct LiquidPoint3D {
   std::uint64_t id = 0;  // Stable nonzero particle ID, unique within this frame.
@@ -273,6 +276,7 @@ class LiquidCache3D {
   /// @param checkpoint Required state for a checkpoint frame. Null for other frames.
   /// @param resume Required resume metadata for a checkpoint frame. Null for other frames.
   /// @param control Optional cancellation and failure callback. All inputs are borrowed through this call.
+  /// @param solid Required with a checkpoint for a resolved mixed scene.
   /// @return OK when frame publication and any required checkpoint retention finish. Read-only caches return
   /// FailedPrecondition before cache access. A conflicting manifest or checkpoint reference returns AlreadyExists.
   /// Verified identical bytes are reused.
@@ -285,7 +289,8 @@ class LiquidCache3D {
       const LiquidPointFrame3D& points,
       const LiquidState3D* checkpoint = nullptr,
       const LiquidResumeMetadata3D* resume = nullptr,
-      LiquidCachePublishControl3D control = {}
+      LiquidCachePublishControl3D control = {},
+      const SolidInteractionCheckpoint3D* solid = nullptr
   ) const;
   /// Reads a committed point frame by ordinal, independently of restart checkpoint retention.
   /// Verifies the resolved scene, binary manifest, deterministic JSON inspection mirror and exact
@@ -295,13 +300,15 @@ class LiquidCache3D {
   absl::StatusOr<LiquidCommittedFrame3D> ReadCommittedFrame(std::uint64_t frame_ordinal) const;
   // Repairs/completes optional checkpoint metadata after a frame has committed.
   // Only frame zero and multiples of ten qualify. Must match the verified frame.
+  // A resolved mixed scene requires the solid state from the same accepted step.
   // Keeps the newest two full-state blobs; immutable reference history remains.
   // The frame-zero payload remains until two later checkpoints are available.
   // Older checkpoint payloads are pruned, but all point frames remain readable.
   absl::Status PublishCheckpoint(
       const LiquidState3D& checkpoint,
       const LiquidResumeMetadata3D& resume,
-      LiquidCachePublishControl3D control = {}
+      LiquidCachePublishControl3D control = {},
+      const SolidInteractionCheckpoint3D* solid = nullptr
   ) const;
   /// Reads the newest eligible checkpoint at or before the inclusive `maximum_frame_ordinal` cutoff.
   /// Validates checkpoint references against their committed manifests and determines the globally newest two

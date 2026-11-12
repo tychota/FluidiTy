@@ -164,6 +164,71 @@ struct StopAt {
     return stage == static_cast<StopAt*>(context)->stage ? absl::CancelledError("interrupted") : absl::OkStatus();
   }
 };
+TEST_F(LiquidCacheStore3D, MixedCheckpointPublishesRepairsAndRetainsBothMaterialsTogether) {
+  const std::array bindings{
+      PlasticSolidCheckpointBinding3D{9, 11, SnowParameters3D{1200, 700, 0.025, 0.01, 4}},
+  };
+  scene.model_version = kPlasticBodyResolvedModel3D;
+  scene.plastic_bodies = bindings;
+  const auto fingerprint = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  resume.resolved_fingerprint = *fingerprint;
+  resume.execution_id = LiquidExecutionId3D(*fingerprint);
+  auto cache = LiquidCache3D::Create(root, scene);
+  ASSERT_TRUE(cache.ok()) << cache.status();
+  const DrySolidParticle3D snow{
+      .world_position = {1, 2, 3},
+      .mass = 300,
+      .reference_volume = 1,
+      .elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}},
+      .log_plastic_jacobian = -0.2,
+  };
+  const auto particle = CapturePlasticSolidCheckpointParticle3D(1, 9, 11, bindings[0].material, snow);
+  ASSERT_TRUE(particle.ok()) << particle.status();
+  SolidInteractionCheckpoint3D solid{.accepted_step = 0, .plastic_particles = {*particle}};
+  SetFrame(0);
+  EXPECT_EQ(cache->PublishFrame(points, &state, &resume).code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_FALSE(fs::exists(FramePath(0)));
+  ASSERT_TRUE(cache->PublishFrame(points, &state, &resume, {}, &solid).ok());
+  SetFrame(10);
+  solid.accepted_step = 10;
+  solid.plastic_particles[0].log_plastic_jacobian = -0.3;
+  StopAt stop{LiquidCachePublishStage3D::kManifestPublished};
+  EXPECT_EQ(
+      cache->PublishFrame(points, &state, &resume, {StopAt::Check, &stop}, &solid).code(),
+      absl::StatusCode::kCancelled
+  );
+  auto reopened = LiquidCache3D::Open(root, *fingerprint);
+  ASSERT_TRUE(reopened.ok()) << reopened.status();
+  auto initial = reopened->ReadCheckpoint();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  ASSERT_TRUE(initial->solid.has_value());
+  EXPECT_EQ(initial->state.clock.frame_ordinal, 0);
+  EXPECT_EQ(initial->solid->accepted_step, 0);
+  ASSERT_TRUE(reopened->PublishCheckpoint(state, resume, {}, &solid).ok());
+  auto repaired = reopened->ReadCheckpoint();
+  ASSERT_TRUE(repaired.ok()) << repaired.status();
+  ASSERT_TRUE(repaired->solid.has_value());
+  ASSERT_EQ(repaired->solid->plastic_particles.size(), 1);
+  EXPECT_EQ(repaired->state, state);
+  EXPECT_EQ(repaired->resume, resume);
+  EXPECT_DOUBLE_EQ(repaired->solid->plastic_particles[0].log_plastic_jacobian, -0.3);
+
+  SetFrame(20);
+  solid.accepted_step = 20;
+  ASSERT_TRUE(reopened->PublishFrame(points, &state, &resume, {}, &solid).ok());
+  EXPECT_TRUE(reopened->ReadCommittedFrame(0).ok());
+  EXPECT_EQ(reopened->ReadCheckpoint(0).status().code(), absl::StatusCode::kNotFound);
+  std::size_t coupled_blob_count = 0;
+  for (const auto& entry : fs::directory_iterator(root / "blobs")) {
+    if (entry.path().extension() == ".flsi") {
+      ++coupled_blob_count;
+    }
+    EXPECT_NE(entry.path().extension(), ".flst");
+  }
+  EXPECT_EQ(coupled_blob_count, 2);
+}
+
 TEST_F(LiquidCacheStore3D, InterruptedStagesPreserveEarlierCommitsAndAllowExactRetry) {
   constexpr LiquidCachePublishStage3D stages[] = {
       LiquidCachePublishStage3D::kTemporaryWritten,

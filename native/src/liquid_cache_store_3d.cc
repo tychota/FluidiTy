@@ -240,7 +240,10 @@ absl::StatusOr<CheckpointReference> DecodeReference(std::span<const std::uint8_t
     }
     return result;
   };
-  auto state = unpack((*root)->checkpoint(), LiquidContentKind3D::kState);
+  const auto expected_state_kind = (*root)->checkpoint()->kind() == wire::ContentKind::CoupledState
+      ? LiquidContentKind3D::kCoupledState
+      : LiquidContentKind3D::kState;
+  auto state = unpack((*root)->checkpoint(), expected_state_kind);
   auto manifest = unpack((*root)->frame_manifest(), LiquidContentKind3D::kManifest);
   if (!state.ok()) {
     return state.status();
@@ -301,6 +304,37 @@ absl::StatusOr<CheckpointReference> ReadCheckpointReference(
   STORE_TRY(VerifyLiquidContent3D(manifest->values(), reference->manifest, LiquidContentKind3D::kManifest, limits));
   return *reference;
 }
+LiquidContentKind3D CheckpointContentKind(const LiquidResolvedScene3D& scene) {
+  return scene.model_version == kPlasticBodyResolvedModel3D ? LiquidContentKind3D::kCoupledState
+                                                            : LiquidContentKind3D::kState;
+}
+
+absl::StatusOr<LiquidCacheBytes3D> EncodeStoreCheckpoint(
+    const LiquidResolvedScene3D& scene,
+    const LiquidState3D& state,
+    const LiquidResumeMetadata3D& resume,
+    const SolidInteractionCheckpoint3D* solid,
+    LiquidCacheLimits3D limits
+) {
+  if ((solid != nullptr) != (CheckpointContentKind(scene) == LiquidContentKind3D::kCoupledState)) {
+    return Failure(absl::StatusCode::kInvalidArgument);
+  }
+  if (solid == nullptr) {
+    return EncodeLiquidCheckpoint3D(state, resume, limits);
+  }
+  const auto mixed = EncodeResolvedCoupledCheckpoint3D(scene.View(), state, *solid, resume, limits);
+  if (!mixed.ok()) {
+    return mixed.status();
+  }
+  auto bytes = LiquidCacheBytes3D::Create(mixed->size());
+  if (!bytes.ok()) {
+    return bytes.status();
+  }
+  STORE_TRY(bytes->Resize(mixed->size()));
+  std::ranges::copy(*mixed, bytes->values().begin());
+  return std::move(*bytes);
+}
+
 absl::StatusOr<LiquidCheckpoint3D> ReadCheckpointRecord(
     const fs::path& root,
     const CheckpointReference& reference,
@@ -312,11 +346,29 @@ absl::StatusOr<LiquidCheckpoint3D> ReadCheckpointRecord(
   if (!frame.ok()) {
     return frame.status();
   }
-  auto bytes = ReadContent(root, reference.state, LiquidContentKind3D::kState, limits);
+  const auto expected_kind = CheckpointContentKind(scene);
+  if (reference.state.kind != expected_kind) {
+    return Failure(absl::StatusCode::kDataLoss);
+  }
+  auto bytes = ReadContent(root, reference.state, expected_kind, limits);
   if (!bytes.ok()) {
     return bytes.status();
   }
-  auto checkpoint = DecodeLiquidCheckpoint3D(bytes->values(), limits);
+  auto checkpoint = [&]() -> absl::StatusOr<LiquidCheckpoint3D> {
+    if (expected_kind == LiquidContentKind3D::kState) {
+      return DecodeLiquidCheckpoint3D(bytes->values(), limits);
+    }
+    LiquidResumeMetadata3D resume;
+    auto mixed = DecodeResolvedCoupledCheckpoint3D(scene.View(), bytes->values(), resume, limits);
+    if (!mixed.ok()) {
+      return mixed.status();
+    }
+    return LiquidCheckpoint3D{
+        .state = std::move(mixed->liquid),
+        .resume = resume,
+        .solid = std::move(mixed->solid),
+    };
+  }();
   if (!checkpoint.ok()) {
     return checkpoint.status();
   }
@@ -480,7 +532,7 @@ absl::Status PublishCheckpointRecord(
       state.clock,
       fingerprint,
       LiquidExecutionId3D(fingerprint),
-      Reference(LiquidContentKind3D::kState, encoded),
+      Reference(CheckpointContentKind(scene), encoded),
       Reference(LiquidContentKind3D::kManifest, manifest_bytes->values()),
   };
   auto reference_bytes = PrepareCheckpointReference(root, reference, limits);
@@ -618,13 +670,15 @@ absl::Status LiquidCache3D::PublishFrame(
     const LiquidPointFrame3D& points,
     const LiquidState3D* checkpoint,
     const LiquidResumeMetadata3D* resume,
-    LiquidCachePublishControl3D control
+    LiquidCachePublishControl3D control,
+    const SolidInteractionCheckpoint3D* solid
 ) const {
   if (read_only_) {
     return Failure(absl::StatusCode::kFailedPrecondition);
   }
   const bool needs_checkpoint = points.clock.frame_ordinal % 10 == 0;
-  if ((checkpoint != nullptr) != needs_checkpoint || (resume != nullptr) != needs_checkpoint) {
+  if ((checkpoint != nullptr) != needs_checkpoint || (resume != nullptr) != needs_checkpoint
+      || (!needs_checkpoint && solid != nullptr)) {
     return Failure(absl::StatusCode::kInvalidArgument);
   }
   auto point_bytes = EncodeLiquidPointFrame3D(points, limits_);
@@ -650,11 +704,14 @@ absl::Status LiquidCache3D::PublishFrame(
       }
       return initial_reference.status();
     }
+    if (initial_reference->state.kind != CheckpointContentKind(*scene)) {
+      return Failure(absl::StatusCode::kDataLoss);
+    }
   }
   LiquidCacheBytes3D checkpoint_bytes;
   if (needs_checkpoint) {
     STORE_TRY(CheckpointMatches(*checkpoint, *resume, points, *scene, fingerprint_));
-    auto encoded = EncodeLiquidCheckpoint3D(*checkpoint, *resume, limits_);
+    auto encoded = EncodeStoreCheckpoint(*scene, *checkpoint, *resume, solid, limits_);
     if (!encoded.ok()) {
       return encoded.status();
     }
@@ -685,7 +742,7 @@ absl::Status LiquidCache3D::PublishFrame(
         points.clock,
         fingerprint_,
         LiquidExecutionId3D(fingerprint_),
-        Reference(LiquidContentKind3D::kState, checkpoint_bytes.values()),
+        Reference(CheckpointContentKind(*scene), checkpoint_bytes.values()),
         Reference(LiquidContentKind3D::kManifest, manifest_bytes->values()),
     };
     auto prepared = PrepareCheckpointReference(root_directory_, reference, limits_);
@@ -697,7 +754,7 @@ absl::Status LiquidCache3D::PublishFrame(
   if (needs_checkpoint) {
     STORE_TRY(PublishContent(
         root_directory_,
-        Reference(LiquidContentKind3D::kState, checkpoint_bytes.values()),
+        Reference(CheckpointContentKind(*scene), checkpoint_bytes.values()),
         checkpoint_bytes.values(),
         limits_,
         control
@@ -750,20 +807,21 @@ absl::StatusOr<LiquidCommittedFrame3D> LiquidCache3D::ReadCommittedFrame(std::ui
 absl::Status LiquidCache3D::PublishCheckpoint(
     const LiquidState3D& checkpoint,
     const LiquidResumeMetadata3D& resume,
-    LiquidCachePublishControl3D control
+    LiquidCachePublishControl3D control,
+    const SolidInteractionCheckpoint3D* solid
 ) const {
   if (read_only_) {
     return Failure(absl::StatusCode::kFailedPrecondition);
-  }
-  auto encoded = EncodeLiquidCheckpoint3D(checkpoint, resume, limits_);
-  if (!encoded.ok()) {
-    return encoded.status();
   }
   NativeFile lease;
   STORE_TRY(Lease(root_directory_, lease, false, read_only_));
   auto scene = ReadVerifiedResolvedScene(root_directory_, fingerprint_, limits_, &resolved_reference_);
   if (!scene.ok()) {
     return scene.status();
+  }
+  auto encoded = EncodeStoreCheckpoint(*scene, checkpoint, resume, solid, limits_);
+  if (!encoded.ok()) {
+    return encoded.status();
   }
   return PublishCheckpointRecord(
       root_directory_,

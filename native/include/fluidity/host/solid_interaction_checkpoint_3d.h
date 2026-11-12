@@ -13,7 +13,9 @@
 
 namespace fluidity {
 
+struct LiquidCacheLimits3D;
 struct LiquidResolvedSceneView3D;
+struct LiquidResumeMetadata3D;
 
 struct RigidBodyHistory3D {
   RigidBody3D body;
@@ -98,5 +100,24 @@ absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCoupledCheckpoint3D(
 // require the original unbound decoder.
 absl::StatusOr<CoupledInteractionCheckpoint3D>
 DecodeResolvedCoupledCheckpoint3D(const LiquidResolvedSceneView3D& scene, std::span<const std::uint8_t> bytes);
+
+// Includes the liquid scheduler's resume metadata in the nested state.
+// Its fingerprint and execution identity must match the resolved scene.
+absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCoupledCheckpoint3D(
+    const LiquidResolvedSceneView3D& scene,
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid,
+    const LiquidResumeMetadata3D& resume,
+    const LiquidCacheLimits3D& limits
+);
+
+// Requires a nested liquid checkpoint with resume metadata and publishes
+// that metadata only after the complete scene-bound checkpoint validates.
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledCheckpoint3D(
+    const LiquidResolvedSceneView3D& scene,
+    std::span<const std::uint8_t> bytes,
+    LiquidResumeMetadata3D& resume,
+    const LiquidCacheLimits3D& limits
+);
 
 }  // namespace fluidity

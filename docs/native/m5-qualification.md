@@ -1521,8 +1521,13 @@ agree before publication. The test changes snow hardening while keeping
 the saved particle admissible. The scene-bound decoder rejects the change,
 and native and CUDA replay byte-identical second-frame checkpoints when
 the scene matches. Existing unbound FLSI v1 and v2 callers retain their
-codec. The production cache still needs a path to store and retrieve
-these scene-bound bytes alongside published frames.
+codec. The cache now stores the scene-bound bytes as one content-addressed FLSI
+blob with liquid scheduler resume metadata nested alongside the liquid
+state. The existing checkpoint reference ties both materials to the
+committed liquid point frame. An interruption after manifest publication
+leaves the prior mixed checkpoint readable. Repair publishes the new
+reference, and retention keeps the newest two mixed payloads. The cache
+fixture checks all three cases and verifies the saved snow strain.
 
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow

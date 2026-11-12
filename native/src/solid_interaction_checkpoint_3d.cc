@@ -1,5 +1,6 @@
 #include "fluidity/host/solid_interaction_checkpoint_3d.h"
 
+#include <algorithm>
 #include <cstddef>
 
 #include "fluidity/host/transfers_3d.h"
@@ -177,9 +178,11 @@ absl::StatusOr<SolidInteractionCheckpoint3D> DecodeInteractionCheckpoint(
     std::span<const std::uint8_t> bytes,
     LiquidState3D* liquid,
     std::span<const PlasticSolidCheckpointBinding3D> bindings,
-    const LiquidDigest3D* resolved_fingerprint = nullptr
+    const LiquidDigest3D* resolved_fingerprint = nullptr,
+    LiquidResumeMetadata3D* resume = nullptr,
+    LiquidCacheLimits3D limits = {}
 ) {
-  if (bytes.size() > kMaximumBytes) {
+  if (bytes.size() > std::min(kMaximumBytes, limits.maximum_bytes)) {
     return absl::ResourceExhaustedError("solid checkpoint byte capacity exceeded");
   }
   if (bytes.size() < 8 || reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(std::uint64_t) != 0) {
@@ -270,7 +273,20 @@ absl::StatusOr<SolidInteractionCheckpoint3D> DecodeInteractionCheckpoint(
     return absl::InvalidArgumentError("interaction checkpoint kind does not match decoder");
   }
   if (payload != nullptr) {
-    auto decoded = DecodeLiquidState3D({payload->data(), payload->size()});
+    if (resume != nullptr) {
+      auto checkpoint = DecodeLiquidCheckpoint3D({payload->data(), payload->size()}, limits);
+      if (!checkpoint.ok()) {
+        return checkpoint.status();
+      }
+      if (checkpoint->state.clock.accepted_step_ordinal != result.accepted_step
+          || checkpoint->resume.resolved_fingerprint != *resolved_fingerprint) {
+        return absl::InvalidArgumentError("coupled checkpoint liquid resume identity disagrees");
+      }
+      *liquid = std::move(checkpoint->state);
+      *resume = checkpoint->resume;
+      return result;
+    }
+    auto decoded = DecodeLiquidState3D({payload->data(), payload->size()}, limits);
     if (!decoded.ok()) {
       return decoded.status();
     }
@@ -332,44 +348,105 @@ absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeCoupledInteractionCheckpoin
   return CoupledInteractionCheckpoint3D{.liquid = std::move(liquid), .solid = std::move(*solid)};
 }
 
-absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCoupledCheckpoint3D(
+namespace {
+
+absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCheckpoint(
     const LiquidResolvedSceneView3D& scene,
     const LiquidState3D& liquid,
-    const SolidInteractionCheckpoint3D& solid
+    const SolidInteractionCheckpoint3D& solid,
+    const LiquidResumeMetadata3D* resume,
+    LiquidCacheLimits3D limits
 ) {
   if (scene.model_version != kPlasticBodyResolvedModel3D || !LiquidMatchesResolvedScene(liquid, scene)
       || liquid.clock.accepted_step_ordinal != solid.accepted_step) {
     return absl::InvalidArgumentError("coupled checkpoint state does not match its resolved scene");
   }
-  const auto fingerprint = ResolvedSceneFingerprint(scene);
+  const auto fingerprint = ResolvedSceneFingerprint(scene, limits);
   if (!fingerprint.ok()) {
     return fingerprint.status();
   }
-  const auto payload = EncodeLiquidState3D(liquid);
+  if (resume != nullptr && resume->resolved_fingerprint != *fingerprint) {
+    return absl::InvalidArgumentError("liquid resume metadata does not match the resolved scene");
+  }
+  const auto payload =
+      resume == nullptr ? EncodeLiquidState3D(liquid, limits) : EncodeLiquidCheckpoint3D(liquid, *resume, limits);
   if (!payload.ok()) {
     return payload.status();
   }
-  return EncodeInteractionCheckpoint(solid, payload->values(), scene.plastic_bodies, &*fingerprint);
+  auto encoded = EncodeInteractionCheckpoint(solid, payload->values(), scene.plastic_bodies, &*fingerprint);
+  if (encoded.ok() && encoded->size() > limits.maximum_bytes) {
+    return absl::ResourceExhaustedError("coupled checkpoint exceeds cache byte capacity");
+  }
+  return encoded;
 }
 
-absl::StatusOr<CoupledInteractionCheckpoint3D>
-DecodeResolvedCoupledCheckpoint3D(const LiquidResolvedSceneView3D& scene, std::span<const std::uint8_t> bytes) {
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCheckpoint(
+    const LiquidResolvedSceneView3D& scene,
+    std::span<const std::uint8_t> bytes,
+    LiquidResumeMetadata3D* resume,
+    LiquidCacheLimits3D limits
+) {
   if (scene.model_version != kPlasticBodyResolvedModel3D) {
     return absl::InvalidArgumentError("coupled checkpoint requires a resolved plastic scene");
   }
-  const auto fingerprint = ResolvedSceneFingerprint(scene);
+  const auto fingerprint = ResolvedSceneFingerprint(scene, limits);
   if (!fingerprint.ok()) {
     return fingerprint.status();
   }
   LiquidState3D liquid;
-  auto solid = DecodeInteractionCheckpoint(bytes, &liquid, scene.plastic_bodies, &*fingerprint);
+  LiquidResumeMetadata3D staged_resume;
+  auto solid = DecodeInteractionCheckpoint(
+      bytes,
+      &liquid,
+      scene.plastic_bodies,
+      &*fingerprint,
+      resume == nullptr ? nullptr : &staged_resume,
+      limits
+  );
   if (!solid.ok()) {
     return solid.status();
   }
   if (!LiquidMatchesResolvedScene(liquid, scene)) {
     return absl::InvalidArgumentError("coupled checkpoint liquid does not match its resolved scene");
   }
+  if (resume != nullptr) {
+    *resume = staged_resume;
+  }
   return CoupledInteractionCheckpoint3D{.liquid = std::move(liquid), .solid = std::move(*solid)};
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCoupledCheckpoint3D(
+    const LiquidResolvedSceneView3D& scene,
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid
+) {
+  return EncodeResolvedCheckpoint(scene, liquid, solid, nullptr, {});
+}
+
+absl::StatusOr<std::vector<std::uint8_t>> EncodeResolvedCoupledCheckpoint3D(
+    const LiquidResolvedSceneView3D& scene,
+    const LiquidState3D& liquid,
+    const SolidInteractionCheckpoint3D& solid,
+    const LiquidResumeMetadata3D& resume,
+    const LiquidCacheLimits3D& limits
+) {
+  return EncodeResolvedCheckpoint(scene, liquid, solid, &resume, limits);
+}
+
+absl::StatusOr<CoupledInteractionCheckpoint3D>
+DecodeResolvedCoupledCheckpoint3D(const LiquidResolvedSceneView3D& scene, std::span<const std::uint8_t> bytes) {
+  return DecodeResolvedCheckpoint(scene, bytes, nullptr, {});
+}
+
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledCheckpoint3D(
+    const LiquidResolvedSceneView3D& scene,
+    std::span<const std::uint8_t> bytes,
+    LiquidResumeMetadata3D& resume,
+    const LiquidCacheLimits3D& limits
+) {
+  return DecodeResolvedCheckpoint(scene, bytes, &resume, limits);
 }
 
 }  // namespace fluidity

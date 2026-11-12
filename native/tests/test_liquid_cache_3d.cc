@@ -143,6 +143,26 @@ TEST(LiquidCache3D, ResolvedPlasticBodiesAreVersionedAndCanonical) {
       DecodeCoupledInteractionCheckpoint3D(*bound_checkpoint, view.plastic_bodies).status().code(),
       absl::StatusCode::kFailedPrecondition
   );
+  auto resume = Resume();
+  resume.resolved_fingerprint = *fingerprint;
+  resume.execution_id = LiquidExecutionId3D(*fingerprint);
+  const auto restartable = EncodeResolvedCoupledCheckpoint3D(view, liquid, solid, resume, {});
+  ASSERT_TRUE(restartable.ok()) << restartable.status();
+  auto restored_resume = Resume();
+  const auto resumed = DecodeResolvedCoupledCheckpoint3D(view, *restartable, restored_resume, {});
+  ASSERT_TRUE(resumed.ok()) << resumed.status();
+  EXPECT_EQ(restored_resume, resume);
+  EXPECT_EQ(resumed->liquid, liquid);
+  ASSERT_EQ(resumed->solid.plastic_particles.size(), 1);
+  EXPECT_DOUBLE_EQ(resumed->solid.plastic_particles[0].log_plastic_jacobian, std::log(0.8));
+
+  EXPECT_FALSE(DecodeResolvedCoupledCheckpoint3D(view, *bound_checkpoint, restored_resume, {}).ok());
+  EXPECT_EQ(restored_resume, resume);
+  auto mismatched_resume = Resume();
+  EXPECT_EQ(
+      EncodeResolvedCoupledCheckpoint3D(view, liquid, solid, mismatched_resume, {}).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
   auto alternate_bindings = bindings;
   std::get<SnowParameters3D>(alternate_bindings[0].material).hardening = 5;
   auto alternate_scene = scene;
