@@ -208,6 +208,42 @@ TEST(CudaLiquidBoundary3D, GeometryAndCapillaryMatchOracle) {
         }
         measurement = gpu->measurement;
         geometry_device_ms += measurement.kernel_ms;
+        if (input.sampled_solid) {
+          const LiquidStateCapacities3D capacities{2, 8, 8, input.mac_grid.face_count(), 0};
+          auto arena = CudaLiquidArena3D::Create(capacities);
+          auto workspace = LiquidBoundaryWorkspace3D::Create(capacities);
+          EXPECT_TRUE(arena.ok()) << arena.status();
+          EXPECT_TRUE(workspace.ok()) << workspace.status();
+          if (!arena.ok() || !workspace.ok()) {
+            return !arena.ok() ? arena.status() : workspace.status();
+          }
+          const LiquidBoundaryGeometryViewInputs3D view{
+              .mac_grid = input.mac_grid.view(),
+              .cell_indices = input.cell_indices,
+              .center_distances = input.center_distances,
+              .corner_distances = input.corner_distances,
+              .obstacle = input.obstacle,
+              .step_duration = input.step_duration,
+              .liquid_density = input.liquid_density,
+              .surface_tension = input.surface_tension,
+              .sampled_solid = input.sampled_solid,
+          };
+          const auto batched = cuda_internal::FreezeLiquidGeometry3D(*arena, view, *workspace);
+          EXPECT_TRUE(batched.ok()) << batched.status();
+          if (!batched.ok()) {
+            return batched.status();
+          }
+          EXPECT_EQ(batched->cells.size(), gpu->geometry.cells().size());
+          EXPECT_EQ(batched->faces.size(), gpu->geometry.faces().size());
+          for (std::size_t i = 0; i < batched->cells.size() && i < gpu->geometry.cells().size(); ++i) {
+            EXPECT_DOUBLE_EQ(batched->cells[i].fluid_volume, gpu->geometry.cells()[i].fluid_volume);
+          }
+          for (std::size_t i = 0; i < batched->faces.size() && i < gpu->geometry.faces().size(); ++i) {
+            EXPECT_EQ(batched->faces[i].face_slot, gpu->geometry.faces()[i].face_slot);
+            EXPECT_DOUBLE_EQ(batched->faces[i].open_area, gpu->geometry.faces()[i].open_area);
+            EXPECT_DOUBLE_EQ(batched->faces[i].wall_normal_velocity, gpu->geometry.faces()[i].wall_normal_velocity);
+          }
+        }
         EXPECT_EQ(measurement.compiled_architecture, 1200);
         if (cpu.ok()) {
           EXPECT_EQ(cpu->cells().size(), gpu->geometry.cells().size());
@@ -294,6 +330,7 @@ TEST(CudaLiquidBoundary3D, GeometryAndCapillaryMatchOracle) {
   cases.ObliqueAndSimultaneousLiquidSolidClips();
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();
+  cases.SampledSolidFreezeSharesOnePressureFace();
   cases.ThetaFixtureAndSignedPressureMapping();
   cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
   {
