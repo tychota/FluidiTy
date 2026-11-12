@@ -254,6 +254,13 @@ class LiquidSubstepScheduler3D {
   // the piston trajectory stays prescribed for this attempt.
   absl::StatusOr<LiquidPlanarPistonAttempt3D>
   AttemptWithPlanarPistonPressureLoad(double step_duration, RigidBody3D piston);
+  // Advances a pressure-only, axially guided planar piston in a particle-free
+  // moving-piston scene. Body center.x is the wall coordinate in meters.
+  // The old axial velocity drives the liquid boundary; accepted pressure and
+  // external axial force update velocity for the next attempt. The guide
+  // absorbs transverse loads and torque. Force and torque are cleared.
+  // The returned body is present only on acceptance.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -262,8 +269,12 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptImpl(double step_duration, LiquidWorkPhaseObserver3D work_phase, RigidBody3D* piston_load);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
+      double step_duration,
+      LiquidWorkPhaseObserver3D work_phase,
+      RigidBody3D* piston_load,
+      bool dynamic_piston = false
+  );
   struct Impl;
   explicit LiquidSubstepScheduler3D(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

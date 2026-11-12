@@ -162,6 +162,52 @@ TEST(LiquidSubstep3D, AcceptedPistonAttemptReturnsSolvedPressureLoad) {
   EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
 }
 
+TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
+  namespace wet = wetted_piston_pressure_test;
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  const RigidBody3D piston{
+      .body_id = 17,
+      .mass = 1000.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {wet::kPistonSpeed, 0.0, 0.0},
+  };
+  const auto first = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, piston);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_TRUE(first->loaded_piston.has_value());
+  const auto next = *first->loaded_piston;
+  EXPECT_DOUBLE_EQ(next.center.x, wet::kDuration * wet::kPistonSpeed);
+  EXPECT_LT(next.linear_velocity.x, wet::kPistonSpeed);
+  EXPECT_GT(next.linear_velocity.x, 0.0);
+  const auto cells = scheduler->committed().cells.values();
+  ASSERT_EQ(cells.size(), 1);
+  EXPECT_NEAR(
+      next.linear_velocity.x,
+      wet::kPistonSpeed - wet::kDuration * 0.75 * cells.front().previous_pressure / piston.mass,
+      1e-12
+  );
+
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration, next);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_FALSE(rejected->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, wet::kDuration);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto second = scheduler->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, next);
+  ASSERT_TRUE(second.ok()) << second.status();
+  ASSERT_TRUE(second->loaded_piston.has_value());
+  const auto& measured = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measured && measured->piston_pose);
+  EXPECT_DOUBLE_EQ(measured->piston_pose->step_start_low_x_m, next.center.x);
+  EXPECT_NEAR(second->loaded_piston->center.x, next.center.x + next.linear_velocity.x * wet::kDuration / 2.0, 1e-15);
+}
+
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
   const LiquidState3D initial;
   auto scene = Scene();

@@ -393,12 +393,18 @@ struct LiquidSubstepScheduler3D::Impl {
       LiquidState3D& trial,
       LiquidAcceptedStepMeasurement3D& accepted_measurement,
       LiquidWorkPhaseObserver3D work_phase,
-      RigidBody3D* piston_load
+      RigidBody3D* piston_load,
+      bool dynamic_piston
   ) {
     auto& boundary = workspace.boundary();
     const double old_time = transaction.committed().clock.time;
     const double new_time = old_time + step_duration;
-    const auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    auto obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, old_time);
+    if (dynamic_piston) {
+      auto& tank = std::get<AxisAlignedLiquidTank3D>(obstacle);
+      tank.start_low_x = piston_load->center.x;
+      tank.piston_velocity_x = piston_load->linear_velocity.x;
+    }
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const MacDepositQuantization3D quantization{
         options.mass_per_quantum,
@@ -921,8 +927,8 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(backend.update_particles(backend.context, particle_update_inputs, trial.particles.values()));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kWhitewater, step_duration));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, step_duration));
-    const double wall_displacement_bound = step_duration
-        * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(scene.obstacle));
+    const double wall_displacement_bound =
+        step_duration * liquid_step_internal::MaximumComponentMagnitude(liquid_step_internal::WallVelocity(obstacle));
     if (wall_displacement_bound > 0.5 * trial.geometry.cell_width) {
       return Error(absl::StatusCode::kAborted);
     }
@@ -943,6 +949,17 @@ struct LiquidSubstepScheduler3D::Impl {
       }
     }
     STEP_TRY(ValidateLiquidState3D(trial));
+    if (dynamic_piston) {
+      const double axial_acceleration = piston_load->force.x / piston_load->mass;
+      const double next_velocity = std::fma(step_duration, axial_acceleration, piston_load->linear_velocity.x);
+      if (!std::isfinite(next_velocity)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      piston_load->center.x = std::get<AxisAlignedLiquidTank3D>(new_obstacle).start_low_x;
+      piston_load->linear_velocity.x = next_velocity;
+      piston_load->force = {};
+      piston_load->torque = {};
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
   }
@@ -1129,10 +1146,38 @@ LiquidSubstepScheduler3D::AttemptWithPlanarPistonPressureLoad(double step_durati
   };
 }
 
+absl::StatusOr<LiquidPlanarPistonAttempt3D>
+LiquidSubstepScheduler3D::AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston) {
+  if (!impl_->staging.wetted_piston.has_value()
+      || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(impl_->scene.field)
+      || !committed().particles.values().empty() || !impl_->scene.sources.empty() || impl_->ocean_boundary) {
+    return absl::FailedPreconditionError("dynamic piston requires a particle-free moving planar piston scene");
+  }
+  const auto validation = ValidateRigidBody3D(piston);
+  if (!validation.ok()) {
+    return validation;
+  }
+  if (piston.linear_velocity.y != 0.0 || piston.linear_velocity.z != 0.0 || piston.angular_velocity.x != 0.0
+      || piston.angular_velocity.y != 0.0 || piston.angular_velocity.z != 0.0) {
+    return absl::InvalidArgumentError("dynamic piston requires axial motion");
+  }
+  const auto outcome = AttemptImpl(step_duration, {}, &piston, true);
+  if (!outcome.ok()) {
+    return outcome.status();
+  }
+  return LiquidPlanarPistonAttempt3D{
+      .outcome = *outcome,
+      .loaded_piston = outcome->disposition == LiquidAttemptDisposition3D::kAccepted
+          ? std::optional<RigidBody3D>{piston}
+          : std::nullopt,
+  };
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     double step_duration,
     LiquidWorkPhaseObserver3D work_phase,
-    RigidBody3D* piston_load
+    RigidBody3D* piston_load,
+    bool dynamic_piston
 ) {
   auto& impl = *impl_;
   auto& diagnostics = impl.diagnostics;
@@ -1159,7 +1204,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   diagnostics.failure_code = absl::StatusCode::kOk;
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
-  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase, piston_load);
+  auto status = impl.Execute(step_duration, **trial, accepted_measurement, work_phase, piston_load, dynamic_piston);
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
