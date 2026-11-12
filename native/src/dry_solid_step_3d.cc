@@ -24,7 +24,7 @@ constexpr double Vec3::* kComponents[]{&Vec3::x, &Vec3::y, &Vec3::z};
 constexpr Vec3 Mat3::* kRows[]{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
 constexpr FaceNormalAxis kAxes[]{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
 
-Mat3 TrialDeformation(Mat3 accepted, Mat3 velocity_gradient, double duration) {
+Mat3 TrialDeformation(Mat3 accepted, Mat3 velocity_gradient, double duration, bool preserve_volume = false) {
   Mat3 trial = accepted;
   for (int axis = 0; axis < 3; ++axis) {
     const Vec3 gradient = velocity_gradient.*kRows[axis];
@@ -32,6 +32,29 @@ Mat3 TrialDeformation(Mat3 accepted, Mat3 velocity_gradient, double duration) {
     for (const auto component : kComponents) {
       const Vec3 column{accepted.x_row.*component, accepted.y_row.*component, accepted.z_row.*component};
       row.*component += duration * solid_detail::Dot(gradient, column);
+    }
+  }
+  if (preserve_volume) {
+    Mat3 increment = velocity_gradient;
+    for (auto row : kRows) {
+      Vec3& gradient_row = increment.*row;
+      gradient_row = {duration * gradient_row.x, duration * gradient_row.y, duration * gradient_row.z};
+    }
+    increment.x_row.x += 1;
+    increment.y_row.y += 1;
+    increment.z_row.z += 1;
+    const auto x = increment.x_row;
+    const auto y = increment.y_row;
+    const auto z = increment.z_row;
+    const double determinant =
+        x.x * (y.y * z.z - y.z * z.y) + x.y * (y.z * z.x - y.x * z.z) + x.z * (y.x * z.y - y.y * z.x);
+    if (determinant > 0) {
+      const double trace = velocity_gradient.x_row.x + velocity_gradient.y_row.y + velocity_gradient.z_row.z;
+      const double scale = std::exp((duration * trace - std::log(determinant)) / 3);
+      for (auto row : kRows) {
+        Vec3& trial_row = trial.*row;
+        trial_row = {scale * trial_row.x, scale * trial_row.y, scale * trial_row.z};
+      }
     }
   }
   return trial;
@@ -778,7 +801,12 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     const bool split_deformation = granular_floor_impact && !compatible_floor;
     const double incoming_duration =
         split_deformation ? settings.duration * *contact->contact_fraction : settings.duration;
-    Mat3 trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, incoming_duration);
+    Mat3 trial = TrialDeformation(
+        particle.elastic_deformation,
+        particle_gather.velocity_gradient,
+        incoming_duration,
+        compatible_floor
+    );
     if (split_deformation) {
       // Compose the two deformation increments in physical order across impact.
       const double projected_duration = settings.duration - incoming_duration;

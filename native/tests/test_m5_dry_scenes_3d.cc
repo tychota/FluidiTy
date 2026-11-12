@@ -190,6 +190,9 @@ bool TestScene(
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
   int retries = 0;
+  fluidity::Vec3 last_momentum{};
+  double maximum_tangent_residual = 0;
+  double summed_tangent_residual = 0;
   constexpr std::array early_sample_times{0.10, 0.15, 0.20, 0.25, 0.35, 0.50};
   std::size_t early_sample = 0;
   for (double t = 0; t < time; ++step) {
@@ -285,6 +288,21 @@ bool TestScene(
           status.ToString().c_str()
       );
       return false;
+    }
+    if (compatible_floor) {
+      fluidity::Vec3 momentum{};
+      for (const auto& particle : particles) {
+        momentum.x += particle.mass * particle.world_velocity.x;
+        momentum.z += particle.mass * particle.world_velocity.z;
+      }
+      const double residual_x =
+          momentum.x - last_momentum.x - budget.grid_wall_tangent_impulse.x - budget.wall_impulse_on_particles.x;
+      const double residual_z =
+          momentum.z - last_momentum.z - budget.grid_wall_tangent_impulse.z - budget.wall_impulse_on_particles.z;
+      const double residual = std::hypot(residual_x, residual_z);
+      maximum_tangent_residual = std::max(maximum_tangent_residual, residual);
+      summed_tangent_residual += residual;
+      last_momentum = momentum;
     }
     if (symmetric_affine_decay_per_second > 0) {
       // This diagnostic decays only the symmetric part of the next deposit's APIC fit.
@@ -406,6 +424,13 @@ bool TestScene(
   }
   if (retry_motion) {
     std::printf("sand accepted_steps=%d retries=%d\n", step, retries);
+  }
+  if (compatible_floor) {
+    std::printf(
+        "tangent momentum residual max_Ns=%.9g summed_Ns=%.9g\n",
+        maximum_tangent_residual,
+        summed_tangent_residual
+    );
   }
   double maximum_height = 0;
   double maximum_radius = 0;
@@ -591,7 +616,7 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
   // swept velocity still removes inward normal motion.
   const auto& elastic = particle.elastic_deformation;
   const double determinant = elastic.x_row.x * elastic.y_row.y * elastic.z_row.z;
-  const double expected_determinant = compatible_floor ? 0.99 : 1.0;
+  const double expected_determinant = compatible_floor ? std::exp(-0.01) : 1.0;
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
       && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
