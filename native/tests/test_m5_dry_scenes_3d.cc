@@ -10,6 +10,7 @@
 #include "../src/plastic_solid_checkpoint_wire_3d.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/mixed_contact_3d.h"
 #include "fluidity/host/plastic_solid_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
@@ -327,6 +328,73 @@ bool TestSandSurfaceFit() {
   const auto slopes = FitSandSurface(particles, 1);
   return slopes.size == 4 && std::abs(slopes.minimum_degrees - 30) < 1e-11
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
+}
+
+bool TestMixedContactAcceptance() {
+  fluidity::LiquidParticleState3D water{
+      .id = 7,
+      .world_position = {2, 3, 4},
+      .world_velocity = {2, 0, 0},
+      .mass = 6,
+      .volume_ratio = 0.95,
+  };
+  fluidity::PlasticSolidCheckpointParticle3D snow{
+      .particle_id = 3,
+      .body_id = 9,
+      .material_id = 1,
+      .transfer =
+          {
+              .trial_world_position = {1, 2, 3},
+              .particle_mass = 2,
+              .particle_velocity = {-2, 3, 0},
+          },
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+      .log_plastic_jacobian = std::log(0.8),
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{3, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{7, 11, 6, 0.5, {2, 0, 0}},
+  };
+  std::array faces{
+      fluidity::DetectedContactFace3D{3, contributors, 9, 11, {1, 0, 0}, 0.25},
+      fluidity::DetectedContactFace3D{6, contributors, 9, 99, {1, 0, 0}, 0.25},
+  };
+  water.world_velocity.z = -0.0;
+  if (!fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {}).ok()
+      || !std::signbit(water.world_velocity.z)) {
+    return false;
+  }
+  auto extreme_water = water;
+  extreme_water.world_velocity.x = -1.7e308;
+  auto extreme_snow = snow;
+  auto extreme_contributors = contributors;
+  extreme_contributors[0].world_face_velocity = {-4e307, 0, 0};
+  extreme_contributors[1].world_face_velocity = {4e307, 0, 0};
+  const fluidity::DetectedContactFace3D extreme_face{3, extreme_contributors, 9, 11, {1, 0, 0}, 0};
+  const auto overflow =
+      fluidity::ApplyMixedContactFaces3D({&extreme_water, 1}, 11, {&extreme_snow, 1}, {&extreme_face, 1});
+  if (overflow.status().code() != absl::StatusCode::kOutOfRange
+      || overflow.status().message() != "unrepresentable stored mixed-contact velocity"
+      || extreme_water.world_velocity.x != -1.7e308
+      || extreme_snow.transfer.particle_velocity.x != snow.transfer.particle_velocity.x) {
+    return false;
+  }
+  const auto old_water = water;
+  const auto old_snow = snow;
+  if (fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, faces).ok() || !(water == old_water)
+      || snow.transfer.particle_velocity.x != old_snow.transfer.particle_velocity.x
+      || snow.transfer.particle_velocity.y != old_snow.transfer.particle_velocity.y) {
+    return false;
+  }
+  faces[1].second_body_id = 11;
+  const auto accepted = fluidity::ApplyMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, faces);
+  return accepted.ok() && accepted->size() == 2 && std::abs(water.world_velocity.x - 1) < 1e-12
+      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12
+      && std::abs(6 * water.world_velocity.y + 2 * snow.transfer.particle_velocity.y - 6) < 1e-12
+      && water.world_position.x == old_water.world_position.x && water.volume_ratio == old_water.volume_ratio
+      && snow.log_plastic_jacobian == old_snow.log_plastic_jacobian
+      && snow.transfer.trial_world_position.x == old_snow.transfer.trial_world_position.x;
 }
 
 bool TestContactFaceBatch() {
@@ -749,10 +817,10 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestContactFaceBatch() || !TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff()
-      || !TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
-      || !TestStoredResidualMomentum() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
-      || !TestRejectsInadmissibleInitialState()) {
+  if (!TestMixedContactAcceptance() || !TestContactFaceBatch() || !TestContactFaceParticleScatter()
+      || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit() || !TestWallImpulseBudget()
+      || !TestStoredVelocityResidual() || !TestStoredResidualMomentum() || !TestUncutStressWork()
+      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);
