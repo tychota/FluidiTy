@@ -29,7 +29,11 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    carrier data. Feed the physical, interface, support and camera upper bounds
    to the width policy. Persist the eligible seconds with the accepted state,
    reset them on veto, and apply deterministic 2:1 closure at faces, edges and
-   corners before preparing a family candidate. Qualify interrupted versus
+   corners before preparing a family candidate. The frozen topology now
+   computes the minimum refinement closure in canonical leaf order and checks
+   the proposed cell count before remap. The remaining transaction must apply
+   all selected families and publish their combined inventory and face changes.
+   Qualify interrupted versus
    uninterrupted policy decisions and ensure a rejected trial cannot earn age.
 2. Extend remap from exact particle rebinning to certified split and merge.
    Preserve mass, reference and current volumes, momentum, constituent inventory
