@@ -29,7 +29,8 @@ absl::Status AdvanceDrySolidWithTransfers3D(
     const DrySolidStep3D& settings,
     std::span<DrySolidParticle3D> particles,
     DrySolidDeposit3D deposit,
-    DrySolidGather3D gather
+    DrySolidGather3D gather,
+    DrySolidStepBudget3D* budget
 );
 
 }  // namespace fluidity::internal

@@ -32,9 +32,8 @@ sweep. Sand retains the incoming normal speed for swept floor friction.
 Snow uses grid normal constraints to transfer load through the platen. The
 solver uses a force acceleration denominator of at least 1e-4 times the
 smallest particle mass. On low-mass faces this reduces the actual stress
-impulse. The Q-SOLID receipt covers the unregularized quadrature. An
-integrated energy or momentum budget for this regularization and wall
-treatment remains open.
+impulse. The Q-SOLID receipt covers the unregularized quadrature. The accepted-step fixture accounts for vertical momentum with an omitted
+stress impulse bound. A full energy balance remains open.
 
 ## Scene measurements
 
@@ -131,6 +130,38 @@ unchanged. Tangent-row retention reduced the reference and refined timestep
 shifts to 4.178286° and 2.808295°, with all four angles below 30°. Both
 controls were reverted. The next comparison needs accepted-step
 wall-contact impulse and omitted low-mass stress impulse over the pile.
+
+### Accepted-step dry momentum budget
+
+For every accepted step the fixture accumulates the absolute proposed and
+omitted stress impulses by face, the signed omitted work against the final
+face velocity, and grid and particle wall impulses separately. Particle wall
+impulse uses mass times the stored-velocity correction. The advecting
+velocity correction supplies no second impulse. The wall oracle expects
+(−0.5, 1, 0) N·s for a 1 kg point initially moving at (1, −1, 0) m/s
+with friction 0.5. A rejected destination preserves the budget sentinel.
+
+For PIC, the fixture compares final vertical particle momentum to gravity
+and the two wall impulses. It requires the absolute residual to be within
+the accumulated absolute omitted stress impulse plus 1e-6 N·s for
+floating-point and CUDA quantization effects. The check runs for both
+snow resolutions and all four sand width/timestep combinations. It uses
+a signed vertical residual and gives no full-step energy claim.
+
+| Sand h (m) | nominal dt (s) | Proposed stress L1 (N·s) | Omitted stress L1 (N·s) | Particle wall Y (N·s) | Contacts |
+|---|---:|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 16.433269 | 0.000035746 | 17.306887 | 5760 |
+| 0.0625 | 0.0015625 | 17.100097 | 0.000200861 | 17.316426 | 6824 |
+| 0.075 | 0.0009375 | 19.511169 | 0.000079376 | 17.296351 | 7763 |
+| 0.0625 | 0.00078125 | 20.819777 | 0.000261465 | 17.274316 | 8617 |
+
+Native values shown. CUDA agreed at the printed precision in the table.
+Grid wall impulse is zero in the sand fixture. The omitted stress impulse
+is at most 0.0013% of the proposed L1 impulse. Halving the timestep raises
+the number of contact events at both widths while changing net vertical
+wall impulse by less than 0.25%. This checks the aggregate budget and leaves
+the spatial and temporal distribution of floor response as an open
+explanation for the angle sensitivity.
 
 ## Reproduction
 

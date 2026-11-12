@@ -11,7 +11,8 @@ absl::Status CudaAdvanceDrySolid3D(
     const DrySolidMaterial3D& material,
     const DrySolidStep3D& settings,
     MacDepositQuantization3D quantization,
-    std::span<DrySolidParticle3D> particles
+    std::span<DrySolidParticle3D> particles,
+    DrySolidStepBudget3D* budget
 ) {
   const auto deposit = [quantization](
                            const SparseMacGrid3D& layout,
@@ -41,7 +42,7 @@ absl::Status CudaAdvanceDrySolid3D(
     CudaOperatorMeasurement measurement{};
     return CudaGatherMac3D(layout, points, old_velocities, new_velocities, results, measurement);
   };
-  return internal::AdvanceDrySolidWithTransfers3D(grid, material, settings, particles, deposit, gather);
+  return internal::AdvanceDrySolidWithTransfers3D(grid, material, settings, particles, deposit, gather, budget);
 }
 
 }  // namespace fluidity

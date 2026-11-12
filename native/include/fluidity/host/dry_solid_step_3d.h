@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <span>
 #include <variant>
@@ -36,6 +37,16 @@ struct DrySolidStep3D {
   double particle_energy_blend = 0;  // [0, 1], applied to stored velocity only.
 };
 
+struct DrySolidStepBudget3D {
+  double proposed_stress_impulse_l1 = 0;  // Sum of absolute face impulses before mass regularization, N s.
+  double omitted_stress_impulse_l1 = 0;  // Sum of absolute face impulses removed by regularization, N s.
+  double applied_stress_work = 0;  // Applied stress impulse paired with the accepted face field, J.
+  double omitted_stress_work = 0;  // Omitted stress impulse paired with that same field, J.
+  double grid_wall_impulse_y = 0;  // Signed impulse from normal grid constraints on solid, N s.
+  Vec3 wall_impulse_on_particles{};  // World impulse from the stored-velocity sweep on solid, N s.
+  std::size_t particle_wall_contacts = 0;  // Count of swept particle contacts.
+};
+
 // Advances a single dry body on a fixed uniform MAC layout with complete quadratic supports.
 // Uses APIC deposits, PIC advection, uncut stress quadrature and a stationary floor with an optional platen.
 // When enabled, the stored velocity retains 0.99 times the blend times the incoming particle residual against
@@ -45,12 +56,14 @@ struct DrySolidStep3D {
 // The bounded dry path uses no liquid pressure, cut support reconstruction, or body mixing.
 // Requires the platen gap to exceed one cell throughout the step and enforces motion and acoustic bounds.
 // Invalid inputs return InvalidArgument, inadmissible material or unsupported motion return FailedPrecondition,
-// and unrepresentable arithmetic returns OutOfRange. On failure the entire particle span is preserved.
+// and unrepresentable arithmetic returns OutOfRange. If provided, budget must be disjoint from all inputs.
+// A successful step replaces the budget. Failure preserves the entire particle span and budget.
 absl::Status AdvanceDrySolid3D(
     const SparseMacGrid3D& grid,
     const DrySolidMaterial3D& material,
     const DrySolidStep3D& settings,
-    std::span<DrySolidParticle3D> particles
+    std::span<DrySolidParticle3D> particles,
+    DrySolidStepBudget3D* budget = nullptr
 );
 
 }  // namespace fluidity
