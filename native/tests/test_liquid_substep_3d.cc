@@ -431,6 +431,34 @@ TEST(LiquidSubstep3D, GuidedPistonMeasuresAddedMassAndLightBodyAmplification) {
     }
     std::cout << "guided_piston_body_mass_kg=" << mass << " signed_step_gain=" << amplification << '\n';
   }
+  const double light_mass = 0.25 * kExpectedAddedMass;
+  auto coupled = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(coupled.ok()) << coupled.status();
+  ASSERT_TRUE(coupled->BeginFrame(wet::kDuration).ok());
+  const auto attempt = coupled->AttemptWithCoupledPlanarPiston(wet::kDuration, body(light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  ASSERT_TRUE(attempt->loaded_piston.has_value()) << coupled->diagnostics().failure_code;
+  const double expected_velocity = wet::kPistonSpeed * light_mass / (light_mass + kExpectedAddedMass);
+  EXPECT_NEAR(attempt->loaded_piston->linear_velocity.x, expected_velocity, 1e-12);
+  EXPECT_NEAR(attempt->loaded_piston->center.x, wet::kDuration * expected_velocity, 1e-12);
+  const auto& measurement = coupled->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_NEAR(measurement->step_start_inward_piston_flux_m3_per_s, kWettedArea * expected_velocity, 1e-12);
+
+  auto rejected = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(kHeight, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->BeginFrame(wet::kDuration).ok());
+  rejected->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("") : absl::OkStatus();
+          },
+  });
+  const auto refused = rejected->AttemptWithCoupledPlanarPiston(wet::kDuration, body(light_mass, wet::kPistonSpeed));
+  ASSERT_TRUE(refused.ok()) << refused.status();
+  EXPECT_EQ(refused->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(refused->loaded_piston.has_value());
+  EXPECT_DOUBLE_EQ(rejected->committed().clock.time, 0.0);
 }
 
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {

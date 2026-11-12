@@ -262,6 +262,11 @@ class LiquidSubstepScheduler3D {
   // absorbs transverse loads and torque. Force and torque are cleared.
   // The returned body is present only on acceptance.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithDynamicPlanarPiston(double step_duration, RigidBody3D piston);
+  // Couples the guided piston velocity to a single incompressible pressure
+  // cell using its frozen wall area and pressure conductance. This explicit
+  // attempt interface supports the particle-free planar scene. The coupled
+  // velocity sets both wall flux and drift. Unsupported topology rejects.
+  absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -274,8 +279,11 @@ class LiquidSubstepScheduler3D {
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
       RigidBody3D* piston_load,
-      bool dynamic_piston = false
+      bool dynamic_piston = false,
+      bool coupled_piston = false
   );
+  absl::StatusOr<LiquidPlanarPistonAttempt3D>
+  AttemptDynamicPistonImpl(double step_duration, RigidBody3D piston, bool coupled);
   struct Impl;
   explicit LiquidSubstepScheduler3D(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
