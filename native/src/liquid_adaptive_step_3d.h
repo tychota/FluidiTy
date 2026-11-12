@@ -6,6 +6,7 @@
 #include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
+#include "fluidity/host/graded_quadratic_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/viscosity.h"
 #include "liquid_remap_3d_internal.h"
@@ -27,6 +28,16 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     std::span<std::size_t> leaf_row_offsets = {}
 );
 
+// A single selected particle and its canonical rows frozen before a physical
+// attempt. The normalized old carriers reside in the owning step scratch.
+struct PreparedAdaptiveQuadraticTransfer3D {
+  std::uint64_t epoch;
+  std::size_t particle_ordinal;
+  std::uint64_t particle_id;
+  Vec3 world_position_m;
+  GradedQuadraticMacStencil3D stencil;
+};
+
 // Frozen graded tank ownership and staging. The owner is built at scheduler
 // admission and kept immutable across attempts and checkpoint restores.
 class AdaptiveLiquidStep3D {
@@ -41,7 +52,18 @@ class AdaptiveLiquidStep3D {
 
   // Dynamic payload kept by the frozen step owner between trials.
   std::size_t reserved_bytes() const;
-  absl::Status Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options);
+  // Stage a complete mixed deposit and its normalized old carriers. Empty
+  // means unsupported eligibility and selects the ordinary radial attempt.
+  absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> PrepareQuadraticTransfer(
+      const LiquidState3D& committed,
+      const LiquidStepOptions3D& options,
+      std::uint64_t particle_id
+  );
+  absl::Status Deposit(
+      const LiquidState3D& trial,
+      const LiquidStepOptions3D& options,
+      const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr
+  );
   absl::Status Project(
       LiquidState3D& trial,
       double duration,
@@ -51,7 +73,7 @@ class AdaptiveLiquidStep3D {
       MacPressureWorkspace3D& workspace,
       LiquidAcceptedStepMeasurement3D& measurement
   );
-  absl::Status Gather(const LiquidState3D& trial);
+  absl::Status Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr);
   absl::Status Update(
       LiquidState3D& trial,
       double duration,
@@ -62,6 +84,11 @@ class AdaptiveLiquidStep3D {
 
  private:
   AdaptiveLiquidStep3D(AdaptiveMacTopology3D topology, GradedMacTransfer3D transfer);
+  absl::Status NormalizeDeposits(
+      const LiquidState3D& state,
+      const LiquidStepOptions3D& options,
+      std::span<const MacFaceDeposit3D> deposits
+  );
   absl::Status AccumulateInventories(const LiquidState3D& state);
   absl::Status AdvectPressureHistory(const LiquidState3D& state, double duration);
 

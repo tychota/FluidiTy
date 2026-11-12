@@ -6,6 +6,7 @@
 #include <span>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_transfer_types_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
@@ -67,6 +68,41 @@ class GradedQuadraticMacTransfer3D {
   ) const;
 
  private:
+  friend class liquid_step_internal::AdaptiveLiquidStep3D;
+
+  // Borrow the runtime's canonical layout and apertures to bind its rows.
+  // The aperture accessor covers all canonical face slots.
+  static absl::StatusOr<GradedQuadraticMacStencil3D> BindWithLayout(
+      const GradedQuadraticMacParticle3D& particle,
+      const AdaptiveMacTopology3D& topology,
+      const GradedMacTransfer3D& transfer,
+      Vec3 world_origin,
+      std::span<const std::size_t> interior_slots,
+      absl::FunctionRef<double(std::size_t)> open_area_m2,
+      std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+  );
+  // The caller owns the prevalidated slot scratch and discards it on failure.
+  static absl::Status AccumulateBoundDeposit(
+      const MacTransferParticle3D& particle,
+      const GradedQuadraticMacStencil3D& bound,
+      std::span<MacFaceDeposit3D> deposits
+  );
+  // Check all slots in the frozen rows, including zero-weight ties.
+  static absl::Status CheckBoundCarriers(
+      const GradedQuadraticMacStencil3D& bound,
+      std::int64_t side_tag,
+      std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+  );
+  // Read both histories on the same frozen rows. Set old_pic_velocity only
+  // on success. The caller checks the old/new extents cover these rows.
+  static absl::StatusOr<MacParticleGatherResult3D> GatherBound(
+      const GradedQuadraticMacStencil3D& bound,
+      std::int64_t side_tag,
+      std::span<const LiquidAdaptiveFaceState3D> old_carrier_faces,
+      std::span<const LiquidAdaptiveFaceState3D> new_carrier_faces,
+      Vec3& old_pic_velocity
+  );
+
   GradedQuadraticMacTransfer3D(
       AdaptiveMacTopology3D topology,
       AdaptiveMacFaceOwnership3D ownership,

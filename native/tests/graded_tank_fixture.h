@@ -88,6 +88,89 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+// A fully wet same-level island adjoining coarser leaves.
+inline absl::StatusOr<std::uint64_t>
+PopulateGradedQuadraticTankFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  constexpr int kExtent = 4;
+  constexpr int kCoarseWidth = 2;
+  constexpr std::size_t kCount = kExtent * kExtent * kExtent + 4;
+  state.geometry.cell_width = 1;
+  scene.field = LiquidHorizontalPlaneSurface3D{kExtent};
+  scene.obstacle = AxisAlignedLiquidTank3D{0, kExtent + kCoarseWidth, 0, 0, kExtent, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 1;
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (int z = 0; z < kExtent; ++z) {
+    for (int y = 0; y < kExtent; ++y) {
+      for (int x = 0; x < kExtent; ++x) {
+        keys.push_back({.lower_corner = {x, y, z}, .width_exponent = 0});
+      }
+    }
+  }
+  for (int z = 0; z < kExtent; z += kCoarseWidth) {
+    for (int y = 0; y < kExtent; y += kCoarseWidth) {
+      keys.push_back({.lower_corner = {kExtent, y, z}, .width_exponent = 1});
+    }
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(kCount);
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(kCount);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  if (!cells.ok() || !particles.ok() || !faces.ok()) {
+    return absl::ResourceExhaustedError("quadratic tank fixture storage failed");
+  }
+  if (!cells->Resize(kCount).ok() || !particles->Resize(kCount).ok() || !faces->Resize(face_count).ok()) {
+    return absl::InternalError("quadratic tank fixture extent failed");
+  }
+  std::uint64_t selected_id = 0;
+  for (std::size_t ordinal = 0; ordinal < kCount; ++ordinal) {
+    const auto& leaf = topology->cells()[ordinal];
+    const auto lower = leaf.key.lower_corner;
+    auto& particle = (*particles)[ordinal];
+    particle.id = ordinal + 1;
+    particle.mass = leaf.cell_volume;
+    particle.reference_volume = leaf.cell_volume;
+    const double half_width = 0.5 * leaf.cell_width;
+    particle.world_position = {lower.x + half_width, lower.y + half_width, lower.z + half_width};
+    particle.pic_initialized = true;
+    if (lower.x == 1 && lower.y == 1 && lower.z == 1) {
+      selected_id = particle.id;
+      particle.world_position = {1.75, 1.75, 1.75};
+      particle.world_velocity = {0.015625, -0.03125, 0.0625};
+    }
+    (*cells)[ordinal] = {
+        .key = leaf.key,
+        .inventory =
+            {
+                .mass_kg = leaf.cell_volume,
+                .reference_volume_m3 = leaf.cell_volume,
+                .current_volume_m3 = leaf.cell_volume,
+                .momentum_kg_m_per_s = particle.world_velocity,
+            },
+    };
+  }
+  for (auto& face : faces->values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  state.next_particle_id = kCount + 1;
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  state.particles = std::move(*particles);
+  const auto valid = ValidateLiquidState3D(state);
+  if (!valid.ok()) {
+    return valid;
+  }
+  return selected_id;
+}
+
 // Start with a particle inventory that can be rebinned without resampling.
 inline absl::Status PopulateGradedFamilyFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
   const auto authored = PopulateGradedTankFixture3D(state, scene);

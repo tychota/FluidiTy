@@ -390,6 +390,15 @@ class LiquidSubstepScheduler3D {
   // or rejection preserves the previous ages and topology.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request);
+  // Attempt a positive duration in seconds with one particle's quadratic
+  // MAC transfer, selected by ID in the exact committed epoch. Requires a
+  // graded, incompressible particle-only tank. Unsupported carrier/support
+  // eligibility uses the ordinary radial transfer before the trial starts.
+  // A stale epoch, absent ID, malformed input or later physical failure leaves
+  // the committed state and backend publication unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveQuadraticTransfer(double step_duration, std::uint64_t committed_epoch, std::uint64_t particle_id);
+
   // Request an ownership handoff before one physical trial. The caller
   // certifies full occupancy and a carrier at the previous accepted epoch.
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(
@@ -535,7 +544,8 @@ class LiquidSubstepScheduler3D {
       FloatingBoxTrial* floating_box = nullptr,
       SnowTrial* snow = nullptr,
       AdaptiveStateTrial* adaptive_replacement = nullptr,
-      const AdaptiveWidthAgeTrial* adaptive_age = nullptr
+      const AdaptiveWidthAgeTrial* adaptive_age = nullptr,
+      std::optional<std::uint64_t> quadratic_particle_id = std::nullopt
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,
