@@ -723,7 +723,7 @@ bool TestPlasticCheckpointHandoff() {
   const auto packed = fluidity::internal::PackPlasticSolidCheckpointParticle3D(*captured);
   flatbuffers::FlatBufferBuilder builder;
   builder.Finish(builder.CreateVectorOfStructs(&packed, 1));
-  using WireVector = flatbuffers::Vector<const fluidity::solid::v1::PlasticParticle*>;
+  using WireVector = fluidity::internal::PlasticCheckpointWireVector3D;
   const auto* wire_records = flatbuffers::GetRoot<WireVector>(builder.GetBufferPointer());
   if (wire_records->size() != 1) {
     return false;
@@ -776,6 +776,25 @@ bool TestPlasticCheckpointHandoff() {
           != absl::StatusCode::kFailedPrecondition
       || fluidity::ValidatePlasticSolidCheckpointParticles3D(duplicate_ids, bindings).code()
           != absl::StatusCode::kInvalidArgument) {
+    return false;
+  }
+  const auto decode_batch = [&](const std::array<fluidity::PlasticSolidCheckpointParticle3D, 2>& records,
+                                std::size_t maximum_particle_count) {
+    const std::array wire_batch{
+        fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[0]),
+        fluidity::internal::PackPlasticSolidCheckpointParticle3D(records[1]),
+    };
+    flatbuffers::FlatBufferBuilder batch_builder;
+    batch_builder.Finish(batch_builder.CreateVectorOfStructs(wire_batch.data(), wire_batch.size()));
+    const auto* batch = flatbuffers::GetRoot<WireVector>(batch_builder.GetBufferPointer());
+    return fluidity::internal::DecodePlasticCheckpointWireVector3D(batch, bindings, maximum_particle_count);
+  };
+  const auto decoded_batch = decode_batch(mixed_records, 2);
+  const auto absent = fluidity::internal::DecodePlasticCheckpointWireVector3D(nullptr, bindings, 0);
+  if (!decoded_batch.ok() || decoded_batch->size() != 2 || (*decoded_batch)[0].particle_id != 5
+      || (*decoded_batch)[1].particle_id != 7 || !absent.ok() || !absent->empty()
+      || decode_batch(mixed_records, 1).status().code() != absl::StatusCode::kResourceExhausted
+      || decode_batch(invalid_state, 2).status().code() != absl::StatusCode::kFailedPrecondition) {
     return false;
   }
   auto uninterrupted = accepted;

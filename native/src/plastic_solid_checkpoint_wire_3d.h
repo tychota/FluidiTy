@@ -53,4 +53,31 @@ inline PlasticSolidCheckpointParticle3D UnpackPlasticSolidCheckpointParticle3D(c
   };
 }
 
+using PlasticCheckpointWireVector3D = flatbuffers::Vector<const solid::v1::PlasticParticle*>;
+
+// Decode a structurally verified optional vector from the owning FLSI envelope.
+// Check the caller's particle limit before allocating. Validate all resolved
+// body bindings and material states before returning any decoded records.
+inline absl::StatusOr<std::vector<PlasticSolidCheckpointParticle3D>> DecodePlasticCheckpointWireVector3D(
+    const PlasticCheckpointWireVector3D* wire_records,
+    std::span<const PlasticSolidCheckpointBinding3D> bindings,
+    std::size_t maximum_particle_count
+) {
+  if (wire_records != nullptr && wire_records->size() > maximum_particle_count) {
+    return absl::ResourceExhaustedError("plastic checkpoint particle count exceeds capacity");
+  }
+  std::vector<PlasticSolidCheckpointParticle3D> records;
+  if (wire_records != nullptr) {
+    records.reserve(wire_records->size());
+    for (const auto* wire_record : *wire_records) {
+      records.push_back(UnpackPlasticSolidCheckpointParticle3D(*wire_record));
+    }
+  }
+  const auto status = ValidatePlasticSolidCheckpointParticles3D(records, bindings);
+  if (!status.ok()) {
+    return status;
+  }
+  return records;
+}
+
 }  // namespace fluidity::internal

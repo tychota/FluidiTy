@@ -764,6 +764,15 @@ of a missing body binding, unsorted bindings, duplicate IDs across
 bodies, and inadmissible snow in the later record. This host validator
 does not write the production FLSI envelope.
 
+The wire decoder accepts the optional vector only after the owning
+FlatBuffers reader has verified its structure. It checks the supplied
+particle capacity before allocation and returns an owned vector only
+after semantic validation of every record. Both scene suites exercise
+the absent-vector case, a two-record vector at capacity, a vector
+above capacity, and a malformed late snow record. The remaining
+codec work is to supply the verified field, enforce the envelope
+version and pass scene bindings and the resolved particle limit.
+
 The shared plastic wire fragment is in
 schemas/simulate/plastic_solid_particle.fbs. A scratch FLSI envelope
 based on M6 ba644ea included that fragment and added the optional
