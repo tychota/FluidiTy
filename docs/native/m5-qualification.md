@@ -695,6 +695,33 @@ most 3e-10 in the mean signed change.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-three-second
 ~~~
 
+### Exact volume change under a frozen velocity gradient
+
+The specified solid update uses the Euler increment I + dt L. For a
+frozen velocity gradient the exact increment has log determinant
+dt tr(L). A temporary control isolates this volume error by scaling
+each Euler trial map by exp((dt tr(L) - log det(I + dt L)) / 3).
+The positive scalar changes the determinant while preserving principal
+directions and deviatoric log strain for the given trial. Apply the
+same rule to each part of a split floor-impact step.
+
+| h (m) | Baseline envelope | Corrected envelope, native | Baseline mean log plastic change | Corrected mean log plastic change, native |
+|---|---:|---:|---:|---:|
+| 0.075 | 21.853351° | 21.861961° | 0.002756145 | 0.002744017 |
+| 0.0625 | 20.623778° | 20.633854° | 0.002007689 | 0.002016616 |
+
+CUDA matches the corrected envelope within 0.000001° at printed
+precision. Momentum and late-drift checks pass on both backends. The
+angle changes by less than 0.011°, and the late plastic dilation changes
+by less than 0.5%. The measured dilation persists when the trial volume
+follows the trace of the frozen gradient exactly.
+
+To reproduce from 5e4201e, insert the scalar correction before the return
+in TrialDeformation in native/src/dry_solid_step_3d.cc. Use the same
+velocity gradient and duration that produced that trial. Rebuild both dry
+scene targets and run the three-second commands above. The production
+source uses the specified Euler update.
+
 ### Vertical grid alignment at the sand floor
 
 Repeat the 504-particle column drop to 1.5 s with nominal step h/80.
