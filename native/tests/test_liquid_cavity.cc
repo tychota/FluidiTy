@@ -10,6 +10,64 @@
 namespace fluidity {
 namespace {
 
+TEST(LiquidCavity3D, LineageAssignsSplitMergeBirthAndLossDeterministically) {
+  using Connectivity = LiquidAirConnectivity3D;
+  const std::array<LiquidCavityLineageState3D, 3> previous{{
+      {10, LiquidCavityInventory3D{10.0, 100000.0}},
+      {11, LiquidCavityInventory3D{4.0, 100000.0}},
+      {12, LiquidCavityInventory3D{2.0, 100000.0}},
+  }};
+  std::array<LiquidAirComponent3D, 5> current{{
+      {{0, 0, 0}, 6.0, Connectivity::kEnclosed},
+      {{1, 0, 0}, 6.0, Connectivity::kEnclosed},
+      {{2, 0, 0}, 2.0, Connectivity::kVented},
+      {{3, 0, 0}, 0.001, Connectivity::kEnclosed},
+      {{4, 0, 0}, 4.0, Connectivity::kEnclosed},
+  }};
+  constexpr std::array<LiquidAirComponentOverlap3D, 5> kOverlaps{{
+      {0, 0, 0.004},
+      {0, 1, 0.003},
+      {0, 2, 0.002},
+      {0, 3, 0.001},
+      {1, 0, 0.003},
+  }};
+  std::array<std::optional<LiquidCavityInventory3D>, 5> initial{};
+  initial.back() = LiquidCavityInventory3D{4.0, 110000.0};
+  const LiquidCavityLineageInputs3D inputs{
+      .previous = previous,
+      .current = current,
+      .overlaps = kOverlaps,
+      .initial_inventories = initial,
+      .next_id = 13,
+      .cell_width = 0.1,
+  };
+  std::array<LiquidCavityLineageCandidate3D, 5> candidates;
+  const auto result = PrepareLiquidCavityLineage3D(inputs, candidates);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(result->next_id, 15);
+  ASSERT_TRUE(candidates[0].state.inventory);
+  EXPECT_EQ(candidates[0].state.id, 10);
+  EXPECT_DOUBLE_EQ(candidates[0].state.inventory->initial_volume, 8.0);
+  ASSERT_TRUE(candidates[1].state.inventory);
+  EXPECT_EQ(candidates[1].state.id, 13);
+  EXPECT_DOUBLE_EQ(candidates[1].state.inventory->initial_volume, 3.0);
+  EXPECT_FALSE(candidates[2].state.inventory);
+  EXPECT_FALSE(candidates[3].state.inventory);
+  ASSERT_TRUE(candidates[4].state.inventory);
+  EXPECT_EQ(candidates[4].state.id, 14);
+  EXPECT_DOUBLE_EQ(candidates[4].state.inventory->initial_absolute_pressure, 110000.0);
+  const double pressure_root = std::pow(100000.0, 1.0 / 1.4);
+  EXPECT_DOUBLE_EQ(result->vented_inventory, 2.0 * pressure_root);
+  EXPECT_DOUBLE_EQ(result->subresolution_inventory, pressure_root);
+  EXPECT_DOUBLE_EQ(result->unmatched_inventory, 2.0 * pressure_root);
+
+  current[2].connectivity = Connectivity::kUnclassified;
+  EXPECT_EQ(PrepareLiquidCavityLineage3D(inputs, candidates).status().code(), absl::StatusCode::kFailedPrecondition);
+  current[2].connectivity = Connectivity::kVented;
+  initial.back().reset();
+  EXPECT_EQ(PrepareLiquidCavityLineage3D(inputs, candidates).status().code(), absl::StatusCode::kFailedPrecondition);
+}
+
 TEST(LiquidCavity3D, MeasuresCanonicalOverlapEdgesForSplitAndMerge) {
   constexpr std::array<LiquidAirVolumeCell3D, 5> kPrevious{{
       {{-2, 0, 0}, 0.25},

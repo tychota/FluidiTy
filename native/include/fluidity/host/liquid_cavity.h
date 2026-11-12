@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
@@ -64,6 +65,47 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
     double surface_tension,
     double liquid_curvature,
     double cell_width
+);
+
+struct LiquidCavityLineageState3D {
+  std::uint64_t id = 0;  // Zero when there is no inventory.
+  std::optional<LiquidCavityInventory3D> inventory;
+};
+
+struct LiquidCavityLineageCandidate3D {
+  LiquidCavityLineageState3D state;
+  double inherited_id_overlap = 0.0;  // m³ of overlap that nominated the inherited ID.
+};
+
+struct LiquidCavityLineageResult3D {
+  std::uint64_t next_id;
+  double vented_inventory = 0.0;  // m³ Pa^(1/1.4).
+  double subresolution_inventory = 0.0;  // m³ Pa^(1/1.4).
+  double unmatched_inventory = 0.0;  // m³ Pa^(1/1.4).
+};
+
+struct LiquidCavityLineageInputs3D {
+  std::span<const LiquidCavityLineageState3D> previous;  // Indexed by previous component, with unique nonzero IDs.
+  std::span<const LiquidAirComponent3D> current;
+  std::span<const LiquidAirComponentOverlap3D> overlaps;  // Unique edges in (previous,current) order.
+  std::span<const std::optional<LiquidCavityInventory3D>> initial_inventories;  // One per current component.
+  std::uint64_t next_id;  // First available ID, larger than every previous ID.
+  double cell_width;  // m.
+};
+
+// Prepares a candidate lineage for the next accepted step. Each tracked parent
+// apportions its inventory by its outgoing overlap weights. Its largest
+// resolved enclosed recipient may inherit the ID. At a merge, the strongest
+// nomination wins. Ties use canonical child order or the lower parent ID.
+// New resolved enclosed cavities with no inherited inventory require an
+// explicit initialization. Unknown recipients of tracked inventory return
+// FailedPrecondition. Lost inventory is reported by cause. The caller supplies
+// disjoint candidate scratch, which may change on error, and commits it only
+// after accepting the step. InvalidArgument covers invalid inputs and aliasing,
+// and OutOfRange covers inventory arithmetic and ID exhaustion.
+absl::StatusOr<LiquidCavityLineageResult3D> PrepareLiquidCavityLineage3D(
+    const LiquidCavityLineageInputs3D& inputs,
+    std::span<LiquidCavityLineageCandidate3D> candidates
 );
 
 struct LiquidCavityBoundaryInputs3D {

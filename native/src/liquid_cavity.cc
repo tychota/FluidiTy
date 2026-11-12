@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numbers>
 #include <tuple>
+#include <utility>
 
 #include "fluidity/host/views.h"
 
@@ -147,6 +148,159 @@ absl::StatusOr<LiquidCavityPressureState3D> EvaluateLiquidCavity3D(
       .maximum_step_duration = maximum_step_duration,
       .resolved = equivalent_radius / 2.0 >= cell_width,
   };
+}
+
+absl::StatusOr<LiquidCavityLineageResult3D> PrepareLiquidCavityLineage3D(
+    const LiquidCavityLineageInputs3D& inputs,
+    std::span<LiquidCavityLineageCandidate3D> candidates
+) {
+  if (candidates.size() != inputs.current.size() || inputs.initial_inventories.size() != inputs.current.size()
+      || !PositiveFinite(inputs.cell_width) || inputs.next_id == 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto alias = CheckWritableViews(
+      {std::as_bytes(candidates)},
+      {std::as_bytes(inputs.previous),
+       std::as_bytes(inputs.current),
+       std::as_bytes(inputs.overlaps),
+       std::as_bytes(inputs.initial_inventories),
+       std::as_bytes(std::span(&inputs, 1))}
+  );
+  if (!alias.ok()) {
+    return alias;
+  }
+  const auto valid_inventory = [](const LiquidCavityInventory3D& inventory) {
+    return PositiveFinite(inventory.initial_volume) && PositiveFinite(inventory.initial_absolute_pressure);
+  };
+  for (const auto& parent : inputs.previous) {
+    if (parent.inventory.has_value() != (parent.id != 0) || parent.id >= inputs.next_id
+        || (parent.inventory && !valid_inventory(*parent.inventory))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+  for (std::size_t current = 0; current < inputs.current.size(); ++current) {
+    const auto& component = inputs.current[current];
+    const auto& initial = inputs.initial_inventories[current];
+    if (!PositiveFinite(component.gas_volume) || component.connectivity > LiquidAirConnectivity3D::kVented
+        || (initial && !valid_inventory(*initial))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+  const auto edge_key = [](const LiquidAirComponentOverlap3D& edge) {
+    return std::pair{edge.previous_component, edge.current_component};
+  };
+  for (std::size_t index = 0; index < inputs.overlaps.size(); ++index) {
+    const auto& edge = inputs.overlaps[index];
+    if (edge.previous_component >= inputs.previous.size() || edge.current_component >= inputs.current.size()
+        || !PositiveFinite(edge.shared_cell_volume)
+        || (index > 0 && edge_key(inputs.overlaps[index - 1]) >= edge_key(edge))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+  }
+
+  const auto resolved = [&inputs](std::size_t current) {
+    return EquivalentRadius(inputs.current[current].gas_volume) / 2.0 >= inputs.cell_width;
+  };
+  const auto accumulate_loss = [](double& loss, const LiquidCavityInventory3D& inventory, double fraction) {
+    const double pressure_root = std::pow(inventory.initial_absolute_pressure, 1.0 / kPolytropicExponent);
+    loss = std::fma(inventory.initial_volume * fraction, pressure_root, loss);
+    return std::isfinite(loss);
+  };
+  std::ranges::fill(candidates, LiquidCavityLineageCandidate3D{});
+  LiquidCavityLineageResult3D result{.next_id = inputs.next_id};
+  auto remaining_edges = inputs.overlaps;
+  for (std::size_t previous = 0; previous < inputs.previous.size(); ++previous) {
+    std::size_t outgoing_count = 0;
+    while (outgoing_count < remaining_edges.size() && remaining_edges[outgoing_count].previous_component == previous) {
+      ++outgoing_count;
+    }
+    const auto outgoing = remaining_edges.first(outgoing_count);
+    remaining_edges = remaining_edges.subspan(outgoing_count);
+    const auto& parent = inputs.previous[previous];
+    if (!parent.inventory) {
+      continue;
+    }
+    if (outgoing.empty()) {
+      if (!accumulate_loss(result.unmatched_inventory, *parent.inventory, 1.0)) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      continue;
+    }
+
+    double outgoing_volume = 0.0;
+    const LiquidAirComponentOverlap3D* nomination = nullptr;
+    for (const auto& edge : outgoing) {
+      const auto connectivity = inputs.current[edge.current_component].connectivity;
+      if (connectivity == LiquidAirConnectivity3D::kUnclassified) {
+        return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+      }
+      outgoing_volume += edge.shared_cell_volume;
+      if (connectivity == LiquidAirConnectivity3D::kEnclosed && resolved(edge.current_component)
+          && (nomination == nullptr || edge.shared_cell_volume > nomination->shared_cell_volume)) {
+        nomination = &edge;
+      }
+    }
+    if (!PositiveFinite(outgoing_volume)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    for (const auto& edge : outgoing) {
+      const std::size_t current = edge.current_component;
+      const double fraction = edge.shared_cell_volume / outgoing_volume;
+      const auto connectivity = inputs.current[current].connectivity;
+      if (connectivity == LiquidAirConnectivity3D::kVented) {
+        if (!accumulate_loss(result.vented_inventory, *parent.inventory, fraction)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
+        }
+        continue;
+      }
+      if (!resolved(current)) {
+        if (!accumulate_loss(result.subresolution_inventory, *parent.inventory, fraction)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
+        }
+        continue;
+      }
+
+      auto& candidate = candidates[current];
+      const auto& existing = candidate.state.inventory;
+      const LiquidCavityInventoryShare3D share{*parent.inventory, fraction};
+      const std::array<LiquidCavityInventoryShare3D, 2> shares{{
+          {existing.value_or(*parent.inventory), 1.0},
+          share,
+      }};
+      const auto combined = CombineLiquidCavityInventoryShares3D(std::span(shares).last(existing ? 2 : 1));
+      if (!combined.ok()) {
+        return combined.status();
+      }
+      candidate.state.inventory = *combined;
+      if (nomination == &edge
+          && (edge.shared_cell_volume > candidate.inherited_id_overlap
+              || (edge.shared_cell_volume == candidate.inherited_id_overlap && parent.id < candidate.state.id))) {
+        candidate.state.id = parent.id;
+        candidate.inherited_id_overlap = edge.shared_cell_volume;
+      }
+    }
+  }
+
+  for (std::size_t current = 0; current < candidates.size(); ++current) {
+    if (inputs.current[current].connectivity != LiquidAirConnectivity3D::kEnclosed || !resolved(current)) {
+      continue;
+    }
+    auto& state = candidates[current].state;
+    if (!state.inventory) {
+      const auto& initial = inputs.initial_inventories[current];
+      if (!initial) {
+        return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+      }
+      state.inventory = *initial;
+    }
+    if (state.id == 0) {
+      if (result.next_id == std::numeric_limits<std::uint64_t>::max()) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      state.id = result.next_id++;
+    }
+  }
+  return result;
 }
 
 absl::StatusOr<LiquidCavityBoundaryPreparation3D> PrepareLiquidCavityBoundaries3D(

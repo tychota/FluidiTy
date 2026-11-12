@@ -329,3 +329,11 @@ Consecutive gas snapshots on the same MAC lattice now produce ordered component-
 The CPU fixture checked a simultaneous split and merge, duplicate edge reduction, unmatched cells, invalid component counts and insufficient scratch. Ten focused CPU tests and six real-device CUDA boundary regressions passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure' and ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. The overlap routine runs on the host. Receipts use the out/m4-cavity-overlap prefix. clang-format 19.1.5 passed.
 
 Inventory assignment, identity and loss accounting consume these weights in the next lineage step. Scheduler integration and Q-CAVITY remain open.
+
+## Cavity candidate lineage receipt
+
+Candidate lineage distributes each tracked parent's inventory in proportion to outgoing occupancy weights. The largest resolved enclosed child can keep the parent's ID. A merge keeps the strongest nominated ID, with the lower ID breaking ties. Other children and newly initialized cavities receive fresh IDs. The result accounts separately for vented, subresolution and unmatched inventory. An unknown recipient of tracked gas fails candidate preparation. New resolved cavities require an explicit initial inventory.
+
+The CPU fixture exercises simultaneous split and merge, a new cavity, all three loss counters, an unknown frontier and missing birth initialization. Eleven CPU cases passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure'. Six real-device boundary regressions passed with ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. Candidate lineage runs on the host. Receipts use the out/m4-cavity-lineage prefix. clang-format 19.1.5 passed.
+
+The scheduler still needs to own the accepted snapshots, provide initialization and exterior certificates, apply the candidate pressure and timestep bounds, and accumulate loss diagnostics on acceptance.
