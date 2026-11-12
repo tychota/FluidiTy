@@ -21,3 +21,29 @@ The shared test fixture uses finest width 0.5 m and leaves `((0,0,0),1)` and `((
 The scheduler still uses uniform block/face storage, uniform transfer and uniform checkpoint records. The checked adaptive transfer evaluator covers bounded aligned two-level patches. A production caller still needs a general graded-leaf transfer and carrier mapping, certified cut and source samples from the trial geometry, and accepted adaptive topology and inventory storage through device publication and checkpoint. The owning graph assembler allocates when it freezes the graph. Integration into the existing allocation-free attempt path needs reserved staging.
 
 The graph admits at most 4,096 pressure cells and 24,576 total subfaces, including sealed entries. The slot limit can bind before the leaf limit. No adaptive interrupted-replay or rejected-scheduler-trial receipt exists for this slice. No wave-scale runtime or memory claim is made.
+
+## Verification receipt
+
+The tested source is `0cf1df9cb83fe3bed2dd3b431b53a57fc25d083d` on base `549fb3f844841b79d14b7beb9ecfb6db9727c976`. The Windows runs used MSVC 19.44, CUDA 13.4, and an NVIDIA GeForce RTX 5060 Ti (driver 610.88). The device test reported compiled architecture 1200. The open cut-subface case measured a maximum divergence of `9.53674e-7 s⁻¹` against a `2e-5 s⁻¹` limit.
+
+The local build directories were configured with Ninja and the locked Conan toolchain. `runtime-debug` used the Windows Debug CPU profile. `runtime-cuda` used the Windows Release CUDA profile, the shared CUDA runtime, and `120-real;120-virtual`. From the worktree root with the qualified MSVC and CUDA tools on PATH:
+
+```powershell
+uv run --offline --project reference --locked --group native cmake --build out/build/runtime-debug --parallel 8
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-debug --output-on-failure -R '^MacPressure' --no-tests=error
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-debug --output-on-failure -j 8
+uv run --offline --project reference --locked --group native cmake --build out/build/runtime-cuda --target fluidity_cuda_operator_tests --parallel 6
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-cuda --output-on-failure -V -R '^CudaMacPressure3D' --no-tests=error
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/build/runtime-cuda/fluidity_cuda_operator_tests.exe '--gtest_filter=CudaMacPressure3D.ExplicitGraphMatchesEdgeAndCornerReferencePressure'
+```
+
+The complete native CPU suite passed 665 cases, including all 43 pressure cases. The CUDA run passed four cases. The adaptive GPU case reported zero Compute Sanitizer errors. Raw receipts are `out/cpu-pressure.log`, `out/cpu-final-tests.log`, `out/cuda-final-tests.log`, and `out/cuda-final-memcheck.log`.
+
+The full CUDA operator executable also passed all 42 tests:
+
+```powershell
+& ./out/build/runtime-cuda/fluidity_cuda_operator_tests.exe
+```
+
+Its raw receipt is `out/cuda-operator-suite.log`. Executable SHA-256 values are `a7eb01a41675faf00074288c7aa1f963f52914c2d839cc8412c3c1b1d7776ce8` for the CPU native tests and `e8094a2a753bb90cfc5313bb8485787e62ed8ff2a33e428b195aa4c796705f26` for the CUDA operator tests.
