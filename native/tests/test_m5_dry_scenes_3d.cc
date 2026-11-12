@@ -667,6 +667,17 @@ int main(int argc, char** argv) {
     const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, sampling_multiplier, 0.10, false, 1.5);
     return reference && refined && reference_half && refined_half ? 0 : 1;
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-grid-phase") {
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      for (const double phase : {0.0, 0.25, 0.5}) {
+        std::printf("sand floor grid offset in cell widths y=%.2f\n", phase);
+        const bool pass = TestScene(width, width / 80, false, 0, 2, 0.10, false, 1.5, 0, {0, phase * width, 0});
+        all_pass = all_pass && pass;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-grid-phase") {
     bool all_pass = true;
     for (const double width : {0.075, 0.0625}) {

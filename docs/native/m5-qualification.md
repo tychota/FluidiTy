@@ -661,6 +661,35 @@ repose gate open.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-column-long-settle
 ```
 
+### Vertical grid alignment at the sand floor
+
+Repeat the 504-particle column drop to 1.5 s with nominal step h/80.
+Translate the grid origin vertically while keeping the floor plane, column,
+and gravity fixed. This changes the location of the MAC samples relative
+to the floor without changing the physical contact or the estimator.
+
+| h (m) | Grid origin y/h | Native envelope | CUDA envelope |
+|---|---:|---:|---:|
+| 0.075 | 0.00 | 26.113921° | 26.113920° |
+| 0.075 | 0.25 | 26.149408° | 26.149408° |
+| 0.075 | 0.50 | 24.685605° | 24.685605° |
+| 0.0625 | 0.00 | 23.529643° | 23.529643° |
+| 0.0625 | 0.25 | 23.791141° | 23.791141° |
+| 0.0625 | 0.50 | 22.529780° | 22.529780° |
+
+At each grid width a half-cell shift lowers the envelope. The largest
+span across vertical alignments is 1.47°, and the steepest envelope is
+still 3.85° below the lower acceptance bound. Maximum late drift is
+0.343°. All runs satisfy the vertical momentum bound of omitted stress
+impulse plus 1e-6 N·s. Both commands exit 1 because none of the six cases
+reaches the repose window. These measurements quantify alignment
+sensitivity while leaving the cause of the remaining shallow slope open.
+
+~~~powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-floor-grid-phase
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-floor-grid-phase
+~~~
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
