@@ -20,6 +20,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Isolated face-to-particle scatter | Pass | A native host fixture deposits an unequal-weight pair, resolves it and recovers both face impulses by summing particle mass times velocity increment. The third body is untouched, and malformed contributor order rejects. The shared per-particle scatter arithmetic also ran on SM120. |
 | Isolated multi-face contact staging | Pass | A native host fixture stages two detected faces in slot order, aggregates repeated contributors, and checks combined particle momentum. A missing body on the later face, duplicate slot, and excess total weight each reject the batch. |
 | Isolated mixed-contact velocity update | Pass on host | Staged face impulses update the actual liquid and plastic stored velocities atomically. The fixture checks combined momentum, untouched liquid volume and snow history, late rejection, successful retry and final-velocity overflow rollback. |
+| Isolated planar mixed contact detection | Pass on host | Certified halfspace sweep admits an analytic interior or endpoint hit, leaves a near miss unchanged, and rejects a later overlapping candidate before publishing any impulse. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
@@ -594,6 +595,16 @@ publishing either span. The fixture exercises late face rejection,
 final-velocity overflow, an empty batch and a successful retry. This
 bridge is a host operation in both focused test binaries. It does not
 provide pressure, swept detection or mixed accepted-step publication.
+
+The planar mixed bridge now filters supplied reconstructed interfaces
+using the same certified moving-halfspace sweep as wall contact. The
+manufactured 0.25 m gap closes at 0.0625 s with a −4 m/s relative
+normal velocity. At 0.125 s the returned hit fraction is 0.5 and the
+pair impulse is 6 N·s. At 0.0625 s the hit is at the endpoint. A
+0.03125 s attempt misses, and a later overlapping candidate rejects
+without applying an earlier hit. This host bridge tests motion of
+reconstructed planes. It still needs geometry from production particles,
+post-impact position integration and pressure/acceptance coupling.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same

@@ -330,6 +330,53 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
+bool TestPlanarMixedContactDetection() {
+  fluidity::LiquidParticleState3D water{.id = 7, .world_velocity = {2, 0, 0}, .mass = 6};
+  fluidity::PlasticSolidCheckpointParticle3D snow{
+      .particle_id = 3,
+      .body_id = 9,
+      .material_id = 1,
+      .transfer = {.particle_mass = 2, .particle_velocity = {-2, 0, 0}},
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{3, 9, 2, 1, {-2, 0, 0}},
+      fluidity::ContactFaceParticle3D{7, 11, 6, 1, {2, 0, 0}},
+  };
+  const fluidity::PlanarMixedContactFace3D face{
+      .pair = {3, contributors, 9, 11, {1, 0, 0}, 0},
+      .first_interface_world_position = {0.25, 0, 0},
+      .first_interface_world_velocity = {-2, 0, 0},
+      .second_plane_start_coordinate = 0,
+      .second_interface_world_velocity = {2, 0, 0},
+  };
+  const auto missed = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.03125);
+  if (!missed.ok() || !missed->empty() || water.world_velocity.x != 2 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto invalid = face;
+  invalid.pair.face_slot = 6;
+  invalid.first_interface_world_position.x = -0.25;
+  const std::array late_overlap{face, invalid};
+  const auto rejected = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, late_overlap, 0.125);
+  if (rejected.ok() || water.world_velocity.x != 2 || snow.transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto endpoint_water = water;
+  auto endpoint_snow = snow;
+  const auto endpoint =
+      fluidity::ApplyPlanarMixedContactFaces3D({&endpoint_water, 1}, 11, {&endpoint_snow, 1}, {&face, 1}, 0.0625);
+  if (!endpoint.ok() || endpoint->size() != 1 || endpoint->front().contact_fraction != 1) {
+    return false;
+  }
+  const auto hit = fluidity::ApplyPlanarMixedContactFaces3D({&water, 1}, 11, {&snow, 1}, {&face, 1}, 0.125);
+  return hit.ok() && hit->size() == 1 && hit->front().face_slot == 3
+      && std::abs(hit->front().contact_fraction - 0.5) < 1e-12
+      && std::abs(hit->front().contact.impulse_on_first.x - 6) < 1e-12 && std::abs(water.world_velocity.x - 1) < 1e-12
+      && std::abs(snow.transfer.particle_velocity.x - 1) < 1e-12;
+}
+
 bool TestMixedContactAcceptance() {
   fluidity::LiquidParticleState3D water{
       .id = 7,
@@ -817,10 +864,10 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestMixedContactAcceptance() || !TestContactFaceBatch() || !TestContactFaceParticleScatter()
-      || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit() || !TestWallImpulseBudget()
-      || !TestStoredVelocityResidual() || !TestStoredResidualMomentum() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestPlanarMixedContactDetection() || !TestMixedContactAcceptance() || !TestContactFaceBatch()
+      || !TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit()
+      || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
+      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

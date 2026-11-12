@@ -1,8 +1,10 @@
 #include "fluidity/host/mixed_contact_3d.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
+#include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/views.h"
 
 namespace fluidity {
@@ -87,6 +89,60 @@ absl::StatusOr<std::vector<DistinctBodyContact3D>> ApplyMixedContactFaces3D(
     *bindings[index].stored_world_velocity = response->velocity_deltas[index];
   }
   return std::move(response->face_contacts);
+}
+
+absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> ApplyPlanarMixedContactFaces3D(
+    std::span<LiquidParticleState3D> liquid,
+    std::uint64_t liquid_body_id,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    std::span<const PlanarMixedContactFace3D> candidates,
+    double duration
+) {
+  if (!std::isfinite(duration) || duration <= 0) {
+    return absl::InvalidArgumentError("invalid planar mixed contact duration");
+  }
+  const auto disjoint =
+      CheckWritableViews({std::as_bytes(liquid), std::as_bytes(plastic)}, {std::as_bytes(candidates)});
+  if (!disjoint.ok()) {
+    return disjoint;
+  }
+  std::vector<DetectedContactFace3D> detected;
+  std::vector<PlanarMixedContactReceipt3D> receipts;
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    const auto& candidate = candidates[index];
+    const auto& pair = candidate.pair;
+    if (index > 0 && pair.face_slot <= candidates[index - 1].pair.face_slot) {
+      return absl::InvalidArgumentError("invalid planar mixed contact face order");
+    }
+    const LiquidWallContactInputs3D sweep{
+        .start_world_position = candidate.first_interface_world_position,
+        .stored_world_velocity = candidate.first_interface_world_velocity,
+        .advecting_world_velocity = candidate.first_interface_world_velocity,
+        .obstacle =
+            TranslatingHalfspace3D{
+                pair.normal_toward_first,
+                candidate.second_plane_start_coordinate,
+                candidate.second_interface_world_velocity,
+            },
+        .step_duration = duration,
+    };
+    const auto hit = ResolveLiquidWallContact3D(sweep);
+    if (!hit.ok()) {
+      return hit.status();
+    }
+    if (hit->contact_fraction.has_value()) {
+      detected.push_back(pair);
+      receipts.push_back({.face_slot = pair.face_slot, .contact_fraction = *hit->contact_fraction, .contact = {}});
+    }
+  }
+  const auto applied = ApplyMixedContactFaces3D(liquid, liquid_body_id, plastic, detected);
+  if (!applied.ok()) {
+    return applied.status();
+  }
+  for (std::size_t index = 0; index < receipts.size(); ++index) {
+    receipts[index].contact = (*applied)[index];
+  }
+  return receipts;
 }
 
 }  // namespace fluidity
