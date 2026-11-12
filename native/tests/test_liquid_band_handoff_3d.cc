@@ -681,6 +681,34 @@ TEST(LiquidBandPolicy3D, RefusesUnavailableGeometryAndUnsafeOwnershipChange) {
   );
 }
 
+TEST(LiquidBandPolicy3D, PreparesMeasuredOverlapAndPreservesEulerianFallback) {
+  auto carrier = LiquidAdaptiveFaceState3D{
+      .carrier_velocity = -2,
+      .validity = LiquidFaceValidity3D::kValid,
+      .side_tag = -9,
+  };
+  const MacFaceDeposit3D deposit{.deposited_mass = 2, .deposited_pure_momentum = 4};
+  const auto blend = PrepareLiquidBandOverlapFace3D(0.5, -2.5, -9, 1, deposit, carrier);
+  ASSERT_TRUE(blend.ok()) << blend.status();
+  ASSERT_TRUE(blend->has_value());
+  EXPECT_EQ((*blend)->normal_velocity_m_per_s, 0);
+  EXPECT_EQ((*blend)->particle_weight, 0.5);
+  EXPECT_FALSE((*blend)->reset_particle_to_pic);
+  const auto fallback = PrepareLiquidBandOverlapFace3D(0.5, -2.5, -9, 2, deposit, carrier);
+  ASSERT_TRUE(fallback.ok()) << fallback.status();
+  ASSERT_TRUE(fallback->has_value());
+  EXPECT_EQ((*fallback)->normal_velocity_m_per_s, -2);
+  EXPECT_TRUE((*fallback)->reset_particle_to_pic);
+  const auto deep = PrepareLiquidBandOverlapFace3D(0.5, -3, -9, 1, deposit, carrier);
+  ASSERT_TRUE(deep.ok()) << deep.status();
+  EXPECT_FALSE(deep->has_value());
+  carrier.side_tag = 9;
+  EXPECT_EQ(
+      PrepareLiquidBandOverlapFace3D(0.5, -2.5, -9, 1, deposit, carrier).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
+
 TEST(LiquidBandPolicy3D, BlendsSameSideCarriersAndUsesEulerianPicFallback) {
   constexpr LiquidBandWidths3D widths{.particle_depth_m = 12.0, .overlap_width_m = 4.0};
   LiquidAdaptiveFaceState3D particle{

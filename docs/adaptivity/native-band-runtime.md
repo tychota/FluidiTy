@@ -24,7 +24,11 @@ ctest --test-dir out/build/band-cpu -R 'PublishesProjectedAdaptiveOwnerExchange|
 ctest --test-dir out/build/band-cuda -R 'PublishesProjectedOwnerExchangeWithLateDeviceRollback|AdaptiveOwnerExchangeReplay.cuda' --output-on-failure
 ```
 
-Automatic placement from the 6h band and 2h overlap, blended carriers and mixed exchange with migrating particles remain integration work. Family remap on Eulerian-owned layouts remains unavailable. A handoff candidate currently requires half-open particle coverage, so it can refuse particles exactly on solid upper tank planes. Graded transfer and core transport still use transient host allocations. The matched-error full wave and simultaneous GPU memory gates remain open.
+`AttemptWithAdaptiveBandOverlap` explicitly blends actual same-side particle deposits and accepted Eulerian carriers on open interior subfaces touching the core. In the stationary conforming tank, the physical subface anchor selects inward depths from 4h inclusive to 6h exclusive, using the fine incident width h. The blend supplies the old-grid carrier to the pressure solve, and the corrected carrier supplies the new-grid history. A missing or low-mass particle deposit uses the Eulerian value and marks both gather histories for PIC. The accepted carrier retains its valid core classification. The existing material owners, core transport and nonzero mixed-flux refusal still apply.
+
+A projected horizontal circulation reduced its positive-normal carrier from 1 to 0.75 m/s without changing the material owners or leaf masses. The low-mass control retained the 1 m/s Eulerian carrier and used pure PIC despite a nonzero old-PIC residual. CPU and SM120 CUDA preserved the previous epoch on late rejection. Both hard-kill replays used checkpoint BLAKE3 `fd09a91e11d7554ec2bc027f52d15c17c5751246993bca174dfa094af8d23829` and produced accepted state BLAKE3 `fb8e73ed9042c283fb3190924c6f427859c793e0052d3ba3f0b2800acfa1263f`. Both reopened the accepted checkpoint.
+
+Automatic placement from the 6h band, combined overlap and mixed-face transport, and mixed exchange with migrating particles remain integration work. Family remap on Eulerian-owned layouts remains unavailable. A handoff candidate currently requires half-open particle coverage, so it can refuse particles exactly on solid upper tank planes. Graded transfer and core transport still use transient host allocations. The matched-error full wave and simultaneous GPU memory gates remain open.
 
 ## Certified planar placement in Simulate
 

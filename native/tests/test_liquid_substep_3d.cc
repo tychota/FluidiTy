@@ -133,6 +133,89 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, PublishesProjectedBandOverlapOnlyAfterAcceptance) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band overlap")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandOverlap(0.01);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt) << scheduler->diagnostics().failure_code;
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = scheduler->AttemptWithAdaptiveBandOverlap(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  const auto& committed = scheduler->committed();
+  EXPECT_EQ(committed.adaptive_faces[*slot].carrier_velocity, 0.75);
+  EXPECT_EQ(committed.adaptive_faces[*slot].validity, LiquidFaceValidity3D::kValid);
+  EXPECT_EQ(committed.next_particle_id, state.next_particle_id);
+  for (std::size_t leaf = 0; leaf < committed.adaptive_cells.size(); ++leaf) {
+    EXPECT_EQ(committed.adaptive_cells[leaf].material_owner, state.adaptive_cells[leaf].material_owner);
+    EXPECT_EQ(committed.adaptive_cells[leaf].inventory.mass_kg, state.adaptive_cells[leaf].inventory.mass_kg);
+  }
+}
+
+TEST(LiquidSubstep3D, BandOverlapEulerianLowMassFallbackUsesPurePic) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  auto options = Options();
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.minimum_face_mass = 1;
+  options.particle_energy_blend = 1;
+  std::vector<LiquidBoundaryParticleGather3D> recorded;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &recorded;
+  backend.update_particles =
+      [](void* context, const LiquidParticleUpdateInputs3D& inputs, std::span<LiquidParticleState3D> particles) {
+        auto& gather = *static_cast<std::vector<LiquidBoundaryParticleGather3D>*>(context);
+        gather.assign(inputs.gathered.begin(), inputs.gathered.end());
+        const auto cpu = CpuLiquidSubstepBackend3D();
+        return cpu.update_particles(cpu.context, inputs, particles);
+      };
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto accepted = scheduler->AttemptWithAdaptiveBandOverlap(0.01);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  const auto& committed = scheduler->committed();
+  EXPECT_EQ(committed.adaptive_faces[*slot].carrier_velocity, 1);
+  EXPECT_EQ(committed.adaptive_faces[*slot].validity, LiquidFaceValidity3D::kValid);
+  ASSERT_EQ(recorded.size(), committed.particles.size());
+  bool observed_nonzero_residual = false;
+  for (std::size_t ordinal = 0; ordinal < recorded.size(); ++ordinal) {
+    const auto& gather = recorded[ordinal];
+    if (gather.particle_minus_old_pic_velocity.x == 0 && gather.particle_minus_old_pic_velocity.z == 0) {
+      continue;
+    }
+    observed_nonzero_residual = true;
+    EXPECT_TRUE(gather.old_pic_fallback);
+    EXPECT_TRUE(gather.new_pic_fallback);
+    EXPECT_FALSE(gather.affine_enabled);
+    const auto velocity = committed.particles[ordinal].world_velocity;
+    EXPECT_EQ(velocity.x, gather.new_pic_velocity.x);
+    EXPECT_EQ(velocity.y, gather.new_pic_velocity.y);
+    EXPECT_EQ(velocity.z, gather.new_pic_velocity.z);
+  }
+  EXPECT_TRUE(observed_nonzero_residual);
+}
+
 TEST(LiquidSubstep3D, PublishesProjectedAdaptiveOwnerExchangeOnlyAfterAcceptance) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

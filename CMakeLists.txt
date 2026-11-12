@@ -443,6 +443,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu exchange)
   set_tests_properties(AdaptiveOwnerExchangeReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveBandOverlapReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu overlap)
+  set_tests_properties(AdaptiveBandOverlapReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(fluidity_adaptive_family_fixture PRIVATE FLUIDITY_ADAPTIVE_FIXTURE_CUDA)
     target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_cuda_operators CUDA::cudart)
@@ -476,6 +480,10 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda exchange)
     set_tests_properties(AdaptiveOwnerExchangeReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveBandOverlapReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda overlap)
+    set_tests_properties(AdaptiveBandOverlapReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
   endif()
 
   if(FLUIDITY_ENABLE_CUDA)

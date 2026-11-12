@@ -551,14 +551,25 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   const bool merge = scenario == "quadratic-merge";
   const bool quadratic = merge || scenario == "quadratic-split";
   const bool exchange = scenario == "exchange";
+  const bool overlap = scenario == "overlap";
   const bool persistent = scenario == "quadratic-persistent";
-  const auto family_scenario =
-      band || width || batch || physical || quadratic || exchange || persistent ? std::string_view{} : scenario;
+  const auto family_scenario = band || width || batch || physical || quadratic || exchange || overlap || persistent
+      ? std::string_view{}
+      : scenario;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   std::optional<test::QuadraticFamilyReplayFixture3D> quadratic_fixture;
   std::uint64_t persistent_particle_id = 0;
+  std::optional<std::size_t> overlap_slot;
   const auto authored = [&]() -> absl::Status {
+    if (overlap) {
+      const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+      if (!slot.ok()) {
+        return slot.status();
+      }
+      overlap_slot = *slot;
+      return absl::OkStatus();
+    }
     if (persistent) {
       const auto selected = test::PopulateGradedQuadraticTankFixture3D(state, scene);
       if (!selected.ok()) {
@@ -590,7 +601,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return authored;
   }
   const auto capacities = [&] {
-    if (persistent) {
+    if (persistent || overlap) {
       return LiquidStateCapacities3D{
           state.particles.size(),
           0,
@@ -648,6 +659,10 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     const std::uint8_t exchange_identity[]{1, 4, 8, 4};
     resume.resolved_fingerprint = LiquidContentDigest3D(exchange_identity);
   }
+  if (overlap) {
+    const std::uint8_t overlap_identity[]{1, 4, 32, 5};
+    resume.resolved_fingerprint = LiquidContentDigest3D(overlap_identity);
+  }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = capacities;
   if (mode == "resume") {
@@ -657,7 +672,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells = (quadratic || persistent)
+    const std::size_t expected_cells = (quadratic || persistent || overlap)
         ? state.adaptive_cells.size()
         : (exchange ? 8 : (batch ? 19 : (band || physical ? 5 : 12)));
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
@@ -774,7 +789,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return absl::OkStatus();
   };
 
-  if (!exchange && mode != "resume") {
+  if (!exchange && !overlap && mode != "resume") {
     const auto refined = [&] {
       if (persistent) {
         constexpr double kDuration = 0.001;
@@ -838,6 +853,23 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 
   const auto continued = [&] {
+    if (overlap) {
+      constexpr double kDuration = 0.01;
+      const auto begun = scheduler->BeginFrame(kDuration);
+      if (!begun.ok()) {
+        return begun;
+      }
+      const auto attempted = scheduler->AttemptWithAdaptiveBandOverlap(kDuration);
+      if (!attempted.ok()) {
+        return attempted.status();
+      }
+      if (attempted->disposition != LiquidAttemptDisposition3D::kAccepted
+          || scheduler->committed().adaptive_faces[*overlap_slot].carrier_velocity != 0.75) {
+        return absl::FailedPreconditionError("replay did not publish the projected band overlap");
+      }
+      return scheduler->FinishFrame();
+    }
+
     if (persistent) {
       const auto advanced = scheduler->AdvanceFrame(0.002);
       if (!advanced.ok()) {
@@ -882,7 +914,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!continued.ok()) {
     return continued;
   }
-  if (batch || physical || quadratic || exchange || persistent) {
+  if (batch || physical || quadratic || exchange || overlap || persistent) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -893,7 +925,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return absl::FailedPreconditionError("fixture requires SM120 device code");
   }
 #endif
-  if (exchange) {
+  if (exchange || overlap) {
     const auto encoded = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
     if (!encoded.ok()) {
       return encoded.status();
@@ -907,7 +939,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       return restarted.status();
     }
     if (restarted->committed() != scheduler->committed()) {
-      return absl::DataLossError("projected owner exchange changed during checkpoint restart");
+      return absl::DataLossError("projected core carrier state changed during checkpoint restart");
     }
   }
   const auto final_state = EncodeLiquidState3D(scheduler->committed());
@@ -928,7 +960,8 @@ int main(int argc, char** argv) {
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
       && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "quadratic-split"
-      && scenario != "quadratic-merge" && scenario != "quadratic-persistent" && scenario != "exchange") {
+      && scenario != "quadratic-merge" && scenario != "quadratic-persistent" && scenario != "exchange"
+      && scenario != "overlap") {
     return 2;
   }
   const std::string_view backend = argv[1];
