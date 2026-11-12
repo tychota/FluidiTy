@@ -678,7 +678,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     std::span<PlasticSolidCheckpointParticle3D> plastic,
     double maximum_path_length,
     MixedPressureProjector3D project,
-    std::optional<double> wall_plane_coordinate
+    std::optional<double> wall_plane_coordinate,
+    std::optional<SnowParameters3D> snow_layer_material
 ) {
   const auto disjoint = CheckWritableViews(
       {std::as_writable_bytes(liquid), std::as_writable_bytes(plastic)},
@@ -880,18 +881,10 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     particle.volume_ratio = volume_ratio;
   }
 
-  auto particle = plastic_trial.begin();
-  for (const auto& contributor : contributors) {
-    particle = std::ranges::lower_bound(
-        particle,
-        plastic_trial.end(),
-        contributor.particle_id,
-        {},
-        &PlasticSolidCheckpointParticle3D::particle_id
-    );
-    const auto velocity = particle->transfer.particle_velocity;
+  const auto drift_snow = [&](PlasticSolidCheckpointParticle3D& particle) -> absl::Status {
+    const auto velocity = particle.transfer.particle_velocity;
     const auto end = AdvanceAtCommonImpact(
-        particle->transfer.trial_world_position,
+        particle.transfer.trial_world_position,
         velocity,
         velocity,
         inputs.step_duration,
@@ -902,7 +895,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
       return end.status();
     }
     const auto swept = ResolveLiquidWallContact3D({
-        .start_world_position = particle->transfer.trial_world_position,
+        .start_world_position = particle.transfer.trial_world_position,
         .stored_world_velocity = velocity,
         .advecting_world_velocity = velocity,
         .obstacle = liquid_side,
@@ -914,7 +907,89 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     if (swept->contact_fraction.has_value()) {
       return absl::FailedPreconditionError("planar pressure snow transport crosses the reconstructed wall");
     }
-    particle->transfer.trial_world_position = *end;
+    particle.transfer.trial_world_position = *end;
+    return absl::OkStatus();
+  };
+  if (snow_layer_material.has_value()) {
+    const auto accepted_snow = RestoreDrySolidCheckpointParticles3D(
+        plastic,
+        plastic.front().body_id,
+        plastic.front().material_id,
+        DrySolidMaterial3D{*snow_layer_material}
+    );
+    if (!accepted_snow.ok()) {
+      return accepted_snow.status();
+    }
+    const auto normal_coordinate = [&](const PlasticSolidCheckpointParticle3D& particle) {
+      return (wall.unit_normal.*wall_component) * (particle.transfer.trial_world_position.*wall_component);
+    };
+    const auto [back, front] = std::ranges::minmax_element(plastic, {}, normal_coordinate);
+    const auto back_ordinal = static_cast<std::size_t>(back - plastic.begin());
+    const auto front_ordinal = static_cast<std::size_t>(front - plastic.begin());
+    const double thickness = normal_coordinate(*front) - normal_coordinate(*back);
+    if (!std::isfinite(thickness) || thickness <= 0) {
+      return absl::InvalidArgumentError("planar snow strain requires a positive layer thickness");
+    }
+    const double geometry_tolerance = 1e-10 * width;
+    for (const auto& contributor : contributors) {
+      const auto particle = std::ranges::lower_bound(
+          plastic,
+          contributor.particle_id,
+          {},
+          &PlasticSolidCheckpointParticle3D::particle_id
+      );
+      if (std::abs(normal_coordinate(*particle) - normal_coordinate(*front)) > geometry_tolerance) {
+        return absl::InvalidArgumentError("planar snow pressure contributor is off the front layer");
+      }
+    }
+    for (auto& particle : plastic_trial) {
+      if (particle.body_id != front->body_id) {
+        return absl::InvalidArgumentError("planar snow strain requires one body");
+      }
+      const auto status = drift_snow(particle);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+    const double moved_back = normal_coordinate(plastic_trial[back_ordinal]);
+    const double moved_thickness = normal_coordinate(plastic_trial[front_ordinal]) - moved_back;
+    const double normal_stretch = moved_thickness / thickness;
+    if (!std::isfinite(normal_stretch) || normal_stretch <= 0) {
+      return absl::FailedPreconditionError("planar snow layer collapsed");
+    }
+    constexpr std::array deformation_rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+    for (std::size_t ordinal = 0; ordinal < plastic_trial.size(); ++ordinal) {
+      auto& particle = plastic_trial[ordinal];
+      const double expected =
+          moved_back + normal_stretch * (normal_coordinate(plastic[ordinal]) - normal_coordinate(*back));
+      if (std::abs(normal_coordinate(particle) - expected) > geometry_tolerance) {
+        return absl::FailedPreconditionError("planar snow layer motion is not affine");
+      }
+      auto trial_deformation = particle.elastic_deformation;
+      auto& normal_row = trial_deformation.*deformation_rows[wall_axis];
+      normal_row = distinct_contact_detail::AddScaled({}, normal_row, normal_stretch);
+      SolidDeformationState3D returned{};
+      if (!ReturnSnowDeformation3D(trial_deformation, particle.log_plastic_jacobian, *snow_layer_material, returned)) {
+        return absl::FailedPreconditionError("inadmissible planar snow deformation");
+      }
+      particle.elastic_deformation = returned.elastic_deformation;
+      particle.log_plastic_jacobian = returned.log_plastic_jacobian;
+    }
+  } else {
+    auto particle = plastic_trial.begin();
+    for (const auto& contributor : contributors) {
+      particle = std::ranges::lower_bound(
+          particle,
+          plastic_trial.end(),
+          contributor.particle_id,
+          {},
+          &PlasticSolidCheckpointParticle3D::particle_id
+      );
+      const auto status = drift_snow(*particle);
+      if (!status.ok()) {
+        return status;
+      }
+    }
   }
   std::ranges::copy(plastic_trial, plastic.begin());
   std::ranges::copy(liquid_trial, liquid.begin());
@@ -929,7 +1004,8 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
     std::span<PlasticSolidCheckpointParticle3D> snow,
     double maximum_path_length,
     MixedPressureProjector3D project,
-    std::optional<double> wall_plane_coordinate
+    std::optional<double> wall_plane_coordinate,
+    std::optional<SnowParameters3D> snow_layer_material
 ) {
   const auto& committed = transaction.committed();
   const auto geometry = inputs.mac_grid.geometry();
@@ -1002,7 +1078,8 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
       snow_trial,
       maximum_path_length,
       project,
-      wall_plane_coordinate
+      wall_plane_coordinate,
+      snow_layer_material
   );
   if (!pressure.ok()) {
     const bool retry = pressure.status().code() == absl::StatusCode::kFailedPrecondition;
@@ -1096,7 +1173,8 @@ absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
           snow,
           settings.maximum_path_length,
           project,
-          frozen->wall_plane_coordinate
+          frozen->wall_plane_coordinate,
+          settings.snow_layer_material
       );
       if (!attempt.ok()) {
         return attempt.status();

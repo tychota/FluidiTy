@@ -634,6 +634,76 @@ bool TestPlanarMixedContactDetection() {
       || frame_snow.transfer.particle_velocity.x != 4) {
     return false;
   }
+  std::array deforming_snow{frame_snow, frame_snow};
+  deforming_snow[0].elastic_deformation = kIdentity;
+  deforming_snow[0].log_plastic_jacobian = 0;
+  deforming_snow[1] = deforming_snow[0];
+  deforming_snow[1].particle_id = 4;
+  deforming_snow[1].transfer.trial_world_position.x = -1.125;
+  deforming_snow[1].transfer.particle_velocity.x = 3;
+  auto deformation_settings = frame_settings;
+  deformation_settings.target_time = 0.0625;
+  deformation_settings.nominal_step_duration = 0.0625;
+  deformation_settings.maximum_path_length = 0.25;
+  deformation_settings.snow_layer_material = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
+  const auto compressed_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      deforming_snow,
+      single_traction,
+      deformation_settings,
+      project
+  );
+  if (!compressed_frame.ok()) {
+    std::fprintf(stderr, "M5 pressure-driven snow deformation: %s\n", compressed_frame.status().ToString().c_str());
+    return false;
+  }
+  if (compressed_frame->snow.size() != deforming_snow.size()) {
+    return false;
+  }
+  if (std::abs(compressed_frame->snow[0].transfer.trial_world_position.x + 0.75) > 1e-12
+      || std::abs(compressed_frame->snow[1].transfer.trial_world_position.x + 0.9375) > 1e-12
+      || std::abs(compressed_frame->liquid.cells[0].previous_pressure - 12) > 1e-12) {
+    std::fprintf(
+        stderr,
+        "M5 compression positions %.17g %.17g pressure %.17g\n",
+        compressed_frame->snow[0].transfer.trial_world_position.x,
+        compressed_frame->snow[1].transfer.trial_world_position.x,
+        compressed_frame->liquid.cells[0].previous_pressure
+    );
+    return false;
+  }
+  for (const auto& particle : compressed_frame->snow) {
+    const double elastic_jacobian = particle.elastic_deformation.x_row.x;
+    if (std::abs(elastic_jacobian - 0.975) > 1e-12
+        || std::abs(elastic_jacobian * std::exp(particle.log_plastic_jacobian) - 0.75) > 1e-12) {
+      std::fprintf(
+          stderr,
+          "M5 compression Jacobians %.17g %.17g\n",
+          elastic_jacobian,
+          std::exp(particle.log_plastic_jacobian)
+      );
+      return false;
+    }
+  }
+  auto middle = deforming_snow[1];
+  middle.particle_id = 5;
+  middle.transfer.trial_world_position.x = -1;
+  middle.transfer.particle_velocity.x = 0;
+  const std::array nonaffine_snow{deforming_snow[0], deforming_snow[1], middle};
+  const auto rejected_deformation = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      nonaffine_snow,
+      single_traction,
+      deformation_settings,
+      project
+  );
+  if (rejected_deformation.status().code() != absl::StatusCode::kFailedPrecondition || accepted_liquid.clock.time != 0
+      || nonaffine_snow[0].transfer.trial_world_position.x != -0.875 || nonaffine_snow[0].log_plastic_jacobian != 0) {
+    return false;
+  }
+
   const fluidity::DrySolidMaterial3D checkpoint_snow = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
   const std::array checkpoint_bindings{
       fluidity::PlasticSolidCheckpointBinding3D{snow.body_id, snow.material_id, checkpoint_snow},

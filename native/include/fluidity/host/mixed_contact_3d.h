@@ -177,7 +177,10 @@ absl::StatusOr<FrozenPlanarSnowPressureCell3D> FreezePlanarSnowPressureCell3D(
 // incident cell along the wall axis and must match its wet volume.
 // Advances volume from the same
 // regular-cell field. On success both spans receive the candidate state;
-// otherwise neither span changes. The caller owns rebinning and acceptance.
+// otherwise neither span changes. With a snow layer material, all snow
+// particles drift and the affine change of normal thickness drives a
+// constitutive return. Pressure contributors must be on the front layer.
+// The caller owns rebinning and acceptance.
 absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     const MacPressureInputs3D& inputs,
     std::size_t wall_face_ordinal,
@@ -186,7 +189,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     std::span<PlasticSolidCheckpointParticle3D> plastic,
     double maximum_path_length,
     MixedPressureProjector3D project,
-    std::optional<double> wall_plane_coordinate = std::nullopt
+    std::optional<double> wall_plane_coordinate = std::nullopt,
+    std::optional<SnowParameters3D> snow_layer_material = std::nullopt
 );
 
 struct PlanarSnowPressureAttempt3D {
@@ -210,7 +214,8 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
     std::span<PlasticSolidCheckpointParticle3D> snow,
     double maximum_path_length,
     MixedPressureProjector3D project,
-    std::optional<double> wall_plane_coordinate = std::nullopt
+    std::optional<double> wall_plane_coordinate = std::nullopt,
+    std::optional<SnowParameters3D> snow_layer_material = std::nullopt
 );
 
 struct PlanarSnowPressureFrameSettings3D {
@@ -223,6 +228,7 @@ struct PlanarSnowPressureFrameSettings3D {
   double target_time;  // Absolute frame end in seconds.
   double nominal_step_duration;  // Upper bound in seconds.
   double maximum_path_length;  // Per-step limit in meters.
+  std::optional<SnowParameters3D> snow_layer_material;  // Enables affine normal strain from snow layer motion.
 };
 
 struct PlanarSnowPressureFrame3D {

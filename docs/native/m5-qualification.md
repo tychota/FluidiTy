@@ -45,6 +45,7 @@ dry-scene target retains the sand and snow qualification cases.
 | Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
 | Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
 | Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
+| Planar snow-layer compression under water pressure | Pass for the one-cell affine layer fixture | Native and CUDA produce 12 Pa and reduce thickness from 0.25 m to 0.1875 m. The elastic Jacobian clamps at 0.975 and the combined Jacobian is 0.75. The frame rejects non-affine normal motion and preserves both input states. |
 | Joint planar snow–water checkpoint replay | Pass in the combined M5/M6 integration worktree | The moving cut-cell driver restarts liquid and compressed snow from FLSI v2. A failed frame preserves the checkpoint. The next completed checkpoint is byte-identical to uninterrupted execution on each backend. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
@@ -1309,3 +1310,25 @@ platen fixture now splits at reversal and removal. The dry solver reuses
 the existing owned stencil and wall sweep, with a local scratch stress
 accumulator. M6's separately reviewed single-particle transfer commit was
 not cherry-picked into this branch.
+
+### Pressure-driven planar snow deformation
+
+The optional snow material enables normal strain for one snow body. The
+pressure contributors must lie on the front layer. All normal particle
+displacements must fit the affine thickness change within 1e-10 cell widths.
+The driver applies the normal stretch to the elastic trial deformation and
+uses the snow constitutive return to update the elastic map and log plastic
+Jacobian in the same frame transaction.
+
+The analytic fixture advances 0.0625 s with the front and back particles
+0.25 m apart. The pressure reaction reduces front speed from 4 to 2 m/s
+while the back advances at 3 m/s. The final coordinates are -0.75 m and
+-0.9375 m. The pressure is 12 Pa. The elastic Jacobian is 0.975 and the
+product of the elastic and plastic Jacobians is 0.75. The checks use
+absolute tolerances of 1e-12 in the respective units. An incompatible
+interior particle exhausts retries and preserves the input states.
+
+The authored Blender snow–water scene still requires production liquid
+integration with general moving-interface reconstruction and internal snow
+stress evolution. Run both planar fixtures with the build and CTest
+commands in the checkpoint replay section above.
