@@ -177,11 +177,68 @@ absl::Status ApplyForces(
   }
   return absl::OkStatus();
 }
+struct BoxParticleReaction {
+  const TranslatingContactBox3D& box;
+  Vec3 impulse{};
+};
+
+// For a static, frictionless tank, every trajectory component is monotone
+// until the tank clamps it. This bounds the entire tank-corrected path.
+bool TankCorrectedPathClearsBox(Vec3 start, Vec3 end, const TranslatingContactBox3D& box, double duration) {
+  const auto box_end_low = boundary_internal::Advance(box.world_low, box.wall_velocity, duration);
+  const auto box_end_high = boundary_internal::Advance(box.world_high, box.wall_velocity, duration);
+  constexpr double kInfinity = std::numeric_limits<double>::infinity();
+  for (auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    const double swept_low = std::min(box.world_low.*component, std::nextafter(box_end_low.*component, -kInfinity));
+    const double swept_high = std::max(box.world_high.*component, std::nextafter(box_end_high.*component, kInfinity));
+    if (std::max(start.*component, end.*component) < swept_low
+        || std::min(start.*component, end.*component) > swept_high) {
+      return true;
+    }
+  }
+  return false;
+}
+
+absl::StatusOr<RigidBoxContact3D>
+ResolveBoxInTank(const LiquidWallContactInputs3D& inputs, const TranslatingContactBox3D& box, double mass) {
+  auto box_inputs = inputs;
+  box_inputs.obstacle = std::monostate{};
+  const auto box_contact = ResolveTranslatingBoxContact3D(box_inputs, box, mass);
+  if (!box_contact.ok()) {
+    return box_contact.status();
+  }
+  const auto tank_sweep = boundary_internal::ResolveContact(boundary_internal::PackContact(inputs));
+  if (!tank_sweep.ok()) {
+    return boundary_internal::ArithmeticStatus(tank_sweep.status(), true);
+  }
+  const auto tank_contact = boundary_internal::UnpackContact(*tank_sweep);
+  if (tank_contact.contact_fraction) {
+    if (box_contact->contact.contact_fraction
+        || !TankCorrectedPathClearsBox(
+            inputs.start_world_position,
+            tank_contact.world_position,
+            box,
+            inputs.step_duration
+        )) {
+      return Error(absl::StatusCode::kAborted);
+    }
+    return RigidBoxContact3D{.contact = tank_contact, .body_impulse = {}, .body_angular_impulse = {}};
+  }
+  // Before box impact the unconstrained path cleared the tank. The corrected
+  // remainder is a segment in the convex tank if its endpoint also clears.
+  const double tank_clearance =
+      liquid_step_internal::SolidDistance(inputs.obstacle, box_contact->contact.world_position);
+  if (!std::isfinite(tank_clearance) || tank_clearance < 0.0) {
+    return Error(absl::StatusCode::kAborted);
+  }
+  return *box_contact;
+}
 absl::Status UpdateParticle(
     const LiquidParticleUpdateInputs3D& inputs,
     std::size_t index,
     LiquidParticleState3D& particle,
-    double* piston_impulse = nullptr
+    double* piston_impulse = nullptr,
+    BoxParticleReaction* box_reaction = nullptr
 ) {
   const auto& gather = inputs.gathered[index];
   const bool fallback = gather.old_pic_fallback || gather.new_pic_fallback || gather.low_mass_fallback;
@@ -202,7 +259,20 @@ absl::Status UpdateParticle(
     divergence = field->divergence;
   } else {
     divergence = gather.velocity_gradient.x_row.x + gather.velocity_gradient.y_row.y + gather.velocity_gradient.z_row.z;
-    const double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
+    double solid_distance = liquid_step_internal::SolidDistance(inputs.obstacle, particle.world_position);
+    if (box_reaction != nullptr) {
+      const auto& box = box_reaction->box;
+      const auto position = particle.world_position;
+      const double box_clearance = std::max({
+          box.world_low.x - position.x,
+          position.x - box.world_high.x,
+          box.world_low.y - position.y,
+          position.y - box.world_high.y,
+          box.world_low.z - position.z,
+          position.z - box.world_high.z,
+      });
+      solid_distance = std::min(solid_distance, box_clearance);
+    }
     if (std::isnan(solid_distance)) {
       return Error(absl::StatusCode::kOutOfRange);
     }
@@ -223,25 +293,39 @@ absl::Status UpdateParticle(
       .friction_coefficient = inputs.friction_coefficient,
       .penetration_tolerance = inputs.penetration_tolerance,
   };
-  double piston_velocity_change = 0.0;
-  const auto contact = boundary_internal::ResolveContact(
-      boundary_internal::PackContact(contact_inputs),
-      nullptr,
-      piston_impulse == nullptr ? nullptr : &piston_velocity_change
-  );
-  if (!contact.ok()) {
-    return boundary_internal::ArithmeticStatus(contact.status(), true);
-  }
-  if (piston_impulse != nullptr) {
-    *piston_impulse -= particle.mass * piston_velocity_change;
-    if (!std::isfinite(*piston_impulse)) {
+  LiquidWallContactResult3D contact;
+  if (box_reaction != nullptr) {
+    const auto resolved = ResolveBoxInTank(contact_inputs, box_reaction->box, particle.mass);
+    if (!resolved.ok()) {
+      return resolved.status();
+    }
+    contact = resolved->contact;
+    box_reaction->impulse = liquid_step_internal::Add(box_reaction->impulse, resolved->body_impulse);
+    if (!liquid_step_internal::Finite(box_reaction->impulse)) {
       return Error(absl::StatusCode::kOutOfRange);
+    }
+  } else {
+    double piston_velocity_change = 0.0;
+    const auto resolved = boundary_internal::ResolveContact(
+        boundary_internal::PackContact(contact_inputs),
+        nullptr,
+        piston_impulse == nullptr ? nullptr : &piston_velocity_change
+    );
+    if (!resolved.ok()) {
+      return boundary_internal::ArithmeticStatus(resolved.status(), true);
+    }
+    contact = boundary_internal::UnpackContact(*resolved);
+    if (piston_impulse != nullptr) {
+      *piston_impulse -= particle.mass * piston_velocity_change;
+      if (!std::isfinite(*piston_impulse)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
     }
   }
   const Vec3 displacement{
-      contact->world_position.x - particle.world_position.x,
-      contact->world_position.y - particle.world_position.y,
-      contact->world_position.z - particle.world_position.z,
+      contact.world_position.x - particle.world_position.x,
+      contact.world_position.y - particle.world_position.y,
+      contact.world_position.z - particle.world_position.z,
   };
   if (liquid_step_internal::MaximumComponentMagnitude(displacement) > 0.5 * inputs.cell_width) {
     return liquid_step_internal::Error(absl::StatusCode::kAborted);
@@ -250,8 +334,8 @@ absl::Status UpdateParticle(
   if (!std::isfinite(volume_ratio) || volume_ratio <= 0) {
     return liquid_step_internal::Error(absl::StatusCode::kAborted);
   }
-  particle.world_position = contact->world_position;
-  particle.world_velocity = contact->stored_world_velocity;
+  particle.world_position = contact.world_position;
+  particle.world_velocity = contact.stored_world_velocity;
   particle.volume_ratio = volume_ratio;
   particle.velocity_slopes = gather.fitted_velocity_slopes;
   particle.affine_enabled = gather.affine_enabled;
@@ -316,6 +400,48 @@ absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
     return status;
   }
   return piston_impulse;
+}
+
+absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&inputs.obstacle);
+  if (tank == nullptr || tank->piston_velocity_x != 0.0 || inputs.friction_coefficient != 0.0
+      || !inputs.regular_cell_transport.empty() || inputs.gathered.size() != trial_particles.size()
+      || inputs.liquid_distances.size() != trial_particles.size()) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto particle_bytes = std::as_bytes(trial_particles);
+  if (Overlap(particle_bytes, std::as_bytes(inputs.gathered))
+      || Overlap(particle_bytes, std::as_bytes(inputs.liquid_distances))
+      || Overlap(particle_bytes, std::as_bytes(std::span(&box, 1)))) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto records = liquid_step_internal::ValidateParticleUpdateRecords(inputs, trial_particles);
+  if (!records.ok()) {
+    return records;
+  }
+  BoxParticleReaction reaction{box};
+  for (std::size_t index = 0; index < trial_particles.size(); ++index) {
+    const auto status = UpdateParticle(inputs, index, trial_particles[index], nullptr, &reaction);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return reaction.impulse;
+}
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  const auto impulse = UpdateCpuLiquidParticlesWithBoxImpulse3D(inputs, box, trial_particles);
+  if (!impulse.ok()) {
+    return impulse.status();
+  }
+  return impulse->y;
 }
 
 namespace {

@@ -9,6 +9,7 @@
 
 #include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/mac_pressure_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 
 namespace fluidity {
 
@@ -90,6 +91,16 @@ struct LiquidBoundaryGeometryInputs3D {
   // Used only at cells incident to open air links with positive surface tension.
   std::optional<double> exact_outward_interface_curvature = std::nullopt;
 };
+struct AxisAlignedFloatingBoxGeometry3D {
+  Vec3 world_low;  // Lower solid corner at freeze time, meters.
+  Vec3 world_high;  // Upper solid corner at freeze time, meters.
+  double liquid_height;  // World Y coordinate of the horizontal free surface, meters.
+};
+struct OrientedFloatingBoxGeometry3D {
+  RigidBodyPose3D pose;
+  Vec3 body_half_extent;  // Positive half extents in body-frame meters.
+  double liquid_height;  // World Y coordinate of the horizontal free surface.
+};
 struct FrozenLiquidCell3D {
   CellIndex3D cell_index;
   double fluid_volume;  // Liquid intersect nonsolid, m³.
@@ -159,6 +170,25 @@ struct LiquidPressureProblem3D {
 };
 
 class FrozenLiquidBoundaryGeometry3D;
+
+// CPU freeze for a single finite box and a horizontal liquid surface. Center
+// and corner samples must be signed distances to that plane. Faces on a box
+// plane are blocked over the transverse overlap. Wall velocities remain zero
+// because wetted box patches supply the integrated pressure-row flux. Supports
+// a stationary open tank with strict clearance around the box. Rejects other
+// obstacles, ambiguous overlap, invalid geometry and disconnected wet cells.
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const AxisAlignedFloatingBoxGeometry3D& box
+);
+
+// CPU geometry freeze for the posed box under a horizontal surface. Supports
+// a stationary tank with strict clearance. Rejects cut pressure cells whose
+// connected exterior cannot be established, and publishes no result on error.
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const OrientedFloatingBoxGeometry3D& box
+);
 namespace boundary_internal {
 struct GeometryBackend;
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);

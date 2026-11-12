@@ -51,6 +51,31 @@ struct LiquidWallContactResult3D {
 // that cannot certify contact or its accepted endpoint. Failure publishes no result.
 absl::StatusOr<LiquidWallContactResult3D> ResolveLiquidWallContact3D(const LiquidWallContactInputs3D& inputs);
 
+struct TranslatingContactBox3D {
+  Vec3 world_low;  // Start-time lower solid corner, meters.
+  Vec3 world_high;  // Start-time upper solid corner, meters.
+  Vec3 wall_velocity;  // Constant world velocity, m/s.
+};
+
+struct RigidBoxContact3D {
+  LiquidWallContactResult3D contact;
+  Vec3 body_impulse;  // Opposite of the stored particle momentum change, N s.
+  Vec3 body_angular_impulse;  // About the translating box center at impact, N m s.
+};
+
+// Sweeps the proposed point path against a finite translating box, with no
+// rotation. Requires a monostate obstacle in inputs and positive mass in kg.
+// An interior start rejects. A grazing path stays free except for stored
+// inward velocity at an initially touching face that the path stays on.
+// Exact simultaneous entries select the first face in x, y, z order.
+// Applies the selected face's Coulomb response once and counts only the
+// stored-velocity reaction. Returns code-only errors, including OutOfRange
+// when the sweep ordering or accepted exterior position cannot be certified.
+absl::StatusOr<RigidBoxContact3D> ResolveTranslatingBoxContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    double mass
+);
 // Stable blade ID and incident side in the blade's authored normal convention.
 // Zero ID and zero sign denote an unassigned particle. Assigned signs are +/-1.
 struct ElasticBladeSide3D {

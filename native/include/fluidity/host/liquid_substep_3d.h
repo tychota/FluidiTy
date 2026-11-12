@@ -256,6 +256,12 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct LiquidFloatingBoxAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
+  std::optional<double> added_mass_kg;  // Measured for an accepted coupled attempt.
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -333,6 +339,25 @@ class LiquidSubstepScheduler3D {
   // attempt interface supports the particle-free planar scene. The coupled
   // velocity sets both wall flux and drift. Unsupported topology rejects.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston);
+  // Advances an upright box guided along world Y in a stationary open tank.
+  // Requires CPU, an analytic horizontal surface, zero friction and no sources.
+  // The start velocity drives frozen wall flux and drift. Solved pressure and
+  // external force and particle reaction update the next velocity. The guide absorbs transverse
+  // force and torque. Half extents are in meters and must stay clear of walls.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Advances an axis-aligned box with all three translations free. Uses the
+  // same stationary tank and material restrictions as the guided attempt.
+  // A rotational constraint absorbs torque. Wall flux and drift use the
+  // old velocity, and solved pressure and contact update the next velocity.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithTranslatingFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Couples vertical wall flux and body inertia over one frozen pressure solve.
+  // Requires the incompressible, zero-surface-tension scene.
+  // The coupled velocity drives final flux, drift and particle contact.
+  // The accepted contact impulse updates the next velocity after pressure.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -341,13 +366,24 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
+  struct FloatingBoxTrial {
+    RigidBody3D body;
+    AxisAlignedFloatingBoxGeometry3D geometry;
+    Vec3 half_extent;
+    bool coupled;
+    bool vertical_guide;
+    std::optional<double> added_mass_kg;
+  };
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, bool coupled, bool vertical_guide);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
       RigidBody3D* piston_load,
       bool dynamic_piston = false,
       bool coupled_piston = false,
-      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
+      FloatingBoxTrial* floating_box = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

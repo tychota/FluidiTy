@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_types_3d.h"
 
@@ -41,6 +43,9 @@ struct RigidBodyStep3D {
 // Checks finite world position and a unit body-to-world quaternion within 1e-12.
 absl::Status ValidateRigidBodyPose3D(RigidBodyPose3D pose);
 
+// Maps a finite body-frame vector to world axes using the unit orientation.
+// Invalid input returns InvalidArgument and an unrepresentable result OutOfRange.
+absl::StatusOr<Vec3> RotateRigidBodyVector3D(RigidOrientation3D orientation, Vec3 body_vector);
 // Checks body identity, positive finite mass and principal inertia, pose and
 // finite velocities and loads. A malformed body returns InvalidArgument.
 absl::Status ValidateRigidBody3D(const RigidBody3D& body);
@@ -60,6 +65,71 @@ struct RigidPressurePatch3D {
   Vec3 outward_body_normal;  // Unit normal pointing out of the rigid body.
 };
 
+// Clips a finite world-axis-aligned box to a horizontal liquid plane (wet
+// below liquid_height). Each positive-area rectangle is assigned to the
+// exterior pressure cell, with cells strictly ordered by (z, y, x). Returns
+// patches in x-/x+/y-/y+/z-/z+ and then pressure-cell order. Coordinates are
+// meters. Invalid bounds or ordering return InvalidArgument, missing wet
+// coverage returns FailedPrecondition, and unrepresentable geometry returns
+// OutOfRange. Failure returns no patches.
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatches3D(
+    std::uint64_t body_id,
+    Vec3 box_low,
+    Vec3 box_high,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+);
+// Clips the posed box surface against the horizontal liquid plane and the
+// selected uniform pressure cells. Half extents are in the body frame, meters.
+// Patches follow body-face and then (z,y,x) pressure-cell order. A face on a
+// lattice plane uses the exterior cell. Missing wet coverage beyond area
+// roundoff returns FailedPrecondition. Invalid inputs or unrepresentable
+// geometry return InvalidArgument or OutOfRange. No partial output is returned.
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::span<const CellIndex3D> pressure_cells
+);
+// Streams oriented patches without allocation in the same order as the owning
+// builder. The cell accessor must return stable, strictly ordered indices.
+// Stage visitor writes until success because coverage checks can reject late.
+// Arithmetic and validation failures are code-only. Visitor errors propagate.
+absl::Status VisitOrientedBoxPressurePatches3D(
+    const RigidBody3D& body,
+    Vec3 body_half_extent,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+);
+// Streams the axis-aligned patches without allocation. Callbacks borrow a stable
+// pressure-cell ordering and must stage any writes until success because a
+// later validation or visitor error can reject the visit. Errors are code-only.
+absl::Status VisitFloatingBoxPressurePatches3D(
+    std::uint64_t body_id,
+    Vec3 box_low,
+    Vec3 box_high,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+);
+// Integrates the rigid surface velocity over wetted patches. Returns one
+// flux in m³/s per pressure cell, positive into the liquid. Affine rigid
+// velocity makes centroid evaluation exact for each planar patch. Patches
+// use the same ordering and ownership as pressure traction. Only pass
+// patches not already represented by a prescribed MAC face flux. Malformed
+// inputs return InvalidArgument and range failures return OutOfRange.
+absl::StatusOr<std::vector<double>> ComputeRigidBodyInwardWallFlux3D(
+    const RigidBody3D& body,
+    std::size_t pressure_cell_count,
+    std::span<const RigidPressurePatch3D> patches
+);
 // Adds pressure traction and its moment about the body center, in patch ID
 // order. Pressure and ambient pressure share a reference and are in pascals.
 // Patches must be disjoint, strictly ordered by ID, and belong to the body.

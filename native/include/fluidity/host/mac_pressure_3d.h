@@ -17,6 +17,9 @@ struct MacPressureCell3D {
   double target_divergence;  // Prescribed divergence in s⁻¹.
   double bulk_modulus;  // Positive Pa. Positive infinity selects zero compliance.
   double previous_pressure;  // Pressure before the step in Pa.
+  // Flux through a solid boundary inside the cell, positive into the liquid.
+  // In m³/s. Excludes any contribution already represented by an incident MAC face.
+  double integrated_inward_wall_flux = 0.0;
 };
 
 // The jump in Pa enters the pressure correction as p_tail − p_head + pressure_jump.

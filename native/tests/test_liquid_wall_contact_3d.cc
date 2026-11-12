@@ -1,5 +1,78 @@
 #include "liquid_wall_contact_3d_cases.h"
 namespace fluidity::boundary_test {
+TEST(LiquidWallContact3D, FiniteBoxDetectsCrossingAndReturnsOneBodyReaction) {
+  const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
+  const LiquidWallContactInputs3D input{
+      .start_world_position = {0.0, 0.75, 0.5},
+      .stored_world_velocity = {3.25, 0.0, 0.0},
+      .advecting_world_velocity = {4.25, 0.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto result = ResolveTranslatingBoxContact3D(input, box, 2.0);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_TRUE(result->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*result->contact.contact_fraction, 0.25);
+  EXPECT_DOUBLE_EQ(result->contact.world_position.x, 1.25);
+  EXPECT_DOUBLE_EQ(result->contact.stored_world_velocity.x, 0.25);
+  EXPECT_DOUBLE_EQ(result->contact.advecting_world_velocity.x, 0.25);
+  EXPECT_DOUBLE_EQ(result->body_impulse.x, 6.0);
+  EXPECT_DOUBLE_EQ(result->body_angular_impulse.z, -1.5);
+
+  auto grazing = input;
+  grazing.start_world_position.y = 1.0;
+  const auto miss = ResolveTranslatingBoxContact3D(grazing, box, 2.0);
+  ASSERT_TRUE(miss.ok()) << miss.status();
+  EXPECT_FALSE(miss->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(miss->contact.world_position.x, 4.25);
+  EXPECT_DOUBLE_EQ(miss->body_impulse.x, 0.0);
+
+  auto interior = input;
+  interior.start_world_position.x = 1.125;
+  EXPECT_EQ(ResolveTranslatingBoxContact3D(interior, box, 2.0).status().code(), absl::StatusCode::kFailedPrecondition);
+}
+
+TEST(LiquidWallContact3D, FiniteBoxResolvesCornerTiesAndEndpointImpact) {
+  const TranslatingContactBox3D box{{1.0, 1.0, 0.0}, {2.0, 2.0, 1.0}, {}};
+  LiquidWallContactInputs3D input{
+      .start_world_position = {0.0, 0.0, 0.5},
+      .stored_world_velocity = {1.0, 1.0, 0.0},
+      .advecting_world_velocity = {1.0, 1.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto tied = ResolveTranslatingBoxContact3D(input, box, 1.0);
+  ASSERT_TRUE(tied.ok()) << tied.status();
+  ASSERT_TRUE(tied->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*tied->contact.contact_fraction, 1.0);
+  EXPECT_DOUBLE_EQ(tied->contact.outward_normal.x, -1.0);
+  EXPECT_DOUBLE_EQ(tied->body_impulse.x, 1.0);
+  EXPECT_DOUBLE_EQ(tied->body_impulse.y, 0.0);
+
+  input.start_world_position = {0.0, 1.0, 0.5};
+  input.advecting_world_velocity = {1.0, 1.0, 0.0};
+  const auto corner_graze = ResolveTranslatingBoxContact3D(input, box, 1.0);
+  ASSERT_TRUE(corner_graze.ok()) << corner_graze.status();
+  EXPECT_FALSE(corner_graze->contact.contact_fraction.has_value());
+}
+TEST(LiquidWallContact3D, FiniteBoxConstrainsTouchingStoredMotionAndRejectsCollapsedBounds) {
+  const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
+  const LiquidWallContactInputs3D input{
+      .start_world_position = {1.0, 0.25, 0.5},
+      .stored_world_velocity = {1.25, 0.0, 0.0},
+      .advecting_world_velocity = {0.25, 0.5, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto touching = ResolveTranslatingBoxContact3D(input, box, 3.0);
+  ASSERT_TRUE(touching.ok()) << touching.status();
+  ASSERT_TRUE(touching->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*touching->contact.contact_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(touching->contact.world_position.x, 1.25);
+  EXPECT_DOUBLE_EQ(touching->contact.world_position.y, 0.75);
+  EXPECT_DOUBLE_EQ(touching->body_impulse.x, 3.0);
+
+  auto unresolved = box;
+  unresolved.wall_velocity.x = 0x1p55;
+  EXPECT_EQ(ResolveTranslatingBoxContact3D(input, unresolved, 3.0).status().code(), absl::StatusCode::kOutOfRange);
+}
 TEST(LiquidWallContact3D, OpenTankSweepsAndConstrainsBothVelocities) {
   ContactCases cases(ResolveLiquidWallContact3D);
   cases.OpenTankSweepsAndConstrainsBothVelocities();

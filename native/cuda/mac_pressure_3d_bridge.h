@@ -10,6 +10,7 @@ namespace fluidity::cuda_internal {
 struct PressureCell3D {
   double fluid_volume;  // m³.
   double integrated_target_flux;  // V s, m³/s.
+  double integrated_inward_wall_flux;  // Interior boundary flux, m³/s.
   double compliance;  // (m³/s)/Pa.
   double previous_pressure;
   double integrated_rhs;

@@ -711,6 +711,33 @@ TEST(MacPressure3D, RetainsAnchoredPreviousPressureMean) {
   EXPECT_DOUBLE_EQ(result->cell_pressures.front(), 5.0);
 }
 
+TEST(MacPressure3D, InteriorMovingWallFluxEntersRhsAndPhysicalDefect) {
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, kUnitBlock, kUnitBlock.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  std::array cells{MacPressureCell3D{
+      .cell_index = {0, 0, 0},
+      .fluid_volume = 1.0,
+      .bulk_modulus = 2.0,
+      .previous_pressure = 4.0,
+      .integrated_inward_wall_flux = 0.5,
+  }};
+  const auto faces = SealedFacesAtX(0);
+  const auto prepared = PrepareMacPressureSystem3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(prepared.ok()) << prepared.status();
+  const auto old = EvaluateMacPressure3D(*prepared, std::array{4.0});
+  ASSERT_TRUE(old.ok()) << old.status();
+  EXPECT_DOUBLE_EQ(old->true_residuals.front(), 0.5);
+  EXPECT_DOUBLE_EQ(old->cell_constraint_defects.front(), -0.5);
+  const auto result = ProjectMacPressure3D({*grid, 1.0, cells, faces});
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_DOUBLE_EQ(result->integrated_rhs.front(), 2.5);
+  EXPECT_DOUBLE_EQ(result->cell_pressures.front(), 5.0);
+  EXPECT_DOUBLE_EQ(result->cell_constraint_defects.front(), 0.0);
+
+  cells.front().bulk_modulus = kInfinity;
+  const auto closed = ProjectMacPressure3D({*grid, 1.0, cells, faces});
+  EXPECT_EQ(closed.status().code(), absl::StatusCode::kFailedPrecondition);
+}
 TEST(MacPressure3D, ExhaustsOneIterationWithoutPublishingOrMutatingInputs) {
   auto problem = MakeAffineProblem(-3, 4, false);
   const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());

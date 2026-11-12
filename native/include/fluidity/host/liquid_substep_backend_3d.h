@@ -247,5 +247,21 @@ absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
     std::span<LiquidParticleState3D> trial_particles
 );
 
+// Updates trial particles against a translating finite box and a static,
+// frictionless tank. Returns the vertical impulse on the box in N s.
+// Requests a retry when a second contact in the step cannot be excluded.
+// The caller discards trial particles on failure.
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+);
+// Same checked update, returning all three world components of box impulse.
+absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+);
+
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity
