@@ -1752,15 +1752,25 @@ foreach ($case in 'fine', 'coarse', 'coarse-half', 'fine-half') {
   .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle $case
 }
 ```
-The nominal fine case reproduced the native 27.424648-degree final
-angle and 0.223715-degree late drift. The process returned a failed
-qualification because the final angle was outside the 30–35 degree band.
+The nominal CUDA cases reproduced the native measurements. Each process
+returned a failed qualification because the final angle was below 30°.
+
+| Case | Final angle | Late drift | Vertical momentum residual (N·s) |
+|---|---:|---:|---:|
+| Fine | 27.424648° | 0.223715° | -0.000100054 |
+| Coarse | 29.962967° | 0.114904° | -0.000015571 |
 
 The milestone branch includes upstream `db4636d`, which adds the M6
 rigid-frame path and liquid gather and tank-contact momentum accounting.
 After rebuilding the CLI and fixture, `SimulateCli.rigid_frame`,
 `SimulateCli.cpu_execution`, and `SimulateCli.execution_validation` all
-passed. The integrated rigid path retains the mixed initial-state gate.
+passed. All six `M5*.native` CTest targets also passed in the integrated
+build. The CUDA planar coupling, plastic checkpoint, snow compaction,
+and constitutive targets also passed after rebuilding. The Windows
+incremental build missed header dependencies in the old piston and snow
+test objects. Recompiling those translation units resolved the stale
+link symbol and the stale budget layout in the rollback fixture.
+The integrated rigid path retains the mixed initial-state gate.
 The remaining production evidence is an authored Blender snow–water bake
 with general moving-interface reconstruction, reciprocal pressure and
 contact through the liquid scheduler, internal snow stress evolution, and
