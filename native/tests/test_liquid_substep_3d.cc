@@ -1087,6 +1087,14 @@ void ExpectOrientedFloatingBoxHydrostaticWeight(bool explicit_composition) {
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       EXPECT_DOUBLE_EQ(attempt->oriented_loads->external_force.y, -kWeight);
       EXPECT_NEAR(attempt->oriented_loads->pressure_force.y, kWeight, 2e-6);
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
+      const auto& tank_pressure = *attempt->oriented_loads->tank_pressure;
+      EXPECT_NEAR(tank_pressure.force.x, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.force.y, 7.65625, 2e-6);
+      EXPECT_NEAR(tank_pressure.force.z, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.x, -7.65625, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.y, 0.0, 2e-6);
+      EXPECT_NEAR(tank_pressure.torque.z, 7.65625, 2e-6);
       const double draft = 0.75 - (attempt->body->center.y - kHalfExtent.y);
       max_draft_error = std::max(max_draft_error, std::abs(draft - kInitialDraft));
       max_net_force = std::max(
@@ -1314,6 +1322,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       ExpectStoredLiquidMomentumBudget(
           initial_momentum,
           scheduler->committed().particles.values(),
@@ -1352,6 +1361,8 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       const auto attempt = replay->AttemptWithOrientedFloatingBox(kDt, history.body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value());
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       history = {*attempt->body, {history.body.center, history.body.orientation}};
       ASSERT_TRUE(replay->FinishFrame().ok());
     }
@@ -1416,6 +1427,7 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code << " stage "
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       const auto& loads = *attempt->oriented_loads;
       const double momentum_change = body.mass * (attempt->body->linear_velocity.y - body.linear_velocity.y);
       const double angular_momentum_change =
@@ -1477,6 +1489,8 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       const auto attempt = replay->AttemptWithCoupledOrientedFloatingBox(kDt, history.body, kHalfExtent);
       ASSERT_TRUE(attempt.ok()) << attempt.status();
       ASSERT_TRUE(attempt->body.has_value());
+      ASSERT_TRUE(attempt->oriented_loads.has_value());
+      ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
       history = {*attempt->body, {history.body.center, history.body.orientation}};
       ASSERT_TRUE(replay->FinishFrame().ok());
     }

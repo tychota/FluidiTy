@@ -256,6 +256,11 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct TankPressureLoad3D {
+  Vec3 force{};  // World N exerted by the stationary tank on the liquid.
+  Vec3 torque{};  // World N m about the world origin, exerted on the liquid.
+};
+
 struct OrientedFloatingBoxLoads3D {
   Vec3 external_force{};  // World N, supplied at step start.
   Vec3 external_torque{};  // World N m about the box center.
@@ -265,6 +270,7 @@ struct OrientedFloatingBoxLoads3D {
   Vec3 particle_angular_impulse{};  // World N m s about the center at impact.
   Vec3 liquid_gather_impulse{};  // World N s, committed-to-gathered particle momentum change before contact.
   Vec3 tank_particle_impulse{};  // World N s, stationary tank contact on particles.
+  std::optional<TankPressureLoad3D> tank_pressure;  // Present when the pressure cells cover every wet tank wall.
 };
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;

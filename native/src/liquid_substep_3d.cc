@@ -1374,43 +1374,46 @@ struct LiquidSubstepScheduler3D::Impl {
         pressure_problem.cells = rows;
         return absl::OkStatus();
       };
+      const auto accumulate_pressure_patch =
+          [&](RigidBody3D& body, std::span<const double> pressures, const RigidPressurePatch3D& patch) -> absl::Status {
+        auto pressure_patch = patch;
+        auto patch_pressures = pressures;
+        double reconstructed_pressure = 0.0;
+        double pressure_gradient_y = 0.0;
+        const bool supports_hydrostatic_gradient = !uses_composition_density || scene.constituent_materials.size() == 1;
+        if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
+          const auto geometry = grid.geometry();
+          const auto cell = links->cells[patch.pressure_cell_index].cell_index;
+          const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
+              patch.world_centroid.y,
+              {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
+          );
+          if (!centroid_to_cell.ok()) {
+            return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
+          }
+          const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
+          pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
+          reconstructed_pressure =
+              std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
+          patch_pressures = {&reconstructed_pressure, 1};
+          pressure_patch.pressure_cell_index = 0;
+        }
+        const auto loaded = AccumulateRigidBodyPressure3D(
+            body,
+            patch_pressures,
+            scene.ambient_pressure,
+            {&pressure_patch, 1},
+            pressure_gradient_y
+        );
+        if (!loaded.ok()) {
+          return loaded.status();
+        }
+        body = *loaded;
+        return absl::OkStatus();
+      };
       const auto load_box = [&](std::span<const double> pressures, RigidBody3D body) -> absl::StatusOr<RigidBody3D> {
         STEP_TRY(visit_box_patches([&](const RigidPressurePatch3D& patch) {
-          auto pressure_patch = patch;
-          auto patch_pressures = pressures;
-          double reconstructed_pressure = 0.0;
-          double pressure_gradient_y = 0.0;
-          const bool supports_hydrostatic_gradient =
-              !uses_composition_density || scene.constituent_materials.size() == 1;
-          if (oriented_box && scene.world_acceleration.y != 0.0 && !eos && supports_hydrostatic_gradient) {
-            const auto geometry = grid.geometry();
-            const auto cell = links->cells[patch.pressure_cell_index].cell_index;
-            const auto centroid_to_cell = boundary_internal::HorizontalPlaneLatticeDistance(
-                patch.world_centroid.y,
-                {geometry.world_origin.y, static_cast<double>(cell.y) + 0.5, geometry.cell_width}
-            );
-            if (!centroid_to_cell.ok()) {
-              return boundary_internal::ArithmeticStatus(centroid_to_cell.status(), true);
-            }
-            const auto& receiver = staging.pressure_fields[patch.pressure_cell_index];
-            pressure_gradient_y = receiver.density.value_or(scene.liquid_density) * scene.world_acceleration.y;
-            reconstructed_pressure =
-                std::fma(-pressure_gradient_y, *centroid_to_cell, pressures[patch.pressure_cell_index]);
-            patch_pressures = {&reconstructed_pressure, 1};
-            pressure_patch.pressure_cell_index = 0;
-          }
-          const auto loaded = AccumulateRigidBodyPressure3D(
-              body,
-              patch_pressures,
-              scene.ambient_pressure,
-              {&pressure_patch, 1},
-              pressure_gradient_y
-          );
-          if (!loaded.ok()) {
-            return loaded.status();
-          }
-          body = *loaded;
-          return absl::OkStatus();
+          return accumulate_pressure_patch(body, pressures, patch);
         }));
         return body;
       };
@@ -1862,6 +1865,33 @@ struct LiquidSubstepScheduler3D::Impl {
             *tank_at_step_start,
             grid.geometry().cell_width
         ));
+      }
+      if (oriented_box) {
+        // Use the same checked traction accumulator for a fixed surface. The
+        // zero center makes its accumulated moment relative to the world origin.
+        constexpr std::uint64_t kTankPatchId = 1;
+        RigidBody3D tank_load{.body_id = kTankPatchId, .mass = 1.0, .principal_inertia = {1.0, 1.0, 1.0}};
+        const auto status = VisitStationaryTankPressurePatches3D(
+            kTankPatchId,
+            *tank_at_step_start,
+            floating_box->oriented_geometry->liquid_height,
+            grid.geometry(),
+            links->cells.size(),
+            [&](std::size_t ordinal) {
+              return links->cells[ordinal].cell_index;
+            },
+            [&](const RigidPressurePatch3D& patch) {
+              return accumulate_pressure_patch(tank_load, projected_cell_pressures, patch);
+            }
+        );
+        if (status.ok()) {
+          floating_box->oriented_loads->tank_pressure = TankPressureLoad3D{
+              .force = liquid_step_internal::Scale(tank_load.force, -1.0),
+              .torque = liquid_step_internal::Scale(tank_load.torque, -1.0),
+          };
+        } else if (status.code() != absl::StatusCode::kFailedPrecondition) {
+          return status;
+        }
       }
       diagnostics.pressure_diagnostics = pressure_diagnostics;
       accepted_measurement.pressure = pressure_diagnostics;
