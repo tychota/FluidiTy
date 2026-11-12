@@ -720,12 +720,17 @@ def verify_cuda_execution_receipt(output, qualification, case):
         record = json.loads(output.splitlines()[0])
     except (ValueError, IndexError) as error:
         raise ValueError("CUDA CLI execution receipt is malformed") from error
+    frame, substep, accepted_step = {
+        "cuda_execution": (2, 0, 4),
+        "cuda_replay": (10, 1, 21),
+        "cuda_effects": (3, 0, 6),
+        "cuda_ocean": (10, 0, 20),
+    }[case]
     replay = case == "cuda_replay"
-    effects = case == "cuda_effects"
     expected = {
         "protocol_version": 1, "event": "result", "command": "replay" if replay else "run",
-        "backend": "cuda", "frame": 10 if replay else (3 if effects else 2), "substep": 1 if replay else 0,
-        "epoch": 21 if replay else (6 if effects else 4), "accepted_step": 21 if replay else (6 if effects else 4),
+        "backend": "cuda", "frame": frame, "substep": substep,
+        "epoch": accepted_step, "accepted_step": accepted_step,
         "particle_count": 1, "next_particle_id": 2, "frames_per_second": 24,
         "compiled_architecture": qualification["cuda"]["architecture"] * 10, "read_only": replay,
     }
@@ -1075,7 +1080,7 @@ def validate(run, args, system, compiler, compiler_id, architecture):
         evidence["cuda_cli"].update(verify_cuda_cli_receipt(cli_outputs["SimulateCli.cuda_device"], qualification, run.config))
         evidence["cuda_cli"]["execution"] = {
             case: verify_cuda_execution_receipt(cli_outputs["SimulateCli." + case], qualification, case)
-            for case in ("cuda_execution", "cuda_replay", "cuda_effects")
+            for case in ("cuda_execution", "cuda_replay", "cuda_effects", "cuda_ocean")
         }
         evidence["cuda_cli"]["lifecycle"] = verify_cli_lifecycle_receipt(
             cli_outputs["SimulateCli.cuda_lifecycle"], "cuda", qualification["cuda"]["architecture"] * 10

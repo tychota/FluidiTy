@@ -511,6 +511,8 @@ def scenario(invocation, monkeypatch):
                                                    accepted_step=21, time_seconds=10.5 / 24, read_only=True)
                                 elif name == "SimulateCli.cuda_effects":
                                     receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
+                                elif name == "SimulateCli.cuda_ocean":
+                                    receipt.update(frame=10, epoch=20, accepted_step=20, time_seconds=10 / 24)
                             console = json.dumps(receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
@@ -1320,7 +1322,7 @@ def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
     rejected("CLI", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay", "cuda_effects"])
+@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay", "cuda_effects", "cuda_ocean"])
 @pytest.mark.parametrize("field,value", [
     ("backend", "cpu"), ("compiled_architecture", 1000), ("graph_replay_count", 0),
     ("graph_replay_count", True), ("device_reserved_bytes", 0),
@@ -1336,6 +1338,8 @@ def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
                        accepted_step=21, time_seconds=10.5 / 24, read_only=True)
     elif case == "cuda_effects":
         receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
+    elif case == "cuda_ocean":
+        receipt.update(frame=10, epoch=20, accepted_step=20, time_seconds=10 / 24)
     receipt[field] = value
     processes.ctest_output_overrides["SimulateCli." + case] = json.dumps(receipt) + "\nPASS " + case
     rejected("CLI", "windows-debug-cuda")

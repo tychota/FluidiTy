@@ -898,8 +898,8 @@ def ocean_case(executable, fixture, directory, backend, mode):
     directory.mkdir()
     scene, initial = make_scene(executable, fixture, directory, backend, mode)
     cache = directory / "cache"
-    execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
-            "--cache", cache, *initial, "--frame-end", 10)
+    result = execute(executable, "run", "--stage", "simulate", "--scene", scene, "--backend", backend,
+            "--cache", cache, *initial, "--frame-end", 10)[-1]
     checkpoint = json.loads(subprocess.run([str(fixture), "checkpoint", str(cache)],
                                           capture_output=True, check=True, timeout=30).stdout)
     expected_particles = 3 if mode == "ocean-level" else 1
@@ -909,26 +909,29 @@ def ocean_case(executable, fixture, directory, backend, mode):
     invoke(executable, "replay", "--scene", scene, "--cache", cache, *initial,
            "--frame", 9, "--substep", 0)
     assert snapshot(cache) == before
-    return checkpoint
+    assert result["frame"] == checkpoint["frame"]
+    assert result["state_digest"] == checkpoint["state_digest"]
+    return checkpoint, result
 
 
 def case_cpu_ocean(executable, fixture, directory, cuda):
-    active = ocean_case(executable, fixture, directory / "ocean", "cpu", "ocean")
-    control = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
+    active, _ = ocean_case(executable, fixture, directory / "ocean", "cpu", "ocean")
+    control, _ = ocean_case(executable, fixture, directory / "control", "cpu", "initial")
     assert math.dist(active["first_velocity"], control["first_velocity"]) > 0.001
     assert math.dist(active["first_position"], control["first_position"]) > 0.00001
     ocean_case(executable, fixture, directory / "level", "cpu", "ocean-level")
 
 
 def case_cuda_ocean(executable, fixture, directory, cuda):
-    cpu = ocean_case(executable, fixture, directory / "cpu", "cpu", "ocean")
-    device = ocean_case(executable, fixture, directory / "cuda", "cuda", "ocean")
+    cpu, _ = ocean_case(executable, fixture, directory / "cpu", "cpu", "ocean")
+    device, receipt = ocean_case(executable, fixture, directory / "cuda", "cuda", "ocean")
     assert cpu["accepted_step"] == device["accepted_step"]
     assert math.dist(cpu["first_position"], device["first_position"]) < 1e-10
     assert math.dist(cpu["first_velocity"], device["first_velocity"]) < 1e-9
-    cpu_level = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
-    device_level = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
+    cpu_level, _ = ocean_case(executable, fixture, directory / "cpu-level", "cpu", "ocean-level")
+    device_level, _ = ocean_case(executable, fixture, directory / "cuda-level", "cuda", "ocean-level")
     assert cpu_level["state_digest"] == device_level["state_digest"]
+    print(json.dumps(receipt, sort_keys=True, allow_nan=False))
 
 
 def case_cuda_lifecycle(executable, fixture, directory, cuda):
