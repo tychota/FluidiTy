@@ -542,6 +542,7 @@ absl::Status GatherCore(
   if (!new_status.ok()) {
     return new_status;
   }
+  const bool same_samples = internal::SameBoundaryVelocitySamples3D(inputs.old_history, inputs.new_history);
   std::ranges::fill(result.particles, LiquidBoundaryParticleGather3D{});
   std::ranges::fill(filled_old, 0.0);
   std::ranges::fill(filled_new, 0.0);
@@ -578,15 +579,16 @@ absl::Status GatherCore(
         if (!old_continued_velocity.ok()) {
           return old_continued_velocity.status();
         }
-        const auto new_continued_velocity = FillVelocity(
-            inputs.new_history,
-            anchors,
-            sample.face_slot,
-            component,
-            particle.side_tag,
-            bounded,
-            squared_radius
-        );
+        const auto new_continued_velocity = same_samples ? old_continued_velocity
+                                                         : FillVelocity(
+                                                               inputs.new_history,
+                                                               anchors,
+                                                               sample.face_slot,
+                                                               component,
+                                                               particle.side_tag,
+                                                               bounded,
+                                                               squared_radius
+                                                           );
         if (!new_continued_velocity.ok()) {
           return new_continued_velocity.status();
         }

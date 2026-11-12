@@ -366,7 +366,8 @@ __device__ GatherSample PrepareGatherSample(
     numeric::span<const BoundaryTransferFace3D> anchors,
     std::size_t face_slot,
     std::size_t component,
-    std::int64_t side_tag
+    std::int64_t side_tag,
+    bool same_history_samples
 ) {
   GatherSample prepared{};
   const auto old_velocity = FillVelocity(old_history, anchors, face_slot, component, side_tag);
@@ -375,7 +376,8 @@ __device__ GatherSample PrepareGatherSample(
     return prepared;
   }
   prepared.old_velocity = *old_velocity;
-  const auto new_velocity = FillVelocity(new_history, anchors, face_slot, component, side_tag);
+  const auto new_velocity =
+      same_history_samples ? old_velocity : FillVelocity(new_history, anchors, face_slot, component, side_tag);
   prepared.new_error = new_velocity.status();
   if (new_velocity.ok()) {
     prepared.new_velocity = *new_velocity;
@@ -404,9 +406,16 @@ __device__ Error GatherParticle(
     Vec3 true_velocity_gradient{};
     for (std::size_t sample_index = 0; sample_index < kGatherSamplesPerComponent; ++sample_index) {
       const auto& sample = transfer_particle.stencils[component][sample_index];
-      const auto velocities = kUsePreparedSamples
-          ? (*prepared_samples)[component][sample_index]
-          : PrepareGatherSample(old_history, new_history, anchors, sample.face_slot, component, particle.side_tag);
+      const auto velocities = kUsePreparedSamples ? (*prepared_samples)[component][sample_index]
+                                                  : PrepareGatherSample(
+                                                        old_history,
+                                                        new_history,
+                                                        anchors,
+                                                        sample.face_slot,
+                                                        component,
+                                                        particle.side_tag,
+                                                        query.same_history_samples
+                                                    );
       if (velocities.old_error != Error::kNone) {
         return velocities.old_error;
       }
@@ -774,8 +783,15 @@ __global__ void LiquidBoundaryParticleGather3DKernel(
     const std::size_t component = sample_lane / kGatherSamplesPerComponent;
     const std::size_t sample_index = sample_lane % kGatherSamplesPerComponent;
     const auto& sample = particle.stencils[component][sample_index];
-    prepared_samples[component][sample_index] =
-        PrepareGatherSample(old_history, new_history, anchors, sample.face_slot, component, particle.particle.side_tag);
+    prepared_samples[component][sample_index] = PrepareGatherSample(
+        old_history,
+        new_history,
+        anchors,
+        sample.face_slot,
+        component,
+        particle.particle.side_tag,
+        query->same_history_samples
+    );
   }
   __syncthreads();
   if (sample_lane == 0) {

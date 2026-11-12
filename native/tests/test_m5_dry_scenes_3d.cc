@@ -419,6 +419,7 @@ bool TestScene(
       std::printf("sand surface slope unresolved: fewer than four occupied radial bins per quadrant\n");
     }
   }
+  std::fflush(stdout);
   if (release_cone) {
     return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && kinetic_energy < 0.01;
   }
@@ -655,23 +656,53 @@ bool TestCompatibleFloorStressWork() {
       {0, 0, velocities, validity, tags, walls},
       {duration, duration, velocities, validity, tags, walls},
   };
+  const auto independent_velocities = velocities;
+  auto independent_histories = gather_inputs;
+  independent_histories.new_history.face_velocities = independent_velocities;
 #if defined(FLUIDITY_M5_CUDA_SCENES)
   const auto device_deposits = fluidity::CudaDepositCompatibleMacQuanta3D(deposit_inputs);
   const auto device_gather = fluidity::CudaGatherLiquidBoundaryParticles3D(gather_inputs);
-  if (!device_deposits.ok() || !device_gather.ok()) {
+  const auto independent_device_gather = fluidity::CudaGatherLiquidBoundaryParticles3D(independent_histories);
+  if (!device_deposits.ok() || !device_gather.ok() || !independent_device_gather.ok()) {
     return false;
   }
   const auto& deposits = device_deposits->deposits;
   const auto& gathered = device_gather->gathered;
+  const auto& independent = independent_device_gather->gathered;
 #else
   const auto host_deposits = fluidity::DepositCompatibleMacQuanta3D(deposit_inputs);
   const auto host_gather = fluidity::GatherLiquidBoundaryParticles3D(gather_inputs);
-  if (!host_deposits.ok() || !host_gather.ok()) {
+  const auto independent_host_gather = fluidity::GatherLiquidBoundaryParticles3D(independent_histories);
+  if (!host_deposits.ok() || !host_gather.ok() || !independent_host_gather.ok()) {
     return false;
   }
   const auto& deposits = *host_deposits;
   const auto& gathered = *host_gather;
+  const auto& independent = *independent_host_gather;
 #endif
+  const auto same_vector = [](fluidity::Vec3 first, fluidity::Vec3 second) {
+    return first.x == second.x && first.y == second.y && first.z == second.z;
+  };
+  const auto same_matrix = [&](const Mat3& first, const Mat3& second) {
+    return same_vector(first.x_row, second.x_row) && same_vector(first.y_row, second.y_row)
+        && same_vector(first.z_row, second.z_row);
+  };
+  const auto& aliased_particle = gathered.particles[0];
+  const auto& independent_particle = independent.particles[0];
+  if (!same_vector(aliased_particle.new_pic_velocity, independent_particle.new_pic_velocity)
+      || !same_vector(aliased_particle.grid_velocity_increment, independent_particle.grid_velocity_increment)
+      || !same_vector(
+          aliased_particle.particle_minus_old_pic_velocity,
+          independent_particle.particle_minus_old_pic_velocity
+      )
+      || !same_matrix(aliased_particle.fitted_velocity_slopes, independent_particle.fitted_velocity_slopes)
+      || !same_matrix(aliased_particle.velocity_gradient, independent_particle.velocity_gradient)
+      || aliased_particle.affine_enabled != independent_particle.affine_enabled
+      || aliased_particle.old_pic_fallback != independent_particle.old_pic_fallback
+      || aliased_particle.new_pic_fallback != independent_particle.new_pic_fallback
+      || aliased_particle.low_mass_fallback != independent_particle.low_mass_fallback) {
+    return false;
+  }
   std::vector<double> force(view.face_count());
   const auto assembled =
       fluidity::internal::AccumulateCompatibleSolidStress3D(deposits.compatible_stencils[0], volume, stress, force);

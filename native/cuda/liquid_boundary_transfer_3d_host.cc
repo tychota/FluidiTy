@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../src/liquid_boundary_backend.h"
+#include "../src/liquid_boundary_transfer_3d_internal.h"
 #include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "liquid_boundary_transfer_3d_bridge.h"
 #include "liquid_boundary_transfer_3d_internal.h"
@@ -329,6 +330,7 @@ absl::StatusOr<CudaLiquidBoundaryGatherResults3D> CudaGatherLiquidBoundaryPartic
   }
   StagedTransfer staged;
   staged.query.operation = cuda_internal::BoundaryTransferOperation3D::kGather;
+  staged.query.same_history_samples = internal::SameBoundaryVelocitySamples3D(inputs.old_history, inputs.new_history);
   staged.query.cell_width = inputs.mac_grid.geometry().cell_width;
   staged.faces.resize(inputs.mac_grid.face_count());
   std::size_t slot = 0;

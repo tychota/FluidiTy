@@ -901,6 +901,14 @@ friction impulses through the swept particle contact. The grid leaves
 the incident velocity available to that sweep. The mode uses PIC stored
 velocity and the bounded boundary-transfer capacities.
 
+When old and new gather histories borrow the same validated velocity,
+validity, compatibility and wall arrays, the host and owning CUDA paths
+reuse the continued sample. Stage-time validation and accumulation order
+remain intact. The cut-floor fixture compares shared and independently
+copied samples on each backend and requires identical velocities,
+affine fits, derivatives, residuals, and fallback flags. The existing
+distinct-history boundary and elastic-blade fixtures also pass.
+
 At 0.75 s the 63-particle column gives the following results. Native
 and CUDA print the same angles and cut work at this precision.
 
