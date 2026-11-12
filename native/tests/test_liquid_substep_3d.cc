@@ -1344,6 +1344,7 @@ struct PressureFaceMeasurement {
 struct FloatingBoxPressureMeasurements {
   double energy_blend;
   double wall_flux{};
+  double wet_volume{};
   Vec3 grid_impulse{};
   Vec3 particle_pressure_impulse{};
   Vec3 particle_prepressure_impulse{};
@@ -1383,7 +1384,9 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
       return result.status();
     }
     measured.wall_flux = 0.0;
+    measured.wet_volume = 0.0;
     for (const auto& cell : problem.cells) {
+      measured.wet_volume += cell.fluid_volume;
       measured.wall_flux += cell.integrated_inward_wall_flux;
     }
     measured.grid_impulse = ExpectedPressureGridImpulse(problem, result->cell_pressures, duration);
@@ -1507,7 +1510,37 @@ void ExpectFloatingBoxPressureMeasurement(
             << std::hypot(gather_weight_difference.x, gather_weight_difference.y, gather_weight_difference.z) << '\n';
 }
 
-TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
+void ExpectInitialTankApertureImpulseDifference(const OrientedFloatingBoxLoads3D& loads, double duration) {
+  // Each vertical intercell aperture spans 7/8 m above the floor, while
+  // the actual liquid depth is 5/8 m. The box is wholly inside one column
+  // and its horizontal traction cancels for that cell's constant pressure.
+  constexpr double kWetFraction = 0.625 / 0.875;
+  const auto grid_impulse = loads.pressure_grid_impulse;
+  const auto tank_force = loads.tank_pressure->force;
+  const auto box_force = loads.pressure_force;
+  EXPECT_NEAR(duration * (tank_force.x - box_force.x), kWetFraction * grid_impulse.x, 1e-12);
+  EXPECT_NEAR(duration * (tank_force.z - box_force.z), kWetFraction * grid_impulse.z, 1e-12);
+  // The four upper MAC faces use the full horizontal cross-section of the
+  // tank. The physical free surface instead excludes the box waterplane.
+  EXPECT_NEAR(grid_impulse.y, duration * tank_force.y, 1e-12);
+}
+
+double MatchFloatingBoxSeedMassToWetVolume(LiquidState3D& state, double density, double submerged_box_volume) {
+  // The four seeds represent the four horizontal cells of the qualification
+  // tank. Their wet widths are 7/8 m and their wet depth is 5/8 m. Only the
+  // cell containing particle 1 is cut by the initial box.
+  constexpr double kWetCellVolume = 0.875 * 0.875 * 0.625;
+  for (auto& particle : state.particles.values()) {
+    particle.reference_volume = kWetCellVolume;
+    if (particle.id == 1) {
+      particle.reference_volume -= submerged_box_volume;
+    }
+    particle.mass = density * particle.reference_volume;
+  }
+  return 4 * kWetCellVolume - submerged_box_volume;
+}
+
+void CheckOrientedFloatingBoxTrajectory(bool match_seed_mass) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
   auto initial = Initial(4);
@@ -1515,8 +1548,12 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
   initial.particles[1].world_position = {1.375, 0.375, 0.375};
   initial.particles[2].world_position = {0.375, 0.375, 1.375};
   initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  // Upright box has a 3/16 m draft and a 1/4 m square waterplane.
+  const double initial_wet_volume =
+      match_seed_mass ? MatchFloatingBoxSeedMassToWetVolume(initial, scene.liquid_density, 0.1875 * 0.25 * 0.25) : 0.0;
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
+    SCOPED_TRACE(match_seed_mass);
     const int frames = static_cast<int>(0.0625 / kDt);
     const auto options = Options();
     FloatingBoxPressureMeasurements measured{.energy_blend = options.particle_energy_blend};
@@ -1551,6 +1588,12 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
                                              << static_cast<int>(scheduler->diagnostics().failed_stage);
       ASSERT_TRUE(attempt->oriented_loads.has_value());
       ASSERT_TRUE(attempt->oriented_loads->tank_pressure.has_value());
+      if (frame == 1) {
+        ExpectInitialTankApertureImpulseDifference(*attempt->oriented_loads, kDt);
+        if (match_seed_mass) {
+          EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
+        }
+      }
       ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
       const auto particle_pressure = measured.particle_pressure_impulse;
       const auto grid_pressure = attempt->oriented_loads->pressure_grid_impulse;
@@ -1593,8 +1636,9 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
       }
     }
     EXPECT_GT(body.orientation.vector.z, 0.0);
-    std::cout << "pressure_traction_dt_s=" << kDt << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
-    std::cout << "pressure_gather_dt_s=" << kDt
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_traction_dt_s=" << kDt
+              << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
               << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
               << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
     EXPECT_GT(max_particle_pressure_impulse, 1e-8);
@@ -1624,7 +1668,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
     EXPECT_EQ(*replayed, final);
   }
 }
-TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody) {
+void CheckCoupledOrientedFloatingBoxTrajectory(bool match_seed_mass) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
   auto initial = Initial(4);
@@ -1632,8 +1676,15 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
   initial.particles[1].world_position = {1.375, 0.375, 0.375};
   initial.particles[2].world_position = {0.375, 0.375, 1.375};
   initial.particles[3].world_position = {1.375, 0.375, 1.375};
+  // The tilted box projects vertical edge components of 0.6 and 0.8.
+  // Its exposed triangular prism is 0.05 m high and 0.25 m thick.
+  constexpr double kExposedVolume = 0.25 * 0.05 * 0.05 / (2.0 * 0.6 * 0.8);
+  const double initial_wet_volume = match_seed_mass
+      ? MatchFloatingBoxSeedMassToWetVolume(initial, scene.liquid_density, 0.25 * 0.25 * 0.25 - kExposedVolume)
+      : 0.0;
   for (const double kDt : {0.015625, 0.0078125}) {
     SCOPED_TRACE(kDt);
+    SCOPED_TRACE(match_seed_mass);
     const int frames = static_cast<int>(0.0625 / kDt);
     const auto options = Options();
     FloatingBoxPressureMeasurements measured{.energy_blend = options.particle_energy_blend};
@@ -1683,6 +1734,12 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
           kDt * (loads.external_torque.z + loads.pressure_torque.z) + loads.particle_angular_impulse.z,
           5e-14
       );
+      if (frame == 1) {
+        ExpectInitialTankApertureImpulseDifference(*attempt->oriented_loads, kDt);
+        if (match_seed_mass) {
+          EXPECT_NEAR(measured.wet_volume, initial_wet_volume, 1e-12);
+        }
+      }
       ExpectFloatingBoxPressureMeasurement(*attempt->oriented_loads, measured);
       const auto particle_pressure = measured.particle_pressure_impulse;
       const auto grid_pressure = attempt->oriented_loads->pressure_grid_impulse;
@@ -1734,8 +1791,9 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
       }
     }
     EXPECT_LT(body.angular_velocity.z, 0.0);
-    std::cout << "pressure_traction_dt_s=" << kDt << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
-    std::cout << "pressure_gather_dt_s=" << kDt
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_traction_dt_s=" << kDt
+              << " max_residual_n_s=" << max_pressure_traction_residual << '\n';
+    std::cout << "match_seed_mass=" << match_seed_mass << " pressure_gather_dt_s=" << kDt
               << " max_particle_pressure_impulse_n_s=" << max_particle_pressure_impulse
               << " max_grid_to_particle_difference_n_s=" << max_grid_to_particle_pressure_difference << '\n';
     EXPECT_GT(max_particle_pressure_impulse, 1e-8);
@@ -1765,6 +1823,19 @@ TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody
     EXPECT_EQ(*replayed, final);
   }
 }
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
+  CheckOrientedFloatingBoxTrajectory(false);
+}
+TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysMatchedMassTrajectory) {
+  CheckOrientedFloatingBoxTrajectory(true);
+}
+TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysLightBody) {
+  CheckCoupledOrientedFloatingBoxTrajectory(false);
+}
+TEST(LiquidSubstep3D, CoupledOrientedFloatingBoxProductionGatherReplaysMatchedMassLightBody) {
+  CheckCoupledOrientedFloatingBoxTrajectory(true);
+}
+
 TEST(LiquidSubstep3D, GuidedFloatingBoxCoupledLightBodyUsesProductionParticles) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 1.875, 0.125, 0.125, 1.875, 0.0};
