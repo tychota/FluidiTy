@@ -132,6 +132,223 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, PublishesRequiredGradedRefinementFamiliesAtomically) {
+  constexpr std::array requested{AdaptiveMacCellKey3D{.lower_corner = {4, 0, 0}, .width_exponent = 1}};
+  for (const bool exact_child_coverage : {false, true}) {
+    SCOPED_TRACE(exact_child_coverage);
+    LiquidState3D state;
+    LiquidSceneInputs3D scene;
+    const auto authored = test::PopulateGradedRefinementClosureFixture3D(state, scene, exact_child_coverage);
+    ASSERT_TRUE(authored.ok()) << authored;
+    auto options = Options();
+    options.capacities = {19, 0, 19, 160, 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    if (!exact_child_coverage) {
+      const auto refused = scheduler->AttemptWithAdaptiveRefinementClosure(0.01, requested);
+      EXPECT_EQ(refused.status().code(), absl::StatusCode::kFailedPrecondition);
+      EXPECT_EQ(refused.status().message(), "graded family inventory requires certified particle resampling");
+      EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+      ExpectIdenticalSerializedState(state, scheduler->committed());
+      continue;
+    }
+    scheduler->SetStageFaultHookForTesting({
+        .context = nullptr,
+        .before_stage =
+            [](void*, LiquidPhysicalStage3D stage, double) {
+              return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject complete grading closure")
+                                                             : absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler->AttemptWithAdaptiveRefinementClosure(0.01, requested);
+    ASSERT_TRUE(rejected.ok()) << rejected.status();
+    ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+    ASSERT_EQ(rejected->retry_duration, 0.005);
+    ExpectIdenticalSerializedState(state, scheduler->committed());
+    scheduler->SetStageFaultHookForTesting({});
+    const auto accepted = scheduler->AttemptWithAdaptiveRefinementClosure(*rejected->retry_duration, requested);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+    EXPECT_EQ(scheduler->committed().adaptive_cells.size(), 19);
+    EXPECT_EQ(
+        std::ranges::count_if(
+            scheduler->committed().adaptive_cells.values(),
+            [](const auto& leaf) {
+              return leaf.key.width_exponent == 0;
+            }
+        ),
+        8
+    );
+    const auto particles = scheduler->committed().particles.values();
+    ASSERT_EQ(particles.size(), state.particles.size());
+    for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+      EXPECT_EQ(particles[ordinal].id, state.particles[ordinal].id);
+      EXPECT_DOUBLE_EQ(particles[ordinal].mass, state.particles[ordinal].mass);
+      EXPECT_DOUBLE_EQ(particles[ordinal].reference_volume, state.particles[ordinal].reference_volume);
+      EXPECT_DOUBLE_EQ(particles[ordinal].volume_ratio, state.particles[ordinal].volume_ratio);
+    }
+  }
+}
+
+TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedFamilyFixture3D(state, scene).ok());
+  auto options = Options();
+  options.capacities = {12, 0, 12, 64, 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto parent = state.adaptive_cells[0].key;
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const std::array halo{AdaptiveCoarsenHaloSample3D{.demand = {.maximum_width = 2}}};
+  LiquidAdaptiveWidthRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .leaf = parent,
+      .demand = {.maximum_width = 0.5},
+      .parent_and_halo = {},
+      .complete_halo = false,
+      .hysteresis_duration_s = 0.01,
+  };
+  const auto refined = scheduler->AttemptWithAdaptiveWidth(0.01, request);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_EQ(refined->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+
+  request.leaf.width_exponent = 0;
+  request.demand.maximum_width = 2;
+  request.parent_and_halo = halo;
+  request.complete_halo = true;
+  ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
+  EXPECT_EQ(scheduler->AttemptWithAdaptiveWidth(0.005, request).status().code(), absl::StatusCode::kFailedPrecondition);
+  request.accepted_epoch = scheduler->committed().clock.epoch;
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject graded width trial")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveWidth(0.01, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_EQ(rejected->retry_duration, 0.005);
+  for (const auto& leaf : scheduler->committed().adaptive_cells.values()) {
+    EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+  }
+  scheduler->SetStageFaultHookForTesting({});
+  for (double expected_age : {0.005, 0.01}) {
+    request.accepted_epoch = scheduler->committed().clock.epoch;
+    const auto accepted = scheduler->AttemptWithAdaptiveWidth(0.005, request);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    EXPECT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+    for (const auto& leaf : scheduler->committed().adaptive_cells.values()) {
+      EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, leaf.key.lower_corner.x < 2 ? expected_age : 0.0);
+    }
+  }
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto encoded = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidState3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  auto vetoed = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(vetoed.ok()) << vetoed.status();
+  ASSERT_TRUE(vetoed->BeginFrame(0.03).ok());
+  request.accepted_epoch = vetoed->committed().clock.epoch;
+  request.complete_halo = false;
+  const auto kept = vetoed->AttemptWithAdaptiveWidth(0.03 - 0.02, request);
+  ASSERT_TRUE(kept.ok()) << kept.status();
+  ASSERT_EQ(kept->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(vetoed->committed().adaptive_cells.size(), 12);
+  for (const auto& leaf : vetoed->committed().adaptive_cells.values()) {
+    EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+  }
+  request.complete_halo = true;
+  for (auto* run : {&*scheduler, &*restarted}) {
+    ASSERT_TRUE(run->BeginFrame(0.03).ok());
+    request.accepted_epoch = run->committed().clock.epoch;
+    const auto coarsened = run->AttemptWithAdaptiveWidth(0.03 - 0.02, request);
+    ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+    ASSERT_EQ(coarsened->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_TRUE(run->FinishFrame().ok());
+    EXPECT_EQ(run->committed().adaptive_cells.size(), 5);
+    for (const auto& leaf : run->committed().adaptive_cells.values()) {
+      EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+    }
+  }
+  ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
+}
+
+TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto authored = test::PopulateDeepGradedBandFixture3D(state, scene);
+  ASSERT_TRUE(authored.ok()) << authored;
+  auto options = Options();
+  options.capacities = {8, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  LiquidAdaptiveBandRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .leaf = state.adaptive_cells[0].key,
+      .margins = {},
+      .destination_carrier = std::nullopt,
+      .reseed_particle_count = 1,
+  };
+  const auto unavailable = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  EXPECT_EQ(unavailable.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(scheduler->diagnostics().attempts, 0);
+  request.destination_carrier = LiquidHandoffCarrier3D{.current_density = 2, .volume_ratio = 1};
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band placement")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandPlacement(0.01, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retired = scheduler->AttemptWithAdaptiveBandPlacement(*rejected->retry_duration, request);
+  ASSERT_TRUE(retired.ok()) << retired.status();
+  ASSERT_EQ(retired->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(scheduler->committed().particles.size(), 7);
+  const auto& actual_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  const auto& expected_inventory = state.adaptive_cells[0].inventory;
+  EXPECT_EQ(actual_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(actual_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(actual_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+
+  EXPECT_EQ(
+      scheduler->AttemptWithAdaptiveBandPlacement(0.005, request).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  request.accepted_epoch = scheduler->committed().clock.epoch;
+  request.margins.particle_support_radius_m = 4;
+  const auto reseeded = scheduler->AttemptWithAdaptiveBandPlacement(0.005, request);
+  ASSERT_TRUE(reseeded.ok()) << reseeded.status();
+  ASSERT_EQ(reseeded->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  EXPECT_EQ(scheduler->committed().adaptive_cells[0].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+  EXPECT_EQ(scheduler->committed().particles.size(), 8);
+  EXPECT_EQ(scheduler->committed().particles[7].id, 9);
+  const auto& reseeded_inventory = scheduler->committed().adaptive_cells[0].inventory;
+  EXPECT_EQ(reseeded_inventory.mass_kg, expected_inventory.mass_kg);
+  EXPECT_EQ(reseeded_inventory.reference_volume_m3, expected_inventory.reference_volume_m3);
+  EXPECT_EQ(reseeded_inventory.current_volume_m3, expected_inventory.current_volume_m3);
+}
+
 TEST(LiquidSubstep3D, PublishesAdaptiveBandRetirementAndReseed) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
@@ -386,26 +603,60 @@ TEST(LiquidSubstep3D, GradedViscousTensorReproducesAffineStrain) {
     velocities.push_back(components[static_cast<std::size_t>(face.axis)]);
     subfaces[slot].open_area_m2 = face.width_m * face.width_m;
   }
-  const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_FALSE(ownership->exterior_faces.empty());
+  std::size_t wall_slot = 0;
+  for (const bool prescribed_wall : {false, true}) {
+    SCOPED_TRACE(prescribed_wall);
+    if (prescribed_wall) {
+      auto& wall = subfaces[wall_slot];
+      wall.prescribed_wall_flux_m3_per_s = wall.open_area_m2 * velocities[wall_slot];
+      wall.open_area_m2 = 0.0;
+      velocities[wall_slot] = 0.0;
+    }
+    const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+        *topology,
+        state.geometry.world_origin,
+        2.0,
+        transfer->faces(),
+        subfaces
+    );
+    ASSERT_TRUE(rows.ok()) << rows.status();
+    if (!prescribed_wall) {
+      const auto wall = std::ranges::find_if(ownership->exterior_faces, [&](const auto& face) {
+        return std::ranges::any_of(*rows, [&](const auto& row) {
+          return row.first_axis != row.second_axis
+              && std::ranges::any_of(std::span(row.terms).first(row.term_count), [&](const auto& term) {
+                   return term.face_slot == face.face_slot;
+                 });
+        });
+      });
+      ASSERT_NE(wall, ownership->exterior_faces.end());
+      wall_slot = wall->face_slot;
+    }
+    constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
+    ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
+    for (std::size_t index = 0; index < rows->size(); ++index) {
+      const auto& row = (*rows)[index];
+      double strain = row.prescribed_strain;
+      for (const auto& term : std::span(row.terms).first(row.term_count)) {
+        strain += term.coefficient * velocities[term.face_slot];
+      }
+      EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
+      const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
+      EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
+    }
+  }
+  subfaces[wall_slot].open_area_m2 = 0.5 * transfer->faces()[wall_slot].width_m * transfer->faces()[wall_slot].width_m;
+  const auto moving_cut = liquid_step_internal::AssembleGradedViscousStrainRows3D(
       *topology,
       state.geometry.world_origin,
       2.0,
       transfer->faces(),
       subfaces
   );
-  ASSERT_TRUE(rows.ok()) << rows.status();
-  constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
-  ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
-  for (std::size_t index = 0; index < rows->size(); ++index) {
-    const auto& row = (*rows)[index];
-    double strain = row.prescribed_strain;
-    for (const auto& term : std::span(row.terms).first(row.term_count)) {
-      strain += term.coefficient * velocities[term.face_slot];
-    }
-    EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
-    const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
-    EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
-  }
+  EXPECT_EQ(moving_cut.status().code(), absl::StatusCode::kUnimplemented);
 }
 
 TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) {
@@ -437,6 +688,68 @@ TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) 
   }
   EXPECT_GT(energy[1], 0.0);
   EXPECT_LT(energy[1], energy[0]);
+}
+
+TEST(LiquidSubstep3D, GradedMiscibleViscosityUsesAcceptedLeafComposition) {
+  std::array<double, 4> energy{};
+  for (std::size_t mode = 0; mode < energy.size(); ++mode) {
+    LiquidState3D initial;
+    LiquidSceneInputs3D scene;
+    ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
+    test::SetGradedTankMiscible3D(initial, scene);
+    std::array<LiquidConstituentMaterial3D, 2> materials{};
+    std::ranges::copy(scene.constituent_materials, materials.begin());
+    if (mode == 1) {
+      materials[0].dynamic_viscosity_pa_s = 1.0;
+      materials[1].dynamic_viscosity_pa_s = 10.0;
+    }
+    if (mode == 2) {
+      materials[0].dynamic_viscosity_pa_s = 10.0;
+      materials[1].dynamic_viscosity_pa_s = 1.0;
+    }
+    if (mode == 3) {
+      scene.dynamic_viscosity = 2.0;
+      materials[0].dynamic_viscosity_pa_s = 0.0;
+      materials[1].dynamic_viscosity_pa_s = 0.0;
+    }
+    scene.constituent_materials = materials;
+    auto options = Options();
+    options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    bool reject = true;
+    scheduler->SetStageFaultHookForTesting({
+        .context = &reject,
+        .before_stage =
+            [](void* context, LiquidPhysicalStage3D stage, double) {
+              if (stage == LiquidPhysicalStage3D::kAccept && std::exchange(*static_cast<bool*>(context), false)) {
+                return absl::Status(absl::StatusCode::kAborted, {});
+              }
+              return absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler->Attempt(0.01);
+    ASSERT_TRUE(rejected.ok()) << rejected.status();
+    ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+    ExpectIdenticalSerializedState(initial, scheduler->committed());
+    const auto accepted = scheduler->Attempt(0.005);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+
+    const auto carrier_energy = test::GradedTankCarrierEnergy3D(scheduler->committed(), scene);
+    ASSERT_TRUE(carrier_energy.ok()) << carrier_energy.status();
+    energy[mode] = *carrier_energy;
+    ASSERT_TRUE(scheduler->diagnostics().accepted_measurement);
+    EXPECT_EQ(
+        scheduler->diagnostics().accepted_measurement->viscous_max_momentum_residual_kg_m_per_s.has_value(),
+        mode == 1 || mode == 2
+    );
+  }
+  EXPECT_LT(energy[1], energy[0]);
+  EXPECT_LT(energy[2], energy[0]);
+  EXPECT_GT(std::abs(energy[1] - energy[2]), 1e-6);
+  EXPECT_EQ(energy[3], energy[0]);
 }
 
 TEST(LiquidSubstep3D, GradedTaitDomainFailureKeepsTheAcceptedState) {

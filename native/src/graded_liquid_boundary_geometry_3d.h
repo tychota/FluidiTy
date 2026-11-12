@@ -1,0 +1,125 @@
+#pragma once
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <span>
+#include <vector>
+
+#include "absl/status/statusor.h"
+#include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/liquid_boundary_geometry_3d.h"
+#include "mac_pressure_3d_system.h"
+
+namespace fluidity {
+
+struct GradedLiquidPlanarSurface3D {
+  Vec3 unit_normal;  // Outward from liquid; liquid is n dot x < plane_coordinate_m.
+  double plane_coordinate_m;  // World meters at the freeze time.
+};
+
+struct FrozenGradedLiquidLeaf3D {
+  Vec3 world_lower_m;
+  Vec3 world_upper_m;
+  double fluid_volume_m3;  // Intersection of liquid and nonsolid.
+};
+
+struct FrozenGradedLiquidSubface3D {
+  FaceIndex3D face_index;
+  std::uint8_t width_exponent;
+  bool exterior;
+  Vec3 world_lower_m;
+  Vec3 world_upper_m;  // Same coordinate as lower along the normal.
+  double full_area_m2;
+  double wet_open_area_m2;  // Liquid intersect nonsolid; excludes dry nonsolid area.
+  double wet_solid_area_m2;  // Liquid intersect solid; excludes dry solid area.
+  double wall_normal_flux_m3_per_s;  // Wet solid area times wall speed along the positive MAC axis.
+};
+
+class FrozenGradedPlanarLiquidGeometry3D {
+ public:
+  // Views borrow this owner and are in canonical leaf and global subface order.
+  std::span<const FrozenGradedLiquidLeaf3D> leaves() const {
+    return leaves_;
+  }
+  std::span<const FrozenGradedLiquidSubface3D> subfaces() const {
+    return subfaces_;
+  }
+  const AdaptiveMacTopology3D& topology() const {
+    return topology_;
+  }
+  double step_duration_s() const {
+    return step_duration_s_;
+  }
+
+ private:
+  friend absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeometry3D(
+      const AdaptiveMacTopology3D&,
+      Vec3,
+      const TranslatingHalfspace3D&,
+      const GradedLiquidPlanarSurface3D&,
+      double
+  );
+
+  FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, double step_duration_s)
+      : topology_(topology), step_duration_s_(step_duration_s) {
+  }
+
+  AdaptiveMacTopology3D topology_;
+  double step_duration_s_;
+  std::vector<FrozenGradedLiquidLeaf3D> leaves_;
+  std::vector<FrozenGradedLiquidSubface3D> subfaces_;
+};
+
+// Freeze the halfspace and liquid plane at the start of the interval. The
+// origin is the world lower corner of finest lattice cell zero. Canonical
+// endpoints define the physical axis-aligned bounds. Clip the two plane
+// fields at these corners with the shared tetrahedra and face diagonals.
+// A face on the solid plane is blocked; a face on the liquid plane is dry.
+// The owner includes dry and solid leaves and every canonical global subface.
+// Invalid planes, origin or duration return InvalidArgument. Unresolved
+// world bounds and unrepresentable measures return OutOfRange. Topology and
+// clipping errors propagate. Inputs are read-only, with no result on failure.
+absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeometry3D(
+    const AdaptiveMacTopology3D& topology,
+    Vec3 world_origin_m,
+    const TranslatingHalfspace3D& solid,
+    const GradedLiquidPlanarSurface3D& liquid_surface,
+    double step_duration_s
+);
+
+struct GradedLiquidPressureCellFields3D {
+  double target_divergence_s_inv = 0;  // External source per fluid volume, independent of wall flux.
+  double bulk_modulus_pa = std::numeric_limits<double>::infinity();
+  double previous_pressure_pa = 0;
+};
+
+struct GradedLiquidPressureExterior3D {
+  double pressure_pa;  // Gauge pressure including any caller-supplied lift.
+  double distance_m;  // Positive distance from the incident pressure cell.
+};
+
+struct GradedLiquidPressureSubfaceFields3D {
+  double inverse_density_m3_per_kg = 0;
+  double predicted_normal_velocity_m_per_s = 0;
+  double pressure_jump_pa = 0;  // Equilibrium head minus tail, interior only.
+  // Absent on interior faces. On exterior faces, absence selects sealing
+  // of the wet aperture while retaining the measured prescribed wall flux.
+  std::optional<GradedLiquidPressureExterior3D> exterior_pressure = std::nullopt;
+};
+
+// Compose explicit pressure fields with frozen physical measures and canonical
+// tail/head incidence. Fields cover every frozen leaf and global face slot.
+// A zero-volume leaf returns FailedPrecondition. World extents incompatible
+// with the nominal pressure metrics return OutOfRange. Tiny upper-measure
+// roundoff is capped at the nominal metric. Malformed extents return
+// InvalidArgument and existing graph errors propagate. The graph does not
+// infer an embedded free-surface pressure or a separate interior wall term.
+// The frozen geometry and inputs are unchanged, with no graph on failure.
+absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlanarLiquidPressure3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
+}  // namespace fluidity

@@ -29,7 +29,12 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    carrier data. Feed the physical, interface, support and camera upper bounds
    to the width policy. Persist the eligible seconds with the accepted state,
    reset them on veto, and apply deterministic 2:1 closure at faces, edges and
-   corners before preparing a family candidate. Qualify interrupted versus
+   corners before preparing a family candidate. The frozen topology now
+   computes the minimum refinement closure in canonical leaf order and checks
+   the proposed cell count before remap. The bounded scheduler can apply the
+   complete refinement closure in one trial when each family can be exactly
+   rebinned.
+   Qualify interrupted versus
    uninterrupted policy decisions and ensure a rejected trial cannot earn age.
 2. Extend remap from exact particle rebinning to certified split and merge.
    Preserve mass, reference and current volumes, momentum, constituent inventory
@@ -50,6 +55,20 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    52.36 ms to 21.08 ms and deposit from 80.01 ms to 32.34 ms on 2,592 leaves,
    8,400 faces and 1,024 particles with identical output. It adds 50,352 bytes
    to the frozen owner in that fixture. [Transfer index](https://github.com/tychota/FluidiTy/pull/114)
+
+### Actual graded support moments
+
+`GradedMacTransfer3D::MeasureSupportMoments` measures partition, weighted mean and centered covariance from the canonical radial gather support. The same affine pivot test reports rank for each velocity component. The witness also records positive geometric support removed by masks and support at other face widths.
+
+At a cell center away from boundaries and width transitions, the measured radial stencil has 28 positive samples per velocity row. In leaf-width-squared units, the binary64 normal and transverse covariances agree with `167/396` and `76/165` within `1e-15`. The affine field reproduces despite the mismatch with the quadratic variance `1/4` and cubic-normal variance `1/3`. A signed coarse/fine fixture also reproduces its affine field and reports the width transition.
+
+`CheckUniformResamplingSupport` refuses the radial stencil, including an accidental binary64 moment match, because uniform split and merge require the complete unmasked tensor support. The checked witness leaves split and merge disabled.
+
+### Checked same-level quadratic transfer
+
+`GradedQuadraticMacTransfer3D` binds the existing FP64 quadratic geometry directly to canonical adaptive face slots. Every tensor node, including a zero-weight tie, requires an interior face with both incident leaves at the particle level, the exact represented anchor displacement, full aperture, and valid same-side carriers. Deposit and gather use the bound rows with the uniform operator's arithmetic. The signed island control matches the uniform sparse operator bit-for-bit for mass, momentum, PIC velocity, FLIP increment, affine slope and gradient. It refuses a mixed-level face and mask, side, low-mass and aperture changes.
+
+Runtime selection and F3/F4 admission still require frozen transfer selection through deposit and both gather histories, conservative binary64 moment and energy bounds, and a topology transaction with complete before-and-after support halos. A single-family edit can leave child stencils extending beyond the refined region.
 
 ## Production band and M2 boundary
 
@@ -86,6 +105,98 @@ Simulate run and its arena. The full-wave time and simultaneous GPU memory
 remain unmeasured.
 
 
+### Manufactured CUDA pressure control
+
+The same sealed 8 m³ graph and error thresholds now run on SM120. The nine
+samples per layout alternate execution order after one warm-up each. Both
+backends produced the same measured pressure and divergence maxima for each
+layout. The Release wall and CUDA event times below were observed on the
+qualification machine while other builds shared the host.
+
+| Backend | Layout | Cells | Pressure error (Pa) | Divergence error (s⁻¹) | Median call (ms) | Median CUDA solver (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| CPU | Finest uniform | 512 | 1.1921e-6 | 5.9605e-6 | 0.754 | |
+| CPU | Graded | 176 | 1.0729e-6 | 8.9010e-6 | 0.216 | |
+| SM120 | Finest uniform | 512 | 1.1921e-6 | 5.9605e-6 | 53.760 | 28.985 |
+| SM120 | Graded | 176 | 1.0729e-6 | 8.9010e-6 | 30.762 | 7.550 |
+
+The CUDA event interval covers the solver stream between warm-start evaluation
+and final status synchronization. The call interval also covers hierarchy
+preparation, device allocation, upload, download and cleanup. This bounded
+control records CPU workspace bytes and executed GPU architecture. The job-wide
+GPU memory check requires the simultaneous arena, solver, and pipeline peak.
+
+```powershell
+cmake --build out/build/matched-pressure-cuda --target fluidity_m3_matched_pressure
+ctest --test-dir out/build/matched-pressure-cuda -V -R '^M3MatchedPressure' --no-tests=error
+```
+
+### Persistent CUDA pressure workspace
+
+The production adaptive pressure stage uploads the frozen graph into reserved
+arena ranges and uses the bounded pressure hierarchy and result bank. A failed
+solve leaves the last published result intact. The sealed-cube control can
+exercise this same path with `fluidity_m3_matched_pressure --cuda-arena`.
+
+On SM120, median stage times were 15.7926 ms for the 512-cell uniform graph and
+4.6444 ms for the 176-cell graded graph at the error limits above. The allocating
+CUDA control in the same run took 24.6398 ms and 8.7352 ms. Peak allocated arena
+bytes were 9,360,128 and 3,396,608 for the two capacity tiers. Peak active
+pressure scratch was 7,411,928 and 2,540,864 bytes. These measurements cover
+the sealed-cube arena. Use the full-wave procedure below for the job-wide peak.
+### Full wave
+
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.
 - Record unprofiled launch-to-exit time including every requested stage and pipeline drain, published-frame intervals, retries, active levels, remap work and simultaneous peak GPU bytes. Include old and new owners, graph/solver scratch, stage buffers and in-flight snapshots in the memory measurement. Use a matched short capture for profiling, separate from the acceptance run. [CUDA optimization procedure](../native/cuda-optimization.md)
 - Run all 240 frames of the reference wave. Require at most 10,800 s and GPU peak at most `min(0.70 × total, 0.80 × free_at_job_start)`. The temporary uniform-sparse narrow-band path may qualify at most 21,600 s under the same cap and leaves adaptivity open. Qualify cage/native Multires when the authored reference output requests it.
+
+
+## Accepted width policy
+
+The native scheduler can apply an epoch-bound width request to one selected
+leaf per physical trial. It derives all eight siblings from the committed
+signed keys. An immediately required refinement or a coarsening with enough
+previously accepted eligible time prepares a replacement before the trial.
+If the family remains eligible, the inactive version receives the accepted
+interval credit. A veto or absence of fresh evidence clears that age on
+acceptance. Rejection leaves the age and the existing topology unchanged.
+
+The width fixture rejects late, retries at the required smaller timestep,
+checkpoints eight eligible siblings in a v4 state, and coarsens on the same
+next step after hard interruption. CPU and SM120 produce the same checkpoint
+and final BLAKE3 values.
+
+- Checkpoint `f9b23fa77c51d215ca7de7c40f6d47549c025aeec09a55c74e1130ab818fb4ba`
+- Final state `efdee2fa2e750765d4b0c7e3a1c24e4e51e533b195ee117f89b22739987bcab5`
+
+```powershell
+ctest --test-dir out/build/width-scheduler-cpu -V -R 'GradedWidthHysteresis|AdaptiveWidthReplay.cpu' --no-tests=error
+ctest --test-dir out/build/width-scheduler-cuda -V -R '^AdaptiveWidthReplay.cuda$' --no-tests=error
+```
+
+The caller still supplies the physical, camera, particle support and
+movement evidence. Automatic scene evaluation, multi-family coarsening, and
+resampling for families that cannot be exactly rebinned remain open.
+
+## Atomic refinement closure
+
+A width request can refine the selected parent and all coarser neighbors
+required by 2:1 grading. The scheduler remaps the closure coarsest first into
+temporary state, and publishes the resulting topology, inventory, pressure
+warm starts and signed subfaces in one physical acceptance. If any family
+requires resampling, the complete preparation refuses before consuming a
+trial. This bounded implementation constructs temporary family candidates
+and remains subject to the existing leaf and subface caps.
+
+A five-leaf planar control requests the smaller parent next to a coarser
+leaf. Both families publish together as 19 leaves. The CUDA fixture checks
+the device bank immediately after a late rejection and after acceptance.
+CPU and SM120 resumed the same checkpoint BLAKE3
+`bae5857e532ca09ad59e773f3d23d081e1354c66f7820c0f16be24a612c989ed`
+and produced final state
+`14865d96ba661a0ad99e0babe3860932d4637871e2d025fd452bd4ae302b4913`.
+
+```powershell
+ctest --test-dir out/build/batch-cpu -V -R 'GradedRefinementFamilies|AdaptiveClosureReplay.cpu' --no-tests=error
+ctest --test-dir out/build/batch-cuda -V -R '^AdaptiveClosureReplay.cuda$' --no-tests=error
+```

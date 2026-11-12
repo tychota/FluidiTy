@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "absl/functional/function_ref.h"
+#include "fluidity/host/adaptive_width_policy_3d.h"
 #include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "fluidity/host/liquid_eos.h"
@@ -304,6 +305,27 @@ struct LiquidFloatingBoxAttempt3D {
   std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
+// Width evidence for one accepted leaf and its candidate sibling family.
+struct LiquidAdaptiveWidthRequest3D {
+  std::uint64_t accepted_epoch;
+  AdaptiveMacCellKey3D leaf;
+  AdaptiveWidthDemand3D demand;
+  // Complete measurements of the parent, particle support and movement halo.
+  // The borrowed samples must describe accepted_epoch and live for this call.
+  std::span<const AdaptiveCoarsenHaloSample3D> parent_and_halo;
+  bool complete_halo;
+  double hysteresis_duration_s;
+};
+
+// One band placement request for the current accepted graded epoch.
+struct LiquidAdaptiveBandRequest3D {
+  std::uint64_t accepted_epoch;
+  AdaptiveMacCellKey3D leaf;
+  LiquidBandMargins3D margins;
+  std::optional<LiquidHandoffCarrier3D> destination_carrier;
+  std::size_t reseed_particle_count = 1;
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -361,6 +383,30 @@ class LiquidSubstepScheduler3D {
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
+  // Refine the requested committed parents and the necessary 2:1 closure.
+  // Coarser parents are prepared first. All changed inventories and signed
+  // subfaces must pass exact rebinning and remap before one physical trial.
+  // An empty request is invalid. Refusal or rejection leaves the committed
+  // topology, histories and inventories unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveRefinementClosure(double step_duration, std::span<const AdaptiveMacCellKey3D> requested_parents);
+  // Try the width policy for one leaf and one possible sibling family. The
+  // scheduler checks the accepted epoch, derives sibling membership from the
+  // committed keys and freezes any topology change before the physical trial.
+  // Coarsening uses only previously accepted eligible seconds. A kept family
+  // earns the proposed duration only on acceptance. An accepted trial resets
+  // other eligibility, including when it receives no width evidence. Refusal
+  // or rejection preserves the previous ages and topology.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request);
+  // Evaluate the particle-band policy at the accepted stationary planar
+  // interface using the named leaf's full-volume inventory and swept margins.
+  // The caller certifies support, movement and any destination carrier. One
+  // physical trial either keeps ownership, retires the leaf, or reseeds it.
+  // Stale evidence or unavailable handoff inputs refuse without consuming a
+  // trial. Rejection leaves both committed ownership versions unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveBandPlacement(double step_duration, const LiquidAdaptiveBandRequest3D& request);
   // Request an ownership handoff before one physical trial. The caller
   // certifies full occupancy and a carrier at the previous accepted epoch.
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandRetirement(
@@ -493,6 +539,7 @@ class LiquidSubstepScheduler3D {
   );
   struct SnowTrial;
   struct AdaptiveStateTrial;
+  struct AdaptiveWidthAgeTrial;
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
@@ -504,7 +551,8 @@ class LiquidSubstepScheduler3D {
       const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
       FloatingBoxTrial* floating_box = nullptr,
       SnowTrial* snow = nullptr,
-      AdaptiveStateTrial* adaptive_replacement = nullptr
+      AdaptiveStateTrial* adaptive_replacement = nullptr,
+      const AdaptiveWidthAgeTrial* adaptive_age = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

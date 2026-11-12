@@ -99,6 +99,7 @@ add_library(fluidity_native STATIC
   native/src/basis.cc
   native/src/coarse_fine_transfer_3d.cc
   native/src/graded_mac_transfer_3d.cc
+  native/src/graded_quadratic_mac_transfer_3d.cc
   native/src/small_solve.cc
   native/src/transfers.cc
   native/src/transfers_3d.cc
@@ -108,6 +109,7 @@ add_library(fluidity_native STATIC
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
+  native/src/graded_liquid_boundary_geometry_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
   native/src/mac_pressure_3d_bounded_hierarchy.cc
@@ -346,6 +348,7 @@ if(BUILD_TESTING)
     native/tests/test_grid_basis.cc
     native/tests/test_coarse_fine_transfer_3d.cc
     native/tests/test_graded_mac_transfer_3d.cc
+    native/tests/test_graded_quadratic_mac_transfer_3d.cc
     native/tests/test_sparse_mac_grid_3d.cc
     native/tests/test_small_solve.cc
     native/tests/test_transfers.cc
@@ -354,6 +357,7 @@ if(BUILD_TESTING)
     native/tests/test_pressure.cc
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
+    native/tests/test_graded_liquid_boundary_geometry_3d.cc
     native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_liquid_wall_contact_3d.cc
     native/tests/test_mac_pressure_workspace_3d.cc
@@ -397,6 +401,16 @@ if(BUILD_TESTING)
   add_test(NAME M3MatchedPressure.manufactured_sealed_cube COMMAND fluidity_m3_matched_pressure)
   set_tests_properties(M3MatchedPressure.manufactured_sealed_cube PROPERTIES LABELS pressure-benchmark)
 
+  if(FLUIDITY_ENABLE_CUDA)
+    target_compile_definitions(fluidity_m3_matched_pressure PRIVATE FLUIDITY_MATCHED_PRESSURE_CUDA)
+    target_link_libraries(fluidity_m3_matched_pressure PRIVATE fluidity_cuda_operators CUDA::cudart)
+    add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda COMMAND fluidity_m3_matched_pressure --cuda)
+    set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
+    add_test(NAME M3MatchedPressure.manufactured_sealed_cube_cuda_arena COMMAND fluidity_m3_matched_pressure --cuda-arena)
+    set_tests_properties(M3MatchedPressure.manufactured_sealed_cube_cuda_arena
+      PROPERTIES LABELS "pressure-benchmark;cuda-adaptivity")
+  endif()
+
   # Historical-cache research needs an external authenticated archive. Keep it
   # outside the mandatory CPU inventory, which never permits skipped tests.
   add_executable(fluidity_surface_fixed_cache_tests native/tests/test_surface_fixed_cache_3d.cc)
@@ -409,10 +423,24 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu)
   set_tests_properties(AdaptiveFamilyReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  foreach(scenario IN ITEMS eos viscous miscible)
+    add_test(NAME AdaptiveFamilyReplay.cpu.${scenario}
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu ${scenario})
+    set_tests_properties(AdaptiveFamilyReplay.cpu.${scenario} PROPERTIES LABELS cpu TIMEOUT 60)
+  endforeach()
   add_test(NAME AdaptiveBandReplay.cpu
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu band)
   set_tests_properties(AdaptiveBandReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveWidthReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu width)
+  set_tests_properties(AdaptiveWidthReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveClosureReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu closure)
+  set_tests_properties(AdaptiveClosureReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(fluidity_adaptive_family_fixture PRIVATE FLUIDITY_ADAPTIVE_FIXTURE_CUDA)
     target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_cuda_operators CUDA::cudart)
@@ -420,10 +448,24 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda)
     set_tests_properties(AdaptiveFamilyReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    foreach(scenario IN ITEMS eos viscous miscible)
+      add_test(NAME AdaptiveFamilyReplay.cuda.${scenario}
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+          "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda ${scenario})
+      set_tests_properties(AdaptiveFamilyReplay.cuda.${scenario} PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    endforeach()
     add_test(NAME AdaptiveBandReplay.cuda
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda band)
     set_tests_properties(AdaptiveBandReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveWidthReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda width)
+    set_tests_properties(AdaptiveWidthReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveClosureReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda closure)
+    set_tests_properties(AdaptiveClosureReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
   endif()
 
   if(FLUIDITY_ENABLE_CUDA)

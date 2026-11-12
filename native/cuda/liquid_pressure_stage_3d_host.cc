@@ -12,10 +12,18 @@ namespace fluidity::pressure_internal {
 // Only a fully fenced successful device projection enters the unused bank.
 // Capacity and all input aliases are checked before either owner is modified.
 struct BoundedCudaPressureAccess3D {
+  static absl::Status CheckExtents(const MacPressureWorkspace3D& workspace, std::size_t cells, std::size_t faces) {
+    if (cells > workspace.cell_capacity_ || faces > workspace.face_capacity_) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    return absl::OkStatus();
+  }
+
   static absl::Status
   Check(const MacPressureWorkspace3D& workspace, SparseMacGridView3D grid, const LiquidPressureProblemView3D& problem) {
-    if (problem.cells.size() > workspace.cell_capacity_ || problem.faces.size() > workspace.face_capacity_) {
-      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    const auto extents = CheckExtents(workspace, problem.cells.size(), problem.faces.size());
+    if (!extents.ok()) {
+      return extents;
     }
     const auto overlaps_inputs = [&](const auto& records) {
       const auto* address = records.values().data();
@@ -347,6 +355,16 @@ absl::Status Execute(
       BoundedCudaPressureAccess3D::Publish(workspace, prepared, pressure_output_range.pinned, pressure_device_report);
   return absl::OkStatus();
 }
+absl::StatusOr<pressure_internal::MacPressureScratch3D> BorrowPressurePreparation(CudaLiquidArena3D& arena) {
+  const auto preparation = arena.range(CudaLiquidRange3D::kPressurePreparationScratch).pinned;
+  if (reinterpret_cast<std::uintptr_t>(preparation.data()) % alignof(std::max_align_t) != 0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  return pressure_internal::MacPressureScratch3D(
+      {reinterpret_cast<std::max_align_t*>(preparation.data()), preparation.size() / sizeof(std::max_align_t)}
+  );
+}
+
 #undef FLUIDITY_PRESSURE_RANGE
 #undef FLUIDITY_PRESSURE_TRY
 }  // namespace
@@ -379,19 +397,16 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
   if (!checked.ok()) {
     return checked;
   }
-  const auto preparation = arena.range(CudaLiquidRange3D::kPressurePreparationScratch).pinned;
-  if (reinterpret_cast<std::uintptr_t>(preparation.data()) % alignof(std::max_align_t) != 0) {
-    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  auto scratch = BorrowPressurePreparation(arena);
+  if (!scratch.ok()) {
+    return scratch.status();
   }
-  pressure_internal::MacPressureScratch3D scratch(
-      {reinterpret_cast<std::max_align_t*>(preparation.data()), preparation.size() / sizeof(std::max_align_t)}
-  );
   const auto prepared = pressure_internal::PrepareBoundedMacPressureUpload3D(
       grid,
       step_duration,
       problem.cells,
       problem.faces,
-      scratch,
+      *scratch,
       problem.seed_uniform_dirichlet_rest_pressure
   );
   if (!prepared.ok()) {
@@ -404,4 +419,45 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
   }
   return result;
 }
+
+absl::StatusOr<MacPressureProjectionView3D> ProjectArenaAdaptivePressure3D(
+    CudaLiquidArena3D& arena,
+    const pressure_internal::PreparedMacPressureSystem3D& system,
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace
+) {
+  const auto ready = arena.RecordRuntimeResult(cudaSuccess);
+  if (!ready.ok()) {
+    return ready;
+  }
+  if (!system.is_explicit_graph() || system.cells().empty() || options.max_iterations == 0
+      || options.max_iterations > 256) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto capacities = arena.capacities();
+  if (system.cells().size() > capacities.cells || system.links().size() > capacities.faces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  // An owning explicit graph has no borrowed ranges in either scratch owner.
+  const auto extents =
+      BoundedCudaPressureAccess3D::CheckExtents(workspace, system.cells().size(), system.links().size());
+  if (!extents.ok()) {
+    return extents;
+  }
+  auto scratch = BorrowPressurePreparation(arena);
+  if (!scratch.ok()) {
+    return scratch.status();
+  }
+  const auto prepared = pressure_internal::PrepareBoundedAdaptiveMacPressureUpload3D(system, *scratch);
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  MacPressureProjectionView3D result;
+  const auto status = Execute(arena, *prepared, options, workspace, result);
+  if (!status.ok()) {
+    return status;
+  }
+  return result;
+}
+
 }  // namespace fluidity::cuda_internal

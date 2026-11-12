@@ -33,6 +33,19 @@ auto CellKey(CellIndex3D index) {
   return std::tuple(index.z, index.y, index.x);
 }
 
+std::optional<std::size_t>
+FindAdaptiveLeaf(std::span<const LiquidAdaptiveCellState3D> cells, AdaptiveMacCellKey3D leaf) {
+  const auto key = CellKey(leaf.lower_corner);
+  const auto found = std::ranges::lower_bound(cells, key, {}, [](const auto& cell) {
+    return CellKey(cell.key.lower_corner);
+  });
+  if (found == cells.end() || CellKey(found->key.lower_corner) != key
+      || found->key.width_exponent != leaf.width_exponent) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(found - cells.begin());
+}
+
 struct RoutedPressureImpulse3D {
   Vec3 angular_impulse_change{};
   std::size_t face_count = 0;
@@ -2823,17 +2836,14 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     const LiquidSubstepBackend3D& backend
 ) {
   const bool adaptive_mode = initial.adaptive_cells.size() != 0;
-  if (adaptive_mode
-      && (HasConstituentViscosity(scene) || scene.drift || scene.cavity || scene.cavity_provider.prepare
-          || !scene.phase_pairs.empty())) {
-    return absl::UnimplementedError(
-        "graded tank constituent viscosity, drift, cavity or immiscible settings require a graded operator"
-    );
+  if (adaptive_mode && (scene.drift || scene.cavity || scene.cavity_provider.prepare || !scene.phase_pairs.empty())) {
+    return absl::UnimplementedError("graded tank drift, cavity or immiscible settings require a graded operator");
   }
-  if (adaptive_mode && backend.project_adaptive == nullptr && !backend.host_adaptive_pressure) {
+  if (adaptive_mode && backend.project_adaptive == nullptr && backend.project_adaptive_in_arena == nullptr
+      && !backend.host_adaptive_pressure) {
     return absl::UnimplementedError("selected backend has no graded pressure projection");
   }
-  if (adaptive_mode && scene.dynamic_viscosity > 0.0 && !backend.host_adaptive_pressure
+  if (adaptive_mode && CanApplyViscosity(scene) && !backend.host_adaptive_pressure
       && backend.project_adaptive_viscous == nullptr) {
     return absl::UnimplementedError("selected backend has no graded viscous velocity inverse");
   }
@@ -3060,6 +3070,11 @@ struct LiquidSubstepScheduler3D::AdaptiveStateTrial {
   std::size_t accepted_reservation_bytes;
 };
 
+struct LiquidSubstepScheduler3D::AdaptiveWidthAgeTrial {
+  std::array<std::size_t, 8> siblings{};
+  double eligible_duration_s = 0;
+};
+
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine) {
   return AttemptPreparedAdaptiveState(step_duration, [&] {
@@ -3071,6 +3086,219 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, Adapti
         refine
     );
   });
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveRefinementClosure(
+    double step_duration,
+    std::span<const AdaptiveMacCellKey3D> requested_parents
+) {
+  return AttemptPreparedAdaptiveState(step_duration, [&]() -> absl::StatusOr<LiquidState3D> {
+    if (requested_parents.empty()) {
+      return absl::InvalidArgumentError("adaptive refinement closure requires at least one parent");
+    }
+    if (requested_parents.size() > kMaximumAdaptiveLiquidCells3D) {
+      return absl::ResourceExhaustedError("adaptive refinement request exceeds the leaf limit");
+    }
+    const auto& accepted = committed();
+    const auto& topology = impl_->adaptive->topology();
+    const auto accepted_cells = accepted.adaptive_cells.values();
+    std::vector<std::size_t> requested_ordinals;
+    requested_ordinals.reserve(requested_parents.size());
+    for (const auto key : requested_parents) {
+      const auto ordinal = FindAdaptiveLeaf(accepted_cells, key);
+      if (!ordinal) {
+        return absl::FailedPreconditionError("adaptive refinement closure requires committed parent leaves");
+      }
+      requested_ordinals.push_back(*ordinal);
+    }
+    auto closure = topology.RefinementClosure(requested_ordinals, impl_->options.capacities.cells);
+    if (!closure.ok()) {
+      return closure.status();
+    }
+    std::ranges::sort(*closure, {}, [&](std::size_t ordinal) {
+      return std::tuple{-static_cast<int>(accepted_cells[ordinal].key.width_exponent), ordinal};
+    });
+
+    // Every forced neighbor is coarser than the parent that required it.
+    // Splitting in descending width order keeps each internal remap 2:1.
+    std::optional<LiquidState3D> staged;
+    for (const auto ordinal : *closure) {
+      const auto& source = staged ? *staged : accepted;
+      auto candidate = liquid_step_internal::PrepareAdaptiveLiquidFamilyCandidate3D(
+          source,
+          impl_->scene,
+          impl_->options.capacities,
+          accepted_cells[ordinal].key,
+          true
+      );
+      if (!candidate.ok()) {
+        return candidate.status();
+      }
+      staged.emplace(std::move(*candidate));
+    }
+    return std::move(*staged);
+  });
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D>
+LiquidSubstepScheduler3D::AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request) {
+  const auto& state = committed();
+  if (!impl_->adaptive || request.accepted_epoch != state.clock.epoch) {
+    return absl::FailedPreconditionError("adaptive width requires evidence for the committed graded epoch");
+  }
+  if (!impl_->frame_active || !std::isfinite(step_duration) || step_duration <= 0
+      || step_duration > impl_->target_time - state.clock.time) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto cells = state.adaptive_cells.values();
+  const auto selected = FindAdaptiveLeaf(cells, request.leaf);
+  if (!selected) {
+    return absl::FailedPreconditionError("adaptive width evidence does not name a committed leaf");
+  }
+  const auto exponent = request.leaf.width_exponent;
+  const double cell_width_m = std::ldexp(state.geometry.cell_width, exponent);
+  AdaptiveMacCellKey3D parent{};
+  AdaptiveWidthAgeTrial ages;
+  bool complete_siblings = exponent < 30;
+  double prior_eligible_duration_s = 0;
+  if (complete_siblings) {
+    const std::int64_t child_width = std::int64_t{1} << exponent;
+    const std::int64_t parent_width = 2 * child_width;
+    const auto parent_coordinate = [parent_width](std::int32_t coordinate) {
+      const auto remainder = coordinate % parent_width;
+      return static_cast<std::int32_t>(coordinate - remainder - (remainder < 0 ? parent_width : 0));
+    };
+    const auto lower = request.leaf.lower_corner;
+    parent = {
+        .lower_corner = {parent_coordinate(lower.x), parent_coordinate(lower.y), parent_coordinate(lower.z)},
+        .width_exponent = static_cast<std::uint8_t>(exponent + 1),
+    };
+    prior_eligible_duration_s = cells[*selected].coarsening_eligible_duration_s;
+    for (std::size_t child = 0; child < ages.siblings.size(); ++child) {
+      const auto child_coordinate = [child, child_width](std::int32_t coordinate, std::size_t axis) {
+        const auto offset = (child & (std::size_t{1} << axis)) != 0 ? child_width : 0;
+        return static_cast<std::int32_t>(coordinate + offset);
+      };
+      const auto sibling = FindAdaptiveLeaf(
+          cells,
+          {.lower_corner =
+               {child_coordinate(parent.lower_corner.x, 0),
+                child_coordinate(parent.lower_corner.y, 1),
+                child_coordinate(parent.lower_corner.z, 2)},
+           .width_exponent = exponent}
+      );
+      if (!sibling || cells[*sibling].material_owner != AdaptiveLiquidMaterialOwner3D::kParticles) {
+        complete_siblings = false;
+        prior_eligible_duration_s = 0;
+        break;
+      }
+      ages.siblings[child] = *sibling;
+      prior_eligible_duration_s = std::min(prior_eligible_duration_s, cells[*sibling].coarsening_eligible_duration_s);
+    }
+  }
+  const auto decision = DecideAdaptiveWidth3D(
+      cell_width_m,
+      request.demand,
+      request.parent_and_halo,
+      complete_siblings,
+      request.complete_halo,
+      prior_eligible_duration_s,
+      0,
+      request.hysteresis_duration_s
+  );
+  if (!decision.ok()) {
+    return decision.status();
+  }
+  if (decision->change == AdaptiveWidthChange3D::kRefine) {
+    if (exponent == 0) {
+      return absl::FailedPreconditionError("adaptive width demand is below the resolved finest lattice");
+    }
+    return AttemptWithAdaptiveRefinementClosure(step_duration, std::span(&request.leaf, 1));
+  }
+  if (decision->change == AdaptiveWidthChange3D::kCoarsen) {
+    return AttemptWithAdaptiveFamily(step_duration, parent, false);
+  }
+  if (decision->veto != AdaptiveCoarsenVeto3D::kNone) {
+    return Attempt(step_duration);
+  }
+  const double remaining_duration_s = request.hysteresis_duration_s - prior_eligible_duration_s;
+  ages.eligible_duration_s =
+      step_duration >= remaining_duration_s ? request.hysteresis_duration_s : prior_eligible_duration_s + step_duration;
+  return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, nullptr, &ages);
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandPlacement(
+    double step_duration,
+    const LiquidAdaptiveBandRequest3D& request
+) {
+  const auto& state = committed();
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
+  if (!impl_->adaptive || plane == nullptr || request.accepted_epoch != state.clock.epoch) {
+    return absl::FailedPreconditionError("band placement requires the committed graded planar epoch");
+  }
+  if (!impl_->frame_active || !std::isfinite(step_duration) || step_duration <= 0
+      || step_duration > impl_->target_time - state.clock.time) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto cells = state.adaptive_cells.values();
+  const auto ordinal = FindAdaptiveLeaf(cells, request.leaf);
+  if (!ordinal) {
+    return absl::FailedPreconditionError("band placement does not name a committed leaf");
+  }
+  const auto& leaf = cells[*ordinal];
+  const double finest_width_m = state.geometry.cell_width;
+  const double lattice_width = std::ldexp(1.0, leaf.key.width_exponent);
+  const double leaf_width_m = std::ldexp(finest_width_m, leaf.key.width_exponent);
+  const double leaf_volume_m3 = leaf_width_m * leaf_width_m * leaf_width_m;
+  LiquidHandoffOccupancy3D occupancy = LiquidHandoffOccupancy3D::kNotLiquid;
+  if (leaf.occupancy == LiquidCellOccupancy3D::kLiquid) {
+    occupancy = leaf.inventory.current_volume_m3 == leaf_volume_m3 ? LiquidHandoffOccupancy3D::kFullLiquid
+                                                                   : LiquidHandoffOccupancy3D::kPartial;
+  }
+  const auto lower = leaf.key.lower_corner;
+  const auto origin = state.geometry.world_origin;
+  const LiquidHandoffCell3D cell{
+      .world_lower_corner =
+          {
+              std::fma(lower.x, finest_width_m, origin.x),
+              std::fma(lower.y, finest_width_m, origin.y),
+              std::fma(lower.z, finest_width_m, origin.z),
+          },
+      .cell_width = leaf_width_m,
+      .occupancy = occupancy,
+  };
+  // For the admitted planar tank, the high-y face is closest to the interface.
+  const double upper_y_m = std::fma(lower.y + lattice_width, finest_width_m, origin.y);
+  const double signed_distance_upper_m =
+      std::nextafter(upper_y_m - plane->world_surface_height_y, std::numeric_limits<double>::infinity());
+  const auto placement = PlanLiquidBandPlacement3D(
+      cell,
+      leaf.material_owner,
+      signed_distance_upper_m,
+      request.margins,
+      request.destination_carrier
+  );
+  if (!placement.ok()) {
+    return placement.status();
+  }
+  switch (placement->action) {
+    case LiquidBandPlacementAction3D::kKeep: {
+      return Attempt(step_duration);
+    }
+    case LiquidBandPlacementAction3D::kRetire: {
+      return AttemptWithAdaptiveBandRetirement(step_duration, request.leaf, occupancy, *request.destination_carrier);
+    }
+    case LiquidBandPlacementAction3D::kReseed: {
+      return AttemptWithAdaptiveCoreReseed(
+          step_duration,
+          request.leaf,
+          occupancy,
+          *request.destination_carrier,
+          request.reseed_particle_count
+      );
+    }
+  }
+  return Error(absl::StatusCode::kInternal);
 }
 
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandRetirement(
@@ -3371,7 +3599,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     const LiquidPistonReactionUpdate3D* update_with_reaction,
     FloatingBoxTrial* floating_box,
     SnowTrial* snow,
-    AdaptiveStateTrial* adaptive_replacement
+    AdaptiveStateTrial* adaptive_replacement,
+    const AdaptiveWidthAgeTrial* adaptive_age
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
@@ -3392,6 +3621,14 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   }
   if (adaptive_replacement != nullptr) {
     **trial = std::move(adaptive_replacement->state);
+  }
+  for (auto& cell : (*trial)->adaptive_cells.values()) {
+    cell.coarsening_eligible_duration_s = 0;
+  }
+  if (adaptive_age != nullptr) {
+    for (const auto sibling : adaptive_age->siblings) {
+      (*trial)->adaptive_cells[sibling].coarsening_eligible_duration_s = adaptive_age->eligible_duration_s;
+    }
   }
   ++diagnostics.attempts;
   diagnostics.accepted_measurement.reset();

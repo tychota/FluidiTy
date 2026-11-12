@@ -12,22 +12,13 @@
 
 #include "absl/status/statusor.h"
 #include "fluidity/host/views.h"
+#include "mac_deposit_3d_internal.h"
 #include "mac_gather_3d_internal.h"
 
 namespace fluidity {
 namespace {
 
-struct MacNormalComponentAccess {
-  FaceNormalAxis axis;
-  double Vec3::* velocity_component;
-  Vec3 Mat3::* velocity_slope_row;
-};
-
-constexpr std::array kNormalComponentAccess{
-    MacNormalComponentAccess{FaceNormalAxis::kX, &Vec3::x, &Mat3::x_row},
-    MacNormalComponentAccess{FaceNormalAxis::kY, &Vec3::y, &Mat3::y_row},
-    MacNormalComponentAccess{FaceNormalAxis::kZ, &Vec3::z, &Mat3::z_row},
-};
+using internal::kNormalComponentAccess;
 constexpr std::size_t kMaxQuantizedParticleCapacity = std::size_t{1} << 20;
 
 bool IsFinite(Vec3 value) {
@@ -82,11 +73,9 @@ absl::Status DepositWithFaceAccumulator(
   // or arithmetic failure on a later particle must leave caller storage intact.
   std::vector<FaceDeposit> staged_face_deposits(face_deposits.size());
   for (const auto& particle : particles) {
-    if (!std::isfinite(particle.particle_mass) || particle.particle_mass < 0.0) {
-      return absl::InvalidArgumentError("particle mass must be finite and nonnegative");
-    }
-    if (!IsFinite(particle.particle_velocity) || !IsFinite(particle.particle_velocity_slopes)) {
-      return absl::InvalidArgumentError("particle velocity and affine fit must be finite");
+    const auto input = internal::ValidateMacDepositParticle(particle);
+    if (!input.ok()) {
+      return input;
     }
     for (const auto component : kNormalComponentAccess) {
       const auto stencil = BuildOwnedMacFaceStencil3D(
@@ -98,21 +87,15 @@ absl::Status DepositWithFaceAccumulator(
       if (!stencil.ok()) {
         return stencil.status();
       }
-      const double particle_velocity_component = particle.particle_velocity.*component.velocity_component;
-      const Vec3 particle_velocity_slope_row = particle.particle_velocity_slopes.*component.velocity_slope_row;
-      for (const auto& sample : *stencil) {
-        const double mass_contribution = sample.weight * particle.particle_mass;
-        const double velocity_at_face =
-            particle_velocity_component + Dot(particle_velocity_slope_row, sample.face_offset_from_particle);
-        const double pure_momentum_contribution = mass_contribution * velocity_at_face;
-        const auto status = accumulate_face_contribution(
-            mass_contribution,
-            pure_momentum_contribution,
-            staged_face_deposits[sample.face_slot]
-        );
-        if (!status.ok()) {
-          return status;
-        }
+      const auto status = internal::AccumulateMacParticleComponent(
+          *stencil,
+          particle,
+          component,
+          std::span(staged_face_deposits),
+          accumulate_face_contribution
+      );
+      if (!status.ok()) {
+        return status;
       }
     }
   }
@@ -158,19 +141,7 @@ absl::Status DepositMac3D(
     std::span<const MacTransferParticle3D> particles,
     std::span<MacFaceDeposit3D> face_deposits
 ) {
-  return DepositWithFaceAccumulator(
-      mac_grid,
-      particles,
-      face_deposits,
-      [](double mass_contribution, double pure_momentum_contribution, MacFaceDeposit3D& face) {
-        face.deposited_mass += mass_contribution;
-        face.deposited_pure_momentum += pure_momentum_contribution;
-        if (!std::isfinite(face.deposited_mass) || !std::isfinite(face.deposited_pure_momentum)) {
-          return absl::OutOfRangeError("deposited mass or pure momentum is nonfinite");
-        }
-        return absl::OkStatus();
-      }
-  );
+  return DepositWithFaceAccumulator(mac_grid, particles, face_deposits, internal::AccumulateMacFaceDeposit);
 }
 
 absl::Status DepositMacQuanta3D(

@@ -5,7 +5,6 @@
 
 #include "../src/liquid_substep_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
-#include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "fluidity/host/cuda_wetted_piston_3d.h"
 #include "liquid_geometry_stages_3d.h"
 #include "liquid_pressure_stage_3d.h"
@@ -284,19 +283,17 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
       }
       return cuda_internal::ProjectArenaAdaptiveViscousPressure3D(arena, system, duration, rows, options);
     };
-    operations.project_adaptive = [](void* context,
-                                     const pressure_internal::PreparedMacPressureSystem3D& system,
-                                     MacPressureSolverOptions3D options) -> absl::StatusOr<MacPressureProjection3D> {
+    operations.project_adaptive_in_arena = [](void* context,
+                                              const pressure_internal::PreparedMacPressureSystem3D& system,
+                                              MacPressureSolverOptions3D options,
+                                              MacPressureWorkspace3D& workspace
+                                           ) -> absl::StatusOr<MacPressureProjectionView3D> {
       auto& arena = static_cast<Impl*>(context)->arena;
       const auto ready = arena.BeginDeviceTimeline();
       if (!ready.ok()) {
         return ready;
       }
-      auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system, options);
-      if (!result.ok()) {
-        return result.status();
-      }
-      return std::move(result->projection);
+      return cuda_internal::ProjectArenaAdaptivePressure3D(arena, system, options, workspace);
     };
   }
   if (!impl_->needs_wetted_piston) {
