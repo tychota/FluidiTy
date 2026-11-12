@@ -144,6 +144,42 @@ TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
   );
 }
 
+TEST(LiquidBoundaryGeometry3D, PressureLoadedSnowTrialAdvancesWithoutChangingAcceptedState) {
+  const auto grid = *SparseMacGrid3D::Create({{}, 1.0}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  const SnowParameters3D snow{2, 3, 0.025, 0.01, 4};
+  const DrySolidParticle3D particle{
+      .world_position = {2, 2, 2},
+      .mass = 2,
+      .reference_volume = 0.1,
+      .elastic_deformation = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+  };
+  const auto checkpoint = CapturePlasticSolidCheckpointParticle3D(7, 4, 1, snow, particle);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const std::array accepted{*checkpoint};
+  const PlasticSolidPressureImpulse3D impulse{.particle_id = 7, .impulse = {0.2, 0, 0}, .world_offset = {0, 0.25, 0}};
+  const std::array loads{impulse};
+  auto trial = StagePressureLoadedSnowParticles3D(accepted, 4, 1, snow, 1.0, loads);
+  ASSERT_TRUE(trial.ok()) << trial.status();
+  ASSERT_EQ(trial->size(), 1);
+  EXPECT_NEAR(trial->front().world_velocity.x, 0.1, 2e-14);
+  EXPECT_NEAR(trial->front().velocity_slopes.x_row.y, 0.1, 2e-14);
+
+  const DrySolidStep3D step{.duration = 0.01, .acoustic_cfl = 0.25};
+  ASSERT_TRUE(AdvanceDrySolid3D(grid, snow, step, *trial).ok());
+  EXPECT_NEAR(trial->front().world_position.x, 2.001, 2e-14);
+  EXPECT_NEAR(trial->front().elastic_deformation.x_row.y, 0.001, 2e-14);
+
+  auto unknown = impulse;
+  unknown.particle_id = 9;
+  const std::array invalid_loads{impulse, unknown};
+  EXPECT_EQ(
+      StagePressureLoadedSnowParticles3D(accepted, 4, 1, snow, 1.0, invalid_loads).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_DOUBLE_EQ(accepted.front().transfer.particle_velocity.x, 0.0);
+  EXPECT_DOUBLE_EQ(accepted.front().transfer.sorted_world_position.x, 2.0);
+}
+
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
   boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
   cell.liquid_distance.fill(-1);
