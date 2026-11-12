@@ -3949,3 +3949,30 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Average equally near tangent fallback donors
+
+Replace the first nearest donor with an equal-weight average over
+all nearest donors, within 1e-12 squared cell units of the minimum.
+This removes owned-slot tie ordering from the bounded tangential
+row. The same row drives both the gather and stress transpose.
+Native and SM120 default dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 34.622626° | 0.170127 m |
+| Coarse half-step | 40.844653° | 0.157125 m |
+| Fine | 31.399622° | 0.161410 m |
+| Fine half-step | 34.753734° | 0.158132 m |
+
+The fine half-step still passes. The fine nominal radius grows
+past the limit and both coarse failure modes persist. Vertical
+momentum residual stays below 5.2e-9 N·s. The source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-nearest-tie-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
