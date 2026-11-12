@@ -535,3 +535,27 @@ Blender 5.2.3 LTS e13b728c6880 round-tripped a mesh through its Alembic exporter
 The receipts and fixture are out/m4-alembic-attribute-probe.*, out/m4-usd-attribute-probe.* and out/m4-usd-dynamic-probe.*. Each Python fixture runs with Blender 5.2.3 -b --factory-startup --python-exit-code 1 --python FIXTURE.py from the worktree root.
 
 Use an authenticated Mesh-cache export to native USD for named render fields. Preserve the existing Alembic surface export. Name fraction attributes fluidity_fraction_<stable substance ID>. Represent phase membership with per-phase named fields so full-width stable IDs are carried in names and never narrowed for Blender. Export time-sampled vertex fields with zero values for absent constituents and preserve the cache timeline and orientation. Verify shader consumption in a fresh extension-disabled Blender process on the production carrier.
+
+## Production named surface export receipt
+
+The Blender bridge command export-surface-usd authenticates the contiguous committed Mesh frames and publishes a native USD cache without replacing an existing destination. Point primvars fluidity_fraction_<substance ID> and fluidity_phase_<phase ID> use stable IDs in their names. Phase fields are one-hot at mesh vertices. Missing values are zero. The export uses one decoded mesh at a time and rereads the authenticated frames for each property, so export cost grows with the number of distinct fields. The carrier uses solver frame ordinals at 24 fps and Blender world axes.
+
+The mixed-surface fixture baked frames zero and one through production Simulate and Mesh. Blender 5.2.3 read phase 4 and 25/75 percent substance fractions on every vertex at both frames. A fresh factory-startup process reopened the saved blend, verified the attributes and checked the native material node bindings. The bridge rejected overwriting the carrier and cleaned staging after a missing-frame failure. The first incremental Release run crashed with stale native objects after the vertex layout change. A clean Release build with the pinned Alembic package fixed the crash. All 725 debug CPU tests passed on the preceding candidate after building all registered test executables. clang-format 19.1.5 and git diff --check passed for this slice.
+
+From the worktree root with the debug CPU solver and fixture and the Release Blender bridge built, run the commands below against a fresh output directory. Receipts use out/m4-usd-mixed-retry and out/m4-usd-bridge-clean-release.log.
+
+```powershell
+$cpu = 'out/build/windows-debug-cpu'
+$bridge = 'out/build/windows-release-cuda/fluidity_blender_bridge.exe'
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$run = 'out/m4-usd-qualification'
+New-Item -ItemType Directory $run
+& "$cpu/fluidity_simulate_fixture.exe" scene "$run/scene.flrs" "$cpu/fluidity_simulate.exe" cpu mixed-surface
+& "$cpu/fluidity_simulate.exe" run --stage simulate --scene "$run/scene.flrs" --initial-state "$run/scene.flrs.flst" --cache "$run/simulate" --frame-end 1
+& "$cpu/fluidity_simulate.exe" run --stage mesh --cache "$run/simulate" --output-cache "$run/mesh" --surface-spacing 0.125 --surface-sigma 0.25 --frame-end 1
+& $bridge export-surface-usd "$run/mesh" 1 "$run/surface.usda"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_surface_usd.py -- prepare "$run/surface.usda" "$run/surface.blend"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_surface_usd.py -- reopen "$run/surface.blend"
+```
+
+The bridge has no artist-facing attachment operator for this carrier yet. The fixture validates saved node bindings and evaluated geometry attributes. Rendered shader response, a shared water–oil interface, and the three-source workflow remain open.

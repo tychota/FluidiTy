@@ -218,8 +218,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
-  const bool initial_particle =
-      args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean || bounded_wave || shear_tank;
+  const bool mixed_surface = args[5] == "mixed-surface";
+  const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean
+      || bounded_wave || shear_tank || mixed_surface;
   if (ocean) {
     scene.options.ocean_boundary = fluidity::OceanBoundarySettings3D{
         .swell =
@@ -237,7 +238,14 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         .outlet_rate_per_s = 4,
     };
   }
-  scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" ? 16 : 0);
+  constexpr std::array<fluidity::LiquidConstituentMaterial3D, 2> kMixedSurfaceMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+  }};
+  if (mixed_surface) {
+    scene.scene.constituent_materials = kMixedSurfaceMaterials;
+  }
+  scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" || mixed_surface ? 16 : 0);
   if (whitewater) {
     scene.options.whitewater_capture = fluidity::WhitewaterCaptureSettings3D{
         .source_options =
@@ -321,6 +329,14 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
       state.particles[0].id = 1;
       state.particles[0].tag = 19;
       state.particles[0].world_position = {2.5, 2.5, 2.5};
+      if (mixed_surface) {
+        auto& particle = state.particles[0];
+        particle.mass = 1015.0;
+        particle.phase_id = 4;
+        particle.constituent_count = 2;
+        particle.constituents[0] = {8, 0.25};
+        particle.constituents[1] = {14, 0.75};
+      }
       if (whitewater) {
         state.particles[0].world_velocity.x = 2;
       }
