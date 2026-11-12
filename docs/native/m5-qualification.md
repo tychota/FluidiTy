@@ -39,6 +39,7 @@ clean Windows Release CUDA rebuild.
 | Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
 | Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
 | Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
+| Joint planar snow–water checkpoint replay | Pass in the combined M5/M6 integration worktree | The moving cut-cell driver restarts liquid and compressed snow from FLSI v2. A failed frame preserves the checkpoint. The next completed checkpoint is byte-identical to uninterrupted execution on each backend. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1117,6 +1118,24 @@ and returns no frame while preserving the caller's inputs. The
 driver uses explicit planar scene settings and supports liquid
 without sources or cavities. It does not yet serve as a resolved
 Blender scene runtime or write the accepted joint checkpoint.
+
+The combined branch codex/m5-planar-restart at 18cffb5 adds the
+owning FLSI codec from draft PR 84 to the coupled planar driver. It
+writes the completed 0.125 s frame with liquid state and nonzero snow
+compaction history. A resumed attempt with an exhausted motion limit
+leaves the saved bytes intact. With the original limit, both the
+uninterrupted and restored runs advance snow and liquid to 0.1875 s.
+The two next envelopes match byte for byte on each backend, including
+accepted step and epoch three and frame ordinal two. The Release
+native and CUDA scene suites and FLSI conformance test passed.
+
+In the combined worktree, run the same Release CUDA configuration as
+the other M5 scene tests and select the coupled replay and schema checks.
+
+```powershell
+cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests --parallel 8
+ctest --preset windows-release-cuda -R '^M5DryScenes\.|^LiquidCacheSchema.solid_interaction_checkpoint' --output-on-failure
+```
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume
