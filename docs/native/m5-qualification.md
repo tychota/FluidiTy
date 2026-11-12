@@ -3810,3 +3810,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Full-stencil moment scale for partial affine support
+
+Starting at `eb8877c`, compute a centered velocity-position moment
+for each affected affine row over its non-fallback samples. Use
+the original quadratic weights and multiply by `4/h²`, the inverse
+second moment of the full uniform quadratic stencil. The partial
+moment is left unnormalized by surviving weight. This avoids
+inverting a covariance built from sparse support. The paired
+stress and deformation operators are unchanged. Native and SM120
+default dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 28.067542° | 0.175966 m |
+| Coarse half-step | 30.804592° | 0.171313 m |
+| Fine | 23.274535° | 0.178705 m |
+| Fine half-step | 27.847757° | 0.170715 m |
+
+The coarse half-step enters the angular window and exceeds the
+radius limit. Both fine cases lose their passes. The fixed moment
+scale moderates the spreading relative to the full refit, with
+vertical momentum residual below 2.5e-8 N·s. Source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-moment-refit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
