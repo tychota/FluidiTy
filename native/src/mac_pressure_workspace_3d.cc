@@ -11,6 +11,7 @@
 #include <tuple>
 #include <utility>
 
+#include "fluidity/host/viscosity.h"
 #include "mac_pressure_3d_arithmetic.h"
 #include "mac_pressure_3d_workspace_internal.h"
 
@@ -624,6 +625,36 @@ class ScratchByteCounter {
   }
   std::size_t total = 0;
 };
+bool CountOriginalPressureScratch(ScratchByteCounter& counter, std::size_t cell_capacity, std::size_t face_capacity) {
+  return counter.Add(cell_capacity, sizeof(PreparedMacPressureCell3D))
+      && counter.Add(face_capacity, sizeof(FrozenMacPressureLink3D)) && counter.Add(cell_capacity, sizeof(double), 2)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 2) && counter.Add(cell_capacity, 6 * sizeof(std::size_t))
+      && counter.Add(cell_capacity, sizeof(FluxRow)) && counter.Add(cell_capacity, sizeof(ComponentBalance));
+}
+
+bool CountUniformStrainScratch(ScratchByteCounter& counter, std::size_t cell_capacity, std::size_t face_capacity) {
+  return counter.Add(cell_capacity, sizeof(MacViscosityCell3D))
+      && counter.Add(cell_capacity, sizeof(std::array<double, 8>))
+      && counter.Add(cell_capacity, sizeof(std::array<double, 3>))
+      && counter.Add(cell_capacity, pressure_internal::kMaximumUniformStrainRowsPerCell3D * sizeof(MacStrainRow3D))
+      && counter.Add(face_capacity, sizeof(std::size_t));
+}
+
+bool CountCoupledPressureScratch(
+    ScratchByteCounter& counter,
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    std::size_t strain_row_capacity
+) {
+  using CompensatedSum = pressure_internal::arithmetic::CompensatedSum;
+  return counter.Add(strain_row_capacity, sizeof(MacStrainRow3D), 2)
+      && counter.Add(face_capacity, pressure_internal::kCoupledVelocityScratchFields3D * sizeof(double))
+      && counter.Add(face_capacity, pressure_internal::kCoupledFaceScratchFields3D * sizeof(double))
+      && counter.Add(cell_capacity, pressure_internal::kCoupledCellScratchFields3D * sizeof(double))
+      && counter.Add(cell_capacity, sizeof(CompensatedSum)) && counter.Add(cell_capacity, sizeof(bool))
+      && counter.Add(cell_capacity, 2 * pressure_internal::kCoupledPressureRestartLength3D * sizeof(double));
+}
+
 template <typename T>
 absl::Status Reserve(LiquidRecords3D<T>& records, std::size_t capacity) {
   auto reserved = LiquidRecords3D<T>::Create(capacity);
@@ -636,16 +667,45 @@ absl::Status Reserve(LiquidRecords3D<T>& records, std::size_t capacity) {
 #undef FLUIDITY_PRESSURE_TAKE
 }  // namespace
 
-absl::StatusOr<MacPressureWorkspaceBytes3D>
-QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_capacity) {
+absl::StatusOr<std::size_t>
+pressure_internal::QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacity, std::size_t face_capacity) {
+  if (cell_capacity > kMaxPressureCells || face_capacity > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  ScratchByteCounter counter;
+  if (!CountOriginalPressureScratch(counter, cell_capacity, face_capacity)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return counter.total;
+}
+
+absl::StatusOr<std::size_t> pressure_internal::QueryCoupledMacPressureScratchBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    std::size_t strain_row_capacity,
+    bool prepare_uniform_system
+) {
+  ScratchByteCounter counter;
+  if (cell_capacity > kMaxPressureCells || face_capacity > kMaxPressureFaces
+      || (prepare_uniform_system && !CountOriginalPressureScratch(counter, cell_capacity, face_capacity))
+      || !CountCoupledPressureScratch(counter, cell_capacity, face_capacity, strain_row_capacity)) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  return counter.total;
+}
+
+absl::StatusOr<MacPressureWorkspaceBytes3D> QueryMacPressureWorkspaceBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    MacPressureWorkspaceMode3D mode
+) {
   if (cell_capacity == 0 && face_capacity == 0) {
     return MacPressureWorkspaceBytes3D{};
   }
   ScratchByteCounter counter;
   const auto level_capacity = kMaximumPressureLevels3D;
-  const bool fits = counter.Add(cell_capacity, sizeof(PreparedMacPressureCell3D))
-      && counter.Add(face_capacity, sizeof(FrozenMacPressureLink3D)) && counter.Add(cell_capacity, sizeof(double), 2)
-      && counter.Add(cell_capacity, sizeof(std::size_t), 4)
+  const bool fits = CountOriginalPressureScratch(counter, cell_capacity, face_capacity)
+      && counter.Add(cell_capacity, sizeof(std::size_t), 2)
       && counter.Add(level_capacity, sizeof(MacPressureLevelView3D))
       && counter.Add(cell_capacity, sizeof(CellIndex3D), level_capacity)
       && counter.Add(cell_capacity, sizeof(double), 2 * level_capacity)
@@ -655,9 +715,6 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
       && counter.Add(face_capacity, 2 * sizeof(MacPressureNeighbor3D), level_capacity)
       && counter.Add(cell_capacity, sizeof(std::size_t), 2) && counter.Add(1, sizeof(std::size_t))
       && counter.Add(cell_capacity, 32 * sizeof(double))
-      // Assembly temporaries: incident duplicates, compensated RHS and balances.
-      && counter.Add(cell_capacity, 6 * sizeof(std::size_t)) && counter.Add(cell_capacity, sizeof(FluxRow))
-      && counter.Add(cell_capacity, sizeof(ComponentBalance))
       // Coarsening order, CSR cursor and terminal inverse permutation.
       && counter.Add(cell_capacity, sizeof(std::size_t), 3) && counter.Add(1, sizeof(std::size_t))
       && counter.Add(face_capacity, sizeof(std::size_t))
@@ -668,6 +725,22 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
       && counter.Add(cell_capacity, sizeof(double), 3 * level_capacity);
   if (!fits) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  if (mode == MacPressureWorkspaceMode3D::kCoupledViscosity) {
+    ScratchByteCounter coupled_counter;
+    if (!CountUniformStrainScratch(coupled_counter, cell_capacity, face_capacity)
+        || !CountOriginalPressureScratch(coupled_counter, cell_capacity, face_capacity)
+        || cell_capacity
+            > std::numeric_limits<std::size_t>::max() / pressure_internal::kMaximumUniformStrainRowsPerCell3D
+        || !CountCoupledPressureScratch(
+            coupled_counter,
+            cell_capacity,
+            face_capacity,
+            cell_capacity * pressure_internal::kMaximumUniformStrainRowsPerCell3D
+        )) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    counter.total = std::max(counter.total, coupled_counter.total);
   }
   MacPressureWorkspaceBytes3D result;
   result.scratch_bytes = counter.total;
@@ -690,13 +763,14 @@ QueryMacPressureWorkspaceBytes3D(std::size_t cell_capacity, std::size_t face_cap
 }
 
 absl::StatusOr<MacPressureWorkspace3D>
-MacPressureWorkspace3D::Create(std::size_t cell_capacity, std::size_t face_capacity) {
-  const auto bytes = QueryMacPressureWorkspaceBytes3D(cell_capacity, face_capacity);
+MacPressureWorkspace3D::Create(std::size_t cell_capacity, std::size_t face_capacity, MacPressureWorkspaceMode3D mode) {
+  const auto bytes = QueryMacPressureWorkspaceBytes3D(cell_capacity, face_capacity, mode);
   if (!bytes.ok()) {
     return bytes.status();
   }
   MacPressureWorkspace3D workspace;
   workspace.bytes_ = *bytes;
+  workspace.mode_ = mode;
   workspace.cell_capacity_ = cell_capacity;
   workspace.face_capacity_ = face_capacity;
   auto status = Reserve(workspace.scratch_, bytes->scratch_bytes / sizeof(std::max_align_t));
@@ -792,6 +866,25 @@ absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectWithP
   published_bank_ = candidate_bank;
   return result;
 }
+absl::StatusOr<MacPressureWorkspace3D::PhysicalComponents> MacPressureWorkspace3D::ClassifyPhysicalComponents(
+    SparseMacGridView3D grid,
+    double step_duration,
+    const LiquidPressureProblemView3D& problem
+) {
+  if (problem.cells.size() > cell_capacity_ || problem.faces.size() > face_capacity_) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratch3D scratch(scratch_.values());
+  const auto prepared = Prepare({grid, step_duration, problem.cells, problem.faces}, scratch);
+  scratch_used_bytes_ = scratch.used();
+  const std::size_t projection_used = used_bytes() - scratch_used_bytes_;
+  high_water_bytes_ = std::max(high_water_bytes_, projection_used + scratch.high_water());
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  return PhysicalComponents{prepared->component_ordinals(), prepared->gauge_cell_ordinals()};
+}
+
 absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectPrepared(
     const pressure_internal::PreparedMacPressureSystem3D& system,
     MacPressureSolverOptions3D options
@@ -804,14 +897,7 @@ absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectPrepa
       system.links().size(),
       options,
       [&](MacPressureScratch3D& scratch) {
-        const PreparedMacPressureView3D prepared{
-            .cell_records = system.cells(),
-            .link_records = system.links(),
-            .rhs = system.integrated_rhs(),
-            .rhs_absolute_terms = system.rhs_absolute_term_sums(),
-            .components = system.component_ordinals(),
-            .gauges = system.gauge_cell_ordinals(),
-        };
+        const auto prepared = pressure_internal::BorrowMacPressureSystem3D(system);
         return PrepareUploadForSystem(prepared, {}, scratch, false);
       }
   );
@@ -854,9 +940,9 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
   for (const double value : system->rhs) {
     rhs_norm = std::hypot(rhs_norm, value);
   }
-  const pressure_internal::MacPressureStoppingCriteria3D stopping{.integrated_residual_limit = 2e-6 + 2e-6 * rhs_norm};
-  if (!std::isfinite(rhs_norm) || !std::isfinite(stopping.integrated_residual_limit)) {
-    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  const auto stopping = pressure_internal::MacPressureStoppingCriteria(rhs_norm, system->links());
+  if (!stopping.ok()) {
+    return stopping.status();
   }
   const auto base_result = scratch.Take<double>(system->cells().size());
   if (!base_result.ok()) {
@@ -869,16 +955,9 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
     if (!pin_result.ok()) {
       return pin_result.status();
     }
-    auto pin_previous_pressures = *pin_result;
-    for (const auto pin : system->gauges) {
-      pin_previous_pressures[system->components[pin]] = system->cell_records[pin].previous_pressure;
-    }
-    for (std::size_t cell = 0; cell < base_pressure.size(); ++cell) {
-      base_pressure[cell] =
-          system->cell_records[cell].previous_pressure - pin_previous_pressures[system->components[cell]];
-      if (!std::isfinite(base_pressure[cell])) {
-        return absl::Status(absl::StatusCode::kOutOfRange, {});
-      }
+    const auto initialized = pressure_internal::InitializeMacPressure3D(*system, *pin_result, base_pressure);
+    if (!initialized.ok()) {
+      return initialized;
     }
   }
   if (seed_uniform_dirichlet_rest_pressure) {
@@ -893,24 +972,20 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
   }
   pressure_internal::arithmetic::CompensatedSum inward_prescribed_wall_flux;
   for (std::size_t face_ordinal = 0; face_ordinal < system->links().size(); ++face_ordinal) {
-    const auto& link = system->links()[face_ordinal];
     const bool has_explicit_wall_flux =
         uniform_faces.empty() || uniform_faces[face_ordinal].prescribed_wall_flux.has_value();
-    if (!has_explicit_wall_flux || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
-      continue;
-    }
-    // Sum in owned face order using the checked RHS incidence. An internal
-    // face has equal and opposite contributions to the two selected cells.
-    pressure_internal::arithmetic::ForEachIncidentCell(link, [&](std::size_t, double outward_sign) {
-      inward_prescribed_wall_flux.Add(-outward_sign * link.prescribed_wall_flux);
-    });
+    pressure_internal::arithmetic::AccumulateInwardExplicitWallFlux(
+        system->links()[face_ordinal],
+        has_explicit_wall_flux,
+        inward_prescribed_wall_flux
+    );
   }
   publication.KeepAllocations();
   return pressure_internal::PreparedMacPressureUploadView3D{
       .system = *system,
       .hierarchy = *hierarchy,
       .initial_pressure = base_pressure,
-      .stopping = stopping,
+      .stopping = *stopping,
       .frozen_measurement =
           {
               .integrated_rhs_l2_m3_per_s = rhs_norm,
@@ -921,6 +996,24 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
 }
 }  // namespace
 
+absl::StatusOr<pressure_internal::PreparedMacPressureView3D> pressure_internal::PrepareBoundedMacPressureSystem3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+) {
+  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratchMark3D publication(scratch);
+  const auto system = Prepare({grid, step_duration, cells, faces}, scratch);
+  if (system.ok()) {
+    publication.KeepAllocations();
+  }
+  return system;
+}
+
 absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_internal::PrepareBoundedMacPressureUpload3D(
     SparseMacGridView3D grid,
     double step_duration,
@@ -929,12 +1022,8 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
     MacPressureScratch3D& scratch,
     bool seed_uniform_dirichlet_rest_pressure
 ) {
-  if (cells.size() > kMaxPressureCells || faces.size() > kMaxPressureFaces) {
-    return absl::Status(absl::StatusCode::kResourceExhausted, {});
-  }
   MacPressureScratchMark3D publication(scratch);
-  const BorrowedInputs inputs{grid, step_duration, cells, faces};
-  const auto system = Prepare(inputs, scratch);
+  const auto system = PrepareBoundedMacPressureSystem3D(grid, step_duration, cells, faces, scratch);
   if (!system.ok()) {
     return system.status();
   }

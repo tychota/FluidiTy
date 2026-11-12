@@ -6,6 +6,7 @@ traction discretization. The row-sum bound is computed in float64 and is not
 a production upper-rounding certificate.
 """
 from dataclasses import dataclass
+from fractions import Fraction
 from numbers import Real
 
 import numpy as np
@@ -71,6 +72,33 @@ def _vector(value, size, name):
     if result.shape != (size,) or not np.all(np.isfinite(result)):
         raise ValueError(f'invalid {name}')
     return result.copy()
+
+
+def exact_trace_bound(mass, E, W) -> Fraction:
+    """Bound the largest mass-scaled eigenvalue for a tiny canonical CSR fixture.
+
+    Interpret the stored binary64 coefficients, masses and quadrature weights
+    as exact rationals. The trace bounds every eigenvalue because the
+    mass-scaled stiffness is positive semidefinite.
+    """
+    if not isinstance(E, csr_matrix) or not E.has_canonical_format:
+        raise ValueError('E must be canonical CSR')
+    if E.dtype != np.float64 or E.shape[1] == 0 or not np.all(np.isfinite(E.data)):
+        raise ValueError('E must have finite float64 coefficients and velocity columns')
+    row_count, face_count = E.shape
+    face_mass = _vector(mass, face_count, 'mass')
+    quadrature = _vector(W, row_count, 'W')
+    if np.any(face_mass <= 0) or np.any(quadrature < 0):
+        raise ValueError('invalid masses or weights')
+
+    inverse_mass = [1 / Fraction(value) for value in face_mass]
+    trace = Fraction()
+    for row, weight in enumerate(quadrature):
+        row_weight = Fraction(weight)
+        for entry in range(E.indptr[row], E.indptr[row + 1]):
+            coefficient = Fraction(E.data[entry])
+            trace += row_weight * coefficient**2 * inverse_mass[E.indices[entry]]
+    return trace
 
 
 def viscous_step(velocity, mass, E, W, boundary_strain, dt, mode='auto', safety=.01):

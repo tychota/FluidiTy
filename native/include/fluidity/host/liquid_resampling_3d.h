@@ -62,7 +62,9 @@ struct LiquidUniformMerge3D {
 };
 
 // Proposes one coarse particle from two to eight affine-enabled children at
-// a common fine width (meters). Children must agree on tag, side and PIC state.
+// a common fine width (meters). Children must agree on tag, side, phase, PIC
+// state and whether composition is explicit. Explicit constituent volumes
+// are conserved using J*V0 weights, within the bounded target composition.
 // The target takes the sum of child mass and V0, J from summed J*V0, mass-weighted
 // position and velocity, and each affine row from its F4 cross moment.
 // The supplied fresh ID must be the next unused ID and exceed every child ID.

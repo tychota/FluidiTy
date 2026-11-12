@@ -92,6 +92,20 @@ void ForEachIncidentCell(const FrozenMacPressureLink3D& link, Accumulate accumul
     accumulate(*link.head_cell_ordinal, -1.0);
   }
 }
+// Accumulate only boundary flux explicitly supplied by the geometry. The
+// oriented contributions of a two-cell link cancel in the domain total.
+inline void AccumulateInwardExplicitWallFlux(
+    const FrozenMacPressureLink3D& link,
+    bool explicitly_prescribed,
+    CompensatedSum& total
+) {
+  if (!explicitly_prescribed || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
+    return;
+  }
+  ForEachIncidentCell(link, [&](std::size_t, double outward_sign) {
+    total.Add(-outward_sign * link.prescribed_wall_flux);
+  });
+}
 
 inline absl::StatusOr<PreparedMacPressureCell3D>
 FreezeCell(const MacPressureCell3D& cell, double step_duration, double full_cell_volume) {

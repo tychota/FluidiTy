@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from fractions import Fraction
 import numpy as np
 
+from .eos import _tait_log_volume_ratio
+
 
 def _array(value, shape=None):
     a = np.array(value, dtype=float, copy=True)
@@ -112,7 +114,7 @@ def tait_J(pressure, bulk_modulus, exponent):
     p, k, gamma = _array([pressure,bulk_modulus,exponent], (3,))
     if k <= 0 or gamma <= 0 or p <= -k/gamma:
         raise ValueError("invalid Tait EOS state")
-    result = (1 + gamma*p/k)**(-1/gamma)
+    result = np.exp(_tait_log_volume_ratio(p, k/gamma, gamma))
     if not np.isfinite(result) or result <= 0:
         raise ValueError("unrepresentable Tait EOS state")
     return float(result)

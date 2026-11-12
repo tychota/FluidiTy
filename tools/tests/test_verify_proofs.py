@@ -194,7 +194,7 @@ TRANSACTION_CONTRACTS = {
 
 def test_liquid_transaction_contract_inventory():
     assert TRANSACTION_CONTRACTS <= set(verify.TARGETS)
-    assert len(verify.TARGETS) == 42
+    assert len(verify.TARGETS) == 46
 
 
 def test_m3_resampling_contracts_are_exported_and_audited():
@@ -262,3 +262,12 @@ def test_axiom_audit_rejects_malformed_and_mixed_duplicate_lines():
     duplicate = output + f"\ninfo: Fluidity/Proof.lean:2:0: '{target}' depends on axioms: [propext]"
     with pytest.raises(ValueError, match='duplicate axiom target'):
         verify.audit_axioms(duplicate)
+
+
+def test_f7_contracts_are_exported_and_audited():
+    assert {
+        'Fluidity.viscous_forward_energy',
+        'Fluidity.viscous_forward_contraction',
+        'Fluidity.viscous_backward_energy',
+        'Fluidity.viscous_trace_certificate',
+    } <= set(verify.TARGETS)

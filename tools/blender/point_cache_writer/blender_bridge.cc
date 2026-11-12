@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <set>
 #include <span>
 #include <system_error>
 #include <vector>
@@ -155,6 +156,262 @@ absl::StatusOr<EffectsCommit3D> ReadDerivedFrame(const EffectsCache3D& cache, st
   return committed;
 }
 
+absl::StatusOr<SurfaceFrame3D> ReadSurfaceFrame(const EffectsCache3D& cache, std::uint64_t ordinal) {
+  const auto committed = ReadDerivedFrame(cache, ordinal);
+  if (!committed.ok()) {
+    return committed.status();
+  }
+  auto frame = DecodeSurfaceFrame3D(committed->payload.values());
+  if (!frame.ok()) {
+    return frame.status();
+  }
+  if (frame->clock != committed->clock) {
+    return absl::DataLossError("surface payload clock differs from its manifest");
+  }
+  return frame;
+}
+
+// USDA groups samples by property. Re-read committed frames to bound working
+// memory to one decoded mesh plus the sets of published attribute IDs.
+template <class WriteValues>
+absl::Status WriteSurfaceUsdSamples(
+    std::ostream& output,
+    const EffectsCache3D& cache,
+    std::uint64_t last_frame,
+    std::string_view property,
+    const WriteValues& write_values
+) {
+  output << "    " << property << ".timeSamples = {\n";
+  for (std::uint64_t ordinal = 0; ordinal <= last_frame; ++ordinal) {
+    const auto frame = ReadSurfaceFrame(cache, ordinal);
+    if (!frame.ok()) {
+      return frame.status();
+    }
+    output << "        " << ordinal << ": [";
+    const auto status = write_values(*frame);
+    if (!status.ok()) {
+      return status;
+    }
+    output << "],\n";
+    if (!output) {
+      return absl::UnavailableError("could not write USD surface samples");
+    }
+  }
+  output << "    }\n";
+  return absl::OkStatus();
+}
+
+absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, std::uint64_t last_frame) {
+  output.imbue(std::locale::classic());
+  output << std::setprecision(std::numeric_limits<float>::max_digits10) << "#usda 1.0\n(\n"
+         << "    defaultPrim = \"FluidiTySurface\"\n"
+         << "    startTimeCode = 0\n"
+         << "    endTimeCode = " << last_frame << "\n"
+         << "    timeCodesPerSecond = " << kFramesPerSecond << "\n"
+         << "    framesPerSecond = " << kFramesPerSecond << "\n"
+         << "    metersPerUnit = 1\n"
+         << "    upAxis = \"Z\"\n)\n"
+         << "def Mesh \"FluidiTySurface\"\n{\n"
+         << "    uniform token subdivisionScheme = \"none\"\n";
+  std::set<std::uint64_t> phase_ids;
+  std::set<std::uint64_t> substance_ids;
+  std::set<std::uint64_t> interface_substance_ids;
+  std::set<std::pair<std::uint64_t, std::uint64_t>> shared_pairs;
+  auto status = WriteSurfaceUsdSamples(output, cache, last_frame, "point3f[] points", [&](const SurfaceFrame3D& frame) {
+    const char* separator = "";
+    const auto write_position = [&](Vec3 world_position) {
+      if (!FitsAlembicFloat(world_position)) {
+        return absl::OutOfRangeError("surface position cannot fit a USD float point");
+      }
+      const auto position = Narrow(world_position);
+      output << separator << '(' << position.x << ", " << -position.z << ", " << position.y << ')';
+      separator = ", ";
+      return absl::OkStatus();
+    };
+    for (const auto& vertex : frame.mesh.vertices) {
+      const auto wrote = write_position(vertex.position);
+      if (!wrote.ok()) {
+        return wrote;
+      }
+      if (vertex.constituent_count > 0) {
+        phase_ids.insert(vertex.phase_id);
+      }
+      for (std::size_t index = 0; index < vertex.constituent_count; ++index) {
+        substance_ids.insert(vertex.constituents[index].substance_id);
+      }
+    }
+    if (frame.phase_interface) {
+      const auto& sheet = *frame.phase_interface;
+      shared_pairs.emplace(sheet.phase_a, sheet.phase_b);
+      for (const auto& sample : sheet.side_compositions) {
+        for (const auto& constituent : std::span(sample.constituents).first(sample.constituent_count)) {
+          interface_substance_ids.insert(constituent.substance_id);
+        }
+      }
+      phase_ids.insert(sheet.phase_a);
+      phase_ids.insert(sheet.phase_b);
+      for (const auto position : sheet.interior_positions) {
+        const auto wrote = write_position(position);
+        if (!wrote.ok()) {
+          return wrote;
+        }
+      }
+    }
+    return absl::OkStatus();
+  });
+  if (!status.ok()) {
+    return status;
+  }
+  status =
+      WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexCounts", [&](const SurfaceFrame3D& frame) {
+        const auto face_count =
+            frame.mesh.triangles.size() + (frame.phase_interface ? frame.phase_interface->triangles.size() : 0);
+        const char* separator = "";
+        for (std::size_t index = 0; index < face_count; ++index) {
+          output << separator << '3';
+          separator = ", ";
+        }
+        return absl::OkStatus();
+      });
+  if (!status.ok()) {
+    return status;
+  }
+  status =
+      WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexIndices", [&](const SurfaceFrame3D& frame) {
+        const char* separator = "";
+        const auto write_triangles = [&](const auto& triangles) {
+          for (const auto& triangle : triangles) {
+            output << separator << triangle[0] << ", " << triangle[1] << ", " << triangle[2];
+            separator = ", ";
+          }
+        };
+        write_triangles(frame.mesh.triangles);
+        if (frame.phase_interface) {
+          write_triangles(frame.phase_interface->triangles);
+        }
+        return absl::OkStatus();
+      });
+  if (!status.ok()) {
+    return status;
+  }
+  const auto write_attribute = [&](const std::string& name, std::string_view interpolation, auto write_frame) {
+    const std::string property = "float[] primvars:" + name;
+    output << "    " << property << " (\n        interpolation = \"" << interpolation << "\"\n    )\n";
+    return WriteSurfaceUsdSamples(output, cache, last_frame, property, write_frame);
+  };
+  const auto write_vertex_attribute = [&](std::string_view prefix, std::uint64_t id, auto sample) {
+    return write_attribute(std::string(prefix) + std::to_string(id), "vertex", [&](const SurfaceFrame3D& frame) {
+      const char* separator = "";
+      for (const auto& vertex : frame.mesh.vertices) {
+        output << separator << static_cast<float>(sample(vertex, id));
+        separator = ", ";
+      }
+      if (frame.phase_interface) {
+        for (std::size_t index = 0; index < frame.phase_interface->interior_positions.size(); ++index) {
+          output << separator << '0';
+          separator = ", ";
+        }
+      }
+      return absl::OkStatus();
+    });
+  };
+  const auto write_face_attribute = [&](const std::string& name, auto sample) {
+    return write_attribute(name, "uniform", [&](const SurfaceFrame3D& frame) {
+      const char* separator = "";
+      for (std::size_t index = 0; index < frame.mesh.triangles.size(); ++index) {
+        output << separator << static_cast<int>(sample(frame, index, false));
+        separator = ", ";
+      }
+      if (frame.phase_interface) {
+        for (std::size_t index = 0; index < frame.phase_interface->triangles.size(); ++index) {
+          output << separator << static_cast<int>(sample(frame, index, true));
+          separator = ", ";
+        }
+      }
+      return absl::OkStatus();
+    });
+  };
+  for (const auto id : phase_ids) {
+    status = write_vertex_attribute("fluidity_phase_", id, [](const SurfaceVertex3D& vertex, std::uint64_t phase_id) {
+      return vertex.constituent_count > 0 && vertex.phase_id == phase_id;
+    });
+    if (!status.ok()) {
+      return status;
+    }
+    if (!shared_pairs.empty()) {
+      status = write_face_attribute(
+          "fluidity_face_phase_" + std::to_string(id),
+          [&](const SurfaceFrame3D& frame, std::size_t index, bool internal) {
+            if (!frame.phase_interface || internal) {
+              return false;
+            }
+            const auto& sheet = *frame.phase_interface;
+            return (sheet.exterior_sides[index] == 0 ? sheet.phase_a : sheet.phase_b) == id;
+          }
+      );
+      if (!status.ok()) {
+        return status;
+      }
+    }
+  }
+  for (const auto id : substance_ids) {
+    status =
+        write_vertex_attribute("fluidity_fraction_", id, [](const SurfaceVertex3D& vertex, std::uint64_t substance_id) {
+          for (std::size_t index = 0; index < vertex.constituent_count; ++index) {
+            const auto& constituent = vertex.constituents[index];
+            if (constituent.substance_id == substance_id) {
+              return constituent.volume_fraction;
+            }
+          }
+          return 0.0;
+        });
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (const auto substance : interface_substance_ids) {
+    status = write_attribute(
+        "fluidity_interface_fraction_" + std::to_string(substance),
+        "vertex",
+        [&](const SurfaceFrame3D& frame) {
+          const auto* sheet = frame.phase_interface ? &*frame.phase_interface : nullptr;
+          const auto records = sheet ? std::span<const SurfaceInterfaceComposition3D>(sheet->side_compositions)
+                                     : std::span<const SurfaceInterfaceComposition3D>{};
+          const auto count = frame.mesh.vertices.size() + (sheet ? sheet->interior_positions.size() : 0);
+          std::size_t record = 0;
+          const char* separator = "";
+          for (std::size_t vertex = 0; vertex < count; ++vertex) {
+            double fraction = 0.0;
+            while (record < records.size() && records[record].vertex_ordinal == vertex) {
+              const auto& sample = records[record++];
+              for (const auto& constituent : std::span(sample.constituents).first(sample.constituent_count)) {
+                if (constituent.substance_id == substance) {
+                  fraction = constituent.volume_fraction;
+                }
+              }
+            }
+            output << separator << static_cast<float>(fraction);
+            separator = ", ";
+          }
+          return absl::OkStatus();
+        }
+    );
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (const auto& [phase_a, phase_b] : shared_pairs) {
+    const auto name = "fluidity_interface_" + std::to_string(phase_a) + "_" + std::to_string(phase_b);
+    status = write_face_attribute(name, [&](const SurfaceFrame3D& frame, std::size_t, bool internal) {
+      return internal && frame.phase_interface->phase_a == phase_a && frame.phase_interface->phase_b == phase_b;
+    });
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  output << "}\n";
+  return output ? absl::OkStatus() : absl::UnavailableError("could not finish USD surface export");
+}
 absl::Status WriteSurfaceArchive(std::ostream& output, const EffectsCache3D& cache, std::uint64_t last_frame) {
   abc::OArchive archive(ogawa::WriteArchive()(&output, abc::MetaData{}));
   const auto sampling = archive.addTimeSampling({1.0 / kFramesPerSecond, 0.0});
@@ -299,7 +556,8 @@ absl::Status PublishArchive(const fs::path& destination, absl::FunctionRef<absl:
   return absl::OkStatus();
 }
 
-absl::Status ExportEffects(const fs::path& root, std::uint64_t last_frame, const fs::path& destination, bool surface) {
+absl::Status
+ExportEffects(const fs::path& root, std::uint64_t last_frame, const fs::path& destination, bool surface, bool usd) {
   const auto cache = EffectsCache3D::OpenForInspection(root);
   if (!cache.ok()) {
     return cache.status();
@@ -316,6 +574,20 @@ absl::Status ExportEffects(const fs::path& root, std::uint64_t last_frame, const
   if (!execution.ok()) {
     return execution.status();
   }
+  std::size_t vertex_count = 0;
+  std::size_t triangle_count = 0;
+  if (usd) {
+    const auto last_surface = ReadSurfaceFrame(*cache, last_frame);
+    if (!last_surface.ok()) {
+      return last_surface.status();
+    }
+    vertex_count = last_surface->mesh.vertices.size();
+    triangle_count = last_surface->mesh.triangles.size();
+    if (last_surface->phase_interface) {
+      vertex_count += last_surface->phase_interface->interior_positions.size();
+      triangle_count += last_surface->phase_interface->triangles.size();
+    }
+  }
   absl::Status written;
   if (surface) {
     const auto resolved = DecodeSurfaceSettings3D(settings->values());
@@ -323,7 +595,7 @@ absl::Status ExportEffects(const fs::path& root, std::uint64_t last_frame, const
       return resolved.status();
     }
     written = PublishArchive(destination, [&](std::ostream& output) {
-      return WriteSurfaceArchive(output, *cache, last_frame);
+      return usd ? WriteSurfaceUsd(output, *cache, last_frame) : WriteSurfaceArchive(output, *cache, last_frame);
     });
   } else {
     const auto resolved = DecodeWhitewaterSettings3D(settings->values());
@@ -338,8 +610,12 @@ absl::Status ExportEffects(const fs::path& root, std::uint64_t last_frame, const
     return written;
   }
   std::cout << "{\"last_frame\":" << last_frame << ",\"execution_id\":\"" << LiquidDigestHex3D(*execution).data()
-            << "\",\"source_execution_id\":\"" << LiquidDigestHex3D(identity.upstream_execution).data() << "\"}\n";
-  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write Alembic export identity");
+            << "\",\"source_execution_id\":\"" << LiquidDigestHex3D(identity.upstream_execution).data() << "\"";
+  if (usd) {
+    std::cout << ",\"vertex_count\":" << vertex_count << ",\"triangle_count\":" << triangle_count;
+  }
+  std::cout << "}\n";
+  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write derived export identity");
 }
 
 absl::Status InspectVolume(const fs::path& root, std::uint64_t frame) {
@@ -422,10 +698,12 @@ absl::Status Run(std::span<const fs::path> args) {
   const bool inspect_volume = args.size() == 3 && args[0] == "inspect-volume";
   const bool export_points = args.size() == 4 && args[0] == "export";
   const bool export_surface = args.size() == 4 && args[0] == "export-surface";
+  const bool export_surface_usd = args.size() == 4 && args[0] == "export-surface-usd";
   const bool export_foam = args.size() == 4 && args[0] == "export-foam";
-  if (!inspect && !inspect_volume && !export_points && !export_surface && !export_foam) {
+  if (!inspect && !inspect_volume && !export_points && !export_surface && !export_surface_usd && !export_foam) {
     return absl::InvalidArgumentError(
-        "expected a cache and frame for inspect, inspect-volume, export, export-surface or export-foam"
+        "expected a cache and frame for inspect, inspect-volume, export, export-surface, export-surface-usd or "
+        "export-foam"
     );
   }
   const auto frame = ParseFrame(args[2]);
@@ -435,8 +713,11 @@ absl::Status Run(std::span<const fs::path> args) {
   if (inspect_volume) {
     return InspectVolume(args[1], *frame);
   }
-  if (export_surface || export_foam) {
-    return ExportEffects(args[1], *frame, args[3], export_surface);
+  if (export_surface_usd && args[3].extension() != ".usda") {
+    return absl::InvalidArgumentError("USD surface export requires a .usda destination");
+  }
+  if (export_surface || export_surface_usd || export_foam) {
+    return ExportEffects(args[1], *frame, args[3], export_surface || export_surface_usd, export_surface_usd);
   }
   const auto cache = LiquidCache3D::OpenForInspection(args[1]);
   if (!cache.ok()) {

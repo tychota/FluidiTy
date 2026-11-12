@@ -49,7 +49,8 @@ void CopyRecords(const LiquidRecords3D<Record>& source, LiquidRecords3D<Record>&
 }
 }  // namespace
 
-absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCapacities3D capacities) {
+absl::StatusOr<LiquidWorkspaceBytes3D>
+QueryLiquidWorkspaceBytes3D(LiquidStateCapacities3D capacities, MacPressureWorkspaceMode3D pressure_mode) {
   LiquidWorkspaceBytes3D bytes;
   if (capacities.particles > kByteLimit / kParticleSupportSize) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
@@ -87,7 +88,7 @@ absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCa
   }
   bytes.boundary_bytes = boundary->total_bytes;
   bytes.total_bytes += bytes.boundary_bytes;
-  const auto pressure = QueryMacPressureWorkspaceBytes3D(capacities.cells, capacities.faces);
+  const auto pressure = QueryMacPressureWorkspaceBytes3D(capacities.cells, capacities.faces, pressure_mode);
   if (!pressure.ok()) {
     return pressure.status();
   }
@@ -99,13 +100,16 @@ absl::StatusOr<LiquidWorkspaceBytes3D> QueryLiquidWorkspaceBytes3D(LiquidStateCa
   return bytes;
 }
 
-absl::StatusOr<LiquidStepWorkspace3D>
-LiquidStepWorkspace3D::Create(LiquidStateCapacities3D capacities, UniformMacGeometry3D geometry) {
+absl::StatusOr<LiquidStepWorkspace3D> LiquidStepWorkspace3D::Create(
+    LiquidStateCapacities3D capacities,
+    UniformMacGeometry3D geometry,
+    MacPressureWorkspaceMode3D pressure_mode
+) {
   const auto empty_grid = SparseMacGridView3D::Create(geometry, {});
   if (!empty_grid.ok()) {
     return empty_grid.status();
   }
-  const auto bytes = QueryLiquidWorkspaceBytes3D(capacities);
+  const auto bytes = QueryLiquidWorkspaceBytes3D(capacities, pressure_mode);
   if (!bytes.ok()) {
     return bytes.status();
   }
@@ -118,7 +122,7 @@ LiquidStepWorkspace3D::Create(LiquidStateCapacities3D capacities, UniformMacGeom
     return boundary.status();
   }
   workspace.boundary_ = std::move(*boundary);
-  auto pressure = MacPressureWorkspace3D::Create(capacities.cells, capacities.faces);
+  auto pressure = MacPressureWorkspace3D::Create(capacities.cells, capacities.faces, pressure_mode);
   if (!pressure.ok()) {
     return pressure.status();
   }

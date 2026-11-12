@@ -77,6 +77,25 @@ class MacPressureScratchMark3D {
   MacPressureScratch3D& scratch_;
   std::size_t mark_;
 };
+// The coupled pressure stage borrows the same reserved arena as the inviscid
+// stage. No inviscid setup borrow may remain live across the coupled call.
+struct CoupledPressureWorkspaceAccess3D {
+  static bool Fits(const MacPressureWorkspace3D& workspace, std::size_t cells, std::size_t faces) {
+    return workspace.mode_ == MacPressureWorkspaceMode3D::kCoupledViscosity && cells <= workspace.cell_capacity_
+        && faces <= workspace.face_capacity_;
+  }
+
+  static std::span<std::max_align_t> Storage(MacPressureWorkspace3D& workspace) {
+    return workspace.scratch_.values();
+  }
+
+  static void RecordUsage(MacPressureWorkspace3D& workspace, const MacPressureScratch3D& scratch) {
+    workspace.scratch_used_bytes_ = scratch.used();
+    const auto projection_used = workspace.used_bytes() - workspace.scratch_used_bytes_;
+    workspace.high_water_bytes_ = std::max(workspace.high_water_bytes_, projection_used + scratch.high_water());
+  }
+};
+
 // Prepared coefficients and hierarchy borrow the scratch arena until its next
 // reuse. These flat spans can be uploaded without reconstructing owning vectors.
 struct PreparedMacPressureView3D {
@@ -105,6 +124,19 @@ struct PreparedMacPressureView3D {
     return gauges;
   }
 };
+// Borrows an already checked owning pressure system. The view expires with
+// the owning system or when that owner is moved.
+inline PreparedMacPressureView3D BorrowMacPressureSystem3D(const PreparedMacPressureSystem3D& system) {
+  return {
+      .cell_records = system.cells(),
+      .link_records = system.links(),
+      .rhs = system.integrated_rhs(),
+      .rhs_absolute_terms = system.rhs_absolute_term_sums(),
+      .components = system.component_ordinals(),
+      .gauges = system.gauge_cell_ordinals(),
+  };
+}
+
 // Same units/order as MacPressureLevel3D; terminal blocks use flat ranges.
 struct MacPressureLevelView3D {
   std::span<CellIndex3D> coordinates;
@@ -132,6 +164,39 @@ struct MacPressureHierarchyView3D {
 // hierarchy spans expire on arena rewind/reuse or backing-owner destruction.
 absl::StatusOr<MacPressureHierarchyView3D>
 BuildBoundedMacPressureHierarchy3D(const PreparedMacPressureView3D& system, MacPressureScratch3D& scratch);
+// Returns the aligned byte reservation for checked original-system assembly.
+// Includes temporary incidence and gauge reductions. Returns ResourceExhausted
+// if an extent or byte count is unrepresentable. Does not allocate.
+inline constexpr std::size_t kCoupledPressureRestartLength3D = 32;
+inline constexpr std::size_t kCoupledFaceScratchFields3D = 5;
+inline constexpr std::size_t kCoupledCellScratchFields3D = 4;
+inline constexpr std::size_t kCoupledVelocityScratchFields3D = 6;
+// Three normal and at most four edge quadratures for each of three shear planes.
+inline constexpr std::size_t kMaximumUniformStrainRowsPerCell3D = 15;
+
+// Upper bound for coupled buffers, optionally including the original uniform system.
+absl::StatusOr<std::size_t> QueryCoupledMacPressureScratchBytes3D(
+    std::size_t cell_capacity,
+    std::size_t face_capacity,
+    std::size_t strain_row_capacity,
+    bool prepare_uniform_system
+);
+
+absl::StatusOr<std::size_t> QueryBoundedMacPressureSystemBytes3D(std::size_t cell_capacity, std::size_t face_capacity);
+
+// Freezes the checked uniform pressure coefficients and gauge incidence into
+// the caller's arena without constructing a hierarchy. Input ordering, units,
+// and status categories match ProjectMacPressure3D. Success appends borrowed
+// records until arena reuse. Failure rewinds to the entry mark. Inputs must
+// be disjoint from the unused arena suffix.
+absl::StatusOr<PreparedMacPressureView3D> PrepareBoundedMacPressureSystem3D(
+    SparseMacGridView3D grid,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    MacPressureScratch3D& scratch
+);
+
 // Checked assembly/hierarchy/warm-start view for a persistent device upload.
 // Requires 1..4096 unique signed-ordered cells, their exact incident face union
 // (1..24576 faces in owned-slot order), and positive finite seconds. Input units,
