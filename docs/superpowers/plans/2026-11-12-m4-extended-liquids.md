@@ -527,3 +527,11 @@ Each reconstructed exterior vertex inherits the phase of its nearest particle. A
 The reconstruction and cache round-trip fixture checked phase 4 and the expected 25/75 mixture at every exterior vertex. The debug CPU simulator built and all 13 focused tests passed with ctest --preset windows-debug-cpu -j 4 -R 'EvaluatesAndCachesMixed|SurfaceCache3D|SurfaceMesh3D|SurfaceTracking3D'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-surface-composition.
 
 Named renderer attributes, shared liquid–liquid render geometry and end-to-end three-source qualification remain open.
+
+## Blender named surface attribute carrier probe
+
+Blender 5.2.3 LTS e13b728c6880 round-tripped a mesh through its Alembic exporter and native Mesh Sequence Cache reader. The evaluated mesh exposed neither the custom point float nor the corner color. A USD round trip preserved the point float and the integer phase. A separate time-sampled USDA mesh produced an evaluated Mesh Sequence Cache after saving and reopening a blend from factory startup. Frames one, two and four returned distinct expected fraction and phase values, and frame three had zero vertices and faces with empty attribute arrays. The extension was absent from this factory-startup probe.
+
+The receipts and fixture are out/m4-alembic-attribute-probe.*, out/m4-usd-attribute-probe.* and out/m4-usd-dynamic-probe.*. Each Python fixture runs with Blender 5.2.3 -b --factory-startup --python-exit-code 1 --python FIXTURE.py from the worktree root.
+
+Use an authenticated Mesh-cache export to native USD for named render fields. Preserve the existing Alembic surface export. Name fraction attributes fluidity_fraction_<stable substance ID>. Represent phase membership with per-phase named fields so full-width stable IDs are carried in names and never narrowed for Blender. Export time-sampled vertex fields with zero values for absent constituents and preserve the cache timeline and orientation. Verify shader consumption in a fresh extension-disabled Blender process on the production carrier.
