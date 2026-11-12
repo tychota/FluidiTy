@@ -3227,3 +3227,32 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain the normal gradient in the swept split
+
+In the wall-face Euler control, keep the full reflected normal row
+during the post-impact interval and apply the swept projection to
+the two tangential rows. This keeps the wall-normal compression
+derivative while isolating the tangential part of the extra
+deformation projection. The stored affine fit is unchanged.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 25.609362° | 0.312922 m |
+| Coarse half-step | 42.584159° | 0.154748 m |
+| Fine | 28.573689° | 0.207809 m |
+| Fine half-step | 33.708095° | 0.184830 m |
+
+Retaining the normal row raises both nominal angles compared with
+the full swept projection, but they stay below 30°. The coarse
+nominal radius remains above 0.31 m, and the fine nominal mean
+log plastic Jacobian rises to 1.318743. Vertical momentum residual
+stays below 1.9e-8 N·s. The temporary source was restored after
+linking. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-normal-gradient-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
