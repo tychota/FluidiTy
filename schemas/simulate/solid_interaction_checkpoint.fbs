@@ -1,4 +1,5 @@
 include "common.fbs";
+include "plastic_solid_particle.fbs";
 
 namespace fluidity.solid.v1;
 
@@ -48,6 +49,8 @@ table SolidInteractionCheckpoint {
   bodies:[BodyHistory] (required, id:2);
   sides:[BladeSide] (required, id:3);
   elastic_particles:[ElasticParticle] (id:4);
+  liquid_state:[ubyte] (id:5, force_align:8);
+  plastic_particles:[PlasticParticle] (id:6);
 }
 
 root_type SolidInteractionCheckpoint;
