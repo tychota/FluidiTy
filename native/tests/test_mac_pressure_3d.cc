@@ -739,6 +739,53 @@ TEST(MacPressure3D, CoupledPressureHistoryKeepsWeakJumpScaleAndClearsZeroForcing
   }
 }
 
+TEST(MacPressure3D, CoupledPressureMatchesAnalyticColumnAcrossGcrRestart) {
+  constexpr int kCellCount = 64;
+  const auto reference_pressure = [](int index) {
+    if (index < 0 || index >= kCellCount) {
+      return 0.0;
+    }
+    const double x = static_cast<double>(index + 1);
+    return 0.1 * std::sin(0.32 * x) + 0.05 * std::cos(1.73 * x) + 0.01 * (index % 5);
+  };
+  auto problem = MakeRectangularAffineProblem(0, {kCellCount, 1, 1}, true);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  for (auto& face : problem.faces) {
+    if (face.face_index.axis != FaceNormalAxis::kX) {
+      face.open_area = 0.0;
+      face.predicted_normal_velocity = 0.0;
+      face.wall_normal_velocity = 0.0;
+      face.pressure_link = SealedMacPressureLink3D{};
+      continue;
+    }
+    const int head = face.face_index.lattice_index.x;
+    face.open_area = 1.0;
+    face.inverse_density = 1.0;
+    face.pressure_gradient_distance = 1.0;
+    face.predicted_normal_velocity = reference_pressure(head) - reference_pressure(head - 1);
+    face.pressure_link = head == 0 || head == kCellCount ? decltype(face.pressure_link){DirichletMacPressureLink3D{0.0}}
+                                                         : decltype(face.pressure_link){InternalMacPressureLink3D{0.0}};
+  }
+  std::vector<MacViscosityCell3D> material;
+  for (const auto& cell : problem.cells) {
+    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = 0.2});
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), material);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  const auto solution = ProjectMacViscousPressure3D({*grid, 1.0, problem.cells, problem.faces}, *strain);
+  ASSERT_TRUE(solution.ok()) << solution.status();
+  std::cout << "coupled_gcr_restart_iterations=" << solution->pressure_iterations << '\n';
+  EXPECT_GT(solution->pressure_iterations, 32u);
+  for (std::size_t index = 0; index < problem.cells.size(); ++index) {
+    EXPECT_NEAR(solution->cell_pressures[index], reference_pressure(problem.cells[index].cell_index.x), 1e-3);
+  }
+  for (const double speed : solution->face_velocities) {
+    EXPECT_NEAR(speed, 0.0, 2e-5);
+  }
+}
+
 TEST(MacPressure3D, CoupledCartesianWallMatchesAnalyticTractionAndWork) {
   constexpr double kDynamicViscosity = 10.0;
   constexpr double kDensity = 1.0;
