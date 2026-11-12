@@ -131,6 +131,21 @@ TEST(LiquidAdaptiveRecordView3D, RejectsSignedOverlapAndFaceEdgeCornerGrading) {
   EXPECT_TRUE(separated.Validate(12).ok());
 }
 
+TEST(LiquidAdaptiveRecordView3D, AcceptsStrictlySeparatedSignedSlabs) {
+  const auto signed_min = std::numeric_limits<std::int32_t>::min();
+  const auto signed_max = std::numeric_limits<std::int32_t>::max();
+  AdaptiveValidationFixture fixture{
+      .keys =
+          {
+              {.lower_corner = {signed_min, 0, signed_min}, .width_exponent = 30},
+              {.lower_corner = {0, 0, 0}, .width_exponent = 29},
+              {.lower_corner = {0, 0, signed_max - 1}},
+          },
+  };
+  EXPECT_TRUE(fixture.Validate(18).ok());
+  EXPECT_EQ(fixture.cell_reads, fixture.keys.size());
+  EXPECT_EQ(fixture.Validate(17).code(), absl::StatusCode::kInvalidArgument);
+}
 constexpr LiquidStateCapacities3D kCapacity{4, 2, 2, 4, 2};
 LiquidState3D InitialState() {
   LiquidState3D state;

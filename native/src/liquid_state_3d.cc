@@ -235,55 +235,13 @@ std::uint8_t AdaptiveFaceCoverage(
   return static_cast<std::uint8_t>(1U << (first_half + second_half));
 }
 
-// Count exactly the canonical owned subfaces without allocating inside a
-// transaction attempt.
-absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRecordView3D& records) {
-  if (records.cell_count == 0) {
-    return records.face_count == 0 ? absl::OkStatus() : absl::Status(absl::StatusCode::kInvalidArgument, {});
-  }
-  if (records.cell_count > kMaximumAdaptiveLiquidCells3D || records.face_count > kMaximumAdaptiveLiquidFaces3D) {
-    return absl::Status(absl::StatusCode::kResourceExhausted, {});
-  }
-  std::array<AdaptiveMacCellKey3D, kMaximumAdaptiveLiquidCells3D> keys;
-  std::uint32_t occupied_widths = 0;
-  for (std::size_t ordinal = 0; ordinal < records.cell_count; ++ordinal) {
-    const auto cell = records.read_cell(records.context, ordinal);
-    if (cell.key.width_exponent > 30 || cell.occupancy > LiquidCellOccupancy3D::kSolid
-        || cell.material_owner > AdaptiveLiquidMaterialOwner3D::kEulerian
-        || (ordinal > 0 && LatticeSortKey(keys[ordinal - 1].lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
-      return absl::Status(absl::StatusCode::kInvalidArgument, {});
-    }
-    const auto width = AdaptiveWidth(cell.key.width_exponent);
-    for (const auto coordinate : AdaptiveLowerCorner(cell.key.lower_corner)) {
-      if (coordinate % width != 0) {
-        return absl::Status(absl::StatusCode::kInvalidArgument, {});
-      }
-      if (coordinate + width > INT32_MAX) {
-        return absl::Status(absl::StatusCode::kOutOfRange, {});
-      }
-    }
-    const double width_m = std::ldexp(records.finest_cell_width, cell.key.width_exponent);
-    const double volume_m3 = width_m * width_m * width_m;
-    if (!Positive(volume_m3)) {
-      return absl::Status(absl::StatusCode::kOutOfRange, {});
-    }
-    const auto& inventory = cell.inventory;
-    if (!IsNonnegativeFinite(inventory.mass_kg) || !IsNonnegativeFinite(inventory.reference_volume_m3)
-        || !IsNonnegativeFinite(inventory.current_volume_m3) || inventory.current_volume_m3 > volume_m3
-        || !Finite(inventory.momentum_kg_m_per_s) || !std::isfinite(inventory.enthalpy_j)
-        || !std::isfinite(cell.previous_pressure) || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
-      return absl::Status(absl::StatusCode::kInvalidArgument, {});
-    }
-    keys[ordinal] = cell.key;
-    occupied_widths |= std::uint32_t{1} << cell.key.width_exponent;
-  }
-
-  const auto active_keys = std::span(keys).first(records.cell_count);
+std::optional<std::size_t>
+CountAdaptiveSubfaces(std::span<const AdaptiveMacCellKey3D> active_keys, std::uint32_t occupied_widths) {
   // Distinct aligned dyadic leaves can overlap only through ancestry.
   for (const auto& key : active_keys) {
     const auto coarser_widths = WidthsAtOrAbove(occupied_widths, key.width_exponent + 1U);
     if (FindContainingAdaptiveLeaf(active_keys, AdaptiveLowerCorner(key.lower_corner), coarser_widths)) {
-      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      return std::nullopt;
     }
   }
 
@@ -321,7 +279,7 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
           }
           const auto& neighbor_key = active_keys[*neighbor];
           if (neighbor_key.width_exponent > key.width_exponent + 1U) {
-            return absl::Status(absl::StatusCode::kInvalidArgument, {});
+            return std::nullopt;
           }
           // Mixed-width faces appear only from the finer endpoint. Count
           // equal-width faces once, from the earlier canonical leaf.
@@ -347,12 +305,67 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
       }
     }
   }
-  for (const auto& sides : std::span(coverage).first(records.cell_count)) {
+  for (const auto& sides : std::span(coverage).first(active_keys.size())) {
     for (const auto covered : sides) {
       subface_count += covered == 0 ? 1 : 4 - std::popcount(covered);
     }
   }
-  if (subface_count != records.face_count) {
+  return subface_count;
+}
+
+// Count exactly the canonical owned subfaces without allocating inside a
+// transaction attempt.
+absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRecordView3D& records) {
+  if (records.cell_count == 0) {
+    return records.face_count == 0 ? absl::OkStatus() : absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  if (records.cell_count > kMaximumAdaptiveLiquidCells3D || records.face_count > kMaximumAdaptiveLiquidFaces3D) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  std::array<AdaptiveMacCellKey3D, kMaximumAdaptiveLiquidCells3D> keys;
+  std::uint32_t occupied_widths = 0;
+  auto prior_upper_z = std::numeric_limits<std::int64_t>::min();
+  bool may_have_contacts = false;
+  for (std::size_t ordinal = 0; ordinal < records.cell_count; ++ordinal) {
+    const auto cell = records.read_cell(records.context, ordinal);
+    if (cell.key.width_exponent > 30 || cell.occupancy > LiquidCellOccupancy3D::kSolid
+        || cell.material_owner > AdaptiveLiquidMaterialOwner3D::kEulerian
+        || (ordinal > 0 && LatticeSortKey(keys[ordinal - 1].lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    const auto width = AdaptiveWidth(cell.key.width_exponent);
+    const auto lower = AdaptiveLowerCorner(cell.key.lower_corner);
+    for (const auto coordinate : lower) {
+      if (coordinate % width != 0) {
+        return absl::Status(absl::StatusCode::kInvalidArgument, {});
+      }
+      if (coordinate + width > INT32_MAX) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+    }
+    const double width_m = std::ldexp(records.finest_cell_width, cell.key.width_exponent);
+    const double volume_m3 = width_m * width_m * width_m;
+    if (!Positive(volume_m3)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    const auto& inventory = cell.inventory;
+    if (!IsNonnegativeFinite(inventory.mass_kg) || !IsNonnegativeFinite(inventory.reference_volume_m3)
+        || !IsNonnegativeFinite(inventory.current_volume_m3) || inventory.current_volume_m3 > volume_m3
+        || !Finite(inventory.momentum_kg_m_per_s) || !std::isfinite(inventory.enthalpy_j)
+        || !std::isfinite(cell.previous_pressure) || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    may_have_contacts |= lower[2] <= prior_upper_z;
+    prior_upper_z = std::max(prior_upper_z, lower[2] + width);
+    keys[ordinal] = cell.key;
+    occupied_widths |= std::uint32_t{1} << cell.key.width_exponent;
+  }
+
+  // Strict separation along z proves that every side is exterior.
+  const auto active_keys = std::span(keys).first(records.cell_count);
+  const auto subface_count =
+      may_have_contacts ? CountAdaptiveSubfaces(active_keys, occupied_widths) : std::optional{6 * records.cell_count};
+  if (!subface_count || *subface_count != records.face_count) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   for (std::size_t ordinal = 0; ordinal < records.face_count; ++ordinal) {
