@@ -78,6 +78,14 @@ TEST(CudaLiquidSubstep3D, SnowTrialPublishesOnlyWithLiquidAcceptance) {
   EXPECT_EQ(epoch->identity().clock, scheduler->committed().clock);
 }
 
+TEST(CudaLiquidSubstep3D, SnowAndLiquidUseSameMovingPlaten) {
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  test::ExpectSnowMovingPlaten(Initial(), options, backend->operations());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 double MaximumComponentError(Vec3 reference, Vec3 measured) {
   return std::max({
       std::abs(reference.x - measured.x),

@@ -901,6 +901,7 @@ struct LiquidSubstepScheduler3D::SnowTrial {
 
   absl::Status Advance(
       double duration,
+      const LiquidObstacle3D& obstacle,
       std::span<const PlasticSolidPressureImpulse3D> loads,
       const LiquidState3D& committed_liquid,
       const LiquidState3D& trial_liquid
@@ -918,6 +919,12 @@ struct LiquidSubstepScheduler3D::SnowTrial {
     }
     auto settings = inputs.solid_step;
     settings.duration = duration;
+    if (const auto* platen = std::get_if<TranslatingHalfspace3D>(&obstacle)) {
+      settings.platen = DrySolidPlaten3D{
+          .start_y = -platen->start_plane_coordinate,
+          .velocity_y = platen->wall_velocity.y,
+      };
+    }
     STEP_TRY(AdvanceDrySolid3D(inputs.solid_grid, inputs.snow, settings, *particles));
     for (const auto& liquid : trial_liquid.particles.values()) {
       const auto old_particles = committed_liquid.particles.values();
@@ -2100,7 +2107,13 @@ struct LiquidSubstepScheduler3D::Impl {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
       }
       if (snow_samples) {
-        auto staged = StagePlasticSolidPressureLoads3D(*frozen, *snow_samples, projected_cell_pressures, 0.0);
+        auto staged = StagePlasticSolidPressureLoads3D(
+            *frozen,
+            *snow_samples,
+            projected_cell_pressures,
+            scene.ambient_pressure,
+            obstacle
+        );
         if (!staged.ok()) {
           return staged.status();
         }
@@ -2692,7 +2705,7 @@ struct LiquidSubstepScheduler3D::Impl {
       body.torque = {};
     }
     if (snow != nullptr) {
-      STEP_TRY(snow->Advance(step_duration, snow_loads.values(), transaction.committed(), trial));
+      STEP_TRY(snow->Advance(step_duration, obstacle, snow_loads.values(), transaction.committed(), trial));
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kAccept, step_duration));
     return absl::OkStatus();
@@ -3175,9 +3188,14 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloa
 absl::StatusOr<LiquidSnowAttempt3D>
 LiquidSubstepScheduler3D::AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& inputs) {
   const auto& impl = *impl_;
-  if (impl.adaptive || !std::holds_alternative<std::monostate>(impl.scene.obstacle) || impl.cavity
-      || impl.scene.cavity_provider.prepare) {
-    return absl::UnimplementedError("sampled snow requires uniform liquid without an analytic obstacle or cavity");
+  const auto* platen = std::get_if<TranslatingHalfspace3D>(&impl.scene.obstacle);
+  const bool vertical_platen = platen != nullptr && platen->unit_normal.x == 0.0 && platen->unit_normal.y == -1.0
+      && platen->unit_normal.z == 0.0 && platen->wall_velocity.x == 0.0 && platen->wall_velocity.z == 0.0;
+  const bool supported_obstacle = std::holds_alternative<std::monostate>(impl.scene.obstacle) || vertical_platen;
+  if (impl.adaptive || !supported_obstacle || impl.cavity || impl.scene.cavity_provider.prepare) {
+    return absl::UnimplementedError(
+        "sampled snow requires uniform liquid without cavities and supports a vertical platen"
+    );
   }
   const auto liquid_geometry = committed().geometry;
   const auto solid_geometry = inputs.solid_grid.geometry();

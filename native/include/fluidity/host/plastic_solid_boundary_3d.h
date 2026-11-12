@@ -44,6 +44,7 @@ struct PlasticSolidPressureImpulse3D {
 // Stages the transpose of one sampled wall face's pressure flux. Samples
 // must be the unmodified output used to freeze this face. The supplied
 // physical pressures in Pa use a common gauge and tail-to-head order.
+// Supply the same frozen halfspace used for the forward wall flux.
 // Impulses are returned in transverse corner-bit order. Invalid arguments,
 // missing ownership or a mismatched frozen face, and unrepresentable
 // arithmetic return status without changing the inputs.
@@ -53,7 +54,8 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
     const FrozenLiquidFace3D& face,
     double tail_pressure,
     double head_pressure,
-    double step_duration
+    double step_duration,
+    const LiquidObstacle3D& obstacle = {}
 );
 
 // Restores a single snow body's trial particles and adds the staged linear
@@ -79,7 +81,8 @@ absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolid
     const FrozenLiquidBoundaryGeometryView3D& geometry,
     const PlasticSolidBoundarySamples3D& samples,
     std::span<const double> solved_cell_pressures,
-    double exterior_pressure
+    double exterior_pressure,
+    const LiquidObstacle3D& obstacle = {}
 );
 
 }  // namespace fluidity

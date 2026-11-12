@@ -8,6 +8,7 @@
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
+#include "liquid_boundary_backend.h"
 
 namespace fluidity {
 namespace {
@@ -152,7 +153,8 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
     const FrozenLiquidFace3D& face,
     double tail_pressure,
     double head_pressure,
-    double step_duration
+    double step_duration,
+    const LiquidObstacle3D& obstacle
 ) {
   if (!std::isfinite(step_duration) || step_duration <= 0 || !std::isfinite(tail_pressure)
       || !std::isfinite(head_pressure) || samples.corners.size() != samples.particle_ids.size()
@@ -201,13 +203,39 @@ absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPr
   }
 
   const double width = grid.geometry().cell_width;
-  const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(width, solid_distance);
+  std::optional<boundary_internal::SampledSolidAnalyticFace> analytic;
+  if (!std::holds_alternative<std::monostate>(obstacle)) {
+    if (!std::holds_alternative<TranslatingHalfspace3D>(obstacle)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    const boundary_internal::GeometryInput query{
+        .mode = boundary_internal::GeometryMode::kSampledSolidFace,
+        .geometry = grid.geometry(),
+        .index = {lattice.x, lattice.y, lattice.z},
+        .obstacle = boundary_internal::PackObstacle(obstacle),
+        .axis = normal_axis,
+    };
+    const auto local = boundary_internal::LocalObstacle(query);
+    if (!local.ok()) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    const auto measured = boundary_internal::MeasureSampledSolidAnalyticFace(query, *local);
+    if (!measured.ok()) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    analytic = *measured;
+  }
+  const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(
+      width,
+      solid_distance,
+      analytic ? &analytic->fluid_side : nullptr
+  );
   if (!weights.ok()) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
-  double blocked_area = 0;
-  double wall_flux = 0;
-  double flux_scale = 0;
+  double blocked_area = analytic ? analytic->blocked_area : 0;
+  double wall_flux = analytic ? analytic->wall_flux : 0;
+  double flux_scale = std::abs(wall_flux);
   for (int corner = 0; corner < 4; ++corner) {
     const double contribution = (*weights)[corner] * normal_velocity[corner];
     blocked_area += (*weights)[corner];
@@ -290,7 +318,8 @@ absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolid
     const FrozenLiquidBoundaryGeometryView3D& geometry,
     const PlasticSolidBoundarySamples3D& samples,
     std::span<const double> solved_cell_pressures,
-    double exterior_pressure
+    double exterior_pressure,
+    const LiquidObstacle3D& obstacle
 ) {
   if (solved_cell_pressures.size() != geometry.cells.size() || !std::isfinite(exterior_pressure)
       || !std::isfinite(geometry.step_duration) || geometry.step_duration <= 0) {
@@ -359,7 +388,8 @@ absl::StatusOr<LiquidRecords3D<PlasticSolidPressureImpulse3D>> StagePlasticSolid
         face,
         tail.value_or(exterior_pressure),
         head.value_or(exterior_pressure),
-        geometry.step_duration
+        geometry.step_duration,
+        obstacle
     );
     if (!face_loads.ok()) {
       return face_loads.status();
