@@ -1,5 +1,7 @@
 """Exercise Cutter assignment and time-zero slab resolution in Blender."""
 
+import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -10,7 +12,7 @@ from bpy_extras.anim_utils import action_get_channelbag_for_slot
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
 
 import fluidity  # noqa: E402
-from fluidity.scene_inputs import SceneError, resolve_cutter  # noqa: E402
+from fluidity.scene_inputs import SceneError, cutter_frame_packet, resolve_cutter  # noqa: E402
 
 
 def expect_scene_error(operation, message):
@@ -69,3 +71,80 @@ with tempfile.TemporaryDirectory() as directory:
     settings.cutter = None
     assert fluidity.scene_inputs(scene) == liquid_packet
 print("PASS: Cutter role, slab resolution, frame restoration and liquid preflight")
+
+if "--" in sys.argv:
+    solver = Path(sys.argv[sys.argv.index("--") + 1]).resolve()
+    scene.frame_end = 2
+    scene.frame_set(0)
+    settings.domain.location = (1.0, -0.5, 0.5)
+    settings.domain.dimensions = (4, 3, 3)
+    settings.elastic_solid = fluidity.authoring.box("Elastic seed box", (1.5, -0.5, 0.5), (3, 1, 1))
+    settings.cell_width = 1
+    settings.elastic_density = 2
+    settings.elastic_shear_modulus = 2
+    settings.elastic_first_lame_parameter = 1
+    settings.elastic_substeps = 1
+
+    blade = fluidity.authoring.box("Bake blade", (0.359375, -0.5, 0.5), (0.125, 4, 4))
+    blade.keyframe_insert(data_path="location", frame=0)
+    blade.location.x = 0.421875
+    blade.keyframe_insert(data_path="location", frame=2)
+    data = blade.animation_data
+    bag = action_get_channelbag_for_slot(data.action, data.action_slot)
+    for curve in bag.fcurves:
+        curve.keyframe_points[0].interpolation = "LINEAR"
+    assert bpy.ops.fluidity.assign_role(role="cutter") == {"FINISHED"}
+    packet_text = cutter_frame_packet(scene)
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        packet = root / "Cutter inputs.txt"
+        first = root / "Frame one.chk"
+        second = root / "Frame two.chk"
+        replay = root / "Frame two replay.chk"
+        rejected = root / "Rejected frame.chk"
+        packet.write_text(packet_text, encoding="ascii", newline="\n")
+
+        def run(previous, output):
+            return subprocess.run([solver, "cutter-frame", packet, previous, output], capture_output=True, check=False)
+
+        result = run("-", first)
+        assert result.returncode == 0, result.stderr
+        first_frame = json.loads(result.stdout)
+        assert first_frame["accepted_step"] == 1
+        assert first_frame["blade_work"] == 0
+        result = run(first, second)
+        assert result.returncode == 0, result.stderr
+        second_frame = json.loads(result.stdout)
+        assert second_frame["accepted_step"] == 2
+        assert second_frame["particle_impulse"] == [0, 0, 0], second_frame
+        assert second_frame["blade_work"] == 0, second_frame
+        assert second_frame["sides"] == [{"particle_id": 1, "sign": 1}, {"particle_id": 2, "sign": 1}, {"particle_id": 3, "sign": 1}]
+        result = run(first, replay)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == second_frame
+        assert replay.read_bytes() == second.read_bytes()
+        assert run(first, second).returncode == 0
+
+        first_bytes = first.read_bytes()
+        settings.elastic_density = 3
+        packet.write_text(cutter_frame_packet(scene), encoding="ascii", newline="\n")
+        result = run(first, rejected)
+        assert result.returncode != 0 and b"different scene" in result.stderr, result.stderr
+        assert not rejected.exists() and first.read_bytes() == first_bytes
+
+        settings.elastic_density = 2
+        for curve in bag.fcurves:
+            if curve.array_index == 0:
+                for key in curve.keyframe_points:
+                    key.co.y += 0.03125
+                curve.update()
+        packet.write_text(cutter_frame_packet(scene), encoding="ascii", newline="\n")
+        before_impact = root / "Before impact.chk"
+        assert run("-", before_impact).returncode == 0
+        before_impact_bytes = before_impact.read_bytes()
+        result = run(before_impact, rejected)
+        assert result.returncode != 0 and b"full-rank velocity continuation" in result.stderr, result.stderr
+        assert not rejected.exists() and before_impact.read_bytes() == before_impact_bytes
+
+    print("PASS: Blender Cutter packet, persistent sides, byte-identical restart and rejected impact")

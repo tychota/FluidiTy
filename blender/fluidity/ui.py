@@ -159,6 +159,14 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
         cutter_row.prop(settings, "cutter")
         if context.object and context.object.type == "MESH":
             column.operator("fluidity.assign_role", text="Use Selected as Cutter").role = "cutter"
+        if settings.cutter:
+            solid_row = column.row()
+            solid_row.alert = settings.issue_field == "elastic_solid"
+            solid_row.prop(settings, "elastic_solid")
+            column.prop(settings, "elastic_density")
+            column.prop(settings, "elastic_shear_modulus")
+            column.prop(settings, "elastic_first_lame_parameter")
+            column.prop(settings, "elastic_substeps")
 
 
 class FLUIDITY_PT_simulation(ChildPanel, bpy.types.Panel):

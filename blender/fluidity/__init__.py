@@ -61,6 +61,22 @@ class FluidiTySettings(PropertyGroup):
         description="Animated box defining the elastic cutting slab",
         update=invalidate_guidance,
     )
+    elastic_solid: PointerProperty(
+        name="Elastic Solid",
+        type=Object,
+        description="Static box seeding the dry elastic body",
+        update=invalidate_guidance,
+    )
+    elastic_density: FloatProperty(
+        name="Elastic Density (kg/m³)", default=1000, min=1, max=50000, update=invalidate_guidance
+    )
+    elastic_shear_modulus: FloatProperty(
+        name="Shear Modulus (Pa)", default=1000, min=0.01, update=invalidate_guidance
+    )
+    elastic_first_lame_parameter: FloatProperty(
+        name="First Lamé Parameter (Pa)", default=1000, min=0, update=invalidate_guidance
+    )
+    elastic_substeps: IntProperty(name="Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
     material_preset: EnumProperty(name="Fluid Preset", items=authoring.PRESET_ITEMS, default="CUSTOM")
     density: FloatProperty(
         name="Density",

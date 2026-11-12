@@ -240,6 +240,67 @@ def resolve_cutter(scene):
     )
 
 
+def cutter_frame_packet(scene):
+    """Encode a dry elastic box and translating Cutter for the native frame runner."""
+    settings = scene.fluidity
+    slab = resolve_cutter(scene)
+    solid = settings.elastic_solid
+    if not solid or solid in {settings.domain, settings.cutter, settings.liquid, settings.collider, settings.paddle}:
+        raise SceneError("elastic_solid", "Assign a distinct static box to Elastic Solid.")
+    if solid.animation_data:
+        raise SceneError("elastic_solid", f"{solid.name}: Remove animation from the initial elastic solid.")
+
+    saved_frame, saved_subframe = scene.frame_current, scene.frame_subframe
+    try:
+        scene.frame_set(0)
+        graph = bpy.context.evaluated_depsgraph_get()
+        domain_low, domain_high = box_bounds(settings.domain, "domain", graph)
+        solid_low, solid_high = box_bounds(solid, "elastic_solid", graph)
+    finally:
+        scene.frame_set(saved_frame, subframe=saved_subframe)
+    if any(
+        low < domain_min or high > domain_max
+        for low, high, domain_min, domain_max in zip(solid_low, solid_high, domain_low, domain_high, strict=True)
+    ):
+        raise SceneError("elastic_solid", f"{solid.name}: Place the initial elastic solid inside the domain.")
+
+    cell = settings.cell_width
+    if not 0.001 <= cell <= 10:
+        raise SceneError("cell_width", "Choose a cell width from 0.001 to 10 meters.")
+    low = (solid_low[0], solid_low[2], -solid_high[1])
+    high = (solid_high[0], solid_high[2], -solid_low[1])
+    ranges = [
+        range(math.floor(lo / cell - 0.5) + 1, math.ceil(hi / cell - 0.5)) for lo, hi in zip(low, high, strict=True)
+    ]
+    count = math.prod(map(len, ranges))
+    if not 1 <= count <= 1024:
+        raise SceneError("cell_width", "Choose a cell width that seeds 1 to 1024 particles.")
+
+    def values(items):
+        return " ".join(map(repr, items))
+
+    lines = [
+        "FLUIDITY-CUTTER-1",
+        values(
+            (
+                cell,
+                settings.elastic_density,
+                settings.elastic_shear_modulus,
+                settings.elastic_first_lame_parameter,
+                settings.friction,
+                settings.elastic_substeps,
+            )
+        ),
+        values((domain_low[0], domain_low[2], -domain_high[1])),
+        values((domain_high[0], domain_high[2], -domain_low[1])),
+        values((slab.start_center_coordinate, slab.half_width, *slab.wall_velocity)),
+        str(count),
+    ]
+    for z, y, x in product(ranges[2], ranges[1], ranges[0]):
+        lines.append(values((coordinate + 0.5) * cell for coordinate in (x, y, z)))
+    return "\n".join(lines) + "\n"
+
+
 def scene_inputs(scene, preview=False):
     """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
     settings = scene.fluidity
