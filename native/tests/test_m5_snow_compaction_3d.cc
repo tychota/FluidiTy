@@ -6,6 +6,7 @@
 
 #include "../src/dry_solid_step_3d_internal.h"
 #include "fluidity/host/dry_solid_step_3d.h"
+#include "fluidity/host/liquid_wall_contact_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
 #include "fluidity/host/cuda_transfers_3d.h"
@@ -106,6 +107,53 @@ bool TestSnowCompaction(double width, double nominal_duration) {
   );
   return std::abs(momentum_residual) <= omitted_stress_impulse + 1e-6 && mean_log_plastic > -0.48
       && mean_log_plastic < -0.34 && maximum_height > 0.11 && maximum_height < 0.15;
+}
+
+bool TestFloorProjectionGradient() {
+  constexpr Mat3 kIncomingGradient{{2, -1, 3}, {4, 2, 1}, {-1, 2, 1}};
+  constexpr std::array components{&fluidity::Vec3::x, &fluidity::Vec3::y, &fluidity::Vec3::z};
+  constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
+  constexpr double kPerturbation = 1e-5;
+  for (const auto incoming : {fluidity::Vec3{3, -2, 4}, {0.2, -2, 0.3}, {3, 2, 4}}) {
+    for (const double friction : {0.0, 0.7}) {
+      const auto actual =
+          fluidity::internal::ProjectStationaryFloorVelocityGradient3D(incoming, kIncomingGradient, friction);
+      const auto response = [&](fluidity::Vec3 velocity) {
+        return fluidity::ResolveLiquidWallContact3D({
+            .start_world_position = {0, 0, 0},
+            .stored_world_velocity = velocity,
+            .advecting_world_velocity = velocity,
+            .obstacle = fluidity::TranslatingHalfspace3D{{0, 1, 0}, 0, {}},
+            .step_duration = 0.01,
+            .friction_coefficient = friction,
+        });
+      };
+      for (const auto column : components) {
+        auto plus = incoming;
+        auto minus = incoming;
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+          const double perturbation = kPerturbation * ((kIncomingGradient.*rows[row]).*column);
+          plus.*components[row] += perturbation;
+          minus.*components[row] -= perturbation;
+        }
+        const auto upper = response(plus);
+        const auto lower = response(minus);
+        if (!upper.ok() || !lower.ok()) {
+          return false;
+        }
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+          const auto component = components[row];
+          const double difference =
+              (upper->advecting_world_velocity.*component - lower->advecting_world_velocity.*component)
+              / (2 * kPerturbation);
+          if (std::abs((actual.*rows[row]).*column - difference) > 1e-9) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return true;
 }
 
 bool TestWallImpulseBudget() {
@@ -324,8 +372,9 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main() {
-  if (!TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()
-      || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()) {
+  if (!TestFloorProjectionGradient() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
+      || !TestStoredResidualMomentum()) {
     return 1;
   }
   const bool coarse = TestSnowCompaction(0.1, 0.0025);

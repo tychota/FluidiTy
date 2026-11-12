@@ -53,6 +53,8 @@ struct DrySolidStepBudget3D {
 // the pre-force grid. The supplied particle state seeds that history. Low-mass support uses PIC storage.
 // The retained correction has zero net momentum over the eligible particles of this dry body.
 // Snow grid normal constraints use face anchors. A continuous halfspace sweep constrains particle transport.
+// Granular floor impacts without a platen split the deformation update at impact. The post-impact velocity
+// gradient uses the active Coulomb response derivative.
 // The force-acceleration denominator is floored at 1e-4 times the smallest particle mass for low-mass faces.
 // The bounded dry path uses no liquid pressure, cut support reconstruction, or body mixing.
 // Requires the platen gap to exceed one cell throughout the step and enforces motion and acoustic bounds.
