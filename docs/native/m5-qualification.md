@@ -3286,3 +3286,30 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Swept friction without tangential grid traction
+
+Keep the reflected normal stress reconstruction, Euler deformation,
+and original swept contact and affine projection. Disable only the
+wall-face tangential grid correction.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 12.847311° | 0.162870 m |
+| Coarse half-step | 20.832620° | 0.164623 m |
+| Fine | 17.595499° | 0.176308 m |
+| Fine half-step | 21.824114° | 0.184563 m |
+
+All four cases finish below 30°. Both forms of friction materially
+affect the geometry in this split wall solver. The removed grid
+traction was carried by the normal stress reaction, while the
+remaining sweep uses its own incident normal velocity. Vertical
+momentum residual stays below 3.5e-9 N·s, and stress-work mismatch
+below 2e-16 J. Source was restored after linking. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-sweep-only-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
