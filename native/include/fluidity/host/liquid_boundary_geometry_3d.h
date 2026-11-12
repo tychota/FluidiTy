@@ -57,6 +57,11 @@ struct LiquidBoundaryGeometryInputs3D {
   // Used only at cells incident to open air links with positive surface tension.
   std::optional<double> exact_outward_interface_curvature = std::nullopt;
 };
+struct AxisAlignedFloatingBoxGeometry3D {
+  Vec3 world_low;  // Lower solid corner at freeze time, meters.
+  Vec3 world_high;  // Upper solid corner at freeze time, meters.
+  double liquid_height;  // World Y coordinate of the horizontal free surface, meters.
+};
 struct FrozenLiquidCell3D {
   CellIndex3D cell_index;
   double fluid_volume;  // Liquid intersect nonsolid, m³.
@@ -99,6 +104,17 @@ struct LiquidPressureProblem3D {
 };
 
 class FrozenLiquidBoundaryGeometry3D;
+
+// CPU freeze for a single finite box and a horizontal liquid surface. Center
+// and corner samples must be signed distances to that plane. Faces on a box
+// plane are blocked over the transverse overlap. Wall velocities remain zero
+// because wetted box patches supply the integrated pressure-row flux. Rejects
+// a second obstacle, invalid geometry, or a box that splits a wet cell.
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const AxisAlignedFloatingBoxGeometry3D& box
+);
+
 namespace boundary_internal {
 struct GeometryBackend;
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);

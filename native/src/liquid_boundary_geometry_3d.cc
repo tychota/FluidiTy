@@ -297,6 +297,173 @@ absl::StatusOr<boundary_internal::GeometryOutput> CpuGeometry(void* context, con
   }
   return *result;
 }
+struct FloatingBoxContext {
+  const AxisAlignedFloatingBoxGeometry3D& box;
+  bool bounded;
+};
+
+absl::Status ValidateFloatingBoxInputs(
+    const AxisAlignedFloatingBoxGeometry3D& box,
+    UniformMacGeometry3D geometry,
+    const LiquidObstacle3D& obstacle,
+    std::span<const LiquidCenterDistance3D> center_distances,
+    bool bounded
+) {
+  const auto lower = CartesianComponents(box.world_low);
+  const auto upper = CartesianComponents(box.world_high);
+  if (!std::holds_alternative<std::monostate>(obstacle) || !HasFiniteComponents(lower) || !HasFiniteComponents(upper)
+      || !std::isfinite(box.liquid_height) || lower[0] >= upper[0] || lower[1] >= upper[1] || lower[2] >= upper[2]) {
+    return absl::Status(
+        absl::StatusCode::kInvalidArgument,
+        bounded ? "" : "invalid finite box or conflicting obstacle"
+    );
+  }
+  for (const auto& sample : center_distances) {
+    const double y_index = static_cast<double>(sample.cell_index.y) + 0.5;
+    const double world_y = std::fma(geometry.cell_width, y_index, geometry.world_origin.y);
+    const double expected_distance = world_y - box.liquid_height;
+    if (!std::isfinite(expected_distance)) {
+      return UnrepresentableGeometry(bounded);
+    }
+    if (sample.signed_distance != expected_distance) {
+      return absl::Status(
+          absl::StatusCode::kInvalidArgument,
+          bounded ? "" : "finite box requires horizontal liquid distance samples"
+      );
+    }
+  }
+  return absl::OkStatus();
+}
+// Decompose the complement into disjoint low/high strips in axis order.
+// This retains a small surviving region without subtracting nearly equal volumes.
+absl::StatusOr<double> BoxComplementMeasure(
+    boundary_internal::TankClipBounds outer,
+    const boundary_internal::TankClipBounds& solid,
+    double cell_width,
+    int excluded_axis,
+    bool reject_split,
+    bool bounded
+) {
+  const auto domain = outer;
+  double measure = 0.0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis == excluded_axis) {
+      continue;
+    }
+    const double cut_low = std::max(outer.low[axis], solid.low[axis]);
+    const double cut_high = std::min(outer.high[axis], solid.high[axis]);
+    if (cut_low >= cut_high) {
+      return measure + boundary_internal::TankBoxMeasure(outer, cell_width, excluded_axis);
+    }
+    if (reject_split && cut_low > outer.low[axis] && cut_high < outer.high[axis]) {
+      bool spans_transverse_axes = true;
+      for (int transverse = 0; transverse < 3; ++transverse) {
+        if (transverse != axis) {
+          spans_transverse_axes &=
+              solid.low[transverse] <= domain.low[transverse] && solid.high[transverse] >= domain.high[transverse];
+        }
+      }
+      if (spans_transverse_axes) {
+        return absl::Status(
+            absl::StatusCode::kFailedPrecondition,
+            bounded ? "" : "finite box splits a wet pressure cell"
+        );
+      }
+    }
+    auto low_strip = outer;
+    low_strip.high[axis] = cut_low;
+    auto high_strip = outer;
+    high_strip.low[axis] = cut_high;
+    measure += boundary_internal::TankBoxMeasure(low_strip, cell_width, excluded_axis);
+    measure += boundary_internal::TankBoxMeasure(high_strip, cell_width, excluded_axis);
+    outer.low[axis] = cut_low;
+    outer.high[axis] = cut_high;
+  }
+  return measure;
+}
+
+absl::StatusOr<boundary_internal::GeometryOutput>
+ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
+  auto& request = *static_cast<FloatingBoxContext*>(context);
+  if (query.mode != GeometryMode::kCell && query.mode != GeometryMode::kFace) {
+    return CpuGeometry(request.bounded ? context : nullptr, query);
+  }
+  const auto& box = request.box;
+  const auto lower = CartesianComponents(box.world_low);
+  const auto upper = CartesianComponents(box.world_high);
+  const double cell_width = query.geometry.cell_width;
+  const bool face_query = query.mode == GeometryMode::kFace;
+  const int excluded_axis = face_query ? query.axis : -1;
+  boundary_internal::GeometryOutput output{};
+  if (face_query) {
+    const auto lattice = boundary_internal::TankAxis(query, excluded_axis);
+    const auto low_sign = boundary_internal::TankPlaneOffsetSign(lower[excluded_axis], lattice);
+    const auto high_sign = boundary_internal::TankPlaneOffsetSign(upper[excluded_axis], lattice);
+    if (!low_sign.ok() || !high_sign.ok()) {
+      return UnrepresentableGeometry(request.bounded);
+    }
+    if (*low_sign > 0 || *high_sign < 0) {
+      output.open_face_area = cell_width * cell_width;
+      return output;
+    }
+  } else if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
+    return UnrepresentableGeometry(request.bounded);
+  }
+
+  boundary_internal::TankClipBounds outer;
+  boundary_internal::TankClipBounds solid;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis == excluded_axis) {
+      continue;
+    }
+    const auto lattice = boundary_internal::TankAxis(query, axis);
+    const auto low = boundary_internal::TankClipCoordinate(lower[axis], lattice);
+    const auto high = boundary_internal::TankClipCoordinate(upper[axis], lattice);
+    if (!low.ok() || !high.ok() || (*low == *high && *low > 0.0 && *high < 1.0)) {
+      return UnrepresentableGeometry(request.bounded);
+    }
+    solid.low[axis] = *low;
+    solid.high[axis] = *high;
+  }
+  if (!face_query) {
+    const auto vertical_lattice = boundary_internal::TankAxis(query, 1);
+    const auto liquid_top = boundary_internal::TankClipCoordinate(box.liquid_height, vertical_lattice);
+    if (!liquid_top.ok()) {
+      return UnrepresentableGeometry(request.bounded);
+    }
+    for (int corner = 0; corner < 8; ++corner) {
+      const double y_index = vertical_lattice.lattice_index + ((corner >> 1) & 1);
+      const double world_y = std::fma(cell_width, y_index, vertical_lattice.world_origin);
+      if (query.corner_distances[corner] != world_y - box.liquid_height) {
+        return absl::Status(
+            absl::StatusCode::kInvalidArgument,
+            request.bounded ? "" : "finite box requires horizontal liquid distance samples"
+        );
+      }
+    }
+    if (*liquid_top == 0.0) {
+      return output;
+    }
+    outer.high[1] = *liquid_top;
+  }
+  const auto open_measure = BoxComplementMeasure(outer, solid, cell_width, excluded_axis, !face_query, request.bounded);
+  if (!open_measure.ok()) {
+    return open_measure.status();
+  }
+  if (!face_query) {
+    output.high_side_liquid_volume = *open_measure;
+    return output;
+  }
+  const double full_area = cell_width * cell_width;
+  output.open_face_area = std::min(full_area, *open_measure);
+  output.blocked_face_area = full_area - output.open_face_area;
+  const double geometric_blocked_area = boundary_internal::TankBoxMeasure(solid, cell_width, excluded_axis);
+  if (!std::isfinite(*open_measure) || !IsNormalOrZero(output.open_face_area)
+      || !IsNormalOrZero(output.blocked_face_area) || (geometric_blocked_area > 0 && output.blocked_face_area == 0)) {
+    return UnrepresentableGeometry(request.bounded);
+  }
+  return output;
+}
 absl::Status FreezeCore(
     const LiquidBoundaryGeometryViewInputs3D& inputs,
     GeometryBackend backend,
@@ -836,6 +1003,18 @@ absl::StatusOr<LiquidPressureProblem3D> boundary_internal::BuildLinks(
   result.lower_theta_regularization_count = output.lower_theta_regularization_count;
   return result;
 }
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const AxisAlignedFloatingBoxGeometry3D& box
+) {
+  const auto status =
+      ValidateFloatingBoxInputs(box, inputs.mac_grid.geometry(), inputs.obstacle, inputs.center_distances, false);
+  if (!status.ok()) {
+    return status;
+  }
+  FloatingBoxContext context{box, false};
+  return boundary_internal::FreezeGeometry(inputs, {ComputeFloatingBoxGeometry, &context});
+}
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs
 ) {
@@ -849,6 +1028,21 @@ absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::Fr
     const LiquidBoundaryGeometryViewInputs3D& inputs
 ) {
   return FreezeWithBackend(inputs, {CpuGeometry, this});
+}
+absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::FreezeFloatingBox(
+    const LiquidBoundaryGeometryViewInputs3D& inputs,
+    const AxisAlignedFloatingBoxGeometry3D& box
+) {
+  if (inputs.cell_indices.size() > capacities_.cells || inputs.center_distances.size() > 27 * capacities_.cells) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  const auto status =
+      ValidateFloatingBoxInputs(box, inputs.mac_grid.geometry(), inputs.obstacle, inputs.center_distances, true);
+  if (!status.ok()) {
+    return status;
+  }
+  FloatingBoxContext context{box, true};
+  return FreezeWithBackend(inputs, {ComputeFloatingBoxGeometry, &context});
 }
 absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::FreezeWithBackend(
     const LiquidBoundaryGeometryViewInputs3D& inputs,

@@ -1,95 +1,180 @@
+#include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "liquid_boundary_geometry_3d_cases.h"
 namespace fluidity::boundary_test {
+namespace {
+constexpr auto kOwningFreeze =
+    static_cast<absl::StatusOr<FrozenLiquidBoundaryGeometry3D> (*)(const LiquidBoundaryGeometryInputs3D&)>(
+        FreezeLiquidBoundaryGeometry3D
+    );
+constexpr auto kOwningLinks = static_cast<
+    absl::StatusOr<LiquidPressureProblem3D> (*)(const FrozenLiquidBoundaryGeometry3D&, const LiquidPressureFields3D&)>(
+    BuildLiquidPressureLinks3D
+);
+}  // namespace
+
+TEST(LiquidBoundaryGeometry3D, FiniteBoxClipsPlanarLiquidVolumeAndApertures) {
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
+  const auto grid = cases.Grid();
+  const auto samples = cases.Sample([](double, double y, double) {
+    return y - 0.75;
+  });
+  const LiquidBoundaryGeometryInputs3D inputs{
+      grid,
+      samples.candidates,
+      samples.centers,
+      samples.corners,
+      {},
+      0.01,
+      1000.0,
+      0.0,
+  };
+  const AxisAlignedFloatingBoxGeometry3D box{
+      .world_low = {0.0, 0.25, 0.25},
+      .world_high = {0.5, 1.0, 0.75},
+      .liquid_height = 0.75,
+  };
+  const auto frozen = FreezeFloatingBoxLiquidBoundaryGeometry3D(inputs, box);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  EXPECT_DOUBLE_EQ(frozen->cells().front().fluid_volume, 0.625);
+  ASSERT_EQ(frozen->faces().size(), 6);
+  const auto low_x = std::ranges::find_if(frozen->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
+  });
+  ASSERT_NE(low_x, frozen->faces().end());
+  EXPECT_DOUBLE_EQ(low_x->open_area, 0.625);
+  EXPECT_DOUBLE_EQ(low_x->blocked_area, 0.375);
+  EXPECT_DOUBLE_EQ(low_x->wall_normal_velocity, 0.0);
+
+  auto interior = box;
+  interior.world_low = {0.25, 0.25, 0.0};
+  interior.world_high = {0.75, 0.5, 1.0};
+  const auto connected = FreezeFloatingBoxLiquidBoundaryGeometry3D(inputs, interior);
+  ASSERT_TRUE(connected.ok()) << connected.status();
+  EXPECT_DOUBLE_EQ(connected->cells().front().fluid_volume, 0.625);
+
+  auto split = box;
+  split.world_low = {0.25, 0.0, 0.0};
+  split.world_high = {0.5, 1.0, 1.0};
+  EXPECT_EQ(
+      FreezeFloatingBoxLiquidBoundaryGeometry3D(inputs, split).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto workspace = LiquidBoundaryWorkspace3D::Create({.blocks = 8, .cells = 8, .faces = 48});
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const LiquidBoundaryGeometryViewInputs3D view{
+      grid.view(),
+      samples.candidates,
+      samples.centers,
+      samples.corners,
+      {},
+      0.01,
+      1000.0,
+      0.0,
+  };
+  const auto accepted = workspace->FreezeFloatingBox(view, box);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  const auto rejected = workspace->FreezeFloatingBox(view, split);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(rejected.status().message().empty());
+  EXPECT_DOUBLE_EQ(accepted->cells.front().fluid_volume, 0.625);
+  auto overlap = inputs;
+  overlap.obstacle = TranslatingHalfspace3D{{0.0, 1.0, 0.0}, 0.125, {}};
+  EXPECT_EQ(
+      FreezeFloatingBoxLiquidBoundaryGeometry3D(overlap, box).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
 TEST(LiquidBoundaryGeometry3D, OpenTankClipsVolumeAndUsesPistonOnlyFlux) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.OpenTankClipsVolumeAndUsesPistonOnlyFlux();
 }
 TEST(LiquidBoundaryGeometry3D, OpenTankPreservesNarrowAndLiquidClippedMeasures) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.OpenTankPreservesNarrowAndLiquidClippedMeasures();
 }
 TEST(LiquidBoundaryGeometry3D, AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOpening) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.AnalyticPlaneFixtureAllAxesSignedIndicesAndTinyOpening();
 }
 TEST(LiquidBoundaryGeometry3D, ObliqueAndSimultaneousLiquidSolidClips) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ObliqueAndSimultaneousLiquidSolidClips();
 }
 TEST(LiquidBoundaryGeometry3D, ThinSlabInvisibleToCornersAndSplitCellRefusal) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
 }
 TEST(LiquidBoundaryGeometry3D, SharedFaceHasOneOwnerAndMatchingTriangulation) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();
 }
 TEST(LiquidBoundaryGeometry3D, ThetaFixtureAndSignedPressureMapping) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ThetaFixtureAndSignedPressureMapping();
 }
 TEST(LiquidBoundaryGeometry3D, PlaneAndSphereCenteredCurvature) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.PlaneAndSphereCenteredCurvature();
 }
 TEST(LiquidBoundaryGeometry3D, CapillaryLiftOnceAndCorrectionMismatchControl) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.CapillaryLiftOnceAndCorrectionMismatchControl();
 }
 TEST(LiquidBoundaryGeometry3D, RejectsMissingSamplesOwnersOrderingAndInvalidObstacle) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.RejectsMissingSamplesOwnersOrderingAndInvalidObstacle();
 }
 TEST(LiquidBoundaryGeometry3D, CapillaryBoundZeroSigmaAndDegenerateDerivativeChecks) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.CapillaryBoundZeroSigmaAndDegenerateDerivativeChecks();
 }
 TEST(LiquidBoundaryGeometry3D, FrozenSnapshotPreservesWallFluxAndSeparatesPressureHistory) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.FrozenSnapshotPreservesWallFluxAndSeparatesPressureHistory();
 }
 TEST(LiquidBoundaryGeometry3D, InternalLinkUsesFullFrozenAreaAndZeroJump) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.InternalLinkUsesFullFrozenAreaAndZeroJump();
 }
 TEST(LiquidBoundaryGeometry3D, RejectsPressureFieldsMissingAirAndNegativeOmittedNeighbor) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.RejectsPressureFieldsMissingAirAndNegativeOmittedNeighbor();
 }
 TEST(LiquidBoundaryGeometry3D, RejectsUnrepresentableMeasuresAndInvalidPhysicalInputs) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.RejectsUnrepresentableMeasuresAndInvalidPhysicalInputs();
 }
 TEST(LiquidBoundaryGeometry3D, InteriorPositiveSigmaDoesNotRequireUnusedCurvature) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.InteriorPositiveSigmaDoesNotRequireUnusedCurvature();
 }
 TEST(LiquidBoundaryGeometry3D, SealedLowFaceAtMinimumSignedIndexNeedsNoExteriorSample) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.SealedLowFaceAtMinimumSignedIndexNeedsNoExteriorSample();
 }
 TEST(LiquidBoundaryGeometry3D, ResolvesRepresentableTinyLiquidTetrahedron) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ResolvesRepresentableTinyLiquidTetrahedron();
 }
 TEST(LiquidBoundaryGeometry3D, RejectsCapillaryLiftThatUnderflowsToZero) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.RejectsCapillaryLiftThatUnderflowsToZero();
 }
 TEST(LiquidBoundaryGeometry3D, ZeroCornerPlateauHasNoStrictlyNegativeLiquidVolume) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.ZeroCornerPlateauHasNoStrictlyNegativeLiquidVolume();
 }
 TEST(LiquidBoundaryGeometry3D, MixedZeroPlateauCountsOnlyStrictlyNegativeTetrahedra) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.MixedZeroPlateauCountsOnlyStrictlyNegativeTetrahedra();
 }
 TEST(LiquidBoundaryGeometry3D, PhysicalVolumeSurvivesUnderflowOfNormalizedCubicMeasure) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.PhysicalVolumeSurvivesUnderflowOfNormalizedCubicMeasure();
 }
 TEST(LiquidBoundaryGeometry3D, PhysicalFaceAreaSurvivesUnderflowOfNormalizedSquareMeasure) {
-  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
   cases.PhysicalFaceAreaSurvivesUnderflowOfNormalizedSquareMeasure();
 }
 }  // namespace fluidity::boundary_test
