@@ -87,6 +87,11 @@ if(BUILD_TESTING)
     set_tests_properties(SimulateCli.${case} PROPERTIES LABELS cli)
   endforeach()
   if(FLUIDITY_ENABLE_CUDA)
+    add_test(NAME SimulateCli.public_graded_cuda
+      COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_fluidity_cli.py"
+        "${fluidity_cli_executable}" "$<TARGET_FILE:fluidity_simulate>" "$<TARGET_FILE:fluidity_simulate_fixture>"
+        --graded-cuda)
+    set_tests_properties(SimulateCli.public_graded_cuda PROPERTIES LABELS cuda-cli)
     # Only this test-linked executable can arm typed runtime faults.
     fluidity_add_simulate_executable(fluidity_simulate_fault_fixture)
     target_sources(fluidity_simulate_fault_fixture PRIVATE native/tests/simulate_fault_fixture.cc)

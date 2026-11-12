@@ -1,5 +1,6 @@
 """Exercise the public CLI and the existing machine interface together."""
 
+import argparse
 import json
 import shutil
 from pathlib import Path
@@ -16,8 +17,16 @@ def run(executable, *arguments, cwd=None):
     )
 
 
-def graded_effects_case(executable, fixture, root):
-    scene, initial = make_scene(executable, fixture, root, "cpu", "graded-effects")
+def graded_effects_case(executable, fixture, root, backend):
+    backend_options = ["--backend", backend]
+    device = None
+    if backend == "cuda":
+        backend_options += ["--device", 0]
+        device = invoke(executable, "devices", *backend_options)
+        assert device["compute_major"] == 12 and device["compute_minor"] == 0, device
+        assert device["compiled_architecture"] == 1200, device
+
+    scene, initial = make_scene(executable, fixture, root, backend, "graded-effects")
     initial_path = Path(initial[1])
     initial_digest = subprocess.check_output(
         [fixture, "digest", initial_path], text=True, timeout=30
@@ -29,16 +38,18 @@ def graded_effects_case(executable, fixture, root):
     refused_cache = root / "refused graded cache"
     refused = execute(
         executable, "simulate", scene, "--cache", refused_cache, "--initial-state", tampered,
-        "--frame-end", 2, success=False,
+        *backend_options, "--frame-end", 2, success=False,
     )[-1]
     assert refused["name"] == "DATA_LOSS" and refused["field"] == "initial-state", refused
     assert not refused_cache.exists()
 
     cache = root / "graded effects cache"
-    output = execute(executable, "simulate", scene, "--cache", cache, *initial, "--frame-end", 2, "--trace")
+    output = execute(
+        executable, "simulate", scene, "--cache", cache, *initial, *backend_options, "--frame-end", 2, "--trace"
+    )
     baked = output[-1]
     assert baked["frame"] == 2 and baked["particle_count"] == baked["cell_count"] == 5
-    assert baked["face_count"] > 0
+    assert baked["backend"] == backend and baked["face_count"] == 25
     assert [item["frame"] for item in output if item["event"] == "frame"] == [0, 1, 2]
 
     before = snapshot(cache)
@@ -61,12 +72,18 @@ def graded_effects_case(executable, fixture, root):
             assert sample["adaptive_face_count"] == baked["face_count"]
             assert sample["state_digest"] == traces[sample["frame"], sample["substep"]]
 
-    complete = execute(executable, "replay", cache, "--frame", 2, "--substep", 0)[-1]
+    complete = execute(executable, "replay", cache, *backend_options, "--frame", 2, "--substep", 0)[-1]
     assert complete["read_only"] and complete["state_digest"] == baked["state_digest"]
-    intermediate = execute(executable, "replay", cache, "--frame", 1, "--substep", 1)[-1]
+    intermediate = execute(executable, "replay", cache, *backend_options, "--frame", 1, "--substep", 1)[-1]
     assert intermediate["read_only"] and intermediate["state_digest"] == traces[1, 1]
     assert snapshot(cache) == before, "graded replay changed parent cache or effects source files"
+    if device is not None:
+        for result in (baked, complete, intermediate):
+            assert result["compiled_architecture"] == 1200, result
+            assert result["device_reserved_bytes"] > 0 and result["snapshot_copy_milliseconds"] > 0, result
     print(json.dumps({
+        "backend": backend,
+        "device": device["device_name"] if device is not None else None,
         "graded_initial_state_digest": initial_digest,
         "graded_state_digest": baked["state_digest"],
         "graded_source_payload_digests": [frame["payload_digest"] for frame in frames],
@@ -75,7 +92,19 @@ def graded_effects_case(executable, fixture, root):
 
 
 def main():
-    fluidity, legacy, fixture = (Path(argument).resolve() for argument in sys.argv[1:])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("fluidity", type=Path)
+    parser.add_argument("legacy", type=Path)
+    parser.add_argument("fixture", type=Path)
+    parser.add_argument("--graded-cuda", action="store_true")
+    args = parser.parse_args()
+    fluidity, legacy, fixture = (path.resolve() for path in (args.fluidity, args.legacy, args.fixture))
+    if args.graded_cuda:
+        with TemporaryDirectory() as directory:
+            graded_effects_case(fluidity, fixture, Path(directory), "cuda")
+        print("PASS public_graded_cuda")
+        return 0
+
     help_result = run(fluidity, "--help")
     assert help_result.returncode == 0, help_result
     assert all(
@@ -142,7 +171,7 @@ def main():
         replay = execute(fluidity, "replay", cache, "--frame", 1, "--substep", 0)[-1]
         assert replay["state_digest"] == baked["state_digest"]
         assert snapshot(cache) == before
-        graded_effects_case(fluidity, fixture, root)
+        graded_effects_case(fluidity, fixture, root, "cpu")
 
     print("PASS public_interface")
     return 0

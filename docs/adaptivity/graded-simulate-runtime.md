@@ -45,8 +45,15 @@ The Windows Debug CPU receipt contains five leaves, 25 subfaces and five particl
 Run from the repository root with a configured CPU build and the locked native tools on PATH.
 
 ```powershell
-uv run --offline --project reference --locked --group native cmake --build out/build/graded-cli-cpu --target fluidity_simulate fluidity_simulate_fixture --parallel 2
-uv run --offline --project reference --locked --group native ctest --test-dir out/build/graded-cli-cpu -V -R '^SimulateCli\.(public_interface|cpu_replay|cpu_effects)$'
+uv run --offline --project reference --locked --group native cmake --build out/build/graded-cli-cpu-m4 --target fluidity_simulate fluidity_simulate_fixture --parallel 2
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/graded-cli-cpu-m4 -V -R '^SimulateCli\.(public_interface|cpu_replay|cpu_effects)$'
+```
+
+The CUDA build registers the same public regression as `SimulateCli.public_graded_cuda`. It explicitly selects device zero with `--backend cuda --device 0`, checks the SM120 device and device snapshot timing, and reconstructs completed and intermediate states in fresh CLI processes. The fixture uses the implicit incompressible tank capture path. On the RTX 5060 Ti, the frame-zero input, frame-two state, and all three source payload digests matched the CPU receipt.
+
+```powershell
+uv run --offline --project reference --locked --group native cmake --build out/build/graded-cli-cuda --target fluidity_simulate fluidity_simulate_fixture --parallel 2
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/graded-cli-cuda -V -R '^SimulateCli\.(public_graded_cuda|cuda_replay|cuda_effects)$'
 ```
 
 ## Independent controls
