@@ -13,6 +13,12 @@ rebuilt and passed native and CUDA tests after integrating main. The
 refreshed milestone branch passed all nine M5 CTest targets after a
 clean Windows Release CUDA rebuild.
 
+The bounded planar solver landed in PR 86 and the shared FLSI
+codec landed in PR 84 after M6's guided-piston and Cutter merges.
+The codec's final five-file diff passed 11 focused native tests
+on the merged M6 runtime. The milestone draft now carries the
+planar restart fixture against that owning codec on main 985a492.
+
 | Gate | Status | Evidence |
 |---|---|---|
 | Granular constitutive invariants | Pass | Elastic compression, translated tensile apex, compressed shear return to the cone at fixed trace, plastic volume transfer, and invalid-state output preservation. |
@@ -913,7 +919,7 @@ The focused native piston, legacy checkpoint, and M5 dry-scene checks
 all passed. The fixture stages a separate dry update and liquid pressure
 step. It exercises common checkpoint replay before reciprocal coupling.
 
-Draft PR 84 carries the owning codec integration on the published M6
+The initial PR 84 trial carried the owning codec integration on the published M6
 native-solids base with main 160e2fa. The five-file change is 354b0fd.
 It supports a plastic payload in both solid-only and coupled FLSI
 envelopes and shares the existing liquid field with M6. All seven
@@ -1120,7 +1126,7 @@ without sources or cavities. It does not yet serve as a resolved
 Blender scene runtime or write the accepted joint checkpoint.
 
 The combined branch codex/m5-planar-restart at 18cffb5 adds the
-owning FLSI codec from draft PR 84 to the coupled planar driver. It
+owning FLSI codec from PR 84 to the coupled planar driver. It
 writes the completed 0.125 s frame with liquid state and nonzero snow
 compaction history. A resumed attempt with an exhausted motion limit
 leaves the saved bytes intact. With the original limit, both the
