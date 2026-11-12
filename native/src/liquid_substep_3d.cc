@@ -25,6 +25,146 @@ namespace {
 absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+auto CellKey(CellIndex3D index) {
+  return std::tuple(index.z, index.y, index.x);
+}
+
+struct RoutedPressureImpulse3D {
+  Vec3 angular_impulse_change{};
+  std::size_t face_count = 0;
+};
+
+// Multi-source breadth-first search over the open pressure graph. Each
+// component and axis can only receive impulses on its own supported faces.
+absl::StatusOr<RoutedPressureImpulse3D> RouteUnsupportedPressureImpulse(
+    SparseMacGridView3D grid,
+    const LiquidPressureProblemView3D& problem,
+    std::span<const FrozenLiquidFace3D> frozen_faces,
+    std::span<const double> face_masses,
+    std::span<double> impulses
+) {
+  constexpr std::size_t kCellCapacity = 4096;
+  constexpr std::int32_t kMissing = -1;
+  if (problem.cells.size() > kCellCapacity || problem.faces.size() != frozen_faces.size()) {
+    return Error(absl::StatusCode::kInternal);
+  }
+  constexpr std::array kCoordinates{&CellIndex3D::x, &CellIndex3D::y, &CellIndex3D::z};
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto find_cell = [&](CellIndex3D index) -> std::int32_t {
+    const auto key = CellKey(index);
+    const auto found = std::ranges::lower_bound(problem.cells, key, {}, [](const auto& cell) {
+      return CellKey(cell.cell_index);
+    });
+    return found == problem.cells.end() || CellKey(found->cell_index) != key
+        ? kMissing
+        : static_cast<std::int32_t>(found - problem.cells.begin());
+  };
+  const auto incident_cells = [&](FaceIndex3D face) {
+    const auto index = face.lattice_index;
+    const CellIndex3D head{index.x, index.y, index.z};
+    auto tail = head;
+    auto& coordinate = tail.*kCoordinates[static_cast<std::size_t>(face.axis)];
+    if (coordinate == std::numeric_limits<std::int32_t>::min()) {
+      return std::array{kMissing, find_cell(head)};
+    }
+    --coordinate;
+    return std::array{find_cell(tail), find_cell(head)};
+  };
+
+  std::array<std::array<std::int32_t, 6>, kCellCapacity> neighbors;
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    neighbors[cell].fill(kMissing);
+  }
+  for (const auto& face : problem.faces) {
+    if (face.open_area == 0.0 || !std::holds_alternative<InternalMacPressureLink3D>(face.pressure_link)) {
+      continue;
+    }
+    const auto [tail, head] = incident_cells(face.face_index);
+    if (tail == kMissing || head == kMissing) {
+      return Error(absl::StatusCode::kInternal);
+    }
+    const auto axis = static_cast<std::size_t>(face.face_index.axis);
+    neighbors[tail][2 * axis + 1] = head;
+    neighbors[head][2 * axis] = tail;
+  }
+
+  struct Route {
+    std::size_t face_ordinal;
+    std::size_t distance;
+  };
+  constexpr auto kNoFace = std::numeric_limits<std::size_t>::max();
+  std::array<Route, kCellCapacity> routes;
+  std::array<std::int32_t, kCellCapacity> queue;
+  RoutedPressureImpulse3D routed;
+  for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+    std::ranges::fill(std::span(routes).first(problem.cells.size()), Route{kNoFace, kNoFace});
+    std::size_t queue_end = 0;
+    // Pressure faces are in owned-slot order. Together with the ordered
+    // neighbor walk this fixes equal-distance donor selection.
+    for (std::size_t ordinal = 0; ordinal < problem.faces.size(); ++ordinal) {
+      const auto& face = problem.faces[ordinal];
+      if (static_cast<std::size_t>(face.face_index.axis) != axis || face.open_area == 0.0
+          || face_masses[frozen_faces[ordinal].face_slot] == 0.0) {
+        continue;
+      }
+      for (const auto cell : incident_cells(face.face_index)) {
+        if (cell != kMissing && routes[cell].face_ordinal == kNoFace) {
+          routes[cell] = {ordinal, 0};
+          queue[queue_end++] = cell;
+        }
+      }
+    }
+    for (std::size_t cursor = 0; cursor < queue_end; ++cursor) {
+      const auto cell = queue[cursor];
+      for (const auto neighbor : neighbors[cell]) {
+        if (neighbor != kMissing && routes[neighbor].face_ordinal == kNoFace) {
+          routes[neighbor] = {routes[cell].face_ordinal, routes[cell].distance + 1};
+          queue[queue_end++] = neighbor;
+        }
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < problem.faces.size(); ++ordinal) {
+      const auto& face = problem.faces[ordinal];
+      const auto slot = frozen_faces[ordinal].face_slot;
+      if (static_cast<std::size_t>(face.face_index.axis) != axis || face_masses[slot] != 0.0 || impulses[slot] == 0.0) {
+        continue;
+      }
+      Route target{kNoFace, kNoFace};
+      for (const auto cell : incident_cells(face.face_index)) {
+        if (cell != kMissing
+            && std::tie(routes[cell].distance, routes[cell].face_ordinal)
+                < std::tie(target.distance, target.face_ordinal)) {
+          target = routes[cell];
+        }
+      }
+      if (target.face_ordinal == kNoFace) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      const auto target_slot = frozen_faces[target.face_ordinal].face_slot;
+      const auto source = face.face_index.lattice_index;
+      const auto target_index = problem.faces[target.face_ordinal].face_index.lattice_index;
+      const double width = grid.geometry().cell_width;
+      const Vec3 offset{
+          width * (static_cast<double>(target_index.x) - source.x),
+          width * (static_cast<double>(target_index.y) - source.y),
+          width * (static_cast<double>(target_index.z) - source.z),
+      };
+      Vec3 impulse{};
+      impulse.*kComponents[axis] = impulses[slot];
+      routed.angular_impulse_change.x += offset.y * impulse.z - offset.z * impulse.y;
+      routed.angular_impulse_change.y += offset.z * impulse.x - offset.x * impulse.z;
+      routed.angular_impulse_change.z += offset.x * impulse.y - offset.y * impulse.x;
+      impulses[target_slot] += impulses[slot];
+      impulses[slot] = 0.0;
+      ++routed.face_count;
+      if (!std::isfinite(impulses[target_slot]) || !liquid_step_internal::Finite(routed.angular_impulse_change)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+    }
+  }
+  return routed;
+}
+
 // Mask anchors inside the box and use the nearest box face to complete those
 // velocity samples. Open anchors continue to use the tank history.
 absl::Status ApplyBoxFaceSamples(
@@ -228,9 +368,6 @@ bool Complete(const LiquidSubstepBackend3D& backend) {
       && backend.discard_growth && backend.topology && backend.deposit && backend.normalize
       && backend.predict_missing_face && backend.forces && backend.freeze && backend.links && backend.project
       && backend.gather && backend.update_particles;
-}
-auto CellKey(CellIndex3D index) {
-  return std::tuple(index.z, index.y, index.x);
 }
 
 // Select the projected new history only for particles in a frozen pressure cell.
@@ -1909,14 +2046,34 @@ struct LiquidSubstepScheduler3D::Impl {
         if (!trial.particles.values().empty()) {
           STEP_TRY(staging.pressure_transfer_mass_scratch.Resize(grid.face_count()));
           STEP_TRY(staging.pressure_particle_impulses.Resize(trial.particles.size()));
-          const auto distribution = DistributeCompatiblePressureImpulse3D(
-              grid,
-              staging.particles.values(),
-              deposits->compatible_stencils,
-              staging.face_pressure_impulses.values(),
-              staging.pressure_transfer_mass_scratch.values(),
-              staging.pressure_particle_impulses.values()
-          );
+          const auto distribute = [&]() {
+            return DistributeCompatiblePressureImpulse3D(
+                grid,
+                staging.particles.values(),
+                deposits->compatible_stencils,
+                staging.face_pressure_impulses.values(),
+                staging.pressure_transfer_mass_scratch.values(),
+                staging.pressure_particle_impulses.values()
+            );
+          };
+          auto distribution = distribute();
+          if (distribution.code() == absl::StatusCode::kFailedPrecondition) {
+            const auto routed = RouteUnsupportedPressureImpulse(
+                grid,
+                pressure_problem,
+                frozen->faces,
+                staging.pressure_transfer_mass_scratch.values(),
+                staging.face_pressure_impulses.values()
+            );
+            if (!routed.ok()) {
+              return routed.status();
+            }
+            distribution = distribute();
+            if (distribution.ok()) {
+              floating_box->oriented_loads->routed_pressure_faces = routed->face_count;
+              floating_box->oriented_loads->routed_pressure_angular_impulse_change = routed->angular_impulse_change;
+            }
+          }
           if (distribution.ok()) {
             use_compatible_pressure_transfer = true;
             STEP_TRY(staging.prepressure_velocities.Resize(grid.face_count()));
@@ -1935,9 +2092,7 @@ struct LiquidSubstepScheduler3D::Impl {
               distributed_impulse = liquid_step_internal::Add(distributed_impulse, impulse);
             }
             floating_box->oriented_loads->particle_pressure_impulse = distributed_impulse;
-            // A sparse face without compatible particles uses the existing
-            // complete gather. The absent receipt identifies that path.
-          } else if (distribution.code() != absl::StatusCode::kFailedPrecondition) {
+          } else {
             return distribution;
           }
         }

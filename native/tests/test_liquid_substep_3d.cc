@@ -2181,7 +2181,7 @@ TEST(LiquidSubstep3D, OrientedFloatingBoxMeasuresCoupledTranslationAndRotationAd
   std::cout << "oriented_box_added_mass_kg=" << vertical_added_mass << " ordinary_mode_gain=" << ordinary_gain
             << " light_mode_gain=" << light_gain << '\n';
 }
-TEST(LiquidSubstep3D, SparseOrientedFloatingBoxReportsMissingPressureTransferSupport) {
+TEST(LiquidSubstep3D, SparseOrientedFloatingBoxRoutesUnsupportedPressureImpulse) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 2.875, 0.125, 0.125, 2.875, 0.0};
   auto initial = Initial();
@@ -2196,14 +2196,79 @@ TEST(LiquidSubstep3D, SparseOrientedFloatingBoxReportsMissingPressureTransferSup
       .center = {0.5, 0.6875, 0.5},
       .linear_velocity = {0.0, 0.125, 0.0},
   };
+  constexpr Vec3 kHalfExtent{0.125, 0.125, 0.125};
+  const auto encode = [&](const LiquidState3D& liquid, const RigidBody3D& box) {
+    return EncodeCoupledInteractionCheckpoint3D(
+        liquid,
+        {
+            .accepted_step = liquid.clock.accepted_step_ordinal,
+            .bodies = {{box, {body.center, body.orientation}}},
+        }
+    );
+  };
+  const auto seed = encode(scheduler->committed(), body);
+  ASSERT_TRUE(seed.ok()) << seed.status();
   ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
-  const auto attempt = scheduler->AttemptWithOrientedFloatingBox(kDuration, body, {0.125, 0.125, 0.125});
+  scheduler->SetStageFaultHookForTesting({nullptr, [](void*, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("")
+                                                                                           : absl::OkStatus();
+                                          }});
+  const auto rejected = scheduler->AttemptWithOrientedFloatingBox(kDuration, body, kHalfExtent);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_TRUE(rejected->outcome.retry_duration.has_value());
+  const double retry_duration = *rejected->outcome.retry_duration;
+  EXPECT_FALSE(rejected->body.has_value());
+  EXPECT_FALSE(rejected->oriented_loads.has_value());
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  const auto after_rejection = encode(scheduler->committed(), body);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *seed);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto attempt = scheduler->AttemptWithOrientedFloatingBox(retry_duration, body, kHalfExtent);
   ASSERT_TRUE(attempt.ok()) << attempt.status();
   ASSERT_TRUE(attempt->body.has_value()) << scheduler->diagnostics().failure_code;
   ASSERT_TRUE(attempt->oriented_loads.has_value());
   EXPECT_GT(std::abs(attempt->oriented_loads->pressure_grid_impulse.y), 1e-8);
-  EXPECT_FALSE(attempt->oriented_loads->particle_pressure_impulse.has_value());
+  const auto& loads = *attempt->oriented_loads;
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
+  EXPECT_GT(loads.routed_pressure_faces, 0u);
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, loads.pressure_grid_impulse.*component, 1e-12);
+  }
+  EXPECT_GT(
+      std::hypot(
+          loads.routed_pressure_angular_impulse_change.x,
+          loads.routed_pressure_angular_impulse_change.y,
+          loads.routed_pressure_angular_impulse_change.z
+      ),
+      1e-8
+  );
   EXPECT_EQ(scheduler->committed().clock.accepted_step_ordinal, 1u);
+  ExpectStoredLiquidMomentumBudget(
+      StoredLiquidMomentum(initial.particles.values()),
+      scheduler->committed().particles.values(),
+      loads
+  );
+  const auto accepted = encode(scheduler->committed(), *attempt->body);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*seed);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(replay->BeginFrame(kDuration).ok());
+  const auto repeated =
+      replay->AttemptWithOrientedFloatingBox(retry_duration, restored->solid.bodies.front().body, kHalfExtent);
+  ASSERT_TRUE(repeated.ok() && repeated->body && repeated->oriented_loads);
+  EXPECT_EQ(repeated->oriented_loads->routed_pressure_faces, loads.routed_pressure_faces);
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_DOUBLE_EQ(
+        repeated->oriented_loads->routed_pressure_angular_impulse_change.*component,
+        loads.routed_pressure_angular_impulse_change.*component
+    );
+  }
+  const auto repeated_bytes = encode(replay->committed(), *repeated->body);
+  ASSERT_TRUE(repeated_bytes.ok()) << repeated_bytes.status();
+  EXPECT_EQ(*repeated_bytes, *accepted);
 }
 
 TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsAngularPressureAndReplays) {

@@ -741,9 +741,6 @@ absl::Status DistributeCompatiblePressureImpulse3D(
         if (!face.ok() || face->axis != kAxes[axis]) {
           return invalid;
         }
-        if (normal_face_impulses[sample.face_slot] == 0.0) {
-          continue;
-        }
         const double weighted_mass = particle_mass * weight;
         auto& face_mass = face_mass_scratch[sample.face_slot];
         face_mass += weighted_mass;
