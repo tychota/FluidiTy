@@ -230,9 +230,10 @@ class LiquidFrameTransaction3D {
   // Validates and copies initial_state into independent reserved versions. Invalid
   // state propagates validation status; inadequate/overflowing capacities return
   // ResourceExhausted, including allocation failure. Does not retain input aliases
-  // or modify input on failure.
+  // or modify input on failure. Enabling cavity state for a fresh input starts
+  // with an empty snapshot and next cavity ID one.
   static absl::StatusOr<LiquidFrameTransaction3D>
-  Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities);
+  Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities, bool enable_cavity = false);
   // Const borrowed versions. References to these state objects survive transitions;
   // record spans/pointers must be reacquired after any modifying operation. Neither
   // borrow may outlive this owner. frame_start contents are immutable during a frame.

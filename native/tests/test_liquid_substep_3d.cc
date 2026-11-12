@@ -2099,6 +2099,24 @@ TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
   ASSERT_TRUE(loaded_measurement && loaded_measurement->cavity);
   EXPECT_EQ(loaded_measurement->cavity->boundaries.active_cavity_count, 1);
   EXPECT_GT(loaded_measurement->pressure_rhs_l2_m3_per_s, 0.0);
+
+  ASSERT_EQ(loaded->committed().next_cavity_id, 2);
+  ASSERT_GT(loaded->committed().cavity_gas.size(), 0);
+  LiquidResumeMetadata3D resume;
+  resume.resolved_fingerprint = *ResolvedSceneFingerprint(decoded->View());
+  resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
+  resume.capacities = options.capacities;
+  resume.capacity_replay_reservations = options.capacity_replay_reservations;
+  const auto checkpoint = EncodeLiquidCheckpoint3D(loaded->committed(), resume);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto restored = DecodeLiquidCheckpoint3D(checkpoint->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto restarted = LiquidSubstepScheduler3D::Create(restored->state, decoded->scene, options);
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  ASSERT_TRUE(loaded->AdvanceFrame(0.002).ok());
+  ASSERT_TRUE(restarted->AdvanceFrame(0.002).ok());
+  EXPECT_EQ(restarted->committed().next_cavity_id, 2);
+  ExpectIdenticalSerializedState(loaded->committed(), restarted->committed());
 }
 
 TEST(LiquidSubstep3D, PreparedCavityPressuresApplyOnlyAfterRadialRetry) {

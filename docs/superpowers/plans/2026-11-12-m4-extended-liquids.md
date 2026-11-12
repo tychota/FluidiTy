@@ -383,3 +383,11 @@ Liquid state and its optional FlatBuffers extension now carry canonical gas cell
 The checkpoint fixture round-tripped a tracked and an untracked component, cloned the decoded state at resume capacity and rejected duplicate cavity IDs. Fifty CPU tests passed with ctest --preset windows-debug-cpu -R 'LiquidCache3D|LiquidState3D|Cavity'. Twenty-one real-device regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Both presets were rebuilt cleanly for the state layout change. The CUDA build also produced fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-cavity-checkpoint.
 
 The codec fixture supplies the cavity state directly. The scheduler's live owner still needs to read and publish the snapshot through LiquidState3D for process-resume continuity.
+
+## Scheduler cavity checkpoint continuity receipt
+
+The liquid transaction now owns the accepted cavity snapshot. The scheduler uses bounded working arrays to prepare the next snapshot and writes the candidate into the same trial state as particles, cells and clocks. Capacity replay and failed attempts use the transaction's existing rollback. Cavity-enabled resume requires a saved snapshot after any accepted step.
+
+The decoded particle-shell scene ran to a frame boundary with nonzero cavity pressure, encoded and decoded a checkpoint, and continued to byte-identical state compared with uninterrupted execution. The cavity ID stayed unchanged. Fifty CPU state, codec and cavity checks passed with ctest --preset windows-debug-cpu -R 'LiquidCache3D|LiquidState3D|Cavity|CapacityReplay'. The full LiquidSubstep3D CPU suite passed all 85 checks. Twenty-one real-device regressions passed after a clean windows-release-cuda build with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The clean build also produced fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-cavity-resume.
+
+The checkpoint equality fixture ran on CPU. The CUDA suite exercised the shared scheduler and the prepared-pressure route. Full Q-CAVITY qualification remains open.

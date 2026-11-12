@@ -319,11 +319,13 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
   return absl::OkStatus();
 }
 
-absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, LiquidStateCapacities3D capacities) {
+static absl::StatusOr<LiquidState3D>
+CloneState(const LiquidState3D& source, LiquidStateCapacities3D capacities, bool enable_cavity) {
+  const bool cavity_enabled = enable_cavity || source.next_cavity_id != 0;
   if (auto status = ValidateLiquidState3D(source); !status.ok()) {
     return status;
   }
-  if (auto status = CheckCapacities(capacities, source.next_cavity_id != 0); !status.ok()) {
+  if (auto status = CheckCapacities(capacities, cavity_enabled); !status.ok()) {
     return status;
   }
   if (!ActiveRecordsFit(source, capacities)) {
@@ -345,7 +347,7 @@ absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, Li
   if (auto status = AllocateRecords(result.sources, capacities.sources); !status.ok()) {
     return status;
   }
-  if (source.next_cavity_id != 0) {
+  if (cavity_enabled) {
     if (auto status = AllocateRecords(result.cavity_gas, capacities.cells); !status.ok()) {
       return status;
     }
@@ -354,20 +356,30 @@ absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, Li
     }
   }
   CopyState(source, result);
+  if (cavity_enabled && result.next_cavity_id == 0) {
+    result.next_cavity_id = 1;
+  }
   return result;
 }
 
-absl::StatusOr<LiquidFrameTransaction3D>
-LiquidFrameTransaction3D::Create(const LiquidState3D& initial_state, LiquidStateCapacities3D capacities) {
-  auto committed = CloneLiquidState3D(initial_state, capacities);
+absl::StatusOr<LiquidState3D> CloneLiquidState3D(const LiquidState3D& source, LiquidStateCapacities3D capacities) {
+  return CloneState(source, capacities, false);
+}
+
+absl::StatusOr<LiquidFrameTransaction3D> LiquidFrameTransaction3D::Create(
+    const LiquidState3D& initial_state,
+    LiquidStateCapacities3D capacities,
+    bool enable_cavity
+) {
+  auto committed = CloneState(initial_state, capacities, enable_cavity);
   if (!committed.ok()) {
     return committed.status();
   }
-  auto trial = CloneLiquidState3D(initial_state, capacities);
+  auto trial = CloneState(initial_state, capacities, enable_cavity);
   if (!trial.ok()) {
     return trial.status();
   }
-  auto frame_start = CloneLiquidState3D(initial_state, capacities);
+  auto frame_start = CloneState(initial_state, capacities, enable_cavity);
   if (!frame_start.ok()) {
     return frame_start.status();
   }
