@@ -312,6 +312,13 @@ if(BUILD_TESTING)
     gtest_discover_tests(${target} PROPERTIES LABELS cpu)
   endforeach()
 
+  add_executable(fluidity_m3_matched_pressure native/tests/matched_error_pressure_3d.cc)
+  target_include_directories(fluidity_m3_matched_pressure PRIVATE "${PROJECT_SOURCE_DIR}/native/src")
+  target_link_libraries(fluidity_m3_matched_pressure PRIVATE fluidity_native)
+  target_compile_options(fluidity_m3_matched_pressure PRIVATE "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/EHsc>")
+  add_test(NAME M3MatchedPressure.manufactured_sealed_cube COMMAND fluidity_m3_matched_pressure)
+  set_tests_properties(M3MatchedPressure.manufactured_sealed_cube PROPERTIES LABELS pressure-benchmark)
+
   # Historical-cache research needs an external authenticated archive. Keep it
   # outside the mandatory CPU inventory, which never permits skipped tests.
   add_executable(fluidity_surface_fixed_cache_tests native/tests/test_surface_fixed_cache_3d.cc)
