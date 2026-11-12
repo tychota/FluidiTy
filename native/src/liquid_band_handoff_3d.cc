@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 #include "absl/status/status.h"
+#include "fluidity/host/graded_mac_transfer_3d.h"
 #include "liquid_remap_3d_internal.h"
 
 namespace fluidity {
@@ -398,6 +400,214 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
     }
   }
   return result;
+}
+
+namespace {
+
+absl::StatusOr<LiquidState3D> PrepareAdaptiveBandHandoff(
+    const LiquidState3D& committed,
+    LiquidStateCapacities3D capacities,
+    AdaptiveMacCellKey3D leaf_key,
+    LiquidHandoffOccupancy3D authoritative_occupancy,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier,
+    std::optional<std::size_t> reseed_particle_count
+) {
+  const auto input_status = ValidateLiquidState3D(committed);
+  if (!input_status.ok()) {
+    return input_status;
+  }
+  if (authoritative_occupancy != LiquidHandoffOccupancy3D::kFullLiquid || !destination_carrier) {
+    return absl::FailedPreconditionError("Adaptive handoff requires certified full occupancy and a carrier");
+  }
+  const auto active_cells = committed.adaptive_cells.values();
+  const auto target = std::ranges::find_if(active_cells, [&](const auto& cell) {
+    const auto lower = cell.key.lower_corner;
+    return cell.key.width_exponent == leaf_key.width_exponent && lower.x == leaf_key.lower_corner.x
+        && lower.y == leaf_key.lower_corner.y && lower.z == leaf_key.lower_corner.z;
+  });
+  if (target == active_cells.end()) {
+    return absl::FailedPreconditionError("Adaptive handoff leaf is missing");
+  }
+  const auto source_owner =
+      reseed_particle_count ? AdaptiveLiquidMaterialOwner3D::kEulerian : AdaptiveLiquidMaterialOwner3D::kParticles;
+  if (target->occupancy != LiquidCellOccupancy3D::kLiquid || target->material_owner != source_owner) {
+    return absl::FailedPreconditionError("Adaptive handoff leaf has incompatible occupancy or material ownership");
+  }
+  if (capacities.particles < committed.particles.size()) {
+    return absl::ResourceExhaustedError("Adaptive handoff particle capacity cannot hold the committed state");
+  }
+
+  std::vector<AdaptiveMacCellKey3D> keys;
+  keys.reserve(active_cells.size());
+  for (const auto& cell : active_cells) {
+    keys.push_back(cell.key);
+  }
+  const double finest_width = committed.geometry.cell_width;
+  const auto topology = AdaptiveMacTopology3D::Create(keys, finest_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto target_ordinal = static_cast<std::size_t>(target - active_cells.begin());
+  const auto& leaf = topology->cells()[target_ordinal];
+  if (target->inventory.current_volume_m3 != leaf.cell_volume) {
+    return absl::FailedPreconditionError("Adaptive handoff inventory does not fill its leaf");
+  }
+
+  const auto world_origin = committed.geometry.world_origin;
+  const auto transfer = GradedMacTransfer3D::Create(*topology, world_origin);
+  if (!transfer.ok()) {
+    return transfer.status();
+  }
+
+  // The handoff primitive uses lower + width for its half-open box. Require
+  // it to describe the same footprint as the fused graded lattice bounds.
+  const auto lower = leaf_key.lower_corner;
+  const Cartesian lattice_lower{double(lower.x), double(lower.y), double(lower.z)};
+  const auto origin = Components(world_origin);
+  const double lattice_width = std::ldexp(1.0, leaf_key.width_exponent);
+  Cartesian world_lower{};
+  for (std::size_t axis = 0; axis < origin.size(); ++axis) {
+    world_lower[axis] = std::fma(lattice_lower[axis], finest_width, origin[axis]);
+    const double world_upper = std::fma(lattice_lower[axis] + lattice_width, finest_width, origin[axis]);
+    if (world_lower[axis] + leaf.cell_width != world_upper) {
+      return absl::OutOfRangeError("Adaptive handoff cannot represent the graded leaf bounds");
+    }
+  }
+  const LiquidHandoffCell3D handoff_cell{
+      .world_lower_corner = AsVec3(world_lower),
+      .cell_width = leaf.cell_width,
+      .occupancy = authoritative_occupancy,
+  };
+
+  std::vector<LiquidParticleState3D> retiring_particles;
+  for (const auto& particle : committed.particles.values()) {
+    const auto particle_leaf = transfer->ParticleLeafOrdinal(particle.world_position);
+    if (!particle_leaf.ok()) {
+      return particle_leaf.status();
+    }
+    if (active_cells[*particle_leaf].material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian) {
+      return absl::FailedPreconditionError("Eulerian adaptive leaf still contains a particle");
+    }
+    if (*particle_leaf == target_ordinal) {
+      retiring_particles.push_back(particle);
+    }
+  }
+
+  auto candidate = CloneLiquidState3D(committed, capacities);
+  if (!candidate.ok()) {
+    return candidate.status();
+  }
+  if (reseed_particle_count) {
+    const auto seeds = ReseedLiquidCoreCell3D(
+        handoff_cell,
+        target->inventory,
+        destination_carrier,
+        *reseed_particle_count,
+        capacities.particles - committed.particles.size(),
+        committed.next_particle_id
+    );
+    if (!seeds.ok()) {
+      return seeds.status();
+    }
+    for (const auto& seed : seeds->particles()) {
+      const auto seed_leaf = transfer->ParticleLeafOrdinal(seed.world_position);
+      if (!seed_leaf.ok() || *seed_leaf != target_ordinal) {
+        return absl::OutOfRangeError("Adaptive handoff seed is outside its destination leaf");
+      }
+    }
+    const auto represented =
+        RetireLiquidBandCell3D(handoff_cell, seeds->particles(), seeds->enthalpy_j(), destination_carrier);
+    if (!represented.ok()) {
+      return represented.status();
+    }
+    auto particle_owned = *target;
+    particle_owned.inventory = *represented;
+    if (particle_owned != *target) {
+      return absl::OutOfRangeError("Adaptive reseed cannot represent the exact owned inventory");
+    }
+
+    const auto existing_particle_count = candidate->particles.size();
+    const auto resized = candidate->particles.Resize(existing_particle_count + seeds->particles().size());
+    if (!resized.ok()) {
+      return resized;
+    }
+    std::ranges::copy(seeds->particles(), candidate->particles.values().subspan(existing_particle_count).begin());
+    candidate->next_particle_id = seeds->next_particle_id();
+    candidate->adaptive_cells[target_ordinal].material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
+  } else {
+    if (retiring_particles.empty()) {
+      return absl::FailedPreconditionError("Particle-owned adaptive leaf has no resident particles");
+    }
+    const auto represented =
+        RetireLiquidBandCell3D(handoff_cell, retiring_particles, target->inventory.enthalpy_j, destination_carrier);
+    if (!represented.ok()) {
+      return represented.status();
+    }
+    auto particle_owned = *target;
+    particle_owned.inventory = *represented;
+    if (particle_owned != *target) {
+      return absl::FailedPreconditionError("Adaptive band particles disagree with their owned inventory");
+    }
+
+    // The selected IDs are unique and were collected in physical record order.
+    std::size_t retired = 0;
+    std::size_t retained = 0;
+    for (const auto& particle : committed.particles.values()) {
+      if (retired < retiring_particles.size() && particle.id == retiring_particles[retired].id) {
+        ++retired;
+        continue;
+      }
+      candidate->particles[retained] = particle;
+      ++retained;
+    }
+    const auto resized = candidate->particles.Resize(retained);
+    if (!resized.ok()) {
+      return resized;
+    }
+    candidate->adaptive_cells[target_ordinal].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  }
+  const auto output_status = ValidateLiquidState3D(*candidate);
+  if (!output_status.ok()) {
+    return output_status;
+  }
+  return candidate;
+}
+
+}  // namespace
+
+absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidBandRetirement3D(
+    const LiquidState3D& committed,
+    LiquidStateCapacities3D capacities,
+    AdaptiveMacCellKey3D leaf_key,
+    LiquidHandoffOccupancy3D authoritative_occupancy,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier
+) {
+  return PrepareAdaptiveBandHandoff(
+      committed,
+      capacities,
+      leaf_key,
+      authoritative_occupancy,
+      destination_carrier,
+      std::nullopt
+  );
+}
+
+absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidCoreReseed3D(
+    const LiquidState3D& committed,
+    LiquidStateCapacities3D capacities,
+    AdaptiveMacCellKey3D leaf_key,
+    LiquidHandoffOccupancy3D authoritative_occupancy,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier,
+    std::size_t particle_count
+) {
+  return PrepareAdaptiveBandHandoff(
+      committed,
+      capacities,
+      leaf_key,
+      authoritative_occupancy,
+      destination_carrier,
+      particle_count
+  );
 }
 
 }  // namespace fluidity
