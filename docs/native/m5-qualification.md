@@ -2830,3 +2830,39 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
 }
 & "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
 ```
+
+### Horizontal momentum and the frozen-gradient volume control
+
+The original fixed-step reconstruction matrix closes the horizontal
+impulse balance against grid traction and swept wall impulse. The
+largest native per-step residual is 1.56e-10 N·s, and the largest
+sum of residual norms over any run is 1.53e-7 N·s. This does not
+explain the spreading through a net unaccounted horizontal impulse.
+
+Local control `5e4e59e` multiplies the compatible-floor trial
+deformation by a scalar so its incremental determinant equals
+`exp(dt * trace(L))` for a frozen gradient. This diagnostic changes
+the explicit Euler update in design §2.3. The unchanged Euler
+matrix remains the qualification reference. The one-particle
+compression oracle now checks `exp(-0.01)`, and both native and
+SM120 dry-scene targets passed the experimental oracle.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 36.352235° | 0.175461 m |
+| Coarse half-step | 41.132684° | 0.153541 m |
+| Fine | 31.353594° | 0.186970 m |
+| Fine half-step | 34.340220° | 0.179144 m |
+
+The fine nominal run improves both geometric measurements and still
+misses the radius limit. The fine half-step result changes little.
+All cases retain cut stress work mismatch below 5.2e-16 J and
+vertical momentum residual below 2.4e-8 N·s. Q-SAND stays open.
+
+```powershell
+foreach ($bin in 'sand-tangent-momentum-bin', 'sand-volume-increment-bin') {
+  foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
