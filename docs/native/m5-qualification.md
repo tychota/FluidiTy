@@ -661,6 +661,33 @@ repose gate open.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-column-long-settle
 ```
 
+### Dense sand at three seconds
+
+Continue the centered 504-particle column drop to 3.0 s at nominal step
+h/80. Keep the original 0.70 s and 0.75 s sample boundaries. The extended
+run takes its final drift sample at 2.95 s and does not add a substep
+boundary at the separate 1.45 s or 1.50 s endpoints. Apply the same
+acceptance checks and measure yield activity over the final 0.05 s.
+
+| h (m) | Nominal dt (s) | Envelope | Final drift | Kinetic energy (J) | Projected fraction | Plastic volume change fraction |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.075 | 0.0009375 | 21.853351° | 0.054106° | 0.000019 | 0.370040 | 0.370040 |
+| 0.0625 | 0.00078125 | 20.623778° | 0.036452° | 0.000031 | 0.333333 | 0.325397 |
+
+Native and CUDA match at the displayed precision. The fractions are
+time-weighted particle counts over the window, using the solver's
+existing 1e-12 scaled change threshold. They measure how frequently
+the return modifies the state, while the magnitude of each change
+remains unmeasured. The final quadrant fits were 14.44° and 18.08°.
+Both runs met the momentum bound on both backends. The low kinetic
+energy and small final envelope drift coexist with continuing plastic
+updates and a surface shallower than the Q-SAND window.
+
+~~~powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-dense-three-second
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-dense-three-second
+~~~
+
 ### Vertical grid alignment at the sand floor
 
 Repeat the 504-particle column drop to 1.5 s with nominal step h/80.

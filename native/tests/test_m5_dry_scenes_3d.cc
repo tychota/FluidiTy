@@ -160,6 +160,9 @@ bool TestScene(
   double late_projection_particle_seconds = 0;
   double late_plastic_volume_particle_seconds = 0;
   double late_particle_seconds = 0;
+  double final_projection_particle_seconds = 0;
+  double final_plastic_volume_particle_seconds = 0;
+  double final_particle_seconds = 0;
   double reset_impulse_y = 0;
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
@@ -277,6 +280,11 @@ bool TestScene(
       late_projection_particle_seconds += step_duration * budget.granular_projected_particles;
       late_plastic_volume_particle_seconds += step_duration * budget.granular_plastic_volume_changes;
       late_particle_seconds += step_duration * particles.size();
+      if (t >= settling_sample_time) {
+        final_projection_particle_seconds += step_duration * budget.granular_projected_particles;
+        final_plastic_volume_particle_seconds += step_duration * budget.granular_plastic_volume_changes;
+        final_particle_seconds += step_duration * particles.size();
+      }
     }
     total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
     total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
@@ -343,6 +351,13 @@ bool TestScene(
         "sand late projected fraction=%.9f plastic volume change fraction=%.9f\n",
         late_projection_particle_seconds / late_particle_seconds,
         late_plastic_volume_particle_seconds / late_particle_seconds
+    );
+  }
+  if (final_particle_seconds > 0) {
+    std::printf(
+        "sand final 0.05 s projected fraction=%.9f plastic volume change fraction=%.9f\n",
+        final_projection_particle_seconds / final_particle_seconds,
+        final_plastic_volume_particle_seconds / final_particle_seconds
     );
   }
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
@@ -666,6 +681,11 @@ int main(int argc, char** argv) {
     const bool reference_half = TestScene(0.075, 0.0009375, false, 0, sampling_multiplier, 0.10, false, 1.5);
     const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, sampling_multiplier, 0.10, false, 1.5);
     return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-three-second") {
+    const bool reference = TestScene(0.075, 0.0009375, false, 0, 2, 0.10, false, 3);
+    const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
+    return reference && refined ? 0 : 1;
   }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-grid-phase") {
     bool all_pass = true;
