@@ -47,3 +47,23 @@ The full CUDA operator executable also passed all 42 tests:
 ```
 
 Its raw receipt is `out/cuda-operator-suite.log`. Executable SHA-256 values are `a7eb01a41675faf00074288c7aa1f963f52914c2d839cc8412c3c1b1d7776ce8` for the CPU native tests and `e8094a2a753bb90cfc5313bb8485787e62ed8ff2a33e428b195aa4c796705f26` for the CUDA operator tests.
+
+## Transfer and checkpoint continuation
+
+The tested continuation source is `4ce045003a8b8f6cbdc27b5a84374c6a3e5e40a5`. The bounded two-level transfer stencil can bind its rows to the canonical global ownership of a graded topology. A geometric face must match in position, axis and width. A subdivided coarse face is unavailable at its former width. The host PIC path excludes missing, ineligible and different-side carriers, then uses the existing normalized fallback and preserves the output on refusal.
+
+Adaptive checkpoints use schema version 2 with canonical leaf keys, authoritative occupancy, extensive inventories, previous pressures and a dense canonical subface carrier roster. Host transaction versions keep these records and the accepted clock together. Wire decoding validates geometry and carrier ownership before allocating records, and both initial and retry reservations are capped at 4,096 cells and 24,576 faces. Uniform checkpoints retain v1 encoding. The validation scans leaf pairs with early separation along the canonical z axis and a bounded stack array for face coverage.
+
+The cut-face pressure fixture runs a rejected projection, accepts a shortened retry, encodes a completed frame, and restores a new host transaction for continuation. Continuous and restored results are byte-identical for each backend. CPU and RTX 5060 Ti SM120 also produced the same final BLAKE3 digest, `042769715eda6dec3fb179d023d40dd65460c59ad13f8953bd176ade6534582d`. The CUDA run performs real pressure solves. Both fixtures use the same authored topology and physical aperture data, so they qualify the pressure stage and host checkpoint boundary. They do not qualify adaptive particle transport, autonomous topology changes, device-state publication or fresh-process Simulate resume. The uniform scheduler refuses adaptive checkpoints with Unimplemented until the graded physical stages are wired.
+
+With the same configured builds as above:
+
+```powershell
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-debug --output-on-failure -V -R '^(LiquidCache3D|LiquidState3D|LiquidFrameTransaction3D|LiquidCacheSchema)|UniformSchedulerRefusesAdaptiveCheckpointState|CheckpointReplaysAcceptedAdaptivePressure|AdaptiveMacTopology3D.BindsTransferRows' --no-tests=error
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-debug --output-on-failure -j 8
+uv run --offline --project reference --locked --group native ctest --test-dir out/build/runtime-cuda --output-on-failure -V -R '^Cuda(CoarseFineTransfer3D|MacPressure3D)' --no-tests=error
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/build/runtime-cuda/fluidity_cuda_operator_tests.exe '--gtest_filter=CudaMacPressure3D.ExplicitGraphMatchesEdgeAndCornerReferencePressure'
+```
+
+All 670 native CPU CTests, 68 focused CPU CTests, seven real CUDA pressure and transfer CTests, and 42 CUDA operator cases passed. Compute Sanitizer reported zero errors on the checkpoint pressure case. Receipts are in `out/adaptive-codec-green.log`, `out/adaptive-runtime-final-cpu.log`, `out/adaptive-runtime-final-cuda.log`, and `out/adaptive-runtime-final-memcheck.log`.
