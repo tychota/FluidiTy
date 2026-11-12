@@ -113,6 +113,7 @@ add_library(fluidity_native STATIC
   native/src/mac_viscous_pressure_3d.cc
   native/src/liquid_air_components.cc
   native/src/gas_thermodynamics.cc
+  native/src/gas_transport.cc
   native/src/liquid_cavity.cc
   native/src/liquid_eos.cc
   native/src/liquid_eos_sensor_3d.cc
@@ -346,6 +347,7 @@ if(BUILD_TESTING)
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
     native/tests/test_gas_thermodynamics.cc
+    native/tests/test_gas_transport.cc
     native/tests/test_liquid_cavity.cc
     native/tests/test_liquid_eos.cc
     native/tests/test_liquid_mixture_3d.cc
