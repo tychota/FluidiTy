@@ -75,6 +75,36 @@ struct MacStrainRow3D {
 absl::StatusOr<std::vector<MacStrainRow3D>>
 AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells);
 
+struct MacViscousVelocityBlockInputs3D {
+  std::span<const MacStrainRow3D> strain_rows;
+  std::span<const double> face_inertias;  // kg, in slot order. Zero marks an eliminated face.
+  double step_duration;  // Nonnegative, in seconds.
+};
+
+struct MacViscousVelocityBlockOptions3D {
+  std::size_t max_iterations = 256;
+  double relative_tolerance = 1e-10;  // Relative to the maximum absolute RHS entry.
+};
+
+struct MacViscousVelocityBlockSolution3D {
+  std::vector<double> velocity;  // m/s, in slot order. Eliminated slots are zero.
+  std::size_t iterations;
+  double max_residual;  // Maximum absolute true momentum residual in kg m/s.
+};
+
+// Solves (M + dt EᵀWE) u = rhs on positive-inertia faces by Jacobi PCG.
+// RHS is in kg m/s and is zero at eliminated slots. The caller adds any
+// prescribed velocity lift to active RHS entries before solving. Strain
+// terms in each row must reference distinct slots. Returns InvalidArgument
+// for inconsistent extents, invalid data or options, OutOfRange for
+// unrepresentable arithmetic, and Aborted for convergence failure.
+// Errors carry no solution.
+absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options = {}
+);
+
 enum class ViscosityMode {
   kAuto,
   kExplicit,

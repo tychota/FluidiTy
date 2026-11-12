@@ -279,21 +279,40 @@ TEST(Viscosity, FullCell3DStrainReproducesAffineVelocityAcrossSignedOwners) {
     const bool normal = row_index < 24;
     EXPECT_EQ(row.term_count, normal ? 2 : 4);
     EXPECT_EQ(row.quadrature_weight, normal ? 0.5 : 1.0);
-    double value = 0.0;
+    double rotation_control_strain = 0.0;
+    double symmetric_affine_strain = 0.0;
     for (const auto& term : std::span(row.terms).first(row.term_count)) {
       const auto face = grid->view().FaceIndex(term.face_slot);
       ASSERT_TRUE(face.ok()) << face.status();
       const auto position = grid->FaceWorldAnchor(*face);
       ASSERT_TRUE(position.ok()) << position.status();
-      const std::array velocity{
+      const std::array rotation_control_velocity{
           2.0 * position->x + 3.0 * position->y + 5.0 * position->z,
           -3.0 * position->x + 7.0 * position->y + 11.0 * position->z,
           -5.0 * position->x - 11.0 * position->y + 13.0 * position->z,
       };
-      value += term.coefficient * velocity[static_cast<std::size_t>(face->axis)];
+      const std::array symmetric_affine_velocity{
+          2.0 * position->x + 3.0 * position->y + 5.0 * position->z,
+          3.0 * position->x + 7.0 * position->y + 11.0 * position->z,
+          5.0 * position->x + 11.0 * position->y + 13.0 * position->z,
+      };
+      const std::size_t component = static_cast<std::size_t>(face->axis);
+      rotation_control_strain += term.coefficient * rotation_control_velocity[component];
+      symmetric_affine_strain += term.coefficient * symmetric_affine_velocity[component];
     }
     constexpr std::array normal_derivatives{2.0, 7.0, 13.0};
-    EXPECT_EQ(value, normal ? normal_derivatives[row_index % 3] : 0.0);
+    constexpr std::array<std::array<double, 3>, 3> shear_derivatives{{
+        std::array{0.0, 3.0, 5.0},
+        std::array{0.0, 0.0, 11.0},
+        std::array{0.0, 0.0, 0.0},
+    }};
+    const auto first_axis = static_cast<std::size_t>(row.first_axis);
+    const auto second_axis = static_cast<std::size_t>(row.second_axis);
+    EXPECT_EQ(rotation_control_strain, normal ? normal_derivatives[row_index % 3] : 0.0);
+    EXPECT_EQ(
+        symmetric_affine_strain,
+        normal ? normal_derivatives[row_index % 3] : shear_derivatives[first_axis][second_axis]
+    );
   }
 }
 
@@ -338,6 +357,41 @@ TEST(Viscosity, FullCell3DStrainRejectsDuplicatesAndMissingFaceOwners) {
   EXPECT_EQ(
       AssembleFullCellMacStrain3D(grid->view(), std::span(&cell, 1)).status().code(),
       absl::StatusCode::kFailedPrecondition
+  );
+}
+
+TEST(Viscosity, SolvesSparsePositiveVelocityBlockAndEliminatesPrescribedFaces) {
+  const std::array rows{MacStrainRow3D{
+      .low_cell = {0, 0, 0},
+      .first_axis = FaceNormalAxis::kX,
+      .second_axis = FaceNormalAxis::kX,
+      .terms = {{{.face_slot = 0, .coefficient = 1.0}, {.face_slot = 1, .coefficient = -1.0}}},
+      .term_count = 2,
+      .quadrature_weight = 2.0,
+  }};
+  const std::array inertia{1.0, 3.0, 0.0};
+  const std::array rhs{3.0, 2.0, 0.0};
+  const auto result = SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_EQ(result->velocity.size(), 3);
+  EXPECT_NEAR(result->velocity[0], 2.0, kTolerance);
+  EXPECT_NEAR(result->velocity[1], 1.0, kTolerance);
+  EXPECT_EQ(result->velocity[2], 0.0);
+  EXPECT_LE(result->max_residual, kTolerance);
+
+  const std::array prescribed_inertia{1.0, 0.0, 0.0};
+  const std::array prescribed_rhs{3.0, 0.0, 0.0};
+  const auto reduced = SolveMacViscousVelocityBlock3D({rows, prescribed_inertia, 0.5}, prescribed_rhs);
+  ASSERT_TRUE(reduced.ok()) << reduced.status();
+  EXPECT_NEAR(reduced->velocity[0], 1.5, kTolerance);
+  EXPECT_EQ(reduced->velocity[1], 0.0);
+  EXPECT_EQ(
+      SolveMacViscousVelocityBlock3D({rows, prescribed_inertia, 0.5}, rhs).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(
+      SolveMacViscousVelocityBlock3D({rows, inertia, 0.5}, rhs, {.max_iterations = 1}).status().code(),
+      absl::StatusCode::kAborted
   );
 }
 
