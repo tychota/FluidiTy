@@ -558,13 +558,25 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     }
   }
 
-  if (!face_query) {
-    auto vertical_lattice = clip::TankAxis(query, 1);
+  double face_normal_coordinate = 0.0;
+  const auto vertical_lattice = clip::TankAxis(query, 1);
+  if (face_query && query.axis == 1) {
+    const auto distance = clip::HorizontalPlaneLatticeDistance(request.box.liquid_height, vertical_lattice);
+    if (!distance.ok()) {
+      return clip::ArithmeticStatus(distance.status(), request.bounded);
+    }
+    // The link between the last liquid center and the first air center uses
+    // the physical free-surface section. Its MAC slot remains on the lattice.
+    const double surface_coordinate = -*distance / h;
+    if (surface_coordinate > -0.5 && surface_coordinate <= 0.5) {
+      face_normal_coordinate = surface_coordinate;
+    }
+  } else {
     const auto liquid_top = clip::TankClipCoordinate(request.box.liquid_height, vertical_lattice);
     if (!liquid_top.ok()) {
       return clip::ArithmeticStatus(liquid_top.status(), request.bounded);
     }
-    for (int corner = 0; corner < 8; ++corner) {
+    for (int corner = 0; !face_query && corner < 8; ++corner) {
       auto lattice = vertical_lattice;
       lattice.lattice_index += (corner >> 1) & 1;
       const auto distance = clip::HorizontalPlaneLatticeDistance(request.box.liquid_height, lattice);
@@ -597,10 +609,12 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     constexpr double kInfinity = std::numeric_limits<double>::infinity();
     const double box_low = std::nextafter(clip::AddDown(offset.lower, -request.world_extent[axis]) / h, -kInfinity);
     const double box_high = std::nextafter(clip::AddUp(offset.upper, request.world_extent[axis]) / h, kInfinity);
-    const double domain_high = face_query && axis == query.axis ? 0.0 : outer.high[axis];
-    clear_low[axis] = box_low > outer.low[axis];
+    const bool normal_axis = face_query && axis == query.axis;
+    const double domain_low = normal_axis ? face_normal_coordinate : outer.low[axis];
+    const double domain_high = normal_axis ? face_normal_coordinate : outer.high[axis];
+    clear_low[axis] = box_low > domain_low;
     clear_high[axis] = box_high < domain_high;
-    separated |= box_low > domain_high || box_high < outer.low[axis];
+    separated |= box_low > domain_high || box_high < domain_low;
   }
   const double outer_measure = clip::TankBoxMeasure(outer, h, face_query ? query.axis : -1);
   if (!IsNormalOrZero(outer_measure)) {
@@ -639,6 +653,7 @@ ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
     };
     for (const auto& corner : kCornerBits) {
       clip::CartesianVector position{};
+      position[query.axis] = face_normal_coordinate;
       position[first_tangent] = corner[0] ? outer.high[first_tangent] : outer.low[first_tangent];
       position[second_tangent] = corner[1] ? outer.high[second_tangent] : outer.low[second_tangent];
       inside.push_back({position, 0.0});

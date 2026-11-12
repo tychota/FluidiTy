@@ -127,7 +127,10 @@ struct FrozenLiquidCell3D {
 struct FrozenLiquidFace3D {
   FaceIndex3D face_index;
   std::size_t face_slot;
-  double open_area;  // Full face minus solid, m²; not clipped by liquid.
+  // Pressure aperture, m². Normally the full face minus solid. The oriented
+  // planar box clips lateral faces by the liquid and uses the wet waterplane
+  // section on the upper Dirichlet link.
+  double open_area;
   double blocked_area;  // Exactly h² - open_area, m².
   double wall_normal_velocity;  // Positive Cartesian face axis, m/s, on both low and high faces.
   // Positive Cartesian orientation, m³/s. For tanks this is the piston-only

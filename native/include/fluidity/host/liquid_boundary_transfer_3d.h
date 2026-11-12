@@ -45,6 +45,22 @@ struct LiquidBoundaryFaceDeposits3D {
 // Inputs are borrowed read-only and may alias; errors publish no result.
 absl::StatusOr<LiquidBoundaryFaceDeposits3D> DepositCompatibleMacQuanta3D(const LiquidBoundaryDepositInputs3D& inputs);
 
+// Distributes each normal pressure impulse in N s using the same positive
+// mass-weighted stencil as deposit, normalized per face before quantization.
+// Impulse and mass spans use owned-face order. Particle stencils and output
+// use particle order. Both writable spans are disjoint from all other spans.
+// Returns FailedPrecondition if a nonzero face impulse has no compatible
+// support. Invalid extents or inputs return InvalidArgument, and nonfinite
+// arithmetic returns OutOfRange. Scratch spans are usable only on success.
+absl::Status DistributeCompatiblePressureImpulse3D(
+    SparseMacGridView3D grid,
+    std::span<const LiquidBoundaryParticle3D> particles,
+    std::span<const std::array<CompatibleMacFaceStencil3D, 3>> stencils,
+    std::span<const double> normal_face_impulses,
+    std::span<double> face_mass_scratch,
+    std::span<Vec3> particle_impulse_scratch
+);
+
 struct NormalizedLiquidMacFaces3D {
   std::vector<double> face_masses;  // Kilograms.
   std::vector<double> face_velocities;  // m/s; zero for missing/low-mass slots.

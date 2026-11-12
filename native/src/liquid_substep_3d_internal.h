@@ -79,6 +79,11 @@ struct Staging {
   std::optional<LiquidRecords3D<SealedLiquidDriftCell3D>> sealed_drift_cells;
   LiquidRecords3D<MacPressureCell3D> pressure_cell_scratch;  // Trial interior wall flux rows.
   LiquidRecords3D<double> incident_velocities;
+  LiquidRecords3D<double> prepressure_velocities;
+  LiquidRecords3D<double> face_pressure_impulses;
+  LiquidRecords3D<double> pressure_transfer_mass_scratch;
+  LiquidRecords3D<Vec3> pressure_particle_impulses;
+  LiquidRecords3D<Vec3> pressure_stored_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
   // Reserved only for eligible stationary tank scenes.

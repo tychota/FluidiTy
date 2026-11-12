@@ -57,6 +57,14 @@ absl::Status ValidateRigidBody3D(const RigidBody3D& body);
 absl::StatusOr<RigidBody3D>
 AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec3 world_force);
 
+// Volume in m³ of a finite box below a horizontal world-y plane in meters.
+// Requires a finite pose with a unit orientation and positive half extents.
+// Malformed inputs return InvalidArgument. Unrepresentable geometry returns OutOfRange.
+absl::StatusOr<double>
+ComputeRigidBoxSubmergedVolume3D(RigidBodyPose3D pose, Vec3 body_half_extent, double liquid_height);
+
+struct AxisAlignedLiquidTank3D;
+
 struct RigidPressurePatch3D {
   std::uint64_t patch_id;  // Stable nonzero identity within the frozen geometry.
   std::uint64_t body_id;
@@ -108,6 +116,21 @@ absl::Status VisitOrientedBoxPressurePatches3D(
     absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
     absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
 );
+// Streams the five wet tank walls in axis and pressure-cell order. The pressure
+// receiver is on the interior side of a wall, and patch normals point into
+// the liquid. Geometry is in meters. Requires a stationary tank and strictly
+// (z,y,x)-ordered pressure cells. Missing wet coverage returns FailedPrecondition.
+// Stage visitor writes until success. Validation and range errors are code-only.
+absl::Status VisitStationaryTankPressurePatches3D(
+    std::uint64_t tank_id,
+    const AxisAlignedLiquidTank3D& tank,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
+);
+
 // Streams the axis-aligned patches without allocation. Callbacks borrow a stable
 // pressure-cell ordering and must stage any writes until success because a
 // later validation or visitor error can reject the visit. Errors are code-only.

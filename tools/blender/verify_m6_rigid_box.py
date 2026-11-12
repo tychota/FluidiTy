@@ -139,7 +139,17 @@ if "--" in sys.argv:
         assert settings.inspect_frame == 2 and "Rigid Box" in settings.point_detail
         replay = root / "Replay.chk"
         paths = tuple(cache / name for name in ("scene.flrs", "state.flst", "rigid.txt"))
-        fluidity.jobs.checked("simulate", "rigid-frame", *paths, first, replay, event="rigid_frame")
+        first_replay = root / "First replay.chk"
+        first_record = fluidity.jobs.checked("simulate", "rigid-frame", *paths, "-", first_replay, event="rigid_frame")
+        assert first_replay.read_bytes() == first_bytes
+        replay_record = fluidity.jobs.checked("simulate", "rigid-frame", *paths, first, replay, event="rigid_frame")
+        for record, expected_steps in (
+            (first_record, first_record["accepted_step"]),
+            (replay_record, replay_record["accepted_step"] - first_record["accepted_step"]),
+        ):
+            assert expected_steps > 0
+            assert record["pressure_transfer_steps"] == expected_steps, record
+            assert record["unsupported_pressure_transfer_steps"] == 0, record
         assert replay.read_bytes() == second.read_bytes()
         box = settings.rigid_box
         authored = box.matrix_world.copy()
