@@ -96,6 +96,49 @@ absl::StatusOr<bool> AdvectMarker(
   return true;
 }
 
+// Extend each velocity component by its nearest face on the rectangular
+// boundary. A stationary sealed normal already has value zero there; a
+// tangential or open component retains the projected boundary value.
+absl::Status ExtendBoundaryVelocities(
+    const SparseMacGrid3D& grid,
+    std::span<const GasCell3D> cells,
+    std::span<const std::uint8_t> pressure_faces,
+    std::span<double> velocity
+) {
+  const auto first = cells.front().cell_index;
+  std::array lower{first.x, first.y, first.z};
+  auto upper = lower;
+  for (const auto& cell : cells) {
+    const std::array coordinates{cell.cell_index.x, cell.cell_index.y, cell.cell_index.z};
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      lower[axis] = std::min(lower[axis], coordinates[axis]);
+      upper[axis] = std::max(upper[axis], coordinates[axis]);
+    }
+  }
+  const auto layout = grid.view();
+  for (std::size_t slot = 0; slot < velocity.size(); ++slot) {
+    if (pressure_faces[slot] != 0) {
+      continue;
+    }
+    const auto face = layout.FaceIndex(slot);
+    if (!face.ok()) {
+      return face.status();
+    }
+    const auto normal = static_cast<std::size_t>(face->axis);
+    const auto index = face->lattice_index;
+    std::array coordinates{index.x, index.y, index.z};
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      const auto high_face = upper[axis] + static_cast<std::int32_t>(axis == normal);
+      coordinates[axis] = std::clamp(coordinates[axis], lower[axis], high_face);
+    }
+    const auto donor = layout.FaceSlot({face->axis, {coordinates[0], coordinates[1], coordinates[2]}});
+    if (donor.ok() && pressure_faces[*donor] != 0) {
+      velocity[slot] = velocity[*donor];
+    }
+  }
+  return absl::OkStatus();
+}
+
 }  // namespace
 
 absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
@@ -144,6 +187,7 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
   std::vector<std::size_t> pressure_face_slots;
   pressure_face_slots.reserve(faces.size());
   std::vector<double> face_apertures(grid.face_count());
+  std::vector<std::uint8_t> pressure_face_mask(grid.face_count());
   for (std::size_t index = 0; index < faces.size(); ++index) {
     const auto slot = grid.FaceSlot(faces[index].face_index);
     if (!slot.ok()) {
@@ -151,6 +195,7 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
     }
     pressure_face_slots.push_back(*slot);
     face_apertures[*slot] = faces[index].open_area;
+    pressure_face_mask[*slot] = 1;
     const auto& deposit = deposits[*slot];
     const double velocity = deposit.deposited_mass > 0.0 ? deposit.deposited_pure_momentum / deposit.deposited_mass
                                                          : old_face_velocities[*slot];
@@ -172,6 +217,10 @@ absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
     const auto slot = pressure_face_slots[index];
     update.face_velocities[slot] =
         face_apertures[slot] > 0.0 ? update.gas.projection.corrected_face_velocities[index] : 0.0;
+  }
+  if (const auto status = ExtendBoundaryVelocities(grid, cells, pressure_face_mask, update.face_velocities);
+      !status.ok()) {
+    return status;
   }
   std::vector<MacParticleGatherResult3D> gathered(markers.size());
   if (const auto status = GatherMac3D(grid, particles, old_face_velocities, update.face_velocities, gathered);

@@ -70,16 +70,15 @@ struct GasApicMarker3D {
 struct GasApicSubstep3D {
   GasSubstep3D gas;
   std::vector<GasApicMarker3D> markers;
-  std::vector<double> face_velocities;  // Projected field including prior values at ghost slots.
+  std::vector<double> face_velocities;  // Projected field including extrapolated boundary values.
 };
 
 // Deposits and gathers APIC markers around the fixed-grid gas step. The old
-// owned-slot field supplies velocities at slots without marker support and
-// at ghosts. Optional accelerations (m/s²) are in pressure-face order.
-// Markers begin inside a gas cell and need complete owned quadratic support.
-// Each axis moves at most half a cell per step. A stationary sealed face
-// stops normal marker motion and an open exterior face removes the marker.
-// Errors propagate without changing any inputs or publishing an update.
+// owned-slot field supplies velocities at slots without marker support.
+// Rectangular transfer halos are extrapolated before gathering. Optional accelerations (m/s²) are in pressure-face
+// order. Markers begin inside a gas cell and need complete owned quadratic support. Each axis moves at most half a cell
+// per step. A stationary sealed face stops normal marker motion and an open exterior face removes the marker. Errors
+// propagate without changing any inputs or publishing an update.
 absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
     const SparseMacGrid3D& grid,
     double step_duration,

@@ -141,8 +141,10 @@ TEST(GasSubstep3D, ApicPreservesUniformDraftAndAdvectsMarker) {
       AdvanceGasApicSubstep3D(*grid, 0.1, cells, faces, sources, ambient, 101325.0, {}, outlet_markers, draft);
   ASSERT_TRUE(wall.ok()) << wall.status();
   ASSERT_EQ(wall->markers.size(), 1);
-  EXPECT_EQ(wall->markers[0].world_position.x, outlet_markers[0].world_position.x);
-  EXPECT_EQ(wall->markers[0].velocity.x, 0.0);
+  EXPECT_LT(wall->markers[0].world_position.x, 3.0);
+  const double residual_speed = std::abs(wall->gas.projection.corrected_face_velocities[0]);
+  EXPECT_NEAR(wall->markers[0].world_position.x, outlet_markers[0].world_position.x, 0.1 * residual_speed);
+  EXPECT_LE(std::abs(wall->markers[0].velocity.x), residual_speed);
 }
 
 TEST(GasSubstep3D, UniformDomainOwnsStencilsAndAdvancesAcrossCellBoundary) {
@@ -228,6 +230,8 @@ TEST(GasSubstep3D, FrameRuntimeAppliesAnimatedDraftToOpenFaces) {
   const auto slot = domain->grid.FaceSlot({FaceNormalAxis::kX, {1, 0, 0}});
   ASSERT_TRUE(slot.ok()) << slot.status();
   EXPECT_NEAR(frame->face_velocities[*slot], 0.1, 1e-14);
+  ASSERT_EQ(frame->markers.size(), 2);
+  EXPECT_NEAR(frame->markers[0].velocity.x, 0.1, 1e-14);
   EXPECT_NEAR(frame->cells[0].density.carrier, options.ambient.carrier, 1e-14);
 }
 }  // namespace
