@@ -206,6 +206,7 @@ struct LiquidPlanarPistonAttempt3D {
 struct LiquidFloatingBoxAttempt3D {
   LiquidAttemptOutcome3D outcome;
   std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
+  std::optional<double> added_mass_kg;  // Measured for an accepted coupled attempt.
 };
 
 // All attempts, including rejection/status destruction, allocate and free nothing.
@@ -292,6 +293,11 @@ class LiquidSubstepScheduler3D {
   // force and torque. Half extents are in meters and must stay clear of walls.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Couples vertical wall flux and body inertia over one frozen pressure solve.
+  // Requires the particle-free, incompressible, zero-surface-tension scene.
+  // The coupled velocity drives both final flux and drift.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -304,7 +310,11 @@ class LiquidSubstepScheduler3D {
     RigidBody3D body;
     AxisAlignedFloatingBoxGeometry3D geometry;
     double half_height;
+    bool coupled;
+    std::optional<double> added_mass_kg;
   };
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, bool coupled);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
