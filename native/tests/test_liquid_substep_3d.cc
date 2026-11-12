@@ -13,6 +13,7 @@
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_cavity_scheduler_cases.h"
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
@@ -2023,20 +2024,9 @@ TEST(LiquidSubstep3D, CapacityWithoutReplayReservationReportsResourceExhausted) 
   EXPECT_EQ(scheduler->diagnostics().capacity_replays, 0);
 }
 TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
-  std::vector<Vec3> positions;
-  for (int z = -4; z <= 4; ++z) {
-    for (int y = -4; y <= 4; ++y) {
-      for (int x = -4; x <= 4; ++x) {
-        if (x * x + y * y + z * z >= 15) {
-          positions.push_back({8.5 + x, 8.5 + y, 8.5 + z});
-        }
-      }
-    }
-  }
-  auto initial = Initial(positions.size());
-  for (std::size_t index = 0; index < positions.size(); ++index) {
-    initial.particles[index].world_position = positions[index];
-  }
+  const auto shell = cavity_test::ParticleShell();
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  const auto& initial = *shell;
   int initializations = 0;
   LiquidSceneInputs3D scene;
   scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
@@ -2050,10 +2040,7 @@ TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
         return InitializeSubmergedLiquidCavity3D(component.gas_volume, 100000.0, 0.0, 0.0);
       },
   };
-  auto options = Options();
-  options.capacities = {positions.size(), 128, 2048, 24576, 1};
-  options.capacity_replay_reservations = {positions.size(), 128, 4096, 24576, 1};
-  options.maximum_step_duration = 0.001;
+  const auto options = cavity_test::ShellOptions(initial.particles.size());
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
   int pressure_attempts = 0;

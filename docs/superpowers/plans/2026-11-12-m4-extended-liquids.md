@@ -391,3 +391,11 @@ The liquid transaction now owns the accepted cavity snapshot. The scheduler uses
 The decoded particle-shell scene ran to a frame boundary with nonzero cavity pressure, encoded and decoded a checkpoint, and continued to byte-identical state compared with uninterrupted execution. The cavity ID stayed unchanged. Fifty CPU state, codec and cavity checks passed with ctest --preset windows-debug-cpu -R 'LiquidCache3D|LiquidState3D|Cavity|CapacityReplay'. The full LiquidSubstep3D CPU suite passed all 85 checks. Twenty-one real-device regressions passed after a clean windows-release-cuda build with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The clean build also produced fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-cavity-resume.
 
 The checkpoint equality fixture ran on CPU. The CUDA suite exercised the shared scheduler and the prepared-pressure route. Full Q-CAVITY qualification remains open.
+
+## Real CUDA cavity checkpoint receipt
+
+The shared particle-shell fixture exercises the scheduler's discovered gas domain and pressure lift on SM120. One resolved cavity imposed a finite radial bound and a nonzero pressure RHS. After a checkpoint round trip into a fresh CUDA backend, the cavity ID and full checkpoint digest matched uninterrupted CUDA execution.
+
+Seventeen focused CPU tests passed with ctest --preset windows-debug-cpu -R Cavity. Four CPU surface occupancy tests passed with ctest --preset windows-debug-cpu -R '^SurfaceOccupancy3D\.', including the supplied-occupancy inner-shell removal and closed-cavity orientation cases. Twenty-two CUDA checks passed with ctest --preset windows-release-cuda -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. clang-format 19.1.5 passed. Receipts use out/m4-cavity-device. Compute Sanitizer reported zero errors with compute-sanitizer --tool memcheck --error-exitcode 99 out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe --gtest_filter=CudaLiquidSubstep3D.DiscoveredCavitySurvivesCheckpointResume.
+
+The occupancy fixtures use supplied classifications. Production cache-to-surface occupancy and full Q-CAVITY qualification remain open.

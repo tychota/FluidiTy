@@ -14,7 +14,9 @@
 
 #include "../cuda/liquid_arena_3d_internal.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
+#include "fluidity/host/liquid_cache_3d.h"
 #include "gtest/gtest.h"
+#include "liquid_cavity_scheduler_cases.h"
 #include "liquid_eos_hydrostatic_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
 #include "liquid_wall_sample_3d_cases.h"
@@ -1178,6 +1180,62 @@ TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
         return pressure_test::AdvanceHydrostaticColumn(*scheduler, options.capacities);
       }
   );
+}
+
+TEST(CudaLiquidSubstep3D, DiscoveredCavitySurvivesCheckpointResume) {
+  const auto initial = cavity_test::ParticleShell();
+  ASSERT_TRUE(initial.ok()) << initial.status();
+  const auto options = cavity_test::ShellOptions(initial->particles.size());
+  LiquidResolvedSceneView3D resolved;
+  resolved.backend = LiquidBackend3D::kCuda;
+  resolved.options = options;
+  resolved.scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  resolved.scene.world_acceleration = {};
+  resolved.scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .birth_hydrostatic_gauge_pressure = 100.0,
+  };
+  const auto fingerprint = ResolvedSceneFingerprint(resolved);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, resolved.scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto first = scheduler->AdvanceFrame(0.001);
+  ASSERT_TRUE(first.ok()) << first << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+  const auto& measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement && measurement->cavity && measurement->step_start_cavity_bound_seconds);
+  EXPECT_EQ(measurement->cavity->boundaries.active_cavity_count, 1);
+  EXPECT_GT(measurement->cavity->boundaries.air_pressure_count, 0);
+  EXPECT_GT(measurement->pressure_rhs_l2_m3_per_s, 0.0);
+  EXPECT_LE(measurement->accepted_dt_seconds, *measurement->step_start_cavity_bound_seconds);
+  EXPECT_EQ(scheduler->committed().next_cavity_id, 2);
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+
+  const LiquidResumeMetadata3D resume{
+      .resolved_fingerprint = *fingerprint,
+      .execution_id = LiquidExecutionId3D(*fingerprint),
+      .capacities = options.capacities,
+      .capacity_replay_reservations = options.capacity_replay_reservations,
+  };
+  const auto checkpoint = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  const auto decoded = DecodeLiquidCheckpoint3D(checkpoint->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted_backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(restarted_backend.ok()) << restarted_backend.status();
+  auto restarted =
+      LiquidSubstepScheduler3D::Create(decoded->state, resolved.scene, options, restarted_backend->operations());
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  ASSERT_TRUE(scheduler->AdvanceFrame(0.002).ok());
+  ASSERT_TRUE(restarted->AdvanceFrame(0.002).ok());
+  EXPECT_EQ(restarted->committed().next_cavity_id, 2);
+  const auto uninterrupted = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+  const auto continued = EncodeLiquidCheckpoint3D(restarted->committed(), resume);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  ASSERT_TRUE(continued.ok()) << continued.status();
+  EXPECT_EQ(LiquidContentDigest3D(uninterrupted->values()), LiquidContentDigest3D(continued->values()));
 }
 
 TEST(CudaLiquidSubstep3D, PreparedCavityBoundariesMatchCpuAfterRetry) {
