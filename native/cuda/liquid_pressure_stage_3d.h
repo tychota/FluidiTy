@@ -1,7 +1,9 @@
 #pragma once
 
+#include "../src/mac_viscous_pressure_3d.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
+#include "fluidity/host/viscosity.h"
 
 namespace fluidity::cuda_internal {
 /// Projects a frozen pressure problem with the bounded CUDA mixed-precision solver.
@@ -26,5 +28,16 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
     const LiquidPressureProblemView3D& problem,
     MacPressureSolverOptions3D options,
     MacPressureWorkspace3D& workspace
+);
+// Runs the host-orchestrated coupled projection using only pre-reserved device
+// ranges. The rows use the full-cell arena bound. Inputs and results use the
+// CPU projection's units and ordering. Arena capacity failure is
+// ResourceExhausted, runtime failure poisons the arena, and errors publish no result.
+absl::StatusOr<MacViscousPressureProjectionView3D> ProjectArenaViscousPressure3D(
+    CudaLiquidArena3D& arena,
+    const pressure_internal::UniformViscousPressureInputs3D& inputs,
+    std::span<const MacStrainRow3D> strain_rows,
+    MacPressureSolverOptions3D options,
+    pressure_internal::MacPressureScratch3D& scratch
 );
 }  // namespace fluidity::cuda_internal

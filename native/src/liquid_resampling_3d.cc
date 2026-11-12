@@ -23,9 +23,67 @@ bool ValidParticle(const LiquidParticleState3D& particle) {
   return particle.id != 0 && Finite(particle.world_position) && Finite(particle.world_velocity)
       && Finite(particle.velocity_slopes.x_row) && Finite(particle.velocity_slopes.y_row)
       && Finite(particle.velocity_slopes.z_row) && PositiveFinite(particle.mass)
-      && PositiveFinite(particle.reference_volume) && PositiveFinite(particle.volume_ratio);
+      && PositiveFinite(particle.reference_volume) && PositiveFinite(particle.volume_ratio)
+      && ValidLiquidParticleComposition3D(particle);
 }
 
+// The APIC merge uses mass weights for moments. Constituent inventories
+// instead use each child's current material volume before any normalization.
+absl::Status MergeConstituentVolumes(
+    std::span<const LiquidParticleState3D> children,
+    double current_volume,
+    double represented_current_volume,
+    LiquidParticleState3D& target
+) {
+  if (children.front().constituent_count == 0) {
+    return absl::OkStatus();
+  }
+  std::array<LiquidConstituentVolume3D, kMaximumLiquidParticleConstituents3D> inventory{};
+  std::size_t count = 0;
+  for (const auto& child : children) {
+    const double child_current_volume = child.reference_volume * child.volume_ratio;
+    for (const auto& constituent : std::span(child.constituents).first(child.constituent_count)) {
+      const double volume = constituent.volume_fraction * child_current_volume;
+      if (!PositiveFinite(volume)) {
+        return absl::OutOfRangeError("Merge constituent volume is unrepresentable");
+      }
+      const auto active = std::span(inventory).first(count);
+      const auto found =
+          std::ranges::lower_bound(active, constituent.substance_id, {}, &LiquidConstituentVolume3D::substance_id);
+      if (found != active.end() && found->substance_id == constituent.substance_id) {
+        found->volume_m3 += volume;
+      } else {
+        if (count == inventory.size()) {
+          return absl::FailedPreconditionError("Merge composition exceeds particle constituent capacity");
+        }
+        const auto insertion = found - active.begin();
+        const auto inventory_end = inventory.begin() + static_cast<std::ptrdiff_t>(count);
+        std::move_backward(inventory.begin() + insertion, inventory_end, inventory_end + 1);
+        inventory[static_cast<std::size_t>(insertion)] = {
+            .substance_id = constituent.substance_id,
+            .volume_m3 = volume,
+        };
+        ++count;
+      }
+    }
+  }
+  target.constituents = {};
+  target.constituent_count = static_cast<std::uint8_t>(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto& entry = inventory[index];
+    const double fraction = entry.volume_m3 / current_volume;
+    const double represented_volume = fraction * represented_current_volume;
+    if (!PositiveFinite(fraction) || !PositiveFinite(represented_volume)
+        || std::abs(represented_volume / entry.volume_m3 - 1.0) > kIncrementRelativeTolerance) {
+      return absl::OutOfRangeError("Merge target cannot represent constituent inventory");
+    }
+    target.constituents[index] = {.substance_id = entry.substance_id, .volume_fraction = fraction};
+  }
+  if (!ValidLiquidParticleComposition3D(target)) {
+    return absl::OutOfRangeError("Merge target composition does not normalize");
+  }
+  return absl::OkStatus();
+}
 bool ValidBasis(LiquidUniformResamplingBasis3D basis) {
   return basis == LiquidUniformResamplingBasis3D::kQuadratic || basis == LiquidUniformResamplingBasis3D::kCubicNormal;
 }
@@ -328,6 +386,14 @@ absl::StatusOr<LiquidUniformSplit3D> SplitUniformLiquidParticle3D(
       || !PositiveFinite(child_current_volume) || child_current_volume * kSplitChildCount != parent_current_volume) {
     return absl::OutOfRangeError("Split spacing or inventories cannot be divided exactly");
   }
+  for (const auto& constituent : std::span(parent.constituents).first(parent.constituent_count)) {
+    const double parent_volume = constituent.volume_fraction * parent_current_volume;
+    const double child_volume = constituent.volume_fraction * child_current_volume;
+    if (!PositiveFinite(parent_volume) || !PositiveFinite(child_volume)
+        || std::abs(child_volume * kSplitChildCount / parent_volume - 1.0) > kIncrementRelativeTolerance) {
+      return absl::OutOfRangeError("Split constituent volume cannot be divided faithfully");
+    }
+  }
   const double displacement = parent_cell_width * (std::sqrt(3.0) / 4.0);
   if (!PositiveFinite(displacement)) {
     return absl::OutOfRangeError("Split displacement is unrepresentable");
@@ -430,6 +496,9 @@ absl::StatusOr<LiquidUniformMerge3D> MergeUniformLiquidParticles3D(
         || child.pic_initialized != first.pic_initialized) {
       return absl::FailedPreconditionError("Merge children must share affine, tag, side and PIC eligibility");
     }
+    if (child.phase_id != first.phase_id || (child.constituent_count == 0) != (first.constituent_count == 0)) {
+      return absl::FailedPreconditionError("Merge children require matching phase and composition mode");
+    }
     const double child_current_volume = child.volume_ratio * child.reference_volume;
     if (!PositiveFinite(child_current_volume)) {
       return absl::OutOfRangeError("Merge child current volume is unrepresentable");
@@ -464,6 +533,10 @@ absl::StatusOr<LiquidUniformMerge3D> MergeUniformLiquidParticles3D(
   if (!PositiveFinite(target.volume_ratio) || !PositiveFinite(represented_current_volume)
       || std::abs(represented_current_volume / current_volume - 1.0) > kIncrementRelativeTolerance) {
     return absl::OutOfRangeError("Merge target volume ratio is unrepresentable");
+  }
+  const auto composition = MergeConstituentVolumes(children, current_volume, represented_current_volume, target);
+  if (!composition.ok()) {
+    return composition;
   }
   if (!MergeCenter(children, weights, &LiquidParticleState3D::world_position, target.world_position)
       || !MergeCenter(children, weights, &LiquidParticleState3D::world_velocity, target.world_velocity)

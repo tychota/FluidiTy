@@ -8,6 +8,8 @@ from pathlib import Path
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
     EnumProperty,
     FloatProperty,
     FloatVectorProperty,
@@ -38,7 +40,49 @@ def custom_material(settings, context):
     invalidate_guidance(settings, context)
 
 
+class FluidiTyLiquidSource(PropertyGroup):
+    geometry: PointerProperty(name="Source Box", type=Object)
+    substance_id: IntProperty(name="Substance ID", min=1, default=1)
+    phase_id: IntProperty(name="Miscibility Phase", min=1, default=1)
+    density: FloatProperty(name="Density (kg/m³)", min=1, default=1000)
+    override_viscosity: BoolProperty(name="Set Viscosity")
+    viscosity: FloatProperty(name="Dynamic Viscosity (Pa·s)", min=0, default=0, precision=5)
+    emission_rate: FloatProperty(name="Particles per Second", min=0, default=0)
+    emitted_volume: FloatProperty(name="Emitted Particle Volume (m³)", min=1e-9, default=0.001, precision=6)
+
+
+class FLUIDITY_OT_liquid_source(Operator):
+    bl_idname = "fluidity.liquid_source"
+    bl_label = "Edit Liquid Sources"
+    index: IntProperty(default=-1)
+
+    def execute(self, context):
+        settings = context.scene.fluidity
+        if self.index < 0:
+            if len(settings.liquid_sources) >= 64:
+                return {"CANCELLED"}
+            used_ids = {item.substance_id for item in settings.liquid_sources}
+            source = settings.liquid_sources.add()
+            source.substance_id = next(index for index in range(1, 65) if index not in used_ids)
+        elif self.index < len(settings.liquid_sources):
+            settings.liquid_sources.remove(self.index)
+        else:
+            return {"CANCELLED"}
+        invalidate_guidance(settings, context)
+        return {"FINISHED"}
+
 class FluidiTySettings(PropertyGroup):
+    liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
+    planar_fill: BoolProperty(name="Planar Tank Fill", update=invalidate_guidance)
+    fill_height: FloatProperty(name="Fill Surface Height (m)", default=1.0, update=invalidate_guidance)
+    surface_object: PointerProperty(type=Object)
+    attached_surface_cache: StringProperty()
+    mesh_cache: StringProperty(name="Surface Cache", default="//FluidiTy Surface", subtype="DIR_PATH")
+    mesh_spacing: FloatProperty(name="Surface Spacing (m)", default=0.0125, min=0.00001, precision=5)
+    mesh_sigma: FloatProperty(name="Surface Smoothing (m)", default=0.025, min=0.00001, precision=5)
+    phase_tension: FloatProperty(
+        name="Phase Interface Tension (N/m)", min=0, default=0, precision=4, update=invalidate_guidance
+    )
     boundary_mode: EnumProperty(
         name="Boundaries",
         description="Choose the actual collision model used by the solver",
@@ -387,6 +431,29 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         settings.message = "Read the committed frame."
 
 
+class FLUIDITY_OT_build_surface(SceneAction, Operator):
+    bl_idname = "fluidity.build_surface"
+    bl_label = "Build Surface"
+    bl_description = "Reconstruct native Mesh frames from the committed Bake cache"
+    resume: BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def perform(self, scene):
+        require_cadence(scene)
+        settings = scene.fluidity
+        source = project_path(settings.bake_cache)
+        output = project_path(settings.mesh_cache)
+        if source == output or source in output.parents or output in source.parents:
+            raise SceneError("cache", "Choose a separate, non-nested Surface cache directory.")
+        if not self.resume and output.exists():
+            raise SceneError("cache", "Choose a fresh Surface cache directory, or use Resume Surface.")
+        last_frame = playback.committed_last(source)
+        jobs.start_mesh(scene, source, output, last_frame, settings.mesh_spacing, settings.mesh_sigma, self.resume)
+        settings.committed_frame = -1
+        settings.target_frame = last_frame
+        settings.message = "Waiting for the first committed Surface frame."
+        if not bpy.app.timers.is_registered(tick):
+            bpy.app.timers.register(tick, first_interval=0.01)
+
 class FLUIDITY_OT_attach(SceneAction, Operator):
     bl_idname = "fluidity.attach"
     bl_description = "Validate and attach native Alembic Points playback without replacing artist display edits"
@@ -415,6 +482,8 @@ class FLUIDITY_OT_relink(SceneAction, Operator):
 
 
 _CLASSES = (
+    FluidiTyLiquidSource,
+    FLUIDITY_OT_liquid_source,
     FluidiTySettings,
     FLUIDITY_OT_check_scene,
     FLUIDITY_OT_preview,
@@ -423,6 +492,7 @@ _CLASSES = (
     FLUIDITY_OT_cancel,
     FLUIDITY_OT_inspect,
     FLUIDITY_OT_attach,
+    FLUIDITY_OT_build_surface,
     FLUIDITY_OT_relink,
     FLUIDITY_Preferences,
     *authoring.CLASSES,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -40,6 +41,38 @@ struct TranslatingSlab3D {
 };
 using LiquidObstacle3D =
     std::variant<std::monostate, TranslatingHalfspace3D, TranslatingSlab3D, AxisAlignedLiquidTank3D>;
+
+struct LiquidAirCellMeasureInputs3D {
+  UniformMacGeometry3D geometry;
+  CellIndex3D cell_index;
+  LiquidObstacle3D obstacle;  // Frozen world-space obstacle.
+  std::array<double, 8> liquid_corner_distances;  // Signed metres, x/y/z corner bits.
+};
+struct LiquidAirCellMeasures3D {
+  double gas_volume;  // m³ of strictly positive liquid distance outside solid.
+  std::array<double, 6> gas_face_areas{};  // m², low/high x, y and z.
+};
+
+// Clips gas volume and face areas with the liquid geometry's tetrahedra
+// and shared face diagonals. Zero plateaus have no gas measure. Positive
+// gas pieces must connect through positive-area shared tetrahedral faces.
+// Invalid geometry or distances return InvalidArgument, disconnected gas
+// returns FailedPrecondition, and arithmetic range failures return
+// OutOfRange. No allocation or partial measures on failure.
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs);
+
+// Measures liquid outside the frozen obstacle in each cell octant, in m³.
+// The octant and input corner bits are x, y, z from low to high bit. Liquid
+// uses the pressure geometry's six tetrahedra and strictly negative distances.
+// Invalid geometry, obstacle or samples return InvalidArgument. Unrepresentable
+// measures or unresolved tank coordinates return OutOfRange. Errors return no
+// partial measures. No input storage is modified.
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances
+);
 
 struct LiquidBoundaryGeometryInputs3D {
   const SparseMacGrid3D& mac_grid;  // Borrowed only during freeze; result owns a copy.
@@ -93,7 +126,27 @@ struct LiquidPressureCellFields3D {
   double target_divergence;  // s⁻¹; independent of geometric volume.
   double bulk_modulus;  // Positive Pa, or +infinity for incompressibility.
   double previous_pressure;  // Pa.
+  std::optional<double> density = std::nullopt;  // Predictor kg/m³. Absent uses the frozen reference density.
 };
+struct LiquidAirCellPressure3D {
+  CellIndex3D cell_index;  // Air-side center on the signed lattice.
+  double gas_gauge_pressure;  // Pa before the liquid-side capillary lift.
+};
+// Computes sqrt((tail_density + head_density) * h³ / (4 pi sigma)) in
+// seconds. Densities are positive kg/m³, h is positive metres and sigma is
+// nonnegative N/m. Zero sigma returns infinity. Invalid inputs return
+// InvalidArgument and an unrepresentable positive limit returns OutOfRange.
+absl::StatusOr<double>
+InternalLiquidCapillaryStepBound3D(double tail_density, double head_density, double cell_width, double surface_tension);
+
+struct LiquidInternalInterface3D {
+  std::size_t face_ordinal;  // Index into the exact frozen face order.
+  double tail_fraction;  // Fraction of the center-to-center segment in the tail phase, in [0,1].
+  double surface_tension;  // Nonnegative N/m for the phase pair.
+  double curvature_tail_to_head;  // Signed m⁻¹ with normal from tail phase to head phase.
+  double normal_viscous_jump_tail_to_head;  // Head-minus-tail normal viscous stress in Pa.
+};
+
 struct LiquidPressureFields3D {
   std::span<const LiquidPressureCellFields3D> cells;  // Frozen cell order.
   std::span<const double> predicted_face_velocities;  // Frozen face order, m/s.
@@ -102,6 +155,13 @@ struct LiquidPressureFields3D {
   // with a finite signed flux in m³/s on each closed piston face with a single
   // selected head. Zero is explicit. Other entries must be absent.
   std::span<const std::optional<double>> wetted_piston_face_fluxes{};
+  // Optional unique (z,y,x) air centers in the frozen sample halo. A listed
+  // pressure replaces ambient gas pressure on all incident open air links.
+  std::span<const LiquidAirCellPressure3D> air_cell_pressures{};
+  // Certified crossings with distinct phases, strictly increasing by frozen
+  // face ordinal. Each needs a positive aperture, two liquid endpoints and
+  // explicit endpoint densities. The internal link receives one signed jump.
+  std::span<const LiquidInternalInterface3D> internal_interfaces{};
 };
 struct LiquidPressureProblem3D {
   std::vector<MacPressureCell3D> cells;
@@ -199,8 +259,13 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
 );
 
 // Builds the exact incident face union with full frozen apertures and wall flux.
-// Air links use theta in [0.05,1] and ambient + sigma*curvature once; internal
-// jumps are zero. Curvature and capillary dt were checked during geometry freeze.
+// Air links use theta in [0.05,1] and gas gauge pressure + sigma*curvature once; internal
+// jumps are zero unless an internal phase crossing is supplied. Air curvature
+// and its capillary limit were checked during geometry freeze. An internal
+// crossing whose capillary limit is below the frozen duration returns Aborted.
+// Open internal mobility is the reciprocal of the midpoint density of the two
+// liquid cells. Air links use the adjacent liquid density. An absent predictor
+// density uses the frozen reference density. Open mobility must be normal.
 // Errors carry no problem: InvalidArgument for invalid field extents/values or
 // overrides inconsistent with the frozen piston incidence or speed,
 // FailedPrecondition for missing air samples or omitted negative-distance neighbors,

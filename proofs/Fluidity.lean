@@ -1,6 +1,7 @@
 import Fluidity.Pressure
 import Fluidity.PressureTopology
 import Fluidity.PressureCorrection
+import Fluidity.Viscosity
 import Fluidity.FixedPoint
 import Fluidity.UniformTransfer
 import Fluidity.UniformTile

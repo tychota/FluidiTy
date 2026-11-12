@@ -58,6 +58,41 @@ TEST(LiquidRemap3D, ProlongsAffineInventoriesAndRestrictsExactly) {
   EXPECT_EQ(Lanes(*restricted), Lanes(parent));
 }
 
+TEST(LiquidRemap3D, PreservesConstituentsWithLimitedNonuniformChildVolume) {
+  const auto mixture = [](double z) {
+    auto inventory = AffineInventory(0, 0, z);
+    inventory.phase_id = 4;
+    inventory.constituent_count = 2;
+    inventory.constituents[0] = {8, inventory.current_volume_m3 * 0.25};
+    inventory.constituents[1] = {14, inventory.current_volume_m3 * 0.75};
+    return inventory;
+  };
+  const auto parent = mixture(0);
+  const LiquidRemapStencil3D neighbors{{{parent, parent}, {parent, parent}, {mixture(-1), mixture(1)}}};
+  const auto children = ProlongLiquidInventory3D(parent, neighbors);
+  ASSERT_TRUE(children.ok()) << children.status();
+  for (std::size_t index = 0; index < children->size(); ++index) {
+    const auto& child = (*children)[index];
+    EXPECT_DOUBLE_EQ(child.current_volume_m3, index % 2 == 0 ? 1.375 : 1.625);
+    EXPECT_DOUBLE_EQ(child.constituents[0].volume_m3, child.current_volume_m3 * 0.25);
+    EXPECT_DOUBLE_EQ(child.constituents[1].volume_m3, child.current_volume_m3 * 0.75);
+  }
+  const auto restricted = RestrictLiquidInventory3D(*children);
+  ASSERT_TRUE(restricted.ok()) << restricted.status();
+  EXPECT_DOUBLE_EQ(restricted->constituents[0].volume_m3, 3);
+  EXPECT_DOUBLE_EQ(restricted->constituents[1].volume_m3, 9);
+
+  auto malformed = parent;
+  malformed.constituents[0].volume_m3 = 1;
+  EXPECT_EQ(ProlongLiquidInventory3D(malformed, neighbors).status().code(), absl::StatusCode::kInvalidArgument);
+  auto excessive = *children;
+  for (std::size_t index = 0; index < excessive.size(); ++index) {
+    auto& child = excessive[index];
+    child.constituents[0].substance_id = 100 + 2 * index;
+    child.constituents[1].substance_id = 101 + 2 * index;
+  }
+  EXPECT_EQ(RestrictLiquidInventory3D(excessive).status().code(), absl::StatusCode::kResourceExhausted);
+}
 TEST(LiquidRemap3D, LimitsAtExtremaAndPreservesNonnegativeInventories) {
   const LiquidRemapInventory3D parent{.mass_kg = 8, .current_volume_m3 = 0.125};
   LiquidRemapStencil3D neighbors{};

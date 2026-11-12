@@ -82,3 +82,27 @@ def test_explicit_scalar_wall_work_identity_and_input_immutability():
     np.testing.assert_array_equal(u, [1.]); np.testing.assert_array_equal(mass, [2.])
     np.testing.assert_array_equal(weight, [3.]); np.testing.assert_array_equal(wall, [4.])
     np.testing.assert_array_equal(E.toarray(), [[1.]])
+
+
+def test_exact_trace_certificate_encloses_downward_rounded_estimate():
+    from fractions import Fraction
+
+    from scipy.sparse import csr_matrix
+
+    from fluidity_reference.viscosity import exact_trace_bound
+
+    bound = exact_trace_bound([3.0], csr_matrix([[1.0]]), [1.0])
+    assert Fraction.from_float(1.0 / 3.0) < bound
+    assert bound == Fraction(1, 3)
+
+
+def test_exact_trace_certificate_handles_small_mass_and_discontinuous_weights():
+    from fractions import Fraction
+
+    from scipy.sparse import csr_matrix
+
+    from fluidity_reference.viscosity import exact_trace_bound
+
+    strain = csr_matrix([[1.0, -1.0], [2.0, 0.0], [0.0, 2.0]])
+    bound = exact_trace_bound([0.125, 2.0], strain, [2.0, 0.0, 3.0])
+    assert bound == Fraction(23)

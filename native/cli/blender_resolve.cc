@@ -1,11 +1,14 @@
 #include "blender_resolve.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <locale>
+#include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/liquid_cache_3d.h"
@@ -101,6 +104,93 @@ absl::Status ReadAuthoringParameters(std::istream& input, LiquidResolvedSceneVie
   }
   return absl::OkStatus();
 }
+struct ExtendedAuthoring3D {
+  std::vector<LiquidConstituentMaterial3D> materials;
+  std::vector<LiquidPhasePair3D> pairs;
+  std::vector<LiquidEmissionSource3D> emitters;
+};
+
+const LiquidConstituentMaterial3D* FindMaterial(const ExtendedAuthoring3D& authoring, std::uint64_t substance_id) {
+  const auto material =
+      std::ranges::lower_bound(authoring.materials, substance_id, {}, &LiquidConstituentMaterial3D::substance_id);
+  return material != authoring.materials.end() && material->substance_id == substance_id ? &*material : nullptr;
+}
+
+bool SetPureMaterial(LiquidParticleState3D& particle, const LiquidConstituentMaterial3D& material, double volume) {
+  const double mass = material.density_kg_per_m3 * volume;
+  if (!std::isfinite(volume) || volume <= 0 || !std::isfinite(mass) || mass <= 0) {
+    return false;
+  }
+  particle.mass = mass;
+  particle.reference_volume = volume;
+  particle.phase_id = material.phase_id;
+  particle.constituent_count = 1;
+  particle.constituents[0] = {material.substance_id, 1.0};
+  return true;
+}
+
+// Version three adds bounded canonical material, phase-pair and emission rows.
+absl::Status ReadExtendedAuthoring(std::istream& input, ExtendedAuthoring3D& authoring, bool reads_viscosity) {
+  constexpr std::size_t kMaximumMaterials = 64;
+  constexpr std::size_t kMaximumPhasePairs = 64;
+  constexpr std::size_t kMaximumEmitters = 64;
+  std::size_t material_count = 0;
+  std::size_t pair_count = 0;
+  std::size_t emitter_count = 0;
+  if (!(input >> material_count >> pair_count >> emitter_count) || material_count == 0
+      || material_count > kMaximumMaterials || pair_count > kMaximumPhasePairs || emitter_count > kMaximumEmitters) {
+    return absl::InvalidArgumentError("extended liquid authoring counts exceed bounds");
+  }
+  authoring.materials.resize(material_count);
+  std::uint64_t previous_substance_id = 0;
+  for (auto& material : authoring.materials) {
+    if (!(input >> material.substance_id >> material.phase_id >> material.density_kg_per_m3)
+        || material.substance_id <= previous_substance_id || material.phase_id == 0
+        || !std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0) {
+      return absl::InvalidArgumentError("invalid authored liquid substance");
+    }
+    if (reads_viscosity) {
+      double viscosity = 0.0;
+      if (!(input >> viscosity) || !std::isfinite(viscosity) || (viscosity < 0.0 && viscosity != -1.0)) {
+        return absl::InvalidArgumentError("invalid authored liquid viscosity");
+      }
+      if (viscosity >= 0.0) {
+        material.dynamic_viscosity_pa_s = viscosity;
+      }
+    }
+    previous_substance_id = material.substance_id;
+  }
+  authoring.pairs.resize(pair_count);
+  for (auto& pair : authoring.pairs) {
+    if (!(input >> pair.phase_a >> pair.phase_b >> pair.surface_tension)) {
+      return absl::InvalidArgumentError("invalid authored liquid phase interaction");
+    }
+  }
+  const auto pairs = ValidateLiquidPhasePairs3D(authoring.pairs, authoring.materials);
+  if (!pairs.ok()) {
+    return pairs;
+  }
+  authoring.emitters.resize(emitter_count);
+  std::uint64_t previous_ordinal = 0;
+  for (auto& emitter : authoring.emitters) {
+    std::uint64_t substance_id = 0;
+    double volume = 0;
+    if (!(input >> emitter.source_ordinal >> substance_id >> emitter.particles_per_second >> volume)
+        || !ReadFiniteVector(input, emitter.world_position) || !ReadFiniteVector(input, emitter.world_position_jitter)
+        || !ReadFiniteVector(input, emitter.emitted_particle_template.world_velocity)) {
+      return absl::InvalidArgumentError("invalid authored liquid emitter");
+    }
+    const auto* material = FindMaterial(authoring, substance_id);
+    if (emitter.source_ordinal <= previous_ordinal || !material || !std::isfinite(emitter.particles_per_second)
+        || emitter.particles_per_second <= 0 || emitter.world_position_jitter.x < 0
+        || emitter.world_position_jitter.y < 0 || emitter.world_position_jitter.z < 0
+        || !SetPureMaterial(emitter.emitted_particle_template, *material, volume)) {
+      return absl::InvalidArgumentError("liquid emitter parameters are outside supported bounds");
+    }
+    previous_ordinal = emitter.source_ordinal;
+  }
+  return absl::OkStatus();
+}
 }  // namespace
 
 absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
@@ -122,11 +212,14 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
   LiquidResolvedSceneView3D scene;
   double& cell_width = scene.geometry.cell_width;
   if (!(input >> version >> preview >> cell_width)
-      || (version != "FLUIDITY-BLENDER-1" && version != "FLUIDITY-BLENDER-2") || preview > 1
-      || !std::isfinite(cell_width) || cell_width < 0.001 || cell_width > 10) {
+      || (version != "FLUIDITY-BLENDER-1" && version != "FLUIDITY-BLENDER-2" && version != "FLUIDITY-BLENDER-3"
+          && version != "FLUIDITY-BLENDER-4")
+      || preview > 1 || !std::isfinite(cell_width) || cell_width < 0.001 || cell_width > 10) {
     return absl::InvalidArgumentError("invalid packet version, Preview flag or cell width");
   }
-  const bool modern_authoring = version == "FLUIDITY-BLENDER-2";
+  const bool modern_authoring = version != "FLUIDITY-BLENDER-1";
+  const bool viscosity_authoring = version == "FLUIDITY-BLENDER-4";
+  const bool extended_authoring = version == "FLUIDITY-BLENDER-3" || viscosity_authoring;
   Vec3 initial_velocity{};
   if (!ReadFiniteVector(input, scene.scene.world_acceleration)) {
     return absl::InvalidArgumentError("invalid gravity");
@@ -147,6 +240,33 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
         .half_width = slab_half_width,
         .wall_velocity = {slab_velocity, 0, 0},
     };
+  }
+  std::optional<LiquidHorizontalPlaneSurface3D> planar_fill;
+  if (viscosity_authoring) {
+    unsigned planar = 0;
+    if (!(input >> planar) || planar > 1) {
+      return absl::InvalidArgumentError("invalid planar tank fill setting");
+    }
+    if (planar == 1) {
+      const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.scene.obstacle);
+      double height = 0.0;
+      if (!(input >> height) || !tank || tank->piston_velocity_x != 0.0 || !std::isfinite(height)
+          || height <= tank->floor_y) {
+        return absl::InvalidArgumentError("planar fill requires a stationary tank and a surface above its floor");
+      }
+      planar_fill = LiquidHorizontalPlaneSurface3D{height};
+    }
+  }
+  ExtendedAuthoring3D extended;
+  if (extended_authoring) {
+    const auto parameters = ReadExtendedAuthoring(input, extended, viscosity_authoring);
+    if (!parameters.ok()) {
+      return parameters;
+    }
+    scene.scene.constituent_materials = extended.materials;
+    scene.scene.phase_pairs = extended.pairs;
+    scene.scene.sources = extended.emitters;
+    scene.options.motion_sample_intervals = 16;
   }
   if (!(input >> count) || count == 0 || count > kMaximumSeedCount) {
     return absl::InvalidArgumentError("invalid seed count");
@@ -171,6 +291,9 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
     Vec3 position{};
     if (!ReadFiniteVector(input, position)) {
       return absl::InvalidArgumentError("invalid seed position");
+    }
+    if (planar_fill && position.y >= planar_fill->world_surface_height_y) {
+      return absl::InvalidArgumentError("seed position is above the planar fill");
     }
     std::int64_t side_tag = 0;
     if (const auto* slab = std::get_if<TranslatingSlab3D>(&scene.scene.obstacle)) {
@@ -204,7 +327,30 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
         .volume_ratio = 1,
         .side_tag = side_tag,
     };
+    if (extended_authoring) {
+      std::uint64_t substance_id = 0;
+      double particle_volume = 0;
+      if (!(input >> substance_id >> particle_volume)) {
+        return absl::InvalidArgumentError("missing extended seed substance or volume");
+      }
+      const auto* material = FindMaterial(extended, substance_id);
+      if (!material || !SetPureMaterial((*particles)[index], *material, particle_volume)) {
+        return absl::InvalidArgumentError("invalid extended seed substance or volume");
+      }
+    }
   }
+  auto source_states = LiquidRecords3D<LiquidSourceState3D>::Create(extended.emitters.size());
+  if (!source_states.ok()) {
+    return source_states.status();
+  }
+  const auto sized_sources = source_states->Resize(extended.emitters.size());
+  if (!sized_sources.ok()) {
+    return sized_sources;
+  }
+  for (std::size_t index = 0; index < extended.emitters.size(); ++index) {
+    (*source_states)[index].source_ordinal = extended.emitters[index].source_ordinal;
+  }
+  state.sources = std::move(*source_states);
   if (input >> version) {
     return absl::InvalidArgumentError("unexpected data after seed positions");
   }
@@ -218,7 +364,11 @@ absl::Status ResolveBlenderScene(std::span<const fs::path> args) {
       .byte_length = seed->size(),
       .digest = LiquidContentDigest3D(seed->values()),
   };
-  scene.scene.field = LiquidParticleSphereUnion3D{0.9 * cell_width};
+  if (planar_fill) {
+    scene.scene.field = *planar_fill;
+  } else {
+    scene.scene.field = LiquidParticleSphereUnion3D{0.9 * cell_width};
+  }
   if (preview != 0) {
     scene.options.maximum_step_duration /= 2;
   }

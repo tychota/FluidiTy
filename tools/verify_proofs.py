@@ -19,6 +19,8 @@ MODULE_TARGETS = {
                          'pressure_gauge_positive_definite',
                          'pressure_solvable_iff_component_compatible'),
     'PressureCorrection': ('pressure_corrected_flux_defect_eq_neg_residual',),
+    'Viscosity': ('viscous_forward_energy', 'viscous_forward_contraction',
+                  'viscous_backward_energy', 'viscous_trace_certificate'),
     'FixedPoint': ('fixed_point_order_independent', 'fixed_point_partial_bound',
                    'fixed_point_cap_partial_bound', 'quantized_contribution_bound',
                    'quantized_sum_error_bound'),

@@ -89,7 +89,8 @@ struct MacPressureSolverOptions3D {
 // pin pressure on unanchored components. Success requires the original FP64
 // residual and independent physical defect gates, including every pin row:
 // ||b-Ap||₂ <= 2e-6 m³/s + 2e-6 ||b||₂ and both maximum |r|/V and physical
-// constraint defect <= 2e-5 s⁻¹.
+// constraint defect <= 2e-5 s⁻¹. A nonzero internal pressure jump additionally
+// caps the global tolerance at 1e-3 ||b||₂ when the RHS norm is positive.
 // Returns kInvalidArgument for invalid data, face topology, or an iteration
 // budget outside [1,256]. Missing face ownership or incompatible unanchored
 // components return kFailedPrecondition. Extents above capacity return

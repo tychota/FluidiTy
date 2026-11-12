@@ -5,10 +5,12 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <tuple>
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/host/liquid_air_components.h"
 #include "fluidity/host/liquid_boundary_workspace_3d.h"
 #include "fluidity/host/views.h"
 #include "liquid_boundary_backend.h"
@@ -1001,18 +1003,47 @@ absl::Status LinksCore(
   const bool has_wetted_piston_face_fluxes = !wetted_piston_face_fluxes.empty();
   if (fields.cells.size() != geometry.cells.size() || fields.predicted_face_velocities.size() != geometry.faces.size()
       || (has_wetted_piston_face_fluxes && wetted_piston_face_fluxes.size() != geometry.faces.size())
-      || !std::isfinite(fields.ambient_pressure)) {
+      || fields.air_cell_pressures.size() > geometry.center_distances.size()
+      || fields.internal_interfaces.size() > geometry.faces.size() || !std::isfinite(fields.ambient_pressure)) {
     return absl::Status(
         absl::StatusCode::kInvalidArgument,
         bounded ? "" : "Invalid pressure field extents or ambient pressure"
     );
   }
+  const auto interfaces = fields.internal_interfaces;
+  for (std::size_t index = 0; index < interfaces.size(); ++index) {
+    const auto& crossing = interfaces[index];
+    if (crossing.face_ordinal >= geometry.faces.size()
+        || (index > 0 && interfaces[index - 1].face_ordinal >= crossing.face_ordinal)
+        || !std::isfinite(crossing.tail_fraction) || crossing.tail_fraction < 0.0 || crossing.tail_fraction > 1.0
+        || !std::isfinite(crossing.surface_tension) || crossing.surface_tension < 0.0
+        || !std::isfinite(crossing.curvature_tail_to_head)
+        || !std::isfinite(crossing.normal_viscous_jump_tail_to_head)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid internal interface record");
+    }
+  }
   const auto distances = geometry.center_distances;
+  for (std::size_t ordinal = 0; ordinal < fields.air_cell_pressures.size(); ++ordinal) {
+    const auto& pressure = fields.air_cell_pressures[ordinal];
+    if (!std::isfinite(pressure.gas_gauge_pressure)
+        || (ordinal > 0 && CellKey(fields.air_cell_pressures[ordinal - 1].cell_index) >= CellKey(pressure.cell_index)
+        )) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid air pressure records");
+    }
+    const auto distance = LookupSignedDistance(distances, pressure.cell_index, bounded);
+    if (!distance.ok()) {
+      return distance.status();
+    }
+    if (*distance < 0.0 || FindCell(geometry.cells, pressure.cell_index) != geometry.cells.size()) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Air pressure requires an air center");
+    }
+  }
   for (std::size_t i = 0; i < geometry.cells.size(); ++i) {
     const auto& cell = geometry.cells[i];
     const auto& field = fields.cells[i];
     if (!std::isfinite(field.target_divergence) || !std::isfinite(field.previous_pressure)
-        || std::isnan(field.bulk_modulus) || field.bulk_modulus <= 0) {
+        || std::isnan(field.bulk_modulus) || field.bulk_modulus <= 0
+        || (field.density && !IsPositiveFinite(*field.density))) {
       return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid pressure cell field");
     }
     result.cells.push_back(
@@ -1059,6 +1090,42 @@ absl::Status LinksCore(
         link.prescribed_wall_flux = signed_piston_flux;
       }
     }
+    const auto crossing = std::ranges::lower_bound(interfaces, i, {}, &LiquidInternalInterface3D::face_ordinal);
+    if (crossing != interfaces.end() && crossing->face_ordinal == i) {
+      if (!has_head || !has_tail || face.open_area <= 0.0 || !fields.cells[head_found].density
+          || !fields.cells[tail_found].density) {
+        return absl::Status(
+            absl::StatusCode::kInvalidArgument,
+            bounded ? "" : "Internal interface requires two open liquid endpoints"
+        );
+      }
+      const double tail_density = *fields.cells[tail_found].density;
+      const double head_density = *fields.cells[head_found].density;
+      const auto capillary_bound =
+          InternalLiquidCapillaryStepBound3D(tail_density, head_density, h, crossing->surface_tension);
+      if (!capillary_bound.ok()) {
+        return capillary_bound.status();
+      }
+      if (geometry.step_duration > *capillary_bound) {
+        return absl::Status(absl::StatusCode::kAborted, bounded ? "" : "Step exceeds internal capillary bound");
+      }
+      // Each phase contributes its density times its share of the distance.
+      // The resulting resistance acts once on this shared pressure link.
+      const double face_density = std::lerp(head_density, tail_density, crossing->tail_fraction);
+      const double inverse_density = 1.0 / face_density;
+      const double pressure_jump = std::fma(
+          -crossing->surface_tension,
+          crossing->curvature_tail_to_head,
+          crossing->normal_viscous_jump_tail_to_head
+      );
+      if (!std::isnormal(inverse_density) || !std::isfinite(pressure_jump)) {
+        return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "Internal interface arithmetic overflow");
+      }
+      link.inverse_density = inverse_density;
+      link.pressure_link = InternalMacPressureLink3D{pressure_jump};
+      result.faces.storage[i] = link;
+      return false;
+    }
     if (!tail.ok()) {
       if (face.open_area > 0) {
         return tail.status();
@@ -1069,10 +1136,27 @@ absl::Status LinksCore(
     if (!has_head && !has_tail) {
       return MissingBoundarySample(bounded);
     }
+    if (face.open_area > 0) {
+      const bool has_head_density = has_head && fields.cells[head_found].density.has_value();
+      const bool has_tail_density = has_tail && fields.cells[tail_found].density.has_value();
+      if (has_head_density || has_tail_density) {
+        const double head_density = has_head_density ? *fields.cells[head_found].density : geometry.liquid_density;
+        const double tail_density = has_tail_density ? *fields.cells[tail_found].density : geometry.liquid_density;
+        // Internal centers contribute two equal half-cell distances. At a
+        // free surface only the liquid-side density enters the mobility.
+        const double face_density =
+            has_head && has_tail ? std::midpoint(head_density, tail_density) : (has_head ? head_density : tail_density);
+        link.inverse_density = 1.0 / face_density;
+        if (!std::isnormal(link.inverse_density)) {
+          return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "Pressure mobility is unrepresentable");
+        }
+      }
+    }
     if (has_head && has_tail) {
       link.pressure_link = InternalMacPressureLink3D{0};
     } else if (face.open_area > 0) {
-      const auto air_distance = LookupSignedDistance(distances, has_head ? *tail : head, bounded);
+      const auto air_cell = has_head ? *tail : head;
+      const auto air_distance = LookupSignedDistance(distances, air_cell, bounded);
       if (!air_distance.ok()) {
         return air_distance.status();
       }
@@ -1084,7 +1168,13 @@ absl::Status LinksCore(
       query.mode = GeometryMode::kLink;
       query.geometry = geometry.mac_grid.geometry();
       query.surface_tension = geometry.surface_tension;
-      query.ambient_pressure = fields.ambient_pressure;
+      const auto air_key = CellKey(air_cell);
+      const auto pressure = std::ranges::lower_bound(fields.air_cell_pressures, air_key, {}, [](const auto& record) {
+        return CellKey(record.cell_index);
+      });
+      query.ambient_pressure = pressure != fields.air_cell_pressures.end() && CellKey(pressure->cell_index) == air_key
+          ? pressure->gas_gauge_pressure
+          : fields.ambient_pressure;
       query.interface_curvature = adjacent_liquid_cell.curvature;
       query.liquid_center_distance = adjacent_liquid_cell.center_distance;
       query.air_center_distance = *air_distance;
@@ -1210,7 +1300,601 @@ void Resize(LiquidRecords3D<T>& records, std::size_t size) {
   const auto status = records.Resize(size);
   (void)status;
 }
+absl::StatusOr<double> MeasureGasFace(GeometryInput face, const std::array<double, 8>& gas_distances, int side) {
+  using boundary_internal::CartesianVector;
+  using boundary_internal::ClippingPolygon;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ClipPolygon;
+  using boundary_internal::ComputeClippedArea;
+  using boundary_internal::ObstacleKind;
+  using boundary_internal::TankClipBounds;
+  const double width = face.geometry.cell_width;
+  const bool tank = face.obstacle.kind == ObstacleKind::kOpenTank;
+  TankClipBounds tank_bounds;
+  if (tank) {
+    const auto bounds = boundary_internal::LocalTankBounds(face);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    const auto opening = boundary_internal::ComputeTankFace(face, *bounds);
+    if (!opening.ok()) {
+      return boundary_internal::ArithmeticStatus(opening.status(), true);
+    }
+    if (opening->open_face_area == 0.0) {
+      return 0.0;
+    }
+    tank_bounds = *bounds;
+  }
+  const auto obstacle = boundary_internal::LocalObstacle(face);
+  if (!obstacle.ok()) {
+    return boundary_internal::ArithmeticStatus(obstacle.status(), true);
+  }
+  std::array<int, 2> transverse{};
+  std::size_t count = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis != face.axis) {
+      transverse[count++] = axis;
+    }
+  }
+  constexpr int kFirst[]{0, 1, 1, 0};
+  constexpr int kSecond[]{0, 0, 1, 1};
+  std::array<ClippingVertex, 4> vertices{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    const int bits = (side << face.axis) | (kFirst[corner] << transverse[0]) | (kSecond[corner] << transverse[1]);
+    vertices[corner].cell_width_position[transverse[0]] = kFirst[corner];
+    vertices[corner].cell_width_position[transverse[1]] = kSecond[corner];
+    vertices[corner].liquid_distance = gas_distances[bits];
+  }
+  double gas_area = 0.0;
+  for (int triangle = 0; triangle < 2; ++triangle) {
+    const ClippingPolygon polygon{vertices[0], vertices[triangle + 1], vertices[triangle + 2]};
+    if (std::ranges::none_of(polygon, [](const ClippingVertex& vertex) {
+          return vertex.liquid_distance < 0.0;
+        })) {
+      continue;
+    }
+    auto gas = ClipPolygon(polygon, {{}, 0.0, true});
+    if (tank) {
+      for (const int axis : transverse) {
+        if (tank_bounds.low[axis] > 0.0) {
+          CartesianVector normal{};
+          normal[axis] = -1.0;
+          gas = ClipPolygon(gas, {normal, -tank_bounds.low[axis], false, axis});
+        }
+        if (tank_bounds.high[axis] < 1.0) {
+          CartesianVector normal{};
+          normal[axis] = 1.0;
+          gas = ClipPolygon(gas, {normal, tank_bounds.high[axis], false, axis});
+        }
+      }
+    }
+    if (obstacle->present) {
+      gas_area += boundary_internal::ComputeOpenFaceArea(
+          gas,
+          {boundary_internal::Scale(obstacle->normal, -1.0), -obstacle->high},
+          width
+      );
+      if (obstacle->slab) {
+        gas_area += boundary_internal::ComputeOpenFaceArea(gas, {obstacle->normal, obstacle->low}, width);
+      }
+    } else {
+      gas_area += ComputeClippedArea(gas, width);
+    }
+  }
+  const double full_area = width * width;
+  if (!IsNormalOrZero(gas_area) || gas_area / full_area > 1.0 + 64.0 * std::numeric_limits<double>::epsilon()) {
+    return UnrepresentableGeometry(true);
+  }
+  return std::min(gas_area, full_area);
+}
+
+// Each clipped tetrahedron is convex on the selected side of the obstacle.
+// A positive-area gas patch on a shared triangle joins two such pieces.
+absl::Status CertifyGasCellConnectivity(GeometryInput query, bool low_slab_side) {
+  using boundary_internal::CartesianVector;
+  using boundary_internal::CellTetrahedronCorner;
+  using boundary_internal::ClippingPolygon;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ObstacleKind;
+  using boundary_internal::TankClipBounds;
+  constexpr std::size_t kTetrahedra = 6;
+  const double width = query.geometry.cell_width;
+  const bool tank = query.obstacle.kind == ObstacleKind::kOpenTank;
+  TankClipBounds tank_bounds;
+  if (tank) {
+    const auto bounds = boundary_internal::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    tank_bounds = *bounds;
+  }
+  const auto obstacle = boundary_internal::LocalObstacle(query);
+  if (!obstacle.ok()) {
+    return boundary_internal::ArithmeticStatus(obstacle.status(), true);
+  }
+  const auto clip_obstacle = [&](auto piece, auto clip) {
+    if (tank) {
+      for (int axis = 0; axis < 3; ++axis) {
+        if (tank_bounds.low[axis] > 0.0) {
+          CartesianVector normal{};
+          normal[axis] = -1.0;
+          piece = clip(piece, {normal, -tank_bounds.low[axis], false, axis});
+        }
+        if (tank_bounds.high[axis] < 1.0) {
+          CartesianVector normal{};
+          normal[axis] = 1.0;
+          piece = clip(piece, {normal, tank_bounds.high[axis], false, axis});
+        }
+      }
+    } else if (obstacle->present) {
+      if (low_slab_side) {
+        piece = clip(piece, {obstacle->normal, obstacle->low});
+      } else {
+        piece = clip(piece, {boundary_internal::Scale(obstacle->normal, -1.0), -obstacle->high});
+      }
+    }
+    return piece;
+  };
+  const auto clip_polyhedron = [](auto piece, boundary_internal::ClippingPlane plane) {
+    return boundary_internal::ClipPolyhedron(piece, plane);
+  };
+  const auto clip_polygon = [](auto piece, boundary_internal::ClippingPlane plane) {
+    return boundary_internal::ClipPolygon(piece, plane);
+  };
+  std::array<ClippingVertex, 8> vertices{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    for (int axis = 0; axis < 3; ++axis) {
+      vertices[corner].cell_width_position[axis] = static_cast<double>((corner >> axis) & 1);
+    }
+    vertices[corner].liquid_distance = query.corner_distances[corner];
+  }
+  const auto has_gas = [](const ClippingVertex& vertex) {
+    return vertex.liquid_distance < 0.0;
+  };
+  std::array<bool, kTetrahedra> active{};
+  std::size_t active_count = 0;
+  for (std::size_t tetrahedron = 0; tetrahedron < kTetrahedra; ++tetrahedron) {
+    const auto a = vertices[0];
+    const auto b = vertices[CellTetrahedronCorner(tetrahedron, 1)];
+    const auto c = vertices[CellTetrahedronCorner(tetrahedron, 2)];
+    const auto d = vertices[7];
+    if (!has_gas(a) && !has_gas(b) && !has_gas(c) && !has_gas(d)) {
+      continue;
+    }
+    const auto gas = clip_polyhedron(
+        boundary_internal::ClippingPolyhedron{{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}},
+        {{}, 0.0, true}
+    );
+    const double volume = boundary_internal::ComputeClippedVolume(clip_obstacle(gas, clip_polyhedron), width);
+    if (!IsNormalOrZero(volume)) {
+      return UnrepresentableGeometry(true);
+    }
+    if (volume > 0.0) {
+      active[tetrahedron] = true;
+      ++active_count;
+    }
+  }
+  if (active_count == 0) {
+    return UnrepresentableGeometry(true);
+  }
+  std::array<std::size_t, kTetrahedra> queue{};
+  std::array<bool, kTetrahedra> reached{};
+  const auto seed = static_cast<std::size_t>(std::ranges::find(active, true) - active.begin());
+  queue[0] = seed;
+  reached[seed] = true;
+  std::size_t queued = 1;
+  for (std::size_t cursor = 0; cursor < queued; ++cursor) {
+    const std::size_t current = queue[cursor];
+    for (std::size_t neighbor = 0; neighbor < kTetrahedra; ++neighbor) {
+      if (!active[neighbor] || reached[neighbor]) {
+        continue;
+      }
+      for (std::size_t inner_corner = 1; inner_corner < 3; ++inner_corner) {
+        const int shared_corner = CellTetrahedronCorner(current, inner_corner);
+        if (shared_corner != CellTetrahedronCorner(neighbor, 1)
+            && shared_corner != CellTetrahedronCorner(neighbor, 2)) {
+          continue;
+        }
+        const ClippingPolygon triangle{vertices[0], vertices[shared_corner], vertices[7]};
+        if (std::ranges::none_of(triangle, has_gas)) {
+          break;
+        }
+        const auto gas = clip_polygon(triangle, {{}, 0.0, true});
+        const double area = boundary_internal::ComputeClippedArea(clip_obstacle(gas, clip_polygon), width);
+        if (!IsNormalOrZero(area)) {
+          return UnrepresentableGeometry(true);
+        }
+        if (area > 0.0) {
+          reached[neighbor] = true;
+          queue[queued++] = neighbor;
+        }
+        break;
+      }
+    }
+  }
+  if (queued != active_count) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureGasCell(const LiquidAirCellMeasureInputs3D& inputs) {
+  const double width = inputs.geometry.cell_width;
+  const double full_volume = width * width * width;
+  if (!IsPositiveFinite(width) || !HasFiniteComponents(CartesianComponents(inputs.geometry.world_origin))
+      || std::ranges::any_of(inputs.liquid_corner_distances, [](double distance) {
+           return !std::isfinite(distance);
+         })) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  if (!std::isnormal(full_volume) || !std::isnormal(width * width)) {
+    return UnrepresentableGeometry(true);
+  }
+  const auto obstacle = ValidateObstacle(inputs.obstacle, 0.0, true);
+  if (!obstacle.ok()) {
+    return obstacle.status();
+  }
+  GeometryInput query{
+      .mode = GeometryMode::kCell,
+      .geometry = inputs.geometry,
+      .index = inputs.cell_index,
+      .obstacle = PackObstacle(inputs.obstacle),
+  };
+  std::array<double, 8> gas_distances{};
+  for (std::size_t corner = 0; corner < gas_distances.size(); ++corner) {
+    gas_distances[corner] = -inputs.liquid_corner_distances[corner];
+    query.corner_distances[corner] = gas_distances[corner];
+  }
+  const auto volume = boundary_internal::ComputeGeometry(query);
+  if (!volume.ok()) {
+    return boundary_internal::ArithmeticStatus(volume.status(), true);
+  }
+  if (volume->low_side_liquid_volume > 0.0 && volume->high_side_liquid_volume > 0.0) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  const double gas_volume = volume->low_side_liquid_volume + volume->high_side_liquid_volume;
+  if (!IsNormalOrZero(gas_volume) || gas_volume / full_volume > 1.0 + 64.0 * std::numeric_limits<double>::epsilon()) {
+    return UnrepresentableGeometry(true);
+  }
+  if (gas_volume > 0.0) {
+    const auto connected = CertifyGasCellConnectivity(query, volume->low_side_liquid_volume > 0.0);
+    if (!connected.ok()) {
+      return connected;
+    }
+  }
+  LiquidAirCellMeasures3D result{.gas_volume = std::min(gas_volume, full_volume)};
+  for (int axis = 0; axis < 3; ++axis) {
+    for (int side = 0; side < 2; ++side) {
+      const auto index = OffsetCellIndex(inputs.cell_index, axis, side, true);
+      if (!index.ok()) {
+        return index.status();
+      }
+      query.mode = GeometryMode::kFace;
+      query.index = *index;
+      query.axis = axis;
+      const auto area = MeasureGasFace(query, gas_distances, side);
+      if (!area.ok()) {
+        return area.status();
+      }
+      result.gas_face_areas[2 * axis + side] = *area;
+    }
+  }
+  return result;
+}
+
 }  // namespace
+
+absl::StatusOr<double> InternalLiquidCapillaryStepBound3D(
+    double tail_density,
+    double head_density,
+    double cell_width,
+    double surface_tension
+) {
+  if (!IsPositiveFinite(tail_density) || !IsPositiveFinite(head_density) || !IsPositiveFinite(cell_width)
+      || !std::isfinite(surface_tension) || surface_tension < 0.0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  if (surface_tension == 0.0) {
+    return std::numeric_limits<double>::infinity();
+  }
+
+  // Scale before forming the density sum and h³. The square of the limit
+  // can exceed the FP64 range even when the limit itself is representable.
+  const double larger_density = std::max(tail_density, head_density);
+  const double density_ratio = std::min(tail_density, head_density) / larger_density;
+  int density_exponent;
+  int width_exponent;
+  int tension_exponent;
+  const double scaled_density = std::frexp(larger_density, &density_exponent) * (1.0 + density_ratio);
+  const double scaled_width = std::frexp(cell_width, &width_exponent);
+  const double scaled_tension = std::frexp(surface_tension, &tension_exponent);
+  const double scaled_square =
+      scaled_density * scaled_width * scaled_width * scaled_width / (4.0 * std::numbers::pi * scaled_tension);
+  const int square_exponent = density_exponent + 3 * width_exponent - tension_exponent;
+  const double bound = std::scalbn(std::sqrt(std::scalbn(scaled_square, square_exponent % 2)), square_exponent / 2);
+  if (!IsPositiveFinite(bound)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return bound;
+}
+
+absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
+  return MeasureGasCell(inputs);
+}
+absl::StatusOr<std::array<double, 8>> boundary_internal::MeasureLiquidCellOctants(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances,
+    bool detailed_errors
+) {
+  using boundary_internal::ClipLiquidToTank;
+  using boundary_internal::ClippingPolyhedron;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ClipPolyhedron;
+  using boundary_internal::ComputeClippedVolume;
+  using boundary_internal::TankClipBounds;
+  const double width = geometry.cell_width;
+  if (!IsPositiveFinite(width) || !HasFiniteComponents(CartesianComponents(geometry.world_origin))
+      || std::ranges::any_of(liquid_corner_distances, [](double distance) {
+           return !std::isfinite(distance);
+         })) {
+    return absl::Status(
+        absl::StatusCode::kInvalidArgument,
+        detailed_errors ? "invalid liquid octant geometry or corner distance" : ""
+    );
+  }
+  const double cell_volume = width * width * width;
+  const double octant_volume = cell_volume / 8.0;
+  if (!std::isnormal(width * width) || !std::isnormal(octant_volume)) {
+    return UnrepresentableGeometry(true);
+  }
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
+  if (!obstacle_status.ok()) {
+    return obstacle_status.status();
+  }
+  const GeometryInput query{
+      .mode = GeometryMode::kCell,
+      .geometry = geometry,
+      .index = cell_index,
+      .obstacle = PackObstacle(obstacle),
+  };
+  std::array<double, 8> volumes{};
+  const bool open_tank = std::holds_alternative<AxisAlignedLiquidTank3D>(obstacle);
+  TankClipBounds tank_bounds;
+  if (open_tank) {
+    if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
+      return UnrepresentableGeometry(true);
+    }
+    const auto bounds = boundary_internal::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    tank_bounds = *bounds;
+  }
+  const auto local = boundary_internal::LocalObstacle(query);
+  if (!local.ok()) {
+    return boundary_internal::ArithmeticStatus(local.status(), true);
+  }
+
+  std::array<ClippingVertex, 8> vertices{};
+  std::array<TankClipBounds, 8> octant_bounds{};
+  std::array<bool, 8> nonempty_octants{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    vertices[corner].liquid_distance = liquid_corner_distances[corner];
+    nonempty_octants[corner] = true;
+    auto& bounds = octant_bounds[corner];
+    for (int axis = 0; axis < 3; ++axis) {
+      const double corner_coordinate = static_cast<double>((corner >> axis) & 1u);
+      vertices[corner].cell_width_position[axis] = corner_coordinate;
+      bounds.low[axis] = std::max(0.5 * corner_coordinate, tank_bounds.low[axis]);
+      bounds.high[axis] = std::min(0.5 * corner_coordinate + 0.5, tank_bounds.high[axis]);
+      nonempty_octants[corner] &= bounds.low[axis] < bounds.high[axis];
+    }
+  }
+
+  // Each tetrahedron lies in the original cell frame. Clipping its liquid
+  // pieces by the octant planes partitions the same volume used by pressure.
+  const auto accumulate_piece = [&](const ClippingPolyhedron& piece) {
+    if (piece.overflow) {
+      volumes.fill(std::numeric_limits<double>::quiet_NaN());
+      return;
+    }
+    if (piece.empty()) {
+      return;
+    }
+    for (std::size_t octant = 0; octant < volumes.size(); ++octant) {
+      if (nonempty_octants[octant]) {
+        volumes[octant] += ComputeClippedVolume(ClipLiquidToTank(piece, octant_bounds[octant]), width);
+      }
+    }
+  };
+  for (std::size_t tetrahedron = 0; tetrahedron < 6; ++tetrahedron) {
+    const auto a = vertices[0];
+    const auto b = vertices[boundary_internal::CellTetrahedronCorner(tetrahedron, 1)];
+    const auto c = vertices[boundary_internal::CellTetrahedronCorner(tetrahedron, 2)];
+    const auto d = vertices[7];
+    if (std::min({a.liquid_distance, b.liquid_distance, c.liquid_distance, d.liquid_distance}) >= 0.0) {
+      continue;
+    }
+    const auto liquid = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
+    if (local->present) {
+      accumulate_piece(ClipPolyhedron(liquid, {boundary_internal::Scale(local->normal, -1), -local->high}));
+      if (local->slab) {
+        accumulate_piece(ClipPolyhedron(liquid, {local->normal, local->low}));
+      }
+    } else {
+      accumulate_piece(liquid);
+    }
+  }
+  constexpr double kVolumeRoundoff = 64.0 * std::numeric_limits<double>::epsilon();
+  for (double& volume : volumes) {
+    if (!IsNormalOrZero(volume) || volume < 0.0 || volume / octant_volume > 1.0 + kVolumeRoundoff) {
+      return UnrepresentableGeometry(true);
+    }
+    volume = std::min(volume, octant_volume);
+  }
+  return volumes;
+}
+
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances
+) {
+  return boundary_internal::MeasureLiquidCellOctants(geometry, cell_index, obstacle, liquid_corner_distances, true);
+}
+
+absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
+    UniformMacGeometry3D geometry,
+    const LiquidObstacle3D& obstacle,
+    std::span<const CellIndex3D> sampled_cells,
+    std::span<const LiquidCornerDistance3D> corners,
+    std::span<const FaceIndex3D> atmosphere_outlets,
+    std::span<LiquidAirVolumeCell3D> gas_cells,
+    LiquidAirExterior3D exterior
+) {
+  const auto invalid = [] {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  };
+  const bool certify_exterior = exterior == LiquidAirExterior3D::kUnobstructedBoundingBox;
+  if (exterior > LiquidAirExterior3D::kUnobstructedBoundingBox
+      || (certify_exterior && (!std::holds_alternative<std::monostate>(obstacle) || !atmosphere_outlets.empty()))) {
+    return invalid();
+  }
+  const auto output_bytes = std::as_bytes(gas_cells);
+  for (const auto input_bytes : {
+           std::as_bytes(sampled_cells),
+           std::as_bytes(corners),
+           std::as_bytes(atmosphere_outlets),
+       }) {
+    if (ByteViewsOverlap(output_bytes, input_bytes)) {
+      return invalid();
+    }
+  }
+  if (ByteViewsOverlap(output_bytes, std::as_bytes(std::span(&obstacle, 1)))) {
+    return invalid();
+  }
+  if (!IsPositiveFinite(geometry.cell_width) || !HasFiniteComponents(CartesianComponents(geometry.world_origin))) {
+    return invalid();
+  }
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
+  if (!obstacle_status.ok()) {
+    return obstacle_status.status();
+  }
+  const auto samples_status = ValidateSamples(corners, true);
+  if (!samples_status.ok()) {
+    return samples_status;
+  }
+  const auto face_key = [](FaceIndex3D face) {
+    return std::tuple{face.axis, face.lattice_index.z, face.lattice_index.y, face.lattice_index.x};
+  };
+  for (std::size_t outlet = 0; outlet < atmosphere_outlets.size(); ++outlet) {
+    const auto& face = atmosphere_outlets[outlet];
+    if (face.axis > FaceNormalAxis::kZ || (outlet > 0 && face_key(atmosphere_outlets[outlet - 1]) >= face_key(face))) {
+      return invalid();
+    }
+  }
+  for (std::size_t cell = 1; cell < sampled_cells.size(); ++cell) {
+    if (CellKey(sampled_cells[cell - 1]) >= CellKey(sampled_cells[cell])) {
+      return invalid();
+    }
+  }
+
+  std::array<std::int32_t, 3> low{};
+  std::array<std::int32_t, 3> high{};
+  if (certify_exterior && !sampled_cells.empty()) {
+    const auto& first = sampled_cells.front();
+    low = {first.x, first.y, first.z};
+    high = low;
+    for (const auto cell : sampled_cells) {
+      const std::array coordinates{cell.x, cell.y, cell.z};
+      for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+        low[axis] = std::min(low[axis], coordinates[axis]);
+        high[axis] = std::max(high[axis], coordinates[axis]);
+      }
+    }
+  }
+
+  std::size_t gas_count = 0;
+  std::size_t used_outlets = 0;
+  for (const auto cell : sampled_cells) {
+    LiquidAirCellMeasureInputs3D inputs{
+        .geometry = geometry,
+        .cell_index = cell,
+        .obstacle = obstacle,
+        .liquid_corner_distances = {},
+    };
+    for (std::size_t corner = 0; corner < inputs.liquid_corner_distances.size(); ++corner) {
+      CellIndex3D corner_index = cell;
+      for (int axis = 0; axis < 3; ++axis) {
+        const auto shifted = OffsetCellIndex(corner_index, axis, static_cast<int>((corner >> axis) & 1), true);
+        if (!shifted.ok()) {
+          return shifted.status();
+        }
+        corner_index = *shifted;
+      }
+      const auto distance = LookupSignedDistance(corners, corner_index, true);
+      if (!distance.ok()) {
+        return distance.status();
+      }
+      inputs.liquid_corner_distances[corner] = *distance;
+    }
+    const auto measures = MeasureLiquidAirCell3D(inputs);
+    if (!measures.ok()) {
+      return measures.status();
+    }
+    if (measures->gas_volume == 0.0) {
+      continue;
+    }
+    if (gas_count == gas_cells.size()) {
+      return absl::Status(absl::StatusCode::kResourceExhausted, {});
+    }
+    LiquidAirVolumeCell3D record{.cell_index = cell, .gas_volume = measures->gas_volume};
+    const std::array coordinates{cell.x, cell.y, cell.z};
+    for (int axis = 0; axis < 3; ++axis) {
+      for (int side = 0; side < 2; ++side) {
+        const auto passage = static_cast<std::size_t>(2 * axis + side);
+        if (measures->gas_face_areas[passage] == 0.0) {
+          continue;
+        }
+        record.passages[passage] = LiquidAirPassage3D::kOpen;
+        if (certify_exterior) {
+          const auto normal_axis = static_cast<std::size_t>(axis);
+          const auto plane = side == 0 ? low[normal_axis] : high[normal_axis];
+          if (coordinates[normal_axis] == plane) {
+            record.passages[passage] = LiquidAirPassage3D::kAtmosphere;
+          }
+          continue;
+        }
+        if (atmosphere_outlets.empty()) {
+          continue;
+        }
+        const auto face = OffsetCellIndex(cell, axis, side, true);
+        if (!face.ok()) {
+          return face.status();
+        }
+        const auto key = face_key({static_cast<FaceNormalAxis>(axis), {face->x, face->y, face->z}});
+        if (!std::ranges::binary_search(atmosphere_outlets, key, {}, face_key)) {
+          continue;
+        }
+        const auto neighbor = OffsetCellIndex(cell, axis, side == 0 ? -1 : 1, true);
+        if (neighbor.ok() && std::ranges::binary_search(sampled_cells, CellKey(*neighbor), {}, CellKey<CellIndex3D>)) {
+          return invalid();
+        }
+        record.passages[passage] = LiquidAirPassage3D::kAtmosphere;
+        ++used_outlets;
+      }
+    }
+    gas_cells[gas_count++] = record;
+  }
+  if (used_outlets != atmosphere_outlets.size()) {
+    return invalid();
+  }
+  return gas_count;
+}
+
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D>
 boundary_internal::FreezeGeometry(const LiquidBoundaryGeometryInputs3D& inputs, GeometryBackend backend) {
   if (inputs.cell_indices.size() > 4096) {
@@ -1394,12 +2078,14 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
     return view_status;
   }
   auto& bank = links_[1 - link_bank_];
-  const auto wetted_flux_bytes = std::as_bytes(fields.wetted_piston_face_fluxes);
-  if (!wetted_flux_bytes.empty()) {
+  for (const auto override_bytes :
+       {std::as_bytes(fields.wetted_piston_face_fluxes),
+        std::as_bytes(fields.air_cell_pressures),
+        std::as_bytes(fields.internal_interfaces)}) {
     const auto reserved_cell_bytes = std::as_bytes(std::span(bank.cells.values().data(), bank.cells.capacity()));
     const auto reserved_face_bytes = std::as_bytes(std::span(bank.faces.values().data(), bank.faces.capacity()));
-    if (ByteViewsOverlap(wetted_flux_bytes, reserved_cell_bytes)
-        || ByteViewsOverlap(wetted_flux_bytes, reserved_face_bytes)) {
+    if (ByteViewsOverlap(override_bytes, reserved_cell_bytes)
+        || ByteViewsOverlap(override_bytes, reserved_face_bytes)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
   }

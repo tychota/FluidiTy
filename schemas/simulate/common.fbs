@@ -11,6 +11,7 @@ enum Occupancy:ubyte { Air = 0, Liquid = 1, Solid = 2 }
 enum Validity:ubyte { Missing = 0, Valid = 1, Predicted = 2, LowMass = 3 }
 enum Backend:ubyte { Cpu = 0, Cuda = 1 }
 enum ContentKind:ubyte { State = 0, Points = 1, ResolvedScene = 2, Manifest = 3 }
+struct ConstituentFraction { substance_id:ulong; volume_fraction:double; }
 table Particle {
   id:ulong (id:0);
   tag:uint (id:1);
@@ -23,6 +24,8 @@ table Particle {
   volume_ratio:double = 1 (id:8);
   side:long (id:9);
   pic_initialized:bool (id:10);
+  phase_id:ulong = null (id:11);
+  constituents:[ConstituentFraction] (id:12);
 }
 table ContentReference {
   kind:ContentKind (id:0);

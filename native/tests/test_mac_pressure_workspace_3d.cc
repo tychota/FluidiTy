@@ -92,6 +92,24 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
   });
 }
 
+TEST(MacPressureWorkspace3D, ReservesAdditionalScratchOnlyInCoupledMode) {
+  constexpr std::size_t kCells = 64;
+  constexpr auto kCoupled = MacPressureWorkspaceMode3D::kCoupledViscosity;
+  const auto inviscid = QueryMacPressureWorkspaceBytes3D(kCells, 0);
+  const auto coupled = QueryMacPressureWorkspaceBytes3D(kCells, 0, kCoupled);
+  ASSERT_TRUE(inviscid.ok());
+  ASSERT_TRUE(coupled.ok());
+  EXPECT_GT(coupled->scratch_bytes, inviscid->scratch_bytes);
+  EXPECT_EQ(coupled->projection_bytes, inviscid->projection_bytes);
+
+  const auto inviscid_workspace = MacPressureWorkspace3D::Create(kCells, 0);
+  const auto coupled_workspace = MacPressureWorkspace3D::Create(kCells, 0, kCoupled);
+  ASSERT_TRUE(inviscid_workspace.ok());
+  ASSERT_TRUE(coupled_workspace.ok());
+  EXPECT_EQ(inviscid_workspace->bytes().total_bytes, inviscid->total_bytes);
+  EXPECT_EQ(coupled_workspace->bytes().total_bytes, coupled->total_bytes);
+}
+
 TEST(MacPressureWorkspace3D, RestSeedUsesOnlyCheckedUniformAnchoredRest) {
   constexpr double kExteriorPressure = 19;
   auto rest = MakeAffineProblem(0, 2, true);

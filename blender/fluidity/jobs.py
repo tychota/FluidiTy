@@ -63,8 +63,9 @@ def prepare(packet, backend, directory):
 
 
 class Job:
-    def __init__(self, scene, cache, packet, backend, last_frame, resume):
+    def __init__(self, scene, stage, command):
         self.scene = scene
+        self.stage = stage
         self.messages = Queue(maxsize=64)
         self.finished_reading = threading.Event()
         self.stop_reader = threading.Event()
@@ -74,27 +75,7 @@ class Job:
         self.last_heartbeat = None
         self.files = tempfile.TemporaryDirectory(prefix="fluidity-")
         try:
-            path, seed = prepare(packet, backend, self.files.name)
-            if resume:
-                checked("simulate", "check", "--scene", path, "--cache", cache)
-            args = [
-                binary("simulate"),
-                "run",
-                "--stage",
-                "simulate",
-                "--scene",
-                path,
-                "--initial-state",
-                seed,
-                "--cache",
-                cache,
-                "--backend",
-                backend,
-                "--frame-end",
-                str(last_frame),
-            ]
-            if resume:
-                args.append("--resume")
+            args = command(Path(self.files.name))
             with open(Path(self.files.name) / "stderr.txt", "wb") as stderr:
                 self.process = subprocess.Popen(
                     args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, creationflags=NO_WINDOW
@@ -283,12 +264,42 @@ def is_running(scene):
 
 
 def start(scene, cache, packet, backend, last_frame, resume):
+    def command(directory):
+        path, seed = prepare(packet, backend, directory)
+        if resume:
+            checked("simulate", "check", "--scene", path, "--cache", cache)
+        args = [
+            binary("simulate"), "run", "--stage", "simulate", "--scene", path,
+            "--initial-state", seed, "--cache", cache, "--backend", backend,
+            "--frame-end", str(last_frame),
+        ]
+        if resume:
+            args.append("--resume")
+        return args
+
+    return start_job(scene, "simulate", command)
+
+
+def start_mesh(scene, source, output, last_frame, spacing, sigma, resume):
+    def command(_directory):
+        args = [
+            binary("simulate"), "run", "--stage", "mesh", "--cache", source,
+            "--output-cache", output, "--frame-end", str(last_frame),
+            "--surface-spacing", str(spacing), "--surface-sigma", str(sigma),
+        ]
+        if resume:
+            args.append("--resume")
+        return args
+
+    return start_job(scene, "mesh", command)
+
+
+def start_job(scene, stage, command):
     if is_running(scene):
         raise ToolError("This scene already has a running job.")
-    job = Job(scene, cache, packet, backend, last_frame, resume)
+    job = Job(scene, stage, command)
     _JOBS[scene.as_pointer()] = job
     return job
-
 
 def cancel(scene):
     job = _JOBS.get(scene.as_pointer())
@@ -306,15 +317,20 @@ def tick():
         cutter = isinstance(job, CutterJob)
         if record.get("event") == "result" and (cutter or job.process.returncode == 0):
             settings.committed_frame = max(settings.committed_frame, record["frame"])
-            settings.message = (
-                "Cutter bake complete. Inspect a committed frame for particle sides."
-                if cutter
-                else "Bake complete. Attach the committed points to render."
-            )
+            if cutter:
+                settings.message = "Cutter bake complete. Inspect a committed frame for particle sides."
+            elif job.stage == "mesh":
+                settings.message = "Surface build complete. Attach the committed surface to render."
+            else:
+                settings.message = "Bake complete. Attach the committed points to render."
         elif record.get("name") == "CANCELLED":
             settings.message = "Cancelled. Committed frames are available for Resume."
         elif record.get("event") == "error":
-            settings.message = "Bake failed. Committed frames are preserved."
+            settings.message = (
+                "Surface build failed. Committed frames are preserved."
+                if not cutter and job.stage == "mesh"
+                else "Bake failed. Committed frames are preserved."
+            )
             settings.diagnostic = " ".join(str(record.get(key, "")) for key in ("code", "field", "cause")).strip()
         else:
             settings.message = "Job ended unexpectedly. Committed frames are preserved."

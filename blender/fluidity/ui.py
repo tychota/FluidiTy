@@ -118,16 +118,40 @@ class FLUIDITY_PT_fluid(ChildPanel, bpy.types.Panel):
         scene = context.scene
         settings = scene.fluidity
         column = controls(self.layout, scene)
-        input_object(column, settings, "liquid", "Initial Liquid")
+        if not settings.liquid_sources:
+            input_object(column, settings, "liquid", "Initial Liquid")
+        if settings.boundary_mode != "LEGACY_PADDLE":
+            for index, source in enumerate(settings.liquid_sources):
+                box = column.box()
+                row = box.row(align=True)
+                row.prop(source, "geometry")
+                row.operator("fluidity.liquid_source", text="", icon="X").index = index
+                for field in ("substance_id", "phase_id", "density", "emission_rate"):
+                    box.prop(source, field)
+                box.prop(source, "override_viscosity")
+                if source.override_viscosity:
+                    box.prop(source, "viscosity")
+                if source.emission_rate > 0:
+                    box.prop(source, "emitted_volume")
+            column.operator("fluidity.liquid_source", text="Add Liquid Source", icon="ADD")
+            if settings.liquid_sources and settings.boundary_mode == "TANK":
+                column.prop(settings, "planar_fill")
+                if settings.planar_fill:
+                    column.prop(settings, "fill_height")
+            if len({source.phase_id for source in settings.liquid_sources}) > 1:
+                interactions = column.box()
+                interactions.label(text="Interactions")
+                interactions.prop(settings, "phase_tension")
         material = column.column(align=True)
         material.enabled = settings.boundary_mode != "LEGACY_PADDLE"
-        row = material.row(align=True)
-        row.label(text="Fluid Preset")
-        preset_name = next(
-            label for key, label, _description in authoring.PRESET_ITEMS if key == settings.material_preset
-        )
-        row.operator_menu_enum("fluidity.apply_preset", "preset", text=preset_name)
-        material.prop(settings, "density", text="Density (kg/m³)")
+        if not settings.liquid_sources:
+            row = material.row(align=True)
+            row.label(text="Fluid Preset")
+            preset_name = next(
+                label for key, label, _description in authoring.PRESET_ITEMS if key == settings.material_preset
+            )
+            row.operator_menu_enum("fluidity.apply_preset", "preset", text=preset_name)
+            material.prop(settings, "density", text="Density (kg/m³)")
         material.prop(settings, "surface_tension", text="Surface Tension (N/m)")
         for index, label in enumerate(("Velocity X (m/s)", "Velocity Y (m/s)", "Velocity Z (m/s)")):
             material.prop(settings, "initial_velocity", index=index, text=label)
@@ -256,6 +280,15 @@ class FLUIDITY_PT_interchange(ChildPanel, bpy.types.Panel):
         column = layout.column()
         column.enabled = not jobs.is_running(context.scene)
         column.operator("fluidity.import_cache", text="Import Cache...", icon="IMPORT")
+        surface = column.column(align=True)
+        settings = context.scene.fluidity
+        surface.prop(settings, "mesh_cache")
+        surface.prop(settings, "mesh_spacing")
+        surface.prop(settings, "mesh_sigma")
+        row = surface.row(align=True)
+        row.operator("fluidity.build_surface", icon="MESH_DATA")
+        row.operator("fluidity.build_surface", text="Resume Surface").resume = True
+        surface.operator("fluidity.attach_surface", text="Attach Surface Cache...", icon="MESH_DATA")
         column.operator("fluidity.export_alembic", text="Export Alembic...", icon="EXPORT")
         column.operator("fluidity.export_usd", text="Export USD...", icon="EXPORT")
 
