@@ -99,6 +99,8 @@ bool ValidLiquidConstituentMaterials3D(std::span<const LiquidConstituentMaterial
   for (std::size_t index = 0; index < materials.size(); ++index) {
     const auto& material = materials[index];
     if (!std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0.0
+        || (material.dynamic_viscosity_pa_s
+            && (!std::isfinite(*material.dynamic_viscosity_pa_s) || *material.dynamic_viscosity_pa_s < 0.0))
         || (index > 0 && materials[index - 1].substance_id >= material.substance_id)) {
       return false;
     }
@@ -226,6 +228,8 @@ absl::Status DepositLiquidConstituentVolumes3D(
   for (std::size_t index = 0; index < materials.size(); ++index) {
     const auto& material = materials[index];
     if (material.phase_id != phase_id || !std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0.0
+        || (material.dynamic_viscosity_pa_s
+            && (!std::isfinite(*material.dynamic_viscosity_pa_s) || *material.dynamic_viscosity_pa_s < 0.0))
         || (index > 0 && materials[index - 1].substance_id >= material.substance_id)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }

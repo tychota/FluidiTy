@@ -103,6 +103,7 @@ table ConstituentMaterial {
   substance_id:ulong (id:0);
   phase_id:ulong (id:1);
   density_kg_per_m3:double (id:2);
+  dynamic_viscosity_pa_s:double = null (id:3);
 }
 table LiquidPhasePair {
   phase_a:ulong (id:0);

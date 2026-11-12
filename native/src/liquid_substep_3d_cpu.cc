@@ -280,6 +280,7 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFull
     double step_duration,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,
+    std::span<const double> cell_dynamic_viscosity,
     MacPressureSolverOptions3D options,
     ProjectViscousPressure3D project
 ) {
@@ -288,13 +289,18 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFull
   const double full_volume = full_area * width;
   std::vector<MacViscosityCell3D> material;
   material.reserve(problem.cells.size());
-  for (const auto& cell : problem.cells) {
+  if (!cell_dynamic_viscosity.empty() && cell_dynamic_viscosity.size() != problem.cells.size()) {
+    return absl::InvalidArgumentError("viscosity coefficients differ from the frozen pressure cells");
+  }
+  for (std::size_t index = 0; index < problem.cells.size(); ++index) {
+    const auto& cell = problem.cells[index];
     // The cut-volume accumulator sums tetrahedra even for full cells.
     constexpr double kFullCellRoundoff = 64 * std::numeric_limits<double>::epsilon();
     if (std::abs(cell.fluid_volume / full_volume - 1.0) > kFullCellRoundoff) {
       return absl::UnimplementedError("viscous substep requires full-cell strain quadratures");
     }
-    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = dynamic_viscosity});
+    const double viscosity = cell_dynamic_viscosity.empty() ? dynamic_viscosity : cell_dynamic_viscosity[index];
+    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = viscosity});
   }
   for (const auto& face : problem.faces) {
     if (face.open_area != 0.0 && face.open_area != full_area) {
@@ -447,12 +453,14 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
              double step_duration,
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
+             std::span<const double> cell_dynamic_viscosity,
              MacPressureSolverOptions3D options) {
             return liquid_step_internal::ProjectFullCellViscosity(
                 grid,
                 step_duration,
                 problem,
                 dynamic_viscosity,
+                cell_dynamic_viscosity,
                 options,
                 ProjectMacViscousPressure3D
             );

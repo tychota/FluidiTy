@@ -21,6 +21,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
     double step_duration,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,
+    std::span<const double> cell_dynamic_viscosity,
     MacPressureSolverOptions3D options,
     ProjectViscousPressure3D project
 );

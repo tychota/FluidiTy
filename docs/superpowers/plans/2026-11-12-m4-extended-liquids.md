@@ -679,3 +679,15 @@ New-Item -ItemType Directory $run
 & $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- build-attach out/m4-blender-authored-nonzero/simulate out/build/m4-bed51fd-release-clean "$run/attached.blend"
 & $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- reopen "$run/attached.blend"
 ```
+
+## Capillary, proof and validator results on bed51fd / c60a546
+
+Both frozen 216-frame drop runs passed on the clean Release solver. CPU measured 1.9245825615 rad/s and CUDA measured 1.9245825497 rad/s against 2.0238577025 rad/s, with 4.90524% relative error, damping 0.135843, and relative volume drift below 0.000418. All 1080 accepted steps on each backend were capped, and the largest accepted-to-bound ratio was 0.23633. Receipts use out/m4-bed51fd-drop-cpu and out/m4-bed51fd-drop-cuda. The same clean Release build passed all 795 CTest cases, including the exact static-sphere rest check at both declared resolutions. The Debug CPU build passed all 734 cases. Independent Lean proof verification passed and saved out/m4-bed51fd-proof/evidence.json.
+
+WSL passed all 1331 Python tests from c60a546, including real symlink provenance. Its preceding 360 failures were traced to a synthetic CUDA report omitting mandatory viscosity, compliance and pressure cases. The repair kept those cases and added the production phase-crossing and cavity regressions to the required operator set. All three passed on the real device and under Compute Sanitizer with zero errors. Receipts use out/m4-c60a546-python.log and out/m4-bed51fd-phase-cavity-memcheck.log.
+
+## Resolved constituent viscosity receipt
+
+The optional substance coefficient is serialized in the resolved registry. Absent coefficients use the scene viscosity. The declared miscible model is the arithmetic current-volume-weighted viscosity, sampled with the existing cell tent and same-phase fallback. The coupled CPU and CUDA projector accept a viscosity per frozen pressure cell. The legacy scene-wide coefficient still uses the scalar path. Full-cell and full-face or sealed-face geometry remains the supported quadrature. Curved cut-cell and adaptive strain, resolved immiscible production traction, and final candidate qualification remain open.
+
+The CPU fixture resolved a 25/75 mixture of 40 and 120 Pa s. All four pressure cells received 100 Pa s, including cells using nearest-donor continuation, and the committed state matched the uniform 100 Pa s control byte for byte. Forty-four focused Debug CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'ConstituentViscosity|SchedulerConsumesResolvedViscosity|LiquidCache3D|PhaseCrossing|LiquidMixture'. The CPU simulator built and clang-format 19.1.5 passed. The real-device heterogeneous-viscosity fixture was in a fresh Release build at the time of this entry. Receipts use out/m4-constituent-viscosity.

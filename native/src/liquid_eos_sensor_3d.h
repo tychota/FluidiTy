@@ -23,11 +23,14 @@ struct CellCompositionDensity3D {
   double sampled_volume_m3 = 0.0;
   double sampled_mass_kg = 0.0;
   double extrapolated_density = 0.0;  // Nearest same-phase density where tent support is empty.
+  double sampled_viscosity_volume = 0.0;  // Sum of dynamic viscosity times current volume.
+  double extrapolated_viscosity = 0.0;  // Nearest same-phase viscosity where tent support is empty.
   double phase_distance = 0.0;  // Difference of nearest phase distances, negative for phase A.
   std::size_t nearest_particle = 0;  // Same-phase donor for unsensed cells.
 };
 
-// Samples the additive-volume density law over selected pressure cells.
+// Samples the additive-volume density law and volume-weighted dynamic
+// viscosity over selected pressure cells.
 // Explicit particles must belong to one phase. Implicit legacy donors use
 // legacy_density. Empty cells leave zero support. Inputs have been validated
 // by the scheduler, and sensors is disjoint scratch in frozen cell order.
@@ -37,7 +40,8 @@ absl::Status SampleLiquidCellCompositionDensity3D(
     std::span<const LiquidParticleState3D> particles,
     std::span<const LiquidConstituentMaterial3D> materials,
     double legacy_density,
-    std::span<CellCompositionDensity3D> sensors
+    std::span<CellCompositionDensity3D> sensors,
+    double legacy_viscosity = 0.0
 );
 
 // Prepares phase-local density and certified links for the configured active
@@ -51,7 +55,8 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
     std::span<const LiquidConstituentMaterial3D> materials,
     const LiquidPhasePair3D& pair,
     std::span<CellCompositionDensity3D> sensors,
-    std::span<LiquidInternalInterface3D> crossings
+    std::span<LiquidInternalInterface3D> crossings,
+    double legacy_viscosity = 0.0
 );
 
 struct CellVolumeRatioSensor3D {

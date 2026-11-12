@@ -103,6 +103,70 @@ TEST(LiquidSubstep3D, SchedulerConsumesResolvedViscosityOnFullCells) {
   );
 }
 
+TEST(LiquidSubstep3D, SamplesResolvedConstituentViscosityInCoupledProjection) {
+  auto initial = Initial(2);
+  for (std::size_t index = 0; index < initial.particles.size(); ++index) {
+    auto& particle = initial.particles[index];
+    particle.world_position = {2.5 + static_cast<double>(index), 2.5, 2.5};
+    particle.world_velocity.z = index == 0 ? 0.125 : -0.125;
+    particle.phase_id = 4;
+    particle.constituent_count = 2;
+    particle.constituents[0] = {8, 0.25};
+    particle.constituents[1] = {14, 0.75};
+  }
+  LiquidResolvedSceneView3D request;
+  request.scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  request.scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  request.scene.world_acceleration = {};
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {14, 4, 1000.0, 120.0},
+  }};
+  request.scene.constituent_materials = kMaterials;
+  const auto encoded = EncodeLiquidResolvedScene3D(request);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto resolved = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  auto scene = resolved->View().scene;
+  ASSERT_EQ(scene.constituent_materials[0].dynamic_viscosity_pa_s, 40.0);
+  ASSERT_EQ(scene.constituent_materials[1].dynamic_viscosity_pa_s, 120.0);
+  std::vector<double> sampled;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &sampled;
+  backend.project_viscous = [](void* context,
+                               SparseMacGridView3D grid,
+                               double duration,
+                               const LiquidPressureProblemView3D& problem,
+                               double viscosity,
+                               std::span<const double> cell_viscosity,
+                               MacPressureSolverOptions3D controls) {
+    auto& observed = *static_cast<std::vector<double>*>(context);
+    observed.assign(cell_viscosity.begin(), cell_viscosity.end());
+    return CpuLiquidSubstepBackend3D()
+        .project_viscous(nullptr, grid, duration, problem, viscosity, cell_viscosity, controls);
+  };
+  auto mixture = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(mixture.ok()) << mixture.status();
+  const auto advanced = mixture->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_EQ(sampled.size(), 4);
+  for (const double viscosity : sampled) {
+    EXPECT_DOUBLE_EQ(viscosity, 100.0);
+  }
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kUniformMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1000.0},
+  }};
+  scene.constituent_materials = kUniformMaterials;
+  scene.dynamic_viscosity = 100.0;
+  auto uniform = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(uniform.ok()) << uniform.status();
+  ASSERT_TRUE(uniform->AdvanceFrame(0.01).ok());
+  const auto actual = EncodeLiquidState3D(mixture->committed());
+  const auto expected = EncodeLiquidState3D(uniform->committed());
+  ASSERT_TRUE(actual.ok() && expected.ok());
+  EXPECT_TRUE(std::ranges::equal(actual->values(), expected->values()));
+}
 TEST(LiquidSubstep3D, PressureHistoryBacktracesAcrossSignedBlocks) {
   LiquidState3D committed;
   auto blocks = LiquidRecords3D<LiquidBlockState3D>::Create(2);

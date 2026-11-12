@@ -7,6 +7,7 @@
 #include <numbers>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "absl/cleanup/cleanup.h"
 #include "liquid_boundary_backend.h"
@@ -150,11 +151,21 @@ absl::Status ApplyIncompressibleDrift(
   return absl::OkStatus();
 }
 
+bool HasConstituentViscosity(const LiquidSceneInputs3D& scene) {
+  return std::ranges::any_of(scene.constituent_materials, [](const auto& material) {
+    return material.dynamic_viscosity_pa_s.has_value();
+  });
+}
+
+bool CanApplyViscosity(const LiquidSceneInputs3D& scene) {
+  return scene.dynamic_viscosity > 0.0 || std::ranges::any_of(scene.constituent_materials, [](const auto& material) {
+           return material.dynamic_viscosity_pa_s.value_or(0.0) > 0.0;
+         });
+}
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
       && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus) && !scene.eos
-      && (!scene.drift || scene.drift->maximum_rate == 0.0) && scene.surface_tension == 0
-      && scene.dynamic_viscosity == 0;
+      && (!scene.drift || scene.drift->maximum_rate == 0.0) && scene.surface_tension == 0 && !CanApplyViscosity(scene);
 }
 
 // Continue projected changes only when the new donors are a strict subset of
@@ -812,6 +823,8 @@ struct LiquidSubstepScheduler3D::Impl {
       return particle.constituent_count != 0;
     });
     const bool uses_composition_density = staging.composition_density && first_explicit != particles.end();
+    const bool uses_composition_viscosity = uses_composition_density && HasConstituentViscosity(scene);
+    const double sensor_viscosity = uses_composition_viscosity ? scene.dynamic_viscosity : 0.0;
     std::span<const LiquidInternalInterface3D> internal_interfaces;
     if (uses_composition_density) {
       STEP_TRY(staging.composition_density->Resize(frozen->cells.size()));
@@ -825,7 +838,8 @@ struct LiquidSubstepScheduler3D::Impl {
             particles,
             scene.constituent_materials,
             scene.liquid_density,
-            staging.composition_density->values()
+            staging.composition_density->values(),
+            sensor_viscosity
         ));
       } else {
         const auto* pair = FindLiquidPhasePair3D(scene.phase_pairs, first_explicit->phase_id, second_phase->phase_id);
@@ -840,7 +854,8 @@ struct LiquidSubstepScheduler3D::Impl {
             scene.constituent_materials,
             *pair,
             staging.composition_density->values(),
-            staging.phase_crossings->values()
+            staging.phase_crossings->values(),
+            sensor_viscosity
         );
         if (!count.ok()) {
           return count.status();
@@ -1040,7 +1055,32 @@ struct LiquidSubstepScheduler3D::Impl {
       std::span<const double> projected_face_velocities;
       MacPressureDiagnostics3D pressure_diagnostics;
       MacPressureFrozenMeasurement3D frozen_measurement;
-      if (scene.dynamic_viscosity == 0.0) {
+      std::vector<double> cell_dynamic_viscosity;
+      if (uses_composition_viscosity) {
+        if (pressure_problem.cells.size() != frozen->cells.size()) {
+          return absl::InternalError("viscosity staging lost frozen cells");
+        }
+        cell_dynamic_viscosity.reserve(pressure_problem.cells.size());
+        for (std::size_t index = 0; index < pressure_problem.cells.size(); ++index) {
+          if (CellKey(pressure_problem.cells[index].cell_index) != CellKey(frozen->cells[index].cell_index)) {
+            return absl::InternalError("viscosity staging lost frozen cell order");
+          }
+          const auto& sensor = (*staging.composition_density)[index];
+          const double viscosity = sensor.sampled_volume_m3 > 0.0
+              ? sensor.sampled_viscosity_volume / sensor.sampled_volume_m3
+              : sensor.extrapolated_viscosity;
+          if (!std::isfinite(viscosity) || viscosity < 0.0) {
+            return absl::OutOfRangeError("sampled liquid viscosity is unrepresentable");
+          }
+          cell_dynamic_viscosity.push_back(viscosity);
+        }
+      }
+      const bool active_viscosity = cell_dynamic_viscosity.empty()
+          ? scene.dynamic_viscosity > 0.0
+          : std::ranges::any_of(cell_dynamic_viscosity, [](double viscosity) {
+              return viscosity > 0.0;
+            });
+      if (!active_viscosity) {
         const auto projection = backend.project(
             backend.context,
             grid,
@@ -1063,6 +1103,7 @@ struct LiquidSubstepScheduler3D::Impl {
             step_duration,
             pressure_problem,
             scene.dynamic_viscosity,
+            cell_dynamic_viscosity,
             options.pressure_solver_options
         );
         if (!result.ok()) {
@@ -1431,10 +1472,10 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     return Error(absl::StatusCode::kInvalidArgument);
   }
   STEP_TRY(liquid_step_internal::ValidateScene(initial, scene, options));
-  if (scene.dynamic_viscosity > 0.0 && !backend.project_viscous) {
+  if (CanApplyViscosity(scene) && !backend.project_viscous) {
     return absl::UnimplementedError("backend does not support coupled viscosity");
   }
-  if (scene.dynamic_viscosity > 0.0 && needs_wetted_piston) {
+  if (CanApplyViscosity(scene) && needs_wetted_piston) {
     return absl::UnimplementedError("viscous projection requires certified moving-wall quadratures");
   }
   const auto bytes = QueryLiquidWorkspaceBytes3D(options.capacities);

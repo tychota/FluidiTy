@@ -89,32 +89,49 @@ absl::Status ScatterCellTent(
   return absl::OkStatus();
 }
 
-double
-ExplicitParticleDensity(const LiquidParticleState3D& particle, std::span<const LiquidConstituentMaterial3D> materials) {
+struct ParticleMaterialCoefficients {
   double density = 0.0;
+  double viscosity = 0.0;
+
+  bool Valid() const {
+    return std::isfinite(density) && density > 0.0 && std::isfinite(viscosity) && viscosity >= 0.0;
+  }
+};
+
+ParticleMaterialCoefficients ExplicitParticleCoefficients(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    double legacy_viscosity
+) {
+  ParticleMaterialCoefficients coefficients;
   for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
     const auto material =
         std::ranges::lower_bound(materials, constituent.substance_id, {}, &LiquidConstituentMaterial3D::substance_id);
     if (material == materials.end() || material->substance_id != constituent.substance_id
         || material->phase_id != particle.phase_id) {
-      return 0.0;
+      return {};
     }
-    density = std::fma(constituent.volume_fraction, material->density_kg_per_m3, density);
+    coefficients.density = std::fma(constituent.volume_fraction, material->density_kg_per_m3, coefficients.density);
+    coefficients.viscosity = std::fma(
+        constituent.volume_fraction,
+        material->dynamic_viscosity_pa_s.value_or(legacy_viscosity),
+        coefficients.viscosity
+    );
   }
-  return density;
+  return coefficients;
 }
-
 absl::Status DepositCompositionDensity(
     CellCompositionDensity3D& sensor,
     double weight,
     double current_volume,
-    double particle_density
+    ParticleMaterialCoefficients coefficients
 ) {
   const double weighted_volume = weight * current_volume;
   sensor.sampled_volume_m3 += weighted_volume;
-  sensor.sampled_mass_kg = std::fma(weighted_volume, particle_density, sensor.sampled_mass_kg);
+  sensor.sampled_mass_kg = std::fma(weighted_volume, coefficients.density, sensor.sampled_mass_kg);
+  sensor.sampled_viscosity_volume = std::fma(weighted_volume, coefficients.viscosity, sensor.sampled_viscosity_volume);
   if (weighted_volume <= 0.0 || !std::isfinite(sensor.sampled_volume_m3) || !std::isfinite(sensor.sampled_mass_kg)
-      || sensor.sampled_mass_kg <= 0.0) {
+      || sensor.sampled_mass_kg <= 0.0 || !std::isfinite(sensor.sampled_viscosity_volume)) {
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return absl::OkStatus();
@@ -199,7 +216,8 @@ absl::Status SampleLiquidCellCompositionDensity3D(
     std::span<const LiquidParticleState3D> particles,
     std::span<const LiquidConstituentMaterial3D> materials,
     double legacy_density,
-    std::span<CellCompositionDensity3D> sensors
+    std::span<CellCompositionDensity3D> sensors,
+    double legacy_viscosity
 ) {
   if (sensors.size() != cells.size()) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
@@ -207,24 +225,62 @@ absl::Status SampleLiquidCellCompositionDensity3D(
   std::ranges::fill(sensors, CellCompositionDensity3D{});
   std::optional<std::uint64_t> phase;
   for (const auto& particle : particles) {
-    double particle_density = legacy_density;
+    ParticleMaterialCoefficients coefficients{legacy_density, legacy_viscosity};
     if (particle.constituent_count != 0) {
       if (phase && *phase != particle.phase_id) {
         return absl::Status(absl::StatusCode::kFailedPrecondition, {});
       }
       phase = particle.phase_id;
-      particle_density = ExplicitParticleDensity(particle, materials);
-      if (!std::isfinite(particle_density) || particle_density <= 0.0) {
+      coefficients = ExplicitParticleCoefficients(particle, materials, legacy_viscosity);
+      if (!coefficients.Valid()) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
     const double current_volume = particle.reference_volume * particle.volume_ratio;
     const auto scattered =
         ScatterCellTent(geometry, cells, particle.world_position, [&](std::size_t cell, double weight) {
-          return DepositCompositionDensity(sensors[cell], weight, current_volume, particle_density);
+          return DepositCompositionDensity(sensors[cell], weight, current_volume, coefficients);
         });
     if (!scattered.ok()) {
       return scattered;
+    }
+  }
+  const bool explicit_viscosity = std::ranges::any_of(materials, [](const auto& material) {
+    return material.dynamic_viscosity_pa_s.has_value();
+  });
+  if (explicit_viscosity) {
+    for (std::size_t index = 0; index < sensors.size(); ++index) {
+      auto& sensor = sensors[index];
+      sensor.extrapolated_viscosity = legacy_viscosity;
+      if (sensor.sampled_volume_m3 > 0.0) {
+        continue;
+      }
+      const auto cell = cells[index].cell_index;
+      const Vec3 center{
+          std::fma(cell.x + 0.5, geometry.cell_width, geometry.world_origin.x),
+          std::fma(cell.y + 0.5, geometry.cell_width, geometry.world_origin.y),
+          std::fma(cell.z + 0.5, geometry.cell_width, geometry.world_origin.z),
+      };
+      const LiquidParticleState3D* nearest = nullptr;
+      double nearest_distance = std::numeric_limits<double>::infinity();
+      for (const auto& particle : particles) {
+        if (particle.constituent_count == 0) {
+          continue;
+        }
+        const auto position = particle.world_position;
+        const double distance = std::hypot(center.x - position.x, center.y - position.y, center.z - position.z);
+        if (distance < nearest_distance) {
+          nearest = &particle;
+          nearest_distance = distance;
+        }
+      }
+      if (nearest) {
+        const auto coefficients = ExplicitParticleCoefficients(*nearest, materials, legacy_viscosity);
+        if (!coefficients.Valid()) {
+          return absl::OutOfRangeError("nearest liquid viscosity is unrepresentable");
+        }
+        sensor.extrapolated_viscosity = coefficients.viscosity;
+      }
     }
   }
   return absl::OkStatus();
@@ -236,7 +292,8 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
     std::span<const LiquidConstituentMaterial3D> materials,
     const LiquidPhasePair3D& pair,
     std::span<CellCompositionDensity3D> sensors,
-    std::span<LiquidInternalInterface3D> crossings
+    std::span<LiquidInternalInterface3D> crossings,
+    double legacy_viscosity
 ) {
   if (sensors.size() != geometry.cells.size()) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
@@ -263,8 +320,8 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
     return absl::Status(absl::StatusCode::kFailedPrecondition, {});
   }
   for (const auto& particle : particles) {
-    const double density = ExplicitParticleDensity(particle, materials);
-    if (!std::isfinite(density) || density <= 0.0) {
+    const auto coefficients = ExplicitParticleCoefficients(particle, materials, legacy_viscosity);
+    if (!coefficients.Valid()) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
     }
     const double current_volume = particle.reference_volume * particle.volume_ratio;
@@ -277,7 +334,7 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
           if (cell_is_a != (particle.phase_id == pair.phase_a)) {
             return absl::OkStatus();
           }
-          return DepositCompositionDensity(sensors[cell], weight, current_volume, density);
+          return DepositCompositionDensity(sensors[cell], weight, current_volume, coefficients);
         }
     );
     if (!scattered.ok()) {
@@ -286,8 +343,11 @@ absl::StatusOr<std::size_t> PrepareLiquidPhaseCrossings3D(
   }
   for (auto& sensor : sensors) {
     if (sensor.sampled_volume_m3 == 0.0) {
-      sensor.extrapolated_density = ExplicitParticleDensity(particles[sensor.nearest_particle], materials);
-      if (!std::isfinite(sensor.extrapolated_density) || sensor.extrapolated_density <= 0.0) {
+      const auto coefficients =
+          ExplicitParticleCoefficients(particles[sensor.nearest_particle], materials, legacy_viscosity);
+      sensor.extrapolated_density = coefficients.density;
+      sensor.extrapolated_viscosity = coefficients.viscosity;
+      if (!coefficients.Valid()) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }

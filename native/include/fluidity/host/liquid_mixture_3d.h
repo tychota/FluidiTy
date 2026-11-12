@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "absl/status/statusor.h"
@@ -19,6 +20,7 @@ struct LiquidConstituentMaterial3D {
   std::uint64_t substance_id;
   std::uint64_t phase_id;  // Shared by miscible substances.
   double density_kg_per_m3;  // Positive density at the supplied material state.
+  std::optional<double> dynamic_viscosity_pa_s{};  // Nonnegative. Absent uses the scene coefficient.
 };
 
 struct LiquidConstituentVolume3D {

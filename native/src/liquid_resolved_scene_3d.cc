@@ -654,7 +654,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
                     builder,
                     record.substance_id,
                     record.phase_id,
-                    record.density_kg_per_m3
+                    record.density_kg_per_m3,
+                    record.dynamic_viscosity_pa_s
                 );
               }
           );
@@ -733,7 +734,12 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
       }
     }
     SCENE_TRY(detail::Materialize(result->constituent_materials, materials, [](const auto* material) {
-      return LiquidConstituentMaterial3D{material->substance_id(), material->phase_id(), material->density_kg_per_m3()};
+      return LiquidConstituentMaterial3D{
+          .substance_id = material->substance_id(),
+          .phase_id = material->phase_id(),
+          .density_kg_per_m3 = material->density_kg_per_m3(),
+          .dynamic_viscosity_pa_s = material->dynamic_viscosity_pa_s(),
+      };
     }));
   }
   if (pairs) {

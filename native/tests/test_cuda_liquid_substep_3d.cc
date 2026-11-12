@@ -1390,25 +1390,42 @@ TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
   scene.field = LiquidHorizontalPlaneSurface3D{3.0};
   scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
   scene.world_acceleration = {};
-  scene.dynamic_viscosity = 100.0;
+
   const auto options = Options();
-  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
-  ASSERT_TRUE(backend.ok()) << backend.status();
-  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
-  ASSERT_TRUE(gpu.ok()) << gpu.status();
-  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
-  ASSERT_TRUE(cpu.ok()) << cpu.status();
-  const auto before = backend->usage();
-  const auto gpu_status = gpu->AdvanceFrame(0.01);
-  ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
-  const auto cpu_status = cpu->AdvanceFrame(0.01);
-  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
-  ExpectState(cpu->committed(), gpu->committed());
-  const auto after = backend->usage();
-  EXPECT_EQ(after.compiled_architecture, 1200);
-  EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
-  EXPECT_EQ(after.device_free_count, before.device_free_count);
-  EXPECT_LT(std::abs(gpu->committed().particles[0].world_velocity.z), 0.125);
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{
+      {8, 4, 1000.0, 40.0},
+      {14, 4, 1000.0, 120.0},
+  }};
+  for (const bool constituent_viscosity : {false, true}) {
+    SCOPED_TRACE(constituent_viscosity);
+    scene.dynamic_viscosity = constituent_viscosity ? 0.0 : 100.0;
+    if (constituent_viscosity) {
+      scene.constituent_materials = kMaterials;
+      for (std::size_t index = 0; index < initial.particles.size(); ++index) {
+        auto& particle = initial.particles[index];
+        particle.phase_id = 4;
+        particle.constituent_count = 1;
+        particle.constituents[0] = {kMaterials[index].substance_id, 1.0};
+      }
+    }
+    auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+    ASSERT_TRUE(gpu.ok()) << gpu.status();
+    auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(cpu.ok()) << cpu.status();
+    const auto before = backend->usage();
+    const auto gpu_status = gpu->AdvanceFrame(0.01);
+    ASSERT_TRUE(gpu_status.ok()) << gpu_status << " stage=" << static_cast<int>(gpu->diagnostics().failed_stage);
+    const auto cpu_status = cpu->AdvanceFrame(0.01);
+    ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+    ExpectState(cpu->committed(), gpu->committed());
+    const auto after = backend->usage();
+    EXPECT_EQ(after.compiled_architecture, 1200);
+    EXPECT_EQ(after.device_allocation_count, before.device_allocation_count);
+    EXPECT_EQ(after.device_free_count, before.device_free_count);
+    EXPECT_LT(std::abs(gpu->committed().particles[0].world_velocity.z), 0.125);
+  }
 }
 
 TEST(CudaLiquidSubstep3D, OpenTankSchedulerMatchesCpu) {

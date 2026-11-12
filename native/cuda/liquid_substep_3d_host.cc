@@ -203,6 +203,7 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
              double step_duration,
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
+             std::span<const double> cell_dynamic_viscosity,
              MacPressureSolverOptions3D options) {
             auto& arena = static_cast<Impl*>(context)->arena;
             return liquid_step_internal::ProjectFullCellViscosity(
@@ -210,6 +211,7 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
                 step_duration,
                 problem,
                 dynamic_viscosity,
+                cell_dynamic_viscosity,
                 options,
                 [&](const MacPressureInputs3D& inputs,
                     std::span<const MacStrainRow3D> rows,
