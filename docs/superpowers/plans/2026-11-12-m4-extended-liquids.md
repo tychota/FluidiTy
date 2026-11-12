@@ -447,3 +447,11 @@ Particles and resolved source templates now carry optional explicit phase and st
 The native codec fixture round-trips a two-constituent particle and source, rejects invalid sums and duplicate IDs, and preserves the legacy scene golden. A source replay fixture retained exact fractions through emission, retry and capacity replay. Thirty-nine CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidState3D|LiquidMixture3D|SourceRetryAndWholeFrameReplay'. A clean CUDA build and 22 serial real-device scheduler and boundary checks passed. The persistent-substep fixture explicitly verifies that CUDA advection retains both fractions. Both simulator builds and clang-format 19.1.5 passed. Receipts use out/m4-particle-composition.
 
 The new fields are transported with the particle state. Phase-local grid reduction, constituent remap, scene substance definitions, and inspected/rendered fractions are still open.
+
+## Phase-local constituent grid transfer receipt
+
+The bounded host transfer deposits f J V0 onto cell centers with a trilinear tent. It selects one explicit phase at a time and retains separate substance volume channels in material order. Every positive stencil weight requires a represented cell, so cropping the supplied support fails instead of dropping inventory. This operator is ready for material-field assembly and inspection consumers.
+
+Fixtures verified independent weights at all eight cell centers, conservation under unequal reference volume and compression, same-phase mixing to 75 percent clear water and 25 percent dyed water, and a separate oil channel. Twenty CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidMixture3D|LiquidRemap|LiquidEos3D'. The real-device particle-composition regression passed. The grid transfer itself ran on the host. clang-format 19.1.5 passed. Receipts use out/m4-constituent-grid, including the initial fixture's incorrect hand-calculated z weights.
+
+Material registry, scheduler and remap integration, and inspected/rendered composition remain open.

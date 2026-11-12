@@ -5,6 +5,7 @@
 #include <span>
 
 #include "absl/status/statusor.h"
+#include "fluidity/base/mac_types_3d.h"
 
 namespace fluidity {
 
@@ -45,6 +46,26 @@ absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
     std::span<const LiquidConstituentMaterial3D> materials,
     std::span<const LiquidConstituentVolume3D> contributions,
     std::span<LiquidConstituentFraction3D> fractions
+);
+
+struct LiquidParticleState3D;
+
+// Deposits f * J * V0 with an eight-point cell-centered linear tent on the
+// supplied MAC lattice. Cells are unique in (z,y,x) order, and materials are
+// unique in substance ID order and belong to phase_id. Implicit particles and
+// explicit particles in other phases contribute nothing. Every positive
+// stencil weight needs a represented cell. Each output row contains one
+// record per material in material order, including zeros. Output is scratch
+// disjoint from all inputs and may change on error. InvalidArgument covers
+// malformed input, incompatible materials, aliasing, or a wrong extent,
+// FailedPrecondition covers missing support, and OutOfRange covers arithmetic.
+absl::Status DepositLiquidConstituentVolumes3D(
+    UniformMacGeometry3D geometry,
+    std::uint64_t phase_id,
+    std::span<const CellIndex3D> cells,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<LiquidConstituentVolume3D> cell_volumes
 );
 
 }  // namespace fluidity

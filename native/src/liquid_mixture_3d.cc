@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 
+#include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/views.h"
 
 namespace fluidity {
@@ -96,6 +98,129 @@ absl::StatusOr<LiquidMixture3D> MixLiquidConstituentVolumes3D(
     fraction = {.substance_id = substance_id, .volume_fraction = constituent_volume / result.volume_m3};
   }
   return result;
+}
+
+absl::Status DepositLiquidConstituentVolumes3D(
+    UniformMacGeometry3D geometry,
+    std::uint64_t phase_id,
+    std::span<const CellIndex3D> cells,
+    std::span<const LiquidConstituentMaterial3D> materials,
+    std::span<const LiquidParticleState3D> particles,
+    std::span<LiquidConstituentVolume3D> cell_volumes
+) {
+  const auto extent = CheckedExtentProduct(cells.size(), materials.size());
+  if (!extent.ok()) {
+    return extent.status();
+  }
+  const auto origin = geometry.world_origin;
+  if (cell_volumes.size() != *extent || !std::isfinite(geometry.cell_width) || geometry.cell_width <= 0.0
+      || !std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z)) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto disjoint = CheckWritableViews(
+      {std::as_bytes(cell_volumes)},
+      {std::as_bytes(cells), std::as_bytes(materials), std::as_bytes(particles)}
+  );
+  if (!disjoint.ok()) {
+    return disjoint;
+  }
+  const auto cell_key = [](CellIndex3D index) {
+    return std::tuple{index.z, index.y, index.x};
+  };
+  for (std::size_t index = 1; index < cells.size(); ++index) {
+    if (cell_key(cells[index - 1]) >= cell_key(cells[index])) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  }
+  for (std::size_t index = 0; index < materials.size(); ++index) {
+    const auto& material = materials[index];
+    if (material.phase_id != phase_id || !std::isfinite(material.density_kg_per_m3) || material.density_kg_per_m3 <= 0.0
+        || (index > 0 && materials[index - 1].substance_id >= material.substance_id)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+  }
+  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+    for (std::size_t material = 0; material < materials.size(); ++material) {
+      cell_volumes[cell * materials.size() + material] = {materials[material].substance_id, 0.0};
+    }
+  }
+
+  for (const auto& particle : particles) {
+    if (!ValidLiquidParticleComposition3D(particle)) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    if (particle.constituent_count == 0 || particle.phase_id != phase_id) {
+      continue;
+    }
+    if (!std::isfinite(particle.reference_volume) || particle.reference_volume <= 0.0
+        || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0.0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const double current_volume = particle.reference_volume * particle.volume_ratio;
+    if (!std::isfinite(current_volume) || current_volume <= 0.0) {
+      return Error(absl::StatusCode::kOutOfRange);
+    }
+    std::array<std::size_t, kMaximumLiquidParticleConstituents3D> material_ordinals;
+    for (std::size_t index = 0; index < particle.constituent_count; ++index) {
+      const auto id = particle.constituents[index].substance_id;
+      const auto found = std::ranges::lower_bound(materials, id, {}, &LiquidConstituentMaterial3D::substance_id);
+      if (found == materials.end() || found->substance_id != id) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+      material_ordinals[index] = static_cast<std::size_t>(found - materials.begin());
+    }
+
+    const auto position = particle.world_position;
+    const std::array coordinates{
+        (position.x - origin.x) / geometry.cell_width - 0.5,
+        (position.y - origin.y) / geometry.cell_width - 0.5,
+        (position.z - origin.z) / geometry.cell_width - 0.5,
+    };
+    constexpr auto kMinimum = std::numeric_limits<std::int32_t>::min();
+    constexpr auto kMaximum = std::numeric_limits<std::int32_t>::max();
+    std::array<std::int64_t, 3> lower;
+    std::array<double, 3> fraction;
+    for (std::size_t axis = 0; axis < coordinates.size(); ++axis) {
+      if (!std::isfinite(coordinates[axis]) || coordinates[axis] < kMinimum || coordinates[axis] > kMaximum) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      const double floor = std::floor(coordinates[axis]);
+      lower[axis] = static_cast<std::int64_t>(floor);
+      fraction[axis] = coordinates[axis] - floor;
+    }
+    for (std::size_t corner = 0; corner < 8; ++corner) {
+      const bool high_x = (corner & 1) != 0;
+      const bool high_y = (corner & 2) != 0;
+      const bool high_z = (corner & 4) != 0;
+      const double x_weight = high_x ? fraction[0] : 1.0 - fraction[0];
+      const double y_weight = high_y ? fraction[1] : 1.0 - fraction[1];
+      const double z_weight = high_z ? fraction[2] : 1.0 - fraction[2];
+      if (x_weight == 0.0 || y_weight == 0.0 || z_weight == 0.0) {
+        continue;
+      }
+      const CellIndex3D index{
+          static_cast<std::int32_t>(lower[0] + high_x),
+          static_cast<std::int32_t>(lower[1] + high_y),
+          static_cast<std::int32_t>(lower[2] + high_z),
+      };
+      const auto key = cell_key(index);
+      const auto cell = std::ranges::lower_bound(cells, key, {}, cell_key);
+      if (cell == cells.end() || cell_key(*cell) != key) {
+        return Error(absl::StatusCode::kFailedPrecondition);
+      }
+      const auto row = static_cast<std::size_t>(cell - cells.begin()) * materials.size();
+      const double weighted_volume = x_weight * y_weight * z_weight * current_volume;
+      for (std::size_t constituent = 0; constituent < particle.constituent_count; ++constituent) {
+        const double contribution = particle.constituents[constituent].volume_fraction * weighted_volume;
+        auto& volume = cell_volumes[row + material_ordinals[constituent]].volume_m3;
+        volume += contribution;
+        if (contribution == 0.0 || !std::isfinite(volume)) {
+          return Error(absl::StatusCode::kOutOfRange);
+        }
+      }
+    }
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace fluidity
