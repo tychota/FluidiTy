@@ -1,5 +1,6 @@
 #include "fluidity/host/liquid_wall_contact_3d.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numeric>
@@ -241,6 +242,256 @@ absl::StatusOr<RigidBoxContact3D> ResolveTranslatingBoxContact3D(
     return absl::Status(absl::StatusCode::kOutOfRange, {});
   }
   return result;
+}
+
+namespace {
+
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxContact(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass,
+    const AxisAlignedLiquidTank3D* tank
+) {
+  namespace sweep = boundary_internal;
+  const auto error = [](absl::StatusCode code) {
+    return absl::Status(code, {});
+  };
+  if (!std::holds_alternative<std::monostate>(inputs.obstacle) || inputs.step_duration != drift.duration
+      || !sweep::HasFiniteComponents(inputs.stored_world_velocity) || !std::isfinite(inputs.friction_coefficient)
+      || inputs.friction_coefficient < 0.0 || !std::isfinite(inputs.penetration_tolerance)
+      || inputs.penetration_tolerance < 0.0 || !std::isfinite(particle_mass) || particle_mass <= 0.0) {
+    return error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto hit =
+      SweepRigidBoxPoint3D(drift, body_half_extent, inputs.start_world_position, inputs.advecting_world_velocity);
+  if (!hit.ok()) {
+    return hit.status();
+  }
+  if (!hit->has_value()) {
+    const auto free = ResolveLiquidWallContact3D(inputs);
+    if (!free.ok()) {
+      return free.status();
+    }
+    return RigidBoxContact3D{.contact = *free, .body_impulse = {}, .body_angular_impulse = {}};
+  }
+
+  const double fraction = std::midpoint((*hit)->fraction_lower, (*hit)->fraction_upper);
+  const double elapsed = fraction * drift.duration;
+  const auto impact_pose = SampleRigidBodyPose3D(drift, fraction);
+  const auto end_pose = SampleRigidBodyPose3D(drift, 1.0);
+  if (!impact_pose.ok() || !end_pose.ok()) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto normal_component = kComponents[(*hit)->body_axis];
+  const double sign = (*hit)->outward_sign;
+  const double face_extent = body_half_extent.*normal_component;
+  Vec3 body_normal{};
+  body_normal.*normal_component = sign;
+
+  const auto difference = [](Vec3 first, Vec3 second) {
+    return Vec3{first.x - second.x, first.y - second.y, first.z - second.z};
+  };
+  const auto cross = [](Vec3 first, Vec3 second) {
+    return Vec3{
+        first.y * second.z - first.z * second.y,
+        first.z * second.x - first.x * second.z,
+        first.x * second.y - first.y * second.x,
+    };
+  };
+  const auto orientation = impact_pose->orientation;
+  const RigidOrientation3D inverse_orientation{
+      .w = orientation.w,
+      .vector = {-orientation.vector.x, -orientation.vector.y, -orientation.vector.z},
+  };
+  const auto relative_start = difference(inputs.start_world_position, drift.start.center);
+  const auto relative_velocity = difference(inputs.advecting_world_velocity, drift.end.linear_velocity);
+  const auto relative_hit = sweep::Advance(relative_start, relative_velocity, elapsed);
+  auto body_hit = RotateRigidBodyVector3D(inverse_orientation, relative_hit);
+  if (!body_hit.ok()) {
+    return body_hit.status();
+  }
+  (*body_hit).*normal_component = sign * face_extent;
+  const auto arm = RotateRigidBodyVector3D(orientation, *body_hit);
+  const auto normal = RotateRigidBodyVector3D(orientation, body_normal);
+  if (!arm.ok() || !normal.ok()) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+  const auto wall_velocity = sweep::Advance(drift.end.linear_velocity, cross(drift.end.angular_velocity, *arm), 1.0);
+  const SweepPlane impact_plane{
+      .outward_normal = *normal,
+      .start_coordinate = 0.0,
+      .slab_half_width = 0.0,
+      .wall_velocity = wall_velocity
+  };
+  const auto incoming_stored = sweep::RelativeNormalVelocity(impact_plane, inputs.stored_world_velocity);
+  const auto incoming_advecting = sweep::RelativeNormalVelocity(impact_plane, inputs.advecting_world_velocity);
+  if (!incoming_stored.magnitude_is_resolved() || !incoming_advecting.magnitude_is_resolved()
+      || (fraction > 0.0 ? incoming_advecting.upper >= 0.0 : incoming_advecting.lower > 0.0)) {
+    return error(absl::StatusCode::kAborted);
+  }
+  const double normal_squared = normal->x * normal->x + normal->y * normal->y + normal->z * normal->z;
+  const auto stored = sweep::ApplyOneWayResponse(
+      impact_plane,
+      inputs.stored_world_velocity,
+      incoming_stored.estimate,
+      normal_squared,
+      inputs.friction_coefficient
+  );
+  const auto advecting = sweep::ApplyOneWayResponse(
+      impact_plane,
+      inputs.advecting_world_velocity,
+      incoming_advecting.estimate,
+      normal_squared,
+      inputs.friction_coefficient
+  );
+  if (!stored.ok() || !advecting.ok()) {
+    return error(absl::StatusCode::kAborted);
+  }
+
+  // Carry the corrected relative remainder in the moving face coordinates.
+  // Its nonnegative normal displacement keeps the whole remainder exterior.
+  auto body_remainder = RotateRigidBodyVector3D(inverse_orientation, difference(*advecting, wall_velocity));
+  if (!body_remainder.ok()) {
+    return body_remainder.status();
+  }
+  (*body_remainder).*normal_component = sign * std::max(0.0, sign * ((*body_remainder).*normal_component));
+  const auto body_endpoint = sweep::Advance(*body_hit, *body_remainder, drift.duration - elapsed);
+  const auto endpoint_arm = RotateRigidBodyVector3D(end_pose->orientation, body_endpoint);
+  const auto end_normal = RotateRigidBodyVector3D(end_pose->orientation, body_normal);
+  if (!endpoint_arm.ok() || !end_normal.ok()) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+  if (tank != nullptr) {
+    // The carried point is affine in the body frame. Its radius is bounded
+    // by the larger endpoint norm, while the center travels on a segment.
+    const double hit_radius = std::hypot(body_hit->x, body_hit->y, body_hit->z);
+    const double end_radius = std::hypot(body_endpoint.x, body_endpoint.y, body_endpoint.z);
+    const double radius = std::nextafter(
+        std::max(hit_radius, end_radius) * (1.0 + 32.0 * std::numeric_limits<double>::epsilon()),
+        std::numeric_limits<double>::infinity()
+    );
+    const auto first = impact_pose->center;
+    const auto last = end_pose->center;
+    if (sweep::AddDown(std::min(first.x, last.x), -radius) <= tank->start_low_x
+        || sweep::AddUp(std::max(first.x, last.x), radius) >= tank->high_x
+        || sweep::AddDown(std::min(first.y, last.y), -radius) <= tank->floor_y
+        || sweep::AddDown(std::min(first.z, last.z), -radius) <= tank->low_z
+        || sweep::AddUp(std::max(first.z, last.z), radius) >= tank->high_z) {
+      return error(absl::StatusCode::kAborted);
+    }
+  }
+  auto endpoint = sweep::Advance(end_pose->center, *endpoint_arm, 1.0);
+  const SweepPlane end_plane{
+      .outward_normal = *end_normal,
+      .start_coordinate = face_extent,
+      .slab_half_width = 0.0,
+      .wall_velocity = {}
+  };
+  if (!sweep::CertifyContactSide(endpoint, *end_normal, [&](Vec3 point) {
+        return sweep::DistanceAlongPath(end_plane, difference(point, end_pose->center), {}, 0.0);
+      })) {
+    return error(absl::StatusCode::kAborted);
+  }
+
+  if (tank != nullptr
+      && (endpoint.x < tank->start_low_x || endpoint.x > tank->high_x || endpoint.y < tank->floor_y
+          || endpoint.z < tank->low_z || endpoint.z > tank->high_z)) {
+    return error(absl::StatusCode::kAborted);
+  }
+  const auto velocity_change = difference(inputs.stored_world_velocity, *stored);
+  const Vec3 impulse{
+      particle_mass * velocity_change.x,
+      particle_mass * velocity_change.y,
+      particle_mass * velocity_change.z
+  };
+  const auto angular_impulse = cross(*arm, impulse);
+  if (!sweep::HasFiniteComponents(impulse) || !sweep::HasFiniteComponents(angular_impulse)) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+  return RigidBoxContact3D{
+      .contact =
+          {
+              .world_position = endpoint,
+              .stored_world_velocity = *stored,
+              .advecting_world_velocity = *advecting,
+              .contact_fraction = fraction,
+              .outward_normal = *normal,
+              .incoming_stored_relative_normal_speed = incoming_stored.estimate / std::sqrt(normal_squared),
+              .incoming_advecting_relative_normal_speed = incoming_advecting.estimate / std::sqrt(normal_squared),
+              .diagnostic = LiquidWallContactDiagnostic3D::kSweptImpact,
+          },
+      .body_impulse = impulse,
+      .body_angular_impulse = angular_impulse,
+  };
+}
+
+}  // namespace
+
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass
+) {
+  return ResolveRotatingBoxContact(inputs, drift, body_half_extent, particle_mass, nullptr);
+}
+
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxInTankContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass
+) {
+  namespace sweep = boundary_internal;
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&inputs.obstacle);
+  if (tank == nullptr || tank->piston_velocity_x != 0.0 || inputs.friction_coefficient != 0.0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto tank_sweep = sweep::ResolveContact(sweep::PackContact(inputs));
+  if (!tank_sweep.ok()) {
+    return sweep::ArithmeticStatus(tank_sweep.status(), true);
+  }
+  const auto tank_contact = sweep::UnpackContact(*tank_sweep);
+  auto box_inputs = inputs;
+  box_inputs.obstacle = std::monostate{};
+  const auto box_contact = ResolveRotatingBoxContact(box_inputs, drift, body_half_extent, particle_mass, tank);
+  if (!box_contact.ok()) {
+    return box_contact.status();
+  }
+  if (!tank_contact.contact_fraction) {
+    return *box_contact;
+  }
+  if (!box_contact->contact.contact_fraction) {
+    const auto end_pose = SampleRigidBodyPose3D(drift, 1.0);
+    if (!end_pose.ok()) {
+      return end_pose.status();
+    }
+    // Every component of a frictionless static tank trajectory is monotone
+    // after any initial recovery. Bound it by the start, recovered start and
+    // end. A box stays inside its circumradius around the moving center.
+    const auto start = inputs.start_world_position;
+    const auto end = tank_contact.world_position;
+    const Vec3 recovered{
+        std::clamp(start.x, tank->start_low_x, tank->high_x),
+        std::max(start.y, tank->floor_y),
+        std::clamp(start.z, tank->low_z, tank->high_z),
+    };
+    const double radius = std::nextafter(
+        std::hypot(body_half_extent.x, body_half_extent.y, body_half_extent.z),
+        std::numeric_limits<double>::infinity()
+    );
+    for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+      const double low = sweep::AddDown(std::min(drift.start.center.*component, end_pose->center.*component), -radius);
+      const double high = sweep::AddUp(std::max(drift.start.center.*component, end_pose->center.*component), radius);
+      if (std::max({start.*component, recovered.*component, end.*component}) < low
+          || std::min({start.*component, recovered.*component, end.*component}) > high) {
+        return RigidBoxContact3D{.contact = tank_contact, .body_impulse = {}, .body_angular_impulse = {}};
+      }
+    }
+  }
+  return absl::Status(absl::StatusCode::kAborted, {});
 }
 absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     const LiquidWallContactInputs3D& inputs,

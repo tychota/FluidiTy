@@ -365,6 +365,11 @@ class LiquidSubstepScheduler3D {
   // neither liquid state nor a candidate body.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithOrientedFloatingBoxPressure(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Advances the pressure-driven oriented box and its particle contact in
+  // one trial. The pressure kick sets the swept drift. Reciprocal contact
+  // impulses change the accepted velocities for the next step.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;

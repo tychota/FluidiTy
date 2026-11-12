@@ -162,7 +162,7 @@ absl::Status ApplyOrientedBoxFaceSamples(
   return absl::OkStatus();
 }
 
-absl::StatusOr<RigidBody3D> AdvanceOrientedBoxInTank(
+absl::StatusOr<RigidBodyStep3D> AdvanceOrientedBoxInTank(
     RigidBody3D loaded_body,
     Vec3 body_half_extent,
     const AxisAlignedLiquidTank3D& tank,
@@ -191,7 +191,7 @@ absl::StatusOr<RigidBody3D> AdvanceOrientedBoxInTank(
       || boundary_internal::AddUp(center.z, swept_radius) >= tank.high_z) {
     return Error(absl::StatusCode::kAborted);
   }
-  return step->end;
+  return *step;
 }
 // Check the complete owned payload before publishing any reservation or growth.
 absl::StatusOr<std::size_t> ReservationBytes(
@@ -823,7 +823,7 @@ struct LiquidSubstepScheduler3D::Impl {
     }
     auto new_obstacle = liquid_step_internal::ObstacleAtTime(scene.obstacle, new_time);
     const bool oriented_box = floating_box != nullptr && floating_box->oriented_geometry.has_value();
-    std::optional<RigidBody3D> oriented_box_candidate;
+    std::optional<RigidBodyStep3D> oriented_box_candidate;
     TranslatingContactBox3D contact_box{};
     TranslatingContactBox3D end_box{};
     if (floating_box != nullptr && !oriented_box) {
@@ -1688,7 +1688,7 @@ struct LiquidSubstepScheduler3D::Impl {
     if (oriented_box) {
       STEP_TRY(ApplyOrientedBoxFaceSamples(
           grid,
-          *oriented_box_candidate,
+          oriented_box_candidate->end,
           floating_box->half_extent,
           staging.new_tags.values(),
           {}
@@ -1743,7 +1743,22 @@ struct LiquidSubstepScheduler3D::Impl {
       if (sampled_wall_side != side) {
         STEP_TRY(backend.sample_faces(backend.context, grid, obstacle, side, {}, staging.old_walls.values()));
         STEP_TRY(backend.sample_faces(backend.context, grid, new_obstacle, side, {}, staging.new_walls.values()));
-        if (floating_box != nullptr) {
+        if (oriented_box) {
+          STEP_TRY(ApplyOrientedBoxFaceSamples(
+              grid,
+              floating_box->body,
+              floating_box->half_extent,
+              {},
+              staging.old_walls.values()
+          ));
+          STEP_TRY(ApplyOrientedBoxFaceSamples(
+              grid,
+              oriented_box_candidate->end,
+              floating_box->half_extent,
+              {},
+              staging.new_walls.values()
+          ));
+        } else if (floating_box != nullptr) {
           STEP_TRY(ApplyBoxFaceSamples(grid, contact_box, {}, staging.old_walls.values()));
           STEP_TRY(ApplyBoxFaceSamples(grid, end_box, {}, staging.new_walls.values()));
         }
@@ -1923,6 +1938,39 @@ struct LiquidSubstepScheduler3D::Impl {
         return impulse.status();
       }
       piston_contact_impulse = *impulse;
+    } else if (oriented_box && trial.particles.size() != 0) {
+      const auto impulse = UpdateCpuLiquidParticlesWithRotatingBoxImpulse3D(
+          particle_update_inputs,
+          *oriented_box_candidate,
+          floating_box->half_extent,
+          trial.particles.values()
+      );
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      auto& body = oriented_box_candidate->end;
+      body.linear_velocity = liquid_step_internal::Add(
+          body.linear_velocity,
+          liquid_step_internal::Scale(impulse->linear, 1.0 / body.mass)
+      );
+      const auto orientation = body.orientation;
+      const auto local_impulse = RotateRigidBodyVector3D(
+          {orientation.w, liquid_step_internal::Scale(orientation.vector, -1.0)},
+          impulse->angular
+      );
+      if (!local_impulse.ok()) {
+        return local_impulse.status();
+      }
+      const auto inertia = body.principal_inertia;
+      const auto angular_change = RotateRigidBodyVector3D(
+          orientation,
+          {local_impulse->x / inertia.x, local_impulse->y / inertia.y, local_impulse->z / inertia.z}
+      );
+      if (!angular_change.ok()) {
+        return angular_change.status();
+      }
+      body.angular_velocity = liquid_step_internal::Add(body.angular_velocity, *angular_change);
+      STEP_TRY(ValidateRigidBody3D(body));
     } else if (floating_box != nullptr && trial.particles.size() != 0) {
       auto swept_box = contact_box;
       swept_box.wall_velocity.y = coupled_box_speed.value_or(contact_box.wall_velocity.y);
@@ -1976,7 +2024,7 @@ struct LiquidSubstepScheduler3D::Impl {
       piston_load->torque = {};
     }
     if (oriented_box) {
-      floating_box->body = *oriented_box_candidate;
+      floating_box->body = oriented_box_candidate->end;
     } else if (floating_box != nullptr) {
       auto& body = floating_box->body;
       auto drift_velocity = body.linear_velocity;
@@ -2400,6 +2448,13 @@ absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWith
   return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kOrientedPressure);
 }
 
+absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptWithOrientedFloatingBox(
+    double step_duration,
+    RigidBody3D body,
+    Vec3 body_half_extent
+) {
+  return AttemptFloatingBox(step_duration, body, body_half_extent, FloatingBoxMotion::kOrientedPressure);
+}
 absl::StatusOr<LiquidFloatingBoxAttempt3D> LiquidSubstepScheduler3D::AttemptFloatingBox(
     double step_duration,
     RigidBody3D body,
