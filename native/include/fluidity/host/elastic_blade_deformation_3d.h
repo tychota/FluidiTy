@@ -77,4 +77,26 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     SolidInteractionCheckpoint3D& checkpoint
 );
 
+struct ElasticBladeFrameResult3D {
+  Vec3 particle_impulse{};  // Net momentum delivered by the blade, newton-seconds.
+  double blade_work = 0.0;  // Joules delivered by the blade.
+  double grid_stress_work = 0.0;
+  double deformation_work = 0.0;
+  double cut_work = 0.0;
+  double omitted_stress_work = 0.0;
+};
+
+// Advances one output frame using a fixed number of equal substeps. Settings
+// give the slab pose at time zero and the frame duration in seconds. Resume
+// requires the same resolved settings, substep count and a frame-aligned
+// accepted_step. Returns ordered sums of the substep budgets in joules and
+// newton-seconds. Invalid timing returns InvalidArgument, unrepresentable time
+// or sums return OutOfRange, and substep errors propagate. On any error the
+// caller's entire checkpoint is preserved.
+absl::StatusOr<ElasticBladeFrameResult3D> AdvanceElasticBladeFrame3D(
+    const SparseMacGrid3D& mac_grid,
+    const ElasticBladeGridStep3D& frame_settings,
+    std::uint32_t substeps_per_frame,
+    SolidInteractionCheckpoint3D& checkpoint
+);
 }  // namespace fluidity

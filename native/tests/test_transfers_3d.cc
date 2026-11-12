@@ -678,6 +678,33 @@ TEST(MacTransfer3D, MovingBladeSceneRetainsSideAndReplaysAtTwoTimesteps) {
       }
       settings.blade.start_center_coordinate += 0.5 * duration;
     }
+    auto frame_state = initial;
+    auto frame_settings = settings;
+    frame_settings.blade.start_center_coordinate = 8.8125;
+    frame_settings.duration = 0.125;
+    const auto frame = AdvanceElasticBladeFrame3D(*grid, frame_settings, steps, frame_state);
+    ASSERT_TRUE(frame.ok()) << frame.status();
+    EXPECT_NEAR(frame->particle_impulse.x, normal_impulse, 1e-12);
+    EXPECT_NEAR(frame->blade_work, blade_work, 1e-12);
+    const auto frame_bytes = EncodeSolidInteractionCheckpoint3D(frame_state);
+    const auto manual_bytes = EncodeSolidInteractionCheckpoint3D(state);
+    ASSERT_TRUE(frame_bytes.ok() && manual_bytes.ok());
+    EXPECT_EQ(*frame_bytes, *manual_bytes);
+    if (steps == 2) {
+      auto restarted = DecodeSolidInteractionCheckpoint3D(halfway_checkpoint);
+      ASSERT_TRUE(restarted.ok()) << restarted.status();
+      const auto rejected = AdvanceElasticBladeFrame3D(*grid, frame_settings, steps, *restarted);
+      EXPECT_EQ(rejected.status().code(), absl::StatusCode::kInvalidArgument);
+      const auto preserved = EncodeSolidInteractionCheckpoint3D(*restarted);
+      ASSERT_TRUE(preserved.ok()) << preserved.status();
+      EXPECT_EQ(*preserved, halfway_checkpoint);
+      frame_settings.duration = duration;
+      const auto replay = AdvanceElasticBladeFrame3D(*grid, frame_settings, 1, *restarted);
+      ASSERT_TRUE(replay.ok()) << replay.status();
+      const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(*restarted);
+      ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+      EXPECT_EQ(*replay_bytes, *frame_bytes);
+    }
     const auto final = state.elastic_particles.front().transfer.trial_world_position;
     EXPECT_NEAR(final.x, 9.0, 1e-9);
     EXPECT_NEAR(normal_impulse, 1.0, 1e-9);

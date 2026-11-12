@@ -413,4 +413,62 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
   return result;
 }
 
+absl::StatusOr<ElasticBladeFrameResult3D> AdvanceElasticBladeFrame3D(
+    const SparseMacGrid3D& mac_grid,
+    const ElasticBladeGridStep3D& frame_settings,
+    std::uint32_t substeps_per_frame,
+    SolidInteractionCheckpoint3D& checkpoint
+) {
+  if (substeps_per_frame == 0 || checkpoint.accepted_step % substeps_per_frame != 0) {
+    return absl::InvalidArgumentError("elastic frame requires a positive substep count and a frame-aligned checkpoint");
+  }
+  const double substep_duration = frame_settings.duration / substeps_per_frame;
+  if (!std::isfinite(substep_duration) || substep_duration <= 0.0) {
+    return absl::InvalidArgumentError("invalid elastic frame duration");
+  }
+  constexpr std::uint64_t kLargestExactOrdinal = std::uint64_t{1} << std::numeric_limits<double>::digits;
+  if (checkpoint.accepted_step > kLargestExactOrdinal - substeps_per_frame) {
+    return absl::OutOfRangeError("elastic frame step ordinal cannot be represented exactly");
+  }
+
+  // Compute every pose from the authored time-zero slab and accepted ordinal
+  // so replay never depends on a separately accumulated clock or pose.
+  const double normal_speed = Dot(frame_settings.blade.unit_normal, frame_settings.blade.wall_velocity);
+  auto step_settings = frame_settings;
+  step_settings.duration = substep_duration;
+  auto trial = checkpoint;
+  ElasticBladeFrameResult3D result;
+  for (std::uint32_t substep = 0; substep < substeps_per_frame; ++substep) {
+    const double start_time = static_cast<double>(trial.accepted_step) * substep_duration;
+    const double end_time = static_cast<double>(trial.accepted_step + 1) * substep_duration;
+    if (!std::isfinite(end_time) || end_time <= start_time) {
+      return absl::OutOfRangeError("elastic substep time cannot be resolved");
+    }
+    step_settings.blade.start_center_coordinate =
+        std::fma(start_time, normal_speed, frame_settings.blade.start_center_coordinate);
+    const auto step = StepElasticBladeGrid3D(mac_grid, step_settings, trial);
+    if (!step.ok()) {
+      return step.status();
+    }
+
+    for (const auto& contact : step->contacts) {
+      result.particle_impulse.x += contact.particle_impulse.x;
+      result.particle_impulse.y += contact.particle_impulse.y;
+      result.particle_impulse.z += contact.particle_impulse.z;
+      result.blade_work += contact.blade_work;
+    }
+    result.grid_stress_work += step->grid_stress_work;
+    result.deformation_work += step->deformation_work;
+    result.cut_work += step->cut_work;
+    result.omitted_stress_work += step->omitted_stress_work;
+  }
+  if (!std::isfinite(result.particle_impulse.x) || !std::isfinite(result.particle_impulse.y)
+      || !std::isfinite(result.particle_impulse.z) || !std::isfinite(result.blade_work)
+      || !std::isfinite(result.grid_stress_work) || !std::isfinite(result.deformation_work)
+      || !std::isfinite(result.cut_work) || !std::isfinite(result.omitted_stress_work)) {
+    return absl::OutOfRangeError("elastic frame budget exceeds the finite range");
+  }
+  checkpoint = std::move(trial);
+  return result;
+}
 }  // namespace fluidity
