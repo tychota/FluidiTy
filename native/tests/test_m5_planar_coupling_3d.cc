@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "fluidity/host/mixed_contact_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #if defined(FLUIDITY_M5_CUDA_SCENES)
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #endif
@@ -582,6 +583,8 @@ bool TestPlanarMixedContactDetection() {
     return false;
   }
   auto frame_snow = committed_snow;
+  frame_snow.elastic_deformation = {{1, 0, 0}, {0, 0.975, 0}, {0, 0, 1}};
+  frame_snow.log_plastic_jacobian = std::log(0.8);
   frame_snow.transfer.trial_world_position.x = -0.875;
   frame_snow.transfer.particle_velocity.x = 4;
   fluidity::PlanarSnowPressureFrameSettings3D frame_settings{
@@ -629,6 +632,74 @@ bool TestPlanarMixedContactDetection() {
   if (exhausted.status().code() != absl::StatusCode::kFailedPrecondition || accepted_liquid.clock.time != 0
       || accepted_liquid.particles[0].world_position.x != -0.5 || frame_snow.transfer.trial_world_position.x != -0.875
       || frame_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  const fluidity::DrySolidMaterial3D checkpoint_snow = fluidity::SnowParameters3D{1200, 700, 0.025, 0.01, 4};
+  const std::array checkpoint_bindings{
+      fluidity::PlasticSolidCheckpointBinding3D{snow.body_id, snow.material_id, checkpoint_snow},
+  };
+  const auto save_frame = [&](const fluidity::PlanarSnowPressureFrame3D& saved) {
+    const fluidity::SolidInteractionCheckpoint3D solid{
+        .accepted_step = saved.liquid.clock.accepted_step_ordinal,
+        .bodies = {},
+        .sides = {},
+        .plastic_particles = saved.snow,
+    };
+    return fluidity::EncodeCoupledInteractionCheckpoint3D(saved.liquid, solid, checkpoint_bindings);
+  };
+  const auto checkpoint = save_frame(*frame);
+  if (!checkpoint.ok()) {
+    std::fprintf(stderr, "M5 planar frame checkpoint: %s\n", checkpoint.status().ToString().c_str());
+    return false;
+  }
+  const auto restored = fluidity::DecodeCoupledInteractionCheckpoint3D(*checkpoint, checkpoint_bindings);
+  if (!restored.ok() || restored->liquid != frame->liquid
+      || restored->solid.accepted_step != frame->liquid.clock.accepted_step_ordinal
+      || restored->solid.plastic_particles.size() != 1
+      || restored->solid.plastic_particles.front().log_plastic_jacobian != std::log(0.8)) {
+    return false;
+  }
+  frame_settings.target_time = 0.1875;
+  frame_settings.maximum_path_length = 0.001;
+  const auto rejected_resume = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      frame->liquid,
+      frame->snow,
+      single_traction,
+      frame_settings,
+      project
+  );
+  const auto checkpoint_after_rejection = save_frame(*frame);
+  if (rejected_resume.status().code() != absl::StatusCode::kFailedPrecondition || !checkpoint_after_rejection.ok()
+      || *checkpoint_after_rejection != *checkpoint) {
+    return false;
+  }
+  frame_settings.maximum_path_length = 0.20;
+  const auto continuous = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      frame->liquid,
+      frame->snow,
+      single_traction,
+      frame_settings,
+      project
+  );
+  const auto resumed = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      restored->liquid,
+      restored->solid.plastic_particles,
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (!continuous.ok() || !resumed.ok() || resumed->liquid.clock.time != 0.1875
+      || resumed->liquid.clock.frame_ordinal != 2 || resumed->liquid.clock.accepted_step_ordinal != 3
+      || resumed->liquid.clock.epoch != 3
+      || resumed->snow.front().transfer.trial_world_position.x <= frame->snow.front().transfer.trial_world_position.x) {
+    return false;
+  }
+  const auto continuous_checkpoint = save_frame(*continuous);
+  const auto resumed_checkpoint = save_frame(*resumed);
+  if (!continuous_checkpoint.ok() || !resumed_checkpoint.ok() || *continuous_checkpoint != *resumed_checkpoint) {
     return false;
   }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
