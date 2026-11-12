@@ -47,8 +47,8 @@ dry-scene target retains the sand and snow qualification cases.
 | Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
 | Planar snow-layer compression under water pressure | Pass for the one-cell affine layer fixture | Native and CUDA produce 12 Pa and reduce thickness from 0.25 m to 0.1875 m. The elastic Jacobian clamps at 0.975 and the combined Jacobian is 0.75. The frame rejects non-affine normal motion and preserves both input states. |
 | Joint planar snow–water checkpoint replay | Pass for the bounded scene on native and CUDA | An authenticated initial artifact advances through pressure compaction. Disk reopen restores FLSI v3 at frame 10 and reproduces the uninterrupted frame-20 checkpoint byte for byte on each backend. |
-| Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
-| Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
+| Production distinct-body water coupling | Pass for the authored uniform snow–water scene | The joint pressure projection includes reciprocal snow mobility, verifies the backend flux and accepts both materials in the same step. Native and SM120 reproduce the joint checkpoint. |
+| Authored Blender snow–water scene | Pass | Blender 5.2.3 bakes and reopens 20 frames with the Snow preset, animated platen, emitted water and separate materials on native and SM120. The frame-20 checkpoint records irreversible compaction. |
 
 The material and pair contact fixtures run the same tests in host code and
 in an actual SM120 kernel. Scalar analytic comparisons use absolute error
@@ -2050,3 +2050,44 @@ ctest --test-dir out/pr-m5-blender-snow/out/build/blender-snow-cpu -R '^(LiquidB
 The projection still needs to include this mobility in its pressure
 system and apply the resulting snow impulse and liquid velocity in
 the same accepted step. The authored bake remains open.
+
+
+### Authored Blender snow–water bake
+
+[PR 107](https://github.com/tychota/FluidiTy/pull/107) landed at
+`d77bc6f` after 178 native and 36 SM120 tests passed with upstream
+`888faba`. Hosted CI was queued at merge. The augmented pressure
+system includes the frozen reciprocal snow mobility in the same solve.
+A one-cell oracle checks the analytic pressure from liquid conductance
+plus snow mobility and rejects a backend pressure that would impose an
+inconsistent flux. The production acceptance checks the snow flux
+mismatch at 2e-5 s⁻¹ per cell before applying the solved traction.
+
+Blender 5.2.3 ran Apply Snow Preset, Check Scene, Bake and Attach on both
+backends. The animated platen ends at 0.58 m, below the original
+0.625 m snow surface. The 20-frame bake preserved all 30 snow particles
+and emitted two water particles. Both backends measured a minimum
+snow total volume ratio of 0.648350539 and a minimum log plastic
+Jacobian of −0.420240034 in the retained checkpoint. The closest
+emitted water center was 0.631821917 m from snow, outside its 0.4375 m
+particle exclusion radius and inside the 0.8875 m combined field
+support. Resume from frame 10 reproduced the frame-20 checkpoint bytes,
+and both material-specific Alembic objects played after reopening the
+saved Blender project. The augmented mobility is assembled on the host,
+with the normal native or SM120 liquid projection supplying the accepted
+pressure and face velocities.
+
+```powershell
+$tree = (Resolve-Path out/pr-m5-blender-snow).Path
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$cpu = Join-Path $tree 'out/build/blender-snow-cpu'
+$cuda = Join-Path $tree 'out/build/blender-snow-sm120'
+cmake --build $cpu --target fluidity_native_tests fluidity_simulate fluidity_blender_bridge fluidity_simulate_fixture
+cmake --build $cuda --target fluidity_cuda_operator_tests fluidity_simulate fluidity_blender_bridge fluidity_simulate_fixture
+ctest --test-dir $cpu -R '^(LiquidBoundaryGeometry3D\.|LiquidSubstep3D\.|SimulateCli\.)' --no-tests=error --output-on-failure
+ctest --test-dir $cuda -R '^(CudaLiquidSubstep3D\.|CudaLiquidBoundary3D\.|SimulateCli\.cuda_mixed$)' --no-tests=error --output-on-failure
+& $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $cpu "$tree/out/authored-native-repro" cpu
+& $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $cuda "$tree/out/authored-cuda-repro" cuda
+```
+
+Q-SAND remains open at the extended settling endpoint.
