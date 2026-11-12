@@ -2181,3 +2181,44 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$build/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+
+### Transpose of the wall-constrained deformation gather
+
+The local diagnostic at `4c56e0d` applies the transpose of the exact
+stationary floor continuation to the full-stencil stress force. The
+existing affine fit supplies the donor coefficients. Rank fallback
+scatters to the same nearest donor, and fixed below-floor normal
+velocities receive no force work. The isolated stress oracle measured
+a work residual of −7.11e-15 J on native and −6.22e-15 J using the
+SM120 gather. Both default dry-scene tests passed.
+
+| Case | Paired at 1.5 s | Paired at 3 s | Paired with grid-supported friction at 1.5 s | Paired with grid-supported friction at 3 s |
+|---|---:|---:|---:|---:|
+| Coarse | 27.481554° | 16.658214° | 27.714905° | 17.149176° |
+| Coarse half-step | 33.813342° | 26.349700° | 34.386059° | 27.105769° |
+| Fine | Motion bound | Motion bound | Motion bound | Motion bound |
+| Fine half-step | 32.051263° | 27.187768° | 32.417311° | 27.633086° |
+
+Completed cases passed the vertical momentum bound. Cut-stress work
+mismatch stayed below 3e-16 J. The friction control uses each particle's
+compressive normal impulse from the fixed ghost constraint to cap
+additional tangential friction before the swept response. Its angular
+effect is limited, and the nominal fine case still rejects at step 170.
+At that step an X face carries 2.61e-9 kg and receives −0.04596 N of
+scattered stress. The existing 3.75e-6 kg force-mass floor still allows
+the face velocity to reach −19.67 m/s, past the 18 m/s limit. The
+transient face instrumentation was removed. This identifies the
+next numerical constraint on the paired transfer. Donor selection
+needs to account for mass without breaking the work pairing.
+
+```powershell
+$build = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
+$bin = 'out/pr-m5-sand-affine/out/floor-transpose-debug-bin'
+cmake --build $build --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+ctest --test-dir $build -R '^M5DryScenes\.' --no-tests=error --output-on-failure
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
