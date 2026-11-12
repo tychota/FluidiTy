@@ -758,6 +758,111 @@ bool TestPlanarMixedContactDetection() {
       || std::abs(advected_water.volume_ratio - 0.95) > 1e-12 || advected_snow.transfer.sorted_world_position.x != 0) {
     return false;
   }
+  auto moving_snow = snow;
+  moving_snow.transfer.particle_mass = 0.375;
+  moving_snow.transfer.trial_world_position = {-0.875, 0.25, 0.25};
+  moving_snow.transfer.particle_velocity = {4, 0, 0};
+  auto moving_liquid = water;
+  moving_liquid.world_position = {-0.5, 0.25, 0.25};
+  moving_liquid.volume_ratio = 0.95;
+  const auto freeze = [&] {
+    return fluidity::FreezePlanarSnowPressureCell3D(
+        *grid,
+        {0, 0, 0},
+        FaceNormalAxis::kX,
+        true,
+        {&moving_snow, 1},
+        0.125,
+        1,
+        0
+    );
+  };
+  const auto first_frozen = freeze();
+  if (!first_frozen.ok()) {
+    std::fprintf(stderr, "M5 moving snow first_frozen: %s\n", first_frozen.status().ToString().c_str());
+    return false;
+  }
+  if (first_frozen->wall_plane_coordinate != -0.75 || first_frozen->cell.fluid_volume != 0.75) {
+    return false;
+  }
+  const fluidity::MacPressureInputs3D first_cut_inputs{
+      *grid,
+      0.125,
+      {&first_frozen->cell, 1},
+      first_frozen->faces,
+  };
+  const auto first_cut = fluidity::AdvancePlanarSnowPressure3D(
+      first_cut_inputs,
+      first_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      first_frozen->wall_plane_coordinate
+  );
+  if (!first_cut.ok()) {
+    std::fprintf(stderr, "M5 moving snow first_cut: %s\n", first_cut.status().ToString().c_str());
+    return false;
+  }
+  if (std::abs(first_cut->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(first_cut->liquid_projection.cell_pressures.front() - 6) > 1e-12
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.625) > 1e-12
+      || std::abs(moving_liquid.world_position.x + 0.25) > 1e-12) {
+    return false;
+  }
+  const auto second_frozen = freeze();
+  if (!second_frozen.ok()) {
+    std::fprintf(stderr, "M5 moving snow second_frozen: %s\n", second_frozen.status().ToString().c_str());
+    return false;
+  }
+  if (std::abs(second_frozen->wall_plane_coordinate + 0.5) > 1e-12
+      || std::abs(second_frozen->cell.fluid_volume - 0.5) > 1e-12) {
+    return false;
+  }
+  const fluidity::MacPressureInputs3D second_cut_inputs{
+      *grid,
+      0.125,
+      {&second_frozen->cell, 1},
+      second_frozen->faces,
+  };
+  const auto inconsistent = fluidity::AdvancePlanarSnowPressure3D(
+      second_cut_inputs,
+      second_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      -0.625
+  );
+  if (inconsistent.status().code() != absl::StatusCode::kInvalidArgument
+      || std::abs(moving_liquid.world_position.x + 0.25) > 1e-12
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.625) > 1e-12) {
+    return false;
+  }
+  const auto second_cut = fluidity::AdvancePlanarSnowPressure3D(
+      second_cut_inputs,
+      second_frozen->wall_face_ordinal,
+      single_traction,
+      {&moving_liquid, 1},
+      {&moving_snow, 1},
+      0.3,
+      project,
+      second_frozen->wall_plane_coordinate
+  );
+  if (!second_cut.ok()) {
+    std::fprintf(stderr, "M5 moving snow second_cut: %s\n", second_cut.status().ToString().c_str());
+    return false;
+  }
+  constexpr double kMovingWallTolerance = 2e-7;
+  if (std::abs(second_cut->solved_wall_normal_velocity - 1.2) > kMovingWallTolerance
+      || std::abs(second_cut->liquid_projection.cell_pressures.front() - 2.4) > kMovingWallTolerance
+      || std::abs(moving_snow.transfer.trial_world_position.x + 0.475) > kMovingWallTolerance
+      || std::abs(moving_liquid.world_position.x + 0.1) > kMovingWallTolerance
+      || std::abs(moving_liquid.volume_ratio - 0.95) > kMovingWallTolerance) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;

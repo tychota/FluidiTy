@@ -36,6 +36,7 @@ clean Windows Release CUDA rebuild.
 | Reciprocal pressure for a planar snow interface | Pass for one- and two-cell frozen fixtures | Native and CUDA recover analytic flux, pressure, speed, and impulse with either wall orientation. The two-cell case reverses which pressure row is incident to the wall. An interior wall selection rejects. |
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
 | Joint planar pressure advection | Pass for one- and two-cell frozen fixtures | The projected regular-cell field updates liquid positions, volume and slopes. Snow advances with its pressure-corrected velocity. Crossing into an adjacent pressure cell succeeds. A late unsupported liquid destination or snow motion failure preserves both states. |
+| Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1074,6 +1075,18 @@ pressure pass with absolute tolerance 2e-6 in the measured units.
 This host trial permits one crossing through an open shared face.
 The full scene still needs moving snow geometry, general paths and
 scheduler acceptance.
+
+The subcell fixture reconstructs the snow front at x = −0.75 m
+from its particle and 0.125 m surface offset. The initial wet
+volume is 0.75 m³ and the outlet distance is half the wet thickness.
+The first step gives 2 m/s and 6 Pa. Reconstruction from the moved
+snow gives x = −0.50 m and 0.50 m³ at the next step. The second
+step gives 1.2 m/s and 2.4 Pa, and the liquid volume ratio stays 0.95
+within the 2e-7 absolute tolerance used for the mixed-precision solve.
+Both native and CUDA pass. A supplied plane inconsistent with the
+wet volume rejects without changing either state. This geometry is
+limited to a planar snow front in one cell with stationary sealed
+transverse faces and a full ambient-pressure outlet.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

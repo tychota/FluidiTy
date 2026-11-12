@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -143,12 +145,37 @@ absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
     MixedPressureProjector3D project
 );
 
+struct FrozenPlanarSnowPressureCell3D {
+  MacPressureCell3D cell;
+  std::array<MacPressureFace3D, 6> faces;
+  std::size_t wall_face_ordinal;
+  double wall_plane_coordinate;  // Signed coordinate along the normal into liquid, m.
+};
+
+// Reconstruct one axis-aligned snow front from the outermost supplied
+// particle and a nonnegative outward offset in meters. The front cuts
+// the selected cell with positive liquid thickness on the opposite side.
+// Produces a sealed snow wall, stationary sealed transverse faces and a
+// full ambient-pressure outlet. All records must belong to one body.
+absl::StatusOr<FrozenPlanarSnowPressureCell3D> FreezePlanarSnowPressureCell3D(
+    const SparseMacGrid3D& grid,
+    CellIndex3D cell,
+    FaceNormalAxis axis,
+    bool wall_on_low_face,
+    std::span<const PlasticSolidCheckpointParticle3D> snow_front_particles,
+    double surface_offset,
+    double inverse_liquid_density,
+    double outlet_pressure
+);
+
 // Stages pressure traction, regular-cell liquid advection and snow
 // contributor drift in a frozen pressure domain. Non-wall faces must be fully open or stationary
 // sealed. Liquid can cross one open face into an adjacent pressure cell.
 // Both materials stay on their
 // respective sides of the translating wall without a second impulse. Position increments are limited
-// by maximum_path_length in meters. Advances volume from the same
+// by maximum_path_length in meters. A supplied wall coordinate clips the
+// incident cell along the wall axis and must match its wet volume.
+// Advances volume from the same
 // regular-cell field. On success both spans receive the candidate state;
 // otherwise neither span changes. The caller owns rebinning and acceptance.
 absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
@@ -158,7 +185,8 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     std::span<LiquidParticleState3D> liquid,
     std::span<PlasticSolidCheckpointParticle3D> plastic,
     double maximum_path_length,
-    MixedPressureProjector3D project
+    MixedPressureProjector3D project,
+    std::optional<double> wall_plane_coordinate = std::nullopt
 );
 
 }  // namespace fluidity
