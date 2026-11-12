@@ -481,3 +481,13 @@ Lowering one target row alone makes its covariance gap indefinite and
 triggers refusal. Geometry and EOS admissibility, phase/body/side matching,
 and conservative floating eigenvalue tolerances require separate runtime
 qualification.
+
+## F7: viscosity energy and trace certificate
+
+`Fluidity/Viscosity.lean` proves the forced forward Euler energy identity,
+homogeneous forward contraction under the certified matrix inequality,
+and backward Euler energy balance with wall work. The trace lemma applies
+column-wise Cauchy–Schwarz to the factor sqrt(W) E invsqrt(M). Its trace
+is the rational oracle in `reference/src/fluidity_reference/viscosity.py`.
+These theorems are exact-arithmetic results. Production geometry, float
+assembly and rounding, and runtime energy defects require their own checks.

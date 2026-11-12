@@ -295,6 +295,11 @@ TEST(CudaLiquidBoundary3D, GeometryAndCapillaryMatchOracle) {
   cases.ThinSlabInvisibleToCornersAndSplitCellRefusal();
   cases.SharedFaceHasOneOwnerAndMatchingTriangulation();
   cases.ThetaFixtureAndSignedPressureMapping();
+  cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
+  {
+    SCOPED_TRACE("internal liquid interface");
+    cases.SharedLiquidInterfaceUsesSeriesResistanceAndOneJump();
+  }
   cases.PlaneAndSphereCenteredCurvature();
   cases.CapillaryLiftOnceAndCorrectionMismatchControl();
   cases.RejectsMissingSamplesOwnersOrderingAndInvalidObstacle();

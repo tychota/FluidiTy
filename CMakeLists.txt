@@ -103,6 +103,12 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d.cc
   native/src/mac_pressure_3d_multigrid.cc
   native/src/adaptive_width_policy_3d.cc
+  native/src/mac_viscous_pressure_3d.cc
+  native/src/liquid_air_components.cc
+  native/src/liquid_cavity.cc
+  native/src/liquid_eos.cc
+  native/src/liquid_eos_sensor_3d.cc
+  native/src/liquid_mixture_3d.cc
   native/src/viscosity.cc)
 target_include_directories(fluidity_native PUBLIC "${PROJECT_SOURCE_DIR}/native/include")
 target_compile_features(fluidity_native PUBLIC cxx_std_20)
@@ -145,6 +151,8 @@ if(FLUIDITY_ENABLE_CUDA)
     native/cuda/liquid_boundary_transfer_3d_host.cc
     native/cuda/liquid_wall_contact_3d_host.cc
     native/cuda/liquid_wall_contact_3d.cu
+    native/cuda/viscosity_velocity_block_3d_host.cc
+    native/cuda/viscosity_velocity_block_3d.cu
     native/cuda/mac_pressure_3d_host.cc
     native/cuda/mac_pressure_3d.cu
     native/cuda/pressure_host.cc
@@ -287,6 +295,9 @@ if(BUILD_TESTING)
     native/tests/test_adaptive_liquid_remap_3d.cc
     native/tests/test_mac_pressure_3d.cc
     native/tests/test_adaptive_width_policy_3d.cc
+    native/tests/test_liquid_cavity.cc
+    native/tests/test_liquid_eos.cc
+    native/tests/test_liquid_mixture_3d.cc
     native/tests/test_viscosity.cc)
   target_link_libraries(fluidity_native_tests PRIVATE fluidity_native fluidity_pressure_3d_test_support flatbuffers::flatbuffers)
   target_include_directories(fluidity_native_tests PRIVATE "${FLUIDITY_CACHE_GENERATED_DIR}")
@@ -339,7 +350,8 @@ if(BUILD_TESTING)
       native/tests/test_cuda_wetted_piston_3d.cc
       native/tests/test_cuda_liquid_substep_3d.cc
       native/tests/test_cuda_liquid_boundary_3d.cc
-      native/tests/test_cuda_mac_pressure_3d.cc)
+      native/tests/test_cuda_mac_pressure_3d.cc
+      native/tests/test_cuda_viscosity.cc)
     add_dependencies(fluidity_cuda_operator_tests fluidity_fixture_headers)
     target_include_directories(fluidity_cuda_operator_tests PRIVATE "${generated_dir}")
     target_link_libraries(fluidity_cuda_operator_tests

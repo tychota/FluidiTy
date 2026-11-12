@@ -1,13 +1,23 @@
 #include "fluidity/host/viscosity.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
+#include <tuple>
+#include <utility>
+#include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/views.h"
+#include "mac_pressure_3d_workspace_internal.h"
+#include "viscosity_strain_3d.h"
+#include "viscosity_velocity_block_3d.h"
 
 namespace fluidity {
 namespace {
@@ -42,6 +52,129 @@ BinaryProduct FactorProduct(double first_factor, double second_factor, double th
 
 double ScaledProduct(double first_factor, double second_factor, double third_factor, double divisor = 1.0) {
   return FactorProduct(first_factor, second_factor, third_factor, divisor).Value();
+}
+
+auto ViscosityCellKey(CellIndex3D cell) {
+  return std::tuple(cell.z, cell.y, cell.x);
+}
+
+CellIndex3D NextViscosityCell(CellIndex3D cell, std::size_t axis) {
+  std::array coordinates{&cell.x, &cell.y, &cell.z};
+  ++*coordinates[axis];
+  return cell;
+}
+
+std::optional<CellIndex3D> PreviousViscosityCell(CellIndex3D cell, std::size_t axis) {
+  std::array coordinates{&cell.x, &cell.y, &cell.z};
+  if (*coordinates[axis] == std::numeric_limits<std::int32_t>::min()) {
+    return std::nullopt;
+  }
+  --*coordinates[axis];
+  return cell;
+}
+
+FaceIndex3D ViscosityFace(std::size_t axis, CellIndex3D cell) {
+  return {.axis = static_cast<FaceNormalAxis>(axis), .lattice_index = {cell.x, cell.y, cell.z}};
+}
+
+const MacViscosityCell3D* FindViscosityCell(std::span<const MacViscosityCell3D> cells, CellIndex3D index) {
+  const auto key = ViscosityCellKey(index);
+  const auto found = std::ranges::lower_bound(cells, key, {}, [](const MacViscosityCell3D& cell) {
+    return ViscosityCellKey(cell.cell_index);
+  });
+  if (found == cells.end() || ViscosityCellKey(found->cell_index) != key) {
+    return nullptr;
+  }
+  return &*found;
+}
+
+// Scaling by the smallest viscosity keeps the reciprocal reduction bounded.
+double HarmonicEdgeViscosity(std::array<double, 4> viscosities) {
+  const double minimum = *std::ranges::min_element(viscosities);
+  if (minimum == 0.0) {
+    return 0.0;
+  }
+  double reciprocal_sum = 0.0;
+  for (const double viscosity : viscosities) {
+    reciprocal_sum += minimum / viscosity;
+  }
+  return minimum * (4.0 / reciprocal_sum);
+}
+
+struct ViscosityErrors {
+  bool detailed;
+
+  absl::Status operator()(absl::StatusCode code, const char* message) const {
+    return absl::Status(code, detailed ? message : "");
+  }
+};
+
+// Form each V/mu as an exponent-separated value. Rescale by the largest
+// exponent before summing, then evaluate 4*V²/sum(V/mu) without first
+// rounding the effective viscosity or overflowing an intermediate product.
+absl::StatusOr<double>
+CutShearWeight(const std::array<double, 4>& volumes, const std::array<double, 4>& viscosities, ViscosityErrors errors) {
+  std::array<BinaryProduct, 4> resistances{};
+  double edge_volume = 0.0;
+  int largest_exponent = std::numeric_limits<int>::min();
+  for (std::size_t quadrant = 0; quadrant < volumes.size(); ++quadrant) {
+    const double volume = volumes[quadrant];
+    if (volume == 0.0) {
+      continue;
+    }
+    const double viscosity = viscosities[quadrant];
+    if (viscosity == 0.0) {
+      return 0.0;
+    }
+    edge_volume += volume;
+    const auto resistance = FactorProduct(volume, 1.0, 1.0, viscosity);
+    resistances[quadrant] = resistance;
+    largest_exponent = std::max(largest_exponent, resistance.exponent);
+  }
+  if (edge_volume == 0.0) {
+    return 0.0;
+  }
+  double normalized_resistance = 0.0;
+  for (const auto resistance : resistances) {
+    if (resistance.fraction > 0.0) {
+      normalized_resistance += std::scalbn(resistance.fraction, resistance.exponent - largest_exponent);
+    }
+  }
+  const double weight = FactorProduct(edge_volume, edge_volume, 1.0, normalized_resistance).Value(2 - largest_exponent);
+  if (!std::isnormal(weight) || weight <= 0.0) {
+    return errors(absl::StatusCode::kOutOfRange, "cut shear strain quadrature is outside normal double range");
+  }
+  return weight;
+}
+
+double StrainWeight3D(double viscosity, double spacing, int multiplicity_exponent) {
+  int spacing_exponent;
+  const double spacing_fraction = std::frexp(spacing, &spacing_exponent);
+  const BinaryProduct weighted_area = FactorProduct(viscosity, spacing, spacing);
+  return std::scalbn(
+      weighted_area.fraction * spacing_fraction,
+      weighted_area.exponent + spacing_exponent + multiplicity_exponent
+  );
+}
+
+// Rows are assembled before publication. A failed lookup cannot expose
+// a stencil with an unowned face slot.
+absl::Status SetStrainTerms(
+    const SparseMacGridView3D& grid,
+    std::span<const FaceIndex3D> faces,
+    double difference_coefficient,
+    MacStrainRow3D& row
+) {
+  for (std::size_t term_index = 0; term_index < faces.size(); ++term_index) {
+    const auto slot = grid.FaceSlot(faces[term_index]);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    const double coefficient = term_index % 2 == 0 ? -difference_coefficient : difference_coefficient;
+    row.terms[term_index] = {.face_slot = *slot, .coefficient = coefficient};
+  }
+  row.term_count = faces.size();
+  return absl::OkStatus();
 }
 
 struct BinaryExponentRange {
@@ -229,25 +362,45 @@ double MassScaledStiffness(double coefficient, double row_sqrt_mass, double colu
   return ScaledProduct(coefficient, 1.0 / row_sqrt_mass, 1.0 / column_sqrt_mass);
 }
 
-// The infinity norm bounds the largest eigenvalue of the symmetric mass-scaled
-// operator. A single row maximum determines the stability limit for all faces.
-absl::StatusOr<double> ComputeSpectralBound(std::span<const double> stiffness, std::span<const double> sqrt_mass) {
-  const std::size_t columns = sqrt_mass.size();
+double UpperAdjacent(double value) {
+  return std::nextafter(value, std::numeric_limits<double>::infinity());
+}
+
+// Bound W E²/M using outward-rounded mantissas. This avoids overflowing E²
+// or losing a contribution below the normal range before division by M.
+double UpperTraceContribution(double quadrature, double strain_coefficient, double face_inertia) {
+  int quadrature_exponent;
+  int strain_exponent;
+  int inertia_exponent;
+  const double quadrature_fraction = std::frexp(quadrature, &quadrature_exponent);
+  const double strain_fraction = std::frexp(std::abs(strain_coefficient), &strain_exponent);
+  const double inertia_fraction = std::frexp(face_inertia, &inertia_exponent);
+  const double squared_strain_fraction = UpperAdjacent(strain_fraction * strain_fraction);
+  const double weighted_strain_fraction = UpperAdjacent(quadrature_fraction * squared_strain_fraction);
+  const double trace_fraction = UpperAdjacent(weighted_strain_fraction / inertia_fraction);
+  const int trace_exponent = quadrature_exponent + 2 * strain_exponent - inertia_exponent;
+  return UpperAdjacent(std::scalbn(trace_fraction, trace_exponent));
+}
+
+// The exact mass-scaled stiffness is PSD. Its trace bounds its spectrum
+// without depending on cancellation or the computed square roots of inertia.
+double ComputeSpectralBound(const ViscosityInputsView& inputs) {
+  const std::size_t columns = inputs.face_inertias.size();
   double spectral_bound = 0.0;
-  for (std::size_t row = 0; row < columns; ++row) {
-    double row_sum = 0.0;
+  for (std::size_t row = 0; row < inputs.strain_row_count; ++row) {
+    const double quadrature = inputs.strain_quadrature_weights[row];
+    if (quadrature == 0.0) {
+      continue;
+    }
     for (std::size_t column = 0; column < columns; ++column) {
-      const double coefficient = stiffness[row * columns + column];
-      const double scaled_coefficient = MassScaledStiffness(coefficient, sqrt_mass[row], sqrt_mass[column]);
-      if (coefficient != 0.0 && !std::isnormal(scaled_coefficient)) {
-        return absl::OutOfRangeError("mass-scaled viscous stiffness is outside normal double range");
+      const double strain_coefficient = inputs.strain_operator[row * columns + column];
+      if (strain_coefficient == 0.0) {
+        continue;
       }
-      row_sum += std::abs(scaled_coefficient);
+      const double trace_contribution =
+          UpperTraceContribution(quadrature, strain_coefficient, inputs.face_inertias[column]);
+      spectral_bound = UpperAdjacent(spectral_bound + trace_contribution);
     }
-    if (!std::isfinite(row_sum)) {
-      return absl::OutOfRangeError("viscosity spectral row sum is nonfinite");
-    }
-    spectral_bound = std::max(spectral_bound, row_sum);
   }
   return spectral_bound;
 }
@@ -606,6 +759,895 @@ absl::Status AssembleMacStrain2D(
   return absl::OkStatus();
 }
 
+namespace {
+template <typename Rows>
+absl::Status AssembleMacStrain(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    bool include_complete_shear,
+    Rows& rows,
+    ViscosityErrors errors
+) {
+  constexpr std::size_t maximum_rows_per_cell = 6;
+  if (cells.size() > rows.max_size() / maximum_rows_per_cell) {
+    return errors(absl::StatusCode::kOutOfRange, "viscosity strain row extent is unrepresentable");
+  }
+  const auto maximum_rows = cells.size() * maximum_rows_per_cell;
+  for (std::size_t index = 0; index < cells.size(); ++index) {
+    const auto& cell = cells[index];
+    if (index > 0 && ViscosityCellKey(cells[index - 1].cell_index) >= ViscosityCellKey(cell.cell_index)) {
+      return errors(absl::StatusCode::kInvalidArgument, "viscosity cells must be unique and ordered");
+    }
+    if (!std::isfinite(cell.dynamic_viscosity) || cell.dynamic_viscosity < 0.0) {
+      return errors(absl::StatusCode::kInvalidArgument, "viscosity must be finite and nonnegative");
+    }
+    constexpr auto kMaximumIndex = std::numeric_limits<std::int32_t>::max();
+    if (cell.cell_index.x == kMaximumIndex || cell.cell_index.y == kMaximumIndex
+        || cell.cell_index.z == kMaximumIndex) {
+      return errors(absl::StatusCode::kOutOfRange, "viscosity cell has an unrepresentable high face");
+    }
+  }
+  if (cells.empty()) {
+    return absl::OkStatus();
+  }
+
+  const double spacing = grid.geometry().cell_width;
+  const double normal_coefficient = 1.0 / spacing;
+  const double shear_coefficient = 0.5 * normal_coefficient;
+  if (!std::isnormal(normal_coefficient)) {
+    return errors(absl::StatusCode::kOutOfRange, "normal strain coefficient is outside normal double range");
+  }
+  const bool cut = !liquid_octant_volumes.empty();
+  const double maximum_octant_volume = spacing * spacing * spacing / 8.0;
+  if (cut && !std::isnormal(maximum_octant_volume)) {
+    return errors(absl::StatusCode::kOutOfRange, "viscosity octant capacity is outside normal double range");
+  }
+  rows.reserve(maximum_rows);
+  for (std::size_t cell_ordinal = 0; cell_ordinal < cells.size(); ++cell_ordinal) {
+    const auto& cell = cells[cell_ordinal];
+    double quadrature_weight;
+    if (cut) {
+      const auto& octants = liquid_octant_volumes[cell_ordinal];
+      double liquid_volume = 0.0;
+      for (const double volume : octants) {
+        if (!std::isfinite(volume) || volume < 0.0 || volume > maximum_octant_volume) {
+          return errors(absl::StatusCode::kInvalidArgument, "viscosity octant volume is outside its cell bound");
+        }
+        liquid_volume += volume;
+      }
+      if (liquid_volume == 0.0) {
+        return errors(absl::StatusCode::kInvalidArgument, "viscosity cell requires positive liquid volume");
+      }
+      if (!std::isfinite(liquid_volume)) {
+        return errors(absl::StatusCode::kOutOfRange, "viscosity liquid volume is unrepresentable");
+      }
+      quadrature_weight = ScaledProduct(cell.dynamic_viscosity, liquid_volume, 2.0);
+    } else {
+      quadrature_weight = StrainWeight3D(cell.dynamic_viscosity, spacing, 1);
+    }
+    if (cell.dynamic_viscosity > 0.0 && !std::isnormal(quadrature_weight)) {
+      return errors(absl::StatusCode::kOutOfRange, "normal strain quadrature is outside normal double range");
+    }
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto normal = static_cast<FaceNormalAxis>(axis);
+      const std::array faces{
+          ViscosityFace(axis, cell.cell_index),
+          ViscosityFace(axis, NextViscosityCell(cell.cell_index, axis)),
+      };
+      MacStrainRow3D row{
+          .low_cell = cell.cell_index,
+          .first_axis = normal,
+          .second_axis = normal,
+          .terms = {},
+          .term_count = 0,
+          .quadrature_weight = quadrature_weight,
+      };
+      const auto status = SetStrainTerms(grid, faces, normal_coefficient, row);
+      if (!status.ok()) {
+        return status;
+      }
+      rows.push_back(row);
+    }
+  }
+
+  if (!include_complete_shear) {
+    return absl::OkStatus();
+  }
+  for (const auto& cell : cells) {
+    for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
+      const auto first_index = NextViscosityCell(cell.cell_index, first_axis);
+      const auto* first = FindViscosityCell(cells, first_index);
+      if (first == nullptr) {
+        continue;
+      }
+      for (std::size_t second_axis = first_axis + 1; second_axis < 3; ++second_axis) {
+        const auto second_index = NextViscosityCell(cell.cell_index, second_axis);
+        const auto diagonal_index = NextViscosityCell(first_index, second_axis);
+        const auto* second = FindViscosityCell(cells, second_index);
+        const auto* diagonal = FindViscosityCell(cells, diagonal_index);
+        if (second == nullptr || diagonal == nullptr) {
+          continue;
+        }
+        const std::array viscosities{
+            cell.dynamic_viscosity,
+            first->dynamic_viscosity,
+            second->dynamic_viscosity,
+            diagonal->dynamic_viscosity,
+        };
+        if (!std::isnormal(shear_coefficient)) {
+          return errors(absl::StatusCode::kOutOfRange, "shear strain coefficient is outside normal double range");
+        }
+        double quadrature_weight;
+        if (cut) {
+          const std::size_t first_bit = std::size_t{1} << first_axis;
+          const std::size_t second_bit = std::size_t{1} << second_axis;
+          const std::size_t edge_axis_bit = 7 ^ (first_bit | second_bit);
+          const auto edge_quarter_volume = [&](const MacViscosityCell3D* adjacent_cell, std::size_t octant) {
+            const auto cell_ordinal = static_cast<std::size_t>(adjacent_cell - cells.data());
+            const auto& octants = liquid_octant_volumes[cell_ordinal];
+            return octants[octant] + octants[octant | edge_axis_bit];
+          };
+          const std::array volumes{
+              edge_quarter_volume(&cell, first_bit | second_bit),
+              edge_quarter_volume(first, second_bit),
+              edge_quarter_volume(second, first_bit),
+              edge_quarter_volume(diagonal, 0),
+          };
+          const auto cut_weight = CutShearWeight(volumes, viscosities, errors);
+          if (!cut_weight.ok()) {
+            return cut_weight.status();
+          }
+          quadrature_weight = *cut_weight;
+        } else {
+          const double edge_viscosity = HarmonicEdgeViscosity(viscosities);
+          if (!std::isfinite(edge_viscosity)) {
+            return errors(absl::StatusCode::kOutOfRange, "edge viscosity is unrepresentable");
+          }
+          quadrature_weight = StrainWeight3D(edge_viscosity, spacing, 2);
+          if (edge_viscosity > 0.0 && !std::isnormal(quadrature_weight)) {
+            return errors(absl::StatusCode::kOutOfRange, "shear strain quadrature is outside normal double range");
+          }
+        }
+        const std::array faces{
+            ViscosityFace(first_axis, first_index),
+            ViscosityFace(first_axis, diagonal_index),
+            ViscosityFace(second_axis, second_index),
+            ViscosityFace(second_axis, diagonal_index),
+        };
+        MacStrainRow3D row{
+            .low_cell = cell.cell_index,
+            .first_axis = static_cast<FaceNormalAxis>(first_axis),
+            .second_axis = static_cast<FaceNormalAxis>(second_axis),
+            .terms = {},
+            .term_count = 0,
+            .quadrature_weight = quadrature_weight,
+        };
+        const auto status = SetStrainTerms(grid, faces, shear_coefficient, row);
+        if (!status.ok()) {
+          return status;
+        }
+        rows.push_back(row);
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>>
+AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells) {
+  std::vector<MacStrainRow3D> rows;
+  const auto status = AssembleMacStrain(grid, cells, {}, true, rows, {.detailed = true});
+  if (!status.ok()) {
+    return status;
+  }
+  return rows;
+}
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes
+) {
+  if (liquid_octant_volumes.size() != cells.size()) {
+    return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
+  }
+  std::vector<MacStrainRow3D> rows;
+  const auto status = AssembleMacStrain(grid, cells, liquid_octant_volumes, true, rows, {.detailed = true});
+  if (!status.ok()) {
+    return status;
+  }
+  return rows;
+}
+
+namespace {
+using FindCutPressureFace = absl::FunctionRef<const MacPressureFace3D*(FaceIndex3D)>;
+
+bool IsOpenCutConnection(const MacPressureFace3D* face) {
+  return face != nullptr && face->open_area > 0.0
+      && std::holds_alternative<InternalMacPressureLink3D>(face->pressure_link);
+}
+
+bool CutEdgeLiquidIsConnected(
+    unsigned liquid_quadrants,
+    const std::array<FaceIndex3D, 4>& separating_faces,
+    FindCutPressureFace find_face
+) {
+  constexpr std::array<unsigned, 4> kAdjacentQuadrants{0b0011, 0b1100, 0b0101, 0b1010};
+  std::array<unsigned, 4> connections{};
+  for (std::size_t index = 0; index < connections.size(); ++index) {
+    const auto pair = kAdjacentQuadrants[index];
+    if ((liquid_quadrants & pair) == pair && IsOpenCutConnection(find_face(separating_faces[index]))) {
+      connections[index] = pair;
+    }
+  }
+  unsigned reached = liquid_quadrants & (0u - liquid_quadrants);
+  for (int pass = 0; pass < 3 && reached != liquid_quadrants; ++pass) {
+    for (const auto connection : connections) {
+      if ((reached & connection) != 0u) {
+        reached |= connection;
+      }
+    }
+  }
+  return reached == liquid_quadrants;
+}
+
+// Move the derivative, rather than a velocity component independently, to a
+// neighboring pair that shares an open liquid connection with this edge.
+std::optional<std::array<FaceIndex3D, 2>> FindCutBoundaryDerivative(
+    std::span<const MacViscosityCell3D> cells,
+    const std::array<const MacViscosityCell3D*, 4>& incident_cells,
+    std::size_t component_axis,
+    std::size_t derivative_axis,
+    CellIndex3D nominal_low_index,
+    FindCutPressureFace find_face
+) {
+  std::optional<std::array<FaceIndex3D, 2>> best;
+  auto best_distance = std::numeric_limits<std::int64_t>::max();
+  for (const auto* cell : incident_cells) {
+    if (cell == nullptr) {
+      continue;
+    }
+    const auto index = cell->cell_index;
+    for (const bool positive_side : {false, true}) {
+      const auto neighbor = positive_side ? std::optional{NextViscosityCell(index, derivative_axis)}
+                                          : PreviousViscosityCell(index, derivative_axis);
+      if (!neighbor.has_value() || FindViscosityCell(cells, *neighbor) == nullptr) {
+        continue;
+      }
+      const auto low = positive_side ? index : *neighbor;
+      const auto high = positive_side ? *neighbor : index;
+      if (!IsOpenCutConnection(find_face(ViscosityFace(derivative_axis, high)))) {
+        continue;
+      }
+      for (const bool high_component_face : {false, true}) {
+        const auto low_face_index = high_component_face ? NextViscosityCell(low, component_axis) : low;
+        const auto high_face_index = high_component_face ? NextViscosityCell(high, component_axis) : high;
+        const auto low_face = ViscosityFace(component_axis, low_face_index);
+        const auto high_face = ViscosityFace(component_axis, high_face_index);
+        if (find_face(low_face) == nullptr || find_face(high_face) == nullptr) {
+          continue;
+        }
+        const std::int64_t dx = static_cast<std::int64_t>(low_face_index.x) - nominal_low_index.x;
+        const std::int64_t dy = static_cast<std::int64_t>(low_face_index.y) - nominal_low_index.y;
+        const std::int64_t dz = static_cast<std::int64_t>(low_face_index.z) - nominal_low_index.z;
+        const auto distance = dx * dx + dy * dy + dz * dz;
+        if (distance < best_distance) {
+          best_distance = distance;
+          best = std::array{low_face, high_face};
+        }
+      }
+    }
+  }
+  return best;
+}
+}  // namespace
+
+namespace {
+template <typename Rows>
+absl::Status AssembleCutCellStrainWithBoundary(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces,
+    std::span<std::size_t> slots,
+    Rows& rows,
+    ViscosityErrors errors
+) {
+  if (liquid_octant_volumes.size() != cells.size()) {
+    return errors(absl::StatusCode::kInvalidArgument, "viscosity octant volumes differ from cell count");
+  }
+  const auto normal_status = AssembleMacStrain(grid, cells, liquid_octant_volumes, false, rows, errors);
+  if (!normal_status.ok() || cells.empty()) {
+    return normal_status;
+  }
+
+  for (std::size_t face = 0; face < pressure_faces.size(); ++face) {
+    const auto slot = grid.FaceSlot(pressure_faces[face].face_index);
+    if (!slot.ok()) {
+      return slot.status();
+    }
+    if (face > 0 && slots[face - 1] >= *slot) {
+      return errors(absl::StatusCode::kInvalidArgument, "cut strain pressure faces must be in unique owned slot order");
+    }
+    slots[face] = *slot;
+  }
+  for (const auto& row : rows) {
+    for (const auto& term : std::span(row.terms).first(row.term_count)) {
+      if (!std::ranges::binary_search(slots, term.face_slot)) {
+        return errors(absl::StatusCode::kFailedPrecondition, "cut strain normal face has no pressure owner");
+      }
+    }
+  }
+  const auto find_face = [&](FaceIndex3D index) -> const MacPressureFace3D* {
+    const auto slot = grid.FaceSlot(index);
+    if (!slot.ok()) {
+      return nullptr;
+    }
+    const auto found = std::ranges::lower_bound(slots, *slot);
+    return found != slots.end() && *found == *slot ? &pressure_faces[found - slots.begin()] : nullptr;
+  };
+
+  const double coefficient = 0.5 / grid.geometry().cell_width;
+  if (!std::isnormal(coefficient)) {
+    return errors(absl::StatusCode::kOutOfRange, "cut shear coefficient is outside normal double range");
+  }
+  for (const auto& cell : cells) {
+    for (std::size_t first_axis = 0; first_axis < 2; ++first_axis) {
+      for (std::size_t second_axis = first_axis + 1; second_axis < 3; ++second_axis) {
+        const auto first_bit = std::size_t{1} << first_axis;
+        const auto second_bit = std::size_t{1} << second_axis;
+        const auto edge_bit = 7 ^ (first_bit | second_bit);
+        for (std::size_t cell_quadrant = 0; cell_quadrant < 4; ++cell_quadrant) {
+          std::optional<CellIndex3D> low_cell = cell.cell_index;
+          if ((cell_quadrant & 1u) != 0) {
+            low_cell = PreviousViscosityCell(*low_cell, first_axis);
+          }
+          if (low_cell.has_value() && (cell_quadrant & 2u) != 0) {
+            low_cell = PreviousViscosityCell(*low_cell, second_axis);
+          }
+          if (!low_cell.has_value()) {
+            return errors(absl::StatusCode::kOutOfRange, "cut strain edge has an unrepresentable low cell");
+          }
+          const auto first_cell = NextViscosityCell(*low_cell, first_axis);
+          const auto second_cell = NextViscosityCell(*low_cell, second_axis);
+          const auto diagonal_cell = NextViscosityCell(first_cell, second_axis);
+          const std::array incident_cells{
+              FindViscosityCell(cells, *low_cell),
+              FindViscosityCell(cells, first_cell),
+              FindViscosityCell(cells, second_cell),
+              FindViscosityCell(cells, diagonal_cell),
+          };
+          const auto owner = std::ranges::find_if(incident_cells, [](const auto* candidate) {
+            return candidate != nullptr;
+          });
+          if (owner == incident_cells.end() || *owner != &cell) {
+            continue;
+          }
+          const std::array quadrant_octants{first_bit | second_bit, second_bit, first_bit, std::size_t{0}};
+          std::array<double, 4> volumes{};
+          std::array<double, 4> viscosities{};
+          auto support_cells = incident_cells;
+          unsigned liquid_quadrants = 0;
+          for (std::size_t quadrant = 0; quadrant < incident_cells.size(); ++quadrant) {
+            const auto* adjacent_cell = incident_cells[quadrant];
+            if (adjacent_cell == nullptr) {
+              continue;
+            }
+            const auto& octants = liquid_octant_volumes[adjacent_cell - cells.data()];
+            const auto octant = quadrant_octants[quadrant];
+            volumes[quadrant] = octants[octant] + octants[octant | edge_bit];
+            viscosities[quadrant] = adjacent_cell->dynamic_viscosity;
+            if (volumes[quadrant] > 0.0) {
+              liquid_quadrants |= 1u << quadrant;
+            } else {
+              support_cells[quadrant] = nullptr;
+            }
+          }
+          const auto weight = CutShearWeight(volumes, viscosities, errors);
+          if (!weight.ok()) {
+            return weight.status();
+          }
+          if (*weight == 0.0) {
+            continue;
+          }
+          const std::array separating_faces{
+              ViscosityFace(first_axis, first_cell),
+              ViscosityFace(first_axis, diagonal_cell),
+              ViscosityFace(second_axis, second_cell),
+              ViscosityFace(second_axis, diagonal_cell),
+          };
+          if (!CutEdgeLiquidIsConnected(liquid_quadrants, separating_faces, find_face)) {
+            return errors(absl::StatusCode::kFailedPrecondition, "cut shear edge spans disconnected liquid quadrants");
+          }
+          const auto first =
+              FindCutBoundaryDerivative(cells, support_cells, first_axis, second_axis, first_cell, find_face);
+          const auto second =
+              FindCutBoundaryDerivative(cells, support_cells, second_axis, first_axis, second_cell, find_face);
+          if (!first.has_value() || !second.has_value()) {
+            return errors(
+                absl::StatusCode::kFailedPrecondition,
+                "positive cut shear edge lacks connected pressure-owned velocity pairs"
+            );
+          }
+          const std::array faces{(*first)[0], (*first)[1], (*second)[0], (*second)[1]};
+          MacStrainRow3D row{
+              .low_cell = *low_cell,
+              .first_axis = static_cast<FaceNormalAxis>(first_axis),
+              .second_axis = static_cast<FaceNormalAxis>(second_axis),
+              .terms = {},
+              .term_count = 0,
+              .quadrature_weight = *weight,
+          };
+          const auto status = SetStrainTerms(grid, faces, coefficient, row);
+          if (!status.ok()) {
+            return status;
+          }
+          rows.push_back(row);
+        }
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+// Capacity is checked against the geometric bound before entering the assembler.
+class StrainRowSpan {
+ public:
+  explicit StrainRowSpan(std::span<MacStrainRow3D> storage) : storage_(storage) {
+  }
+  std::size_t max_size() const {
+    return storage_.size();
+  }
+  void reserve(std::size_t) {
+  }
+  void push_back(const MacStrainRow3D& row) {
+    storage_[size_++] = row;
+  }
+  auto begin() const {
+    return values().begin();
+  }
+  auto end() const {
+    return values().end();
+  }
+  std::span<MacStrainRow3D> values() const {
+    return storage_.first(size_);
+  }
+
+ private:
+  std::span<MacStrainRow3D> storage_;
+  std::size_t size_ = 0;
+};
+}  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrainWithBoundary3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces
+) {
+  std::vector<MacStrainRow3D> rows;
+  std::vector<std::size_t> slots(cells.empty() ? 0 : pressure_faces.size());
+  const auto status = AssembleCutCellStrainWithBoundary(
+      grid,
+      cells,
+      liquid_octant_volumes,
+      pressure_faces,
+      slots,
+      rows,
+      {.detailed = true}
+  );
+  if (!status.ok()) {
+    return status;
+  }
+  return rows;
+}
+
+absl::StatusOr<std::span<MacStrainRow3D>> viscosity_internal::AssembleUniformStrainInScratch3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> octant_volumes,
+    std::span<const MacPressureFace3D> pressure_faces,
+    pressure_internal::MacPressureScratch3D& scratch
+) {
+  const bool cut = !octant_volumes.empty();
+  const std::size_t rows_per_cell = cut ? pressure_internal::kMaximumUniformStrainRowsPerCell3D : 6;
+  if (cells.size() > std::numeric_limits<std::size_t>::max() / rows_per_cell) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  const auto storage = scratch.Take<MacStrainRow3D>(cells.size() * rows_per_cell);
+  if (!storage.ok()) {
+    return storage.status();
+  }
+  StrainRowSpan rows(*storage);
+  absl::Status status;
+  if (cut) {
+    pressure_internal::MacPressureScratchMark3D temporary(scratch);
+    const auto slots = scratch.Take<std::size_t>(pressure_faces.size());
+    if (!slots.ok()) {
+      return slots.status();
+    }
+    status = AssembleCutCellStrainWithBoundary(
+        grid,
+        cells,
+        octant_volumes,
+        pressure_faces,
+        *slots,
+        rows,
+        {.detailed = false}
+    );
+  } else {
+    status = AssembleMacStrain(grid, cells, {}, true, rows, {.detailed = false});
+  }
+  if (!status.ok()) {
+    return status;
+  }
+  return rows.values();
+}
+
+absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
+    CellIndex3D adjacent_cell,
+    FaceNormalAxis tangential_axis,
+    FaceNormalAxis wall_normal_axis,
+    std::size_t tangential_face_slot,
+    double cell_width,
+    double dynamic_viscosity,
+    double wall_tangential_velocity,
+    bool positive_side_wall,
+    double wall_normal_velocity_tangential_derivative
+) {
+  if (tangential_axis > FaceNormalAxis::kZ || wall_normal_axis > FaceNormalAxis::kZ
+      || tangential_axis == wall_normal_axis) {
+    return absl::InvalidArgumentError("wall strain requires distinct Cartesian axes");
+  }
+  if (!std::isfinite(cell_width) || cell_width <= 0.0 || !std::isfinite(dynamic_viscosity) || dynamic_viscosity < 0.0
+      || !std::isfinite(wall_tangential_velocity) || !std::isfinite(wall_normal_velocity_tangential_derivative)) {
+    return absl::InvalidArgumentError("wall strain has invalid physical data");
+  }
+  // D_nt includes half the tangential velocity derivative, over h/2.
+  const double coefficient = (positive_side_wall ? -1.0 : 1.0) / cell_width;
+  const double prescribed_strain =
+      0.5 * wall_normal_velocity_tangential_derivative - coefficient * wall_tangential_velocity;
+  const double weight = StrainWeight3D(dynamic_viscosity, cell_width, 1);
+  if (!std::isnormal(coefficient) || !std::isfinite(prescribed_strain)
+      || (dynamic_viscosity > 0.0 && !std::isnormal(weight))) {
+    return absl::OutOfRangeError("wall strain or quadrature is unrepresentable");
+  }
+  return MacStrainRow3D{
+      .low_cell = adjacent_cell,
+      .first_axis = std::min(tangential_axis, wall_normal_axis),
+      .second_axis = std::max(tangential_axis, wall_normal_axis),
+      .terms = {{{.face_slot = tangential_face_slot, .coefficient = coefficient}}},
+      .term_count = 1,
+      .quadrature_weight = weight,
+      .prescribed_strain = prescribed_strain,
+  };
+}
+
+namespace {
+
+absl::StatusOr<double> ValidateVelocityBlockInputs(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    ViscosityErrors errors
+) {
+  const auto inertia = inputs.face_inertias;
+  const std::size_t face_count = inertia.size();
+  if (rhs.size() != face_count || !std::isfinite(inputs.step_duration) || inputs.step_duration < 0.0) {
+    return errors(absl::StatusCode::kInvalidArgument, "invalid velocity-block extent or timestep");
+  }
+  if (options.max_iterations == 0 || !std::isfinite(options.relative_tolerance) || options.relative_tolerance <= 0.0
+      || options.relative_tolerance >= 1.0) {
+    return errors(absl::StatusCode::kInvalidArgument, "invalid velocity-block iteration budget or tolerance");
+  }
+  double max_rhs = 0.0;
+  for (std::size_t face = 0; face < face_count; ++face) {
+    if (!std::isfinite(inertia[face]) || inertia[face] < 0.0 || !std::isfinite(rhs[face])) {
+      return errors(absl::StatusCode::kInvalidArgument, "invalid face inertia or momentum");
+    }
+    if (inertia[face] == 0.0 && rhs[face] != 0.0) {
+      return errors(absl::StatusCode::kInvalidArgument, "eliminated face must have zero momentum");
+    }
+    max_rhs = std::max(max_rhs, std::abs(rhs[face]));
+  }
+
+  return max_rhs;
+}
+
+absl::Status BuildWeightedVelocityRows(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<MacStrainRow3D> weighted_rows,
+    std::span<double> diagonal,
+    ViscosityErrors errors
+) {
+  const auto inertia = inputs.face_inertias;
+  const std::size_t face_count = inertia.size();
+  // Store the square-root weighted rows so the operator and its Jacobi
+  // diagonal use the same coefficients. Eliminate prescribed slots in E.
+  std::ranges::copy(inertia, diagonal.begin());
+  std::ranges::copy(inputs.strain_rows, weighted_rows.begin());
+  const double sqrt_step = std::sqrt(inputs.step_duration);
+  for (auto& row : weighted_rows) {
+    if (row.term_count == 0 || row.term_count > row.terms.size() || !std::isfinite(row.quadrature_weight)
+        || row.quadrature_weight < 0.0) {
+      return errors(absl::StatusCode::kInvalidArgument, "invalid strain row extent or weight");
+    }
+    const double sqrt_weight = std::sqrt(row.quadrature_weight);
+    for (std::size_t term_index = 0; term_index < row.term_count; ++term_index) {
+      auto& term = row.terms[term_index];
+      if (term.face_slot >= face_count || !std::isfinite(term.coefficient)) {
+        return errors(absl::StatusCode::kInvalidArgument, "invalid strain term");
+      }
+      for (std::size_t earlier = 0; earlier < term_index; ++earlier) {
+        if (row.terms[earlier].face_slot == term.face_slot) {
+          return errors(absl::StatusCode::kInvalidArgument, "strain row has a duplicate face slot");
+        }
+      }
+      if (inertia[term.face_slot] == 0.0 || sqrt_step == 0.0 || sqrt_weight == 0.0 || term.coefficient == 0.0) {
+        term.coefficient = 0.0;
+        continue;
+      }
+      const double weighted_coefficient = ScaledProduct(sqrt_step, sqrt_weight, term.coefficient);
+      if (!std::isnormal(weighted_coefficient)) {
+        return errors(absl::StatusCode::kOutOfRange, "weighted strain coefficient is outside normal double range");
+      }
+      term.coefficient = weighted_coefficient;
+      diagonal[term.face_slot] += weighted_coefficient * weighted_coefficient;
+      if (!std::isfinite(diagonal[term.face_slot])) {
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block diagonal is nonfinite");
+      }
+    }
+  }
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> SolvePreparedVelocityBlock(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    double max_rhs,
+    viscosity_internal::VelocityBlockScratch3D scratch,
+    ViscosityErrors errors
+) {
+  const auto inertia = inputs.face_inertias;
+  const std::size_t face_count = inertia.size();
+  const auto weighted_rows = scratch.weighted_rows;
+  const auto diagonal = scratch.diagonal;
+  const auto apply = [&](std::span<const double> velocity, std::span<double> momentum) {
+    for (std::size_t face = 0; face < face_count; ++face) {
+      momentum[face] = inertia[face] * velocity[face];
+    }
+    for (const auto& row : weighted_rows) {
+      const auto terms = std::span(row.terms).first(row.term_count);
+      double weighted_strain = 0.0;
+      for (const auto& term : terms) {
+        weighted_strain += term.coefficient * velocity[term.face_slot];
+      }
+      for (const auto& term : terms) {
+        momentum[term.face_slot] += term.coefficient * weighted_strain;
+      }
+    }
+    return std::ranges::all_of(momentum, [](double value) {
+      return std::isfinite(value);
+    });
+  };
+  const auto precondition = [&](std::span<const double> residual, std::span<double> preconditioned) {
+    for (std::size_t face = 0; face < face_count; ++face) {
+      preconditioned[face] = inertia[face] == 0.0 ? 0.0 : residual[face] / diagonal[face];
+    }
+    return std::inner_product(residual.begin(), residual.end(), preconditioned.begin(), 0.0);
+  };
+
+  const auto velocity = scratch.velocity;
+  std::ranges::fill(velocity, 0.0);
+  viscosity_internal::VelocityBlockViewSolution3D solution{
+      .velocity = velocity,
+      .iterations = 0,
+      .max_residual = 0.0,
+  };
+  if (max_rhs == 0.0) {
+    return solution;
+  }
+  const double tolerance = options.relative_tolerance * max_rhs;
+  const auto residual = scratch.residual;
+  const auto preconditioned = scratch.preconditioned;
+  const auto direction = scratch.direction;
+  const auto applied = scratch.applied;
+  std::ranges::copy(rhs, residual.begin());
+  double residual_product = precondition(residual, preconditioned);
+  std::ranges::copy(preconditioned, direction.begin());
+  while (solution.iterations < options.max_iterations) {
+    if (!std::isfinite(residual_product) || residual_product <= 0.0 || !apply(direction, applied)) {
+      return errors(absl::StatusCode::kOutOfRange, "velocity-block search direction is unrepresentable");
+    }
+    const double curvature = std::inner_product(direction.begin(), direction.end(), applied.begin(), 0.0);
+    if (!std::isfinite(curvature) || curvature <= 0.0) {
+      return errors(absl::StatusCode::kAborted, "velocity-block search curvature is not finite and positive");
+    }
+    const double step = residual_product / curvature;
+    if (!std::isnormal(step)) {
+      return errors(absl::StatusCode::kOutOfRange, "velocity-block iteration step is unrepresentable");
+    }
+    double max_residual = 0.0;
+    for (std::size_t face = 0; face < face_count; ++face) {
+      velocity[face] += step * direction[face];
+      residual[face] -= step * applied[face];
+      if (!std::isfinite(velocity[face]) || !std::isfinite(residual[face])) {
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block iterate is nonfinite");
+      }
+      max_residual = std::max(max_residual, std::abs(residual[face]));
+    }
+    ++solution.iterations;
+    const bool check_true_residual = max_residual <= tolerance || solution.iterations == options.max_iterations;
+    if (check_true_residual) {
+      if (!apply(velocity, applied)) {
+        return errors(absl::StatusCode::kOutOfRange, "velocity-block true residual is unrepresentable");
+      }
+      max_residual = 0.0;
+      for (std::size_t face = 0; face < face_count; ++face) {
+        residual[face] = rhs[face] - applied[face];
+        if (!std::isfinite(residual[face])) {
+          return errors(absl::StatusCode::kOutOfRange, "velocity-block true residual is nonfinite");
+        }
+        max_residual = std::max(max_residual, std::abs(residual[face]));
+      }
+      if (max_residual <= tolerance) {
+        solution.max_residual = max_residual;
+        return solution;
+      }
+    }
+    const double next_product = precondition(residual, preconditioned);
+    const double conjugacy = check_true_residual ? 0.0 : next_product / residual_product;
+    for (std::size_t face = 0; face < face_count; ++face) {
+      direction[face] = preconditioned[face] + conjugacy * direction[face];
+    }
+    residual_product = next_product;
+  }
+  return errors(absl::StatusCode::kAborted, "velocity-block iteration budget exhausted");
+}
+}  // namespace
+
+absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::PrepareVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  constexpr ViscosityErrors kErrors{.detailed = true};
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  PreparedVelocityBlock3D result{
+      .weighted_rows = std::vector<MacStrainRow3D>(inputs.strain_rows.size()),
+      .diagonal = std::vector<double>(inputs.face_inertias.size()),
+      .max_rhs = *max_rhs,
+  };
+  const auto status = BuildWeightedVelocityRows(inputs, result.weighted_rows, result.diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return result;
+}
+
+absl::StatusOr<double> viscosity_internal::PrepareVelocityBlockInScratch3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    std::span<MacStrainRow3D> weighted_rows,
+    std::span<double> diagonal
+) {
+  constexpr ViscosityErrors kErrors{.detailed = false};
+  if (weighted_rows.size() != inputs.strain_rows.size() || diagonal.size() != inputs.face_inertias.size()) {
+    return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block preparation scratch has invalid extents");
+  }
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  const auto status = BuildWeightedVelocityRows(inputs, weighted_rows, diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return max_rhs;
+}
+
+absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> viscosity_internal::SolveVelocityBlockWithScratch3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    VelocityBlockScratch3D scratch
+) {
+  constexpr ViscosityErrors kErrors{.detailed = false};
+  const auto face_count = inputs.face_inertias.size();
+  const std::array face_views{
+      scratch.diagonal,
+      scratch.velocity,
+      scratch.residual,
+      scratch.preconditioned,
+      scratch.direction,
+      scratch.applied
+  };
+  if (scratch.weighted_rows.size() != inputs.strain_rows.size()
+      || std::ranges::any_of(face_views, [&](const auto view) {
+           return view.size() != face_count;
+         })) {
+    return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block scratch has invalid extents");
+  }
+  const std::array readable{
+      std::as_bytes(inputs.strain_rows),
+      std::as_bytes(inputs.face_inertias),
+      std::as_bytes(rhs),
+      std::as_bytes(std::span(&inputs, 1)),
+  };
+  std::array<ByteView, face_views.size() + 1> writable{};
+  writable[0] = std::as_bytes(scratch.weighted_rows);
+  for (std::size_t index = 0; index < face_views.size(); ++index) {
+    writable[index + 1] = std::as_bytes(face_views[index]);
+  }
+  for (std::size_t index = 0; index < writable.size(); ++index) {
+    const auto overlaps = [&](ByteView other) {
+      return ByteViewsOverlap(writable[index], other);
+    };
+    if (std::ranges::any_of(readable, overlaps) || std::ranges::any_of(std::span(writable).first(index), overlaps)) {
+      return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block scratch aliases another view");
+    }
+  }
+
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  const auto status = BuildWeightedVelocityRows(inputs, scratch.weighted_rows, scratch.diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return SolvePreparedVelocityBlock(inputs, rhs, options, *max_rhs, scratch, kErrors);
+}
+
+absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveMacViscousVelocityBlock3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options
+) {
+  auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  const auto face_count = inputs.face_inertias.size();
+  MacViscousVelocityBlockSolution3D solution{
+      .velocity = std::vector<double>(face_count),
+      .iterations = 0,
+      .max_residual = 0.0,
+  };
+  if (prepared->max_rhs == 0.0) {
+    return solution;
+  }
+  std::vector<double> residual(face_count);
+  std::vector<double> preconditioned(face_count);
+  std::vector<double> direction(face_count);
+  std::vector<double> applied(face_count);
+  const viscosity_internal::VelocityBlockScratch3D scratch{
+      .weighted_rows = prepared->weighted_rows,
+      .diagonal = prepared->diagonal,
+      .velocity = solution.velocity,
+      .residual = residual,
+      .preconditioned = preconditioned,
+      .direction = direction,
+      .applied = applied,
+  };
+  const auto bounded = SolvePreparedVelocityBlock(inputs, rhs, options, prepared->max_rhs, scratch, {.detailed = true});
+  if (!bounded.ok()) {
+    return bounded.status();
+  }
+  solution.iterations = bounded->iterations;
+  solution.max_residual = bounded->max_residual;
+  return solution;
+}
+
 absl::Status
 ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, ViscosityWorkspace& workspace) {
   const auto views = ValidateStepViews(inputs, outputs, workspace);
@@ -628,17 +1670,13 @@ ViscousStep(const ViscosityInputsView& inputs, ViscosityOutputsView outputs, Vis
   for (std::size_t face = 0; face < columns; ++face) {
     sqrt_mass[face] = std::sqrt(inputs.face_inertias[face]);
   }
-  const auto computed_bound = ComputeSpectralBound(stiffness, sqrt_mass);
-  if (!computed_bound.ok()) {
-    return computed_bound.status();
-  }
-
-  // The stability test applies to the entire coupled operator. A product
-  // above the finite explicit limit can only select the implicit branch.
-  const double explicit_limit = 2.0 * (1.0 - inputs.explicit_stability_margin);
-  const double spectral_bound = *computed_bound;
-  const double dimensionless_step = inputs.dt * spectral_bound;
-  const bool explicit_safe = dimensionless_step <= explicit_limit;
+  const double spectral_bound = ComputeSpectralBound(inputs);
+  // Round toward rejection on both sides of the stability comparison.
+  // Zero dt and zero stiffness are exact identities.
+  const double stability_margin = inputs.explicit_stability_margin;
+  const double explicit_limit = stability_margin == 0.0 ? 2.0 : 2.0 * std::nextafter(1.0 - stability_margin, 0.0);
+  const bool explicit_safe =
+      inputs.dt == 0.0 || spectral_bound == 0.0 || UpperAdjacent(inputs.dt * spectral_bound) <= explicit_limit;
   if (inputs.mode == ViscosityMode::kExplicit && !explicit_safe) {
     return absl::FailedPreconditionError("explicit viscosity exceeds its stability bound");
   }

@@ -69,6 +69,13 @@ SNAPSHOT_3D_CASES = (
 MEMCHECK_OPERATOR_CASES = (
     *SNAPSHOT_3D_CASES,
     *SUBSTEP_3D_CASES,
+    "CudaLiquidSubstep3D.FullCellViscosityMatchesCpuWithoutDeviceAllocation",
+    "CudaLiquidSubstep3D.TaitComplianceMatchesCpu",
+    "CudaLiquidSubstep3D.EosHydrostaticCompressionMatchesColumn",
+    "CudaLiquidSubstep3D.OpenIncompressibleDriftMatchesCpu",
+    "CudaLiquidSubstep3D.ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry",
+    "CudaLiquidSubstep3D.DiscoveredCavitySurvivesCheckpointResume",
+    "CudaLiquidSubstep3D.PreparedCavityBoundariesMatchCpuAfterRetry",
     *WETTED_PISTON_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
@@ -80,6 +87,13 @@ MEMCHECK_OPERATOR_CASES = (
     "CudaTransfer.GatherFailurePreservesOutputs",
     *MAC_TRANSFER_3D_CASES,
     *MAC_PRESSURE_3D_CASES,
+    "CudaMacPressure3D.BackwardEulerStandingWaveMatchesAnalyticMode",
+    "CudaMacPressure3D.BackwardEulerPressurePulseMatchesModalOracle",
+    "CudaMacPressure3D.WaterHammerValveClosureMatchesAcousticOracle",
+    "CudaMacPressure3D.CompliantPistonConvergesToEosCompression",
+    "CudaMacViscosity3D.CoupledProjectionBalancesMomentumAndCompliantFlux",
+    "CudaMacViscosity3D.VelocityBlockMatchesCpuAndTrueResidual",
+    "CudaMacViscosity3D.RejectsExhaustionAndEliminatedMomentum",
     "CudaPressure.NeumannJumpMatchesFixture",
     "CudaPressure.ComplianceRetainsMeanPressure",
     "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
@@ -511,6 +525,8 @@ def scenario(invocation, monkeypatch):
                                                    accepted_step=21, time_seconds=10.5 / 24, read_only=True)
                                 elif name == "SimulateCli.cuda_effects":
                                     receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
+                                elif name == "SimulateCli.cuda_ocean":
+                                    receipt.update(frame=10, epoch=20, accepted_step=20, time_seconds=10 / 24)
                             console = json.dumps(receipt) + "\n" + console
                     console = self.ctest_output_overrides.get(name, console)
                     before_case = self.gpu_before_case.get(name, "")
@@ -779,13 +795,14 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "48", "failures": "0", "skipped": "0"}
+    expected_gpu = {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
+    assert gpu_report.attrib == {"name": "gpu", "tests": str(len(expected_gpu)), "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
-    assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
+    assert gpu_names == expected_gpu
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 48,
+        "tests": len(expected_gpu),
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -836,7 +853,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 46,
+            "tests": 1 + len(MEMCHECK_OPERATOR_CASES) + len(GRAPH_CASES),
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
@@ -1320,7 +1337,7 @@ def test_cuda_cli_requires_qualified_device_receipt(scenario, field, value):
     rejected("CLI", "windows-debug-cuda")
 
 
-@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay", "cuda_effects"])
+@pytest.mark.parametrize("case", ["cuda_execution", "cuda_replay", "cuda_effects", "cuda_ocean"])
 @pytest.mark.parametrize("field,value", [
     ("backend", "cpu"), ("compiled_architecture", 1000), ("graph_replay_count", 0),
     ("graph_replay_count", True), ("device_reserved_bytes", 0),
@@ -1336,6 +1353,8 @@ def test_cuda_cli_requires_real_execution_receipt(scenario, case, field, value):
                        accepted_step=21, time_seconds=10.5 / 24, read_only=True)
     elif case == "cuda_effects":
         receipt.update(frame=3, epoch=6, accepted_step=6, time_seconds=3 / 24)
+    elif case == "cuda_ocean":
+        receipt.update(frame=10, epoch=20, accepted_step=20, time_seconds=10 / 24)
     receipt[field] = value
     processes.ctest_output_overrides["SimulateCli." + case] = json.dumps(receipt) + "\nPASS " + case
     rejected("CLI", "windows-debug-cuda")
