@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 import bpy
 from bpy_extras.anim_utils import action_get_channelbag_for_slot
+from mathutils import Matrix
 
 
 class SceneError(ValueError):
@@ -17,7 +18,7 @@ def require_cadence(scene):
         raise SceneError("fps", "Set the scene to 24 fps.")
 
 
-def box_bounds(obj, field, depsgraph):
+def box_bounds(obj, field, depsgraph, *, local=False):
     if not obj or obj.type != "MESH":
         raise SceneError(field, "Select a closed mesh box.")
     if obj.parent or obj.constraints or obj.modifiers or obj.data.shape_keys:
@@ -26,7 +27,7 @@ def box_bounds(obj, field, depsgraph):
     mesh = evaluated.data
     if len(mesh.vertices) != 8 or len(mesh.polygons) != 6 or len(mesh.edges) != 12:
         raise SceneError(field, "Use a closed, world-axis-aligned box.")
-    corners = [evaluated.matrix_world @ vertex.co for vertex in mesh.vertices]
+    corners = [vertex.co if local else evaluated.matrix_world @ vertex.co for vertex in mesh.vertices]
     low = tuple(min(point[axis] for point in corners) for axis in range(3))
     high = tuple(max(point[axis] for point in corners) for axis in range(3))
     if any(not math.isfinite(value) or abs(value) > 100 for value in (*low, *high)):
@@ -345,11 +346,64 @@ def extended_liquid_rows(sources, bounds, cell, initial_velocity, phase_tension,
     rows.extend(seeds)
     return [" ".join(map(repr, row)) for row in rows]
 
-def scene_inputs(scene, preview=False):
+def rigid_scene_packets(scene, preview=False):
+    """Resolve the planar tank and the rigid box from its native frame-zero transform."""
+    settings = scene.fluidity
+    box = settings.rigid_box
+    sources = settings.liquid_sources
+    if not box or settings.cutter or settings.boundary_mode != "TANK" or not settings.planar_fill:
+        raise SceneError("rigid_box", "Assign a Rigid Box and use a planar tank fill without a Cutter.")
+    if settings.backend != "cpu" or settings.friction or settings.surface_tension:
+        raise SceneError("rigid_box", "Use CPU, zero wall friction, and zero surface tension for a rigid bake.")
+    if not sources or any(source.emission_rate or source.override_viscosity for source in sources):
+        raise SceneError("rigid_box", "Use initial liquid sources without emission or viscosity overrides.")
+    if len({(source.substance_id, source.phase_id, source.density) for source in sources}) != 1:
+        raise SceneError("rigid_box", "Use one liquid substance for a rigid bake.")
+    if box in {settings.domain, settings.liquid, settings.collider, settings.elastic_solid,
+               *(source.geometry for source in sources)}:
+        raise SceneError("rigid_box", "Assign a distinct mesh to Rigid Box.")
+    if box.animation_data or box.rigid_body:
+        raise SceneError("rigid_box", "Clear transform animation and Blender rigid-body physics from the driven box.")
+
+    liquid_packet = scene_inputs(scene, preview, rigid=True)
+    saved_frame, saved_subframe = scene.frame_current, scene.frame_subframe
+    try:
+        scene.frame_set(0)
+        graph = bpy.context.evaluated_depsgraph_get()
+        low, high = box_bounds(box, "rigid_box", graph, local=True)
+        transform = box.evaluated_get(graph).matrix_world
+        center, rotation, scale = transform.decompose()
+        if any(abs(a + b) > 1e-6 for a, b in zip(low, high, strict=True)):
+            raise SceneError("rigid_box", "Center the box mesh on its object origin.")
+        if any(not math.isfinite(value) or value <= 0 for value in (*scale, *box.scale)):
+            raise SceneError("rigid_box", "Use positive scale on every box axis.")
+        if any(not math.isfinite(value) or abs(value) > 100 for value in center):
+            raise SceneError("rigid_box", "Keep the box center within 100 meters of the origin.")
+        extent = tuple((b - a) * size * 0.5 for a, b, size in zip(low, high, scale, strict=True))
+        if any(not math.isfinite(value) or value <= 0 for value in extent):
+            raise SceneError("rigid_box", "Give the box finite positive dimensions.")
+        axes = Matrix(((1, 0, 0), (0, 0, 1), (0, -1, 0)))
+        orientation = tuple((axes @ rotation.to_matrix()).to_quaternion())
+        orientation_norm = math.hypot(*orientation)
+        orientation = tuple(value / orientation_norm for value in orientation)
+    finally:
+        scene.frame_set(saved_frame, subframe=saved_subframe)
+
+    mass = settings.rigid_mass
+    inertia = tuple(mass * (extent[(axis + 1) % 3] ** 2 + extent[(axis + 2) % 3] ** 2) / 3 for axis in range(3))
+    packet = "FLUIDITY-RIGID-1 " + " ".join(map(repr, (
+        settings.rigid_substeps, mass, *inertia, *extent, center.x, center.z, -center.y, *orientation,
+        0, 0, 0, 0, 0, 0,
+    ))) + "\n"
+    return liquid_packet, packet
+
+def scene_inputs(scene, preview=False, *, rigid=False):
     """Resolve supported domain/material/collider authoring; retain v1 scenes exactly."""
     settings = scene.fluidity
     if settings.cutter:
         raise SceneError("cutter", "Cutter requires an elastic bake. Clear Cutter to bake the liquid scene.")
+    if settings.rigid_box and not rigid:
+        raise SceneError("rigid_box", "Use a coupled rigid bake for the assigned box.")
     sources = settings.liquid_sources
     if settings.boundary_mode == "LEGACY_PADDLE":
         if sources:

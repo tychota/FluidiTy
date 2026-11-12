@@ -21,7 +21,7 @@ from bpy.types import Object, Operator, PropertyGroup
 
 from . import authoring, interchange, jobs, playback, ui
 from .preferences import FLUIDITY_Preferences, preview_end
-from .scene_inputs import SceneError, cutter_frame_packet, require_cadence, scene_inputs
+from .scene_inputs import SceneError, cutter_frame_packet, require_cadence, rigid_scene_packets, scene_inputs
 from .translations import TRANSLATIONS
 
 is_running = jobs.is_running
@@ -105,6 +105,16 @@ class FluidiTySettings(PropertyGroup):
         description="Animated box defining the elastic cutting slab",
         update=invalidate_guidance,
     )
+    rigid_box: PointerProperty(
+        name="Rigid Box",
+        type=Object,
+        description="Box driven by liquid pressure and particle contact",
+        update=invalidate_guidance,
+    )
+    rigid_mass: FloatProperty(
+        name="Rigid Mass (kg)", default=1, min=1e-9, update=invalidate_guidance
+    )
+    rigid_substeps: IntProperty(name="Rigid Substeps per Frame", default=4, min=1, max=256, update=invalidate_guidance)
     elastic_solid: PointerProperty(
         name="Elastic Solid",
         type=Object,
@@ -321,6 +331,11 @@ class FLUIDITY_OT_check_scene(SceneAction, Operator):
             jobs.check_cutter(cutter_frame_packet(scene))
             scene.fluidity.message = "Cutter scene is ready for a CPU bake."
             return
+        if scene.fluidity.rigid_box:
+            cache_paths(scene.fluidity)
+            jobs.check_rigid(rigid_scene_packets(scene))
+            scene.fluidity.message = "Rigid box scene is ready for a CPU bake."
+            return
         packet = scene_inputs(scene)
         cache_paths(scene.fluidity)
         backend = scene.fluidity.backend
@@ -337,14 +352,21 @@ class StartJob(SceneAction):
 
     def perform(self, scene):
         settings = scene.fluidity
-        packet = cutter_frame_packet(scene) if settings.cutter else scene_inputs(scene, self.preview)
+        if settings.rigid_box:
+            packet = rigid_scene_packets(scene, self.preview)
+        elif settings.cutter:
+            packet = cutter_frame_packet(scene)
+        else:
+            packet = scene_inputs(scene, self.preview)
         bake, preview = cache_paths(settings)
         cache = preview if self.preview else bake
         if not self.resume and cache.exists():
             raise SceneError("cache", "Choose a fresh cache directory, or use Resume for an existing bake.")
         last_frame = preview_end(scene) if self.preview else scene.frame_end
         try:
-            if settings.cutter:
+            if settings.rigid_box:
+                jobs.start_rigid(scene, cache, packet, last_frame, self.resume)
+            elif settings.cutter:
                 jobs.start_cutter(scene, cache, packet, last_frame, self.resume)
             else:
                 check_device(settings.backend)
@@ -407,6 +429,13 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         cache = project_path(settings.attached_cache or settings.bake_cache)
         settings.inspect_frame = -1
         settings.point_detail = ""
+        if settings.rigid_box:
+            result = jobs.inspect_rigid(project_path(settings.bake_cache), scene.frame_current)
+            x, y, z = result["position"]
+            settings.inspect_frame, settings.point_count = result["frame"], 0
+            settings.point_detail = f"Rigid Box | ({x:.4g}, {-z:.4g}, {y:.4g}) m"
+            settings.message = "Read the committed rigid pose."
+            return
         cutter_cache = project_path(settings.bake_cache) if settings.cutter else cache
         if (cutter_cache / "cutter.txt").is_file():
             checkpoint = jobs.cutter_checkpoint(cutter_cache, scene.frame_current)
@@ -462,6 +491,10 @@ class FLUIDITY_OT_attach(SceneAction, Operator):
 
     def perform(self, scene):
         bake, preview = cache_paths(scene.fluidity)
+        if scene.fluidity.rigid_box:
+            playback.attach_rigid(scene, preview if self.preview else bake, self.preview)
+            scene.fluidity.message = "Rigid motion attached to a separate animated object."
+            return
         playback.attach(scene, preview if self.preview else bake)
         scene.fluidity.message = "Points attached. Save the project to keep the binding."
 

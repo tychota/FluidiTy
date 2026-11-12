@@ -79,6 +79,7 @@ class FLUIDITY_OT_assign_role(IdleOperator, bpy.types.Operator):
             ("liquid", "Liquid", ""),
             ("collider", "Collider", ""),
             ("cutter", "Cutter", ""),
+            ("rigid_box", "Rigid Box", ""),
         )
     )
 
@@ -96,7 +97,7 @@ class FLUIDITY_OT_assign_role(IdleOperator, bpy.types.Operator):
             active_roles.append("paddle")
         elif settings.boundary_mode in {"PLANE", "SLAB"}:
             active_roles.append("collider")
-        active_roles.append("cutter")
+        active_roles.extend(("cutter", "rigid_box", "elastic_solid"))
         for role in active_roles:
             if role != self.role and getattr(settings, role) == obj:
                 self.report({"WARNING"}, "Assign a different object to each simulation role.")
