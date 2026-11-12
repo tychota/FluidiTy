@@ -3174,6 +3174,80 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveWidth(double step_duration, const L
   return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, nullptr, &ages);
 }
 
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandPlacement(
+    double step_duration,
+    const LiquidAdaptiveBandRequest3D& request
+) {
+  const auto& state = committed();
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
+  if (!impl_->adaptive || plane == nullptr || request.accepted_epoch != state.clock.epoch) {
+    return absl::FailedPreconditionError("band placement requires the committed graded planar epoch");
+  }
+  if (!impl_->frame_active || !std::isfinite(step_duration) || step_duration <= 0
+      || step_duration > impl_->target_time - state.clock.time) {
+    return Error(absl::StatusCode::kInvalidArgument);
+  }
+  const auto cells = state.adaptive_cells.values();
+  const auto ordinal = FindAdaptiveLeaf(cells, request.leaf);
+  if (!ordinal) {
+    return absl::FailedPreconditionError("band placement does not name a committed leaf");
+  }
+  const auto& leaf = cells[*ordinal];
+  const double finest_width_m = state.geometry.cell_width;
+  const double lattice_width = std::ldexp(1.0, leaf.key.width_exponent);
+  const double leaf_width_m = std::ldexp(finest_width_m, leaf.key.width_exponent);
+  const double leaf_volume_m3 = leaf_width_m * leaf_width_m * leaf_width_m;
+  LiquidHandoffOccupancy3D occupancy = LiquidHandoffOccupancy3D::kNotLiquid;
+  if (leaf.occupancy == LiquidCellOccupancy3D::kLiquid) {
+    occupancy = leaf.inventory.current_volume_m3 == leaf_volume_m3 ? LiquidHandoffOccupancy3D::kFullLiquid
+                                                                   : LiquidHandoffOccupancy3D::kPartial;
+  }
+  const auto lower = leaf.key.lower_corner;
+  const auto origin = state.geometry.world_origin;
+  const LiquidHandoffCell3D cell{
+      .world_lower_corner =
+          {
+              std::fma(lower.x, finest_width_m, origin.x),
+              std::fma(lower.y, finest_width_m, origin.y),
+              std::fma(lower.z, finest_width_m, origin.z),
+          },
+      .cell_width = leaf_width_m,
+      .occupancy = occupancy,
+  };
+  // For the admitted planar tank, the high-y face is closest to the interface.
+  const double upper_y_m = std::fma(lower.y + lattice_width, finest_width_m, origin.y);
+  const double signed_distance_upper_m =
+      std::nextafter(upper_y_m - plane->world_surface_height_y, std::numeric_limits<double>::infinity());
+  const auto placement = PlanLiquidBandPlacement3D(
+      cell,
+      leaf.material_owner,
+      signed_distance_upper_m,
+      request.margins,
+      request.destination_carrier
+  );
+  if (!placement.ok()) {
+    return placement.status();
+  }
+  switch (placement->action) {
+    case LiquidBandPlacementAction3D::kKeep: {
+      return Attempt(step_duration);
+    }
+    case LiquidBandPlacementAction3D::kRetire: {
+      return AttemptWithAdaptiveBandRetirement(step_duration, request.leaf, occupancy, *request.destination_carrier);
+    }
+    case LiquidBandPlacementAction3D::kReseed: {
+      return AttemptWithAdaptiveCoreReseed(
+          step_duration,
+          request.leaf,
+          occupancy,
+          *request.destination_carrier,
+          request.reseed_particle_count
+      );
+    }
+  }
+  return Error(absl::StatusCode::kInternal);
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandRetirement(
     double step_duration,
     AdaptiveMacCellKey3D leaf,

@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity::test {
@@ -138,6 +139,62 @@ inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidScen
   for (auto& face : state.adaptive_faces.values()) {
     face.validity = LiquidFaceValidity3D::kValid;
   }
+  return ValidateLiquidState3D(state);
+}
+
+inline absl::Status PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  state.geometry.cell_width = 0.5;
+  scene.field = LiquidHorizontalPlaneSurface3D{4};
+  scene.obstacle = AxisAlignedLiquidTank3D{0, 0.5, 0, 0, 0.5, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 2;
+  std::array<AdaptiveMacCellKey3D, 8> keys{};
+  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
+    keys[ordinal].lower_corner.y = static_cast<std::int32_t>(ordinal);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(keys.size());
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  if (!cells.ok() || !particles.ok() || !faces.ok()) {
+    return absl::ResourceExhaustedError("deep graded band fixture storage failed");
+  }
+  if (!cells->Resize(keys.size()).ok() || !particles->Resize(keys.size()).ok() || !faces->Resize(face_count).ok()) {
+    return absl::InternalError("deep graded band fixture extent failed");
+  }
+  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
+    const auto& leaf = topology->cells()[ordinal];
+    (*cells)[ordinal] = {
+        .key = leaf.key,
+        .inventory =
+            {
+                .mass_kg = 2 * leaf.cell_volume,
+                .reference_volume_m3 = leaf.cell_volume,
+                .current_volume_m3 = leaf.cell_volume,
+            },
+    };
+    auto& particle = (*particles)[ordinal];
+    particle.id = ordinal + 1;
+    particle.world_position = {0.25, 0.5 * leaf.key.lower_corner.y + 0.25, 0.25};
+    particle.mass = 2 * leaf.cell_volume;
+    particle.reference_volume = leaf.cell_volume;
+    particle.pic_initialized = true;
+  }
+  for (auto& face : faces->values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  state.next_particle_id = keys.size() + 1;
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  state.particles = std::move(*particles);
   return ValidateLiquidState3D(state);
 }
 
