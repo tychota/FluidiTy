@@ -3016,3 +3016,37 @@ foreach ($region in 'floor', 'interior') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 8 fine $region 3
 }
 ```
+
+### Floor-supported cone with wall-face traction
+
+Run the existing 45° cone fixture with 371 midpoint samples, zero
+floor clearance, and the wall-face solver with the specified Euler
+increment. Retain the column matrix's grid widths, timesteps, material
+and 3 s endpoint. This control isolates the role of release geometry
+and drop. The column remains the qualification fixture.
+
+| Native case at 3 s | Envelope angle | Quadrant slope range |
+|---|---:|---:|
+| Coarse | 39.208113° | 49.014896–53.987325° |
+| Coarse half-step | 40.001391° | 48.623546–51.312037° |
+| Fine | 39.324139° | 50.432561–53.494205° |
+| Fine half-step | 39.973375° | 49.341096–51.974507° |
+
+All final maximum radii equal the initial sampled radius of 0.160078 m
+at printed precision. Late envelope drift is below 0.031°, kinetic
+energy below 4e-5 J, and vertical momentum residual below 1.8e-7 N·s.
+The cone reaches a consistent steep shape across the four cases.
+The steep result therefore persists without the column impact.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-cone-bin'
+foreach ($grid in 'fine', 'coarse') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-cone $grid $step
+  }
+}
+```
+
+The temporary entry point enables the existing cone fixture with
+particle multiplier two, zero release height, and compatible floor
+traction. Both solver and harness sources were restored after linking.
