@@ -8,10 +8,12 @@
 #include <span>
 #include <vector>
 
+#include "../src/mac_viscous_pressure_3d.h"
 #include "coarse_fine_transfer_3d_bridge.h"
 #include "fluidity/host/coarse_fine_transfer_3d.h"
 #include "fluidity/host/cuda_liquid_substep_3d.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
+#include "fluidity/host/cuda_viscosity.h"
 #include "graded_tank_fixture.h"
 #include "gtest/gtest.h"
 #include "mac_pressure_explicit_cases.h"
@@ -174,6 +176,46 @@ TEST(CudaAdaptiveSimulate3D, RejectedGradedMiscibleTrialPreservesDeviceEpoch) {
 
 TEST(CudaAdaptiveSimulate3D, RejectedGradedCapillaryTrialPreservesDeviceEpoch) {
   ExpectRejectedGradedTrialPreservesDeviceEpoch(GradedTankVariant::kCapillary);
+}
+
+TEST(CudaAdaptiveSimulate3D, CoupledGradedNormalTractionMatchesManufacturedReference) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto rows = pressure_test::ConfigureAdaptiveNormalTraction(*fixture);
+  std::size_t device_solves = 0;
+  const auto projection = pressure_internal::ProjectAdaptiveMacViscousPressureWithVelocitySolver3D(
+      fixture->topology,
+      1.0,
+      fixture->cells,
+      fixture->subfaces,
+      rows,
+      [&](const MacViscousVelocityBlockInputs3D& block,
+          std::span<const double> rhs,
+          MacViscousVelocityBlockOptions3D options) -> absl::StatusOr<MacViscousVelocityBlockSolution3D> {
+        auto result = CudaSolveMacViscousVelocityBlock3D(block, rhs, options);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        ++device_solves;
+        return std::move(result->solution);
+      }
+  );
+  ASSERT_TRUE(projection.ok()) << projection.status();
+  EXPECT_GT(device_solves, 0U);
+  const double interface_velocity = projection->face_velocities[fixture->internal_slot];
+  const double outlet_velocity = projection->face_velocities[fixture->outlet_slot];
+  constexpr double kTolerance = 2e-5;
+  EXPECT_NEAR(interface_velocity, 0.25, kTolerance);
+  EXPECT_NEAR(outlet_velocity, 0.375, kTolerance);
+  EXPECT_NEAR(projection->cell_pressures[0], 2.0, kTolerance);
+  EXPECT_NEAR(projection->cell_pressures[1], 2.5, kTolerance);
+  EXPECT_LE(projection->max_cell_constraint_defect, kTolerance);
+  EXPECT_LE(projection->max_momentum_residual, kTolerance);
+  const double coarse_traction = 2.0 * interface_velocity - projection->cell_pressures[0];
+  const double fine_traction = 4.0 * (outlet_velocity - interface_velocity) / 0.5 - projection->cell_pressures[1];
+  EXPECT_NEAR(coarse_traction, -1.5, kTolerance);
+  EXPECT_NEAR(fine_traction, -1.5, kTolerance);
 }
 
 TEST(CudaAdaptiveSimulate3D, AdaptiveInterfacePressureJumpPreservesOwnedFlux) {

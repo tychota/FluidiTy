@@ -46,7 +46,7 @@ compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --
 
 ## Qualification receipt
 
-Source commit `01356af` passed 51 focused CPU tests. The RTX 5060 Ti
+Source commit `01356af` passed all 802 CPU-labeled tests, including 51 focused cases. The RTX 5060 Ti
 (driver 610.88, CUDA 13.4, SM120) passed all four graded epoch tests.
 Compute Sanitizer reported zero errors across those four tests.
 
@@ -63,6 +63,28 @@ state match the uninterrupted run byte for byte on each backend.
 The local replay and GPU receipts are `out/m4-graded-cpu-replay.log`,
 `out/m4-graded-cuda-replay.log`, `out/m4-graded-cuda-rollback.log` and
 `out/m4-graded-cuda-memcheck.log`.
+
+## Coarse/fine interface operator controls
+
+The open interior graph slot accepts a signed equilibrium pressure jump in
+Pa. The signed jump is applied once through the existing pressure assembly
+and velocity correction. Sealed and exterior slots reject it. The tests
+exercise both signs and verify unchanged interior and outlet fluxes.
+
+The separate coupled traction fixture uses manufactured normal rows at a
+2:1 viscosity ratio. The CPU and SM120 velocity solves recover −1.5 Pa
+normal traction on both sides of one owned cut subface. The three focused
+CPU interface tests and all six CUDA adaptive tests passed. Compute
+Sanitizer reported zero errors for the two CUDA interface controls.
+
+```powershell
+uv run --project reference --locked --group native ctest --test-dir out/build/graded-cpu-final -R 'AdaptiveM4Pressure3D|AdaptiveInterfacePressureJump' --output-on-failure --no-tests=error
+uv run --project reference --locked --group native ctest --test-dir out/build/graded-cuda-final -R 'CudaAdaptiveSimulate3D' --output-on-failure --no-tests=error
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/build/graded-cuda-final/fluidity_cuda_coarse_fine_tests.exe '--gtest_filter=CudaAdaptiveSimulate3D.CoupledGradedNormalTractionMatchesManufacturedReference:CudaAdaptiveSimulate3D.AdaptiveInterfacePressureJumpPreservesOwnedFlux'
+```
+
+The interface receipts are `out/m4-graded-traction-cpu.log`,
+`out/m4-graded-traction-cuda.log` and `out/m4-graded-interface-memcheck.log`.
 
 ## Remaining M4 gates
 

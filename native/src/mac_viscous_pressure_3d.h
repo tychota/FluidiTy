@@ -68,4 +68,27 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure
     std::span<const MacStrainRow3D> strain_rows
 );
 
+// Runs the bounded coupled CPU solve on M3's canonical adaptive subface graph.
+// Strain terms reference open owned slots. Supply sealed velocity contributions
+// through prescribed strain and blocked pressure flux through the subfaces.
+// Returns in cell and canonical subface order, or propagates graph/solve errors.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressure3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces,
+    std::span<const MacStrainRow3D> strain_rows
+);
+
+// Uses the same canonical graph and row validation with an owning velocity
+// block callback. Callback failures propagate without a projection.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectAdaptiveMacViscousPressureWithVelocitySolver3D(
+    const AdaptiveMacTopology3D& topology,
+    double step_duration,
+    std::span<const MacPressureCell3D> cells,
+    std::span<const AdaptiveMacPressureSubface3D> subfaces,
+    std::span<const MacStrainRow3D> strain_rows,
+    SolveViscousVelocity3D solve_velocity_block
+);
+
 }  // namespace fluidity::pressure_internal
