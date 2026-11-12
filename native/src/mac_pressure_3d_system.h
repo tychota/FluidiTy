@@ -51,6 +51,7 @@ struct ExplicitMacPressureFace3D {
   double predicted_normal_velocity;  // m/s.
   std::optional<double> full_face_area = std::nullopt;  // m². Omission denotes a fully open face.
   double prescribed_wall_flux = 0;  // m³/s along the positive normal.
+  double pressure_jump_pa = 0;  // Equilibrium head pressure minus tail pressure on an open link.
 };
 
 // An exterior subface names the one incident cell. Missing exterior pressure
@@ -139,6 +140,7 @@ struct AdaptiveMacPressureSubface3D {
   double prescribed_wall_flux_m3_per_s = 0;  // Positive Cartesian normal.
   double exterior_pressure_distance_m = 0;  // Positive on open exterior faces only.
   std::optional<double> exterior_pressure_pa = std::nullopt;
+  double pressure_jump_pa = 0;  // Equilibrium head pressure minus tail pressure on an open interior link.
 };
 
 // Derive incidence, full area and interior center distance from the frozen

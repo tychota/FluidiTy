@@ -11,6 +11,7 @@
 
 #include "../src/mac_pressure_3d_system.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/viscosity.h"
 
 namespace fluidity::pressure_test {
 
@@ -213,6 +214,33 @@ inline ExplicitPressureFixture MakeExplicitPressureFixture(const ExplicitPressur
     }
   }
   return fixture;
+}
+
+inline std::array<MacStrainRow3D, 2> ConfigureAdaptiveNormalTraction(AdaptiveCutPressureFixture& fixture) {
+  const auto interior = fixture.internal_slot;
+  const auto outlet = fixture.outlet_slot;
+  // Manufacture u = (1/4, 3/8) and p = (2, 5/2) by balancing the open
+  // subface inertia, pressure and strain terms. The blocked flux is unchanged.
+  fixture.subfaces[interior].predicted_normal_velocity_m_per_s = 0.25;
+  fixture.subfaces[outlet].predicted_normal_velocity_m_per_s = -3.625;
+  return {
+      MacStrainRow3D{
+          .low_cell = {0, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kX,
+          .terms = {{{interior, 1.0}}},
+          .term_count = 1,
+          .quadrature_weight = 0.25,
+      },
+      MacStrainRow3D{
+          .low_cell = {2, 0, 0},
+          .first_axis = FaceNormalAxis::kX,
+          .second_axis = FaceNormalAxis::kX,
+          .terms = {{{interior, -2.0}, {outlet, 2.0}}},
+          .term_count = 2,
+          .quadrature_weight = 0.25,
+      },
+  };
 }
 
 }  // namespace fluidity::pressure_test

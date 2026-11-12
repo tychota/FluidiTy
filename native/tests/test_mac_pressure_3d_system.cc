@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../src/mac_pressure_3d_system.h"
+#include "../src/mac_viscous_pressure_3d.h"
 #include "absl/status/status.h"
 #include "adaptive_pressure_checkpoint_fixture.h"
 #include "fluidity/host/mac_pressure_3d.h"
@@ -100,6 +101,157 @@ TEST(MacPressureExplicitGraph3D, CheckpointReplaysAcceptedAdaptivePressure) {
     return workspace->ProjectPrepared(system);
   });
 }
+TEST(AdaptiveM4Pressure3D, MatchesNormalTractionAcrossOneOwnedCutSubface) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  const auto interior = fixture->internal_slot;
+  const auto outlet = fixture->outlet_slot;
+
+  const auto rows = pressure_test::ConfigureAdaptiveNormalTraction(*fixture);
+  const auto projection = pressure_internal::ProjectAdaptiveMacViscousPressure3D(
+      fixture->topology,
+      1.0,
+      fixture->cells,
+      fixture->subfaces,
+      rows
+  );
+  ASSERT_TRUE(projection.ok()) << projection.status();
+  constexpr double kTolerance = 2e-5;
+  const double interface_velocity = projection->face_velocities[interior];
+  const double outlet_velocity = projection->face_velocities[outlet];
+  EXPECT_NEAR(interface_velocity, 0.25, kTolerance);
+  EXPECT_NEAR(outlet_velocity, 0.375, kTolerance);
+  EXPECT_NEAR(projection->cell_pressures[0], 2.0, kTolerance);
+  EXPECT_NEAR(projection->cell_pressures[1], 2.5, kTolerance);
+  EXPECT_LE(projection->max_cell_constraint_defect, kTolerance);
+  EXPECT_LE(projection->max_momentum_residual, kTolerance);
+  const double coarse_traction = 2.0 * interface_velocity - projection->cell_pressures[0];
+  const double fine_traction = 4.0 * (outlet_velocity - interface_velocity) / 0.5 - projection->cell_pressures[1];
+  EXPECT_NEAR(coarse_traction, -1.5, kTolerance);
+  EXPECT_NEAR(fine_traction, -1.5, kTolerance);
+  EXPECT_NEAR(coarse_traction, fine_traction, kTolerance);
+  EXPECT_DOUBLE_EQ(projection->inward_prescribed_wall_flux_m3_per_s, 0.0);
+
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(fixture->topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  const auto low_y_wall = std::ranges::find_if(ownership->exterior_faces, [](const auto& face) {
+    return face.cell_ordinal == 0 && !face.cell_is_tail && face.face_index.axis == FaceNormalAxis::kY;
+  });
+  ASSERT_NE(low_y_wall, ownership->exterior_faces.end());
+  fixture->subfaces[low_y_wall->face_slot].prescribed_wall_flux_m3_per_s = 0.03125;
+  fixture->cells[0].target_divergence -= 0.03125;
+  const auto with_wall_flux = pressure_internal::ProjectAdaptiveMacViscousPressure3D(
+      fixture->topology,
+      1.0,
+      fixture->cells,
+      fixture->subfaces,
+      rows
+  );
+  ASSERT_TRUE(with_wall_flux.ok()) << with_wall_flux.status();
+  EXPECT_DOUBLE_EQ(with_wall_flux->inward_prescribed_wall_flux_m3_per_s, 0.03125);
+  EXPECT_NEAR(with_wall_flux->cell_pressures[0], 2.0, kTolerance);
+  EXPECT_NEAR(with_wall_flux->cell_pressures[1], 2.5, kTolerance);
+
+  auto invalid_rows = rows;
+  const auto sealed = std::ranges::find_if(fixture->subfaces, [](const auto& subface) {
+    return subface.open_area_m2 == 0.0;
+  });
+  ASSERT_NE(sealed, fixture->subfaces.end());
+  invalid_rows[0].terms[0].face_slot = static_cast<std::size_t>(sealed - fixture->subfaces.begin());
+  EXPECT_EQ(
+      pressure_internal::ProjectAdaptiveMacViscousPressure3D(
+          fixture->topology,
+          1.0,
+          fixture->cells,
+          fixture->subfaces,
+          invalid_rows
+      )
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
+TEST(AdaptiveM4Pressure3D, BalancesConstituentInventoryAcrossOneOwnedCutSubface) {
+  const auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double kStepDuration = 1.0;
+  const auto graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+      fixture->topology,
+      kStepDuration,
+      fixture->cells,
+      fixture->subfaces
+  );
+  ASSERT_TRUE(graph.ok()) << graph.status();
+  auto workspace = MacPressureWorkspace3D::Create(graph->cells().size(), graph->links().size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto projection = workspace->ProjectPrepared(*graph);
+  ASSERT_TRUE(projection.ok()) << projection.status();
+
+  // Isolate the owned interior exchange. Prescribed blocked-wall flux is
+  // geometric displacement and does not carry either constituent.
+  const auto slot = fixture->internal_slot;
+  const auto& link = graph->links()[slot];
+  ASSERT_EQ(link.tail_cell_ordinal, 0U);
+  ASSERT_EQ(link.head_cell_ordinal, 1U);
+  const double swept_volume = kStepDuration * link.open_area * projection->corrected_face_velocities[slot];
+  EXPECT_NEAR(swept_volume, 0.03125, 1e-8);
+  constexpr std::array donor_fraction{0.75, 0.25};
+  constexpr std::array expected_transfer{0.0234375, 0.0078125};
+  constexpr std::array coarse_before{0.75, 0.25};
+  constexpr std::array fine_before{0.0625, 0.0625};
+  auto coarse = coarse_before;
+  auto fine = fine_before;
+  for (std::size_t constituent = 0; constituent < donor_fraction.size(); ++constituent) {
+    const double transfer = donor_fraction[constituent] * swept_volume;
+    coarse[constituent] -= transfer;
+    fine[constituent] += transfer;
+    EXPECT_NEAR(coarse[constituent], coarse_before[constituent] - expected_transfer[constituent], 1e-8);
+    EXPECT_NEAR(fine[constituent], fine_before[constituent] + expected_transfer[constituent], 1e-8);
+    EXPECT_NEAR(coarse[constituent] + fine[constituent], coarse_before[constituent] + fine_before[constituent], 1e-15);
+  }
+}
+
+TEST(MacPressureExplicitGraph3D, AdaptiveInterfacePressureJumpChangesPressureWithoutDoubleFlux) {
+  auto fixture = pressure_test::MakeAdaptiveCutPressureFixture();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  auto workspace = MacPressureWorkspace3D::Create(fixture->cells.size(), fixture->subfaces.size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  for (const double jump_pa : {0.5, -0.5}) {
+    SCOPED_TRACE(jump_pa);
+    fixture->subfaces[fixture->internal_slot].pressure_jump_pa = jump_pa;
+    const auto graph = pressure_internal::PrepareAdaptiveMacPressureSystem3D(
+        fixture->topology,
+        1.0,
+        fixture->cells,
+        fixture->subfaces
+    );
+    ASSERT_TRUE(graph.ok()) << graph.status();
+    const auto projection = workspace->ProjectPrepared(*graph);
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    EXPECT_NEAR(projection->cell_pressures[0], 1.28125 - jump_pa, 1e-6);
+    EXPECT_NEAR(projection->cell_pressures[1], 1.09375, 1e-6);
+    EXPECT_NEAR(projection->corrected_face_velocities[fixture->internal_slot], 0.25, 1e-6);
+    EXPECT_NEAR(projection->corrected_face_velocities[fixture->outlet_slot], 0.375, 1e-6);
+    EXPECT_NEAR(projection->diagnostics.max_cell_constraint_defect, 0.0, 1e-6);
+  }
+  fixture->subfaces[fixture->internal_slot].open_area_m2 = 0.0;
+  EXPECT_EQ(
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(fixture->topology, 1.0, fixture->cells, fixture->subfaces)
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  fixture->subfaces[fixture->internal_slot].pressure_jump_pa = 0.0;
+  fixture->subfaces[fixture->outlet_slot].pressure_jump_pa = 0.5;
+  EXPECT_EQ(
+      pressure_internal::PrepareAdaptiveMacPressureSystem3D(fixture->topology, 1.0, fixture->cells, fixture->subfaces)
+          .status()
+          .code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(MacPressureExplicitGraph3D, ProjectsExteriorPressureAndSignedWallFlux) {
   const std::array cells{
       IncompressibleCellAtX(0),
