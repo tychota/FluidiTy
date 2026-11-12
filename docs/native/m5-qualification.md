@@ -2769,3 +2769,36 @@ foreach ($bin in 'sand-wall-one-sided-bin', 'sand-wall-bidirectional-bin') {
   }
 }
 ```
+
+### Motion retries and thin support with wall-face traction
+
+At `59e1426`, the fine nominal run first rejects at 1.321875 s.
+Its X face in slot 5014 carries 5.73538182e-6 kg, above the
+3.75e-6 kg reconstruction threshold. The stress force is 0.11043345 N.
+The face speed rises from 0.01934248 to 30.10491940 m/s, above the
+18 m/s bound. The diagnostic source was restored after compiling.
+
+Local commit `d91b03d` adds a separate retry command for the same case.
+It halves the rejected interval when the checked dry-step status
+permits a duration retry, then attempts the nominal step again after
+each acceptance. Native and SM120 reach 3 s in 2,893 accepted steps
+with 2,176 rejected attempts. The output logs match byte for byte.
+The pile reaches 28.498761° and 0.214432 m, missing both geometric
+checks. The vertical momentum residual is 1.35e-8 N·s, and cut
+stress work mismatch is 9.38e-16 J.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-motion-retry-bin'
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-motion-retry *> native-retry.log
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-motion-retry *> cuda-retry.log
+```
+
+A fixed-step control doubles the `minimum_force_mass` multiplier
+from `1e-4` to `2e-4` with the same wall traction. The new cutoff is
+above the originally rejected face mass. The fine nominal rejection
+moves from step 846 to 895. The remaining fixed-step cases finish
+with coarse 36.949208° / 0.172551 m, coarse half-step 41.531990° /
+0.151460 m, and fine half-step 34.719518° / 0.177724 m. Rebuild the
+native dry-scene target and use the fixed-step matrix above to
+reproduce that control. The threshold was restored after compilation.
+Q-SAND remains open.
