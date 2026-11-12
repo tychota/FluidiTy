@@ -88,6 +88,21 @@ cmake --build out/build/resampling-pair-cpu --target fluidity_native_tests --par
 ctest --test-dir out/build/resampling-pair-cpu -R 'GradedQuadraticMacTransfer3D|LiquidUniform(Split|Merge)3D|GradedMacTransfer3D' --output-on-failure
 ```
 
+### Detached conservative family resampling
+
+The conforming tank candidate stages a full refinement or coarsening halo
+before applying a quadratic F3 split or F4 merge. Pressure and signed subface
+flux use the same remap as exact particle rebinning. The replacement roster
+must reproduce every remapped leaf inventory exactly in the stable particle
+order. Failed support and covariance checks leave the accepted roster,
+topology and next ID byte-identical.
+
+The signed native case stages a 125-to-314-leaf refinement and replaces one
+particle by eight. With dyadic child positions and a positive F4 covariance
+gap, the coarsening halo restores the original 125-leaf graph and face
+history, with one fresh ID for the merged particle. A lone family without the
+required halo is refused in either direction. Duplicate child IDs fail
+preflight. The proposal is detached from accepted scheduler publication.
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.

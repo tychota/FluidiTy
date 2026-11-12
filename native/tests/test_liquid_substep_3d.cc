@@ -285,7 +285,7 @@ TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
-TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
+TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitAndMergeWithFullHalo) {
   LiquidState3D state;
   state.geometry.cell_width = 0.5;
   LiquidSceneInputs3D scene;
@@ -379,7 +379,7 @@ TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
       parent_id
   );
   EXPECT_EQ(unsupported.status().code(), absl::StatusCode::kFailedPrecondition);
-  const auto staged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+  auto staged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
       state,
       scene,
       kCapacities,
@@ -401,6 +401,62 @@ TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
   const auto after = EncodeLiquidState3D(state);
   ASSERT_TRUE(after.ok()) << after.status();
   EXPECT_TRUE(std::ranges::equal(before->values(), after->values()));
+
+  // A strict F4 covariance witness uses dyadic child centers. The symmetric
+  // F3 offsets alone do not certify a positive covariance gap on reversal.
+  std::array<std::uint64_t, 8> child_ids{};
+  for (std::size_t ordinal = 0; ordinal < child_ids.size(); ++ordinal) {
+    auto& child = staged->particles[parent_id - 1 + ordinal];
+    child_ids[ordinal] = child.id;
+    child.world_position = {
+        (ordinal & 1u) == 0 ? 0.25 : 0.75,
+        (ordinal & 2u) == 0 ? 0.25 : 0.75,
+        (ordinal & 4u) == 0 ? 0.25 : 0.75,
+    };
+  }
+  const auto fine_before = EncodeLiquidState3D(*staged);
+  ASSERT_TRUE(fine_before.ok()) << fine_before.status();
+  const auto missing_merge_halo = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      std::span(&kCenter, 1),
+      kCenter,
+      child_ids
+  );
+  EXPECT_EQ(missing_merge_halo.status().code(), absl::StatusCode::kFailedPrecondition);
+  auto repeated_ids = child_ids;
+  repeated_ids.back() = repeated_ids.front();
+  const auto duplicate = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      requested,
+      kCenter,
+      repeated_ids
+  );
+  EXPECT_EQ(duplicate.status().code(), absl::StatusCode::kInvalidArgument);
+  std::ranges::reverse(child_ids);
+  const auto merged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
+      *staged,
+      scene,
+      kCapacities,
+      requested,
+      kCenter,
+      child_ids
+  );
+  ASSERT_TRUE(merged.ok()) << merged.status();
+  EXPECT_EQ(merged->adaptive_cells.size(), state.adaptive_cells.size());
+  EXPECT_EQ(merged->particles.size(), state.particles.size());
+  EXPECT_EQ(merged->next_particle_id, staged->next_particle_id + 1);
+  auto expected_parent = state.particles[parent_id - 1];
+  expected_parent.id = staged->next_particle_id;
+  EXPECT_EQ(merged->particles[parent_id - 1], expected_parent);
+  EXPECT_EQ(merged->adaptive_cells, state.adaptive_cells);
+  EXPECT_EQ(merged->adaptive_faces, state.adaptive_faces);
+  const auto fine_after = EncodeLiquidState3D(*staged);
+  ASSERT_TRUE(fine_after.ok()) << fine_after.status();
+  EXPECT_TRUE(std::ranges::equal(fine_before->values(), fine_after->values()));
 }
 
 TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
