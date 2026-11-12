@@ -1350,6 +1350,11 @@ struct FloatingBoxPressureMeasurements {
   Vec3 particle_prepressure_impulse{};
   std::vector<PressureFaceMeasurement> pressure_faces;
   std::vector<double> deposited_face_masses;
+  std::vector<LiquidBoundaryParticle3D> deposit_particles;
+  std::vector<LiquidCompatibleStencils3D> deposit_stencils;
+  std::vector<double> normal_face_impulses;
+  std::vector<double> face_mass_scratch;
+  std::vector<Vec3> compatible_particle_impulses;
   std::vector<double> prepressure_velocities;
 };
 
@@ -1364,6 +1369,8 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
     if (!result.ok()) {
       return result.status();
     }
+    measured.deposit_particles.assign(inputs.particles.begin(), inputs.particles.end());
+    measured.deposit_stencils.assign(result->compatible_stencils.begin(), result->compatible_stencils.end());
     measured.deposited_face_masses.clear();
     for (const auto& quanta : result->face_quanta) {
       measured.deposited_face_masses.push_back(
@@ -1393,6 +1400,7 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
     measured.particle_pressure_impulse = {};
     measured.particle_prepressure_impulse = {};
     measured.pressure_faces.clear();
+    measured.normal_face_impulses.assign(grid.face_count(), 0.0);
     for (std::size_t index = 0; index < problem.faces.size(); ++index) {
       const auto& face = problem.faces[index];
       const auto slot = grid.FaceSlot(face.face_index);
@@ -1409,6 +1417,20 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
           .pressure_dual_mass = pressure_dual_mass,
           .deposited_mass = measured.deposited_face_masses.at(*slot),
       });
+      measured.normal_face_impulses[*slot] = pressure_dual_mass * measured.pressure_faces.back().velocity_change;
+    }
+    measured.face_mass_scratch.resize(grid.face_count());
+    measured.compatible_particle_impulses.resize(measured.deposit_particles.size());
+    const auto distributed = DistributeCompatiblePressureImpulse3D(
+        grid,
+        measured.deposit_particles,
+        measured.deposit_stencils,
+        measured.normal_face_impulses,
+        measured.face_mass_scratch,
+        measured.compatible_particle_impulses
+    );
+    if (!distributed.ok()) {
+      return distributed;
     }
     return result;
   };
@@ -1493,6 +1515,11 @@ void ExpectFloatingBoxPressureMeasurement(
   for (const auto component : kComponents) {
     EXPECT_NEAR(loads.pressure_grid_impulse.*component, measured.grid_impulse.*component, 1e-12);
     EXPECT_NEAR(reconstructed_gather.*component, measured.particle_pressure_impulse.*component, 1e-12);
+    double distributed_impulse = 0.0;
+    for (const auto& particle_impulse : measured.compatible_particle_impulses) {
+      distributed_impulse += particle_impulse.*component;
+    }
+    EXPECT_NEAR(distributed_impulse, measured.grid_impulse.*component, 1e-12);
     EXPECT_NEAR(
         mass_weight_difference.*component + gather_weight_difference.*component,
         measured.particle_pressure_impulse.*component - measured.grid_impulse.*component,
