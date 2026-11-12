@@ -15,6 +15,45 @@ struct ContactVelocityBinding {
   Vec3* stored_world_velocity;
 };
 
+absl::Status
+CheckPlanarContactViews(ByteView liquid, ByteView plastic, std::span<const PlanarMixedContactFace3D> candidates) {
+  const auto disjoint = CheckWritableViews({liquid, plastic}, {std::as_bytes(candidates)});
+  if (!disjoint.ok()) {
+    return disjoint;
+  }
+  for (const auto& candidate : candidates) {
+    const auto contributors = std::as_bytes(candidate.pair.contributors);
+    if (ByteViewsOverlap(liquid, contributors) || ByteViewsOverlap(plastic, contributors)) {
+      return absl::InvalidArgumentError("planar mixed contact contributors alias output");
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::StatusOr<Vec3> AdvanceAtCommonImpact(
+    Vec3 position,
+    Vec3 before,
+    Vec3 after,
+    double before_duration,
+    double after_duration,
+    double maximum_path_length
+) {
+  const double path_length = before_duration * std::hypot(before.x, before.y, before.z)
+      + after_duration * std::hypot(after.x, after.y, after.z);
+  if (!std::isfinite(path_length)) {
+    return absl::OutOfRangeError("nonfinite planar mixed contact path");
+  }
+  if (path_length > maximum_path_length) {
+    return absl::FailedPreconditionError("planar mixed contact path exceeds motion bound");
+  }
+  const Vec3 impact_position = distinct_contact_detail::AddScaled(position, before, before_duration);
+  const Vec3 final_position = distinct_contact_detail::AddScaled(impact_position, after, after_duration);
+  if (!distinct_contact_detail::Finite(impact_position) || !distinct_contact_detail::Finite(final_position)) {
+    return absl::OutOfRangeError("nonfinite planar mixed contact position");
+  }
+  return final_position;
+}
+
 }  // namespace
 
 absl::StatusOr<std::vector<DistinctBodyContact3D>> ApplyMixedContactFaces3D(
@@ -101,8 +140,7 @@ absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> ApplyPlanarMixedContact
   if (!std::isfinite(duration) || duration <= 0) {
     return absl::InvalidArgumentError("invalid planar mixed contact duration");
   }
-  const auto disjoint =
-      CheckWritableViews({std::as_bytes(liquid), std::as_bytes(plastic)}, {std::as_bytes(candidates)});
+  const auto disjoint = CheckPlanarContactViews(std::as_bytes(liquid), std::as_bytes(plastic), candidates);
   if (!disjoint.ok()) {
     return disjoint;
   }
@@ -143,6 +181,71 @@ absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> ApplyPlanarMixedContact
     receipts[index].contact = (*applied)[index];
   }
   return receipts;
+}
+
+absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> AdvancePlanarMixedContact3D(
+    std::span<LiquidParticleState3D> liquid,
+    std::uint64_t liquid_body_id,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    std::span<const PlanarMixedContactFace3D> candidates,
+    double duration,
+    double maximum_path_length
+) {
+  if (!std::isfinite(maximum_path_length) || maximum_path_length <= 0) {
+    return absl::InvalidArgumentError("invalid planar mixed contact motion bound");
+  }
+  const auto disjoint = CheckPlanarContactViews(std::as_bytes(liquid), std::as_bytes(plastic), candidates);
+  if (!disjoint.ok()) {
+    return disjoint;
+  }
+  std::vector<LiquidParticleState3D> liquid_trial(liquid.begin(), liquid.end());
+  std::vector<PlasticSolidCheckpointParticle3D> plastic_trial(plastic.begin(), plastic.end());
+  auto receipts = ApplyPlanarMixedContactFaces3D(liquid_trial, liquid_body_id, plastic_trial, candidates, duration);
+  if (!receipts.ok()) {
+    return receipts.status();
+  }
+  const double common_fraction = receipts->empty() ? 1 : receipts->front().contact_fraction;
+  for (const auto& receipt : *receipts) {
+    if (receipt.contact_fraction != common_fraction) {
+      return absl::FailedPreconditionError("planar mixed contact requires one common impact time");
+    }
+  }
+  const double before_duration = duration * common_fraction;
+  const double after_duration = duration - before_duration;
+  for (std::size_t index = 0; index < liquid.size(); ++index) {
+    const auto position = AdvanceAtCommonImpact(
+        liquid[index].world_position,
+        liquid[index].world_velocity,
+        liquid_trial[index].world_velocity,
+        before_duration,
+        after_duration,
+        maximum_path_length
+    );
+    if (!position.ok()) {
+      return position.status();
+    }
+    liquid_trial[index].world_position = *position;
+  }
+  for (std::size_t index = 0; index < plastic.size(); ++index) {
+    const auto& initial = plastic[index].transfer;
+    auto& trial = plastic_trial[index].transfer;
+    const auto position = AdvanceAtCommonImpact(
+        initial.trial_world_position,
+        initial.particle_velocity,
+        trial.particle_velocity,
+        before_duration,
+        after_duration,
+        maximum_path_length
+    );
+    if (!position.ok()) {
+      return position.status();
+    }
+    trial.trial_world_position = *position;
+  }
+
+  std::ranges::copy(liquid_trial, liquid.begin());
+  std::ranges::copy(plastic_trial, plastic.begin());
+  return std::move(*receipts);
 }
 
 }  // namespace fluidity

@@ -59,4 +59,22 @@ absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> ApplyPlanarMixedContact
     double duration
 );
 
+// Advances a bounded piecewise-constant trial with a common hit fraction
+// across all detected faces. The incoming and outgoing stored velocities
+// are also the advection velocities for this trial. With no hit, advection
+// uses the incoming velocity for the entire duration. The plastic trial
+// position is advanced while its sorted position remains the last bin pose.
+// The caller supplies the certified geometry and a positive path length
+// limit in meters. Different hit fractions or an exceeded bound return
+// FailedPrecondition. Nonfinite motion returns OutOfRange. Other errors
+// follow ApplyPlanarMixedContactFaces3D. No failure changes either span.
+absl::StatusOr<std::vector<PlanarMixedContactReceipt3D>> AdvancePlanarMixedContact3D(
+    std::span<LiquidParticleState3D> liquid,
+    std::uint64_t liquid_body_id,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    std::span<const PlanarMixedContactFace3D> candidates,
+    double duration,
+    double maximum_path_length
+);
+
 }  // namespace fluidity

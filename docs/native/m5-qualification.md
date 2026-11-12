@@ -21,6 +21,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Isolated multi-face contact staging | Pass | A native host fixture stages two detected faces in slot order, aggregates repeated contributors, and checks combined particle momentum. A missing body on the later face, duplicate slot, and excess total weight each reject the batch. |
 | Isolated mixed-contact velocity update | Pass on host | Staged face impulses update the actual liquid and plastic stored velocities atomically. The fixture checks combined momentum, untouched liquid volume and snow history, late rejection, successful retry and final-velocity overflow rollback. |
 | Isolated planar mixed contact detection | Pass on host | Certified halfspace sweep admits an analytic interior or endpoint hit, leaves a near miss unchanged, and rejects a later overlapping candidate before publishing any impulse. |
+| Isolated common-impact mixed advection | Pass on host | Two translating planar interfaces hit halfway through the attempt and both trial positions reach 0.1875 m. An insufficient path-length budget rejects both velocity and position changes. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
@@ -605,6 +606,21 @@ pair impulse is 6 N·s. At 0.0625 s the hit is at the endpoint. A
 without applying an earlier hit. This host bridge tests motion of
 reconstructed planes. It still needs geometry from production particles,
 post-impact position integration and pressure/acceptance coupling.
+
+The bounded advection bridge uses the incoming and outgoing stored
+velocities for a piecewise-constant drift with a common hit fraction.
+The 0.125 s fixture advances from x = 0 and x = 0.25 m to the same
+impact location, then to x = 0.1875 m. A 0.10 m path limit rejects
+both candidate spans. The plastic sorted pose is preserved until the
+next binning stage. Unequal hit times require another integrator.
+This fixture does not exercise separate production stored and advecting
+histories, evolving particle-derived geometry, or pressure coupling.
+
+M6 commit 62100a6 adds isolated traction geometry for a finite box
+intersected by a horizontal liquid plane. The supplied hydrostatic
+pressure fixture balances buoyancy and weight. Production fractions,
+moving wall flux, solved traction feedback and mixed replay are separate
+from that geometry test.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
