@@ -143,6 +143,22 @@ TEST(CudaMacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
   RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
 }
 
+TEST(CudaMacPressure3D, CompliantPistonConvergesToEosCompression) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectCompliantPistonCompression(
+      [&](const MacPressureInputs3D& inputs) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = CudaProjectMacPressure3D(inputs);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("piston_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   CudaOperatorMeasurement maximum_measurement{};

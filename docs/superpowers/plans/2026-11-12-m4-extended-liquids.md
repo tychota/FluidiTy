@@ -243,3 +243,11 @@ The hydrostatic oracle integrates dp/d(depth) = rho0*g/J(p) independently for He
 Both backends used 18 total pressure iterations across the four cases. Maximum pressure error was 3.276031 Pa, maximum volume-ratio error was about 2.7e-5 and maximum particle speed was about 4.79e-4 m/s. Fixture wall time was about 2.15 s on Debug CPU and 1.07 s on Release CUDA. All 17 focused CPU and four CUDA checks passed, and Compute Sanitizer reported zero errors on the RTX 5060 Ti. clang-format 19.1.5 passed. Reproduce with the locked Windows presets and ctest -R EosHydrostaticCompression. XML, regression and memcheck receipts use the out/m4-eos-hydrostatic prefix.
 
 The fixture limits scale with cell width and the expected one-sided surface pressure error. Review verified the continuum formulas and initial density. This tests short-time preservation of a seeded compressed equilibrium. It does not establish convergence from an uncompressed state or long-time hydrostatic stability.
+
+## Compliant piston pressure-operator receipt
+
+The sealed one-cell fixture supplies a prescribed wetted flux of 0.02 m³/s through one quarter of the moving wall and decreases the chamber volume analytically. It verifies positive pressure rise, no gauge, the scalar tangent recurrence and the physical defect for Hencky and Tait. It halves the timestep from 1/16 s through 1/64 s and checks convergence against the independently integrated EOS compression. Each refinement reduced the final relative error by more than 45%.
+
+Both backends used 224 pressure iterations over 224 projections. The worst finest-resolution relative pressure error was 0.001352 and the worst constraint defect was 1.738402e-9 s⁻¹. The fixture measured about 4.72 ms CPU wall time, 230 ms CUDA wall time and 41.31 ms CUDA solver event time. All 20 CPU and seven real-device CUDA pressure regressions passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce with the locked Windows presets and ctest -R CompliantPistonConverges. XML, regression and sanitizer receipts use the out/m4-compliant-piston prefix.
+
+The fixture qualifies the pressure operator and EOS with prescribed moving-wall flux. It does not measure wetted geometry, swept volume or closed-chamber scheduler behavior.

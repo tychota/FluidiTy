@@ -46,6 +46,20 @@ TEST(MacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
   );
 }
 
+TEST(MacPressure3D, CompliantPistonConvergesToEosCompression) {
+  auto workspace = MacPressureWorkspace3D::Create(1, 6);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::ExpectCompliantPistonCompression([&](const MacPressureInputs3D& inputs) {
+    return ProjectMacPressure3D(
+        inputs.mac_grid.view(),
+        inputs.step_duration,
+        {inputs.pressure_cells, inputs.pressure_faces},
+        {},
+        *workspace
+    );
+  });
+}
+
 using pressure_internal::EvaluateMacPressure3D;
 using pressure_internal::PrepareMacPressureSystem3D;
 
