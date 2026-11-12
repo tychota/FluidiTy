@@ -36,6 +36,8 @@ struct SurfaceMetrics3D {
   double signed_volume = 0;  // m³, local-origin tetrahedron sum.
   double area = 0;  // m².
   std::size_t components = 0;
+  std::size_t positive_volume_components = 0;  // Outward-oriented closed boundaries.
+  std::size_t negative_volume_components = 0;  // Inward-oriented closed boundaries.
   std::int64_t euler_characteristic = 0;
   std::size_t boundary_edges = 0;
   std::size_t nonmanifold_edges = 0;

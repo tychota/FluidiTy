@@ -326,6 +326,8 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
           result.raw_metrics.signed_volume += reconstructed->raw_metrics.signed_volume;
           result.raw_metrics.area += reconstructed->raw_metrics.area;
           result.raw_metrics.components += reconstructed->raw_metrics.components;
+          result.raw_metrics.positive_volume_components += reconstructed->raw_metrics.positive_volume_components;
+          result.raw_metrics.negative_volume_components += reconstructed->raw_metrics.negative_volume_components;
           result.raw_metrics.euler_characteristic += reconstructed->raw_metrics.euler_characteristic;
           result.deep_liquid_fills += reconstructed->deep_liquid_fills;
           result.deep_air_fills += reconstructed->deep_air_fills;

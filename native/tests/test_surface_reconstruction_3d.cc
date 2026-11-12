@@ -218,6 +218,10 @@ TEST(SurfaceReconstruction3D, SeedsSeparatedComponentsAndRejectsOverlappingScaff
   ASSERT_TRUE(result.ok()) << result.status();
   ASSERT_EQ(result->frame.volumes.size(), 2);
   EXPECT_EQ(result->corrected_metrics.components, 2);
+  EXPECT_EQ(result->raw_metrics.positive_volume_components, 2);
+  EXPECT_EQ(result->raw_metrics.negative_volume_components, 0);
+  EXPECT_EQ(result->corrected_metrics.positive_volume_components, 2);
+  EXPECT_EQ(result->corrected_metrics.negative_volume_components, 0);
   EXPECT_NEAR(result->frame.volumes[0].corrected_m3, 1, 0.005);
   EXPECT_NEAR(result->frame.volumes[1].corrected_m3, 1, 0.005);
   EXPECT_EQ(result->frame.volumes[0].component, 1);

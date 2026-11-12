@@ -391,6 +391,24 @@ MeasureSurfaceMesh3D(const SurfaceMesh3D& mesh, std::vector<std::array<std::size
     metrics.nonmanifold_vertices += !cycle;
   }
   metrics.components = roots.size();
+  // Use each component's own origin for orientation, including an inner
+  // cavity far from the outer boundary's vertices.
+  std::vector<double> component_volumes(mesh.vertices.size(), 0.0);
+  for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
+    const auto root = sets.Find(mesh.triangles[index][0]);
+    const auto local_origin = mesh.vertices[root].position;
+    const auto& p = positions[index];
+    component_volumes[root] +=
+        Dot(Sub(p[0], local_origin), Cross(Sub(p[1], local_origin), Sub(p[2], local_origin))) / 6.0;
+  }
+  for (const auto root : roots) {
+    const double volume = component_volumes[root];
+    if (!std::isfinite(volume)) {
+      return absl::OutOfRangeError("surface component volume overflow");
+    }
+    metrics.positive_volume_components += volume > 0.0;
+    metrics.negative_volume_components += volume < 0.0;
+  }
   metrics.euler_characteristic = static_cast<std::int64_t>(mesh.vertices.size())
       - static_cast<std::int64_t>(edges.size()) + static_cast<std::int64_t>(mesh.triangles.size());
   for (const auto& [key, edge] : edges) {

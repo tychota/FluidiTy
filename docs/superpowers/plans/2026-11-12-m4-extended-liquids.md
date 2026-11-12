@@ -399,3 +399,11 @@ The shared particle-shell fixture exercises the scheduler's discovered gas domai
 Seventeen focused CPU tests passed with ctest --preset windows-debug-cpu -R Cavity. Four CPU surface occupancy tests passed with ctest --preset windows-debug-cpu -R '^SurfaceOccupancy3D\.', including the supplied-occupancy inner-shell removal and closed-cavity orientation cases. Twenty-two CUDA checks passed with ctest --preset windows-release-cuda -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. clang-format 19.1.5 passed. Receipts use out/m4-cavity-device. Compute Sanitizer reported zero errors with compute-sanitizer --tool memcheck --error-exitcode 99 out/build/windows-release-cuda/fluidity_cuda_operator_tests.exe --gtest_filter=CudaLiquidSubstep3D.DiscoveredCavitySurvivesCheckpointResume.
 
 The occupancy fixtures use supplied classifications. Production cache-to-surface occupancy and full Q-CAVITY qualification remain open.
+
+## Oriented surface boundary measurement receipt
+
+Surface measurement now computes local-origin signed volume for each connected boundary. The deep-liquid fixture identifies the raw inward shell and verifies its removal without moving the exterior. The closed-cavity fixture retains one inward and one outward boundary. Production reconstruction preserves these counts when it combines separate material surfaces. Its separated-drop fixture measures two outward boundaries.
+
+Twenty-one CPU mesh, occupancy, cache and reconstruction tests passed with ctest --preset windows-debug-cpu -R 'SurfaceMesh3D|SurfaceOccupancy3D|SurfaceReconstruction3D|SurfaceCache3D'. After adding the reconstruction aggregation, 15 focused CPU checks passed with ctest --preset windows-debug-cpu -R 'SurfaceReconstruction3D.SeedsSeparatedComponents|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. The final build included fluidity_simulate. clang-format 19.1.5 passed. Receipts use out/m4-oriented-surface.
+
+Motion frames already carry the cavity snapshot via accepted FLST states. Production reconstruction still needs to use that snapshot to admit and retain measured cavity boundaries. Q-CAVITY remains open.
