@@ -94,6 +94,7 @@ add_library(fluidity_native STATIC
   native/src/transfers.cc
   native/src/transfers_3d.cc
   native/src/rigid_body_3d.cc
+  native/src/solid_interaction_checkpoint_3d.cc
   native/src/pressure.cc
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc

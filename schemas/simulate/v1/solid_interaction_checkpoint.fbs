@@ -1,0 +1,41 @@
+include "common.fbs";
+
+namespace fluidity.solid.v1;
+
+struct Orientation {
+  w:double;
+  vector:fluidity.cache.v1.Vector3;
+}
+
+struct Pose {
+  center:fluidity.cache.v1.Vector3;
+  orientation:Orientation;
+}
+
+struct BodyHistory {
+  body_id:ulong;
+  mass:double;
+  principal_inertia:fluidity.cache.v1.Vector3;
+  pose:Pose;
+  previous_pose:Pose;
+  linear_velocity:fluidity.cache.v1.Vector3;
+  angular_velocity:fluidity.cache.v1.Vector3;
+  force:fluidity.cache.v1.Vector3;
+  torque:fluidity.cache.v1.Vector3;
+}
+
+struct BladeSide {
+  particle_id:ulong;
+  blade_id:ulong;
+  sign:int;
+}
+
+table SolidInteractionCheckpoint {
+  schema_version:uint = 1 (id:0);
+  accepted_step:ulong (id:1);
+  bodies:[BodyHistory] (required, id:2);
+  sides:[BladeSide] (required, id:3);
+}
+
+root_type SolidInteractionCheckpoint;
+file_identifier "FLSI";

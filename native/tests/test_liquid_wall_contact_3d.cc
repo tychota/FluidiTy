@@ -122,4 +122,24 @@ TEST(ElasticBladeContact3D, MovingThinBladeAccountsForOnePhysicalReaction) {
   EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
 }
 
+TEST(ElasticBladeContact3D, ReactionUsesCertifiedFacePosition) {
+  const LiquidWallContactInputs3D inputs{
+      .start_world_position = {100.0, 0.0, 0.0},
+      .stored_world_velocity = {-3.0, 2.0, 0.0},
+      .advecting_world_velocity = {-3.0, 0.0, 0.0},
+      .obstacle =
+          TranslatingSlab3D{
+              .unit_normal = {1.0, 0.0, 0.0},
+              .start_center_coordinate = 0.0,
+              .half_width = 0.1,
+              .wall_velocity = {},
+          },
+      .step_duration = 50.0,
+      .friction_coefficient = 0.25,
+  };
+  const auto contact = ResolveElasticBladeContact3D(inputs, 1.0, 17, {});
+  ASSERT_TRUE(contact.ok()) << contact.status();
+  EXPECT_DOUBLE_EQ(contact->particle_angular_impulse_about_world_origin.z, -0.075);
+}
+
 }  // namespace fluidity::boundary_test

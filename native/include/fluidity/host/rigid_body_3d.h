@@ -36,6 +36,13 @@ struct RigidBodyStep3D {
   double duration;  // Seconds.
 };
 
+// Checks finite world position and a unit body-to-world quaternion within 1e-12.
+absl::Status ValidateRigidBodyPose3D(RigidBodyPose3D pose);
+
+// Checks body identity, positive finite mass and principal inertia, pose and
+// finite velocities and loads. A malformed body returns InvalidArgument.
+absl::Status ValidateRigidBody3D(const RigidBody3D& body);
+
 // Adds a world force at the given world position and its torque about the
 // current center. Returns InvalidArgument for invalid state or nonfinite input
 // and OutOfRange on overflow. Does not modify the input.

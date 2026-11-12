@@ -27,24 +27,26 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
   if (committed_side.blade_id != 0 && committed_side.blade_id != blade_id) {
     return absl::FailedPreconditionError("elastic blade contact supports one persistent blade per particle");
   }
-  const auto contact = ResolveLiquidWallContact3D(inputs);
-  if (!contact.ok()) {
-    return contact.status();
+  Vec3 hit{};
+  const auto swept = boundary_internal::ResolveContact(boundary_internal::PackContact(inputs), &hit);
+  if (!swept.ok()) {
+    return boundary_internal::ArithmeticStatus(swept.status());
   }
+  const auto contact = boundary_internal::UnpackContact(*swept);
   ElasticBladeContact3D result{
-      .contact = *contact,
+      .contact = contact,
       .side = committed_side,
       .particle_impulse = {},
       .particle_angular_impulse_about_world_origin = {},
       .blade_work = 0.0,
   };
-  if (!contact->contact_fraction.has_value()) {
+  if (!contact.contact_fraction.has_value()) {
     return result;
   }
-  if (contact->diagnostic == LiquidWallContactDiagnostic3D::kInitialPenetration) {
+  if (contact.diagnostic == LiquidWallContactDiagnostic3D::kInitialPenetration) {
     return absl::FailedPreconditionError("elastic blade side requires a nonpenetrating sweep start");
   }
-  const Vec3 normal = contact->outward_normal;
+  const Vec3 normal = contact.outward_normal;
   const double alignment =
       normal.x * blade->unit_normal.x + normal.y * blade->unit_normal.y + normal.z * blade->unit_normal.z;
   const int incident_sign = alignment > 0.0 ? 1 : -1;
@@ -52,18 +54,12 @@ absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     return absl::FailedPreconditionError("blade impact disagrees with the committed side");
   }
   result.side = {.blade_id = blade_id, .sign = incident_sign};
-  const Vec3 outgoing = contact->stored_world_velocity;
+  const Vec3 outgoing = contact.stored_world_velocity;
   const Vec3 incoming = inputs.stored_world_velocity;
   const Vec3 impulse{
       particle_mass * (outgoing.x - incoming.x),
       particle_mass * (outgoing.y - incoming.y),
       particle_mass * (outgoing.z - incoming.z),
-  };
-  const double hit_time = *contact->contact_fraction * inputs.step_duration;
-  const Vec3 hit{
-      std::fma(hit_time, inputs.advecting_world_velocity.x, inputs.start_world_position.x),
-      std::fma(hit_time, inputs.advecting_world_velocity.y, inputs.start_world_position.y),
-      std::fma(hit_time, inputs.advecting_world_velocity.z, inputs.start_world_position.z),
   };
   const Vec3 angular_impulse{
       hit.y * impulse.z - hit.z * impulse.y,

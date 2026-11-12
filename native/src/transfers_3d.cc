@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -277,8 +278,17 @@ NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, dou
   if (!std::isfinite(volume_ratio)) {
     return absl::OutOfRangeError("nonfinite elastic volume ratio");
   }
-  if (volume_ratio <= 0.0) {
-    return absl::InvalidArgumentError("elastic deformation requires a positive determinant");
+  // Bound cancellation in the cofactor expansion before taking log(J).
+  const double determinant_magnitude_bound = std::abs(x.x) * (std::abs(y.y * z.z) + std::abs(y.z * z.y))
+      + std::abs(x.y) * (std::abs(y.z * z.x) + std::abs(y.x * z.z))
+      + std::abs(x.z) * (std::abs(y.x * z.y) + std::abs(y.y * z.x));
+  if (!std::isfinite(determinant_magnitude_bound)) {
+    return absl::OutOfRangeError("nonfinite elastic determinant bound");
+  }
+  const double determinant_error_bound = (16.0 * std::numeric_limits<double>::epsilon()) * determinant_magnitude_bound
+      + 16.0 * std::numeric_limits<double>::denorm_min();
+  if (volume_ratio <= determinant_error_bound) {
+    return absl::InvalidArgumentError("elastic deformation requires a resolved positive determinant");
   }
 
   const double volumetric_stress = first_lame_parameter * std::log(volume_ratio);

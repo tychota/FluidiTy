@@ -1,5 +1,6 @@
 #include "fluidity/host/rigid_body_3d.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -70,6 +71,20 @@ bool ValidDrift(const RigidBodyStep3D& step) {
 }
 
 }  // namespace
+
+absl::Status ValidateRigidBodyPose3D(RigidBodyPose3D pose) {
+  if (!IsFinite(pose.center) || !IsUnit(pose.orientation)) {
+    return absl::InvalidArgumentError("invalid rigid body pose");
+  }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateRigidBody3D(const RigidBody3D& body) {
+  if (!ValidBody(body)) {
+    return absl::InvalidArgumentError("invalid rigid body");
+  }
+  return absl::OkStatus();
+}
 
 absl::StatusOr<RigidBody3D>
 AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec3 world_force) {
@@ -169,7 +184,11 @@ absl::StatusOr<double> RigidBodySweepDistanceBound3D(const RigidBodyStep3D& step
   if (!ValidDrift(step) || !std::isfinite(radius) || radius < 0.0) {
     return absl::InvalidArgumentError("invalid rigid body drift or sweep radius");
   }
-  const double translation_distance = Norm(Scale(step.duration, step.end.linear_velocity));
+  const Vec3 translation = Scale(step.duration, step.end.linear_velocity);
+  // Each sampled center component moves monotonically. Include its rounded
+  // endpoint displacement so a large world origin cannot hide that motion.
+  const Vec3 rounded_translation = Subtract(Add(step.start.center, translation), step.start.center);
+  const double translation_distance = std::max(Norm(translation), Norm(rounded_translation));
   const double rotation_angle = Norm(Scale(step.duration, step.end.angular_velocity));
   const double travel = std::fma(radius, rotation_angle, translation_distance);
   // Allow for rounding in the drift products, norms and arc-length sum.

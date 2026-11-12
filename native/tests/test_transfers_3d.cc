@@ -286,6 +286,16 @@ TEST(MacTransfer3D, UncutElasticWorkBalancesAtTranslatedCorner) {
   );
 }
 
+TEST(MacTransfer3D, NeoHookeanRejectsRoundedSingularDeformation) {
+  constexpr Vec3 kRepeatedRow{0.23645552527159452, 0.3692706737201661, 0.5042420323006809};
+  constexpr Mat3 kSingular{
+      .x_row = kRepeatedRow,
+      .y_row = {0.7048832636792213, 0.05054362863302231, 0.3695183543022722},
+      .z_row = kRepeatedRow,
+  };
+  EXPECT_EQ(NeoHookeanKirchhoffStress3D(kSingular, 2.0, 1.0).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
   const auto mac_grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();

@@ -61,7 +61,7 @@ absl::Status GatherMac3D(
 );
 
 // Computes compressible Neo-Hookean Kirchhoff stress in pascals from a
-// dimensionless deformation gradient with positive determinant. The shear
+// dimensionless deformation gradient with a numerically resolved positive determinant. The shear
 // modulus must be positive and the first Lame parameter nonnegative (pascals).
 // Returns InvalidArgument for invalid inputs or OutOfRange for nonfinite arithmetic.
 absl::StatusOr<Mat3>
