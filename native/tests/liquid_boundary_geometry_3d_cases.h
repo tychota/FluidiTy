@@ -7,10 +7,12 @@
 #include <iostream>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <vector>
 
 #include "fixture_data.h"
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
+#include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "fluidity/host/liquid_boundary_geometry_3d.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "gtest/gtest.h"
@@ -481,6 +483,21 @@ class GeometryCases {
     EXPECT_NEAR(affine_link.open_area, 0.75, 2e-14);
     EXPECT_NEAR(*affine_link.prescribed_wall_flux, 0.625, 2e-14);
     EXPECT_NEAR(affine_link.wall_normal_velocity, 2.5, 2e-14);
+    const auto projection = project_({grid, inputs.step_duration, affine_links.cells, affine_links.faces});
+    ASSERT_TRUE(projection.ok()) << projection.status();
+    ASSERT_EQ(projection->cell_pressures.size(), 2);
+    const double tail_pressure = projection->cell_pressures[0];
+    const double head_pressure = projection->cell_pressures[1];
+    const double pressure_difference = tail_pressure - head_pressure;
+    EXPECT_GT(std::abs(pressure_difference), 1.0);
+    const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.25, 0.75, -0.25, 0.75});
+    ASSERT_TRUE(weights.ok());
+    const auto forces =
+        boundary_internal::ComputeSampledSolidFacePressureForces(*weights, tail_pressure, head_pressure);
+    ASSERT_TRUE(forces.ok());
+    constexpr std::array normal_velocities{2.0, 6.0, 2.0, 6.0};
+    const double solid_power = std::inner_product(forces->begin(), forces->end(), normal_velocities.begin(), 0.0);
+    EXPECT_NEAR(solid_power, pressure_difference * *affine_link.prescribed_wall_flux, 2e-12 * std::abs(solid_power));
     inputs.sampled_solid->face_normal_velocities = wall_velocities;
 
     inputs.sampled_solid->corner_distances = std::span<const SolidCornerDistance3D>(solid_corners).first(1);

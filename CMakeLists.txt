@@ -44,6 +44,7 @@ include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
     native/src/contact_face_bodies_3d.cc
     native/src/mixed_contact_3d.cc
+    native/src/plastic_solid_boundary_3d.cc
     native/src/dry_solid_step_3d.cc
     native/src/plastic_solid_checkpoint_3d.cc
     native/src/effects_source_3d.cc

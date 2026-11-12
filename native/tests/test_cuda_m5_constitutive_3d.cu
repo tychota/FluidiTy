@@ -71,6 +71,27 @@ __global__ void CheckSampledSolidGeometryOnDevice(int* result) {
   if (!geometry.ok() || fabs(geometry->prescribed_wall_flux - 0.625) > 2e-14
       || fabs(geometry->open_face_area - 0.75) > 2e-14) {
     *result = 94;
+    return;
+  }
+  const auto reaction_weights =
+      fluidity::boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.25, 0.75, -0.25, 0.75});
+  if (!reaction_weights.ok()) {
+    *result = 95;
+    return;
+  }
+  const auto forces = fluidity::boundary_internal::ComputeSampledSolidFacePressureForces(*reaction_weights, 13.0, 5.0);
+  if (!forces.ok()) {
+    *result = 96;
+    return;
+  }
+  double normal_force = 0;
+  double solid_power = 0;
+  for (int corner = 0; corner < 4; ++corner) {
+    normal_force += (*forces)[corner];
+    solid_power += (*forces)[corner] * (2.0 + 4.0 * (corner & 1));
+  }
+  if (fabs(normal_force - 2.0) > 2e-14 || fabs(solid_power - 8.0 * geometry->prescribed_wall_flux) > 2e-14) {
+    *result = 97;
   }
 }
 
