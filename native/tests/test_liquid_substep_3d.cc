@@ -296,6 +296,75 @@ TEST(LiquidSubstep3D, GuidedPistonCommitsPressureAndParticleReactionTogether) {
   EXPECT_EQ(*expected_bytes, *replayed_bytes);
 }
 
+TEST(LiquidSubstep3D, GuidedFloatingBoxCommitsPressureAndDriftTogether) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDt = 0.125;
+  constexpr Vec3 kHalfExtent{0.125, 0.3125, 0.125};
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.375, 0.5625, 0.375},
+      .linear_velocity = {0.0, 0.5, 0.0},
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(kDt).ok());
+  const auto first = scheduler->AttemptWithGuidedFloatingBox(kDt, body, kHalfExtent);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_TRUE(first->body.has_value()) << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_DOUBLE_EQ(first->body->center.y, 0.625);
+  EXPECT_NEAR(first->body->linear_velocity.y, 0.5 - kDt / 144.0, 1e-9);
+  ASSERT_EQ(scheduler->committed().cells.size(), 1);
+  EXPECT_NEAR(scheduler->committed().cells[0].previous_pressure, -1.0 / 9.0, 1e-7);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+
+  const auto encode = [](const LiquidState3D& state, const RigidBody3D& current, const RigidBody3D& previous) {
+    const SolidInteractionCheckpoint3D solid{
+        .accepted_step = state.clock.accepted_step_ordinal,
+        .bodies = {{current, {previous.center, previous.orientation}}},
+    };
+    return EncodeCoupledInteractionCheckpoint3D(state, solid);
+  };
+  const auto checkpoint = encode(scheduler->committed(), *first->body, body);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, scene, Options());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * kDt).ok());
+  const auto old_clock = scheduler->committed().clock;
+  scheduler->SetStageFaultHookForTesting({nullptr, [](void*, LiquidPhysicalStage3D stage, double) {
+                                            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("")
+                                                                                           : absl::OkStatus();
+                                          }});
+  const auto rejected = scheduler->AttemptWithGuidedFloatingBox(kDt, *first->body, kHalfExtent);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->outcome.disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_FALSE(rejected->body.has_value());
+  EXPECT_EQ(scheduler->committed().clock, old_clock);
+  const auto after_rejection = encode(scheduler->committed(), *first->body, body);
+  ASSERT_TRUE(after_rejection.ok()) << after_rejection.status();
+  EXPECT_EQ(*after_rejection, *checkpoint);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retry = scheduler->AttemptWithGuidedFloatingBox(kDt / 2.0, *first->body, kHalfExtent);
+  ASSERT_TRUE(retry.ok()) << retry.status();
+  ASSERT_TRUE(retry->body.has_value());
+  EXPECT_NEAR(retry->body->center.y, 0.625 + first->body->linear_velocity.y * kDt / 2.0, 1e-12);
+  EXPECT_NEAR(scheduler->diagnostics().accepted_measurement->step_start_pressure_cell_volume_m3, 0.32421875, 1e-12);
+
+  ASSERT_TRUE(replay->BeginFrame(2.0 * kDt).ok());
+  const auto replayed =
+      replay->AttemptWithGuidedFloatingBox(kDt / 2.0, restored->solid.bodies.front().body, kHalfExtent);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(replayed->body.has_value());
+  const auto resumed_bytes = encode(replay->committed(), *replayed->body, *first->body);
+  const auto direct_bytes = encode(scheduler->committed(), *retry->body, *first->body);
+  ASSERT_TRUE(resumed_bytes.ok() && direct_bytes.ok());
+  EXPECT_EQ(*resumed_bytes, *direct_bytes);
+}
 TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
   namespace wet = wetted_piston_pressure_test;
   auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
@@ -2201,6 +2270,38 @@ TEST(LiquidSubstep3D, ActualDepositRejectionAllocatesAndFreesNothing) {
   EXPECT_EQ(scheduler_allocations, 0);
   EXPECT_EQ(scheduler_frees, 0);
   EXPECT_TRUE(scheduler->committed() == initial);
+}
+TEST(LiquidSubstep3D, GuidedFloatingBoxAttemptsAllocateAndFreeNothing) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
+  auto scheduler = LiquidSubstepScheduler3D::Create({}, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.125).ok());
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.375, 0.5625, 0.375},
+      .linear_velocity = {0.0, 0.5, 0.0},
+  };
+  auto malformed = body;
+  malformed.mass = 0.0;
+  scheduler_allocations = 0;
+  scheduler_frees = 0;
+  scheduler_previous_hook = _CrtSetAllocHook(SchedulerAllocationHook);
+  bool rejected = false;
+  bool accepted = false;
+  {
+    const auto invalid = scheduler->AttemptWithGuidedFloatingBox(0.125, malformed, {0.125, 0.3125, 0.125});
+    rejected = absl::IsInvalidArgument(invalid.status());
+    const auto valid = scheduler->AttemptWithGuidedFloatingBox(0.125, body, {0.125, 0.3125, 0.125});
+    accepted = valid.ok() && valid->body.has_value();
+  }
+  _CrtSetAllocHook(scheduler_previous_hook);
+  EXPECT_TRUE(rejected);
+  EXPECT_TRUE(accepted);
+  EXPECT_EQ(scheduler_allocations, 0);
+  EXPECT_EQ(scheduler_frees, 0);
 }
 TEST(LiquidSubstep3D, ActualPressureNonconvergenceAllocatesAndFreesNothing) {
   auto initial = Initial(8);

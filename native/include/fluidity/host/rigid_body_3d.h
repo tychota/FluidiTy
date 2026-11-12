@@ -5,6 +5,7 @@
 #include <span>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_types_3d.h"
 
@@ -75,6 +76,19 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
     double liquid_height,
     UniformMacGeometry3D geometry,
     std::span<const CellIndex3D> pressure_cells
+);
+// Streams the same patches without allocation. Callbacks borrow a stable
+// pressure-cell ordering and must stage any writes until success because a
+// later validation or visitor error can reject the visit. Errors are code-only.
+absl::Status VisitFloatingBoxPressurePatches3D(
+    std::uint64_t body_id,
+    Vec3 box_low,
+    Vec3 box_high,
+    double liquid_height,
+    UniformMacGeometry3D geometry,
+    std::size_t pressure_cell_count,
+    absl::FunctionRef<CellIndex3D(std::size_t)> pressure_cell_at,
+    absl::FunctionRef<absl::Status(const RigidPressurePatch3D&)> visit
 );
 // Integrates the rigid surface velocity over wetted patches. Returns one
 // flux in m³/s per pressure cell, positive into the liquid. Affine rigid

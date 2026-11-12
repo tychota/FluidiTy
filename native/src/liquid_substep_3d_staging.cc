@@ -166,6 +166,7 @@ absl::StatusOr<Staging> Staging::Create(
   STEP_TRY(Reserve(staging.old_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.new_walls, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.pressure_fields, capacities.cells, staging.reserved_bytes));
+  STEP_TRY(Reserve(staging.pressure_cell_scratch, capacities.cells, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.particle_distances, capacities.particles, staging.reserved_bytes));

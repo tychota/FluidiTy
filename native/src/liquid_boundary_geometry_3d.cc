@@ -335,12 +335,14 @@ absl::Status ValidateFloatingBoxInputs(
   }
   for (const auto& sample : center_distances) {
     const double y_index = static_cast<double>(sample.cell_index.y) + 0.5;
-    const double world_y = std::fma(geometry.cell_width, y_index, geometry.world_origin.y);
-    const double expected_distance = world_y - box.liquid_height;
-    if (!std::isfinite(expected_distance)) {
-      return UnrepresentableGeometry(bounded);
+    const auto expected_distance = boundary_internal::HorizontalPlaneLatticeDistance(
+        box.liquid_height,
+        {geometry.world_origin.y, y_index, geometry.cell_width}
+    );
+    if (!expected_distance.ok()) {
+      return boundary_internal::ArithmeticStatus(expected_distance.status(), bounded);
     }
-    if (sample.signed_distance != expected_distance) {
+    if (sample.signed_distance != *expected_distance) {
       return absl::Status(
           absl::StatusCode::kInvalidArgument,
           bounded ? "" : "finite box requires horizontal liquid distance samples"
@@ -468,8 +470,14 @@ ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
     }
     for (int corner = 0; corner < 8; ++corner) {
       const double y_index = vertical_lattice.lattice_index + ((corner >> 1) & 1);
-      const double world_y = std::fma(cell_width, y_index, vertical_lattice.world_origin);
-      if (query.corner_distances[corner] != world_y - box.liquid_height) {
+      const auto expected_distance = boundary_internal::HorizontalPlaneLatticeDistance(
+          box.liquid_height,
+          {vertical_lattice.world_origin, y_index, cell_width}
+      );
+      if (!expected_distance.ok()) {
+        return boundary_internal::ArithmeticStatus(expected_distance.status(), request.bounded);
+      }
+      if (query.corner_distances[corner] != *expected_distance) {
         return absl::Status(
             absl::StatusCode::kInvalidArgument,
             request.bounded ? "" : "finite box requires horizontal liquid distance samples"

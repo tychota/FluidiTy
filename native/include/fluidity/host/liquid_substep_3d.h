@@ -203,6 +203,11 @@ struct LiquidPlanarPistonAttempt3D {
   std::optional<RigidBody3D> loaded_piston;  // Present only when the liquid attempt is accepted.
 };
 
+struct LiquidFloatingBoxAttempt3D {
+  LiquidAttemptOutcome3D outcome;
+  std::optional<RigidBody3D> body;  // Present only on liquid acceptance.
+};
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -280,6 +285,13 @@ class LiquidSubstepScheduler3D {
   // attempt interface supports the particle-free planar scene. The coupled
   // velocity sets both wall flux and drift. Unsupported topology rejects.
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptWithCoupledPlanarPiston(double step_duration, RigidBody3D piston);
+  // Advances an upright box guided along world Y in a stationary open tank.
+  // Requires CPU, an analytic horizontal surface and no particles or sources.
+  // The start velocity drives frozen wall flux and drift. Solved pressure and
+  // external force update the next velocity. The guide absorbs transverse
+  // force and torque. Half extents are in meters and must stay clear of walls.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -288,13 +300,19 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
+  struct FloatingBoxTrial {
+    RigidBody3D body;
+    AxisAlignedFloatingBoxGeometry3D geometry;
+    double half_height;
+  };
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
       RigidBody3D* piston_load,
       bool dynamic_piston = false,
       bool coupled_piston = false,
-      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr
+      const LiquidPistonReactionUpdate3D* update_with_reaction = nullptr,
+      FloatingBoxTrial* floating_box = nullptr
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

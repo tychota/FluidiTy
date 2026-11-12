@@ -37,6 +37,7 @@ struct Staging {
   LiquidRecords3D<LiquidPrescribedWallSample3D> old_walls;
   LiquidRecords3D<LiquidPrescribedWallSample3D> new_walls;
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
+  LiquidRecords3D<MacPressureCell3D> pressure_cell_scratch;  // Trial interior wall flux rows.
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
