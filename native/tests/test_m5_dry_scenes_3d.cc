@@ -109,7 +109,8 @@ bool TestScene(
     double stored_velocity_decay_rate = 0,
     double granular_lambda = 700,
     bool compatible_floor = false,
-    double symmetric_affine_decay_per_second = 0
+    double symmetric_affine_decay_per_second = 0,
+    std::string_view affine_decay_region = "all"
 ) {
   std::vector<BlockIndex3D> blocks;
   const int maximum_block_y = compatible_floor ? 2 : 4;
@@ -171,6 +172,13 @@ bool TestScene(
   double final_plastic_volume_particle_seconds = 0;
   double final_particle_seconds = 0;
   std::vector<double> previous_log_plastic(particles.size());
+  std::vector<double> previous_height(particles.size());
+  double floor_resident_plastic_path = 0;
+  double floor_arrival_plastic_path = 0;
+  double floor_departure_plastic_path = 0;
+  double above_floor_plastic_path = 0;
+  constexpr double kFloorPositionToleranceInCells = 1e-12;
+  const double floor_tolerance = kFloorPositionToleranceInCells * width;
   double final_log_plastic_change = 0;
   double final_absolute_log_plastic_change = 0;
   double floor_layer_absolute_log_plastic_change = 0;
@@ -207,6 +215,7 @@ bool TestScene(
     if (in_final_window) {
       for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
         previous_log_plastic[ordinal] = particles[ordinal].log_plastic_jacobian;
+        previous_height[ordinal] = particles[ordinal].world_position.y;
       }
     }
     fluidity::DrySolidStepBudget3D budget{};
@@ -267,6 +276,10 @@ bool TestScene(
       constexpr std::array rows{&Mat3::x_row, &Mat3::y_row, &Mat3::z_row};
       constexpr std::array coordinates{&fluidity::Vec3::x, &fluidity::Vec3::y, &fluidity::Vec3::z};
       for (auto& particle : particles) {
+        const bool floor_layer = particle.world_position.y <= spacing;
+        if ((affine_decay_region == "floor" && !floor_layer) || (affine_decay_region == "interior" && floor_layer)) {
+          continue;
+        }
         const Mat3 previous = particle.velocity_slopes;
         for (std::size_t row = 0; row < rows.size(); ++row) {
           for (std::size_t column = 0; column < coordinates.size(); ++column) {
@@ -319,7 +332,19 @@ bool TestScene(
           const auto& particle = particles[ordinal];
           const double change = particle.log_plastic_jacobian - previous_log_plastic[ordinal];
           final_log_plastic_change += change;
-          final_absolute_log_plastic_change += std::abs(change);
+          const double path = std::abs(change);
+          final_absolute_log_plastic_change += path;
+          const bool started_on_floor = previous_height[ordinal] <= floor_tolerance;
+          const bool ended_on_floor = particle.world_position.y <= floor_tolerance;
+          if (started_on_floor && ended_on_floor) {
+            floor_resident_plastic_path += path;
+          } else if (ended_on_floor) {
+            floor_arrival_plastic_path += path;
+          } else if (started_on_floor) {
+            floor_departure_plastic_path += path;
+          } else {
+            above_floor_plastic_path += path;
+          }
           if (particle.world_position.y <= spacing) {
             floor_layer_absolute_log_plastic_change += std::abs(change);
           }
@@ -420,6 +445,16 @@ bool TestScene(
         floor_layer_absolute_log_plastic_change / particles.size()
     );
   }
+  if (extended_column) {
+    const double particle_count = static_cast<double>(particles.size());
+    std::printf(
+        "sand final plastic path resident=%.9g arrival=%.9g departure=%.9g above=%.9g\n",
+        floor_resident_plastic_path / particle_count,
+        floor_arrival_plastic_path / particle_count,
+        floor_departure_plastic_path / particle_count,
+        above_floor_plastic_path / particle_count
+    );
+  }
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
   const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
   std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
@@ -489,10 +524,16 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
 #else
   const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
+  // The stationary normal ghost gives L_yy = -0.5/s for this incoming
+  // uniform field. Sliding with friction 0.5 gives post-impact L_xy = -0.25/s.
+  // At zero trace, the cone return retains only the simple-shear polar rotation.
+  const double trial_shear = compatible_floor ? -0.0025 : 0;
+  const double expected_rotation_xy = trial_shear / std::hypot(2.0, trial_shear);
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
       && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
-      && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
+      && budget.cut_stress_work == 0 && budget.granular_projected_particles == (compatible_floor ? 1U : 0U)
+      && std::abs(particle.elastic_deformation.x_row.y - expected_rotation_xy) < 1e-10
       && budget.granular_plastic_volume_changes == 0;
 }
 
@@ -893,12 +934,27 @@ int main(int argc, char** argv) {
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
   }
-  if (argc == 4 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
+  if (argc >= 4 && argc <= 6 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
     const std::string_view rate_name = argv[2];
-    if (rate_name != "2" && rate_name != "8" && rate_name != "32") {
+    if (rate_name != "0" && rate_name != "2" && rate_name != "8" && rate_name != "32") {
       return 2;
     }
-    const double rate = rate_name == "2" ? 2.0 : (rate_name == "8" ? 8.0 : 32.0);
+    double rate = 0;
+    if (rate_name == "2") {
+      rate = 2;
+    } else if (rate_name == "8") {
+      rate = 8;
+    } else if (rate_name == "32") {
+      rate = 32;
+    }
+    const std::string_view region = argc >= 5 ? argv[4] : "all";
+    if (region != "all" && region != "floor" && region != "interior") {
+      return 2;
+    }
+    if (argc == 6 && std::string_view(argv[5]) != "3") {
+      return 2;
+    }
+    const double end_time = argc == 6 ? 3.0 : 1.5;
     const std::string_view selection = argv[3];
     const bool coarse = selection == "coarse" || selection == "coarse-half";
     const bool fine = selection == "fine" || selection == "fine-half";
@@ -907,8 +963,34 @@ int main(int argc, char** argv) {
     }
     const double width = coarse ? 0.075 : 0.0625;
     const double duration = width / (selection.ends_with("-half") ? 80 : 40);
-    std::printf("symmetric APIC decay in inverse seconds=%.0f\n", rate);
-    return TestScene(width, duration, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, false, 1, 0, 700, true, rate) ? 0 : 1;
+    std::printf(
+        "symmetric APIC decay in inverse seconds=%.0f region=%.*s\n",
+        rate,
+        static_cast<int>(region.size()),
+        region.data()
+    );
+    return TestScene(
+               width,
+               duration,
+               false,
+               0,
+               1,
+               0.10,
+               false,
+               end_time,
+               0,
+               {},
+               0.7,
+               false,
+               1,
+               0,
+               700,
+               true,
+               rate,
+               region
+           )
+        ? 0
+        : 1;
   }
   if (argc >= 2
       && (std::string_view(argv[1]) == "--q-sand-compatible-floor"
