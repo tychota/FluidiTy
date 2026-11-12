@@ -603,26 +603,60 @@ TEST(LiquidSubstep3D, GradedViscousTensorReproducesAffineStrain) {
     velocities.push_back(components[static_cast<std::size_t>(face.axis)]);
     subfaces[slot].open_area_m2 = face.width_m * face.width_m;
   }
-  const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  ASSERT_FALSE(ownership->exterior_faces.empty());
+  std::size_t wall_slot = 0;
+  for (const bool prescribed_wall : {false, true}) {
+    SCOPED_TRACE(prescribed_wall);
+    if (prescribed_wall) {
+      auto& wall = subfaces[wall_slot];
+      wall.prescribed_wall_flux_m3_per_s = wall.open_area_m2 * velocities[wall_slot];
+      wall.open_area_m2 = 0.0;
+      velocities[wall_slot] = 0.0;
+    }
+    const auto rows = liquid_step_internal::AssembleGradedViscousStrainRows3D(
+        *topology,
+        state.geometry.world_origin,
+        2.0,
+        transfer->faces(),
+        subfaces
+    );
+    ASSERT_TRUE(rows.ok()) << rows.status();
+    if (!prescribed_wall) {
+      const auto wall = std::ranges::find_if(ownership->exterior_faces, [&](const auto& face) {
+        return std::ranges::any_of(*rows, [&](const auto& row) {
+          return row.first_axis != row.second_axis
+              && std::ranges::any_of(std::span(row.terms).first(row.term_count), [&](const auto& term) {
+                   return term.face_slot == face.face_slot;
+                 });
+        });
+      });
+      ASSERT_NE(wall, ownership->exterior_faces.end());
+      wall_slot = wall->face_slot;
+    }
+    constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
+    ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
+    for (std::size_t index = 0; index < rows->size(); ++index) {
+      const auto& row = (*rows)[index];
+      double strain = row.prescribed_strain;
+      for (const auto& term : std::span(row.terms).first(row.term_count)) {
+        strain += term.coefficient * velocities[term.face_slot];
+      }
+      EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
+      const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
+      EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
+    }
+  }
+  subfaces[wall_slot].open_area_m2 = 0.5 * transfer->faces()[wall_slot].width_m * transfer->faces()[wall_slot].width_m;
+  const auto moving_cut = liquid_step_internal::AssembleGradedViscousStrainRows3D(
       *topology,
       state.geometry.world_origin,
       2.0,
       transfer->faces(),
       subfaces
   );
-  ASSERT_TRUE(rows.ok()) << rows.status();
-  constexpr std::array expected_strains{2.0, 1.0, 11.0, 4.0, 15.0, 6.0};
-  ASSERT_EQ(rows->size(), expected_strains.size() * topology->cells().size());
-  for (std::size_t index = 0; index < rows->size(); ++index) {
-    const auto& row = (*rows)[index];
-    double strain = row.prescribed_strain;
-    for (const auto& term : std::span(row.terms).first(row.term_count)) {
-      strain += term.coefficient * velocities[term.face_slot];
-    }
-    EXPECT_NEAR(strain, expected_strains[index % expected_strains.size()], 1e-12);
-    const double volume = topology->cells()[index / expected_strains.size()].cell_volume;
-    EXPECT_DOUBLE_EQ(row.quadrature_weight, (row.first_axis == row.second_axis ? 4.0 : 8.0) * volume);
-  }
+  EXPECT_EQ(moving_cut.status().code(), absl::StatusCode::kUnimplemented);
 }
 
 TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) {

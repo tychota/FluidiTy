@@ -14,7 +14,10 @@
 namespace fluidity::liquid_step_internal {
 
 // Assemble nonzero symmetric-gradient quadratures per leaf from local staggered
-// face anchors and owned apertures. Dynamic viscosity is in Pa s. Stationary sealed faces are lifted as zero velocity.
+// face anchors and owned apertures. Dynamic viscosity is in Pa s. On a fully
+// blocked face the prescribed Cartesian wall flux divided by its area gives
+// the normal anchor velocity. Nonzero wall flux on a partial aperture returns
+// Unimplemented until separate moving-cut quadrature is available.
 // All geometric arrays use canonical topology order. An optional scratch span of leaf count + 1 stores
 // row offsets in leaf order; it must be disjoint from inputs and may change on failure.
 // Rank-deficient anchor support fails without rows.
