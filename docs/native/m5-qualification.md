@@ -3603,3 +3603,31 @@ foreach ($grid in 'fine', 'coarse') {
 
 The temporary entry point sets the existing modulus multiplier
 to four. Both sources were restored after linking.
+
+### Eightfold stiffness control
+
+Repeat the same wall-face Euler column at eight times the
+reference Lamé moduli. Keep all other inputs fixed.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 35.401524° | 0.164587 m | 0.161759 |
+| Coarse half-step | 38.948569° | 0.157965 m | 0.122788 |
+| Fine | 31.594502° | 0.180954 m | 2.527271 |
+| Fine half-step | 32.931358° | 0.181184 m | 0.135007 |
+
+Increasing stiffness beyond fourfold does not consistently improve
+geometry. The fine half-step angle enters the band, but its radius
+increases. The fine nominal mean log plastic Jacobian reaches
+2.527271 compared with 0.464481 in the fourfold control. All runs
+finish with vertical momentum residual below 1.8e-8 N·s. Source
+was restored after linking, and Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-stiffness-eight-bin'
+foreach ($grid in 'fine', 'coarse') {
+  foreach ($step in 'nominal', 'half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-stiffness-eight $grid $step
+  }
+}
+```
