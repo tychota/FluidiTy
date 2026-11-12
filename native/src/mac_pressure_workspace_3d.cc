@@ -892,10 +892,11 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
     pressure_cell_volume.Add(cell.fluid_volume);
   }
   pressure_internal::arithmetic::CompensatedSum inward_prescribed_wall_flux;
-  for (std::size_t face_ordinal = 0; face_ordinal < uniform_faces.size(); ++face_ordinal) {
+  for (std::size_t face_ordinal = 0; face_ordinal < system->links().size(); ++face_ordinal) {
     const auto& link = system->links()[face_ordinal];
-    if (!uniform_faces[face_ordinal].prescribed_wall_flux.has_value()
-        || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
+    const bool has_explicit_wall_flux =
+        uniform_faces.empty() || uniform_faces[face_ordinal].prescribed_wall_flux.has_value();
+    if (!has_explicit_wall_flux || link.tail_cell_ordinal.has_value() == link.head_cell_ordinal.has_value()) {
       continue;
     }
     // Sum in owned face order using the checked RHS incidence. An internal
