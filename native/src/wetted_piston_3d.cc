@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <tuple>
 
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
@@ -606,4 +607,81 @@ ComputeWettedPiston3D(const WettedPistonInputs3D& inputs, WettedPistonWorkspace3
       }
   );
 }
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressurePatches3D(
+    const WettedPistonInputs3D& inputs,
+    const WettedPistonView3D& wetted,
+    std::uint64_t body_id
+) {
+  const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&inputs.field);
+  if (plane == nullptr || body_id == 0 || !std::isfinite(plane->world_surface_height_y)
+      || !std::isfinite(inputs.tank.start_low_x) || !std::isfinite(inputs.tank.floor_y)
+      || !std::isfinite(inputs.tank.low_z) || !std::isfinite(inputs.tank.high_z)
+      || inputs.tank.low_z >= inputs.tank.high_z || wetted.face_fluxes.size() != inputs.frozen.faces.size()) {
+    return absl::InvalidArgumentError("invalid planar piston pressure patch inputs");
+  }
+  const auto geometry = inputs.frozen.mac_grid.geometry();
+  const double h = geometry.cell_width;
+  std::vector<RigidPressurePatch3D> patches;
+  patches.reserve(wetted.patches.size());
+  std::optional<std::pair<std::int32_t, std::int32_t>> previous_patch;
+  for (const auto& wet : wetted.patches) {
+    const std::pair patch_order{wet.lattice_z, wet.lattice_y};
+    if (previous_patch && patch_order <= *previous_patch) {
+      return absl::InvalidArgumentError("piston pressure patches must be strictly ordered");
+    }
+    previous_patch = patch_order;
+    const double lattice_y = wet.lattice_y;
+    const double lattice_z = wet.lattice_z;
+    const double low_y = std::max(inputs.tank.floor_y, std::fma(h, lattice_y, geometry.world_origin.y));
+    const double high_y =
+        std::min(plane->world_surface_height_y, std::fma(h, lattice_y + 1.0, geometry.world_origin.y));
+    const double low_z = std::max(inputs.tank.low_z, std::fma(h, lattice_z, geometry.world_origin.z));
+    const double high_z = std::min(inputs.tank.high_z, std::fma(h, lattice_z + 1.0, geometry.world_origin.z));
+    const double area = std::max(0.0, high_y - low_y) * std::max(0.0, high_z - low_z);
+    if (!std::isfinite(area)) {
+      return absl::OutOfRangeError("nonfinite planar piston patch area");
+    }
+    if (!std::isfinite(wet.area.lower) || !std::isfinite(wet.area.upper) || wet.area.lower < 0.0
+        || area < wet.area.lower || area > wet.area.upper) {
+      return absl::FailedPreconditionError("planar piston patch area disagrees with its wet enclosure");
+    }
+    if (area == 0.0) {
+      continue;
+    }
+    if (!wet.receiver_face_ordinal || *wet.receiver_face_ordinal >= inputs.frozen.faces.size()) {
+      return absl::FailedPreconditionError("wet piston pressure patch has no receiver");
+    }
+    const auto& face = inputs.frozen.faces[*wet.receiver_face_ordinal];
+    const auto index = face.face_index.lattice_index;
+    const auto receiver = wetted_piston_internal::FindReceiverFaceOrdinal(
+        inputs.frozen,
+        index.x,
+        {index.y, index.z},
+        inputs.tank.piston_velocity_x
+    );
+    const auto patch_row_offset = static_cast<std::int64_t>(wet.lattice_y) - index.y;
+    if (!receiver.ok() || *receiver != *wet.receiver_face_ordinal || index.z != wet.lattice_z || patch_row_offset < 0
+        || patch_row_offset > 1) {
+      return absl::FailedPreconditionError("invalid piston pressure receiver geometry");
+    }
+    const auto cells = inputs.frozen.cells;
+    const auto cell_key = wetted_piston_internal::CellOrder({index.x, index.y, index.z});
+    const auto cell = std::ranges::lower_bound(cells, cell_key, {}, [](const FrozenLiquidCell3D& entry) {
+      return wetted_piston_internal::CellOrder(entry.cell_index);
+    });
+    if (cell == cells.end() || wetted_piston_internal::CellOrder(cell->cell_index) != cell_key) {
+      return absl::FailedPreconditionError("piston pressure receiver has no selected pressure cell");
+    }
+    patches.push_back({
+        .patch_id = static_cast<std::uint64_t>(patches.size()) + 1,
+        .body_id = body_id,
+        .pressure_cell_index = static_cast<std::size_t>(cell - cells.begin()),
+        .wetted_area = area,
+        .world_centroid = {inputs.tank.start_low_x, std::midpoint(low_y, high_y), std::midpoint(low_z, high_z)},
+        .outward_body_normal = {1.0, 0.0, 0.0},
+    });
+  }
+  return patches;
+}
+
 }  // namespace fluidity

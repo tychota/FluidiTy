@@ -2,6 +2,7 @@
 
 #include "fluidity/base/wetted_piston_math_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 
 namespace fluidity {
 namespace wetted_piston_internal {
@@ -82,5 +83,17 @@ class WettedPistonWorkspace3D {
 // workspace destruction. Failure preserves the previous result and all inputs.
 absl::StatusOr<WettedPistonView3D>
 ComputeWettedPiston3D(const WettedPistonInputs3D& inputs, WettedPistonWorkspace3D& workspace);
+
+// Builds pressure traction patches for the horizontal-plane liquid field at
+// the low-x piston. The wet view must come from the same frozen inputs.
+// Uses each physical patch's clipped centroid and its selected receiver
+// pressure index. Output follows wet patch order and skips dry patches.
+// Requires a nonzero body ID. Invalid or inconsistent data returns
+// InvalidArgument or FailedPrecondition. Range failures return OutOfRange.
+absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildPlanarWettedPistonPressurePatches3D(
+    const WettedPistonInputs3D& inputs,
+    const WettedPistonView3D& wetted,
+    std::uint64_t body_id
+);
 
 }  // namespace fluidity
