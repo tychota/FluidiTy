@@ -121,3 +121,69 @@ def transport_densities(grid, dt, densities, source_rates, face_velocity, exteri
     if np.any(updated < 0) or not np.all(np.isfinite(updated)) or not np.all(np.isfinite(outward_rate)):
         raise ValueError("invalid transport result")
     return DensityTransport(updated, outward_rate)
+
+
+@dataclass(frozen=True)
+class ReactionUpdate:
+    densities: np.ndarray
+    heat_rate: np.ndarray
+
+
+@dataclass(frozen=True)
+class ResidualGasState:
+    density: np.ndarray
+    acceleration: np.ndarray
+
+
+def react_densities(densities, dt, burn_rate, heat_per_fuel, soot_yield):
+    """Burn a first-order fraction of the fuel over dt.
+
+    Columns are fuel and soot in kg/m³ and enthalpy in J/m³. The supplied
+    burn rate in 1/s can be zero for unignited cells. The heat rate returned
+    for the pressure source is in W/m³.
+    """
+    _positive_scalar(dt, "dt")
+    densities = np.asarray(densities, dtype=float)
+    if densities.ndim != 2 or densities.shape[1] != 3:
+        raise ValueError("expected fuel, soot and enthalpy density")
+    rates = np.broadcast_to(burn_rate, (len(densities),)).astype(float)
+    for values in (densities, rates, heat_per_fuel, soot_yield):
+        if np.any(np.asarray(values) < 0) or not np.all(np.isfinite(values)):
+            raise ValueError("invalid reaction inputs")
+    if np.ndim(heat_per_fuel) != 0 or np.ndim(soot_yield) != 0 or soot_yield > 1:
+        raise ValueError("invalid reaction coefficients")
+    burned = -densities[:, 0] * np.expm1(-dt * rates)
+    reaction_heat = burned * heat_per_fuel
+    updated = densities.copy()
+    updated[:, 0] -= burned
+    updated[:, 1] += soot_yield * burned
+    updated[:, 2] += reaction_heat
+    heat_rate = reaction_heat / dt
+    if not np.all(np.isfinite(updated)) or not np.all(np.isfinite(heat_rate)):
+        raise ValueError("invalid reaction result")
+    return ReactionUpdate(updated, heat_rate)
+
+
+def residual_gas_state(p0, temperature, soot, ambient_temperature, gravity):
+    """Evaluate dry-air EOS density and residual thermal/dilute-soot acceleration.
+
+    p0 is absolute Pa, temperatures are kelvins, soot is kg/m³, and gravity
+    is a world-space vector in m/s². The carrier density excludes dilute soot.
+    """
+    _positive_scalar(ambient_temperature, "ambient temperature")
+    temperature = np.asarray(temperature, dtype=float)
+    if temperature.ndim != 1 or not np.all(np.isfinite(temperature)) or np.any(temperature <= 0):
+        raise ValueError("invalid temperature")
+    pressure = _finite_array(p0, temperature.shape, "p0")
+    soot = _finite_array(soot, temperature.shape, "soot density")
+    gravity = _finite_array(gravity, (3,), "gravity")
+    if np.any(pressure <= 0) or np.any(soot < 0):
+        raise ValueError("invalid pressure or soot density")
+    gas_density = pressure / (287.05 * temperature)
+    if np.any(gas_density <= 0) or not np.all(np.isfinite(gas_density)):
+        raise ValueError("invalid EOS density")
+    buoyancy = (soot / gas_density - (temperature - ambient_temperature) / ambient_temperature)
+    acceleration = buoyancy[:, None] * gravity
+    if not np.all(np.isfinite(acceleration)):
+        raise ValueError("invalid residual acceleration")
+    return ResidualGasState(gas_density, acceleration)

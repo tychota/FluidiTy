@@ -53,3 +53,26 @@ def test_scalar_budgets_include_sources_and_signed_boundary_flux():
                                dt * (grid.cell_volumes @ rates - expected_flux))
     with pytest.raises(ValueError, match="CFL"):
         transport_densities(grid, 2, densities, rates, face_velocity, exterior)
+
+
+def test_burn_conserves_fuel_and_adds_soot_and_enthalpy():
+    from fluidity_reference.gas import react_densities
+
+    densities = np.array([[0.1, 0.01, 3e5], [0.0, 0.02, 4e5]])
+    result = react_densities(densities, 0.25, 4.0, 2e6, 0.2)
+    burned = -0.1 * np.expm1(-1.0)
+    np.testing.assert_allclose(result.densities[0], [0.1 - burned, 0.01 + 0.2 * burned, 3e5 + 2e6 * burned])
+    np.testing.assert_array_equal(result.densities[1], densities[1])
+    np.testing.assert_allclose(result.heat_rate, [2e6 * burned / 0.25, 0])
+    np.testing.assert_array_equal(densities, [[0.1, 0.01, 3e5], [0, 0.02, 4e5]])
+
+
+def test_ideal_gas_density_and_residual_buoyancy():
+    from fluidity_reference.gas import residual_gas_state
+
+    temperature = np.array([300.0, 600, 300])
+    p0 = np.array([101325.0, 101325, 202650])
+    soot = np.array([0.0, 0, 0.1])
+    result = residual_gas_state(p0, temperature, soot, 300.0, [0, -9.81, 0])
+    np.testing.assert_allclose(result.density, p0 / (287.05 * temperature))
+    np.testing.assert_allclose(result.acceleration[:, 1], [0, 9.81, -9.81 * 0.1 / result.density[2]])
