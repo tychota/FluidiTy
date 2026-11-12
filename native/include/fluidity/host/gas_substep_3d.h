@@ -54,4 +54,40 @@ absl::StatusOr<GasSubstep3D> AdvanceGasSubstep3D(
         project = ProjectMacPressure3D
 );
 
+struct GasApicMarker3D {
+  Vec3 world_position;  // Meters.
+  double weight;  // Positive transfer weight, independent of physical carrier mass.
+  Vec3 velocity;  // World m/s.
+  Mat3 velocity_slopes;  // APIC affine rows in s⁻¹.
+};
+
+struct GasApicSubstep3D {
+  GasSubstep3D gas;
+  std::vector<GasApicMarker3D> markers;
+  std::vector<double> face_velocities;  // Projected field including prior values at ghost slots.
+};
+
+// Deposits and gathers APIC markers around the fixed-grid gas step. The old
+// owned-slot field supplies velocities at slots without marker support and
+// at ghosts. Optional accelerations (m/s²) are in pressure-face order.
+// Markers begin inside a gas cell and need complete owned quadratic support.
+// Each axis moves at most half a cell per step. A stationary sealed face
+// stops normal marker motion and an open exterior face removes the marker.
+// Errors propagate without changing any inputs or publishing an update.
+absl::StatusOr<GasApicSubstep3D> AdvanceGasApicSubstep3D(
+    const SparseMacGrid3D& grid,
+    double step_duration,
+    std::span<const GasCell3D> cells,
+    std::span<const MacPressureFace3D> faces,
+    std::span<const GasCellSource3D> sources,
+    GasScalars ambient,
+    double ambient_pressure,
+    Vec3 gravity,
+    std::span<const GasApicMarker3D> markers,
+    std::span<const double> old_face_velocities,
+    std::span<const double> face_accelerations = {},
+    absl::FunctionRef<absl::StatusOr<MacPressureProjection3D>(const MacPressureInputs3D&, MacPressureSolverOptions3D)>
+        project = ProjectMacPressure3D
+);
+
 }  // namespace fluidity

@@ -1,5 +1,6 @@
 #include <array>
 #include <cmath>
+#include <vector>
 
 #include "fluidity/host/gas_substep_3d.h"
 #include "gtest/gtest.h"
@@ -80,5 +81,68 @@ TEST(GasSubstep3D, FixedCellHeatingUsesProjectedFluxOrSealedPressureWork) {
   EXPECT_EQ(open->cells[0].absolute_pressure, ambient_pressure);
 }
 
+TEST(GasSubstep3D, ApicPreservesUniformDraftAndAdvectsMarker) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}, BlockIndex3D{1, 0, 0}, BlockIndex3D{0, 1, 0}, BlockIndex3D{0, 0, 1}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const GasScalars ambient{.carrier = 1.2, .enthalpy = 354637.5};
+  const std::array cells{
+      GasCell3D{.cell_index = {2, 2, 2}, .volume = 1.0, .density = ambient, .absolute_pressure = 101325.0},
+  };
+  const std::array sources{GasCellSource3D{}};
+  const std::array indices{
+      FaceIndex3D{FaceNormalAxis::kX, {2, 2, 2}},
+      FaceIndex3D{FaceNormalAxis::kX, {3, 2, 2}},
+      FaceIndex3D{FaceNormalAxis::kY, {2, 2, 2}},
+      FaceIndex3D{FaceNormalAxis::kY, {2, 3, 2}},
+      FaceIndex3D{FaceNormalAxis::kZ, {2, 2, 2}},
+      FaceIndex3D{FaceNormalAxis::kZ, {2, 2, 3}},
+  };
+  std::array<MacPressureFace3D, 6> faces{};
+  for (std::size_t i = 0; i < faces.size(); ++i) {
+    faces[i].face_index = indices[i];
+    faces[i].pressure_link = SealedMacPressureLink3D{};
+  }
+  for (std::size_t i = 0; i < 2; ++i) {
+    faces[i].open_area = 1.0;
+    faces[i].pressure_gradient_distance = 0.5;
+    faces[i].pressure_link = DirichletMacPressureLink3D{.exterior_pressure = 0.0};
+  }
+  std::vector<double> draft(grid->face_count());
+  for (std::size_t slot = 0; slot < draft.size(); ++slot) {
+    const auto face = grid->view().FaceIndex(slot);
+    ASSERT_TRUE(face.ok()) << face.status();
+    draft[slot] = face->axis == FaceNormalAxis::kX ? 0.2 : 0.0;
+  }
+  const std::array markers{GasApicMarker3D{
+      .world_position = {2.5, 2.5, 2.5},
+      .weight = 50.0,
+      .velocity = {0.2, 0.0, 0.0},
+      .velocity_slopes = {},
+  }};
+  const auto step = AdvanceGasApicSubstep3D(*grid, 0.1, cells, faces, sources, ambient, 101325.0, {}, markers, draft);
+  ASSERT_TRUE(step.ok()) << step.status();
+  ASSERT_EQ(step->markers.size(), 1);
+  EXPECT_NEAR(step->markers[0].world_position.x, 2.52, 1e-14);
+  EXPECT_NEAR(step->markers[0].velocity.x, 0.2, 1e-14);
+  EXPECT_EQ(step->markers[0].weight, 50.0);
+  EXPECT_NEAR(step->gas.cells[0].density.carrier, ambient.carrier, 1e-14);
+
+  auto outlet_markers = markers;
+  outlet_markers[0].world_position.x = 2.999;
+  const auto outlet =
+      AdvanceGasApicSubstep3D(*grid, 0.1, cells, faces, sources, ambient, 101325.0, {}, outlet_markers, draft);
+  ASSERT_TRUE(outlet.ok()) << outlet.status();
+  EXPECT_TRUE(outlet->markers.empty());
+
+  faces[1].open_area = 0.0;
+  faces[1].pressure_link = SealedMacPressureLink3D{};
+  const auto wall =
+      AdvanceGasApicSubstep3D(*grid, 0.1, cells, faces, sources, ambient, 101325.0, {}, outlet_markers, draft);
+  ASSERT_TRUE(wall.ok()) << wall.status();
+  ASSERT_EQ(wall->markers.size(), 1);
+  EXPECT_EQ(wall->markers[0].world_position.x, outlet_markers[0].world_position.x);
+  EXPECT_EQ(wall->markers[0].velocity.x, 0.0);
+}
 }  // namespace
 }  // namespace fluidity

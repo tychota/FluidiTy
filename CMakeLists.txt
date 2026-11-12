@@ -115,6 +115,7 @@ add_library(fluidity_native STATIC
   native/src/gas_thermodynamics.cc
   native/src/gas_transport.cc
   native/src/gas_substep_3d.cc
+  native/src/gas_apic_3d.cc
   native/src/liquid_cavity.cc
   native/src/liquid_eos.cc
   native/src/liquid_eos_sensor_3d.cc
