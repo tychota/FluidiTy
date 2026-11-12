@@ -52,6 +52,28 @@ TEST(LiquidWallContact3D, RotatingBoxTransfersOneOffCenterImpulse) {
   EXPECT_DOUBLE_EQ(miss->contact.world_position.x, 1.0);
   EXPECT_DOUBLE_EQ(miss->body_angular_impulse.z, 0.0);
 }
+TEST(LiquidWallContact3D, TangentialRotatingEntryCarriesPointWithoutNormalImpulse) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, 1.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 0.25);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  const LiquidWallContactInputs3D input{
+      .start_world_position = {0.5, 0.0, 0.0},
+      .step_duration = 0.25,
+  };
+  const auto result = ResolveRotatingBoxContact3D(input, *drift, {0.5, 1.0, 0.5}, 1.0);
+  ASSERT_TRUE(result.ok()) << result.status();
+  ASSERT_TRUE(result->contact.contact_fraction.has_value());
+  EXPECT_DOUBLE_EQ(*result->contact.contact_fraction, 0.0);
+  EXPECT_DOUBLE_EQ(result->body_impulse.x, 0.0);
+  EXPECT_DOUBLE_EQ(result->body_angular_impulse.z, 0.0);
+  const auto endpoint = result->contact.world_position;
+  EXPECT_NEAR(std::cos(0.25) * endpoint.x + std::sin(0.25) * endpoint.y, 0.5, 1e-14);
+}
 TEST(LiquidWallContact3D, FiniteBoxDetectsCrossingAndReturnsOneBodyReaction) {
   const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
   const LiquidWallContactInputs3D input{

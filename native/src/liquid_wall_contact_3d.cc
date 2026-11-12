@@ -325,7 +325,7 @@ absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxContact3D(
   const auto incoming_stored = sweep::RelativeNormalVelocity(impact_plane, inputs.stored_world_velocity);
   const auto incoming_advecting = sweep::RelativeNormalVelocity(impact_plane, inputs.advecting_world_velocity);
   if (!incoming_stored.magnitude_is_resolved() || !incoming_advecting.magnitude_is_resolved()
-      || incoming_advecting.upper >= 0.0) {
+      || (fraction > 0.0 ? incoming_advecting.upper >= 0.0 : incoming_advecting.lower > 0.0)) {
     return error(absl::StatusCode::kAborted);
   }
   const double normal_squared = normal->x * normal->x + normal->y * normal->y + normal->z * normal->z;

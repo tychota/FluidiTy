@@ -171,7 +171,7 @@ struct RigidBoxSweepHit3D {
 // rotating box over the rigid drift. Half extents and the initial point are
 // meters, and the world point velocity is m/s. A disengaged result certifies
 // the whole path is exterior. A strictly interior start returns
-// FailedPrecondition. An approaching, uniquely resolved touching start hits at zero.
+// FailedPrecondition. A uniquely resolved touching start can hit at zero by slope or curvature.
 // A separating touching start is checked for later re-entry. Ambiguous grazing, edge hits, angles above pi/2, and an
 // exhausted isolation budget request a shorter step with Aborted. Invalid
 // inputs return InvalidArgument and unrepresentable arithmetic OutOfRange.

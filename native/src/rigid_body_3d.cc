@@ -882,10 +882,17 @@ absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
     const double normal_travel = Dot(world_normal, relative_face_travel);
     const bool unique_face =
         start_gap->gap - start_gap->next_gap > 2.0 * roundoff && start_gap->coordinate_magnitude > 2.0 * roundoff;
-    if (!unique_face || !std::isfinite(normal_travel) || std::abs(normal_travel) <= roundoff) {
+    if (!unique_face || !std::isfinite(normal_travel)) {
       return error(absl::StatusCode::kAborted);
     }
-    if (normal_travel < 0.0) {
+    const bool tangential = std::abs(normal_travel) <= roundoff;
+    const auto normal_rate = Cross(angular_travel, world_normal);
+    const double normal_curvature =
+        Dot(Cross(angular_travel, normal_rate), relative_start) + 2.0 * Dot(normal_rate, relative_travel);
+    if (tangential && (!std::isfinite(normal_curvature) || std::abs(normal_curvature) <= 4.0 * roundoff)) {
+      return error(absl::StatusCode::kAborted);
+    }
+    if (tangential ? normal_curvature < 0.0 : normal_travel < 0.0) {
       return std::optional<RigidBoxSweepHit3D>{{
           .fraction_lower = 0.0,
           .fraction_upper = 0.0,
@@ -906,6 +913,19 @@ absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
     }
     const double outward_travel = boundary_internal::AddDown(normal_travel, -roundoff);
     exterior_prefix_end = std::min(1.0, std::nextafter(0.5 * outward_travel / curvature_bound, 0.0));
+    if (tangential) {
+      // Classify the near-zero initial slope as tangential within the contact
+      // roundoff band. Bound the change in curvature on the outward prefix.
+      const double curvature_change_bound = boundary_internal::AddUp(
+          rotation_angle * rotation_angle * (rotation_angle * relative_radius + 3.0 * Norm(relative_travel)),
+          roundoff
+      );
+      if (!std::isfinite(curvature_change_bound)) {
+        return error(absl::StatusCode::kOutOfRange);
+      }
+      const double outward_curvature = boundary_internal::AddDown(normal_curvature, -roundoff);
+      exterior_prefix_end = std::min(1.0, std::nextafter(0.5 * outward_curvature / curvature_change_bound, 0.0));
+    }
     const auto departing_gap = gap_at(exterior_prefix_end);
     if (!departing_gap.ok()) {
       return departing_gap.status();

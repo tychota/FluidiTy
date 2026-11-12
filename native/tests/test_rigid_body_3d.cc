@@ -274,6 +274,25 @@ TEST(RigidBody3D, RotatingBoxSweepFindsInteriorHitBetweenClearEndpoints) {
   const auto corner = SweepRigidBoxPoint3D(*fixed, kHalfExtent, {1.0, 0.2, 0.0}, {-0.2, -0.2, 0.0});
   EXPECT_EQ(corner.status().code(), absl::StatusCode::kAborted);
 }
+TEST(RigidBody3D, RotatingSweepUsesCurvatureAtTangentialStart) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, 1.0},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 0.25);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  constexpr Vec3 kHalfExtent{0.5, 1.0, 0.5};
+  constexpr Vec3 kStart{0.5, 0.0, 0.0};
+  const auto hit = SweepRigidBoxPoint3D(*drift, kHalfExtent, kStart, {});
+  ASSERT_TRUE(hit.ok()) << hit.status();
+  ASSERT_TRUE(hit->has_value());
+  EXPECT_DOUBLE_EQ((*hit)->fraction_upper, 0.0);
+  const auto miss = SweepRigidBoxPoint3D(*drift, kHalfExtent, kStart, {0.0, 0.5, 0.0});
+  ASSERT_TRUE(miss.ok()) << miss.status();
+  EXPECT_FALSE(miss->has_value());
+}
 TEST(RigidBody3D, RotatingSweepChecksReentryAfterSeparatingStart) {
   RigidBody3D body{
       .body_id = 1,
