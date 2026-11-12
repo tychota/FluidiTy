@@ -670,9 +670,25 @@ bool TestPlanarMixedContactDetection() {
           fluidity::SnowParameters3D{12, 7, 0.025, 0.01, 4}
       },
   };
+  const fluidity::SolidInteractionCheckpoint3D initial_solid{
+      .accepted_step = 0,
+      .plastic_particles = {deforming_snow.begin(), deforming_snow.end()},
+  };
+  const auto initial_bytes =
+      fluidity::EncodeCoupledInteractionCheckpoint3D(accepted_liquid, initial_solid, scene_bindings);
+  if (!initial_bytes.ok()) {
+    return false;
+  }
+  const std::array upstream{fluidity::LiquidUpstreamContent3D{
+      .role = fluidity::LiquidUpstreamRole3D::kInitialParticles,
+      .ordinal = 0,
+      .byte_length = initial_bytes->size(),
+      .digest = fluidity::LiquidContentDigest3D(*initial_bytes),
+  }};
   const auto scene_bytes = fluidity::EncodeLiquidResolvedScene3D({
       .geometry = grid->geometry(),
       .model_version = fluidity::kPlasticBodyResolvedModel3D,
+      .upstream = upstream,
       .plastic_bodies = scene_bindings,
   });
   if (!scene_bytes.ok()) {
@@ -680,6 +696,21 @@ bool TestPlanarMixedContactDetection() {
   }
   const auto resolved_scene = fluidity::DecodeLiquidResolvedScene3D(scene_bytes->values());
   if (!resolved_scene.ok() || resolved_scene->plastic_bodies.size() != 1) {
+    return false;
+  }
+  const auto initial = fluidity::DecodeResolvedCoupledInitialState3D(resolved_scene->View(), *initial_bytes, {});
+  auto corrupt_initial = *initial_bytes;
+  corrupt_initial.back() ^= 1;
+  const auto rejected_initial =
+      fluidity::DecodeResolvedCoupledInitialState3D(resolved_scene->View(), corrupt_initial, {});
+  if (!initial.ok() || initial->liquid != accepted_liquid
+      || rejected_initial.status().code() != absl::StatusCode::kDataLoss) {
+    return false;
+  }
+  auto mismatched_initial_scene = resolved_scene->View();
+  ++mismatched_initial_scene.random_seed;
+  if (fluidity::DecodeResolvedCoupledInitialState3D(mismatched_initial_scene, *initial_bytes, {}).status().code()
+      != absl::StatusCode::kFailedPrecondition) {
     return false;
   }
   const auto checkpoint_bindings = resolved_scene->View().plastic_bodies;
@@ -700,8 +731,8 @@ bool TestPlanarMixedContactDetection() {
   }
   const auto compressed_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
-      accepted_liquid,
-      deforming_snow,
+      initial->liquid,
+      initial->solid.plastic_particles,
       single_traction,
       deformation_settings,
       project

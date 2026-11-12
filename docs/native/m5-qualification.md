@@ -1674,6 +1674,17 @@ leaves the prior mixed checkpoint readable. Repair publishes the new
 reference, and retention keeps the newest two mixed payloads. The cache
 fixture checks all three cases and verifies the saved snow strain.
 
+The bounded mixed compaction fixture now starts from a canonical unbound
+FLSI initial artifact. The resolved FLRS scene names that artifact by
+length and digest, and the loader verifies those exact bytes before
+decoding. Geometry, seed, time-zero clock, source counters, and plastic
+material bindings must agree. Native and CUDA reject a byte change and
+a mismatched scene seed, then advance the verified initial state through
+compaction and scene-bound restart. Initial state uses the unbound
+format because the FLRS fingerprint already includes the initial
+artifact digest. The CLI still gates mixed execution pending production
+scheduler integration.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

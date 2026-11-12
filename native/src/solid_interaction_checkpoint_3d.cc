@@ -449,4 +449,61 @@ absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledCheckpoint3D
   return DecodeResolvedCheckpoint(scene, bytes, &resume, limits);
 }
 
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledInitialState3D(
+    const LiquidResolvedSceneView3D& scene,
+    std::span<const std::uint8_t> bytes,
+    const LiquidCacheLimits3D& limits
+) {
+  if (scene.model_version != kPlasticBodyResolvedModel3D || scene.plastic_bodies.empty()) {
+    return absl::InvalidArgumentError("initial mixed state requires resolved plastic bodies");
+  }
+  const LiquidUpstreamContent3D* initial = nullptr;
+  for (const auto& upstream : scene.upstream) {
+    if (upstream.role != LiquidUpstreamRole3D::kInitialParticles) {
+      continue;
+    }
+    if (initial != nullptr) {
+      return absl::InvalidArgumentError("mixed scene names more than one initial state");
+    }
+    initial = &upstream;
+  }
+  if (initial == nullptr) {
+    return absl::FailedPreconditionError("mixed scene has no initial state reference");
+  }
+  const LiquidContentReference3D reference{LiquidContentKind3D::kCoupledState, initial->byte_length, initial->digest};
+  const auto verified = VerifyLiquidContent3D(bytes, reference, LiquidContentKind3D::kCoupledState, limits);
+  if (!verified.ok()) {
+    return verified;
+  }
+
+  LiquidState3D liquid;
+  auto solid = DecodeInteractionCheckpoint(bytes, &liquid, scene.plastic_bodies, nullptr, nullptr, limits);
+  if (!solid.ok()) {
+    return solid.status();
+  }
+  if (liquid.clock != LiquidClock3D{} || !LiquidMatchesResolvedScene(liquid, scene)
+      || liquid.sources.size() != scene.scene.sources.size()) {
+    return absl::FailedPreconditionError("initial mixed state does not match its resolved scene");
+  }
+  for (std::size_t index = 0; index < liquid.sources.size(); ++index) {
+    const auto& source = liquid.sources[index];
+    if (source.source_ordinal != scene.scene.sources[index].source_ordinal || source.next_child_ordinal != 0
+        || source.fractional_remainder != 0) {
+      return absl::FailedPreconditionError("initial mixed state has inconsistent source counters");
+    }
+  }
+  const auto liquid_bytes = EncodeLiquidState3D(liquid, limits);
+  if (!liquid_bytes.ok()) {
+    return liquid_bytes.status();
+  }
+  const auto canonical = EncodeInteractionCheckpoint(*solid, liquid_bytes->values(), scene.plastic_bodies);
+  if (!canonical.ok()) {
+    return canonical.status();
+  }
+  if (!std::ranges::equal(bytes, *canonical)) {
+    return absl::FailedPreconditionError("initial mixed state bytes are not canonical");
+  }
+  return CoupledInteractionCheckpoint3D{.liquid = std::move(liquid), .solid = std::move(*solid)};
+}
+
 }  // namespace fluidity

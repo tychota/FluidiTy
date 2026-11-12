@@ -120,4 +120,13 @@ absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledCheckpoint3D
     const LiquidCacheLimits3D& limits
 );
 
+// Loads the canonical unbound FLSI initial artifact named by a resolved
+// mixed scene. Exact upstream bytes, time-zero clock, geometry, seed,
+// source counters, and plastic bindings must agree. Failure returns no state.
+absl::StatusOr<CoupledInteractionCheckpoint3D> DecodeResolvedCoupledInitialState3D(
+    const LiquidResolvedSceneView3D& scene,
+    std::span<const std::uint8_t> bytes,
+    const LiquidCacheLimits3D& limits
+);
+
 }  // namespace fluidity
