@@ -1,7 +1,9 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
+#include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
@@ -71,6 +73,7 @@ class AdaptiveLiquidStep3D {
   // Nonempty only when an Eulerian core owns material in this frozen trial.
   std::vector<std::uint8_t> core_faces_;
   std::vector<double> core_fluxes_;
+  std::optional<AdaptiveLiquidCoreTransportWorkspace3D> core_transport_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<MacStrainRow3D> strain_rows_;
