@@ -3515,3 +3515,34 @@ foreach ($grid in 'fine', 'coarse') {
 
 The temporary fixture only swaps the absolute half-step durations.
 Both sources were restored after linking. Q-SAND remains open.
+
+### Grid-width sequence at one timestep
+
+Hold the wall-face Euler path, physical release, 63 particles and
+absolute timestep 0.00078125 s fixed. Add grid widths 0.06875 and
+0.05000 m to the matched-timestep comparison.
+
+| Grid width | Native angle at 3 s | Radius |
+|---:|---:|---:|
+| 0.07500 m | 42.318401° | 0.147696 m |
+| 0.06875 m | 38.321245° | 0.165608 m |
+| 0.06250 m | 34.345649° | 0.179405 m |
+| 0.05000 m | 30.190030° | 0.172222 m |
+
+The envelope angle falls at each tested refinement. The radius
+first grows and then decreases at the finest tested width. Neither
+new case meets both geometric checks. Holding particle sampling
+fixed across this sequence changes the number of particles per
+cell, so these data do not establish spatial convergence. Both
+new runs retain vertical momentum residual below 2.1e-8 N·s and
+cut stress work mismatch below 1.1e-16 J.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-resolution-control-bin'
+foreach ($grid in 'middle', 'finer') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-resolution-control $grid
+}
+```
+
+The temporary entry point changes only the grid width. Both sources
+were restored after linking. Q-SAND remains open.
