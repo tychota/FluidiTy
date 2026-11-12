@@ -1512,6 +1512,28 @@ absl::StatusOr<viscosity_internal::PreparedVelocityBlock3D> viscosity_internal::
   return result;
 }
 
+absl::StatusOr<double> viscosity_internal::PrepareVelocityBlockInScratch3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    std::span<MacStrainRow3D> weighted_rows,
+    std::span<double> diagonal
+) {
+  constexpr VelocityBlockErrors kErrors{.detailed = false};
+  if (weighted_rows.size() != inputs.strain_rows.size() || diagonal.size() != inputs.face_inertias.size()) {
+    return kErrors(absl::StatusCode::kInvalidArgument, "velocity-block preparation scratch has invalid extents");
+  }
+  const auto max_rhs = ValidateVelocityBlockInputs(inputs, rhs, options, kErrors);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
+  const auto status = BuildWeightedVelocityRows(inputs, weighted_rows, diagonal, kErrors);
+  if (!status.ok()) {
+    return status;
+  }
+  return max_rhs;
+}
+
 absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> viscosity_internal::SolveVelocityBlockWithScratch3D(
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,

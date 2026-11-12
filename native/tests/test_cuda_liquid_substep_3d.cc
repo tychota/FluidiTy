@@ -1454,6 +1454,36 @@ TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
   }
 }
 
+TEST(CudaLiquidSubstep3D, PositiveViscosityAttemptsAllocateAndFreeNothing) {
+  const auto fixture = viscous_tank_test::FractionalFill();
+  ASSERT_TRUE(fixture.ok()) << fixture.status();
+  constexpr double duration = viscous_tank_test::kStepDuration;
+  for (auto failure : {absl::StatusCode::kOk, absl::StatusCode::kAborted, absl::StatusCode::kFailedPrecondition}) {
+    auto backend = CudaLiquidSubstepBackend3D::Create(fixture->options.capacities, 0);
+    ASSERT_TRUE(backend.ok()) << backend.status();
+    auto scheduler =
+        LiquidSubstepScheduler3D::Create(fixture->initial, fixture->scene, fixture->options, backend->operations());
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(duration).ok());
+    scheduler->SetStageFaultHookForTesting({&failure, [](void* context, LiquidPhysicalStage3D stage, double) {
+                                              if (stage != LiquidPhysicalStage3D::kAccept) {
+                                                return absl::OkStatus();
+                                              }
+                                              return absl::Status(*static_cast<absl::StatusCode*>(context), {});
+                                            }});
+    const auto expected = failure == absl::StatusCode::kOk ? LiquidAttemptDisposition3D::kAccepted
+        : failure == absl::StatusCode::kAborted            ? LiquidAttemptDisposition3D::kRetryDt
+                                                           : LiquidAttemptDisposition3D::kFatal;
+    MeasuredAttempt(*scheduler, *backend, duration, expected);
+    EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+    if (failure == absl::StatusCode::kOk) {
+      EXPECT_DOUBLE_EQ(scheduler->committed().clock.time, duration);
+    } else {
+      EXPECT_EQ(scheduler->committed(), fixture->initial);
+    }
+  }
+}
+
 TEST(CudaLiquidSubstep3D, ViscousFractionalTankFillMatchesCpuHydrostaticRest) {
   const auto fixture = viscous_tank_test::FractionalFill();
   ASSERT_TRUE(fixture.ok()) << fixture.status();

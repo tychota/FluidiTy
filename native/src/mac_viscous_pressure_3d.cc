@@ -20,11 +20,7 @@ namespace {
 
 using pressure_internal::PreparedMacPressureView3D;
 
-using SolveViscousVelocityView3D = absl::FunctionRef<absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D>(
-    const MacViscousVelocityBlockInputs3D&,
-    std::span<const double>,
-    MacViscousVelocityBlockOptions3D
-)>;
+using pressure_internal::SolveViscousVelocityView3D;
 
 absl::StatusOr<viscosity_internal::VelocityBlockScratch3D> PrepareCpuVelocityScratch(
     pressure_internal::MacPressureScratch3D& scratch,
@@ -277,7 +273,7 @@ absl::StatusOr<MacViscousPressureProjectionView3D> SolveCoupled(
       }
     }
     if (solve_velocity_block.has_value()) {
-      return (*solve_velocity_block)(velocity_block, momentum, {});
+      return (*solve_velocity_block)(velocity_block, momentum, {}, scratch);
     }
     return viscosity_internal::SolveVelocityBlockWithScratch3D(velocity_block, momentum, {}, cpu_scratch);
   };
@@ -587,10 +583,11 @@ pressure_internal::UniformViscousPressureInputs3D BorrowUniformInputs(const MacP
 template <typename Project>
 auto ProjectWithOwningVelocity(pressure_internal::SolveViscousVelocity3D solve_velocity_block, Project project) {
   std::optional<MacViscousVelocityBlockSolution3D> owned_velocity;
-  const auto solve = [&](const MacViscousVelocityBlockInputs3D& block,
-                         std::span<const double> rhs,
-                         MacViscousVelocityBlockOptions3D controls
-                     ) -> absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> {
+  const auto solve =
+      [&](const MacViscousVelocityBlockInputs3D& block,
+          std::span<const double> rhs,
+          MacViscousVelocityBlockOptions3D controls,
+          pressure_internal::MacPressureScratch3D&) -> absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> {
     auto result = solve_velocity_block(block, rhs, controls);
     if (!result.ok()) {
       return result.status();
@@ -640,11 +637,9 @@ absl::StatusOr<MacViscousPressureProjectionView3D> ProjectScratchMacViscousPress
     std::span<const MacStrainRow3D> strain_rows,
     MacPressureSolverOptions3D options,
     MacPressureScratch3D& scratch,
-    SolveViscousVelocity3D solve_velocity_block
+    SolveViscousVelocityView3D solve_velocity_block
 ) {
-  return ProjectWithOwningVelocity(solve_velocity_block, [&](SolveViscousVelocityView3D solve) {
-    return ProjectScratchUniform(inputs, strain_rows, options, solve, scratch);
-  });
+  return ProjectScratchUniform(inputs, strain_rows, options, solve_velocity_block, scratch);
 }
 
 absl::StatusOr<MacViscousPressureProjection3D> ProjectExplicitMacViscousPressure3D(

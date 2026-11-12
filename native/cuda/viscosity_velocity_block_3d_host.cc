@@ -1,6 +1,7 @@
 #include <utility>
 #include <vector>
 
+#include "../src/mac_pressure_3d_workspace_internal.h"
 #include "../src/mac_viscous_pressure_3d.h"
 #include "../src/viscosity_velocity_block_3d.h"
 #include "fluidity/host/cuda_viscosity.h"
@@ -100,30 +101,41 @@ absl::Status Execute(
   return absl::OkStatus();
 }
 
-absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveArenaVelocityBlock(
+absl::StatusOr<viscosity_internal::VelocityBlockViewSolution3D> SolveArenaVelocityBlock(
     CudaLiquidArena3D& arena,
     const MacViscousVelocityBlockInputs3D& inputs,
     std::span<const double> rhs,
-    MacViscousVelocityBlockOptions3D options
+    MacViscousVelocityBlockOptions3D options,
+    pressure_internal::MacPressureScratch3D& host_scratch
 ) {
   using cuda_internal::CheckedLiquidRange3D;
   using cuda_internal::CopyLiquidRange3D;
   using cuda_internal::FinishLiquidDispatch3D;
   using Range = CudaLiquidRange3D;
-  const auto prepared = viscosity_internal::PrepareVelocityBlock3D(inputs, rhs, options);
-  if (!prepared.ok()) {
-    return prepared.status();
-  }
   const std::size_t face_count = rhs.size();
+  pressure_internal::MacPressureScratchMark3D temporary(host_scratch);
+  const auto weighted_rows = host_scratch.Take<MacStrainRow3D>(inputs.strain_rows.size());
+  if (!weighted_rows.ok()) {
+    return weighted_rows.status();
+  }
+  const auto diagonal = host_scratch.Take<double>(face_count);
+  if (!diagonal.ok()) {
+    return diagonal.status();
+  }
+  const auto max_rhs =
+      viscosity_internal::PrepareVelocityBlockInScratch3D(inputs, rhs, options, *weighted_rows, *diagonal);
+  if (!max_rhs.ok()) {
+    return max_rhs.status();
+  }
   std::size_t term_count = 0;
-  for (const auto& row : prepared->weighted_rows) {
+  for (const auto& row : (*weighted_rows)) {
     term_count += row.term_count;
   }
   // The inviscid and viscous pressure paths run exclusively. Borrow their
   // common pressure ranges before touching pinned staging or the device.
   auto faces = CheckedLiquidRange3D<ViscousVelocityFace3D>(arena, Range::kPressureLinks, face_count);
   auto terms = CheckedLiquidRange3D<ViscousVelocityTerm3D>(arena, Range::kPressureCoefficients, term_count);
-  auto offsets = CheckedLiquidRange3D<std::size_t>(arena, Range::kPressureIndices, prepared->weighted_rows.size() + 1);
+  auto offsets = CheckedLiquidRange3D<std::size_t>(arena, Range::kPressureIndices, (*weighted_rows).size() + 1);
   auto scratch = CheckedLiquidRange3D<double>(arena, Range::kPressureCoarseScratch, 5 * face_count);
   auto state = CheckedLiquidRange3D<ViscousVelocityState3D>(arena, Range::kPressureState, 1);
   for (const auto& status : {faces.status(), terms.status(), offsets.status(), scratch.status(), state.status()}) {
@@ -134,14 +146,14 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveArenaVelocityBlock(
   for (std::size_t face = 0; face < face_count; ++face) {
     faces->pinned[face] = {
         .inertia = inputs.face_inertias[face],
-        .diagonal = prepared->diagonal[face],
+        .diagonal = (*diagonal)[face],
         .rhs = rhs[face],
     };
   }
   std::size_t term_index = 0;
   offsets->pinned[0] = 0;
-  for (std::size_t row_index = 0; row_index < prepared->weighted_rows.size(); ++row_index) {
-    const auto& row = prepared->weighted_rows[row_index];
+  for (std::size_t row_index = 0; row_index < (*weighted_rows).size(); ++row_index) {
+    const auto& row = (*weighted_rows)[row_index];
     for (const auto& term : std::span(row.terms).first(row.term_count)) {
       terms->pinned[term_index++] = {
           .face_slot = term.face_slot,
@@ -155,10 +167,10 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveArenaVelocityBlock(
       .terms = terms->device,
       .row_offsets = offsets->device,
       .face_count = face_count,
-      .row_count = prepared->weighted_rows.size(),
+      .row_count = (*weighted_rows).size(),
       .max_iterations = options.max_iterations,
-      .max_rhs = prepared->max_rhs,
-      .tolerance = options.relative_tolerance * prepared->max_rhs,
+      .max_rhs = *max_rhs,
+      .tolerance = options.relative_tolerance * *max_rhs,
       .velocity = scratch->device,
       .residual = scratch->device + face_count,
       .preconditioned = scratch->device + 2 * face_count,
@@ -201,8 +213,8 @@ absl::StatusOr<MacViscousVelocityBlockSolution3D> SolveArenaVelocityBlock(
   if (auto status = CheckVelocityState(report); !status.ok()) {
     return status;
   }
-  return MacViscousVelocityBlockSolution3D{
-      .velocity = std::vector<double>(velocity.pinned.begin(), velocity.pinned.end()),
+  return viscosity_internal::VelocityBlockViewSolution3D{
+      .velocity = velocity.pinned,
       .iterations = report.iterations,
       .max_residual = report.max_residual,
   };
@@ -295,8 +307,9 @@ absl::StatusOr<MacViscousPressureProjectionView3D> cuda_internal::ProjectArenaVi
       scratch,
       [&](const MacViscousVelocityBlockInputs3D& block,
           std::span<const double> rhs,
-          MacViscousVelocityBlockOptions3D controls) {
-        return SolveArenaVelocityBlock(arena, block, rhs, controls);
+          MacViscousVelocityBlockOptions3D controls,
+          pressure_internal::MacPressureScratch3D& host_scratch) {
+        return SolveArenaVelocityBlock(arena, block, rhs, controls, host_scratch);
       }
   );
 }

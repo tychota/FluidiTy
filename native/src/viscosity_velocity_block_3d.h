@@ -20,6 +20,18 @@ absl::StatusOr<PreparedVelocityBlock3D> PrepareVelocityBlock3D(
     MacViscousVelocityBlockOptions3D options
 );
 
+// Prepare a velocity block in one scratch row per input row and one diagonal
+// entry per face. Scratch must be disjoint from itself and all inputs.
+// Returns the maximum absolute momentum RHS in kg m/s. On error the scratch
+// is invalid. This internal arena path returns empty status messages.
+absl::StatusOr<double> PrepareVelocityBlockInScratch3D(
+    const MacViscousVelocityBlockInputs3D& inputs,
+    std::span<const double> rhs,
+    MacViscousVelocityBlockOptions3D options,
+    std::span<MacStrainRow3D> weighted_rows,
+    std::span<double> diagonal
+);
+
 struct VelocityBlockScratch3D {
   std::span<MacStrainRow3D> weighted_rows;
   std::span<double> diagonal;
