@@ -491,6 +491,10 @@ class FLUIDITY_OT_attach(SceneAction, Operator):
 
     def perform(self, scene):
         bake, preview = cache_paths(scene.fluidity)
+        if scene.fluidity.rigid_box:
+            playback.attach_rigid(scene, preview if self.preview else bake, self.preview)
+            scene.fluidity.message = "Rigid motion attached to a separate animated object."
+            return
         playback.attach(scene, preview if self.preview else bake)
         scene.fluidity.message = "Points attached. Save the project to keep the binding."
 

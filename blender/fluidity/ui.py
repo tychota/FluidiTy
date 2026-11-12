@@ -239,14 +239,21 @@ class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
         column.prop(scene.fluidity, "preview_cache")
         row = column.row(align=True)
         row.operator("fluidity.preview", icon="PLAY")
-        if not scene.fluidity.cutter and not scene.fluidity.rigid_box:
+        if scene.fluidity.rigid_box:
+            row.operator("fluidity.attach", text="Attach Rigid Preview", icon="ACTION").preview = True
+        elif not scene.fluidity.cutter:
             row.operator("fluidity.attach", text="Attach Preview", icon="POINTCLOUD_DATA").preview = True
         column.separator()
         column.prop(scene.fluidity, "bake_cache")
         row = column.row(align=True)
         row.operator("fluidity.bake", icon="RENDER_ANIMATION")
         row.operator("fluidity.resume", icon="RECOVER_LAST")
-        if scene.fluidity.cutter:
+        if scene.fluidity.rigid_box:
+            column.operator("fluidity.attach", text="Attach Rigid Motion", icon="ACTION")
+            column.operator("fluidity.inspect", icon="VIEWZOOM")
+            if scene.fluidity.inspect_frame >= 0:
+                message(column, scene.fluidity.point_detail)
+        elif scene.fluidity.cutter:
             column.prop(scene.fluidity, "point_index")
             column.operator("fluidity.inspect", icon="VIEWZOOM")
             if scene.fluidity.inspect_frame >= 0:

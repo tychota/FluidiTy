@@ -7,7 +7,7 @@ import tempfile
 import time
 
 import bpy
-from mathutils import Quaternion, Vector
+from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
 
@@ -78,6 +78,7 @@ if "--" in sys.argv:
     box.animation_data_clear()
     settings.cell_width = 1
     scene.use_gravity = False
+    settings.initial_velocity = (0, 0, 0.125)
     scene.frame_end = 2
     for index, (x, y) in enumerate(((1.375, -0.375), (0.375, -1.375), (1.375, -1.375))):
         source = settings.liquid_sources.add()
@@ -130,5 +131,31 @@ if "--" in sys.argv:
         paths = tuple(cache / name for name in ("scene.flrs", "state.flst", "rigid.txt"))
         fluidity.jobs.checked("simulate", "rigid-frame", *paths, first, replay, event="rigid_frame")
         assert replay.read_bytes() == second.read_bytes()
+        box = settings.rigid_box
+        authored = box.matrix_world.copy()
+        before = set(scene.objects)
+        assert bpy.ops.fluidity.attach() == {"FINISHED"}, settings.message
+        display, = set(scene.objects) - before
+        assert display.data == box.data and box.animation_data is None
+        display_name = display.name
+        x, y, z = receipt["position"]
+        expected = Vector((x, -z, y))
+        scene.frame_set(2)
+        assert (display.location - expected).length < 1e-7
+        axes = Matrix(((1, 0, 0), (0, 0, -1), (0, 1, 0)))
+        expected_rotation = (axes @ Quaternion(receipt["orientation"]).to_matrix()).to_quaternion()
+        assert abs(display.rotation_quaternion.dot(expected_rotation)) > 1 - 1e-6
+        scene.frame_set(0)
+        assert (display.location - authored.translation).length < 1e-7
+        assert (display.location - expected).length > 1e-7
+        assert box.matrix_world == authored
 
-    print("PASS rigid Check, Bake, Cancel, saved-project Resume, and byte-identical replay")
+        baked_project = root / "Rigid motion.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=str(baked_project))
+        bpy.ops.wm.open_mainfile(filepath=str(baked_project))
+        scene = bpy.context.scene
+        scene.frame_set(2)
+        assert (scene.objects[display_name].location - expected).length < 1e-7
+        assert scene.fluidity.rigid_box.matrix_world == authored
+
+    print("PASS rigid bake, byte-identical resume, and saved native timeline playback")
