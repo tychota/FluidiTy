@@ -11,11 +11,12 @@ struct GatheredMacVelocityComponent {
   Vec3 velocity_gradient_row;
 };
 
-inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
+template <typename OldFaceVelocity, typename NewFaceVelocity>
+inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponentFromSlots(
     const MacFaceStencil3D& stencil,
     double cell_width,
-    std::span<const double> old_face_velocities,
-    std::span<const double> new_face_velocities,
+    const OldFaceVelocity& read_old_velocity,
+    const NewFaceVelocity& read_new_velocity,
     bool bounded = false
 ) {
   const auto IsFinite = [](Vec3 value) {
@@ -31,8 +32,8 @@ inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
   Vec3 normalized_offset_velocity_moment{};
   Vec3 velocity_gradient_row{};
   for (const auto& sample : stencil) {
-    const double old_face_velocity = old_face_velocities[sample.face_slot];
-    const double new_face_velocity = new_face_velocities[sample.face_slot];
+    const double old_face_velocity = read_old_velocity(sample.face_slot);
+    const double new_face_velocity = read_new_velocity(sample.face_slot);
     const double weighted_new_face_velocity = sample.weight * new_face_velocity;
     old_pic_velocity += sample.weight * old_face_velocity;
     new_pic_velocity += weighted_new_face_velocity;
@@ -63,6 +64,26 @@ inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
       .fitted_velocity_slope_row = fitted_velocity_slope_row,
       .velocity_gradient_row = velocity_gradient_row,
   };
+}
+
+inline absl::StatusOr<GatheredMacVelocityComponent> GatherMacVelocityComponent(
+    const MacFaceStencil3D& stencil,
+    double cell_width,
+    std::span<const double> old_face_velocities,
+    std::span<const double> new_face_velocities,
+    bool bounded = false
+) {
+  return GatherMacVelocityComponentFromSlots(
+      stencil,
+      cell_width,
+      [&](std::size_t slot) {
+        return old_face_velocities[slot];
+      },
+      [&](std::size_t slot) {
+        return new_face_velocities[slot];
+      },
+      bounded
+  );
 }
 
 }  // namespace fluidity::internal
