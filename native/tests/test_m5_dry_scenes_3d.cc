@@ -585,7 +585,14 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
 }
 
 bool TestGridWallTractionBudget() {
-  constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+  std::vector<BlockIndex3D> blocks;
+  for (int z = -1; z <= 1; ++z) {
+    for (int y = -1; y <= 0; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        blocks.push_back({x, y, z});
+      }
+    }
+  }
   const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
   if (!grid.ok()) {
     return false;

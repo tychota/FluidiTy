@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <utility>
 #include <vector>
@@ -323,7 +324,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<LiquidBoundaryParticle3D> boundary_particles;
   LiquidBoundaryFaceDeposits3D boundary_deposits;
   double ghost_wall_force_y = 0;
-  std::vector<double> particle_grid_normal_impulse;
+  std::map<std::pair<double, double>, double> floor_reactions;
   std::vector<StationaryFloorGhostRow3D> ghost_rows;
   const double minimum_force_mass = 1e-4 * minimum_particle_mass;
   if (compatible_floor) {
@@ -398,7 +399,6 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         validity[slot] = LiquidFaceValidity3D::kValid;
       }
     }
-    particle_grid_normal_impulse.resize(particles.size());
     for (std::size_t index = 0; index < particles.size(); ++index) {
       const auto status = AccumulateDrySolidStress3D(
           grid,
@@ -410,28 +410,6 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       if (!status.ok()) {
         return status;
       }
-      const auto normal_stencil = BuildOwnedMacFaceStencil3D(
-          grid,
-          FaceNormalAxis::kY,
-          particles[index].world_position,
-          particles[index].world_position
-      );
-      if (!normal_stencil.ok()) {
-        return normal_stencil.status();
-      }
-      double wall_force_y = 0;
-      for (const auto& sample : *normal_stencil) {
-        if (!deformation_tags[sample.face_slot].structurally_eligible) {
-          const auto anchor = floor_grid.FaceWorldAnchor(*floor_grid.FaceIndex(sample.face_slot));
-          if (!anchor.ok()) {
-            return anchor.status();
-          }
-          const double reflection_factor = anchor->y < 0 ? 2 : 1;
-          wall_force_y += reflection_factor * particles[index].reference_volume
-              * solid_detail::Dot(particle_stresses[index].y_row, sample.weight_gradient);
-        }
-      }
-      particle_grid_normal_impulse[index] = settings.duration * std::max(0.0, wall_force_y);
     }
     std::vector<std::uint8_t> needed(grid.face_count());
     for (const auto& particle_stencils : boundary_deposits.compatible_stencils) {
@@ -441,6 +419,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         }
       }
     }
+    const auto unscattered_force = face_force;
     const auto wall_force = ScatterStationaryFloorGhostTranspose3D(
         grid.view(),
         validity,
@@ -455,6 +434,28 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       return wall_force.status();
     }
     ghost_wall_force_y = *wall_force;
+    for (const auto& row : ghost_rows) {
+      const auto slot = row.target_slot;
+      if (deformation_tags[slot].structurally_eligible || unscattered_force[slot] == 0) {
+        continue;
+      }
+      const auto face = floor_grid.FaceIndex(slot);
+      if (!face.ok()) {
+        return face.status();
+      }
+      if (face->axis != FaceNormalAxis::kY) {
+        continue;
+      }
+      const auto anchor = floor_grid.FaceWorldAnchor(*face);
+      if (!anchor.ok()) {
+        return anchor.status();
+      }
+      double coefficient_sum = 0;
+      for (const auto& term : row.terms) {
+        coefficient_sum += term.coefficient;
+      }
+      floor_reactions[{anchor->x, anchor->z}] += (coefficient_sum - 1) * unscattered_force[slot];
+    }
   } else {
     const auto deposited = deposit(grid, transfer_particles, deposits);
     if (!deposited.ok()) {
@@ -525,31 +526,39 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
 
   if (compatible_floor && settings.floor_friction > 0) {
     constexpr std::array<int, 2> kTangentAxes{0, 2};
-    for (std::size_t index = 0; index < particles.size(); ++index) {
-      const double friction_limit = settings.floor_friction * particle_grid_normal_impulse[index];
-      if (friction_limit == 0) {
+    for (const auto& [horizontal_position, reaction] : floor_reactions) {
+      const double friction_limit = settings.floor_friction * settings.duration * reaction;
+      if (friction_limit <= 0) {
         continue;
       }
       Vec3 tangent_velocity{};
       Vec3 tangent_mobility{};
       std::array<double, 3> weight_sums{};
-      const auto& stencils = boundary_deposits.compatible_stencils[index];
+      const Vec3 wall_position{horizontal_position.first, 0, horizontal_position.second};
+      const auto x_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kX, wall_position, wall_position);
+      const auto z_stencil = BuildOwnedMacFaceStencil3D(grid, FaceNormalAxis::kZ, wall_position, wall_position);
+      if (!x_stencil.ok()) {
+        return x_stencil.status();
+      }
+      if (!z_stencil.ok()) {
+        return z_stencil.status();
+      }
       for (const int axis : kTangentAxes) {
-        for (const auto& sample : stencils[axis]) {
+        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
           if (deposits[sample.face_slot].deposited_mass >= minimum_force_mass) {
-            weight_sums[axis] += sample.normalized_weight;
+            weight_sums[axis] += sample.weight;
           }
         }
         if (weight_sums[axis] == 0) {
           continue;
         }
-        for (const auto& sample : stencils[axis]) {
+        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
           const auto slot = sample.face_slot;
           const double mass = deposits[slot].deposited_mass;
           if (mass < minimum_force_mass) {
             continue;
           }
-          const double weight = sample.normalized_weight / weight_sums[axis];
+          const double weight = sample.weight / weight_sums[axis];
           tangent_velocity.*kComponents[axis] += weight * velocities[slot];
           tangent_mobility.*kComponents[axis] += weight * weight / mass;
         }
@@ -562,13 +571,13 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         return impulse.status();
       }
       for (const int axis : kTangentAxes) {
-        for (const auto& sample : stencils[axis]) {
+        for (const auto& sample : (axis == 0 ? *x_stencil : *z_stencil)) {
           const auto slot = sample.face_slot;
           const double mass = deposits[slot].deposited_mass;
           if (mass < minimum_force_mass) {
             continue;
           }
-          const double weight = sample.normalized_weight / weight_sums[axis];
+          const double weight = sample.weight / weight_sums[axis];
           const double face_impulse = weight * ((*impulse).*kComponents[axis]);
           const double before = velocities[slot];
           velocities[slot] += face_impulse / mass;
