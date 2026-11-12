@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -52,6 +53,14 @@ TEST(GradedLiquidBoundaryGeometry3D, ClipsCanonicalSignedCoarseFineWorldSubfaces
     EXPECT_DOUBLE_EQ(face.world_upper_m.x, 3);
     EXPECT_DOUBLE_EQ(face.full_area_m2, 1);
     EXPECT_NEAR(face.wet_open_area_m2, open_areas[ordinal], 1e-14);
+    if (open_areas[ordinal] > 0) {
+      ASSERT_TRUE(face.wet_open_centroid_m);
+      EXPECT_DOUBLE_EQ(face.wet_open_centroid_m->x, 3.0);
+      EXPECT_NEAR(face.wet_open_centroid_m->y, ordinal == 0 ? -3.25 : -2.5, 1e-14);
+      EXPECT_NEAR(face.wet_open_centroid_m->z, 8.375, 1e-14);
+    } else {
+      EXPECT_FALSE(face.wet_open_centroid_m);
+    }
     EXPECT_NEAR(face.wet_solid_area_m2, solid_areas[ordinal], 1e-14);
     EXPECT_NEAR(face.wall_normal_flux_m3_per_s, 0.5 * solid_areas[ordinal], 1e-14);
   }
@@ -83,6 +92,7 @@ TEST(GradedLiquidBoundaryGeometry3D, EdgeAndCornerContactBlockNoPositiveMeasure)
     for (const auto& face : geometry->subfaces()) {
       const bool surface_plateau = face.face_index.axis == FaceNormalAxis::kZ && face.world_lower_m.z == 1;
       EXPECT_NEAR(face.wet_open_area_m2, surface_plateau ? 0 : 1, 1e-14);
+      EXPECT_EQ(face.wet_open_centroid_m.has_value(), !surface_plateau);
       EXPECT_DOUBLE_EQ(face.wet_solid_area_m2, 0);
       EXPECT_DOUBLE_EQ(face.wall_normal_flux_m3_per_s, 0);
     }
@@ -106,10 +116,37 @@ TEST(GradedLiquidBoundaryGeometry3D, FlatCoplanarWallOwnsOnlyItsWetArea) {
   EXPECT_EQ(low_x.face_index.axis, FaceNormalAxis::kX);
   EXPECT_DOUBLE_EQ(low_x.world_lower_m.x, -2);
   EXPECT_DOUBLE_EQ(low_x.wet_open_area_m2, 0);
+  EXPECT_FALSE(low_x.wet_open_centroid_m);
   EXPECT_DOUBLE_EQ(low_x.wet_solid_area_m2, 0.5);
   EXPECT_DOUBLE_EQ(low_x.wall_normal_flux_m3_per_s, -0.125);
   EXPECT_DOUBLE_EQ(geometry->subfaces()[1].wet_open_area_m2, 0.5);
   EXPECT_DOUBLE_EQ(geometry->subfaces()[1].wall_normal_flux_m3_per_s, 0);
+}
+
+TEST(GradedLiquidBoundaryGeometry3D, MeasuresTriangularWetApertureCentroid) {
+  constexpr std::array keys{AdaptiveMacCellKey3D{{0, 0, 0}, 0}};
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1.0);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const double normal_component = std::sqrt(0.5);
+  const auto geometry = FreezeGradedPlanarLiquidGeometry3D(
+      *topology,
+      {},
+      {.unit_normal = {normal_component, normal_component, 0},
+       .start_plane_coordinate = 1.5 * normal_component,
+       .wall_velocity = {}},
+      {.unit_normal = {0, 0, 1}, .plane_coordinate_m = 1.0},
+      0.25
+  );
+  ASSERT_TRUE(geometry.ok()) << geometry.status();
+  const auto face = std::ranges::find_if(geometry->subfaces(), [](const auto& subface) {
+    return subface.face_index.axis == FaceNormalAxis::kZ && subface.world_lower_m.z == 0;
+  });
+  ASSERT_NE(face, geometry->subfaces().end());
+  EXPECT_NEAR(face->wet_open_area_m2, 0.125, 1e-14);
+  ASSERT_TRUE(face->wet_open_centroid_m);
+  EXPECT_NEAR(face->wet_open_centroid_m->x, 5.0 / 6.0, 1e-14);
+  EXPECT_NEAR(face->wet_open_centroid_m->y, 5.0 / 6.0, 1e-14);
+  EXPECT_DOUBLE_EQ(face->wet_open_centroid_m->z, 0);
 }
 
 TEST(GradedLiquidBoundaryGeometry3D, ComposesSignedWallIncidenceAndIndependentSource) {
