@@ -584,6 +584,24 @@ struct LiquidSubstepScheduler3D::Impl {
         .surface_tension = scene.surface_tension,
         .exact_outward_interface_curvature = exact_curvature,
     };
+    LiquidStepCavityBoundaries3D cavity_boundaries;
+    if (scene.cavity_provider.prepare) {
+      const auto prepared = scene.cavity_provider.prepare(scene.cavity_provider.context, old_time, geometry_inputs);
+      if (!prepared.ok()) {
+        return prepared.status();
+      }
+      cavity_boundaries = *prepared;
+      const double bound = cavity_boundaries.maximum_step_duration;
+      if (!(bound > 0.0)) {
+        return Error(absl::StatusCode::kInvalidArgument);
+      }
+      if (std::isfinite(bound)) {
+        accepted_measurement.step_start_cavity_bound_seconds = bound;
+        if (step_duration > bound) {
+          return Error(absl::StatusCode::kAborted);
+        }
+      }
+    }
     const auto frozen = backend.freeze(backend.context, geometry_inputs, boundary);
     if (!frozen.ok()) {
       // Geometry uses FailedPrecondition for both step_duration certification and incompatible
@@ -767,6 +785,7 @@ struct LiquidSubstepScheduler3D::Impl {
             .predicted_face_velocities = staging.incident_velocities.values(),
             .ambient_pressure = scene.ambient_pressure,
             .wetted_piston_face_fluxes = wetted_piston_face_fluxes,
+            .air_cell_pressures = cavity_boundaries.air_pressures,
         },
         boundary
     );

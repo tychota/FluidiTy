@@ -53,6 +53,23 @@ struct LiquidSceneDrift3D {
   double correction_time;  // Positive finite seconds.
   double maximum_rate;  // Finite nonnegative s⁻¹.
 };
+struct LiquidStepCavityBoundaries3D {
+  std::span<const LiquidAirCellPressure3D> air_pressures;  // Sorted air centers and gas-only gauge Pa.
+  double maximum_step_duration = std::numeric_limits<double>::infinity();  // Radial limit in seconds.
+};
+
+struct LiquidStepCavityProvider3D {
+  void* context = nullptr;
+  // Evaluates the step-start samples on each attempt, including retries.
+  // The returned pressure span must remain valid for that attempt. Evaluation
+  // can use caller scratch and must not publish accepted lineage state.
+  absl::StatusOr<LiquidStepCavityBoundaries3D> (*prepare)(
+      void* context,
+      double step_start_time,
+      const LiquidBoundaryGeometryViewInputs3D& samples
+  ) = nullptr;
+};
+
 struct LiquidSceneInputs3D {
   LiquidSceneField3D field = LiquidParticleSphereUnion3D{};
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
@@ -68,6 +85,7 @@ struct LiquidSceneInputs3D {
   double friction_coefficient = 0;
   double penetration_tolerance = 0;  // m.
   std::span<const LiquidEmissionSource3D> sources;  // Copied at Create; exact committed identity order.
+  LiquidStepCavityProvider3D cavity_provider{};  // Optional host evaluation, borrowed for scheduler lifetime.
 };
 struct WhitewaterCaptureSettings3D {
   Vec3 world_source_grid_origin{};
@@ -135,6 +153,7 @@ struct LiquidAcceptedStepMeasurement3D {
   LiquidClock3D accepted_clock;
   double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
   std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
+  std::optional<double> step_start_cavity_bound_seconds;  // Present for a finite radial limit.
   MacPressureDiagnostics3D pressure;
   std::optional<double> viscous_max_momentum_residual_kg_m_per_s;  // Present after a coupled viscosity solve.
   double pressure_rhs_l2_m3_per_s = 0;  // L2 norm of the original integrated RHS, including gauge rows.

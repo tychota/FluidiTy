@@ -2022,6 +2022,57 @@ TEST(LiquidSubstep3D, CapacityWithoutReplayReservationReportsResourceExhausted) 
   EXPECT_TRUE(scheduler->committed() == initial);
   EXPECT_EQ(scheduler->diagnostics().capacity_replays, 0);
 }
+TEST(LiquidSubstep3D, PreparedCavityPressuresApplyOnlyAfterRadialRetry) {
+  struct CavityFixture {
+    std::array<LiquidAirCellPressure3D, 256> pressures;
+    int calls = 0;
+  } fixture;
+  auto initial = Initial();
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.cavity_provider = {
+      .context = &fixture,
+      .prepare = [](void* context, double step_start_time, const LiquidBoundaryGeometryViewInputs3D& samples
+                 ) -> absl::StatusOr<LiquidStepCavityBoundaries3D> {
+        auto& cavity = *static_cast<CavityFixture*>(context);
+        ++cavity.calls;
+        EXPECT_DOUBLE_EQ(step_start_time, 0.0);
+        std::size_t count = 0;
+        for (const auto& center : samples.center_distances) {
+          if (center.signed_distance >= 0.0) {
+            if (count == cavity.pressures.size()) {
+              return absl::ResourceExhaustedError("cavity fixture capacity");
+            }
+            cavity.pressures[count++] = {center.cell_index, 17.0};
+          }
+        }
+        return LiquidStepCavityBoundaries3D{
+            .air_pressures = std::span(cavity.pressures).first(count),
+            .maximum_step_duration = 0.006,
+        };
+      },
+  };
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const auto rejected = scheduler->Attempt(0.01);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_TRUE(rejected->retry_duration);
+  EXPECT_TRUE(scheduler->committed() == initial);
+  EXPECT_FALSE(scheduler->diagnostics().accepted_measurement);
+
+  const auto accepted = scheduler->Attempt(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  EXPECT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(fixture.calls, 2);
+  const auto& measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement && measurement->step_start_cavity_bound_seconds);
+  EXPECT_DOUBLE_EQ(*measurement->step_start_cavity_bound_seconds, 0.006);
+  ASSERT_GT(scheduler->committed().cells.size(), 0);
+  EXPECT_NEAR(scheduler->committed().cells[0].previous_pressure, 17.0, 1e-7);
+}
+
 TEST(LiquidSubstep3D, ExplicitCapillaryOversizeRequestsSmallerDuration) {
   auto initial = Initial();
   auto scene = Scene();

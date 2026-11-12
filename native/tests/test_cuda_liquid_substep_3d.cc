@@ -1180,6 +1180,51 @@ TEST(CudaLiquidSubstep3D, EosHydrostaticCompressionMatchesColumn) {
   );
 }
 
+TEST(CudaLiquidSubstep3D, PreparedCavityBoundariesMatchCpuAfterRetry) {
+  std::array<LiquidAirCellPressure3D, 512> pressures;
+  auto scene = Scene();
+  scene.world_acceleration = {};
+  scene.cavity_provider = {
+      .context = &pressures,
+      .prepare = [](void* context, double, const LiquidBoundaryGeometryViewInputs3D& samples
+                 ) -> absl::StatusOr<LiquidStepCavityBoundaries3D> {
+        auto& output = *static_cast<std::array<LiquidAirCellPressure3D, 512>*>(context);
+        std::size_t count = 0;
+        for (const auto& center : samples.center_distances) {
+          if (center.signed_distance >= 0.0) {
+            if (count == output.size()) {
+              return absl::ResourceExhaustedError("cavity fixture capacity");
+            }
+            output[count++] = {center.cell_index, 17.0};
+          }
+        }
+        return LiquidStepCavityBoundaries3D{
+            .air_pressures = std::span(output).first(count),
+            .maximum_step_duration = 0.006,
+        };
+      },
+  };
+  const auto options = Options();
+  const auto initial = Initial();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  ASSERT_TRUE(gpu->AdvanceFrame(0.01).ok());
+  ASSERT_TRUE(cpu->AdvanceFrame(0.01).ok());
+  EXPECT_EQ(gpu->diagnostics().dt_retries, 1);
+  ASSERT_TRUE(gpu->diagnostics().accepted_measurement);
+  EXPECT_EQ(gpu->diagnostics().accepted_measurement->step_start_cavity_bound_seconds, 0.006);
+  ASSERT_GT(gpu->committed().cells.size(), 0);
+  const double radius = std::get<LiquidAnalyticSphere3D>(scene.field).radius;
+  const double boundary_pressure = 17.0 + scene.surface_tension * 2.0 / radius;
+  EXPECT_NEAR(gpu->committed().cells[0].previous_pressure, boundary_pressure, kPressureTolerance);
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {
   auto initial = Initial();
   initial.particles[0].volume_ratio = 1.02;

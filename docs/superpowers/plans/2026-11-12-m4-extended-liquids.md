@@ -337,3 +337,11 @@ Candidate lineage distributes each tracked parent's inventory in proportion to o
 The CPU fixture exercises simultaneous split and merge, a new cavity, all three loss counters, an unknown frontier and missing birth initialization. Eleven CPU cases passed with ctest --preset windows-debug-cpu -R 'LiquidCavity3D|CavityGasPressure'. Six real-device boundary regressions passed with ctest --preset windows-release-cuda -R CudaLiquidBoundary3D. Candidate lineage runs on the host. Receipts use the out/m4-cavity-lineage prefix. clang-format 19.1.5 passed.
 
 The scheduler still needs to own the accepted snapshots, provide initialization and exterior certificates, apply the candidate pressure and timestep bounds, and accumulate loss diagnostics on acceptance.
+
+## Scheduler cavity pressure and retry receipt
+
+The shared scheduler accepts an optional host provider evaluated on each attempt using step-start geometry samples. Its radial bound enters the existing transactional retry path. Its gas pressures enter the real CPU or CUDA projection links, where the capillary term is applied once. The accepted-step measurement records a finite radial bound.
+
+Fourteen CPU tests passed with ctest --preset windows-debug-cpu -R 'Cavity|ExplicitCapillaryOversize'. The explicit attempt fixture verifies rollback, retry and publication at 17 Pa. Twenty-one real-device tests passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The frame fixture verifies retry, SM120, CPU parity and 17 Pa plus the analytic capillary jump. clang-format 19.1.5 passed. Receipts use out/m4-cavity-scheduler. The initial incremental CUDA build skipped translation units after the public header layout changed and failed in the scheduler tests. Rebuild with cmake --build --preset windows-release-cuda --clean-first --parallel 8 --target fluidity_cuda_operator_tests. The initial CUDA fixture omitted the capillary term in its expected pressure, recorded in the fixture-negative log.
+
+The tests supply gas pressure directly. The production scheduler still needs to build the gas domain, maintain accepted lineage and initialize cavity inventory. Q-CAVITY remains open.
