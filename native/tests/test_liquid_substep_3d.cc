@@ -2376,6 +2376,47 @@ TEST(LiquidSubstep3D, SparseOrientedFloatingBoxRoutesUnsupportedPressureImpulse)
   EXPECT_EQ(*repeated_bytes, *accepted);
 }
 
+TEST(LiquidSubstep3D, OrientedFloatingBoxRejectsPressureWithNoReachableParticleSupport) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 2.875, 0.125, 0.125, 2.875, 0.0};
+  auto initial = Initial();
+  // The particle is above every wet pressure stencil, so no receiver exists.
+  initial.particles[0].world_position = {0.375, 4.5, 0.375};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDuration = 0.015625;
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.6875, 0.5},
+      .linear_velocity = {0.0, 0.125, 0.0},
+  };
+  const auto encode = [&] {
+    const auto& liquid = scheduler->committed();
+    return EncodeCoupledInteractionCheckpoint3D(
+        liquid,
+        {
+            .accepted_step = liquid.clock.accepted_step_ordinal,
+            .bodies = {{body, {body.center, body.orientation}}},
+        }
+    );
+  };
+  const auto seed = encode();
+  ASSERT_TRUE(seed.ok()) << seed.status();
+  ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+  const auto attempt = scheduler->AttemptWithOrientedFloatingBox(kDuration, body, {0.125, 0.125, 0.125});
+  ASSERT_TRUE(attempt.ok()) << attempt.status();
+  EXPECT_EQ(attempt->outcome.disposition, LiquidAttemptDisposition3D::kFatal);
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kPressure);
+  EXPECT_EQ(scheduler->diagnostics().failure_code, absl::StatusCode::kFailedPrecondition);
+  EXPECT_FALSE(attempt->body.has_value());
+  EXPECT_FALSE(attempt->oriented_loads.has_value());
+  const auto after = encode();
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_EQ(*after, *seed);
+}
+
 TEST(LiquidSubstep3D, OrientedFloatingBoxCommitsAngularPressureAndReplays) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 0.875, 0.125, 0.125, 0.875, 0.0};
