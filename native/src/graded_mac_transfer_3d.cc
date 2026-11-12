@@ -34,6 +34,94 @@ double Dot(const Components3D& left, const Components3D& right) {
   return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
 }
 
+constexpr std::size_t kFaceSupportBlockSize = 16;
+
+// A subtree with N canonical blocks has 2N - 1 preorder bounds. Its left
+// child gets floor(N/2) blocks and occupies the first nodes after the root.
+std::size_t LeftSupportBlockCount(std::size_t node_count) {
+  return (node_count + 1) / 4;
+}
+
+template <typename Bounds>
+void BuildFaceSupportBounds(std::span<const GradedMacFace3D> faces, std::span<Bounds> nodes) {
+  auto& root = nodes.front();
+  if (nodes.size() == 1) {
+    root.lower = Components(faces.front().world_anchor);
+    root.upper = root.lower;
+    for (const auto& face : faces.subspan(1)) {
+      const auto anchor = Components(face.world_anchor);
+      for (std::size_t axis = 0; axis < anchor.size(); ++axis) {
+        root.lower[axis] = std::min(root.lower[axis], anchor[axis]);
+        root.upper[axis] = std::max(root.upper[axis], anchor[axis]);
+      }
+    }
+    return;
+  }
+
+  const std::size_t left_block_count = LeftSupportBlockCount(nodes.size());
+  const std::size_t right_node = 2 * left_block_count;
+  const std::size_t right_slot = left_block_count * kFaceSupportBlockSize;
+  BuildFaceSupportBounds(faces.first(right_slot), nodes.subspan(1, right_node - 1));
+  BuildFaceSupportBounds(faces.subspan(right_slot), nodes.subspan(right_node));
+  for (std::size_t axis = 0; axis < root.lower.size(); ++axis) {
+    root.lower[axis] = std::min(nodes[1].lower[axis], nodes[right_node].lower[axis]);
+    root.upper[axis] = std::max(nodes[1].upper[axis], nodes[right_node].upper[axis]);
+  }
+}
+
+// Use the same subtraction and division as the slot filter. Both operations
+// are monotone for a fixed position and positive width. If the nearest bound
+// in any coordinate fails the slot test, every anchor in the node fails it.
+template <typename Bounds>
+bool OutsideSupport(const Bounds& bounds, const Components3D& position, double leaf_width) {
+  for (std::size_t axis = 0; axis < position.size(); ++axis) {
+    if (position[axis] < bounds.lower[axis]) {
+      if ((bounds.lower[axis] - position[axis]) / leaf_width >= kSupportRadiusInLeafWidths) {
+        return true;
+      }
+    } else if (position[axis] > bounds.upper[axis]) {
+      if ((bounds.upper[axis] - position[axis]) / leaf_width <= -kSupportRadiusInLeafWidths) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+template <typename Bounds, typename Visit>
+absl::Status VisitFaceSupportSlots(
+    std::span<const Bounds> nodes,
+    const Components3D& position,
+    double leaf_width,
+    std::size_t first_slot,
+    std::size_t end_slot,
+    const Visit& visit
+) {
+  if (OutsideSupport(nodes.front(), position, leaf_width)) {
+    return absl::OkStatus();
+  }
+  if (nodes.size() == 1) {
+    for (std::size_t slot = first_slot; slot < end_slot; ++slot) {
+      const auto status = visit(slot);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+    return absl::OkStatus();
+  }
+
+  // The left subtree precedes the right in global slot order.
+  const std::size_t left_block_count = LeftSupportBlockCount(nodes.size());
+  const std::size_t right_node = 2 * left_block_count;
+  const std::size_t right_slot = first_slot + left_block_count * kFaceSupportBlockSize;
+  const auto left_status =
+      VisitFaceSupportSlots(nodes.subspan(1, right_node - 1), position, leaf_width, first_slot, right_slot, visit);
+  if (!left_status.ok()) {
+    return left_status;
+  }
+  return VisitFaceSupportSlots(nodes.subspan(right_node), position, leaf_width, right_slot, end_slot, visit);
+}
+
 struct ComponentSupport {
   double weight_sum = 0;
   Components3D mean_offset{};
@@ -47,8 +135,9 @@ using ParticleSupport = std::array<ComponentSupport, 3>;
 
 // Evaluate the compact, area-weighted transfer on canonical global slots.
 // All offsets use the particle's owning leaf width to condition the fit.
-template <typename Visit>
+template <typename Bounds, typename Visit>
 absl::Status VisitSupport(
+    std::span<const Bounds> bounds,
     std::span<const GradedMacFace3D> faces,
     std::span<const LiquidAdaptiveFaceState3D> carriers,
     const LiquidParticleState3D& particle,
@@ -56,13 +145,13 @@ absl::Status VisitSupport(
     bool gather,
     Visit visit
 ) {
-  for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+  const auto visit_slot = [&](std::size_t slot) {
     const auto& carrier = carriers[slot];
     if (!carrier.structurally_eligible || carrier.side_tag != particle.side_tag) {
-      continue;
+      return absl::OkStatus();
     }
     if (gather && carrier.validity == LiquidFaceValidity3D::kMissing) {
-      continue;
+      return absl::OkStatus();
     }
     const auto& face = faces[slot];
     const Components3D offset{
@@ -73,26 +162,25 @@ absl::Status VisitSupport(
     if (std::ranges::any_of(offset, [](double value) {
           return std::abs(value) >= kSupportRadiusInLeafWidths;
         })) {
-      continue;
+      return absl::OkStatus();
     }
     const double radial_weight = 1 - Dot(offset, offset) / (kSupportRadiusInLeafWidths * kSupportRadiusInLeafWidths);
     if (radial_weight <= 0) {
-      continue;
+      return absl::OkStatus();
     }
     const double width_ratio = face.width_m / leaf_width;
     const double weight = (radial_weight * width_ratio) * (radial_weight * width_ratio);
     if (gather && (carrier.validity > LiquidFaceValidity3D::kLowMass || !std::isfinite(carrier.carrier_velocity))) {
       return absl::InvalidArgumentError("invalid adaptive transfer carrier");
     }
-    const auto status = visit(slot, static_cast<std::size_t>(face.axis), offset, weight);
-    if (!status.ok()) {
-      return status;
-    }
-  }
-  return absl::OkStatus();
+    return visit(slot, static_cast<std::size_t>(face.axis), offset, weight);
+  };
+  return VisitFaceSupportSlots(bounds, Components(particle.world_position), leaf_width, 0, faces.size(), visit_slot);
 }
 
+template <typename Bounds>
 absl::StatusOr<ParticleSupport> BuildSupport(
+    std::span<const Bounds> bounds,
     std::span<const GradedMacFace3D> faces,
     std::span<const LiquidAdaptiveFaceState3D> carriers,
     const LiquidParticleState3D& particle,
@@ -101,6 +189,7 @@ absl::StatusOr<ParticleSupport> BuildSupport(
 ) {
   ParticleSupport support{};
   auto status = VisitSupport(
+      bounds,
       faces,
       carriers,
       particle,
@@ -134,6 +223,7 @@ absl::StatusOr<ParticleSupport> BuildSupport(
     }
   }
   status = VisitSupport(
+      bounds,
       faces,
       carriers,
       particle,
@@ -293,6 +383,9 @@ GradedMacTransfer3D::Create(const AdaptiveMacTopology3D& topology, Vec3 world_or
       return absl::OutOfRangeError("adaptive transfer exterior anchor is not representable");
     }
   }
+  const std::size_t block_count = (face_count + kFaceSupportBlockSize - 1) / kFaceSupportBlockSize;
+  transfer.face_support_bounds_.resize(2 * block_count - 1);
+  BuildFaceSupportBounds(transfer.faces_, std::span(transfer.face_support_bounds_));
   return transfer;
 }
 
@@ -341,7 +434,7 @@ absl::StatusOr<std::vector<MacFaceDeposit3D>> GradedMacTransfer3D::Deposit(
     if (!width.ok()) {
       return width.status();
     }
-    const auto support = BuildSupport(faces_, carrier_faces, particle, *width, false);
+    const auto support = BuildSupport(std::span(face_support_bounds_), faces_, carrier_faces, particle, *width, false);
     if (!support.ok()) {
       return support.status();
     }
@@ -354,6 +447,7 @@ absl::StatusOr<std::vector<MacFaceDeposit3D>> GradedMacTransfer3D::Deposit(
         Components(particle.velocity_slopes.z_row),
     };
     const auto status = VisitSupport(
+        std::span(face_support_bounds_),
         faces_,
         carrier_faces,
         particle,
@@ -402,7 +496,7 @@ absl::StatusOr<GradedMacParticleGather3D> GradedMacTransfer3D::Gather(
   if (!width.ok()) {
     return width.status();
   }
-  const auto support = BuildSupport(faces_, carrier_faces, particle, *width, true);
+  const auto support = BuildSupport(std::span(face_support_bounds_), faces_, carrier_faces, particle, *width, true);
   if (!support.ok()) {
     return support.status();
   }
