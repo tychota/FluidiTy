@@ -30,11 +30,24 @@ struct BladeSide {
   sign:int;
 }
 
+struct ElasticParticle {
+  particle_id:ulong;
+  body_id:ulong;
+  sorted_position:fluidity.cache.v1.Vector3;
+  position:fluidity.cache.v1.Vector3;
+  mass:double;
+  velocity:fluidity.cache.v1.Vector3;
+  velocity_slopes:fluidity.cache.v1.Matrix3;
+  reference_volume:double;
+  deformation_gradient:fluidity.cache.v1.Matrix3;
+}
+
 table SolidInteractionCheckpoint {
   schema_version:uint = 1 (id:0);
   accepted_step:ulong (id:1);
   bodies:[BodyHistory] (required, id:2);
   sides:[BladeSide] (required, id:3);
+  elastic_particles:[ElasticParticle] (id:4);
 }
 
 root_type SolidInteractionCheckpoint;

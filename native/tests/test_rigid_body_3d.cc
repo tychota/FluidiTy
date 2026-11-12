@@ -123,6 +123,7 @@ TEST(RigidBody3D, InteractionCheckpointReplaysBodyAndBladeSideAfterRejectedAttem
   EXPECT_EQ(DecodeSolidInteractionCheckpoint3D(corrupt).status().code(), absl::StatusCode::kInvalidArgument);
   const auto restored = DecodeSolidInteractionCheckpoint3D(*bytes);
   ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_TRUE(restored->elastic_particles.empty());
   ASSERT_EQ(restored->accepted_step, 1);
   ASSERT_EQ(restored->bodies.size(), 1);
   ASSERT_EQ(restored->sides.size(), 1);

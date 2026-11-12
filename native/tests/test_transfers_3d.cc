@@ -11,6 +11,7 @@
 #include "fixture_data.h"
 #include "fluidity/host/elastic_blade_deformation_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "fluidity/host/transfers_3d.h"
 #include "gtest/gtest.h"
 
@@ -429,6 +430,51 @@ TEST(MacTransfer3D, ElasticDeformationUsesSameSideGhostGradientAndRejectsCollaps
   ASSERT_TRUE(result.ok()) << result.status();
   ExpectNear(result->gather.velocity_gradient.x_row, {2.0, 1.0, 0.0});
   ExpectNear(result->deformation_gradient.x_row, {1.5, 0.5, 0.0});
+
+  SolidInteractionCheckpoint3D checkpoint{
+      .accepted_step = 1,
+      .sides = {{.particle_id = 7, .side = side}},
+      .elastic_particles = {{
+          .particle_id = 7,
+          .body_id = 23,
+          .transfer = particle,
+          .reference_volume = 0.25,
+          .deformation_gradient = result->deformation_gradient,
+      }},
+  };
+  const auto encoded = EncodeSolidInteractionCheckpoint3D(checkpoint);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto restored = DecodeSolidInteractionCheckpoint3D(*encoded);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->elastic_particles.size(), 1);
+  ASSERT_EQ(restored->sides.size(), 1);
+  const auto& restored_particle = restored->elastic_particles.front();
+  EXPECT_EQ(restored_particle.body_id, 23);
+  EXPECT_DOUBLE_EQ(restored_particle.reference_volume, 0.25);
+  ExpectNear(restored_particle.transfer.trial_world_position, particle.trial_world_position);
+  ExpectNear(restored_particle.transfer.particle_velocity_slopes, particle.particle_velocity_slopes);
+  const auto uninterrupted =
+      GatherElasticBladeDeformation3D(*grid, particle, side, old_history, new_history, result->deformation_gradient);
+  ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
+  const auto replayed = GatherElasticBladeDeformation3D(
+      *grid,
+      restored_particle.transfer,
+      restored->sides.front().side,
+      old_history,
+      new_history,
+      restored_particle.deformation_gradient
+  );
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  checkpoint.elastic_particles.front().deformation_gradient = uninterrupted->deformation_gradient;
+  auto replay_checkpoint = *restored;
+  replay_checkpoint.elastic_particles.front().deformation_gradient = replayed->deformation_gradient;
+  const auto uninterrupted_bytes = EncodeSolidInteractionCheckpoint3D(checkpoint);
+  const auto replay_bytes = EncodeSolidInteractionCheckpoint3D(replay_checkpoint);
+  ASSERT_TRUE(uninterrupted_bytes.ok()) << uninterrupted_bytes.status();
+  ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+  EXPECT_EQ(*uninterrupted_bytes, *replay_bytes);
+  checkpoint.elastic_particles.front().deformation_gradient = {};
+  EXPECT_EQ(EncodeSolidInteractionCheckpoint3D(checkpoint).status().code(), absl::StatusCode::kInvalidArgument);
 
   for (double& velocity : new_velocity) {
     velocity *= -2.0;
