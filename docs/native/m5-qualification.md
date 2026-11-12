@@ -2282,3 +2282,34 @@ not. The preceding wall-plane-only control at `24f888b` changed
 reaction allocation without passing the matching tags to the
 deformation gather. Its angle results do not establish the effect of
 a wall-plane-only constraint and are excluded from this comparison.
+
+
+### Reflected-floor timestep refinement and contact affine state
+
+Local diagnostic `1e30a76` keeps the original 63-particle column and
+the same three-second endpoint while reducing the reflected solver's
+nominal timestep. All four runs completed and missed the angle band.
+
+| Grid | Quarter step at 3 s | Eighth step at 3 s |
+|---|---:|---:|
+| Coarse | 38.129921° | 24.390220° |
+| Fine | 39.551096° | 40.896382° |
+
+Local commit `62c447f` preserves the derivative of the swept Coulomb
+velocity projection as the stored affine fit at floor impact. The
+native analytic and dry-scene regressions passed. The full scene
+outcomes were:
+
+| Case | Angle at 1.5 s | Angle at 3 s |
+|---|---:|---:|
+| Coarse | 30.988615° | 30.981431° |
+| Coarse half-step | 41.821079° | 41.044791° |
+| Fine | 30.656335° | 31.003871° |
+| Fine half-step | 38.747054° | 29.627498° |
+
+The nominal cases have stable angles inside the band, but miss the
+original radius bound. At 3 s their radii are 0.164953 and 0.161415 m,
+respectively, above the 0.16 m limit. The half-step cases miss the
+angle criterion. The cutoff and work-pairing gains remain, with
+vertical residuals below 1e-8 N·s and cut-work mismatch below
+4e-16 J. The gate stays open.
