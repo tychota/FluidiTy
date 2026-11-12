@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <tuple>
 #include <utility>
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "liquid_boundary_backend.h"
+#include "mac_pressure_3d_system.h"
 
 namespace fluidity {
 namespace {
@@ -541,6 +543,193 @@ absl::StatusOr<std::vector<double>> PlasticSolidPressureMobility3D::Apply(std::s
     flux.push_back(face_flux);
   }
   return flux;
+}
+
+absl::StatusOr<std::vector<double>> PlasticSolidPressureMobility3D::SolveWallFlux(
+    const MacPressureInputs3D& liquid,
+    double ambient_pressure,
+    std::size_t maximum_iterations
+) const {
+  if (liquid.pressure_cells.size() != cell_count_ || liquid.pressure_faces.size() != faces_.size()
+      || !std::isfinite(ambient_pressure) || maximum_iterations == 0) {
+    return absl::InvalidArgumentError("invalid coupled snow pressure system");
+  }
+  const auto system = pressure_internal::PrepareMacPressureSystem3D(liquid);
+  if (!system.ok()) {
+    return system.status();
+  }
+  const auto links = system->links();
+  const auto cells = system->cells();
+  std::vector<bool> pinned(cell_count_);
+  for (const auto cell : system->gauge_cell_ordinals()) {
+    pinned[cell] = true;
+  }
+  std::vector<double> diagonal(cell_count_);
+  for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+    diagonal[cell] = cells[cell].compliance;
+  }
+  for (std::size_t index = 0; index < links.size(); ++index) {
+    const auto& link = links[index];
+    const auto& face = faces_[index];
+    if (link.tail_cell_ordinal.value_or(cell_count_) != face.tail_cell
+        || link.head_cell_ordinal.value_or(cell_count_) != face.head_cell) {
+      return absl::InvalidArgumentError("snow and liquid pressure face incidence differs");
+    }
+    if (face.tail_cell < cell_count_) {
+      diagonal[face.tail_cell] += link.conductance;
+    }
+    if (face.head_cell < cell_count_) {
+      diagonal[face.head_cell] += link.conductance;
+    }
+  }
+  for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+    if (!pinned[cell] && (!std::isfinite(diagonal[cell]) || diagonal[cell] <= 0)) {
+      return absl::FailedPreconditionError("invalid coupled snow pressure diagonal");
+    }
+  }
+
+  // Shift the snow pressure by the exterior gauge. The same outward
+  // incidence maps both the liquid conductance and the snow flux to cells.
+  const auto apply = [&](std::span<const double> pressure, std::span<double> output) -> absl::Status {
+    const auto snow_flux = Apply(pressure);
+    if (!snow_flux.ok()) {
+      return snow_flux.status();
+    }
+    for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+      output[cell] = cells[cell].compliance * pressure[cell];
+    }
+    for (std::size_t index = 0; index < links.size(); ++index) {
+      const auto& face = faces_[index];
+      const double tail = face.tail_cell < cell_count_ ? pressure[face.tail_cell] : 0;
+      const double head = face.head_cell < cell_count_ ? pressure[face.head_cell] : 0;
+      const double flux = std::fma(links[index].conductance, tail - head, (*snow_flux)[index]);
+      if (face.tail_cell < cell_count_) {
+        output[face.tail_cell] += flux;
+      }
+      if (face.head_cell < cell_count_) {
+        output[face.head_cell] -= flux;
+      }
+    }
+    return absl::OkStatus();
+  };
+
+  // p starts at zero in the liquid gauge. Moving the ambient contribution
+  // to the right leaves pinned increments at zero throughout the solve.
+  std::vector<double> ambient(cell_count_, ambient_pressure);
+  const auto ambient_flux = Apply(ambient);
+  if (!ambient_flux.ok()) {
+    return ambient_flux.status();
+  }
+  const auto integrated_rhs = system->integrated_rhs();
+  std::vector<double> rhs(integrated_rhs.begin(), integrated_rhs.end());
+  for (std::size_t index = 0; index < faces_.size(); ++index) {
+    const auto& face = faces_[index];
+    if (face.tail_cell < cell_count_) {
+      rhs[face.tail_cell] += (*ambient_flux)[index];
+    }
+    if (face.head_cell < cell_count_) {
+      rhs[face.head_cell] -= (*ambient_flux)[index];
+    }
+  }
+  std::vector<double> pressure(cell_count_);
+  std::vector<double> residual(cell_count_);
+  std::vector<double> scaled_residual(cell_count_);
+  std::vector<double> direction(cell_count_);
+  std::vector<double> action(cell_count_);
+  for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+    if (pinned[cell]) {
+      continue;
+    }
+    residual[cell] = rhs[cell];
+    scaled_residual[cell] = residual[cell] / diagonal[cell];
+    direction[cell] = scaled_residual[cell];
+  }
+  double product = std::inner_product(residual.begin(), residual.end(), scaled_residual.begin(), 0.0);
+  for (std::size_t iteration = 0; iteration <= maximum_iterations; ++iteration) {
+    double maximum_defect = 0;
+    for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+      maximum_defect = std::max(maximum_defect, std::abs(residual[cell]) / cells[cell].fluid_volume);
+    }
+    if (maximum_defect <= 1e-8) {
+      const auto verified = apply(pressure, action);
+      if (!verified.ok()) {
+        return verified;
+      }
+      for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+        const double defect = std::abs(rhs[cell] - action[cell]) / cells[cell].fluid_volume;
+        if (!std::isfinite(defect) || defect > 1e-7) {
+          return absl::AbortedError("coupled snow pressure residual failed verification");
+        }
+        pressure[cell] -= ambient_pressure;
+      }
+      return Apply(pressure);
+    }
+    if (iteration == maximum_iterations) {
+      break;
+    }
+    const auto applied = apply(direction, action);
+    if (!applied.ok()) {
+      return applied;
+    }
+    const double curvature = std::inner_product(direction.begin(), direction.end(), action.begin(), 0.0);
+    if (!std::isfinite(product) || product <= 0 || !std::isfinite(curvature) || curvature <= 0) {
+      return absl::AbortedError("coupled snow pressure lost positive curvature");
+    }
+    const double alpha = product / curvature;
+    for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+      if (!pinned[cell]) {
+        pressure[cell] = std::fma(alpha, direction[cell], pressure[cell]);
+        residual[cell] = std::fma(-alpha, action[cell], residual[cell]);
+        scaled_residual[cell] = residual[cell] / diagonal[cell];
+      }
+    }
+    const double next_product = std::inner_product(residual.begin(), residual.end(), scaled_residual.begin(), 0.0);
+    const double beta = next_product / product;
+    for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+      direction[cell] = std::fma(beta, direction[cell], scaled_residual[cell]);
+    }
+    product = next_product;
+  }
+  return absl::AbortedError("coupled snow pressure did not converge");
+}
+
+absl::Status PlasticSolidPressureMobility3D::VerifyProjectedFlux(
+    std::span<const double> projected_pressure,
+    double ambient_pressure,
+    std::span<const double> imposed_flux,
+    std::span<const FrozenLiquidCell3D> cells
+) const {
+  if (cells.size() != cell_count_ || imposed_flux.size() != faces_.size()) {
+    return absl::InvalidArgumentError("invalid coupled snow pressure verification extents");
+  }
+  std::vector<double> relative_pressure;
+  relative_pressure.reserve(projected_pressure.size());
+  for (const double pressure : projected_pressure) {
+    relative_pressure.push_back(pressure - ambient_pressure);
+  }
+  const auto actual_flux = Apply(relative_pressure);
+  if (!actual_flux.ok()) {
+    return actual_flux.status();
+  }
+  std::vector<double> defect(cell_count_);
+  for (std::size_t index = 0; index < faces_.size(); ++index) {
+    const auto& face = faces_[index];
+    const double flux_error = (*actual_flux)[index] - imposed_flux[index];
+    if (face.tail_cell < cell_count_) {
+      defect[face.tail_cell] += flux_error;
+    }
+    if (face.head_cell < cell_count_) {
+      defect[face.head_cell] -= flux_error;
+    }
+  }
+  for (std::size_t cell = 0; cell < cell_count_; ++cell) {
+    constexpr double kMaximumSnowConstraintDefect = 2e-5;
+    const double scaled_defect = std::abs(defect[cell]) / cells[cell].fluid_volume;
+    if (!std::isfinite(scaled_defect) || scaled_defect > kMaximumSnowConstraintDefect) {
+      return absl::AbortedError("projected pressure and snow flux disagree");
+    }
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace fluidity

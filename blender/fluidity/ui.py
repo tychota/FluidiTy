@@ -170,6 +170,7 @@ class FLUIDITY_PT_colliders(ChildPanel, bpy.types.Panel):
         elif settings.boundary_mode == "SNOW_PLATEN":
             input_object(column, settings, "collider", "Animated Platen")
             input_object(column, settings, "snow_mound", "Snow Mound Bounds")
+            column.operator("fluidity.apply_snow_preset")
             for field in ("snow_density", "snow_shear", "snow_lambda", "snow_compression", "snow_stretch", "snow_hardening"):
                 column.prop(settings, field)
         elif settings.boundary_mode in {"PLANE", "SLAB"}:

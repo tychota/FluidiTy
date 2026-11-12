@@ -200,6 +200,32 @@ TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
     EXPECT_NEAR((*reverse_response)[index], -0.5 * (*response)[index], 2e-15);
   }
   EXPECT_EQ(mobility->Apply({}).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto unit_flux = mobility->Apply(std::array{1.0});
+  ASSERT_TRUE(unit_flux.ok());
+  double snow_diagonal = 0;
+  double liquid_diagonal = 0;
+  for (std::size_t index = 0; index < links->faces.size(); ++index) {
+    const auto& link = links->faces[index];
+    if (link.open_area > 0) {
+      liquid_diagonal += 0.01 * link.open_area * link.inverse_density / link.pressure_gradient_distance;
+    }
+    const auto lattice = link.face_index.lattice_index;
+    const bool low_face = lattice.x == 0 && lattice.y == 0 && lattice.z == 0;
+    snow_diagonal += (low_face ? -1.0 : 1.0) * (*unit_flux)[index];
+  }
+  ASSERT_GT(snow_diagonal, 0);
+  ASSERT_GT(liquid_diagonal, 0);
+  const double expected_pressure = projected->integrated_rhs[0] / (liquid_diagonal + snow_diagonal);
+  const auto coupled_flux = mobility->SolveWallFlux({grid, 0.01, links->cells, links->faces}, 0, 32);
+  ASSERT_TRUE(coupled_flux.ok()) << coupled_flux.status();
+  for (std::size_t index = 0; index < coupled_flux->size(); ++index) {
+    EXPECT_NEAR((*coupled_flux)[index], expected_pressure * (*unit_flux)[index], 2e-12);
+  }
+  EXPECT_TRUE(mobility->VerifyProjectedFlux(std::array{expected_pressure}, 0, *coupled_flux, frozen->cells()).ok());
+  EXPECT_EQ(
+      mobility->VerifyProjectedFlux(std::array{0.0}, 0, *coupled_flux, frozen->cells()).code(),
+      absl::StatusCode::kAborted
+  );
   auto stale_face = *face;
   stale_face.prescribed_wall_flux = *stale_face.prescribed_wall_flux + 0.1;
   EXPECT_EQ(

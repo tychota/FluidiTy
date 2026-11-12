@@ -1702,6 +1702,42 @@ struct LiquidSubstepScheduler3D::Impl {
       if ((coupled_piston || floating_box != nullptr) && active_viscosity) {
         return Error(absl::StatusCode::kFailedPrecondition);
       }
+      std::vector<MacPressureFace3D> snow_pressure_faces;
+      std::optional<PlasticSolidPressureMobility3D> snow_mobility;
+      std::vector<double> coupled_snow_flux;
+      if (snow_samples && active_viscosity) {
+        return absl::UnimplementedError("sampled snow pressure mobility requires inviscid liquid");
+      }
+      if (snow_samples) {
+        auto mobility =
+            PlasticSolidPressureMobility3D::Create(*frozen, *snow_samples, snow->inputs.accepted_particles, obstacle);
+        if (!mobility.ok()) {
+          return mobility.status();
+        }
+        const auto pressure_grid =
+            SparseMacGrid3D::Create(grid.geometry(), grid.active_block_indices(), grid.active_block_indices().size());
+        if (!pressure_grid.ok()) {
+          return pressure_grid.status();
+        }
+        auto flux = mobility->SolveWallFlux(
+            {*pressure_grid, step_duration, pressure_problem.cells, pressure_problem.faces},
+            scene.ambient_pressure,
+            options.pressure_solver_options.max_iterations
+        );
+        if (!flux.ok()) {
+          return flux.status();
+        }
+        snow_mobility = std::move(*mobility);
+        coupled_snow_flux = std::move(*flux);
+        snow_pressure_faces.assign(pressure_problem.faces.begin(), pressure_problem.faces.end());
+        for (std::size_t index = 0; index < snow_pressure_faces.size(); ++index) {
+          auto& face = snow_pressure_faces[index];
+          if (coupled_snow_flux[index] != 0) {
+            face.prescribed_wall_flux = face.prescribed_wall_flux.value_or(0) + coupled_snow_flux[index];
+          }
+        }
+        pressure_problem.faces = snow_pressure_faces;
+      }
       if (!active_viscosity) {
         auto pressure_options = options.pressure_solver_options;
         if (oriented_box && floating_box->coupled) {
@@ -2112,6 +2148,12 @@ struct LiquidSubstepScheduler3D::Impl {
         return absl::InternalError("pressure projection extents do not match frozen geometry");
       }
       if (snow_samples) {
+        STEP_TRY(snow_mobility->VerifyProjectedFlux(
+            projected_cell_pressures,
+            scene.ambient_pressure,
+            coupled_snow_flux,
+            frozen->cells
+        ));
         auto staged = StagePlasticSolidPressureLoads3D(
             *frozen,
             *snow_samples,

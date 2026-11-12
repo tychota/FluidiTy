@@ -106,6 +106,22 @@ class PlasticSolidPressureMobility3D {
   // The operator includes the frozen step duration. Failure returns no flux.
   absl::StatusOr<std::vector<double>> Apply(std::span<const double> pressure_increment) const;
 
+  // Solves the integrated liquid pressure system with the frozen snow
+  // mobility. Returns the positive-normal snow flux increment for each
+  // pressure face. The ambient pressure fixes the exterior snow traction.
+  // Closed liquid components retain the checked liquid gauge convention.
+  absl::StatusOr<std::vector<double>>
+  SolveWallFlux(const MacPressureInputs3D& liquid, double ambient_pressure, std::size_t maximum_iterations) const;
+
+  // Verifies that the backend pressure produces the imposed flux increment
+  // to within the integrated per-cell tolerance expressed in inverse seconds.
+  absl::Status VerifyProjectedFlux(
+      std::span<const double> projected_pressure,
+      double ambient_pressure,
+      std::span<const double> imposed_flux,
+      std::span<const FrozenLiquidCell3D> cells
+  ) const;
+
  private:
   struct Corner {
     std::size_t owner = 0;

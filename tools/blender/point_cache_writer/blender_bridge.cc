@@ -109,6 +109,40 @@ absl::Status Inspect(const LiquidCache3D& cache, std::uint64_t frame_ordinal) {
   return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write inspection result");
 }
 
+absl::Status InspectSnowCheckpoint(const fs::path& root, std::uint64_t frame_ordinal) {
+  const auto inspection = LiquidCache3D::OpenForInspection(root);
+  if (!inspection.ok()) {
+    return inspection.status();
+  }
+  const auto scene = inspection->ReadResolvedScene();
+  if (!scene.ok()) {
+    return scene.status();
+  }
+  const auto fingerprint = ResolvedSceneFingerprint(scene->View());
+  if (!fingerprint.ok()) {
+    return fingerprint.status();
+  }
+  const auto cache = LiquidCache3D::OpenForReplay(root, *fingerprint);
+  if (!cache.ok()) {
+    return cache.status();
+  }
+  const auto checkpoint = cache->ReadCheckpoint(frame_ordinal);
+  if (!checkpoint.ok()) {
+    return checkpoint.status();
+  }
+  if (checkpoint->state.clock.frame_ordinal != frame_ordinal || !checkpoint->solid
+      || checkpoint->solid->plastic_particles.empty()) {
+    return absl::NotFoundError("no retained snow checkpoint at the requested frame");
+  }
+  double minimum_log_plastic_jacobian = std::numeric_limits<double>::infinity();
+  for (const auto& particle : checkpoint->solid->plastic_particles) {
+    minimum_log_plastic_jacobian = std::min(minimum_log_plastic_jacobian, particle.log_plastic_jacobian);
+  }
+  std::cout << "{\"frame\":" << frame_ordinal << ",\"minimum_log_plastic_jacobian\":" << minimum_log_plastic_jacobian
+            << "}\n";
+  return std::cout ? absl::OkStatus() : absl::UnavailableError("could not write snow checkpoint inspection");
+}
+
 bool FitsAlembicFloat(double value) {
   return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
 }
@@ -720,6 +754,7 @@ absl::Status Run(std::span<const fs::path> args) {
     return ResolveBlenderScene(args);
   }
   const bool inspect = args.size() == 3 && args[0] == "inspect";
+  const bool inspect_snow = args.size() == 3 && args[0] == "inspect-snow";
   const bool inspect_volume = args.size() == 3 && args[0] == "inspect-volume";
   const bool export_water = args.size() == 4 && args[0] == "export-water";
   const bool export_snow = args.size() == 4 && args[0] == "export-snow";
@@ -727,7 +762,8 @@ absl::Status Run(std::span<const fs::path> args) {
   const bool export_surface = args.size() == 4 && args[0] == "export-surface";
   const bool export_surface_usd = args.size() == 4 && args[0] == "export-surface-usd";
   const bool export_foam = args.size() == 4 && args[0] == "export-foam";
-  if (!inspect && !inspect_volume && !export_points && !export_surface && !export_surface_usd && !export_foam) {
+  if (!inspect && !inspect_snow && !inspect_volume && !export_points && !export_surface && !export_surface_usd
+      && !export_foam) {
     return absl::InvalidArgumentError(
         "expected a cache and frame for inspect, inspect-volume, export, export-surface, export-surface-usd or "
         "export-foam"
@@ -736,6 +772,9 @@ absl::Status Run(std::span<const fs::path> args) {
   const auto frame = ParseFrame(args[2]);
   if (!frame.ok()) {
     return frame.status();
+  }
+  if (inspect_snow) {
+    return InspectSnowCheckpoint(args[1], *frame);
   }
   if (inspect_volume) {
     return InspectVolume(args[1], *frame);
