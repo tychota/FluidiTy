@@ -283,16 +283,17 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   if (!gathered.ok()) {
     return gathered;
   }
-  std::vector<DrySolidParticle3D> trial_particles(particles.begin(), particles.end());
-  for (std::size_t index = 0; index < trial_particles.size(); ++index) {
-    auto& particle = trial_particles[index];
-    const auto& particle_gather = gathers[index];
-    const Vec3 velocity = particle_gather.new_pic_velocity;
-    if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
-      return absl::FailedPreconditionError("dry particle motion bound");
-    }
-    Vec3 stored_velocity = velocity;
-    if (blend_stored_velocity) {
+  struct RetainedVelocity {
+    Vec3 correction{};
+    bool eligible = false;
+  };
+  std::vector<RetainedVelocity> retained_velocities;
+  if (blend_stored_velocity) {
+    retained_velocities.resize(particles.size());
+    Vec3 correction_momentum{};
+    double eligible_mass = 0;
+    for (std::size_t index = 0; index < particles.size(); ++index) {
+      const auto& particle = particles[index];
       bool usable_history = true;
       for (const auto axis : kAxes) {
         const auto support = BuildOwnedMacFaceStencil3D(grid, axis, particle.world_position, particle.world_position);
@@ -305,11 +306,45 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
           }
         }
       }
-      if (usable_history) {
-        const Vec3 old_pic = solid_detail::Combine(velocity, 1, particle_gather.grid_velocity_increment, -1);
-        const Vec3 residual = solid_detail::Combine(particle.world_velocity, 1, old_pic, -1);
-        stored_velocity = solid_detail::Combine(velocity, 1, residual, 0.99 * settings.particle_energy_blend);
+      if (!usable_history) {
+        continue;
       }
+      const auto& particle_gather = gathers[index];
+      const Vec3 old_pic =
+          solid_detail::Combine(particle_gather.new_pic_velocity, 1, particle_gather.grid_velocity_increment, -1);
+      const Vec3 residual = solid_detail::Combine(particle.world_velocity, 1, old_pic, -1);
+      const Vec3 correction = solid_detail::Combine({}, 0, residual, 0.99 * settings.particle_energy_blend);
+      retained_velocities[index] = {.correction = correction, .eligible = true};
+      eligible_mass += particle.mass;
+      correction_momentum = solid_detail::Combine(correction_momentum, 1, correction, particle.mass);
+    }
+    if (eligible_mass > 0) {
+      if (!std::isfinite(eligible_mass) || !solid_detail::Finite(correction_momentum)) {
+        return absl::OutOfRangeError("nonfinite retained-velocity momentum");
+      }
+      const Vec3 mean_correction{
+          correction_momentum.x / eligible_mass,
+          correction_momentum.y / eligible_mass,
+          correction_momentum.z / eligible_mass
+      };
+      for (auto& retained : retained_velocities) {
+        if (retained.eligible) {
+          retained.correction = solid_detail::Combine(retained.correction, 1, mean_correction, -1);
+        }
+      }
+    }
+  }
+  std::vector<DrySolidParticle3D> trial_particles(particles.begin(), particles.end());
+  for (std::size_t index = 0; index < trial_particles.size(); ++index) {
+    auto& particle = trial_particles[index];
+    const auto& particle_gather = gathers[index];
+    const Vec3 velocity = particle_gather.new_pic_velocity;
+    if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
+      return absl::FailedPreconditionError("dry particle motion bound");
+    }
+    Vec3 stored_velocity = velocity;
+    if (!retained_velocities.empty() && retained_velocities[index].eligible) {
+      stored_velocity = solid_detail::Combine(velocity, 1, retained_velocities[index].correction, 1);
     }
     const auto contact = SweepDryWalls(particle, stored_velocity, velocity, settings);
     if (!contact.ok()) {

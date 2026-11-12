@@ -248,8 +248,7 @@ bool TestScene(
       - total_budget.wall_impulse_on_particles.y;
   std::printf("vertical momentum residual_Ns=%.9g\n", vertical_residual);
   constexpr double kMomentumRoundoffTolerance = 1e-6;
-  if (particle_energy_blend == 0
-      && std::abs(vertical_residual) > total_budget.omitted_stress_impulse_l1 + kMomentumRoundoffTolerance) {
+  if (std::abs(vertical_residual) > total_budget.omitted_stress_impulse_l1 + kMomentumRoundoffTolerance) {
     return false;
   }
   if (total_budget.omitted_stress_impulse_l1 > total_budget.proposed_stress_impulse_l1) {
@@ -352,6 +351,40 @@ bool TestStoredVelocityResidual() {
   return status.ok() && std::abs(particles[0].world_velocity.x - 0.594) < 1e-12
       && std::abs(particles[1].world_velocity.x + 0.594) < 1e-12 && particles[0].world_position.x == 2.25
       && particles[1].world_position.x == 2.25;
+}
+
+bool TestStoredResidualMomentum() {
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}, BlockIndex3D{1, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  const DrySolidParticle3D first{
+      .world_position = {1.75, 2.25, 2.25},
+      .world_velocity = {1, 0, 0},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = kIdentity,
+  };
+  std::array particles{first, first, first, first, first};
+  particles.back().world_position.x = 2.5001;
+  particles.back().world_velocity.x = -1;
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{.duration = 0.01, .acoustic_cfl = 0.25, .particle_energy_blend = 0.6};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, particles);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, particles);
+#endif
+  double momentum_x = 0;
+  for (const auto& particle : particles) {
+    momentum_x += particle.mass * particle.world_velocity.x;
+  }
+  if (!status.ok() || std::abs(momentum_x - 3) > 1e-9) {
+    std::fprintf(stderr, "stored residual momentum %.12g N s, %s\n", momentum_x, status.ToString().c_str());
+    return false;
+  }
+  return true;
 }
 
 bool TestRollbackOnUnsupportedDestination() {
@@ -531,6 +564,13 @@ int main(int argc, char** argv) {
     const bool fine_half = TestScene(0.03125, 0.000390625, false, 0, 2, 0, true, 1.5);
     return coarse && fine && coarse_half && fine_half ? 0 : 1;
   }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-cone-stored-only") {
+    const bool coarse = TestScene(0.0375, 0.00078125, false, 0.6, 2, 0, true);
+    const bool fine = TestScene(0.03125, 0.00078125, false, 0.6, 2, 0, true);
+    const bool coarse_half = TestScene(0.0375, 0.000390625, false, 0.6, 2, 0, true);
+    const bool fine_half = TestScene(0.03125, 0.000390625, false, 0.6, 2, 0, true);
+    return coarse && fine && coarse_half && fine_half ? 0 : 1;
+  }
   if (argc != 1) {
     return 2;
   }
@@ -538,8 +578,9 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
+      || !TestStoredResidualMomentum() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

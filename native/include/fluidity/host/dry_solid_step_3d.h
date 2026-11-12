@@ -51,6 +51,7 @@ struct DrySolidStepBudget3D {
 // Uses APIC deposits, PIC advection, uncut stress quadrature and a stationary floor with an optional platen.
 // When enabled, the stored velocity retains 0.99 times the blend times the incoming particle residual against
 // the pre-force grid. The supplied particle state seeds that history. Low-mass support uses PIC storage.
+// The retained correction has zero net momentum over the eligible particles of this dry body.
 // Snow grid normal constraints use face anchors. A continuous halfspace sweep constrains particle transport.
 // The force-acceleration denominator is floored at 1e-4 times the smallest particle mass for low-mass faces.
 // The bounded dry path uses no liquid pressure, cut support reconstruction, or body mixing.

@@ -83,7 +83,7 @@ changing the material parameters or angle estimator.
 
 ### Stored velocity experiment
 
-The optional dry-step blend retains 0.594 of the particle velocity
+In the historical 6d31b68 experiment, the optional dry-step blend retained 0.594 of the particle velocity
 residual against the pre-force grid at energy setting 0.6. The
 manufactured test uses opposing velocities with zero grid increment.
 It verifies that the residual survives in storage while the PIC advection
@@ -358,12 +358,43 @@ runs are inside the envelope window at this later time.
 
 CUDA envelope angles differed by at most 1e-6° at the reported precision.
 The 1.5 s half-step angles are within 0.40° of the 0.75 s nominal-step
-angles at equal grid width and roughly equal step count, despite
-doubling the physical time. At fixed 1.5 s, halving the step shifts the
+angles at equal grid width. The half-step runs use four times as many
+nominal steps because the physical time doubles and the timestep halves. At fixed 1.5 s, halving the step shifts the
 angle by more than 4° on both grids. All momentum checks pass. This
 shows that the cone changes the benchmark result but does not establish
 a converged repose angle, even when the last 0.05 s drift meets the
 declared bound.
+
+### Conservative stored velocity and the advection control
+
+The original storage-only blend excluded low-mass supports independently.
+It could therefore add net momentum even without wall contact. A manufactured
+one-body test with four eligible particles and one fallback particle measured
+3.621335079 N·s after a step from 3 N·s with no external x impulse. The production
+fix subtracts the mass-weighted mean correction over eligible particles.
+Fallback particles retain PIC storage. Both native and CUDA now preserve
+the manufactured momentum within 1e-9 N·s. The scene applies its existing
+vertical momentum gate to the stored-blend cases as well.
+
+An advection prototype also used the existing energy setting 0.6 to scale
+the retained correction in advection. It accepted the extra displacement
+only when the PIC and residual paths both passed the swept-wall and motion
+checks without contact. With the old unbalanced storage it put all cone
+envelopes in the window, but the native vertical residual reached
+0.522350393 N·s. With balanced storage, all eight momentum checks passed.
+The nominal fine-grid envelope was 29.981364° on CPU and 30.027238° on CUDA,
+so the prototype did not consistently pass Q-SAND. Independent surface
+fits also continued to exceed 35° in several cases. Residual advection was
+removed from the production change. The experimental patches against
+9562d88 are out/m5-cone-unbalanced-advection.patch and
+out/m5-cone-balanced-advection.patch. Their --q-sand-cone-energy command
+runs the four 0.75 s cone cases.
+
+The production storage-only comparison at 0.75 s now passes vertical
+momentum on all four CPU and all four CUDA runs. Its nominal fine-grid
+envelope remains outside the window at 29.903758° on CPU and 29.990626°
+on CUDA. The other three envelope cases are inside. This does not close
+Q-SAND, and the production default still uses PIC.
 
 ## Reproduction
 
@@ -409,6 +440,8 @@ cmake --build --preset windows-release-cuda --target fluidity_m5_dry_scene_tests
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-release
 & ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-long-settle
 & ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-long-settle
+& ./out/build/windows-release-cuda/fluidity_m5_dry_scene_tests.exe --q-sand-cone-stored-only
+& ./out/build/windows-release-cuda/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-cone-stored-only
 
 $nativeSources = git ls-files -- 'native/*.cc' 'native/*.h' 'native/*.cu' 'native/*.cuh'
 clang-format --dry-run --Werror @nativeSources
@@ -458,6 +491,11 @@ reaction and byte-identical coupled replay after a rejected attempt.
 The fixture prescribes the incoming gather to isolate the impulse.
 The CUDA reaction, deformable plastic particle records, and a production
 snow–water restart remain open.
+
+M6 commits 5d017de and 8a15777 measure light-body amplification for
+partitioned pressure feedback and provide a stable coupled update for
+one analytic pressure cell and a guided piston. M6 commit 62cbf0c extends that guided update to multiple pressure cells. The coupled path is particle-free.
+It does not provide a coupled plastic-particle pressure or contact step.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
