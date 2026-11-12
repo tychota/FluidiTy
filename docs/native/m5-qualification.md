@@ -2802,3 +2802,30 @@ with coarse 36.949208° / 0.172551 m, coarse half-step 41.531990° /
 native dry-scene target and use the fixed-step matrix above to
 reproduce that control. The threshold was restored after compilation.
 Q-SAND remains open.
+
+### Rebuild stress donors using the face motion bound
+
+Local sand commit `7a7cef0` rebuilds the paired stress transpose and
+deformation reconstruction when stress would push a thin donor beyond
+the existing face-motion bound. Only structurally eligible faces
+below one percent of the minimum particle mass can be removed. The
+pre-stress drift must already satisfy the motion bound. Each pass
+restarts from the original face force, removes at least one donor
+or finishes, and rejects if eight passes are exhausted.
+
+Both native and SM120 dry-scene targets passed. All four native
+fixed-step piles reach 3 s. The coarse nominal, coarse half-step,
+and fine half-step results match the preceding control at printed
+precision. The fine nominal case reaches 29.704868° and a radius of
+0.200837 m. Its late angle drift is 0.023640°, kinetic energy is
+0.000122 J, cut stress work mismatch is 6.74e-16 J, and vertical
+momentum residual is 1.05e-8 N·s. The motion rejection is resolved
+for this case while its geometry still misses both checks.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-stress-donor-retry-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine all 3
+```
