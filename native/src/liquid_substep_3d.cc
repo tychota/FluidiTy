@@ -2823,8 +2823,19 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     const LiquidSubstepBackend3D& backend
 ) {
   const bool adaptive_mode = initial.adaptive_cells.size() != 0;
+  if (adaptive_mode
+      && (HasConstituentViscosity(scene) || scene.drift || scene.cavity || scene.cavity_provider.prepare
+          || !scene.phase_pairs.empty())) {
+    return absl::UnimplementedError(
+        "graded tank constituent viscosity, drift, cavity or immiscible settings require a graded operator"
+    );
+  }
   if (adaptive_mode && backend.project_adaptive == nullptr && !backend.host_adaptive_pressure) {
     return absl::UnimplementedError("selected backend has no graded pressure projection");
+  }
+  if (adaptive_mode && scene.dynamic_viscosity > 0.0 && !backend.host_adaptive_pressure
+      && backend.project_adaptive_viscous == nullptr) {
+    return absl::UnimplementedError("selected backend has no graded viscous velocity inverse");
   }
   const bool needs_lattice_plane = std::holds_alternative<LiquidHorizontalPlaneSurface3D>(scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
@@ -3043,7 +3054,7 @@ absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
   impl_->diagnostics = {};
   return absl::OkStatus();
 }
-struct LiquidSubstepScheduler3D::AdaptiveFamilyTrial {
+struct LiquidSubstepScheduler3D::AdaptiveStateTrial {
   LiquidState3D state;
   liquid_step_internal::AdaptiveLiquidStep3D owner;
   std::size_t accepted_reservation_bytes;
@@ -3051,25 +3062,64 @@ struct LiquidSubstepScheduler3D::AdaptiveFamilyTrial {
 
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine) {
+  return AttemptPreparedAdaptiveState(step_duration, [&] {
+    return liquid_step_internal::PrepareAdaptiveLiquidFamilyCandidate3D(
+        committed(),
+        impl_->scene,
+        impl_->options.capacities,
+        parent,
+        refine
+    );
+  });
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandRetirement(
+    double step_duration,
+    AdaptiveMacCellKey3D leaf,
+    LiquidHandoffOccupancy3D occupancy,
+    const LiquidHandoffCarrier3D& carrier
+) {
+  return AttemptPreparedAdaptiveState(step_duration, [&] {
+    return PrepareAdaptiveLiquidBandRetirement3D(committed(), impl_->options.capacities, leaf, occupancy, carrier);
+  });
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveCoreReseed(
+    double step_duration,
+    AdaptiveMacCellKey3D leaf,
+    LiquidHandoffOccupancy3D occupancy,
+    const LiquidHandoffCarrier3D& carrier,
+    std::size_t particle_count
+) {
+  return AttemptPreparedAdaptiveState(step_duration, [&] {
+    return PrepareAdaptiveLiquidCoreReseed3D(
+        committed(),
+        impl_->options.capacities,
+        leaf,
+        occupancy,
+        carrier,
+        particle_count
+    );
+  });
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPreparedAdaptiveState(
+    double step_duration,
+    absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare
+) {
   auto& impl = *impl_;
   if (!impl.adaptive) {
-    return absl::FailedPreconditionError("family replacement requires a graded scheduler");
+    return absl::FailedPreconditionError("adaptive state replacement requires a graded scheduler");
   }
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
-  auto state = liquid_step_internal::PrepareAdaptiveLiquidFamilyCandidate3D(
-      committed(),
-      impl.scene,
-      impl.options.capacities,
-      parent,
-      refine
-  );
-  if (!state.ok()) {
-    return state.status();
+  auto prepared = prepare();
+  if (!prepared.ok()) {
+    return prepared.status();
   }
-  auto owner = liquid_step_internal::AdaptiveLiquidStep3D::Create(*state, impl.scene, impl.options);
+  auto owner = liquid_step_internal::AdaptiveLiquidStep3D::Create(*prepared, impl.scene, impl.options);
   if (!owner.ok()) {
     return owner.status();
   }
@@ -3077,7 +3127,7 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, Adapti
     return Error(absl::StatusCode::kResourceExhausted);
   }
   const auto accepted_bytes = impl.reservation_bytes - impl.adaptive->reserved_bytes() + owner->reserved_bytes();
-  AdaptiveFamilyTrial candidate{std::move(*state), std::move(*owner), accepted_bytes};
+  AdaptiveStateTrial candidate{std::move(*prepared), std::move(*owner), accepted_bytes};
   return AttemptImpl(step_duration, {}, nullptr, false, false, nullptr, nullptr, nullptr, &candidate);
 }
 
@@ -3321,7 +3371,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     const LiquidPistonReactionUpdate3D* update_with_reaction,
     FloatingBoxTrial* floating_box,
     SnowTrial* snow,
-    AdaptiveFamilyTrial* adaptive_family
+    AdaptiveStateTrial* adaptive_replacement
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
@@ -3340,8 +3390,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   if (!trial.ok()) {
     return trial.status();
   }
-  if (adaptive_family != nullptr) {
-    **trial = std::move(adaptive_family->state);
+  if (adaptive_replacement != nullptr) {
+    **trial = std::move(adaptive_replacement->state);
   }
   ++diagnostics.attempts;
   diagnostics.accepted_measurement.reset();
@@ -3355,7 +3405,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   diagnostics.failed_stage = LiquidPhysicalStage3D::kCount;
   LiquidAcceptedStepMeasurement3D accepted_measurement;
   auto* adaptive_owner =
-      adaptive_family != nullptr ? &adaptive_family->owner : (impl.adaptive ? &*impl.adaptive : nullptr);
+      adaptive_replacement != nullptr ? &adaptive_replacement->owner : (impl.adaptive ? &*impl.adaptive : nullptr);
   auto status = adaptive_owner != nullptr
       ? impl.ExecuteAdaptive(*adaptive_owner, step_duration, **trial, accepted_measurement, work_phase)
       : impl.Execute(
@@ -3396,9 +3446,9 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
   }
   if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
     impl.backend.commit_publication(impl.backend.context);
-    if (adaptive_family != nullptr) {
-      impl.adaptive = std::move(adaptive_family->owner);
-      impl.reservation_bytes = adaptive_family->accepted_reservation_bytes;
+    if (adaptive_replacement != nullptr) {
+      impl.adaptive = std::move(adaptive_replacement->owner);
+      impl.reservation_bytes = adaptive_replacement->accepted_reservation_bytes;
     }
     ++diagnostics.accepted_attempts;
     accepted_measurement.accepted_clock = committed().clock;

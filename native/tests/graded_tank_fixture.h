@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "fluidity/host/liquid_substep_3d.h"
 
@@ -121,6 +122,89 @@ inline absl::Status PopulateGradedFamilyFixture3D(LiquidState3D& state, LiquidSc
   state.particles = std::move(*particles);
   state.next_particle_id = 13;
   return ValidateLiquidState3D(state);
+}
+
+inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  const auto authored = PopulateGradedTankFixture3D(state, scene);
+  if (!authored.ok()) {
+    return authored;
+  }
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+  for (auto& face : state.adaptive_faces.values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  return ValidateLiquidState3D(state);
+}
+
+inline void SetGradedTankEos3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0};
+  scene.ambient_pressure = 1.0;
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+}
+
+inline void SetGradedTankMiscible3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  static constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1.5}, {14, 4, 2.5}}};
+  scene.constituent_materials = kMaterials;
+  for (std::size_t ordinal = 0; ordinal < state.particles.size(); ++ordinal) {
+    auto& particle = state.particles[ordinal];
+    auto& inventory = state.adaptive_cells[ordinal].inventory;
+    const double clear = ordinal % 2 == 0 ? 0.75 : 0.25;
+    const double dyed = 1.0 - clear;
+    particle.phase_id = 4;
+    particle.constituent_count = 2;
+    particle.constituents = {{{8, clear}, {14, dyed}}};
+    particle.mass =
+        particle.reference_volume * (clear * kMaterials[0].density_kg_per_m3 + dyed * kMaterials[1].density_kg_per_m3);
+    inventory.mass_kg = particle.mass;
+    inventory.momentum_kg_m_per_s = {
+        particle.mass * particle.world_velocity.x,
+        particle.mass * particle.world_velocity.y,
+        particle.mass * particle.world_velocity.z,
+    };
+    inventory.phase_id = particle.phase_id;
+    inventory.constituent_count = particle.constituent_count;
+    inventory.constituents = {{{8, clear * particle.reference_volume}, {14, dyed * particle.reference_volume}}};
+  }
+}
+
+inline absl::StatusOr<double> GradedTankCarrierEnergy3D(const LiquidState3D& state, const LiquidSceneInputs3D& scene) {
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto energy = [&](std::size_t slot, double area, double distance) {
+    const double speed = state.adaptive_faces[slot].carrier_velocity;
+    return 0.5 * scene.liquid_density * area * distance * speed * speed;
+  };
+  double result = 0.0;
+  for (std::size_t face = 0; face < topology->interior_faces().size(); ++face) {
+    const auto& geometry = topology->interior_faces()[face];
+    result += energy(ownership->interior_face_slots[face], geometry.face_area, geometry.cell_center_distance);
+  }
+  for (const auto& face : ownership->exterior_faces) {
+    if (face.face_index.axis == FaceNormalAxis::kY && face.cell_is_tail) {
+      result += energy(face.face_slot, face.face_area, topology->cells()[face.cell_ordinal].cell_width / 2.0);
+    }
+  }
+  return result;
 }
 
 }  // namespace fluidity::test

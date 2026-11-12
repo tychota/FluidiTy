@@ -49,7 +49,13 @@ replay. See the [M3 plan](../superpowers/plans/2026-11-11-m3-adaptivity-and-band
 
 The manufactured regression covers a 2:1 corner, signed keys on a translated lattice, false inner shell removal, and true cavity preservation. The mapped samples equal the independently authored controls. An unsupported node in a solid leaf is refused.
 
-Production Mesh still needs authenticated accepted state, density, support and obstacle closure at the same epoch and lattice.
+The manufactured extraction round-trips the completed endpoint through the
+M2 motion capture codec with explicit Eulerian ownership. EffectsSource already
+joins each motion payload to the committed point frame and verifies full state
+continuity across adjacent motion frames. The completed motion endpoint supplies
+the occupancy records at the requested epoch. Mesh still needs to derive
+particle support on the extraction lattice and qualify obstacle closure and
+component-volume targets from that same accepted interval.
 
 ```powershell
 uv run --offline --project reference --locked --group native ctest --test-dir out/build/occupancy-cpu --output-on-failure -R '^SurfaceOccupancy3D' --no-tests=error

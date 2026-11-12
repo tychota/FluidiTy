@@ -2,8 +2,8 @@
 #include <cmath>
 #include <limits>
 
-#include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/motion_capture_3d.h"
 #include "fluidity/host/surface_occupancy_3d.h"
 #include "gtest/gtest.h"
 
@@ -135,16 +135,27 @@ TEST(SurfaceOccupancy3D, MapsAcceptedGradedCoverageAndPreservesManufacturedTopol
       cell.key = keys[ordinal];
       cell.occupancy = occupancies[ordinal];
       if (cell.occupancy == LiquidCellOccupancy3D::kLiquid) {
-        cell.inventory.current_volume_m3 = topology->cells()[ordinal].cell_volume;
+        const double volume_m3 = topology->cells()[ordinal].cell_volume;
+        cell.material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+        cell.inventory.mass_kg = 1000 * volume_m3;
+        cell.inventory.reference_volume_m3 = volume_m3;
+        cell.inventory.current_volume_m3 = volume_m3;
       }
     }
     state.adaptive_cells = std::move(*cells);
     state.adaptive_faces = std::move(*faces);
-    const auto encoded = EncodeLiquidState3D(state);
+    auto capture = MotionCapture3D::Create(state, 1.0 / 24, 2);
+    ASSERT_TRUE(capture.ok()) << capture.status();
+    state.clock = {.time = 1.0 / 24, .frame_ordinal = 1, .accepted_step_ordinal = 1, .epoch = 1};
+    const auto observed = capture->Observe(state, false);
+    ASSERT_TRUE(observed.ok()) << observed;
+    const auto encoded = capture->Finish(state);
     ASSERT_TRUE(encoded.ok()) << encoded.status();
-    const auto decoded = DecodeLiquidState3D(encoded->values());
+    const auto decoded = DecodeMotionFrame3D(encoded->values());
     ASSERT_TRUE(decoded.ok()) << decoded.status();
-    const auto corrected = ApplyAdaptiveSurfaceOccupancy3D(band.density, support, *decoded, 4000);
+    ASSERT_EQ(decoded->samples.size(), 2);
+    EXPECT_EQ(decoded->samples.back(), state);
+    const auto corrected = ApplyAdaptiveSurfaceOccupancy3D(band.density, support, decoded->samples.back(), 4000);
     ASSERT_TRUE(corrected.ok()) << corrected.status();
     const auto expected = ApplySurfaceOccupancy3D(band.density, band.OccupancyView(), 4000);
     ASSERT_TRUE(expected.ok()) << expected.status();

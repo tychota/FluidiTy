@@ -116,4 +116,36 @@ absl::StatusOr<LiquidBandReseed3D> ReseedLiquidCoreCell3D(
     std::uint64_t first_particle_id
 );
 
+// Prepare one unpublished replacement for a canonical adaptive leaf. The
+// caller supplies authoritative occupancy and certifies the carrier over the
+// full leaf. Retirement requires particle ownership and exact agreement of
+// the leaf ledger with its resident particles. Both directions require the
+// graded scheduler's ordered mass, volume and momentum sums to agree exactly.
+// Retained particles keep order
+// and IDs. Eulerian leaves must have no resident particles. The supplied
+// capacities must accommodate the input and result. Errors preserve input.
+absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidBandRetirement3D(
+    const LiquidState3D& committed,
+    LiquidStateCapacities3D capacities,
+    AdaptiveMacCellKey3D leaf_key,
+    LiquidHandoffOccupancy3D authoritative_occupancy,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier
+);
+
+// Prepare the reverse change. The Eulerian inventory must be exactly
+// represented by the new particles. Append them in certified seed order
+// and advance the particle ID counter by particle_count. Both operations
+// preserve the clock, face records, unrelated leaves, and cell enthalpy.
+// FailedPrecondition denotes missing/incompatible ownership, occupancy or
+// carrier. ResourceExhausted denotes inadequate capacity. Validation,
+// topology and arithmetic errors propagate without a result.
+absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidCoreReseed3D(
+    const LiquidState3D& committed,
+    LiquidStateCapacities3D capacities,
+    AdaptiveMacCellKey3D leaf_key,
+    LiquidHandoffOccupancy3D authoritative_occupancy,
+    const std::optional<LiquidHandoffCarrier3D>& destination_carrier,
+    std::size_t particle_count
+);
+
 }  // namespace fluidity
