@@ -68,6 +68,17 @@ bool ValidBody(const RigidBody3D& body) {
       && IsFinite(body.torque);
 }
 
+bool ValidPressurePatch(
+    const RigidPressurePatch3D& patch,
+    std::uint64_t body_id,
+    std::uint64_t previous_patch_id,
+    std::size_t cell_count
+) {
+  const double normal_length = Norm(patch.outward_body_normal);
+  return patch.patch_id > previous_patch_id && patch.body_id == body_id && patch.pressure_cell_index < cell_count
+      && std::isfinite(patch.wetted_area) && patch.wetted_area > 0.0 && IsFinite(patch.world_centroid)
+      && std::isfinite(normal_length) && std::abs(normal_length - 1.0) <= 1e-12;
+}
 bool ValidDrift(const RigidBodyStep3D& step) {
   return std::isfinite(step.duration) && step.duration > 0.0 && IsFinite(step.start.center)
       && IsUnit(step.start.orientation) && IsFinite(step.end.linear_velocity) && IsFinite(step.end.angular_velocity);
@@ -226,6 +237,33 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
   }
   return patches;
 }
+absl::StatusOr<std::vector<double>> ComputeRigidBodyInwardWallFlux3D(
+    const RigidBody3D& body,
+    std::size_t pressure_cell_count,
+    std::span<const RigidPressurePatch3D> patches
+) {
+  if (!ValidBody(body)) {
+    return absl::InvalidArgumentError("invalid rigid body for wall flux");
+  }
+  std::vector<double> inward_wall_fluxes(pressure_cell_count);
+  std::uint64_t previous_patch_id = 0;
+  for (const auto& patch : patches) {
+    if (!ValidPressurePatch(patch, body.body_id, previous_patch_id, pressure_cell_count)) {
+      return absl::InvalidArgumentError("invalid rigid wall flux patch");
+    }
+    previous_patch_id = patch.patch_id;
+    const Vec3 moment_arm = Subtract(patch.world_centroid, body.center);
+    const Vec3 surface_velocity = Add(body.linear_velocity, Cross(body.angular_velocity, moment_arm));
+    const double normal_speed = Dot(surface_velocity, patch.outward_body_normal);
+    const double patch_flux = patch.wetted_area * normal_speed;
+    auto& inward_wall_flux = inward_wall_fluxes[patch.pressure_cell_index];
+    inward_wall_flux += patch_flux;
+    if (!std::isfinite(inward_wall_flux)) {
+      return absl::OutOfRangeError("nonfinite integrated rigid wall flux");
+    }
+  }
+  return inward_wall_fluxes;
+}
 absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
     RigidBody3D body,
     std::span<const double> solved_pressures,
@@ -237,17 +275,12 @@ absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
   }
   std::uint64_t previous_patch_id = 0;
   for (const auto& patch : patches) {
-    if (patch.patch_id <= previous_patch_id || patch.body_id != body.body_id) {
+    if (!ValidPressurePatch(patch, body.body_id, previous_patch_id, solved_pressures.size())) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     previous_patch_id = patch.patch_id;
-    if (patch.pressure_cell_index >= solved_pressures.size()) {
-      return absl::Status(absl::StatusCode::kInvalidArgument, {});
-    }
     const double pressure = solved_pressures[patch.pressure_cell_index];
-    const double normal_length = Norm(patch.outward_body_normal);
-    if (!std::isfinite(pressure) || !std::isfinite(patch.wetted_area) || patch.wetted_area <= 0.0
-        || !IsFinite(patch.world_centroid) || !std::isfinite(normal_length) || std::abs(normal_length - 1.0) > 1e-12) {
+    if (!std::isfinite(pressure)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const double pressure_difference = pressure - ambient_pressure;

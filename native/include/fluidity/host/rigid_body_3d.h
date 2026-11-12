@@ -76,6 +76,17 @@ absl::StatusOr<std::vector<RigidPressurePatch3D>> BuildFloatingBoxPressurePatche
     UniformMacGeometry3D geometry,
     std::span<const CellIndex3D> pressure_cells
 );
+// Integrates the rigid surface velocity over wetted patches. Returns one
+// flux in m³/s per pressure cell, positive into the liquid. Affine rigid
+// velocity makes centroid evaluation exact for each planar patch. Patches
+// use the same ordering and ownership as pressure traction. Only pass
+// patches not already represented by a prescribed MAC face flux. Malformed
+// inputs return InvalidArgument and range failures return OutOfRange.
+absl::StatusOr<std::vector<double>> ComputeRigidBodyInwardWallFlux3D(
+    const RigidBody3D& body,
+    std::size_t pressure_cell_count,
+    std::span<const RigidPressurePatch3D> patches
+);
 // Adds pressure traction and its moment about the body center, in patch ID
 // order. Pressure and ambient pressure share a reference and are in pascals.
 // Patches must be disjoint, strictly ordered by ID, and belong to the body.

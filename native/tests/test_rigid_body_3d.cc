@@ -102,6 +102,31 @@ TEST(RigidBody3D, FloatingBoxClipsWetFacesAndUsesExteriorPressureCells) {
       BuildFloatingBoxPressurePatches3D(body.body_id, {0.0, 0.0, 0.0}, {1.0, 1.0, 1.0}, 0.5, {{}, 1.0}, duplicate);
   EXPECT_EQ(malformed.status().code(), absl::StatusCode::kInvalidArgument);
 }
+TEST(RigidBody3D, WallFluxAndTractionExchangeEqualAndOppositePower) {
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .linear_velocity = {0.25, 0.5, 0.0},
+      .angular_velocity = {0.0, 0.0, 1.0},
+  };
+  const std::array patches{
+      RigidPressurePatch3D{1, body.body_id, 1, 0.5, {0.5, 0.0, 0.0}, {0.0, -1.0, 0.0}},
+      RigidPressurePatch3D{2, body.body_id, 1, 0.25, {0.0, 0.5, 0.0}, {-1.0, 0.0, 0.0}},
+  };
+  const auto fluxes = ComputeRigidBodyInwardWallFlux3D(body, 2, patches);
+  ASSERT_TRUE(fluxes.ok()) << fluxes.status();
+  EXPECT_DOUBLE_EQ((*fluxes)[0], 0.0);
+  EXPECT_DOUBLE_EQ((*fluxes)[1], -0.4375);
+
+  const auto loaded = AccumulateRigidBodyPressure3D(body, std::array{0.0, 8.0}, 0.0, patches);
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  const double body_power = loaded->force.x * body.linear_velocity.x + loaded->force.y * body.linear_velocity.y
+      + loaded->torque.z * body.angular_velocity.z;
+  EXPECT_DOUBLE_EQ(body_power, 3.5);
+  EXPECT_DOUBLE_EQ(body_power + 8.0 * (*fluxes)[1], 0.0);
+  EXPECT_EQ(ComputeRigidBodyInwardWallFlux3D(body, 1, patches).status().code(), absl::StatusCode::kInvalidArgument);
+}
 TEST(RigidBody3D, FloatingBoxRejectsInteriorHoleWithCompleteOuterEdges) {
   std::vector<CellIndex3D> cells;
   for (int z = -1; z <= 3; ++z) {

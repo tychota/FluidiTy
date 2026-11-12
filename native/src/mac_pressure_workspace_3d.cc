@@ -170,7 +170,8 @@ std::optional<double> UniformDirichletRestPressure(const PreparedMacPressureView
     return std::nullopt;
   }
   for (const auto& cell : system.cells()) {
-    if (cell.compliance != 0 || cell.previous_pressure != 0 || cell.integrated_target_flux != 0) {
+    if (cell.compliance != 0 || cell.previous_pressure != 0 || cell.integrated_target_flux != 0
+        || cell.integrated_inward_wall_flux != 0) {
       return std::nullopt;
     }
   }
@@ -892,6 +893,9 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> PrepareUpload
     pressure_cell_volume.Add(cell.fluid_volume);
   }
   pressure_internal::arithmetic::CompensatedSum inward_prescribed_wall_flux;
+  for (const auto& cell : system->cells()) {
+    inward_prescribed_wall_flux.Add(cell.integrated_inward_wall_flux);
+  }
   for (std::size_t face_ordinal = 0; face_ordinal < system->links().size(); ++face_ordinal) {
     const auto& link = system->links()[face_ordinal];
     const bool has_explicit_wall_flux =

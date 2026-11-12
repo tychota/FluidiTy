@@ -98,7 +98,8 @@ FreezeCell(const MacPressureCell3D& cell, double step_duration, double full_cell
   if (!IsFinitePositive(cell.fluid_volume) || cell.fluid_volume > full_cell_volume) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  if (!std::isfinite(cell.target_divergence) || !std::isfinite(cell.previous_pressure)) {
+  if (!std::isfinite(cell.target_divergence) || !std::isfinite(cell.previous_pressure)
+      || !std::isfinite(cell.integrated_inward_wall_flux)) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
   double compliance = 0.0;
@@ -124,6 +125,7 @@ FreezeCell(const MacPressureCell3D& cell, double step_duration, double full_cell
       .cell_index = cell.cell_index,
       .fluid_volume = cell.fluid_volume,
       .integrated_target_flux = integrated_target_flux,
+      .integrated_inward_wall_flux = cell.integrated_inward_wall_flux,
       .compliance = compliance,
       .previous_pressure = cell.previous_pressure,
   };
@@ -252,6 +254,7 @@ inline absl::Status AssembleIntegratedRhsInto(
   std::fill(rows.begin(), rows.end(), FluxRow{});
   for (std::size_t cell = 0; cell < cells.size(); ++cell) {
     rows[cell].Add(cells[cell].integrated_target_flux);
+    rows[cell].Add(cells[cell].integrated_inward_wall_flux);
     const auto& coefficients = cells[cell];
     const double prior_compliance_flux = coefficients.compliance * coefficients.previous_pressure;
     if (!IsRepresentablePressureProduct(
@@ -345,6 +348,7 @@ inline absl::StatusOr<std::size_t> SelectGaugesInto(
     auto& balance = balances[component_ordinals[cell]];
     if (!balance.anchored) {
       balance.physical_balance.Add(cells[cell].integrated_target_flux);
+      balance.physical_balance.Add(cells[cell].integrated_inward_wall_flux);
     }
   }
   for (const auto& link : links) {
@@ -430,6 +434,7 @@ inline absl::Status CorrectFacesAndAccumulatePhysicalDefectInto(
   for (std::size_t cell = 0; cell < rows.size(); ++cell) {
     const auto& coefficients = system.cells()[cell];
     rows[cell].Add(-coefficients.integrated_target_flux);
+    rows[cell].Add(-coefficients.integrated_inward_wall_flux);
     if (coefficients.compliance > 0.0) {
       const double pressure_change = candidate_cell_pressures[cell] - coefficients.previous_pressure;
       const double compliance_change_flux = coefficients.compliance * pressure_change;
