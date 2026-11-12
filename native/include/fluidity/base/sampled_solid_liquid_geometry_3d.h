@@ -31,6 +31,21 @@ SampledSolidExteriorPlane(const numeric::array<double, 8>& solid_distance, const
   return plane;
 }
 
+// Restricts a face polygon to the open side of an optional analytic
+// boundary. A polygon exactly on that boundary is closed.
+FLUIDITY_HD inline ClippingPolygon
+ClipSampledAvailableFace(const ClippingPolygon& polygon, const ClippingPlane* analytic_fluid_side) {
+  if (analytic_fluid_side == nullptr || polygon.overflow) {
+    return polygon;
+  }
+  if (numeric::none_of(polygon.begin(), polygon.end(), [&](const ClippingVertex& vertex) {
+        return EvaluateClipDistance(vertex, *analytic_fluid_side) < 0;
+      })) {
+    return {};
+  }
+  return ClipPolygon(polygon, *analytic_fluid_side);
+}
+
 // Wet tetrahedra are convex. Their only triangular interior faces
 // form a ring around the cube's body diagonal. A positive-area wet
 // opening on a shared triangle connects its incident pieces.
@@ -38,10 +53,12 @@ FLUIDITY_HD inline Error CheckSampledWetConnectivity(
     const ClippingVertex (&vertices)[8],
     const numeric::array<double, 8>& solid_distance,
     const bool (&wet)[6],
-    double width
+    double width,
+    const ClippingPlane* analytic_fluid_side
 ) {
   const auto wet_corner = [&](int corner) {
-    return vertices[corner].liquid_distance < 0 && solid_distance[corner] > 0;
+    return vertices[corner].liquid_distance < 0 && solid_distance[corner] > 0
+        && (analytic_fluid_side == nullptr || EvaluateClipDistance(vertices[corner], *analytic_fluid_side) < 0);
   };
   if (wet_corner(0) || wet_corner(7)) {
     return Error::kNone;
@@ -74,7 +91,9 @@ FLUIDITY_HD inline Error CheckSampledWetConnectivity(
       continue;
     }
     const auto liquid = ClipPolygon(triangle, {{}, 0, true});
-    const double wet_area = ComputeOpenFaceArea(liquid, SampledSolidExteriorPlane(solid_distance, corners), width);
+    const auto available_liquid = ClipSampledAvailableFace(liquid, analytic_fluid_side);
+    const double wet_area =
+        ComputeOpenFaceArea(available_liquid, SampledSolidExteriorPlane(solid_distance, corners), width);
     if (!IsNormalOrZero(wet_area)) {
       return Error::kRange;
     }
@@ -100,7 +119,10 @@ FLUIDITY_HD inline Error CheckSampledWetConnectivity(
 // normalized solid sample losing precision return kRange. Disconnected wet
 // regions return kPrecondition. No partial measures
 // are returned, and the input remains unchanged.
-FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCell(const SampledSolidLiquidCell& cell) {
+// If supplied, analytic_fluid_side is the checked open halfspace in
+// local cell-width coordinates. Its boundary is excluded from openings.
+FLUIDITY_HD inline Value<SampledSolidLiquidMeasures>
+MeasureSampledSolidLiquidCell(const SampledSolidLiquidCell& cell, const ClippingPlane* analytic_fluid_side = nullptr) {
   const double width = cell.cell_width;
   if (!numeric::isfinite(width) || width <= 0) {
     return Error::kInvalid;
@@ -165,7 +187,9 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
     const auto d = vertices[corners[3]];
     const auto liquid = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
     const auto exterior = ClipPolyhedron(liquid, SampledSolidExteriorPlane(scaled_solid_distance, corners));
-    const double wet_volume = ComputeClippedVolume(exterior, width);
+    const double wet_volume = analytic_fluid_side == nullptr
+        ? ComputeClippedVolume(exterior, width)
+        : ComputeClippedVolume(ClipPolyhedron(exterior, *analytic_fluid_side), width);
     wet_tetrahedra[tetrahedron] = wet_volume > 0;
     result.wet_volume += wet_volume;
   }
@@ -175,7 +199,8 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
     return Error::kRange;
   }
   result.wet_volume = numeric::min(result.wet_volume, full_volume);
-  const auto connectivity = CheckSampledWetConnectivity(vertices, scaled_solid_distance, wet_tetrahedra, width);
+  const auto connectivity =
+      CheckSampledWetConnectivity(vertices, scaled_solid_distance, wet_tetrahedra, width, analytic_fluid_side);
   if (connectivity != Error::kNone) {
     return connectivity;
   }
@@ -193,7 +218,8 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
         const int middle_corner = first_corner | (1 << transverse_axis);
         const int corners[3]{first_corner, middle_corner, last_corner};
         const ClippingPolygon triangle{vertices[first_corner], vertices[middle_corner], vertices[last_corner]};
-        open_area += ComputeOpenFaceArea(triangle, SampledSolidExteriorPlane(scaled_solid_distance, corners), width);
+        const auto available = ClipSampledAvailableFace(triangle, analytic_fluid_side);
+        open_area += ComputeOpenFaceArea(available, SampledSolidExteriorPlane(scaled_solid_distance, corners), width);
       }
       if (!IsNormalOrZero(open_area) || open_area / full_area > 1 + kMeasureSlack) {
         return Error::kRange;
@@ -210,10 +236,15 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
 // diagonal is 0 to 3. The resulting area weights in m² multiply sampled
 // normal velocities for wall flux and distribute its conjugate load by
 // the transpose. An all-zero solid plateau blocks the entire face.
+// An optional analytic clip uses the same local face coordinates and
+// excludes the portion occupied by the analytic obstacle.
 // Invalid samples or width return kInvalid. Unrepresentable weights return
 // kRange. Failure returns no partial weights.
-FLUIDITY_HD inline Value<numeric::array<double, 4>>
-MeasureSampledSolidFaceWeights(double width, const numeric::array<double, 4>& solid_distance) {
+FLUIDITY_HD inline Value<numeric::array<double, 4>> MeasureSampledSolidFaceWeights(
+    double width,
+    const numeric::array<double, 4>& solid_distance,
+    const ClippingPlane* analytic_fluid_side = nullptr
+) {
   if (!numeric::isfinite(width) || width <= 0) {
     return Error::kInvalid;
   }
@@ -255,7 +286,8 @@ MeasureSampledSolidFaceWeights(double width, const numeric::array<double, 4>& so
         .normal = Scale(exterior.normal, -1),
         .plane_coordinate = -exterior.plane_coordinate,
     };
-    const auto blocked = ClipPolygon(triangle, interior);
+    const auto available = ClipSampledAvailableFace(triangle, analytic_fluid_side);
+    const auto blocked = ClipPolygon(available, interior);
     if (blocked.overflow) {
       return Error::kRange;
     }
@@ -323,6 +355,39 @@ FLUIDITY_HD inline bool IsSampledSolidMode(GeometryMode mode) {
   return mode == GeometryMode::kSampledSolidCell || mode == GeometryMode::kSampledSolidFace;
 }
 
+struct SampledSolidAnalyticFace {
+  ClippingPlane fluid_side;  // Open analytic halfspace in transverse face coordinates.
+  double blocked_area;  // m², occupied by the analytic wall.
+  double wall_flux;  // m³/s along the positive face normal.
+};
+
+// Measures the analytic wall independently of the snow. Its area takes
+// priority over any sampled snow on the same portion of the face.
+FLUIDITY_HD inline Value<SampledSolidAnalyticFace>
+MeasureSampledSolidAnalyticFace(const GeometryInput& input, const ObstaclePlanes& local) {
+  auto query = input;
+  query.mode = GeometryMode::kFace;
+  const auto geometry = ComputeGeometry(query);
+  if (!geometry.ok()) {
+    return geometry.status();
+  }
+  SampledSolidAnalyticFace result{
+      .fluid_side = {.normal = {}, .plane_coordinate = -local.high},
+      .blocked_area = geometry->blocked_face_area,
+      .wall_flux = geometry->blocked_face_area * local.velocity[input.axis],
+  };
+  int transverse = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis != input.axis) {
+      result.fluid_side.normal[transverse++] = -local.normal[axis];
+    }
+  }
+  if (!IsNormalOrZero(result.wall_flux)) {
+    return Error::kRange;
+  }
+  return result;
+}
+
 // Maps the staged samples to the existing freeze query result. A face
 // query supplies the four corners on the low side of the selected axis.
 FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const GeometryInput& input) {
@@ -335,7 +400,15 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
     cell.liquid_distance[corner] = is_face ? 0.0 : input.corner_distances[corner];
     cell.solid_distance[corner] = input.derivative_distances[corner];
   }
-  const auto measures = MeasureSampledSolidLiquidCell(cell);
+  const auto local = LocalObstacle(input);
+  if (!local.ok()) {
+    return local.status();
+  }
+  if (input.obstacle.kind != ObstacleKind::kAbsent && input.obstacle.kind != ObstacleKind::kHalfspace) {
+    return Error::kInvalid;
+  }
+  const ClippingPlane analytic_fluid_side{.normal = Scale(local->normal, -1), .plane_coordinate = -local->high};
+  const auto measures = MeasureSampledSolidLiquidCell(cell, local->present ? &analytic_fluid_side : nullptr);
   if (!measures.ok()) {
     return measures.status();
   }
@@ -356,7 +429,19 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
         ++face_corner;
       }
     }
-    const auto weights = MeasureSampledSolidFaceWeights(cell.cell_width, solid_distance);
+    SampledSolidAnalyticFace analytic{};
+    if (local->present) {
+      const auto measured = MeasureSampledSolidAnalyticFace(input, *local);
+      if (!measured.ok()) {
+        return measured.status();
+      }
+      analytic = *measured;
+    }
+    const auto weights = MeasureSampledSolidFaceWeights(
+        cell.cell_width,
+        solid_distance,
+        local->present ? &analytic.fluid_side : nullptr
+    );
     if (!weights.ok()) {
       return weights.status();
     }
@@ -365,7 +450,11 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
       weighted_area += (*weights)[corner];
       result.prescribed_wall_flux += (*weights)[corner] * normal_velocity[corner];
     }
+    result.prescribed_wall_flux += analytic.wall_flux;
+    weighted_area += analytic.blocked_area;
+    const double area_slack = 64 * numeric::numeric_limits<double>::epsilon() * cell.cell_width * cell.cell_width;
     if (!IsNormalOrZero(result.blocked_face_area) || !IsNormalOrZero(result.prescribed_wall_flux)
+        || numeric::abs(result.blocked_face_area - weighted_area) > area_slack
         || (weighted_area > 0 && result.blocked_face_area == 0)) {
       return Error::kRange;
     }

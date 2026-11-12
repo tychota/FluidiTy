@@ -420,7 +420,8 @@ class LiquidSubstepScheduler3D {
   // sphere-union wall and the host snow transfer with complete support.
   // Rejects intersecting particle sweeps and publishes the snow candidate
   // only after the liquid transaction accepts. The original snow records
-  // remain immutable. Analytic obstacle composition is unsupported.
+  // remain immutable. A vertically translating overhead platen uses the same
+  // start-of-step pose for liquid geometry, pressure loads, and snow contact.
   absl::StatusOr<LiquidSnowAttempt3D> AttemptWithSnow(double step_duration, const LiquidSnowStepInputs3D& snow);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();

@@ -215,6 +215,84 @@ TEST(LiquidBoundaryGeometry3D, PressureLoadedSnowTrialAdvancesWithoutChangingAcc
   EXPECT_DOUBLE_EQ(accepted.front().transfer.sorted_world_position.x, 2.0);
 }
 
+TEST(LiquidBoundaryGeometry3D, AnalyticPlatenExcludesOverlappingSnowReactionArea) {
+  boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
+  for (int corner = 0; corner < 8; ++corner) {
+    cell.liquid_distance[corner] = -1.0;
+    cell.solid_distance[corner] = (corner & 1) - 0.5;
+  }
+  const boundary_internal::ClippingPlane fluid_side{.normal = {0, 1, 0}, .plane_coordinate = 0.75};
+  const auto clipped = boundary_internal::MeasureSampledSolidLiquidCell(cell, &fluid_side);
+  ASSERT_TRUE(clipped.ok());
+  EXPECT_NEAR(clipped->wet_volume, 0.375, 2e-14);
+  EXPECT_NEAR(clipped->open_area[4], 0.375, 2e-14);
+  EXPECT_EQ(clipped->open_area[3], 0.0);
+
+  const auto snow_weights = boundary_internal::MeasureSampledSolidFaceWeights(1.0, {-0.5, 0.5, -0.5, 0.5}, &fluid_side);
+  ASSERT_TRUE(snow_weights.ok());
+  constexpr std::array corner_velocity{2.0, 6.0, 2.0, 6.0};
+  EXPECT_NEAR(std::accumulate(snow_weights->begin(), snow_weights->end(), 0.0), 0.375, 2e-14);
+  EXPECT_NEAR(
+      std::inner_product(snow_weights->begin(), snow_weights->end(), corner_velocity.begin(), 0.0),
+      1.125,
+      2e-14
+  );
+}
+
+TEST(LiquidBoundaryGeometry3D, ComposedPlatenPressureFluxKeepsSnowReactionSeparate) {
+  const auto grid = *SparseMacGrid3D::Create({{}, 1.0}, std::array{BlockIndex3D{0, 0, 0}}, 1);
+  const std::array cells{CellIndex3D{0, 0, 0}};
+  const std::array centers{LiquidCenterDistance3D{{0, 0, 0}, -1}};
+  std::array<LiquidCornerDistance3D, 8> liquid_corners{};
+  PlasticSolidBoundarySamples3D snow{
+      .corners = *LiquidRecords3D<SolidCornerDistance3D>::Create(8),
+      .particle_ids = *LiquidRecords3D<std::uint64_t>::Create(8),
+      .particle_offsets = *LiquidRecords3D<Vec3>::Create(8),
+  };
+  ASSERT_TRUE(snow.corners.Resize(8).ok());
+  ASSERT_TRUE(snow.particle_ids.Resize(8).ok());
+  ASSERT_TRUE(snow.particle_offsets.Resize(8).ok());
+  for (int corner = 0; corner < 8; ++corner) {
+    const CellCornerIndex3D index{corner & 1, (corner >> 1) & 1, (corner >> 2) & 1};
+    liquid_corners[corner] = {index, -1.0};
+    snow.corners.values()[corner] = {index, index.x - 0.5, {0, 0, 2.0 + 4.0 * index.x}};
+    snow.particle_ids.values()[corner] = 7;
+  }
+  const double q = 1.0 / std::sqrt(2.0);
+  const LiquidObstacle3D platen = TranslatingHalfspace3D{{0, -q, -q}, -0.75 * q, {0, 0.5, 0.5}};
+  const auto frozen = FreezeLiquidBoundaryGeometry3D({
+      .mac_grid = grid,
+      .cell_indices = cells,
+      .center_distances = centers,
+      .corner_distances = liquid_corners,
+      .obstacle = platen,
+      .step_duration = 0.01,
+      .liquid_density = 1,
+      .surface_tension = 0,
+      .sampled_solid = snow.View(),
+  });
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  EXPECT_NEAR(frozen->cells()[0].fluid_volume, 0.140625, 2e-14);
+  const auto face = std::ranges::find_if(frozen->faces(), [](const FrozenLiquidFace3D& candidate) {
+    return candidate.face_index.axis == FaceNormalAxis::kZ && candidate.face_index.lattice_index.z == 0;
+  });
+  ASSERT_NE(face, frozen->faces().end());
+  ASSERT_TRUE(face->prescribed_wall_flux.has_value());
+  EXPECT_NEAR(face->open_area, 0.375, 2e-14);
+  EXPECT_NEAR(*face->prescribed_wall_flux, 1.25, 2e-14);
+  const auto loads = StagePlasticSolidPressureFace3D(grid.view(), snow, *face, 13, 5, 0.01, platen);
+  ASSERT_TRUE(loads.ok()) << loads.status();
+  double impulse = 0;
+  double work = 0;
+  for (std::size_t i = 0; i < loads->size(); ++i) {
+    impulse += (*loads)[i].impulse.z;
+    work += (*loads)[i].impulse.z * snow.corners.values()[i].wall_velocity.z;
+  }
+  EXPECT_NEAR(impulse, 0.03, 2e-14);
+  EXPECT_NEAR(work, 0.09, 2e-14);
+}
+
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {
   boundary_internal::SampledSolidLiquidCell cell{.cell_width = 1.0};
   cell.liquid_distance.fill(-1);

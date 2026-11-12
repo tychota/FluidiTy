@@ -71,6 +71,10 @@ TEST(LiquidSubstep3D, SnowTrialPublishesOnlyWithLiquidAcceptance) {
   test::ExpectSnowJointAcceptance(*scheduler, state);
 }
 
+TEST(LiquidSubstep3D, SnowAndLiquidUseSameMovingPlaten) {
+  test::ExpectSnowMovingPlaten(Initial(), Options(), CpuLiquidSubstepBackend3D());
+}
+
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

@@ -92,6 +92,31 @@ __global__ void CheckSampledSolidGeometryOnDevice(int* result) {
   }
   if (fabs(normal_force - 2.0) > 2e-14 || fabs(solid_power - 8.0 * geometry->prescribed_wall_flux) > 2e-14) {
     *result = 97;
+    return;
+  }
+  // The oblique platen blocks one quarter of this Z-face independently of snow.
+  const double normal_component = 1 / sqrt(2.0);
+  GeometryInput composed_query{
+      .mode = GeometryMode::kSampledSolidFace,
+      .geometry = {{}, 1.0},
+      .obstacle =
+          {
+              .kind = fluidity::boundary_internal::ObstacleKind::kHalfspace,
+              .normal = {0, -normal_component, -normal_component},
+              .coordinate = -0.75 * normal_component,
+              .velocity = {0, 0.5, 0.5},
+          },
+      .axis = 2,
+  };
+  for (int corner = 0; corner < 4; ++corner) {
+    const double x = corner & 1;
+    composed_query.derivative_distances[corner] = x - 0.5;
+    composed_query.corner_distances[corner] = 2 + 4 * x;
+  }
+  const auto composed = fluidity::boundary_internal::ComputeSampledSolidGeometry(composed_query);
+  if (!composed.ok() || fabs(composed->open_face_area - 0.375) > 2e-14
+      || fabs(composed->prescribed_wall_flux - 1.25) > 2e-14) {
+    *result = 98;
   }
 }
 
