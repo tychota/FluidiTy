@@ -469,6 +469,22 @@ class GeometryCases {
 
     inputs.sampled_solid->corner_distances = std::span<const SolidCornerDistance3D>(solid_corners).first(1);
     EXPECT_EQ(freeze_(inputs).status().code(), absl::StatusCode::kFailedPrecondition);
+
+    // Wet lobes at corners 1 and 6 have no shared open triangle.
+    for (auto& corner : solid_corners) {
+      const auto index = corner.corner_index;
+      const bool first_lobe = index.x == -1 && index.y == -2 && index.z == -2;
+      const bool second_lobe = index.x == -2 && index.y == -1 && index.z == -1;
+      corner.signed_distance = first_lobe || second_lobe ? 1.0 : -1.0;
+    }
+    for (auto& corner : samples.corners) {
+      corner.signed_distance = -1.0;
+    }
+    inputs.cell_indices = std::span<const CellIndex3D>(samples.candidates).first(1);
+    inputs.sampled_solid->corner_distances = solid_corners;
+    const auto split = freeze_(inputs);
+    ASSERT_FALSE(split.ok());
+    EXPECT_EQ(split.status().code(), absl::StatusCode::kFailedPrecondition);
   }
 
   Samples IsolatedLiquid(double center = -0.01) {

@@ -1821,7 +1821,14 @@ ctest --test-dir out/build/m5-resolved-clean -R '^LiquidBoundary(Geometry|Worksp
 ctest --test-dir out/build/windows-release-cuda -R '^CudaLiquidBoundary3D\.' --output-on-failure
 ```
 
+The clipper now rejects a pressure cell with disconnected wet pieces.
+Wet tetrahedra connect only across a shared triangle with positive wet
+area. A fixture with wet lobes at opposite off-diagonal corners
+reproduced acceptance before the fix and now returns
+`FAILED_PRECONDITION` on native and SM120. All 74 native geometry and
+workspace tests and six CUDA boundary tests passed after the change.
+
 The sampled input currently requires an otherwise unobstructed domain.
 The mixed scheduler still needs particle-derived samples, composition
-with the tank and moving obstacle, connectivity checks for split wet
-regions, and a reciprocal traction scatter using the same geometry.
+with the tank and moving obstacle, and reciprocal traction scatter
+using the same geometry.

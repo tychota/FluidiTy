@@ -15,8 +15,8 @@ struct SampledSolidLiquidMeasures {
   numeric::array<double, 6> open_area{};  // Area outside solid, m², low/high x, y, and z.
 };
 
-// The cube's tetrahedra and their boundary triangles have vertices on a
-// chain of Cartesian edges. The solid interpolant is affine on each simplex.
+// The simplex vertices form a chain of increasing corner bits. Use one
+// changing axis per edge to extend the affine samples off the simplex.
 template <std::size_t CornerCount>
 FLUIDITY_HD inline ClippingPlane
 SampledSolidExteriorPlane(const numeric::array<double, 8>& solid_distance, const int (&corners)[CornerCount]) {
@@ -25,10 +25,71 @@ SampledSolidExteriorPlane(const numeric::array<double, 8>& solid_distance, const
     const int previous_corner = corners[edge - 1];
     const int next_corner = corners[edge];
     const int direction = next_corner ^ previous_corner;
-    const int axis = direction == 4 ? 2 : (direction == 2 ? 1 : 0);
+    const int axis = (direction & 1) != 0 ? 0 : ((direction & 2) != 0 ? 1 : 2);
     plane.normal[axis] = solid_distance[previous_corner] - solid_distance[next_corner];
   }
   return plane;
+}
+
+// Wet tetrahedra are convex. Their only triangular interior faces
+// form a ring around the cube's body diagonal. A positive-area wet
+// opening on a shared triangle connects its incident pieces.
+FLUIDITY_HD inline Error CheckSampledWetConnectivity(
+    const ClippingVertex (&vertices)[8],
+    const numeric::array<double, 8>& solid_distance,
+    const bool (&wet)[6],
+    double width
+) {
+  const auto wet_corner = [&](int corner) {
+    return vertices[corner].liquid_distance < 0 && solid_distance[corner] > 0;
+  };
+  if (wet_corner(0) || wet_corner(7)) {
+    return Error::kNone;
+  }
+  int components = 0;
+  for (const bool piece : wet) {
+    components += piece;
+  }
+  if (components <= 1) {
+    return Error::kNone;
+  }
+  constexpr int kTetrahedronRing[6]{0, 1, 4, 5, 3, 2};
+  constexpr int kSharedCorner[6]{1, 5, 4, 6, 2, 3};
+  int group[6]{0, 1, 2, 3, 4, 5};
+  for (int edge = 0; edge < 6; ++edge) {
+    const int first = kTetrahedronRing[edge];
+    const int second = kTetrahedronRing[(edge + 1) % 6];
+    if (!wet[first] || !wet[second] || group[first] == group[second]) {
+      continue;
+    }
+    const int middle = kSharedCorner[edge];
+    const ClippingPolygon triangle{vertices[0], vertices[middle], vertices[7]};
+    if (numeric::none_of(triangle.begin(), triangle.end(), [](const ClippingVertex& vertex) {
+          return vertex.liquid_distance < 0;
+        })) {
+      continue;
+    }
+    const int corners[3]{0, middle, 7};
+    if (solid_distance[0] <= 0 && solid_distance[middle] <= 0 && solid_distance[7] <= 0) {
+      continue;
+    }
+    const auto liquid = ClipPolygon(triangle, {{}, 0, true});
+    const double wet_area = ComputeOpenFaceArea(liquid, SampledSolidExteriorPlane(solid_distance, corners), width);
+    if (!IsNormalOrZero(wet_area)) {
+      return Error::kRange;
+    }
+    if (wet_area > 0) {
+      const int old_group = group[second];
+      const int new_group = group[first];
+      for (int& member : group) {
+        if (member == old_group) {
+          member = new_group;
+        }
+      }
+      --components;
+    }
+  }
+  return components == 1 ? Error::kNone : Error::kPrecondition;
 }
 
 // Measures piecewise-linear liquid outside piecewise-linear solid. Adjacent
@@ -36,7 +97,8 @@ SampledSolidExteriorPlane(const numeric::array<double, 8>& solid_distance, const
 // geometry's tetrahedra and face diagonals. Zero plateaus are closed solid
 // and contribute no wet volume.
 // Invalid widths or samples return kInvalid. Unrepresentable measures or a
-// normalized solid sample losing precision return kRange. No partial measures
+// normalized solid sample losing precision return kRange. Disconnected wet
+// regions return kPrecondition. No partial measures
 // are returned, and the input remains unchanged.
 FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCell(const SampledSolidLiquidCell& cell) {
   const double width = cell.cell_width;
@@ -80,6 +142,7 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
   }
 
   SampledSolidLiquidMeasures result;
+  bool wet_tetrahedra[6]{};
   for (std::size_t tetrahedron = 0; tetrahedron < 6; ++tetrahedron) {
     const int corners[4]{
         0,
@@ -102,7 +165,9 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
     const auto d = vertices[corners[3]];
     const auto liquid = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
     const auto exterior = ClipPolyhedron(liquid, SampledSolidExteriorPlane(scaled_solid_distance, corners));
-    result.wet_volume += ComputeClippedVolume(exterior, width);
+    const double wet_volume = ComputeClippedVolume(exterior, width);
+    wet_tetrahedra[tetrahedron] = wet_volume > 0;
+    result.wet_volume += wet_volume;
   }
 
   constexpr double kMeasureSlack = 64 * numeric::numeric_limits<double>::epsilon();
@@ -110,6 +175,10 @@ FLUIDITY_HD inline Value<SampledSolidLiquidMeasures> MeasureSampledSolidLiquidCe
     return Error::kRange;
   }
   result.wet_volume = numeric::min(result.wet_volume, full_volume);
+  const auto connectivity = CheckSampledWetConnectivity(vertices, scaled_solid_distance, wet_tetrahedra, width);
+  if (connectivity != Error::kNone) {
+    return connectivity;
+  }
 
   for (int axis = 0; axis < 3; ++axis) {
     const int axis_bit = 1 << axis;
