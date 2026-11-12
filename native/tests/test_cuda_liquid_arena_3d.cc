@@ -225,6 +225,7 @@ TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
   ASSERT_TRUE(initial.adaptive_faces.Resize(14).ok());
   initial.adaptive_cells[0] = {
       .key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1},
+      .material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian,
       .inventory =
           {.mass_kg = 4,
            .reference_volume_m3 = 0.5,
@@ -261,11 +262,16 @@ TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
   auto trial = CloneLiquidState3D(initial, capacity);
   ASSERT_TRUE(trial.ok());
   trial->adaptive_cells[0].inventory.enthalpy_j += 2;
+  trial->adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kParticles;
+  trial->adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
   trial->adaptive_faces[0].carrier_velocity = 3;
   constexpr LiquidClock3D accepted_clock{1, 1, 0, 1, 1};
   ASSERT_TRUE(trial->adaptive_faces.Resize(13).ok());
   EXPECT_EQ(arena->PreparePublication(*trial, accepted_clock).code(), absl::StatusCode::kInvalidArgument);
   ASSERT_TRUE(trial->adaptive_faces.Resize(14).ok());
+  trial->adaptive_cells[1].material_owner = static_cast<AdaptiveLiquidMaterialOwner3D>(2);
+  EXPECT_EQ(arena->PreparePublication(*trial, accepted_clock).code(), absl::StatusCode::kInvalidArgument);
+  trial->adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
   EXPECT_EQ(arena->AcquireCommitted()->identity(), old->identity());
   ASSERT_TRUE(arena->PreparePublication(*trial, accepted_clock).ok());
   arena->DiscardPublication();
