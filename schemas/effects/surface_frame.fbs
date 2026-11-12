@@ -20,6 +20,13 @@ table SurfaceComposition {
   phase_id:ulong = null (id:1);
   constituents:[fluidity.cache.v1.ConstituentFraction] (required, id:2);
 }
+table SurfacePhaseInterface {
+  phase_a:ulong (id:0);
+  phase_b:ulong (id:1);
+  exterior_sides:[ubyte] (required, id:2);
+  interior_positions:[fluidity.cache.v1.Vector3] (required, id:3);
+  triangles:[SurfaceTriangle] (required, id:4);
+}
 table SurfaceFrame {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -30,6 +37,7 @@ table SurfaceFrame {
   triangles:[SurfaceTriangle] (required, id:6);
   volumes:[SurfaceVolume] (required, id:7);
   compositions:[SurfaceComposition] (id:8);
+  phase_interface:SurfacePhaseInterface (id:9);
 }
 root_type SurfaceFrame;
 file_identifier "FLMS";

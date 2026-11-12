@@ -567,3 +567,11 @@ The two-phase extractor partitions a common piecewise-linear exterior into A-to-
 Ten CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceMesh3D|EvaluatesAndCachesMixedSurfaceFractions'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-phase-partition. The clean Release build from the preceding candidate passed 23 focused real-device CUDA checks in out/m4-usd-clean-release-cuda-tests.log.
 
 Production integration must sample the existing particle phase field, preserve seam incidence through tracking and volume correction, qualify both closed phases after correction, and carry the shared faces and phase pair through the cache and renderer. This receipt covers the raw lattice partition.
+
+## Shared phase sheet cache receipt
+
+The optional Mesh frame record carries an ordered stable phase pair, one label per exterior triangle, and one oriented A-to-B internal sheet. Internal triangles address the existing exterior indices at the seam and append positions only for interior vertices. Read and write enforce combined record budgets, reconstruct both closed phase boundaries from the same shared sheet, and reject open, nonmanifold, intersecting or wrongly wound boundaries. The fixed exterior vertex representation and legacy payloads are preserved.
+
+A tetrahedron split by an oblique plane round-tripped byte-for-byte with one interior vertex and one shared seam. Wrong exterior labels, flipped shared winding and an out-of-range index were rejected. The combined vertex budget also refused the fixture on decode. Five focused CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceCache3D|PartitionsTwoClosed|EvaluatesAndCachesMixed'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-shared-surface-cache.
+
+The codec is ready for the production reconstruction to preserve the shared seam through correction and for USD to publish the internal sheet.

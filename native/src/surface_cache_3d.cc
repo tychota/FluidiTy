@@ -21,6 +21,72 @@ bool Safe(const SurfaceMetrics3D& m) {
   return m.boundary_edges == 0 && m.nonmanifold_edges == 0 && m.nonmanifold_vertices == 0 && m.orientation_defects == 0
       && m.degenerate_triangles == 0 && m.self_intersections == 0;
 }
+absl::Status ValidatePhaseInterface(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) {
+  if (!frame.phase_interface) {
+    return absl::OkStatus();
+  }
+  const auto& sheet = *frame.phase_interface;
+  const auto vertex_count = frame.mesh.vertices.size() + sheet.interior_positions.size();
+  const auto counts = CheckCounts(vertex_count, frame.mesh.triangles.size() + sheet.triangles.size(), limits);
+  if (!counts.ok()) {
+    return counts;
+  }
+  if (sheet.phase_a == 0 || sheet.phase_a >= sheet.phase_b || sheet.triangles.empty()
+      || sheet.exterior_sides.size() != frame.mesh.triangles.size()) {
+    return absl::InvalidArgumentError("invalid shared surface phase sheet");
+  }
+  for (const auto side : sheet.exterior_sides) {
+    if (side > 1) {
+      return absl::InvalidArgumentError("invalid exterior phase side");
+    }
+  }
+  for (const auto& triangle : sheet.triangles) {
+    if (*std::max_element(triangle.begin(), triangle.end()) >= vertex_count) {
+      return absl::InvalidArgumentError("shared surface index outside vertices");
+    }
+  }
+  for (std::uint8_t side = 0; side < 2; ++side) {
+    SurfaceMesh3D phase;
+    std::vector<std::uint32_t> local_indices(vertex_count, UINT32_MAX);
+    const auto append = [&](std::array<std::uint32_t, 3> triangle) {
+      for (auto& index : triangle) {
+        auto& local = local_indices[index];
+        if (local == UINT32_MAX) {
+          const auto position = index < frame.mesh.vertices.size()
+              ? frame.mesh.vertices[index].position
+              : sheet.interior_positions[index - frame.mesh.vertices.size()];
+          local = static_cast<std::uint32_t>(phase.vertices.size());
+          phase.vertices.push_back({.position = position});
+        }
+        index = local;
+      }
+      phase.triangles.push_back(triangle);
+    };
+    for (std::size_t index = 0; index < frame.mesh.triangles.size(); ++index) {
+      if (sheet.exterior_sides[index] == side) {
+        append(frame.mesh.triangles[index]);
+      }
+    }
+    for (auto triangle : sheet.triangles) {
+      if (side == 1) {
+        std::swap(triangle[1], triangle[2]);
+      }
+      append(triangle);
+    }
+    const auto interior = std::span(local_indices).subspan(frame.mesh.vertices.size());
+    if (std::ranges::find(interior, UINT32_MAX) != interior.end()) {
+      return absl::InvalidArgumentError("unused shared surface interior vertex");
+    }
+    const auto metrics = MeasureSurfaceMesh3D(phase);
+    if (!metrics.ok()) {
+      return metrics.status();
+    }
+    if (!Safe(*metrics) || !detail::Positive(metrics->signed_volume)) {
+      return absl::InvalidArgumentError("shared surface phase is open, intersecting or incorrectly oriented");
+    }
+  }
+  return absl::OkStatus();
+}
 absl::Status Validate(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) {
   const auto counts = CheckCounts(frame.mesh.vertices.size(), frame.mesh.triangles.size(), limits);
   if (!counts.ok()) {
@@ -89,7 +155,7 @@ absl::Status Validate(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) 
       return absl::InvalidArgumentError("surface components intersect");
     }
   }
-  return absl::OkStatus();
+  return ValidatePhaseInterface(frame, limits);
 }
 }  // namespace
 
@@ -128,10 +194,22 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
       composed_vertices.push_back(static_cast<std::uint32_t>(ordinal));
     }
   }
+  std::vector<wire::SurfaceTriangle> shared_triangles;
+  std::vector<cache::v1::Vector3> interior_positions;
+  if (frame.phase_interface) {
+    for (const auto triangle : frame.phase_interface->triangles) {
+      shared_triangles.emplace_back(triangle[0], triangle[1], triangle[2]);
+    }
+    for (const auto position : frame.phase_interface->interior_positions) {
+      interior_positions.push_back(detail::Pack(position));
+    }
+  }
   const auto bytes = vertices.size() * sizeof(wire::SurfaceVertex) + triangles.size() * sizeof(wire::SurfaceTriangle)
-      + volumes.size() * sizeof(wire::SurfaceVolume);
+      + volumes.size() * sizeof(wire::SurfaceVolume) + shared_triangles.size() * sizeof(wire::SurfaceTriangle)
+      + interior_positions.size() * sizeof(cache::v1::Vector3)
+      + (frame.phase_interface ? frame.phase_interface->exterior_sides.size() : 0);
   return detail::Build<wire::SurfaceFrame>(
-      2 + (bytes + 511) / 512 + composed_vertices.size(),
+      2 + (bytes + 511) / 512 + composed_vertices.size() + frame.phase_interface.has_value(),
       limits.cache,
       "FLMS",
       [&](auto& builder) -> absl::StatusOr<flatbuffers::Offset<wire::SurfaceFrame>> {
@@ -151,6 +229,15 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
           }
           compositions = *records;
         }
+        flatbuffers::Offset<wire::SurfacePhaseInterface> phase_interface;
+        if (frame.phase_interface) {
+          const auto& sheet = *frame.phase_interface;
+          const auto sides = builder.CreateVector(sheet.exterior_sides);
+          const auto positions = builder.CreateVectorOfStructs(interior_positions);
+          const auto shared = builder.CreateVectorOfStructs(shared_triangles);
+          phase_interface =
+              wire::CreateSurfacePhaseInterface(builder, sheet.phase_a, sheet.phase_b, sides, positions, shared);
+        }
         const auto clock = detail::Pack(frame.clock);
         return wire::CreateSurfaceFrame(
             builder,
@@ -162,7 +249,8 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
             vertex_data,
             triangle_data,
             volume_data,
-            compositions
+            compositions,
+            phase_interface
         );
       }
   );
@@ -219,6 +307,29 @@ absl::StatusOr<SurfaceFrame3D> DecodeSurfaceFrame3D(std::span<const std::uint8_t
   }
   for (const auto* t : *source->triangles()) {
     frame.mesh.triangles.push_back({t->a(), t->b(), t->c()});
+  }
+  if (const auto* sheet = source->phase_interface()) {
+    const auto shared_counts = CheckCounts(
+        frame.mesh.vertices.size() + sheet->interior_positions()->size(),
+        frame.mesh.triangles.size() + sheet->triangles()->size(),
+        limits
+    );
+    if (!shared_counts.ok()) {
+      return shared_counts;
+    }
+    if (sheet->exterior_sides()->size() != frame.mesh.triangles.size()) {
+      return absl::DataLossError("invalid exterior phase side count");
+    }
+    auto& target = frame.phase_interface.emplace();
+    target.phase_a = sheet->phase_a();
+    target.phase_b = sheet->phase_b();
+    target.exterior_sides.assign(sheet->exterior_sides()->begin(), sheet->exterior_sides()->end());
+    for (const auto* position : *sheet->interior_positions()) {
+      target.interior_positions.push_back(detail::Unpack(position));
+    }
+    for (const auto* triangle : *sheet->triangles()) {
+      target.triangles.push_back({triangle->a(), triangle->b(), triangle->c()});
+    }
   }
   for (const auto* v : *source->volumes()) {
     frame.volumes.push_back({v->component(), v->material_m3(), v->raw_m3(), v->corrected_m3()});
