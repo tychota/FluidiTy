@@ -3753,3 +3753,31 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Component-wise affine feedback after ghost fallback
+
+Local commit `eb8877c` retains the fitted velocity slope rows whose
+component stencils use no ghost fallback. A fallback clears only
+its own velocity component's row. The bounded tangent ghost rule,
+paired stress transpose, and Euler deformation gradient remain
+unchanged. Native and SM120 dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 34.329576° | 0.168211 m | Radius |
+| Coarse half-step | 40.501234° | 0.156712 m | Angle |
+| Fine | 31.443051° | 0.159557 m | Pass |
+| Fine half-step | 34.693822° | 0.156304 m | Pass |
+
+Both fine cases pass the original checks. The nominal fine radius
+has 0.443 mm of margin. Across the matrix, cut stress work mismatch
+is below 1.9e-16 J, vertical momentum residual below 9.3e-9 N·s,
+and late angle drift below 0.13°. Both coarse cases remain open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-component-affine-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
