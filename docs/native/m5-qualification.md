@@ -2939,3 +2939,30 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear the affine fit after wall contact
+
+The zero-phase Euler control leaves the stored affine slope zero
+after a swept wall contact. The Coulomb velocity update and wall-face
+traction remain in place. The temporary source was restored after
+linking.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 27.660759° | 0.242658 m |
+| Coarse half-step | 40.631438° | 0.158705 m |
+| Fine | 34.127422° | 0.182198 m |
+| Fine half-step | 36.071663° | 0.175083 m |
+
+Clearing the slope reduces both fine radii compared with the
+Coulomb-projected affine result. Both are still above 0.16 m.
+The coarse nominal radius grows by 0.064095 m. Horizontal per-step
+momentum residual stays below 1.6e-10 N·s and cut stress work
+mismatch below 5.2e-16 J.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-reset-affine-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
