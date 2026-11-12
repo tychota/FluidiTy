@@ -60,6 +60,19 @@ struct LiquidAirCellMeasures3D {
 // OutOfRange. No allocation or partial measures on failure.
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs);
 
+// Measures liquid outside the frozen obstacle in each cell octant, in m³.
+// The octant and input corner bits are x, y, z from low to high bit. Liquid
+// uses the pressure geometry's six tetrahedra and strictly negative distances.
+// Invalid geometry, obstacle or samples return InvalidArgument. Unrepresentable
+// measures or unresolved tank coordinates return OutOfRange. Errors return no
+// partial measures. No input storage is modified.
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances
+);
+
 struct LiquidBoundaryGeometryInputs3D {
   const SparseMacGrid3D& mac_grid;  // Borrowed only during freeze; result owns a copy.
   // Candidate cells, distinct and sorted (z,y,x), separate from the sample halo.

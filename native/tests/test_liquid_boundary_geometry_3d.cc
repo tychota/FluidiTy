@@ -1,3 +1,6 @@
+#include <limits>
+#include <numeric>
+
 #include "liquid_boundary_geometry_3d_cases.h"
 namespace fluidity::boundary_test {
 TEST(LiquidBoundaryGeometry3D, OpenTankClipsVolumeAndUsesPistonOnlyFlux) {
@@ -70,6 +73,51 @@ TEST(LiquidBoundaryGeometry3D, PredictorDensitySetsSharedAndFreeSurfaceMobility)
   fields[1].density = 0.0;
   EXPECT_EQ(
       BuildLiquidPressureLinks3D(*frozen, {fields, velocity, 0.0}).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
+TEST(LiquidBoundaryGeometry3D, PartitionsLiquidStressVolumesAcrossCellOctants) {
+  const UniformMacGeometry3D geometry{{3.0, 1.0, 0.0}, 1.0};
+  const CellIndex3D cell{-3, -1, 0};
+  const std::array distances{-0.5, 0.5, 0.5, 1.5, -0.5, 0.5, 0.5, 1.5};
+  const auto liquid = MeasureLiquidCellOctants3D(geometry, cell, {}, distances);
+  ASSERT_TRUE(liquid.ok()) << liquid.status();
+  constexpr std::array kExpected{0.0625, 0.0, 0.0, 0.0, 0.0625, 0.0, 0.0, 0.0};
+  for (std::size_t octant = 0; octant < kExpected.size(); ++octant) {
+    EXPECT_NEAR((*liquid)[octant], kExpected[octant], 1e-15);
+  }
+
+  const TranslatingHalfspace3D wall{{0.0, 1.0, 0.0}, 0.25, {}};
+  const auto partial = MeasureLiquidCellOctants3D(geometry, cell, wall, distances);
+  ASSERT_TRUE(partial.ok()) << partial.status();
+  EXPECT_NEAR((*partial)[0], 0.015625, 1e-15);
+  EXPECT_NEAR((*partial)[4], 0.015625, 1e-15);
+
+  const AxisAlignedLiquidTank3D tank{0.25, 0.75, 0.0, 0.0, 1.0, 0.0};
+  const std::array full{-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0};
+  const auto tank_liquid = MeasureLiquidCellOctants3D(geometry, cell, tank, full);
+  ASSERT_TRUE(tank_liquid.ok()) << tank_liquid.status();
+  for (const double volume : *tank_liquid) {
+    EXPECT_NEAR(volume, 0.0625, 1e-15);
+  }
+
+  const std::array<double, 8> plateau{};
+  const auto empty = MeasureLiquidCellOctants3D(geometry, cell, {}, plateau);
+  ASSERT_TRUE(empty.ok()) << empty.status();
+  EXPECT_EQ(*empty, plateau);
+  const std::array nonaffine{-0.2, 0.8, -0.4, 0.2, -0.5, 0.6, -0.8, 0.9};
+  const auto partial_liquid = MeasureLiquidCellOctants3D(geometry, cell, {}, nonaffine);
+  ASSERT_TRUE(partial_liquid.ok()) << partial_liquid.status();
+  const auto gas = MeasureLiquidAirCell3D({geometry, cell, {}, nonaffine});
+  ASSERT_TRUE(gas.ok()) << gas.status();
+  const double liquid_volume = std::accumulate(partial_liquid->begin(), partial_liquid->end(), 0.0);
+  EXPECT_NEAR(liquid_volume + gas->gas_volume, 1.0, 1e-15);
+
+  auto invalid = distances;
+  invalid[0] = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(
+      MeasureLiquidCellOctants3D(geometry, cell, {}, invalid).status().code(),
       absl::StatusCode::kInvalidArgument
   );
 }

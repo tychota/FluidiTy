@@ -1182,6 +1182,118 @@ absl::StatusOr<double> InternalLiquidCapillaryStepBound3D(
 absl::StatusOr<LiquidAirCellMeasures3D> MeasureLiquidAirCell3D(const LiquidAirCellMeasureInputs3D& inputs) {
   return MeasureGasCell(inputs);
 }
+absl::StatusOr<std::array<double, 8>> MeasureLiquidCellOctants3D(
+    UniformMacGeometry3D geometry,
+    CellIndex3D cell_index,
+    const LiquidObstacle3D& obstacle,
+    std::span<const double, 8> liquid_corner_distances
+) {
+  using boundary_internal::ClipLiquidToTank;
+  using boundary_internal::ClippingPolyhedron;
+  using boundary_internal::ClippingVertex;
+  using boundary_internal::ClipPolyhedron;
+  using boundary_internal::ComputeClippedVolume;
+  using boundary_internal::TankClipBounds;
+  const double width = geometry.cell_width;
+  if (!IsPositiveFinite(width) || !HasFiniteComponents(CartesianComponents(geometry.world_origin))
+      || std::ranges::any_of(liquid_corner_distances, [](double distance) {
+           return !std::isfinite(distance);
+         })) {
+    return absl::InvalidArgumentError("invalid liquid octant geometry or corner distance");
+  }
+  const double cell_volume = width * width * width;
+  const double octant_volume = cell_volume / 8.0;
+  if (!std::isnormal(width * width) || !std::isnormal(octant_volume)) {
+    return UnrepresentableGeometry(true);
+  }
+  const auto obstacle_status = ValidateObstacle(obstacle, 0.0, true);
+  if (!obstacle_status.ok()) {
+    return obstacle_status.status();
+  }
+  const GeometryInput query{
+      .mode = GeometryMode::kCell,
+      .geometry = geometry,
+      .index = cell_index,
+      .obstacle = PackObstacle(obstacle),
+  };
+  std::array<double, 8> volumes{};
+  const bool open_tank = std::holds_alternative<AxisAlignedLiquidTank3D>(obstacle);
+  TankClipBounds tank_bounds;
+  if (open_tank) {
+    if (!boundary_internal::TankCellHasResolvedWorldExtent(query)) {
+      return UnrepresentableGeometry(true);
+    }
+    const auto bounds = boundary_internal::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return boundary_internal::ArithmeticStatus(bounds.status(), true);
+    }
+    tank_bounds = *bounds;
+  }
+  const auto local = boundary_internal::LocalObstacle(query);
+  if (!local.ok()) {
+    return boundary_internal::ArithmeticStatus(local.status(), true);
+  }
+
+  std::array<ClippingVertex, 8> vertices{};
+  std::array<TankClipBounds, 8> octant_bounds{};
+  std::array<bool, 8> nonempty_octants{};
+  for (std::size_t corner = 0; corner < vertices.size(); ++corner) {
+    vertices[corner].liquid_distance = liquid_corner_distances[corner];
+    nonempty_octants[corner] = true;
+    auto& bounds = octant_bounds[corner];
+    for (int axis = 0; axis < 3; ++axis) {
+      const double corner_coordinate = static_cast<double>((corner >> axis) & 1u);
+      vertices[corner].cell_width_position[axis] = corner_coordinate;
+      bounds.low[axis] = std::max(0.5 * corner_coordinate, tank_bounds.low[axis]);
+      bounds.high[axis] = std::min(0.5 * corner_coordinate + 0.5, tank_bounds.high[axis]);
+      nonempty_octants[corner] &= bounds.low[axis] < bounds.high[axis];
+    }
+  }
+
+  // Each tetrahedron lies in the original cell frame. Clipping its liquid
+  // pieces by the octant planes partitions the same volume used by pressure.
+  const auto accumulate_piece = [&](const ClippingPolyhedron& piece) {
+    if (piece.overflow) {
+      volumes.fill(std::numeric_limits<double>::quiet_NaN());
+      return;
+    }
+    if (piece.empty()) {
+      return;
+    }
+    for (std::size_t octant = 0; octant < volumes.size(); ++octant) {
+      if (nonempty_octants[octant]) {
+        volumes[octant] += ComputeClippedVolume(ClipLiquidToTank(piece, octant_bounds[octant]), width);
+      }
+    }
+  };
+  for (std::size_t tetrahedron = 0; tetrahedron < 6; ++tetrahedron) {
+    const auto a = vertices[0];
+    const auto b = vertices[boundary_internal::CellTetrahedronCorner(tetrahedron, 1)];
+    const auto c = vertices[boundary_internal::CellTetrahedronCorner(tetrahedron, 2)];
+    const auto d = vertices[7];
+    if (std::min({a.liquid_distance, b.liquid_distance, c.liquid_distance, d.liquid_distance}) >= 0.0) {
+      continue;
+    }
+    const auto liquid = ClipPolyhedron({{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}}, {{}, 0, true});
+    if (local->present) {
+      accumulate_piece(ClipPolyhedron(liquid, {boundary_internal::Scale(local->normal, -1), -local->high}));
+      if (local->slab) {
+        accumulate_piece(ClipPolyhedron(liquid, {local->normal, local->low}));
+      }
+    } else {
+      accumulate_piece(liquid);
+    }
+  }
+  constexpr double kVolumeRoundoff = 64.0 * std::numeric_limits<double>::epsilon();
+  for (double& volume : volumes) {
+    if (!IsNormalOrZero(volume) || volume < 0.0 || volume / octant_volume > 1.0 + kVolumeRoundoff) {
+      return UnrepresentableGeometry(true);
+    }
+    volume = std::min(volume, octant_volume);
+  }
+  return volumes;
+}
+
 absl::StatusOr<std::size_t> BuildLiquidAirDomain3D(
     UniformMacGeometry3D geometry,
     const LiquidObstacle3D& obstacle,
