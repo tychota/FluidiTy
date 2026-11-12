@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -284,6 +285,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   std::vector<LiquidBoundaryParticle3D> boundary_particles;
   LiquidBoundaryFaceDeposits3D boundary_deposits;
   double ghost_wall_force_y = 0;
+  std::vector<double> particle_grid_normal_impulse;
   if (compatible_floor) {
     floor_tags.resize(grid.face_count());
     const auto layout = grid.view();
@@ -322,6 +324,7 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
         validity[slot] = LiquidFaceValidity3D::kValid;
       }
     }
+    particle_grid_normal_impulse.resize(particles.size());
     for (std::size_t index = 0; index < particles.size(); ++index) {
       const auto status = AccumulateDrySolidStress3D(
           grid,
@@ -333,6 +336,23 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       if (!status.ok()) {
         return status;
       }
+      const auto normal_stencil = BuildOwnedMacFaceStencil3D(
+          grid,
+          FaceNormalAxis::kY,
+          particles[index].world_position,
+          particles[index].world_position
+      );
+      if (!normal_stencil.ok()) {
+        return normal_stencil.status();
+      }
+      double wall_force_y = 0;
+      for (const auto& sample : *normal_stencil) {
+        if (!floor_tags[sample.face_slot].structurally_eligible) {
+          wall_force_y += particles[index].reference_volume
+              * solid_detail::Dot(particle_stresses[index].y_row, sample.weight_gradient);
+        }
+      }
+      particle_grid_normal_impulse[index] = settings.duration * std::max(0.0, wall_force_y);
     }
     const auto wall_force = ScatterStationaryFloorGhostTranspose3D(grid.view(), validity, floor_tags, face_force);
     if (!wall_force.ok()) {
@@ -517,9 +537,26 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   for (std::size_t index = 0; index < trial_particles.size(); ++index) {
     auto& particle = trial_particles[index];
     const auto& particle_gather = gathers[index];
-    const Vec3 velocity = particle_gather.new_pic_velocity;
+    Vec3 velocity = particle_gather.new_pic_velocity;
     if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
       return DurationExceeded("dry particle motion bound");
+    }
+    if (compatible_floor && particle_grid_normal_impulse[index] > 0) {
+      const double tangent_speed = std::hypot(velocity.x, velocity.z);
+      if (tangent_speed > 0) {
+        const double friction_speed = settings.floor_friction * particle_grid_normal_impulse[index] / particle.mass;
+        const double retained_tangent = std::max(0.0, 1 - friction_speed / tangent_speed);
+        const Vec3 incoming = velocity;
+        velocity.x *= retained_tangent;
+        velocity.z *= retained_tangent;
+        if (budget != nullptr) {
+          const auto change = solid_detail::Combine(velocity, 1, incoming, -1);
+          trial_budget.wall_impulse_on_particles =
+              solid_detail::Combine(trial_budget.wall_impulse_on_particles, 1, change, particle.mass);
+          const auto midpoint = solid_detail::Combine(incoming, 0.5, velocity, 0.5);
+          trial_budget.particle_wall_kinetic_energy_change += particle.mass * solid_detail::Dot(midpoint, change);
+        }
+      }
     }
     Vec3 stored_velocity = velocity;
     if (!retained_velocities.empty() && retained_velocities[index].eligible) {
