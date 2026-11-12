@@ -7,6 +7,7 @@
 #include <span>
 #include <variant>
 
+#include "fluidity/host/liquid_cavity.h"
 #include "fluidity/host/liquid_eos.h"
 #include "fluidity/host/liquid_step_workspace_3d.h"
 #include "fluidity/host/ocean_boundary_3d.h"
@@ -70,6 +71,20 @@ struct LiquidStepCavityProvider3D {
   ) = nullptr;
 };
 
+struct LiquidSceneCavity3D {
+  double atmospheric_absolute_pressure;  // Positive absolute Pa.
+  void* context = nullptr;
+  // Optional certification of atmosphere outlets for the current samples.
+  // The returned span is borrowed until the end of step preparation.
+  absl::StatusOr<std::span<const FaceIndex3D>> (*atmosphere_outlets)(
+      void* context,
+      const LiquidBoundaryGeometryViewInputs3D& samples
+  ) = nullptr;
+  // Supplies equilibrium inventory for a newly resolved cavity. Both callbacks
+  // may be repeated after a rejected step or a frame replay.
+  absl::StatusOr<LiquidCavityInventory3D> (*initialize)(void* context, const LiquidAirComponent3D& component) = nullptr;
+};
+
 struct LiquidSceneInputs3D {
   LiquidSceneField3D field = LiquidParticleSphereUnion3D{};
   LiquidObstacle3D obstacle;  // Pose at world time zero; constant world translation.
@@ -85,6 +100,7 @@ struct LiquidSceneInputs3D {
   double friction_coefficient = 0;
   double penetration_tolerance = 0;  // m.
   std::span<const LiquidEmissionSource3D> sources;  // Copied at Create; exact committed identity order.
+  std::optional<LiquidSceneCavity3D> cavity;  // Owns accepted gas state in the scheduler.
   LiquidStepCavityProvider3D cavity_provider{};  // Optional host evaluation, borrowed for scheduler lifetime.
 };
 struct WhitewaterCaptureSettings3D {
@@ -154,6 +170,7 @@ struct LiquidAcceptedStepMeasurement3D {
   double accepted_dt_seconds = 0;  // Exact duration passed to the physical attempt.
   std::optional<double> step_start_capillary_bound_seconds;  // Absent when the frozen geometry imposes no bound.
   std::optional<double> step_start_cavity_bound_seconds;  // Present for a finite radial limit.
+  std::optional<LiquidCavityStepPreparation3D> cavity;  // Accepted geometry and per-step inventory losses.
   MacPressureDiagnostics3D pressure;
   std::optional<double> viscous_max_momentum_residual_kg_m_per_s;  // Present after a coupled viscosity solve.
   double pressure_rhs_l2_m3_per_s = 0;  // L2 norm of the original integrated RHS, including gauge rows.

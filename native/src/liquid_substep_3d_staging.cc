@@ -731,7 +731,8 @@ absl::Status PrepareField(
     const LiquidObstacle3D& obstacle,
     const LiquidState3D& trial,
     Staging& staging,
-    const LiquidSubstepBackend3D& backend
+    const LiquidSubstepBackend3D& backend,
+    bool sample_cavity_interior
 ) {
   STEP_TRY(staging.candidates.Resize(0));
   STEP_TRY(staging.centers.Resize(0));
@@ -808,6 +809,44 @@ absl::Status PrepareField(
     if (isolated_drop) {
       // Retain the seed's particle activation and certify its fitted interface coverage.
       STEP_TRY(add_sphere(isolated_drop->world_center(), isolated_drop->maximum_semiaxis(), true));
+    }
+  }
+  // Gas-only interior cells can lie outside all liquid support boxes.
+  if (sample_cavity_interior && staging.candidates.size() != 0 && !plane) {
+    auto lower = staging.candidates[0];
+    auto upper = lower;
+    for (const auto& cell : staging.candidates.values()) {
+      lower.x = std::min(lower.x, cell.x);
+      lower.y = std::min(lower.y, cell.y);
+      lower.z = std::min(lower.z, cell.z);
+      upper.x = std::max(upper.x, cell.x);
+      upper.y = std::max(upper.y, cell.y);
+      upper.z = std::max(upper.z, cell.z);
+    }
+    std::size_t box_count = 1;
+    const std::array extents{
+        static_cast<std::int64_t>(upper.x) - lower.x + 1,
+        static_cast<std::int64_t>(upper.y) - lower.y + 1,
+        static_cast<std::int64_t>(upper.z) - lower.z + 1
+    };
+    for (const auto extent : extents) {
+      if (static_cast<std::uint64_t>(extent) > staging.candidates.capacity() / box_count) {
+        return Error(absl::StatusCode::kResourceExhausted);
+      }
+      box_count *= static_cast<std::size_t>(extent);
+    }
+    STEP_TRY(staging.candidates.Resize(box_count));
+    std::size_t index = 0;
+    for (std::int64_t z = lower.z; z <= upper.z; ++z) {
+      for (std::int64_t y = lower.y; y <= upper.y; ++y) {
+        for (std::int64_t x = lower.x; x <= upper.x; ++x) {
+          staging.candidates[index++] = {
+              static_cast<std::int32_t>(x),
+              static_cast<std::int32_t>(y),
+              static_cast<std::int32_t>(z),
+          };
+        }
+      }
     }
   }
   // These reservations already cover the full undeduplicated stencil. Keep

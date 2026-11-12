@@ -2022,6 +2022,65 @@ TEST(LiquidSubstep3D, CapacityWithoutReplayReservationReportsResourceExhausted) 
   EXPECT_TRUE(scheduler->committed() == initial);
   EXPECT_EQ(scheduler->diagnostics().capacity_replays, 0);
 }
+TEST(LiquidSubstep3D, OwnsResolvedCavityAcrossAcceptedSteps) {
+  std::vector<Vec3> positions;
+  for (int z = -4; z <= 4; ++z) {
+    for (int y = -4; y <= 4; ++y) {
+      for (int x = -4; x <= 4; ++x) {
+        if (x * x + y * y + z * z >= 15) {
+          positions.push_back({8.5 + x, 8.5 + y, 8.5 + z});
+        }
+      }
+    }
+  }
+  auto initial = Initial(positions.size());
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    initial.particles[index].world_position = positions[index];
+  }
+  int initializations = 0;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidParticleSphereUnion3D{.radius = 0.9};
+  scene.world_acceleration = {};
+  scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .context = &initializations,
+      .initialize = [](void* context,
+                       const LiquidAirComponent3D& component) -> absl::StatusOr<LiquidCavityInventory3D> {
+        ++*static_cast<int*>(context);
+        return InitializeSubmergedLiquidCavity3D(component.gas_volume, 100000.0, 0.0, 0.0);
+      },
+  };
+  auto options = Options();
+  options.capacities = {positions.size(), 128, 2048, 24576, 1};
+  options.capacity_replay_reservations = {positions.size(), 128, 4096, 24576, 1};
+  options.maximum_step_duration = 0.001;
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  int pressure_attempts = 0;
+  scheduler->SetStageFaultHookForTesting({
+      .context = &pressure_attempts,
+      .before_stage =
+          [](void* context, LiquidPhysicalStage3D stage, double) {
+            if (stage == LiquidPhysicalStage3D::kPressure && ++*static_cast<int*>(context) == 2) {
+              return absl::Status(absl::StatusCode::kResourceExhausted, {});
+            }
+            return absl::OkStatus();
+          },
+  });
+  for (const double target : {0.002, 0.003}) {
+    const auto status = scheduler->AdvanceFrame(target);
+    ASSERT_TRUE(status.ok()) << status << " stage=" << static_cast<int>(scheduler->diagnostics().failed_stage);
+    const auto& measurement = scheduler->diagnostics().accepted_measurement;
+    EXPECT_EQ(scheduler->diagnostics().capacity_replays, target == 0.002 ? 1 : 0);
+    ASSERT_TRUE(measurement && measurement->cavity);
+    EXPECT_EQ(measurement->cavity->boundaries.active_cavity_count, 1);
+    EXPECT_GT(measurement->cavity->boundaries.air_pressure_count, 0);
+    EXPECT_EQ(measurement->cavity->lineage.next_id, 2);
+    EXPECT_DOUBLE_EQ(measurement->cavity->lineage.unmatched_inventory, 0.0);
+  }
+  EXPECT_EQ(initializations, 2);
+}
+
 TEST(LiquidSubstep3D, PreparedCavityPressuresApplyOnlyAfterRadialRetry) {
   struct CavityFixture {
     std::array<LiquidAirCellPressure3D, 256> pressures;

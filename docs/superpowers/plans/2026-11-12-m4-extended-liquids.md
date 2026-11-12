@@ -353,3 +353,11 @@ The host preparation API takes a sampled domain, a prior accepted snapshot and a
 An integrated spherical fixture initialized a resolved cavity at 104 kPa absolute, reduced the sampled radius from 3.2 to 3.0 m, and verified the same ID, a single initialization, the polytropic pressure, and a tighter radial limit. Fourteen CPU checks passed with ctest --preset windows-debug-cpu -R Cavity. Seven real-device regressions passed with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|PreparedCavityBoundaries'. The new preparation function runs on the host. clang-format 19.1.5 passed. Receipts use out/m4-cavity-step and include the initial fixture compile error for the distinct corner index type.
 
 Production still needs to supply the gas sampling domain and atmosphere certificates, own accepted snapshots through retries and replays, and connect this preparation to the scheduler. Q-CAVITY remains open.
+
+## Scheduler-owned cavity snapshot receipt
+
+Opt-in cavity settings activate bounded scheduler-owned gas snapshots. The particle-derived domain fills its support bounding box to sample the gas-only interior. Trial snapshots publish with the accepted liquid step. Capacity replay restores the saved frame-start cavity state. The accepted measurement exposes active pressure counts and per-step losses. Gas scratch and three snapshot buffers are reserved up front from the larger configured capacity.
+
+The particle-shell CPU fixture found one resolved cavity and injected a capacity failure after the first accepted step. Replay rebuilt the initial inventory once, then preserved it through subsequent accepted steps. Fifteen CPU tests passed with ctest --preset windows-debug-cpu -R 'Cavity|CapacityReplay'. Twenty-one CUDA scheduler and boundary regressions passed after a clean windows-release-cuda build with ctest --preset windows-release-cuda -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. The owned particle-shell fixture ran on CPU. clang-format 19.1.5 passed. Receipts use out/m4-owned-cavity, including initial fixture failures from an excessive face reservation and unsampled interior cells.
+
+The opt-in API still depends on scene-provided atmosphere certification and birth initialization. Checkpoint serialization and production scene loading remain open, as does full Q-CAVITY qualification.

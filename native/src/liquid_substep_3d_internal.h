@@ -122,7 +122,8 @@ absl::Status PrepareField(
     const LiquidObstacle3D& obstacle,
     const LiquidState3D& trial,
     Staging& staging,
-    const LiquidSubstepBackend3D& backend
+    const LiquidSubstepBackend3D& backend,
+    bool sample_cavity_interior = false
 );
 // Copy the assembled faces into staging and replace the isolated drop air
 // lifts with ambient + sigma times analytic curvature. On success the

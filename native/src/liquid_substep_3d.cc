@@ -415,6 +415,120 @@ LiquidRegularCellTransport3D RegularTransportSample(
   sample.active = true;
   return sample;
 }
+struct CavitySnapshot {
+  LiquidRecords3D<LiquidAirVolumeCell3D> gas;
+  LiquidRecords3D<std::size_t> labels;
+  LiquidRecords3D<LiquidCavityLineageState3D> lineage;
+  LiquidCavityStepPreparation3D result{.lineage = {.next_id = 1}};
+};
+
+struct CavityStepOwner {
+  CavitySnapshot committed;
+  CavitySnapshot trial;
+  CavitySnapshot frame_start;
+  LiquidRecords3D<std::size_t> queue;
+  LiquidRecords3D<LiquidAirComponent3D> components;
+  LiquidRecords3D<LiquidAirComponentOverlap3D> overlaps;
+  LiquidRecords3D<std::optional<LiquidCavityInventory3D>> inventories;
+  LiquidRecords3D<LiquidCavityLineageCandidate3D> candidates;
+  LiquidRecords3D<LiquidCavityBoundaryComponent3D> boundary_components;
+  LiquidRecords3D<LiquidAirCellPressure3D> pressures;
+  std::size_t reserved_bytes = 0;
+
+  static absl::StatusOr<CavityStepOwner> Create(std::size_t capacity) {
+    CavityStepOwner owner;
+    const auto reserve = [&]<typename Record>(LiquidRecords3D<Record>& records) -> absl::Status {
+      constexpr std::size_t stride = sizeof(Record);
+      if (capacity > (SIZE_MAX - owner.reserved_bytes) / stride) {
+        return Error(absl::StatusCode::kResourceExhausted);
+      }
+      auto storage = LiquidRecords3D<Record>::Create(capacity);
+      if (!storage.ok()) {
+        return storage.status();
+      }
+      STEP_TRY(storage->Resize(capacity));
+      records = std::move(*storage);
+      owner.reserved_bytes += capacity * stride;
+      return absl::OkStatus();
+    };
+    for (auto* snapshot : {&owner.committed, &owner.trial, &owner.frame_start}) {
+      STEP_TRY(reserve(snapshot->gas));
+      STEP_TRY(reserve(snapshot->labels));
+      STEP_TRY(reserve(snapshot->lineage));
+    }
+    STEP_TRY(reserve(owner.queue));
+    STEP_TRY(reserve(owner.components));
+    STEP_TRY(reserve(owner.overlaps));
+    STEP_TRY(reserve(owner.inventories));
+    STEP_TRY(reserve(owner.candidates));
+    STEP_TRY(reserve(owner.boundary_components));
+    STEP_TRY(reserve(owner.pressures));
+    return owner;
+  }
+
+  static void CopySnapshot(const CavitySnapshot& source, CavitySnapshot& destination) {
+    const auto& result = source.result;
+    std::ranges::copy(source.gas.values().first(result.gas_cell_count), destination.gas.values().begin());
+    std::ranges::copy(source.labels.values().first(result.gas_cell_count), destination.labels.values().begin());
+    std::ranges::copy(source.lineage.values().first(result.component_count), destination.lineage.values().begin());
+    destination.result = result;
+  }
+
+  absl::StatusOr<LiquidStepCavityBoundaries3D>
+  Prepare(const LiquidSceneCavity3D& settings, const LiquidBoundaryGeometryViewInputs3D& samples) {
+    std::span<const FaceIndex3D> outlets;
+    if (settings.atmosphere_outlets) {
+      const auto supplied = settings.atmosphere_outlets(settings.context, samples);
+      if (!supplied.ok()) {
+        return supplied.status();
+      }
+      outlets = *supplied;
+    }
+    const auto& prior = committed.result;
+    const LiquidCavityStepInputs3D inputs{
+        .geometry = samples.mac_grid.geometry(),
+        .obstacle = samples.obstacle,
+        .sampled_cells = samples.cell_indices,
+        .corners = samples.corner_distances,
+        .centers = samples.center_distances,
+        .atmosphere_outlets = outlets,
+        .previous_snapshot =
+            {committed.gas.values().first(prior.gas_cell_count),
+             committed.labels.values().first(prior.gas_cell_count),
+             prior.component_count},
+        .previous_lineage = committed.lineage.values().first(prior.component_count),
+        .next_id = prior.lineage.next_id,
+        .atmospheric_absolute_pressure = settings.atmospheric_absolute_pressure,
+        .liquid_density = samples.liquid_density,
+        .initialization_context = settings.context,
+        .initialize = settings.initialize,
+    };
+    const LiquidCavityStepScratch3D scratch{
+        .gas_cells = trial.gas.values(),
+        .labels = trial.labels.values(),
+        .queue = queue.values(),
+        .components = components.values(),
+        .overlaps = overlaps.values(),
+        .inventories = inventories.values(),
+        .lineage = candidates.values(),
+        .boundary_components = boundary_components.values(),
+        .air_pressures = pressures.values(),
+    };
+    const auto prepared = PrepareLiquidCavityStep3D(inputs, scratch);
+    if (!prepared.ok()) {
+      return prepared.status();
+    }
+    trial.result = *prepared;
+    for (std::size_t index = 0; index < prepared->component_count; ++index) {
+      trial.lineage[index] = candidates[index].state;
+    }
+    return LiquidStepCavityBoundaries3D{
+        .air_pressures = pressures.values().first(prepared->boundaries.air_pressure_count),
+        .maximum_step_duration = prepared->boundaries.maximum_step_duration,
+    };
+  }
+};
+
 }  // namespace
 struct LiquidSubstepScheduler3D::Impl {
   LiquidFrameTransaction3D transaction;
@@ -422,6 +536,7 @@ struct LiquidSubstepScheduler3D::Impl {
   liquid_step_internal::Staging staging;
   LiquidRecords3D<LiquidEmissionSource3D> sources;
   LiquidSceneInputs3D scene;
+  std::optional<CavityStepOwner> cavity;
   LiquidStepOptions3D options;
   LiquidSubstepBackend3D backend;
   std::optional<ResolvedOceanBoundary3D> ocean_boundary;
@@ -482,7 +597,7 @@ struct LiquidSubstepScheduler3D::Impl {
       STEP_TRY(ocean_inlet_particles->Apply(*ocean_boundary, obstacle, old_time, trial));
     }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, step_duration));
-    STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend));
+    STEP_TRY(liquid_step_internal::PrepareField(scene.field, obstacle, trial, staging, backend, cavity.has_value()));
     STEP_TRY(backend.topology(
         backend.context,
         trial.particles.values(),
@@ -585,8 +700,10 @@ struct LiquidSubstepScheduler3D::Impl {
         .exact_outward_interface_curvature = exact_curvature,
     };
     LiquidStepCavityBoundaries3D cavity_boundaries;
-    if (scene.cavity_provider.prepare) {
-      const auto prepared = scene.cavity_provider.prepare(scene.cavity_provider.context, old_time, geometry_inputs);
+    if (cavity || scene.cavity_provider.prepare) {
+      const auto prepared = cavity
+          ? cavity->Prepare(*scene.cavity, geometry_inputs)
+          : scene.cavity_provider.prepare(scene.cavity_provider.context, old_time, geometry_inputs);
       if (!prepared.ok()) {
         return prepared.status();
       }
@@ -1262,6 +1379,22 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
   impl->scene = scene;
   impl->scene.sources = impl->sources.values();
   impl->options = options;
+  if (scene.cavity) {
+    if (scene.cavity_provider.prepare || !std::isfinite(scene.cavity->atmospheric_absolute_pressure)
+        || scene.cavity->atmospheric_absolute_pressure <= 0.0) {
+      return Error(absl::StatusCode::kInvalidArgument);
+    }
+    const auto cavity_capacity = std::max(capacities.cells, options.capacity_replay_reservations.cells);
+    auto cavity = CavityStepOwner::Create(cavity_capacity);
+    if (!cavity.ok()) {
+      return cavity.status();
+    }
+    if (cavity->reserved_bytes > SIZE_MAX - impl->reservation_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    impl->reservation_bytes += cavity->reserved_bytes;
+    impl->cavity = std::move(*cavity);
+  }
   if (options.ocean_boundary) {
     auto ocean_boundary = ResolvedOceanBoundary3D::Resolve(*options.ocean_boundary);
     if (!ocean_boundary.ok()) {
@@ -1301,6 +1434,9 @@ void LiquidSubstepScheduler3D::SetStageFaultHookForTesting(LiquidStageFaultHook3
 }
 absl::Status LiquidSubstepScheduler3D::BeginFrame(double target) {
   STEP_TRY(impl_->transaction.BeginFrame(target));
+  if (impl_->cavity) {
+    CavityStepOwner::CopySnapshot(impl_->cavity->committed, impl_->cavity->frame_start);
+  }
   impl_->target_time = target;
   impl_->frame_active = true;
   impl_->diagnostics = {};
@@ -1360,6 +1496,10 @@ LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3
   }
   if (outcome->disposition == LiquidAttemptDisposition3D::kAccepted) {
     impl.backend.commit_publication(impl.backend.context);
+    if (impl.cavity) {
+      std::swap(impl.cavity->committed, impl.cavity->trial);
+      accepted_measurement.cavity = impl.cavity->committed.result;
+    }
     ++diagnostics.accepted_attempts;
     accepted_measurement.accepted_clock = committed().clock;
     accepted_measurement.accepted_dt_seconds = step_duration;
@@ -1454,7 +1594,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
         return reservation_bytes.status();
       }
       const auto inlet_bytes = impl_->ocean_inlet_particles ? impl_->ocean_inlet_particles->reserved_bytes() : 0;
-      if (inlet_bytes > SIZE_MAX - *reservation_bytes) {
+      const auto cavity_bytes = impl_->cavity ? impl_->cavity->reserved_bytes : 0;
+      if (inlet_bytes > SIZE_MAX - *reservation_bytes || cavity_bytes > SIZE_MAX - *reservation_bytes - inlet_bytes) {
         return Error(absl::StatusCode::kResourceExhausted);
       }
       const auto prepared_growth =
@@ -1469,7 +1610,10 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
         return restarted;
       }
       impl_->backend.commit_growth(impl_->backend.context);
-      impl_->reservation_bytes = *reservation_bytes + inlet_bytes;
+      if (impl_->cavity) {
+        CavityStepOwner::CopySnapshot(impl_->cavity->frame_start, impl_->cavity->committed);
+      }
+      impl_->reservation_bytes = *reservation_bytes + inlet_bytes + cavity_bytes;
       impl_->workspace = std::move(*workspace);
       impl_->staging = std::move(*staging);
       impl_->options.capacities = growth;
