@@ -686,6 +686,59 @@ TEST(MacPressure3D, CoupledViscosityUsesGaugeShiftedPressureHistory) {
   }
 }
 
+TEST(MacPressure3D, CoupledPressureHistoryKeepsWeakJumpScaleAndClearsZeroForcing) {
+  constexpr double kJump = 1e-8;
+  auto problem = MakeAffineProblem(0, 2, false);
+  const auto grid = SparseMacGrid3D::Create(kUnitGeometry, problem.blocks, problem.blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  SortFaces(problem, *grid);
+  for (auto& face : problem.faces) {
+    face.predicted_normal_velocity = 0.0;
+    face.wall_normal_velocity = 0.0;
+    if (auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link)) {
+      internal->pressure_jump = face.face_index.axis == FaceNormalAxis::kX ? kJump : 0.0;
+    }
+  }
+  std::vector<MacViscosityCell3D> material;
+  for (const auto& cell : problem.cells) {
+    material.push_back({.cell_index = cell.cell_index, .dynamic_viscosity = 1.0});
+  }
+  const auto strain = AssembleFullCellMacStrain3D(grid->view(), material);
+  ASSERT_TRUE(strain.ok()) << strain.status();
+  const MacPressureInputs3D inputs{*grid, 1.0, problem.cells, problem.faces};
+  const auto cold = ProjectMacViscousPressure3D(inputs, *strain);
+  ASSERT_TRUE(cold.ok()) << cold.status();
+  ASSERT_GT(cold->pressure_iterations, 0u);
+  ASSERT_GT(cold->initial_constraint_residual_l2, 0.0);
+  for (std::size_t index = 0; index < problem.cells.size(); ++index) {
+    auto& cell = problem.cells[index];
+    const double exact = kJump * cell.cell_index.x;
+    EXPECT_NEAR(cold->cell_pressures[index], exact, 1e-11);
+    cell.previous_pressure = 32.0 + exact;
+  }
+  const auto warm = ProjectMacViscousPressure3D(inputs, *strain);
+  ASSERT_TRUE(warm.ok()) << warm.status();
+  EXPECT_EQ(warm->pressure_iterations, 0u);
+  EXPECT_DOUBLE_EQ(warm->initial_constraint_residual_l2, cold->initial_constraint_residual_l2);
+  EXPECT_LE(warm->constraint_residual_l2, 1e-3 * warm->initial_constraint_residual_l2);
+
+  for (auto& face : problem.faces) {
+    if (auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link)) {
+      internal->pressure_jump = 0.0;
+    }
+  }
+  const auto unforced = ProjectMacViscousPressure3D(inputs, *strain);
+  ASSERT_TRUE(unforced.ok()) << unforced.status();
+  EXPECT_EQ(unforced->pressure_iterations, 0u);
+  EXPECT_DOUBLE_EQ(unforced->initial_constraint_residual_l2, 0.0);
+  for (const double pressure : unforced->cell_pressures) {
+    EXPECT_DOUBLE_EQ(pressure, 0.0);
+  }
+  for (const double velocity : unforced->face_velocities) {
+    EXPECT_DOUBLE_EQ(velocity, 0.0);
+  }
+}
+
 TEST(MacPressure3D, CoupledCartesianWallMatchesAnalyticTractionAndWork) {
   constexpr double kDynamicViscosity = 10.0;
   constexpr double kDensity = 1.0;
