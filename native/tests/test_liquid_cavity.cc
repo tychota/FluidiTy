@@ -1,12 +1,78 @@
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
 
+#include "fluidity/host/liquid_air_components.h"
 #include "fluidity/host/liquid_cavity.h"
 #include "gtest/gtest.h"
 
 namespace fluidity {
 namespace {
+
+TEST(LiquidCavity3D, LabelsEnclosedVentedAndUnclassifiedAirComponents) {
+  using Passage = LiquidAirPassage3D;
+  using Connectivity = LiquidAirConnectivity3D;
+  std::array cells{
+      LiquidAirVolumeCell3D{.cell_index = {-3, 0, 0}, .gas_volume = 0.25},
+      LiquidAirVolumeCell3D{.cell_index = {-2, 0, 0}, .gas_volume = 0.75},
+      LiquidAirVolumeCell3D{.cell_index = {0, 0, 0}, .gas_volume = 1.0},
+      LiquidAirVolumeCell3D{.cell_index = {1, 0, 0}, .gas_volume = 0.5},
+      LiquidAirVolumeCell3D{.cell_index = {3, 0, 0}, .gas_volume = 0.125},
+  };
+  cells[0].passages[1] = cells[1].passages[0] = Passage::kOpen;
+  cells[2].passages[1] = cells[3].passages[0] = Passage::kOpen;
+  cells[2].passages[2] = Passage::kOpen;  // Unclassified frontier.
+  cells[3].passages[3] = Passage::kAtmosphere;
+  cells[4].passages[5] = Passage::kOpen;
+  std::array<std::size_t, 5> labels;
+  std::array<std::size_t, 5> queue;
+  std::array<LiquidAirComponent3D, 3> components;
+  const auto result = LabelLiquidAirComponents3D(cells, labels, queue, components);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(*result, 3U);
+  EXPECT_EQ(labels, (std::array<std::size_t, 5>{0, 0, 1, 1, 2}));
+  EXPECT_EQ(components[0].first_cell.x, -3);
+  EXPECT_EQ(components[0].gas_volume, 1.0);
+  EXPECT_EQ(components[0].connectivity, Connectivity::kEnclosed);
+  EXPECT_EQ(components[1].gas_volume, 1.5);
+  EXPECT_EQ(components[1].connectivity, Connectivity::kVented);
+  EXPECT_EQ(components[2].gas_volume, 0.125);
+  EXPECT_EQ(components[2].connectivity, Connectivity::kUnclassified);
+  EXPECT_EQ(
+      LabelLiquidAirComponents3D(cells, labels, queue, std::span(components).first(2)).status().code(),
+      absl::StatusCode::kResourceExhausted
+  );
+  EXPECT_EQ(
+      LabelLiquidAirComponents3D(cells, labels, labels, components).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  cells[0].passages[1] = Passage::kClosed;
+  EXPECT_EQ(
+      LabelLiquidAirComponents3D(cells, labels, queue, components).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
+TEST(LiquidCavity3D, AirConnectivityDoesNotWrapSignedCoordinates) {
+  using Passage = LiquidAirPassage3D;
+  constexpr auto kMin = std::numeric_limits<std::int32_t>::min();
+  constexpr auto kMax = std::numeric_limits<std::int32_t>::max();
+  std::array cells{
+      LiquidAirVolumeCell3D{.cell_index = {kMin, 0, 0}, .gas_volume = 1.0},
+      LiquidAirVolumeCell3D{.cell_index = {kMax, 0, 0}, .gas_volume = 1.0},
+  };
+  cells[0].passages[0] = Passage::kOpen;
+  cells[1].passages[1] = Passage::kAtmosphere;
+  std::array<std::size_t, 2> labels;
+  std::array<std::size_t, 2> queue;
+  std::array<LiquidAirComponent3D, 2> components;
+  const auto result = LabelLiquidAirComponents3D(cells, labels, queue, components);
+  ASSERT_TRUE(result.ok()) << result.status();
+  EXPECT_EQ(*result, 2U);
+  EXPECT_EQ(components[0].connectivity, LiquidAirConnectivity3D::kUnclassified);
+  EXPECT_EQ(components[1].connectivity, LiquidAirConnectivity3D::kVented);
+}
 
 TEST(LiquidCavity3D, SubmergedSphereBalancesHydrostaticPressureAndSignedCurvature) {
   constexpr double kRadius = 0.25;

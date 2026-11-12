@@ -102,6 +102,7 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d_multigrid.cc
   native/src/adaptive_width_policy_3d.cc
   native/src/mac_viscous_pressure_3d.cc
+  native/src/liquid_air_components.cc
   native/src/liquid_cavity.cc
   native/src/liquid_eos.cc
   native/src/liquid_eos_sensor_3d.cc

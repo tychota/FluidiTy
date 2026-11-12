@@ -275,3 +275,11 @@ Pressure link assembly now accepts optional gas gauge pressures keyed by sampled
 The shared CPU and CUDA fixture supplied 19 and -3 Pa gas pressure with a -1 Pa capillary jump, observed Dirichlet pressures 18 and -4 Pa, and retained 6 Pa on the four ambient faces. The one-cell solve recovered 38/6 Pa and passed the physical constraint gate. Duplicate and liquid-center overrides were rejected. All 28 focused CPU and eight real-device CUDA cases passed. Compute Sanitizer reported zero errors and clang-format 19.1.5 passed. Reproduce under the locked presets with ctest -R 'LiquidBoundaryGeometry3D|LiquidCavity3D' on CPU and ctest -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D\.(EosHydrostatic|Tait)' on CUDA. Logs use the out/m4-cavity-link prefix.
 
 Review checked orientation, extent, aliasing and the single capillary lift. The caller still supplies the cavity mapping. Discovery, clipped volume, persistent lineage, timestep routing and Q-CAVITY remain open.
+
+## Air-component labeling receipt
+
+The bounded native labeler traverses certified face passages between sorted signed-lattice gas cells. It reports deterministic component membership and summed input gas volume. A missing open neighbor is unclassified unless an atmosphere outlet is certified. A component with a certified outlet is vented even if another part of its frontier is unclassified. Closed supplied boundaries yield an enclosed component. The caller provides disjoint label, queue and component scratch.
+
+The CPU fixture checked mixed enclosed, vented and unclassified components, partial gas volumes, asymmetric passages, scratch overlap and signed endpoints. All six focused CPU cases and the existing real-device CUDA boundary regression passed. Reproduce with the locked Windows presets using ctest -R 'LiquidCavity3D|CavityGasPressure' on CPU and ctest -R '^CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle$' on CUDA. Logs use the out/m4-air-components prefix. clang-format 19.1.5 passed and review found no graph-labeling defect.
+
+The labeler consumes supplied gas geometry. Clipping the gas phase and certifying face passages from the sampled field, persistent cavity lineage, scheduler publication and Q-CAVITY remain open.
