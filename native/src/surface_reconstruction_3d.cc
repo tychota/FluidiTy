@@ -25,10 +25,15 @@ bool MatchesCavityBoundaries(const SurfaceMetrics3D& metrics, std::size_t cavity
       && metrics.components == cavity_count + 1;
 }
 // Reconstruct a local volume-weighted composition from donors in the nearest
-// particle's phase. A radial tent uses a two-cell support, with a nearest
+// particle's phase, or from a phase fixed by the exterior face labels.
+// A radial tent uses a two-cell support, with a nearest
 // explicit donor fallback when the corrected surface leaves that support.
-absl::Status
-SampleVertexComposition(SurfaceVertex3D& vertex, std::span<const LiquidParticleState3D> particles, double cell_width) {
+absl::Status SampleVertexComposition(
+    SurfaceVertex3D& vertex,
+    std::span<const LiquidParticleState3D> particles,
+    double cell_width,
+    std::uint64_t required_phase
+) {
   const auto distance = [&](const LiquidParticleState3D& particle) {
     return std::hypot(
         vertex.position.x - particle.world_position.x,
@@ -39,6 +44,9 @@ SampleVertexComposition(SurfaceVertex3D& vertex, std::span<const LiquidParticleS
   const LiquidParticleState3D* nearest = nullptr;
   double nearest_distance = std::numeric_limits<double>::infinity();
   for (const auto& particle : particles) {
+    if (required_phase != 0 && particle.phase_id != required_phase) {
+      continue;
+    }
     const double separation = distance(particle);
     const bool canonical_tie = nearest && separation == nearest_distance
         && std::pair{particle.phase_id, particle.id} < std::pair{nearest->phase_id, nearest->id};
@@ -960,6 +968,16 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   }
   result.corrected_metrics = *corrected;
   result.frame.volumes.push_back({component, material_volume, raw_metrics->signed_volume, corrected->signed_volume});
+  std::vector<std::uint8_t> incident_phases;
+  if (result.frame.phase_interface) {
+    incident_phases.resize(result.frame.mesh.vertices.size());
+    for (std::size_t face = 0; face < result.frame.mesh.triangles.size(); ++face) {
+      const auto side = result.frame.phase_interface->exterior_sides[face];
+      for (const auto vertex : result.frame.mesh.triangles[face]) {
+        incident_phases[vertex] |= static_cast<std::uint8_t>(1u << side);
+      }
+    }
+  }
   const bool has_explicit_composition =
       std::ranges::any_of(endpoint.particles.values(), [](const LiquidParticleState3D& particle) {
         return particle.constituent_count != 0;
@@ -974,7 +992,17 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
     vertex.phase_id = 0;
     vertex.constituent_count = 0;
     if (has_explicit_composition) {
-      const auto composition = SampleVertexComposition(vertex, endpoint.particles.values(), cell_width_m);
+      std::uint64_t required_phase = 0;
+      if (!incident_phases.empty()) {
+        const auto& sheet = *result.frame.phase_interface;
+        if (incident_phases[index] == 1) {
+          required_phase = sheet.phase_a;
+        } else if (incident_phases[index] == 2) {
+          required_phase = sheet.phase_b;
+        }
+      }
+      const auto composition =
+          SampleVertexComposition(vertex, endpoint.particles.values(), cell_width_m, required_phase);
       if (!composition.ok()) {
         return composition;
       }

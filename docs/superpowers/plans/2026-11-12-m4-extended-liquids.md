@@ -583,3 +583,28 @@ The Mesh reconstruction now samples the same nearest-phase field as pressure pro
 The production reconstruction fixture advanced two immiscible particle phases through an accepted CPU scheduler frame and rebuilt the phase sheet from its MotionInterval. The sheet retained connectivity, every exterior vertex retained its ID, and geometric velocity matched the prescribed 0.24 m/s translation to 1e-8 m/s. The corrected seed exterior met the 0.5% volume gate, and the encoder validated the closed phase boundaries for both frames. Initial negative receipts show connectivity drift on a fixed world lattice and an invalid manufactured carrier without accepted velocity faces.
 
 The debug CPU simulator built. Six focused CPU cases passed with ctest --preset windows-debug-cpu -j 4 -R 'PublishesSharedSheet|EvaluatesAndCachesMixed|SurfaceCache3D|PhaseCrossing'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-production-shared. USD publication of the sheet, topology-changing phase tracking and the three-source render gate remain open.
+
+## Shared USD geometry and native material receipt
+
+The production USD bridge writes one combined mesh. It appends shared A-to-B triangles once, using the exterior vertex indices at the seam. Uniform primvars fluidity_face_phase_<ID> identify the exterior phase and fluidity_interface_<A>_<B> identifies the shared faces. Point fractions remain keyed by stable substance ID. After volume correction, vertices incident to only one exterior phase use donors from that certified phase. Seam vertices use nearest-phase composition and the material uses face masks to distinguish the two exteriors.
+
+The three-substance seed fixture baked through production Simulate and Mesh for frames zero and one. Inspect confirmed stable phase and substance IDs on the three particles. Blender 5.2.3 read 396 aqueous, 384 oil and 220 shared triangles on each frame. It found 54 edges incident to all three sheets, with two faces on every other edge and no duplicate triangles. The aqueous interior of the exterior patch measured 25/75 clear/dyed water and zero oil. The oil patch measured pure oil. A fresh factory-startup Blender process reopened the blend and rendered 444 dye-colored pixels and 754 oil-colored pixels. Disconnecting the dye input yielded zero dye-colored pixels. The pixel check uses the Standard view transform with a 64 × 64 Cycles emission render.
+
+From the worktree root with the CPU solver and fixture and the Release Blender bridge built, run these commands against a fresh output directory. Receipts use out/m4-shared-usd-production. clang-format 19.1.5 and git diff --check passed.
+
+```powershell
+$cpu = 'out/build/windows-debug-cpu'
+$bridge = 'out/build/windows-release-cuda/fluidity_blender_bridge.exe'
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$run = 'out/m4-shared-usd-qualification'
+New-Item -ItemType Directory $run
+& "$cpu/fluidity_simulate_fixture.exe" scene "$run/scene.flrs" "$cpu/fluidity_simulate.exe" cpu shared-surface
+& "$cpu/fluidity_simulate.exe" run --stage simulate --scene "$run/scene.flrs" --initial-state "$run/scene.flrs.flst" --cache "$run/simulate" --frame-end 1
+& "$cpu/fluidity_simulate.exe" check --cache "$run/simulate" --frame 1
+& "$cpu/fluidity_simulate.exe" run --stage mesh --cache "$run/simulate" --output-cache "$run/mesh" --surface-spacing 0.25 --surface-sigma 0.25 --frame-end 1
+& $bridge export-surface-usd "$run/mesh" 1 "$run/surface.usda"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- prepare "$run/surface.usda" "$run/surface.blend"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- reopen "$run/surface.blend"
+```
+
+This fixture uses a native seed with three pure-substance particles. Authoring three emitting sources and their interaction in Blender, artist-facing USD attachment, phase topology changes and final qualification remain open.

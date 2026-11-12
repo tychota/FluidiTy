@@ -188,7 +188,7 @@ absl::Status WriteSurfaceUsdSamples(
       return frame.status();
     }
     output << "        " << ordinal << ": [";
-    const auto status = write_values(frame->mesh);
+    const auto status = write_values(*frame);
     if (!status.ok()) {
       return status;
     }
@@ -215,15 +215,23 @@ absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, 
          << "    uniform token subdivisionScheme = \"none\"\n";
   std::set<std::uint64_t> phase_ids;
   std::set<std::uint64_t> substance_ids;
-  auto status = WriteSurfaceUsdSamples(output, cache, last_frame, "point3f[] points", [&](const SurfaceMesh3D& mesh) {
+  std::set<std::pair<std::uint64_t, std::uint64_t>> shared_pairs;
+  auto status = WriteSurfaceUsdSamples(output, cache, last_frame, "point3f[] points", [&](const SurfaceFrame3D& frame) {
     const char* separator = "";
-    for (const auto& vertex : mesh.vertices) {
-      if (!FitsAlembicFloat(vertex.position)) {
+    const auto write_position = [&](Vec3 world_position) {
+      if (!FitsAlembicFloat(world_position)) {
         return absl::OutOfRangeError("surface position cannot fit a USD float point");
       }
-      const auto position = Narrow(vertex.position);
+      const auto position = Narrow(world_position);
       output << separator << '(' << position.x << ", " << -position.z << ", " << position.y << ')';
       separator = ", ";
+      return absl::OkStatus();
+    };
+    for (const auto& vertex : frame.mesh.vertices) {
+      const auto wrote = write_position(vertex.position);
+      if (!wrote.ok()) {
+        return wrote;
+      }
       if (vertex.constituent_count > 0) {
         phase_ids.insert(vertex.phase_id);
       }
@@ -231,62 +239,134 @@ absl::Status WriteSurfaceUsd(std::ostream& output, const EffectsCache3D& cache, 
         substance_ids.insert(vertex.constituents[index].substance_id);
       }
     }
-    return absl::OkStatus();
-  });
-  if (!status.ok()) {
-    return status;
-  }
-  status = WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexCounts", [&](const SurfaceMesh3D& mesh) {
-    const char* separator = "";
-    for (std::size_t index = 0; index < mesh.triangles.size(); ++index) {
-      output << separator << '3';
-      separator = ", ";
+    if (frame.phase_interface) {
+      const auto& sheet = *frame.phase_interface;
+      shared_pairs.emplace(sheet.phase_a, sheet.phase_b);
+      phase_ids.insert(sheet.phase_a);
+      phase_ids.insert(sheet.phase_b);
+      for (const auto position : sheet.interior_positions) {
+        const auto wrote = write_position(position);
+        if (!wrote.ok()) {
+          return wrote;
+        }
+      }
     }
     return absl::OkStatus();
   });
   if (!status.ok()) {
     return status;
   }
-  status = WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexIndices", [&](const SurfaceMesh3D& mesh) {
-    const char* separator = "";
-    for (const auto& triangle : mesh.triangles) {
-      output << separator << triangle[0] << ", " << triangle[1] << ", " << triangle[2];
-      separator = ", ";
-    }
-    return absl::OkStatus();
-  });
+  status =
+      WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexCounts", [&](const SurfaceFrame3D& frame) {
+        const auto face_count =
+            frame.mesh.triangles.size() + (frame.phase_interface ? frame.phase_interface->triangles.size() : 0);
+        const char* separator = "";
+        for (std::size_t index = 0; index < face_count; ++index) {
+          output << separator << '3';
+          separator = ", ";
+        }
+        return absl::OkStatus();
+      });
   if (!status.ok()) {
     return status;
   }
-  const auto write_attribute = [&](std::string_view prefix, std::uint64_t id, auto sample) {
-    const std::string property = "float[] primvars:" + std::string(prefix) + std::to_string(id);
-    output << "    " << property << " (\n        interpolation = \"vertex\"\n    )\n";
-    return WriteSurfaceUsdSamples(output, cache, last_frame, property, [&](const SurfaceMesh3D& mesh) {
+  status =
+      WriteSurfaceUsdSamples(output, cache, last_frame, "int[] faceVertexIndices", [&](const SurfaceFrame3D& frame) {
+        const char* separator = "";
+        const auto write_triangles = [&](const auto& triangles) {
+          for (const auto& triangle : triangles) {
+            output << separator << triangle[0] << ", " << triangle[1] << ", " << triangle[2];
+            separator = ", ";
+          }
+        };
+        write_triangles(frame.mesh.triangles);
+        if (frame.phase_interface) {
+          write_triangles(frame.phase_interface->triangles);
+        }
+        return absl::OkStatus();
+      });
+  if (!status.ok()) {
+    return status;
+  }
+  const auto write_attribute = [&](const std::string& name, std::string_view interpolation, auto write_frame) {
+    const std::string property = "float[] primvars:" + name;
+    output << "    " << property << " (\n        interpolation = \"" << interpolation << "\"\n    )\n";
+    return WriteSurfaceUsdSamples(output, cache, last_frame, property, write_frame);
+  };
+  const auto write_vertex_attribute = [&](std::string_view prefix, std::uint64_t id, auto sample) {
+    return write_attribute(std::string(prefix) + std::to_string(id), "vertex", [&](const SurfaceFrame3D& frame) {
       const char* separator = "";
-      for (const auto& vertex : mesh.vertices) {
+      for (const auto& vertex : frame.mesh.vertices) {
         output << separator << static_cast<float>(sample(vertex, id));
         separator = ", ";
+      }
+      if (frame.phase_interface) {
+        for (std::size_t index = 0; index < frame.phase_interface->interior_positions.size(); ++index) {
+          output << separator << '0';
+          separator = ", ";
+        }
+      }
+      return absl::OkStatus();
+    });
+  };
+  const auto write_face_attribute = [&](const std::string& name, auto sample) {
+    return write_attribute(name, "uniform", [&](const SurfaceFrame3D& frame) {
+      const char* separator = "";
+      for (std::size_t index = 0; index < frame.mesh.triangles.size(); ++index) {
+        output << separator << static_cast<int>(sample(frame, index, false));
+        separator = ", ";
+      }
+      if (frame.phase_interface) {
+        for (std::size_t index = 0; index < frame.phase_interface->triangles.size(); ++index) {
+          output << separator << static_cast<int>(sample(frame, index, true));
+          separator = ", ";
+        }
       }
       return absl::OkStatus();
     });
   };
   for (const auto id : phase_ids) {
-    status = write_attribute("fluidity_phase_", id, [](const SurfaceVertex3D& vertex, std::uint64_t phase_id) {
+    status = write_vertex_attribute("fluidity_phase_", id, [](const SurfaceVertex3D& vertex, std::uint64_t phase_id) {
       return vertex.constituent_count > 0 && vertex.phase_id == phase_id;
     });
     if (!status.ok()) {
       return status;
     }
+    if (!shared_pairs.empty()) {
+      status = write_face_attribute(
+          "fluidity_face_phase_" + std::to_string(id),
+          [&](const SurfaceFrame3D& frame, std::size_t index, bool internal) {
+            if (!frame.phase_interface || internal) {
+              return false;
+            }
+            const auto& sheet = *frame.phase_interface;
+            return (sheet.exterior_sides[index] == 0 ? sheet.phase_a : sheet.phase_b) == id;
+          }
+      );
+      if (!status.ok()) {
+        return status;
+      }
+    }
   }
   for (const auto id : substance_ids) {
-    status = write_attribute("fluidity_fraction_", id, [](const SurfaceVertex3D& vertex, std::uint64_t substance_id) {
-      for (std::size_t index = 0; index < vertex.constituent_count; ++index) {
-        const auto& constituent = vertex.constituents[index];
-        if (constituent.substance_id == substance_id) {
-          return constituent.volume_fraction;
-        }
-      }
-      return 0.0;
+    status =
+        write_vertex_attribute("fluidity_fraction_", id, [](const SurfaceVertex3D& vertex, std::uint64_t substance_id) {
+          for (std::size_t index = 0; index < vertex.constituent_count; ++index) {
+            const auto& constituent = vertex.constituents[index];
+            if (constituent.substance_id == substance_id) {
+              return constituent.volume_fraction;
+            }
+          }
+          return 0.0;
+        });
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  for (const auto& [phase_a, phase_b] : shared_pairs) {
+    const auto name = "fluidity_interface_" + std::to_string(phase_a) + "_" + std::to_string(phase_b);
+    status = write_face_attribute(name, [&](const SurfaceFrame3D& frame, std::size_t, bool internal) {
+      return internal && frame.phase_interface->phase_a == phase_a && frame.phase_interface->phase_b == phase_b;
     });
     if (!status.ok()) {
       return status;

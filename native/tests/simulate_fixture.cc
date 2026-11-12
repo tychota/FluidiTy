@@ -218,7 +218,8 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
-  const bool mixed_surface = args[5] == "mixed-surface";
+  const bool shared_surface = args[5] == "shared-surface";
+  const bool mixed_surface = args[5] == "mixed-surface" || shared_surface;
   const bool initial_particle = args[5] == "initial" || args[5] == "effects" || slow_frame || whitewater || ocean
       || bounded_wave || shear_tank || mixed_surface;
   if (ocean) {
@@ -238,12 +239,17 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         .outlet_rate_per_s = 4,
     };
   }
-  constexpr std::array<fluidity::LiquidConstituentMaterial3D, 2> kMixedSurfaceMaterials{{
+  constexpr std::array<fluidity::LiquidConstituentMaterial3D, 3> kMixedSurfaceMaterials{{
       {8, 4, 1000.0},
       {14, 4, 1020.0},
+      {25, 5, 820.0},
   }};
   if (mixed_surface) {
-    scene.scene.constituent_materials = kMixedSurfaceMaterials;
+    scene.scene.constituent_materials = std::span(kMixedSurfaceMaterials).first(shared_surface ? 3 : 2);
+  }
+  constexpr std::array<fluidity::LiquidPhasePair3D, 1> kSharedSurfacePairs{{{4, 5, 0.0}}};
+  if (shared_surface) {
+    scene.scene.phase_pairs = kSharedSurfacePairs;
   }
   scene.options.motion_sample_intervals = whitewater ? 1 : (args[5] == "effects" || mixed_surface ? 16 : 0);
   if (whitewater) {
@@ -281,6 +287,8 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     scene.scene.field = fluidity::LiquidHorizontalPlaneSurface3D{3.0};
     scene.scene.obstacle = fluidity::AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
     scene.scene.dynamic_viscosity = args[5] == "viscous" ? 100.0 : 0.0;
+  } else if (shared_surface) {
+    scene.scene.field = fluidity::LiquidParticleSphereUnion3D{1.1};
   } else if (initial_particle) {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
   }
@@ -309,6 +317,36 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
         std::cerr << authored << '\n';
         return 3;
       }
+    } else if (shared_surface) {
+      state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(3);
+      if (!state.particles.Resize(3).ok()) {
+        return 3;
+      }
+      state.particles[0] = {
+          .id = 1,
+          .world_position = {2.5, 2.5, 2.5},
+          .world_velocity = {0.24, 0, 0},
+          .mass = 250.0,
+          .reference_volume = 0.25,
+          .phase_id = 4,
+          .constituent_count = 1,
+          .constituents = {{{8, 1.0}}},
+      };
+      state.particles[1] = state.particles[0];
+      state.particles[1].id = 2;
+      state.particles[1].mass = 765.0;
+      state.particles[1].reference_volume = 0.75;
+      state.particles[1].constituents[0] = {14, 1.0};
+      state.particles[2] = {
+          .id = 3,
+          .world_position = {2.92, 2.64, 2.57},
+          .world_velocity = {0.24, 0, 0},
+          .mass = 820.0,
+          .phase_id = 5,
+          .constituent_count = 1,
+          .constituents = {{{25, 1.0}}},
+      };
+      state.next_particle_id = 4;
     } else if (shear_tank) {
       state.particles = *fluidity::LiquidRecords3D<fluidity::LiquidParticleState3D>::Create(2);
       if (!state.particles.Resize(2).ok()) {
