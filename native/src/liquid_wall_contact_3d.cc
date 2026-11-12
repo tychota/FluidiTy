@@ -1,6 +1,9 @@
 #include "fluidity/host/liquid_wall_contact_3d.h"
 
+#include <array>
 #include <cmath>
+#include <numeric>
+#include <span>
 
 #include "fluidity/base/liquid_wall_contact_math_3d.h"
 #include "liquid_boundary_backend.h"
@@ -11,6 +14,233 @@ absl::StatusOr<LiquidWallContactResult3D> ResolveLiquidWallContact3D(const Liqui
     return boundary_internal::ArithmeticStatus(result.status());
   }
   return boundary_internal::UnpackContact(*result);
+}
+namespace {
+
+using boundary_internal::ProjectionBounds;
+using boundary_internal::SweepPlane;
+
+struct BoxSweepTime {
+  ProjectionBounds distance;
+  ProjectionBounds speed;
+};
+
+ProjectionBounds NegateBounds(ProjectionBounds value) {
+  return {-value.estimate, -value.upper, -value.lower};
+}
+
+// Compare nonnegative distances divided by positive speeds using bounded
+// cross products. Equal exact fractions preserve the canonical face order.
+std::optional<int> CompareBoxSweepTimes(BoxSweepTime first, BoxSweepTime second) {
+  boundary_internal::ProjectedSum lower;
+  lower.AddProduct(first.distance.lower, second.speed.lower);
+  lower.AddProduct(-second.distance.upper, first.speed.upper);
+  const auto lower_sign = lower.Bounds().sign();
+  if (lower_sign.has_value() && *lower_sign > 0) {
+    return 1;
+  }
+  boundary_internal::ProjectedSum upper;
+  upper.AddProduct(first.distance.upper, second.speed.upper);
+  upper.AddProduct(-second.distance.lower, first.speed.lower);
+  const auto upper_sign = upper.Bounds().sign();
+  if (upper_sign.has_value() && *upper_sign < 0) {
+    return -1;
+  }
+  if (lower_sign.has_value() && upper_sign.has_value() && *lower_sign == 0 && *upper_sign == 0) {
+    return 0;
+  }
+  return std::nullopt;
+}
+
+struct BoxSweepFace {
+  SweepPlane plane;
+  ProjectionBounds start_distance;
+  ProjectionBounds relative_speed;
+  int start_side;
+  int direction;
+};
+
+absl::StatusOr<const SweepPlane*>
+SelectBoxImpactFace(std::span<const BoxSweepFace> faces, Vec3 stored_velocity, double duration) {
+  const BoxSweepFace* entering_face = nullptr;
+  BoxSweepTime entry_time{};
+  std::optional<BoxSweepTime> exit_time;
+  bool permanently_exterior = false;
+  bool starts_on_box = true;
+  bool immediately_leaves_box = false;
+  const SweepPlane* tangent_face = nullptr;
+  for (const auto& face : faces) {
+    starts_on_box &= face.start_side <= 0;
+    immediately_leaves_box |= face.start_side == 0 && face.direction > 0;
+    if (face.direction == 0 && face.start_side == 0) {
+      permanently_exterior = true;
+      const auto stored_direction = boundary_internal::RelativeNormalVelocity(face.plane, stored_velocity).sign();
+      if (!stored_direction.has_value()) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      if (tangent_face == nullptr && *stored_direction < 0) {
+        tangent_face = &face.plane;
+      }
+    } else if (face.start_side > 0 && face.direction >= 0) {
+      return nullptr;
+    }
+  }
+  if (permanently_exterior) {
+    return starts_on_box && !immediately_leaves_box ? tangent_face : nullptr;
+  }
+  for (const auto& face : faces) {
+    if (face.direction < 0 && face.start_side >= 0) {
+      const BoxSweepTime candidate{face.start_distance, NegateBounds(face.relative_speed)};
+      const auto order = entering_face == nullptr ? std::optional<int>{1} : CompareBoxSweepTimes(candidate, entry_time);
+      if (!order) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      if (*order > 0) {
+        entering_face = &face;
+        entry_time = candidate;
+      }
+    } else if (face.direction > 0) {
+      const BoxSweepTime candidate{NegateBounds(face.start_distance), face.relative_speed};
+      const auto order = exit_time ? CompareBoxSweepTimes(candidate, *exit_time) : std::optional<int>{-1};
+      if (!order) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      if (*order < 0) {
+        exit_time = candidate;
+      }
+    }
+  }
+  if (entering_face == nullptr) {
+    return nullptr;
+  }
+  if (exit_time) {
+    const auto order = CompareBoxSweepTimes(entry_time, *exit_time);
+    if (!order) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    if (*order >= 0) {
+      return nullptr;
+    }
+  }
+  const auto before_end = CompareBoxSweepTimes(entry_time, {{duration, duration, duration}, {1.0, 1.0, 1.0}});
+  if (!before_end) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return *before_end <= 0 ? &entering_face->plane : nullptr;
+}
+
+}  // namespace
+
+absl::StatusOr<RigidBoxContact3D> ResolveTranslatingBoxContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    double mass
+) {
+  namespace sweep = boundary_internal;
+  if (!std::holds_alternative<std::monostate>(inputs.obstacle) || !sweep::HasFiniteComponents(box.world_low)
+      || !sweep::HasFiniteComponents(box.world_high) || !sweep::HasFiniteComponents(box.wall_velocity)
+      || !sweep::HasFiniteComponents(inputs.start_world_position)
+      || !sweep::HasFiniteComponents(inputs.advecting_world_velocity)
+      || !sweep::HasFiniteComponents(inputs.stored_world_velocity) || !std::isfinite(inputs.step_duration)
+      || inputs.step_duration <= 0.0 || !std::isfinite(inputs.friction_coefficient) || inputs.friction_coefficient < 0.0
+      || !std::isfinite(inputs.penetration_tolerance) || inputs.penetration_tolerance < 0.0 || !std::isfinite(mass)
+      || mass <= 0.0) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto end_low = sweep::Advance(box.world_low, box.wall_velocity, inputs.step_duration);
+  const auto end_high = sweep::Advance(box.world_high, box.wall_velocity, inputs.step_duration);
+  std::array<BoxSweepFace, 6> faces{};
+  bool interior_start = true;
+  for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+    const auto component = kComponents[axis];
+    if (box.world_low.*component >= box.world_high.*component) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, {});
+    }
+    if (!std::isfinite(end_low.*component) || !std::isfinite(end_high.*component)
+        || end_low.*component >= end_high.*component) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    for (std::size_t side = 0; side < 2; ++side) {
+      const double sign = side == 0 ? -1.0 : 1.0;
+      Vec3 normal{};
+      normal.*component = sign;
+      const SweepPlane plane{
+          .outward_normal = normal,
+          .start_coordinate = sign * ((side == 0 ? box.world_low : box.world_high).*component),
+          .slab_half_width = 0.0,
+          .wall_velocity = box.wall_velocity,
+      };
+      const auto start_distance = sweep::DistanceAlongPath(plane, inputs.start_world_position, {}, 0.0);
+      const auto start_side = start_distance.sign();
+      const auto relative_speed = sweep::RelativeNormalVelocity(plane, inputs.advecting_world_velocity);
+      const auto direction = relative_speed.sign();
+      if (!start_side.has_value() || !direction.has_value()) {
+        return absl::Status(absl::StatusCode::kOutOfRange, {});
+      }
+      faces[2 * axis + side] = {plane, start_distance, relative_speed, *start_side, *direction};
+      interior_start &= *start_side < 0;
+    }
+  }
+  if (interior_start) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  const auto selected = SelectBoxImpactFace(faces, inputs.stored_world_velocity, inputs.step_duration);
+  if (!selected.ok()) {
+    return selected.status();
+  }
+
+  auto plane_inputs = inputs;
+  if (*selected != nullptr) {
+    const auto& plane = **selected;
+    plane_inputs.obstacle = TranslatingHalfspace3D{plane.outward_normal, plane.start_coordinate, box.wall_velocity};
+  }
+  Vec3 hit_position{};
+  const auto resolved = sweep::ResolveContact(sweep::PackContact(plane_inputs), &hit_position);
+  if (!resolved.ok()) {
+    return sweep::ArithmeticStatus(resolved.status(), true);
+  }
+  RigidBoxContact3D result{.contact = sweep::UnpackContact(*resolved), .body_impulse = {}, .body_angular_impulse = {}};
+  if (result.contact.contact_fraction.has_value() != (*selected != nullptr)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  if (*selected == nullptr) {
+    for (const auto& face : faces) {
+      const auto end_distance =
+          sweep::DistanceAlongPath(face.plane, result.contact.world_position, {}, inputs.step_duration);
+      if (end_distance.finite() && end_distance.lower >= 0.0) {
+        return result;
+      }
+    }
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+
+  const auto incoming = inputs.stored_world_velocity;
+  const auto outgoing = result.contact.stored_world_velocity;
+  result.body_impulse = {
+      mass * (incoming.x - outgoing.x),
+      mass * (incoming.y - outgoing.y),
+      mass * (incoming.z - outgoing.z)
+  };
+  const Vec3 start_center{
+      std::midpoint(box.world_low.x, box.world_high.x),
+      std::midpoint(box.world_low.y, box.world_high.y),
+      std::midpoint(box.world_low.z, box.world_high.z),
+  };
+  const auto center_at_hit =
+      sweep::Advance(start_center, box.wall_velocity, *result.contact.contact_fraction * inputs.step_duration);
+  const Vec3 arm{hit_position.x - center_at_hit.x, hit_position.y - center_at_hit.y, hit_position.z - center_at_hit.z};
+  const auto impulse = result.body_impulse;
+  result.body_angular_impulse = {
+      arm.y * impulse.z - arm.z * impulse.y,
+      arm.z * impulse.x - arm.x * impulse.z,
+      arm.x * impulse.y - arm.y * impulse.x,
+  };
+  if (!sweep::HasFiniteComponents(result.body_impulse) || !sweep::HasFiniteComponents(result.body_angular_impulse)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return result;
 }
 absl::StatusOr<ElasticBladeContact3D> ResolveElasticBladeContact3D(
     const LiquidWallContactInputs3D& inputs,
