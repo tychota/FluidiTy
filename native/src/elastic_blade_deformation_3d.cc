@@ -22,13 +22,14 @@ Vec3 AdvanceDeformationRow(Vec3 old_row, Vec3 gradient_row, Mat3 old_deformation
 
 }  // namespace
 
-absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation3D(
+static absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation(
     const SparseMacGrid3D& mac_grid,
     const MacTransferParticle3D& particle,
     ElasticBladeSide3D blade_side,
     const LiquidBoundaryVelocityHistory3D& old_history,
     const LiquidBoundaryVelocityHistory3D& new_history,
-    Mat3 old_deformation_gradient
+    Mat3 old_deformation_gradient,
+    std::vector<double>* completed_new_face_velocities
 ) {
   const bool assigned_sign = blade_side.sign == -1 || blade_side.sign == 1;
   if (blade_side.blade_id == 0 || !assigned_sign) {
@@ -47,14 +48,17 @@ absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation3D(
       .side_tag = blade_side.sign,
       .affine_enabled = true,
   };
-  const auto gathered = GatherLiquidBoundaryParticles3D({
+  const LiquidBoundaryGatherInputs3D inputs{
       .mac_grid = mac_grid,
       .particles = {&boundary_particle, 1},
       .old_time = old_history.velocity_sample_time,
       .new_time = new_history.velocity_sample_time,
       .old_history = old_history,
       .new_history = new_history,
-  });
+  };
+  const auto gathered = completed_new_face_velocities == nullptr
+      ? GatherLiquidBoundaryParticles3D(inputs)
+      : GatherLiquidBoundaryParticles3D(inputs, *completed_new_face_velocities);
   if (!gathered.ok()) {
     return gathered.status();
   }
@@ -84,7 +88,40 @@ absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation3D(
   return ElasticBladeDeformation3D{.gather = gather, .deformation_gradient = candidate};
 }
 
-absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3D(
+absl::StatusOr<ElasticBladeDeformation3D> GatherElasticBladeDeformation3D(
+    const SparseMacGrid3D& mac_grid,
+    const MacTransferParticle3D& particle,
+    ElasticBladeSide3D blade_side,
+    const LiquidBoundaryVelocityHistory3D& old_history,
+    const LiquidBoundaryVelocityHistory3D& new_history,
+    Mat3 old_deformation_gradient
+) {
+  return GatherElasticBladeDeformation(
+      mac_grid,
+      particle,
+      blade_side,
+      old_history,
+      new_history,
+      old_deformation_gradient,
+      nullptr
+  );
+}
+
+namespace {
+
+double Dot(Vec3 first, Vec3 second) {
+  return (first.x * second.x + first.y * second.y) + first.z * second.z;
+}
+
+struct ElasticStepWork {
+  std::span<const Mat3> stresses;
+  std::span<const std::array<CompatibleMacFaceStencil3D, 3>> stencils;
+  ElasticBladeGridStepResult3D& result;
+};
+
+}  // namespace
+
+static absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles(
     const SparseMacGrid3D& mac_grid,
     const TranslatingSlab3D& blade,
     std::uint64_t blade_id,
@@ -92,7 +129,8 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
     double friction_coefficient,
     const LiquidBoundaryVelocityHistory3D& old_history,
     const LiquidBoundaryVelocityHistory3D& new_history,
-    SolidInteractionCheckpoint3D& checkpoint
+    SolidInteractionCheckpoint3D& checkpoint,
+    ElasticStepWork* work
 ) {
   const double dt = new_history.velocity_sample_time - old_history.velocity_sample_time;
   const bool valid_retention = std::isfinite(retained_velocity_fraction) && retained_velocity_fraction >= 0.0
@@ -108,6 +146,8 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
   auto candidates = checkpoint.elastic_particles;
   std::vector<ElasticBladeContact3D> reactions;
   reactions.reserve(candidates.size());
+  std::vector<double> completed_new_face_velocities;
+  double compatible_stress_work = 0.0;
   std::uint64_t previous_particle_id = 0;
   for (std::size_t particle_index = 0; particle_index < candidates.size(); ++particle_index) {
     auto& candidate = candidates[particle_index];
@@ -119,16 +159,34 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
     }
     previous_particle_id = candidate.particle_id;
     auto& transfer = candidate.transfer;
-    const auto deformation = GatherElasticBladeDeformation3D(
+    const auto deformation = GatherElasticBladeDeformation(
         mac_grid,
         transfer,
         side.side,
         old_history,
         new_history,
-        candidate.deformation_gradient
+        candidate.deformation_gradient,
+        work == nullptr ? nullptr : &completed_new_face_velocities
     );
     if (!deformation.ok()) {
       return deformation.status();
+    }
+    if (work != nullptr) {
+      const Mat3 stress = work->stresses[particle_index];
+      const Mat3 gradient = deformation->gather.velocity_gradient;
+      const double volume_time = dt * candidate.reference_volume;
+      work->result.deformation_work += volume_time
+          * (Dot(stress.x_row, gradient.x_row) + Dot(stress.y_row, gradient.y_row) + Dot(stress.z_row, gradient.z_row));
+      const std::array stress_rows{stress.x_row, stress.y_row, stress.z_row};
+      for (std::size_t axis = 0; axis < stress_rows.size(); ++axis) {
+        for (const auto& sample : work->stencils[particle_index][axis]) {
+          if (sample.compatible) {
+            const double completed_velocity = completed_new_face_velocities[sample.face_slot];
+            compatible_stress_work -=
+                volume_time * Dot(stress_rows[axis], sample.normalized_weight_gradient) * completed_velocity;
+          }
+        }
+      }
     }
     const Vec3 pic_velocity = deformation->gather.new_pic_velocity;
     const Vec3 residual = deformation->gather.particle_minus_old_pic_velocity;
@@ -167,12 +225,42 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3
     candidate.deformation_gradient = deformation->deformation_gradient;
     reactions.push_back(*contact);
   }
+  if (work != nullptr) {
+    work->result.cut_work = work->result.deformation_work + compatible_stress_work;
+    work->result.omitted_stress_work = compatible_stress_work - work->result.grid_stress_work;
+    if (!std::isfinite(work->result.cut_work) || !std::isfinite(work->result.omitted_stress_work)) {
+      return absl::OutOfRangeError("nonfinite elastic work budget");
+    }
+  }
   checkpoint.elastic_particles.swap(candidates);
   ++checkpoint.accepted_step;
   return reactions;
 }
 
-absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
+absl::StatusOr<std::vector<ElasticBladeContact3D>> AdvanceElasticBladeParticles3D(
+    const SparseMacGrid3D& mac_grid,
+    const TranslatingSlab3D& blade,
+    std::uint64_t blade_id,
+    double retained_velocity_fraction,
+    double friction_coefficient,
+    const LiquidBoundaryVelocityHistory3D& old_history,
+    const LiquidBoundaryVelocityHistory3D& new_history,
+    SolidInteractionCheckpoint3D& checkpoint
+) {
+  return AdvanceElasticBladeParticles(
+      mac_grid,
+      blade,
+      blade_id,
+      retained_velocity_fraction,
+      friction_coefficient,
+      old_history,
+      new_history,
+      checkpoint,
+      nullptr
+  );
+}
+
+absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     const SparseMacGrid3D& mac_grid,
     const ElasticBladeGridStep3D& settings,
     SolidInteractionCheckpoint3D& checkpoint
@@ -252,6 +340,7 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
       }
     }
   }
+  ElasticBladeGridStepResult3D result;
   auto new_velocities = old_grid->face_velocities;
   auto new_validity = old_grid->validity;
   for (std::size_t face_slot = 0; face_slot < mac_grid.face_count(); ++face_slot) {
@@ -264,13 +353,15 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
     if (new_validity[face_slot] == LiquidFaceValidity3D::kValid) {
       const double acceleration = stress_force_sums[face_slot] / old_grid->face_masses[face_slot];
       new_velocities[face_slot] = std::fma(settings.duration, acceleration, new_velocities[face_slot]);
-      if (!std::isfinite(new_velocities[face_slot])) {
+      result.grid_stress_work += settings.duration * stress_force_sums[face_slot] * new_velocities[face_slot];
+      if (!std::isfinite(new_velocities[face_slot]) || !std::isfinite(result.grid_stress_work)) {
         return absl::OutOfRangeError("nonfinite elastic face velocity");
       }
     }
   }
   const std::vector<LiquidPrescribedWallSample3D> wall_samples(mac_grid.face_count());
-  return AdvanceElasticBladeParticles3D(
+  ElasticStepWork work{stresses, deposits->compatible_stencils, result};
+  auto contacts = AdvanceElasticBladeParticles(
       mac_grid,
       settings.blade,
       settings.blade_id,
@@ -278,8 +369,14 @@ absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
       settings.friction_coefficient,
       {0.0, 0.0, old_grid->face_velocities, old_grid->validity, *old_tags, wall_samples},
       {settings.duration, settings.duration, new_velocities, new_validity, *new_tags, wall_samples},
-      checkpoint
+      checkpoint,
+      &work
   );
+  if (!contacts.ok()) {
+    return contacts.status();
+  }
+  result.contacts = std::move(*contacts);
+  return result;
 }
 
 }  // namespace fluidity

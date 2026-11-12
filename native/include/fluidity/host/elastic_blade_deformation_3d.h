@@ -54,13 +54,21 @@ struct ElasticBladeGridStep3D {
   double friction_coefficient = 0.0;
 };
 
+struct ElasticBladeGridStepResult3D {
+  std::vector<ElasticBladeContact3D> contacts;  // Particle order.
+  double grid_stress_work = 0.0;  // Applied face force against new velocity, joules.
+  double deformation_work = 0.0;  // dt times V0 stress:L, joules.
+  double cut_work = 0.0;  // dt times V0 stress:(L - L'), joules.
+  double omitted_stress_work = 0.0;  // Work of omitted force on completed samples, joules.
+};
+
 // Advances dry elastic particles on the fixed owned grid for a prescribed
 // translating slab. Deposits compatible mass and momentum, adds the explicit
 // stress force, and completes old/new same-side histories for particle
 // acceptance. Faces changing side or entering the slab carry no new-time
 // donor mass. The caller controls the explicit time step. Contact results
 // are in particle order and failure preserves the entire checkpoint.
-absl::StatusOr<std::vector<ElasticBladeContact3D>> StepElasticBladeGrid3D(
+absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     const SparseMacGrid3D& mac_grid,
     const ElasticBladeGridStep3D& settings,
     SolidInteractionCheckpoint3D& checkpoint

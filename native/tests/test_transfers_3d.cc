@@ -569,6 +569,10 @@ TEST(MacTransfer3D, ElasticBladeStepBuildsHistoriesAndReplaysUniformTransport) {
   stressed.elastic_particles.front().deformation_gradient.x_row.x = 1.01;
   const auto stressed_step = StepElasticBladeGrid3D(*grid, settings, stressed);
   ASSERT_TRUE(stressed_step.ok()) << stressed_step.status();
+  ASSERT_EQ(stressed_step->contacts.size(), 1);
+  EXPECT_GT(stressed_step->grid_stress_work, 0.0);
+  EXPECT_GT(std::abs(stressed_step->cut_work), 1e-12);
+  EXPECT_NEAR(stressed_step->grid_stress_work + stressed_step->deformation_work, stressed_step->cut_work, 1e-12);
   EXPECT_LT(stressed.elastic_particles.front().deformation_gradient.x_row.x, 1.01);
 }
 

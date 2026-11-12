@@ -686,7 +686,11 @@ absl::StatusOr<NormalizedLiquidMacFaces3D> NormalizeLiquidMacFaces3D(
   }
   return result;
 }
-absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
+namespace {
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherBoundaryParticles(
+    const LiquidBoundaryGatherInputs3D& inputs,
+    std::vector<double>* completed_new_face_velocities
 ) {
   if (const auto status = ValidateCapacity(inputs.mac_grid.face_count(), inputs.particles.size(), false);
       !status.ok()) {
@@ -711,8 +715,28 @@ absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(co
   if (!status.ok()) {
     return status;
   }
+  if (completed_new_face_velocities != nullptr) {
+    *completed_new_face_velocities = std::move(new_values);
+  }
   return result;
 }
+}  // namespace
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
+) {
+  return GatherBoundaryParticles(inputs, nullptr);
+}
+
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(
+    const LiquidBoundaryGatherInputs3D& inputs,
+    std::vector<double>& completed_new_face_velocities
+) {
+  if (inputs.particles.size() != 1) {
+    return absl::InvalidArgumentError("completed face history requires exactly one particle");
+  }
+  return GatherBoundaryParticles(inputs, &completed_new_face_velocities);
+}
+
 absl::StatusOr<LiquidBoundaryFaceDepositsView3D> LiquidBoundaryWorkspace3D::Deposit(
     const LiquidBoundaryDepositViewInputs3D& inputs
 ) {
