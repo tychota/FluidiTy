@@ -702,13 +702,15 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       auto& result = gathers[index];
       const auto& complete = gathered->particles[index];
       result.velocity_gradient = complete.velocity_gradient;
-      bool affine_enabled = complete.affine_enabled;
-      for (const auto& stencil : boundary_deposits.compatible_stencils[index]) {
-        for (const auto& sample : stencil) {
-          affine_enabled = affine_enabled && fallback[sample.face_slot] == 0;
+      result.fitted_velocity_slopes = complete.affine_enabled ? complete.fitted_velocity_slopes : Mat3{};
+      for (std::size_t axis = 0; axis < 3; ++axis) {
+        for (const auto& sample : boundary_deposits.compatible_stencils[index][axis]) {
+          if (fallback[sample.face_slot] != 0) {
+            result.fitted_velocity_slopes.*kRows[axis] = {};
+            break;
+          }
         }
       }
-      result.fitted_velocity_slopes = affine_enabled ? complete.fitted_velocity_slopes : Mat3{};
       // Compatible PIC is the transpose of the mass deposit. Use the complete
       // ghost field for the affine fit and the true deformation derivative.
       for (std::size_t axis = 0; axis < 3; ++axis) {
