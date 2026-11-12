@@ -4212,3 +4212,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Component-wise translation-relative affine limit
+
+Cap each centered tangent affine contribution by the magnitude
+of translation along its own component. Scale the whole row by
+the tightest sample bound to preserve its weighted mean.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 42.358288° | 0.150247 m |
+| Coarse half-step | 54.403787° | 0.115074 m |
+| Fine | 37.182639° | 0.149841 m |
+| Fine half-step | 47.609860° | 0.132312 m |
+
+All four runs finish with radii inside the acceptance interval
+and vertical momentum residual below 4.3e-9 N·s. Every angle
+exceeds 35°. The source was restored after linking. The
+component-wise clearing candidate still has the two passing
+fine cases, and Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-component-limit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
