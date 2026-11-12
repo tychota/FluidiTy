@@ -1839,3 +1839,20 @@ The standalone clean Windows Release CPU build passed all 74 geometry
 and workspace tests. The clean milestone build with upstream adaptive
 pressure and cache changes passed 161 selected native M5, geometry,
 workspace, cache, schema, and CLI tests.
+
+### Nodal wall flux and pressure work
+
+The blocked-face basis weights integrate the sampled nodal velocities
+into the signed pressure-link flux. The oblique two-cell oracle has a
+0.75 m² open area and 0.625 m³/s wall flux. Its blocked area moves at an
+average 2.5 m/s. [PR 100](https://github.com/tychota/FluidiTy/pull/100)
+landed at `6022201` after 213 native and SM120 checks with upstream M6
+pressure routing. A clean milestone build also passed six native M5
+targets and three CLI tests.
+
+The reciprocal pressure branch at `f9459cf` applies the transpose of the
+same weights to the solved pressure difference. Its analytic test
+recovers 2 N and 5 W for a pressure difference of 8 Pa. The native
+two-cell projection also recovers the wall-flux power from the corner
+forces and velocities. Transferring those loads to the owning particles
+and accepting both materials in one production attempt remain open.
