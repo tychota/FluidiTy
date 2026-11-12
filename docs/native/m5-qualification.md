@@ -690,6 +690,34 @@ sensitivity while leaving the cause of the remaining shallow slope open.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-floor-grid-phase
 ~~~
 
+### Low-mass stress acceleration control
+
+The vertical alignment runs omit 0.000034–0.000060 N·s of stress impulse
+out of 34.26–41.49 N·s proposed on native. To test whether this small
+aggregate nevertheless changes the result, repeat the same six cases
+with the stress acceleration denominator set to deposited face mass.
+Leave the empty-face check, motion bound, and transfer settings intact.
+
+| h (m) | Grid origin y/h | Native envelope | CUDA envelope |
+|---|---:|---:|---:|
+| 0.075 | 0.00 | 26.113421° | 26.113421° |
+| 0.075 | 0.25 | Face motion bound at step 270 | 26.149349° |
+| 0.075 | 0.50 | 24.685833° | 24.685833° |
+| 0.0625 | 0.00 | Face motion bound at step 1693 | 23.529277° |
+| 0.0625 | 0.25 | Face motion bound at step 727 | Face motion bound at step 727 |
+| 0.0625 | 0.50 | 22.529888° | 22.529889° |
+
+Every completed case stays within 0.0006° of its regularized baseline and
+within 1e-6 N·s of the vertical momentum balance. All completed angles
+are below 30°. The motion rejections show the safeguard matters to the
+fixed-step fixture even though its effect on completed angles is small.
+
+To reproduce from 9996ba1, temporarily change the assignment of
+force_mass in native/src/dry_solid_step_3d.cc from
+std::max(mass, minimum_force_mass) to mass. Rebuild both dry-scene targets
+and run the two --q-sand-floor-grid-phase commands above. Restore the
+original assignment and rebuild before running the normal suite.
+
 ### Floor-supported release and the 30° material oracle
 
 The drop fixture gives the sand column 0.10 m of clearance above the floor.
