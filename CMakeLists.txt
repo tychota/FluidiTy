@@ -118,6 +118,7 @@ add_library(fluidity_native STATIC
   native/src/gas_apic_3d.cc
   native/src/gas_uniform_domain_3d.cc
   native/src/gas_frame_3d.cc
+  native/src/gas_checkpoint_3d.cc
   native/src/liquid_cavity.cc
   native/src/liquid_eos.cc
   native/src/liquid_eos_sensor_3d.cc
@@ -353,6 +354,7 @@ if(BUILD_TESTING)
     native/tests/test_gas_thermodynamics.cc
     native/tests/test_gas_transport.cc
     native/tests/test_gas_substep_3d.cc
+    native/tests/test_gas_checkpoint_3d.cc
     native/tests/test_liquid_cavity.cc
     native/tests/test_liquid_eos.cc
     native/tests/test_liquid_mixture_3d.cc

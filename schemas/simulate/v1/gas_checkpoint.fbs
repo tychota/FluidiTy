@@ -1,0 +1,33 @@
+include "common.fbs";
+
+namespace fluidity.cache.v1;
+
+// Cell and face identity is supplied by the authenticated fixed scene. Cells
+// use pressure order, and face velocities use owned-slot order including halo.
+struct GasCellState {
+  carrier_kg_per_m3:double;
+  fuel_kg_per_m3:double;
+  soot_kg_per_m3:double;
+  enthalpy_j_per_m3:double;
+  absolute_pressure_pa:double;
+  gauge_pressure_pa:double;
+  fuel_burn_kg_per_m3_s:double;
+}
+struct GasMarkerState {
+  position_m:Vector3;
+  weight:double;
+  velocity_m_per_s:Vector3;
+  slopes_per_s:Matrix3;
+}
+table GasCheckpoint {
+  schema_version:uint = 1 (id:0);
+  byte_length:ulong (id:1);
+  scene_digest:Digest (required, id:2);
+  clock:Clock (required, id:3);
+  cells:[GasCellState] (required, id:4);
+  markers:[GasMarkerState] (required, id:5);
+  face_velocity_m_per_s:[double] (required, id:6);
+}
+root_type GasCheckpoint;
+file_identifier "FLGC";
+file_extension "flgc";

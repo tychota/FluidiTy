@@ -1,0 +1,46 @@
+include "common.fbs";
+
+namespace fluidity.cache.v1;
+
+struct GasFuelHeatKey {
+  time_s:double;
+  fuel_kg_per_m3_s:double;
+  heat_w_per_m3:double;
+}
+struct GasDraftKey {
+  time_s:double;
+  acceleration_m_per_s2:Vector3;
+}
+table GasEmitter {
+  lower_m:Vector3 (required, id:0);
+  upper_m:Vector3 (required, id:1);
+  keys:[GasFuelHeatKey] (required, id:2);
+}
+table GasReaction {
+  ignition_temperature_k:double = 300 (id:0);
+  burn_rate_per_s:double (id:1);
+  heat_per_fuel_j_per_kg:double (id:2);
+  soot_yield:double (id:3);
+}
+table GasScene {
+  schema_version:uint = 1 (id:0);
+  model_version:uint = 1 (id:1);
+  backend:Backend (id:2);
+  build_digest:Digest (required, id:3);
+  world_origin_m:Vector3 (required, id:4);
+  extent:Index3 (required, id:5);
+  cell_width_m:double = 1 (id:6);
+  open_boundaries:ubyte (id:7);
+  ambient_pressure_pa:double = 101325 (id:8);
+  ambient_temperature_k:double = 293.15 (id:9);
+  initial_velocity_m_per_s:Vector3 (required, id:10);
+  gravity_m_per_s2:Vector3 (required, id:11);
+  frame_duration_s:double = 0.041666666666666664 (id:12);
+  substeps_per_frame:uint = 4 (id:13);
+  emitters:[GasEmitter] (required, id:14);
+  draft:[GasDraftKey] (required, id:15);
+  reaction:GasReaction (required, id:16);
+}
+root_type GasScene;
+file_identifier "FLGS";
+file_extension "flgs";
