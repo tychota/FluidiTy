@@ -2338,3 +2338,46 @@ foreach ($grid in 'coarse', 'fine') {
   }
 }
 ```
+
+
+### Contact-activated grid support
+
+Local commit `46c9d4b` delays the reflected floor constraint until an
+accepted particle reaches the wall. Before that event the paired
+gather and stress transpose use unconstrained support. The compressed
+single-particle oracle has nonzero stress and no wall reaction while
+its center is 0.2 cell widths above the floor. Both default native and
+SM120 dry-scene targets passed with this oracle.
+
+The fine half-step trace reports zero grid reaction and zero swept
+contacts at 0.15 s. By 0.20 s it reports 477 swept contacts and
+0.298291 N·s of grid reaction. At 0.35 s its height is 0.160144 m,
+versus 0.202572 m for the continuously active reflected constraint.
+This removes the earlier premature grid-supported rebound.
+
+| Case | Global activation at 1.5 s | Global activation at 3 s | Contact-local activation at 1.5 s | Contact-local activation at 3 s |
+|---|---:|---:|---:|---:|
+| Coarse | 32.417839° | 31.264670° | 35.233573° | 32.098814° |
+| Coarse half-step | 38.078230° | 33.821046° | 39.835357° | 36.198762° |
+| Fine | 29.939029° | 27.313441° | No compatible donor | No compatible donor |
+| Fine half-step | 34.924794° | 28.055917° | 37.166363° | No compatible donor |
+
+Only the global coarse 1.5 s and coarse half-step 3 s cases pass all
+original checks. The other angles in range miss the radius bound.
+The contact-local experiment only enables the constraint on stencils
+of particles already touching the floor. Its native default checks
+pass, but the fine case loses a compatible ghost donor at step 863,
+and the fine half-step at step 2807. Completed runs retain the
+work pairing and vertical momentum balance. Q-SAND stays open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/floor-contact-active-bin'
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-contact-trace fine half
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
+
+The contact-local binaries use the same commands from
+`out/pr-m5-sand-affine/out/floor-local-contact-bin`.
