@@ -87,6 +87,15 @@ class ProtocolWriter {
   std::FILE* diagnostics_;
   std::mutex mutex_;
 };
+// Internal Blender bridge. Advances a coupled rigid box by one completed
+// frame and optionally publishes a scene-bound joint checkpoint.
+absl::Status ExecuteRigidBoxFrame(
+    const Command& liquid,
+    const std::filesystem::path& rigid_packet,
+    const std::filesystem::path& previous,
+    const std::filesystem::path& output,
+    ProtocolWriter& writer
+);
 /// Executes a run, advances one accepted substep, or replays a requested clock.
 /// @pre command is a run, step, or replay returned by ParseCommand. diagnostic is non-null.
 ///

@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <locale>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -13,6 +15,7 @@
 #include "fluidity/host/effects_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "fluidity/host/motion_capture_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "fluidity/host/whitewater_sphere_source_3d.h"
 #include "simulate_job.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
@@ -1147,6 +1150,148 @@ absl::StatusOr<std::string> ExecuteCommand(
 }
 }  // namespace
 
+absl::Status ExecuteRigidBoxFrame(
+    const Command& liquid,
+    const std::filesystem::path& rigid_packet,
+    const std::filesystem::path& previous,
+    const std::filesystem::path& output,
+    ProtocolWriter& writer
+) {
+  namespace files = liquid_cache_files_internal;
+  constexpr LiquidCacheLimits3D kPacketLimits{.maximum_bytes = 4096};
+  constexpr LiquidCacheLimits3D kCheckpointLimits{.maximum_bytes = 32 * 1024 * 1024};
+  const auto scene_bytes = files::ReadBytes(liquid.scene_path, {});
+  if (!scene_bytes.ok()) {
+    return scene_bytes.status();
+  }
+  const auto scene = DecodeLiquidResolvedScene3D(scene_bytes->values());
+  if (!scene.ok()) {
+    return scene.status();
+  }
+  const auto build = ExecutableDigest();
+  if (!build.ok()) {
+    return build.status();
+  }
+  if (scene->build_digest != *build || scene->backend != LiquidBackend3D::kCpu) {
+    return absl::FailedPreconditionError("rigid frame requires a CPU scene resolved for this executable");
+  }
+  const auto packet = files::ReadBytes(rigid_packet, kPacketLimits);
+  if (!packet.ok()) {
+    return packet.status();
+  }
+  const auto bytes = packet->values();
+  std::istringstream input(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+  input.imbue(std::locale::classic());
+  std::string version;
+  RigidBody3D body{.body_id = 1};
+  Vec3 extent{};
+  unsigned substeps = 0;
+  const auto read_vector = [&](Vec3& value) {
+    return static_cast<bool>(input >> value.x >> value.y >> value.z);
+  };
+  if (!(input >> version >> substeps >> body.mass) || version != "FLUIDITY-RIGID-1" || substeps == 0 || substeps > 256
+      || !read_vector(body.principal_inertia) || !read_vector(extent) || !read_vector(body.center)
+      || !(input >> body.orientation.w) || !read_vector(body.orientation.vector) || !read_vector(body.linear_velocity)
+      || !read_vector(body.angular_velocity) || (input >> version)) {
+    return absl::InvalidArgumentError("invalid rigid box packet");
+  }
+  EXEC_TRY(ValidateRigidBody3D(body));
+
+  std::vector<std::uint8_t> prefix;
+  for (const auto& digest : {LiquidContentDigest3D(scene_bytes->values()), LiquidContentDigest3D(bytes), *build}) {
+    prefix.insert(prefix.end(), digest.begin(), digest.end());
+  }
+  auto initial = ReadInitialState(liquid, scene->View());
+  if (!initial.ok()) {
+    return initial.status();
+  }
+  if (!previous.empty()) {
+    const auto saved = files::ReadBytes(previous, kCheckpointLimits);
+    if (!saved.ok()) {
+      return saved.status();
+    }
+    if (saved->values().size() <= prefix.size() || !std::ranges::equal(saved->values().first(prefix.size()), prefix)) {
+      return absl::FailedPreconditionError("rigid checkpoint belongs to another scene, packet or executable");
+    }
+    auto restored = DecodeCoupledInteractionCheckpoint3D(saved->values().subspan(prefix.size()));
+    if (!restored.ok()) {
+      return restored.status();
+    }
+    if (restored->solid.bodies.size() != 1 || !restored->solid.sides.empty()
+        || !restored->solid.elastic_particles.empty() || !restored->solid.plastic_particles.empty()
+        || restored->liquid.clock.substep_ordinal != 0) {
+      return absl::FailedPreconditionError("rigid checkpoint does not contain one completed box frame");
+    }
+    const auto& saved_body = restored->solid.bodies.front().body;
+    if (saved_body.body_id != body.body_id || saved_body.mass != body.mass
+        || saved_body.principal_inertia.x != body.principal_inertia.x
+        || saved_body.principal_inertia.y != body.principal_inertia.y
+        || saved_body.principal_inertia.z != body.principal_inertia.z) {
+      return absl::FailedPreconditionError("rigid checkpoint body properties disagree with the packet");
+    }
+    body = saved_body;
+    *initial = std::move(restored->liquid);
+  }
+
+  auto options = scene->options;
+  options.capacities = kCapacities;
+  auto scheduler = LiquidSubstepScheduler3D::Create(*initial, scene->View().scene, options);
+  if (!scheduler.ok()) {
+    return scheduler.status();
+  }
+  const auto frame = initial->clock.frame_ordinal;
+  const auto frame_start = CompletedFrameTime(frame);
+  const auto frame_end = CompletedFrameTime(frame + 1);
+  if (!frame_start.ok() || !frame_end.ok() || initial->clock.time != *frame_start) {
+    return absl::FailedPreconditionError("rigid checkpoint is off the completed-frame schedule");
+  }
+  EXEC_TRY(scheduler->BeginFrame(*frame_end));
+  RigidBodyPose3D previous_pose{};
+  const double nominal_duration = std::min(options.maximum_step_duration, 1.0 / (kFramesPerSecond * substeps));
+  while (scheduler->committed().clock.time < *frame_end) {
+    double duration = std::min(nominal_duration, *frame_end - scheduler->committed().clock.time);
+    for (;;) {
+      const auto gravity = scene->scene.world_acceleration;
+      body.force = {body.mass * gravity.x, body.mass * gravity.y, body.mass * gravity.z};
+      const auto step = scheduler->AttemptWithCoupledOrientedFloatingBox(duration, body, extent);
+      if (!step.ok()) {
+        return step.status();
+      }
+      if (step->body) {
+        previous_pose = {body.center, body.orientation};
+        body = *step->body;
+        break;
+      }
+      if (!step->outcome.retry_duration) {
+        return absl::Status(scheduler->diagnostics().failure_code, "rigid frame attempt failed");
+      }
+      duration = *step->outcome.retry_duration;
+    }
+  }
+  EXEC_TRY(scheduler->FinishFrame());
+  const auto& state = scheduler->committed();
+  if (!output.empty()) {
+    const SolidInteractionCheckpoint3D solids{
+        .accepted_step = state.clock.accepted_step_ordinal,
+        .bodies = {{body, previous_pose}},
+    };
+    const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(state, solids);
+    if (!checkpoint.ok()) {
+      return checkpoint.status();
+    }
+    prefix.insert(prefix.end(), checkpoint->begin(), checkpoint->end());
+    EXEC_TRY(files::PublishBytes(output, prefix, kCheckpointLimits, {}));
+  }
+  const auto vector = [](Vec3 value) {
+    return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
+  };
+  const auto q = body.orientation;
+  return writer.Emit(
+      "rigid_frame",
+      ClockMembers(state.clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
+          + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
+  );
+}
 absl::Status Execute(const Command& command, ProtocolWriter& writer, Diagnostic* diagnostic) {
   std::optional<JobMeasurement> measurement;
   if (command.measure_job) {

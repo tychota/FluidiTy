@@ -148,6 +148,26 @@ absl::StatusOr<std::string> SceneJson(LiquidResolvedSceneView3D scene) {
   flatbuffers::IterateFlatBuffer(bytes->values().data(), wire::ResolvedSceneTypeTable(), &visitor);
   return visitor.s;
 }
+absl::Status RunRigidBoxFrame(std::span<const std::string> args, ProtocolWriter& writer, Diagnostic& diagnostic) {
+  diagnostic.field = "rigid_box";
+  if (args.size() != 6 || !std::all_of(args.begin(), args.end(), ValidUtf8)) {
+    return absl::InvalidArgumentError(
+        "expected rigid-frame SCENE INITIAL_OR_DASH PACKET PREVIOUS_OR_DASH OUTPUT_OR_DASH"
+    );
+  }
+  Command liquid;
+  liquid.scene_path = PathFromUtf8(args[1]);
+  if (args[2] != "-") {
+    liquid.initial_state_path = PathFromUtf8(args[2]);
+  }
+  return ExecuteRigidBoxFrame(
+      liquid,
+      PathFromUtf8(args[3]),
+      args[4] == "-" ? std::filesystem::path{} : PathFromUtf8(args[4]),
+      args[5] == "-" ? std::filesystem::path{} : PathFromUtf8(args[5]),
+      writer
+  );
+}
 constexpr LiquidCacheLimits3D kCutterPacketLimits{.maximum_bytes = 128 * 1024};
 constexpr LiquidCacheLimits3D kCutterCheckpointLimits{.maximum_bytes = 1024 * 1024};
 constexpr std::size_t kCutterCheckpointPrefixSize = 2 * sizeof(LiquidDigest3D);
@@ -834,10 +854,12 @@ int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
   if (!public_cli && !arguments.empty()
-      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect")) {
+      && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect"
+          || arguments.front() == "rigid-frame")) {
     const auto status = arguments.front() == "cutter-frame"
         ? fluidity::simulate::RunCutterFrame(arguments, writer, diagnostic)
-        : fluidity::simulate::InspectCutterFrame(arguments, writer, diagnostic);
+        : arguments.front() == "rigid-frame" ? fluidity::simulate::RunRigidBoxFrame(arguments, writer, diagnostic)
+                                             : fluidity::simulate::InspectCutterFrame(arguments, writer, diagnostic);
     if (status.ok()) {
       return 0;
     }
