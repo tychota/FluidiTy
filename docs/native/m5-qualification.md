@@ -118,6 +118,31 @@ stays in range over a longer window at both timesteps.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-column-long-settle
 ```
 
+### Floor-friction sensitivity during extended settling
+
+Use the original column, centered grids, nominal timesteps, and 1.50 s
+endpoint. Change only the stationary floor's Coulomb coefficient. The
+granular friction angle stays at 30°. Coefficient 0 removes the
+tangential reaction. Coefficient 10 increases the allowed impulse
+without imposing a separate no-slip boundary condition.
+
+| h (m) | Nominal dt (s) | μ_floor = 0 | μ_floor = 0.7 | μ_floor = 10 |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 11.336790° | 20.801830° | 20.806219° |
+| 0.0625 | 0.0015625 | 7.022668° | 20.580671° | 20.587004° |
+
+Native angles are shown. CUDA agrees within 0.000001° at the printed
+precision. The drift and momentum checks pass throughout, and both
+diagnostic commands return 1 for the angle gate. Removing floor friction
+substantially increases flattening. Increasing it from 0.7 to 10 changes
+the final angle by less than 0.007° at both widths. The late deficit
+persists even with the higher impulse limit.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-floor-friction
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-floor-friction
+```
+
 ### Horizontal grid alignment
 
 Shift only the MAC origin by half a cell in x and then in both x and z.

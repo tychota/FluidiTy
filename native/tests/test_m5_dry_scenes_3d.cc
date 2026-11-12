@@ -105,7 +105,8 @@ bool TestScene(
     bool release_cone = false,
     double sand_end_time = 0.75,
     int quantized_mass_bits = 0,
-    fluidity::Vec3 grid_origin = {}
+    fluidity::Vec3 grid_origin = {},
+    double floor_friction = 0.7
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -168,7 +169,7 @@ bool TestScene(
     DrySolidStep3D settings{
         .duration = next_time - t,
         .gravity_y = snow ? 0.0 : -9.81,
-        .floor_friction = 0.7,
+        .floor_friction = floor_friction,
         .acoustic_cfl = 0.25,
         .particle_energy_blend = particle_energy_blend,
     };
@@ -956,6 +957,16 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-friction") {
+    bool all_pass = true;
+    for (const double floor_friction : {0.0, 10.0}) {
+      std::printf("sand floor friction coefficient=%.1f\n", floor_friction);
+      const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
+      const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, floor_friction);
+      all_pass = all_pass && reference && refined;
+    }
+    return all_pass ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-column-long-settle") {
     const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5);
     const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5);
