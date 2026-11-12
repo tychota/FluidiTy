@@ -370,6 +370,11 @@ class LiquidSubstepScheduler3D {
   // impulses change the accepted velocities for the next step.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
+  // Couples the six rigid velocity components to the frozen incompressible
+  // liquid pressure response. Contact impulses update the accepted twist
+  // after drift. Supports the oriented CPU box without surface tension.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithCoupledOrientedFloatingBox(double step_duration, RigidBody3D body, Vec3 body_half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -382,7 +387,8 @@ class LiquidSubstepScheduler3D {
     kVerticalGuide,
     kTranslation,
     kCoupledVerticalGuide,
-    kOrientedPressure
+    kOrientedPressure,
+    kCoupledOrientedPressure
   };
   struct FloatingBoxTrial {
     RigidBody3D body;
