@@ -298,7 +298,7 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
   }
   SampledSolidLiquidCell cell{.cell_width = input.geometry.cell_width};
   for (int corner = 0; corner < 8; ++corner) {
-    cell.liquid_distance[corner] = input.corner_distances[corner];
+    cell.liquid_distance[corner] = is_face ? 0.0 : input.corner_distances[corner];
     cell.solid_distance[corner] = input.derivative_distances[corner];
   }
   const auto measures = MeasureSampledSolidLiquidCell(cell);
@@ -309,8 +309,37 @@ FLUIDITY_HD inline Value<GeometryOutput> ComputeSampledSolidGeometry(const Geome
   if (is_face) {
     result.open_face_area = measures->open_area[2 * input.axis];
     result.blocked_face_area = cell.cell_width * cell.cell_width - result.open_face_area;
-    if (!IsNormalOrZero(result.blocked_face_area)) {
+    numeric::array<double, 4> solid_distance{};
+    numeric::array<double, 4> normal_velocity{};
+    int face_corner = 0;
+    for (int corner = 0; corner < 8; ++corner) {
+      if ((corner & (1 << input.axis)) == 0) {
+        solid_distance[face_corner] = input.derivative_distances[corner];
+        normal_velocity[face_corner] = input.corner_distances[corner];
+        if (!numeric::isfinite(normal_velocity[face_corner])) {
+          return Error::kInvalid;
+        }
+        ++face_corner;
+      }
+    }
+    const auto weights = MeasureSampledSolidFaceWeights(cell.cell_width, solid_distance);
+    if (!weights.ok()) {
+      return weights.status();
+    }
+    double weighted_area = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      weighted_area += (*weights)[corner];
+      result.prescribed_wall_flux += (*weights)[corner] * normal_velocity[corner];
+    }
+    if (!IsNormalOrZero(result.blocked_face_area) || !IsNormalOrZero(result.prescribed_wall_flux)
+        || (weighted_area > 0 && result.blocked_face_area == 0)) {
       return Error::kRange;
+    }
+    if (weighted_area > 0) {
+      result.piston_normal_velocity = result.prescribed_wall_flux / weighted_area;
+      if (!numeric::isfinite(result.piston_normal_velocity)) {
+        return Error::kRange;
+      }
     }
   } else {
     result.high_side_liquid_volume = measures->wet_volume;

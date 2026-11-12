@@ -57,6 +57,20 @@ __global__ void CheckSampledSolidGeometryOnDevice(int* result) {
   }
   if (fabs(wall_flux - 0.375) > 2e-14) {
     *result = 93;
+    return;
+  }
+  using fluidity::boundary_internal::GeometryInput;
+  using fluidity::boundary_internal::GeometryMode;
+  GeometryInput query{.mode = GeometryMode::kSampledSolidFace, .geometry = {{}, 1.0}};
+  for (int corner = 0; corner < 8; corner += 2) {
+    const double y = (corner >> 1) & 1;
+    query.derivative_distances[corner] = y - 0.25;
+    query.corner_distances[corner] = 2.0 + 4.0 * y;
+  }
+  const auto geometry = fluidity::boundary_internal::ComputeSampledSolidGeometry(query);
+  if (!geometry.ok() || fabs(geometry->prescribed_wall_flux - 0.625) > 2e-14
+      || fabs(geometry->open_face_area - 0.75) > 2e-14) {
+    *result = 94;
   }
 }
 
