@@ -118,6 +118,34 @@ stays in range over a longer window at both timesteps.
 .\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-column-long-settle
 ```
 
+### Extended settling after a velocity reset
+
+At the original 0.75 s endpoint, clear each particle's translational
+velocity and APIC slopes. Preserve positions, masses, elastic
+deformation and plastic history. Resume immediately under the same
+gravity and contact law. Count the reset as an external vertical impulse
+in the momentum budget. The listed kinetic energy is translational.
+
+| h (m) | Nominal dt (s) | Removed kinetic energy (J) | Uninterrupted angle at 1.50 s | Reset angle at 1.50 s |
+|---|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 0.002264 | 20.801830° | 20.859030° |
+| 0.0625 | 0.0015625 | 0.001680 | 20.580671° | 20.615958° |
+| 0.075 | 0.0009375 | 0.002686 | 28.040080° | 28.138482° |
+| 0.0625 | 0.00078125 | 0.004526 | 26.585383° | 26.642217° |
+
+Native and CUDA angles and drift match to six decimal places. All runs
+pass the drift and adjusted momentum checks. The reset changes the
+endpoint by less than 0.10° in every case.
+The resumed piles still flatten by 6.06–9.30° relative to the restart
+shape and all four miss the angle gate. The sustained change develops
+under the force and deformation update after the reset. Continuing
+particle momentum and APIC slopes at 0.75 s account for little of it.
+
+```powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-reset-column-velocity
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-reset-column-velocity
+```
+
 ### Floor-friction sensitivity during extended settling
 
 Use the original column, centered grids, nominal timesteps, and 1.50 s

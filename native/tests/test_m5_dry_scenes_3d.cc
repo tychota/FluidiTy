@@ -106,7 +106,8 @@ bool TestScene(
     double sand_end_time = 0.75,
     int quantized_mass_bits = 0,
     fluidity::Vec3 grid_origin = {},
-    double floor_friction = 0.7
+    double floor_friction = 0.7,
+    bool reset_column_velocity = false
 ) {
   std::vector<BlockIndex3D> blocks;
   for (int z = -2; z <= 2; ++z) {
@@ -155,6 +156,7 @@ bool TestScene(
   const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
   constexpr double kDegreesPerRadian = 57.29577951308232;
   double early_envelope_angle = 0;
+  double reset_impulse_y = 0;
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
@@ -247,6 +249,22 @@ bool TestScene(
         std::printf("sand envelope at 0.75 s=%.6f\n", angle);
       }
     }
+    if (original_endpoint && reset_column_velocity) {
+      double removed_kinetic_energy = 0;
+      for (auto& particle : particles) {
+        const auto velocity = particle.world_velocity;
+        reset_impulse_y -= particle.mass * velocity.y;
+        removed_kinetic_energy +=
+            0.5 * particle.mass * (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z);
+        particle.world_velocity = {};
+        particle.velocity_slopes = {};
+      }
+      std::printf(
+          "sand reset at 0.75 s removed kinetic_J=%.9g applied vertical impulse_Ns=%.9g\n",
+          removed_kinetic_energy,
+          reset_impulse_y
+      );
+    }
     total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
     total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
     total_budget.omitted_stress_work += budget.omitted_stress_work;
@@ -294,8 +312,8 @@ bool TestScene(
       total_budget.particle_wall_contacts
   );
   const double gravity_impulse_y = (snow ? 0.0 : -9.81) * (300 * volume * particles.size()) * time;
-  const double vertical_residual = final_momentum_y - gravity_impulse_y - total_budget.grid_wall_impulse_y
-      - total_budget.wall_impulse_on_particles.y;
+  const double vertical_residual = final_momentum_y - reset_impulse_y - gravity_impulse_y
+      - total_budget.grid_wall_impulse_y - total_budget.wall_impulse_on_particles.y;
   std::printf("vertical momentum residual_Ns=%.9g\n", vertical_residual);
   constexpr double kMomentumRoundoffTolerance = 1e-6;
   if (std::abs(vertical_residual) > total_budget.omitted_stress_impulse_l1 + kMomentumRoundoffTolerance) {
@@ -957,6 +975,13 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-reset-column-velocity") {
+    const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
+    return reference && refined && reference_half && refined_half ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-friction") {
     bool all_pass = true;
     for (const double floor_friction : {0.0, 10.0}) {
