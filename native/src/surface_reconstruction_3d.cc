@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include "absl/strings/str_cat.h"
 #include "fluidity/host/motion_carrier_3d.h"
@@ -21,6 +22,99 @@ bool Safe(const SurfaceMetrics3D& m) {
 bool MatchesCavityBoundaries(const SurfaceMetrics3D& metrics, std::size_t cavity_count) {
   return metrics.positive_volume_components == 1 && metrics.negative_volume_components == cavity_count
       && metrics.components == cavity_count + 1;
+}
+// Reconstruct a local volume-weighted composition from donors in the nearest
+// particle's phase. A radial tent uses a two-cell support, with a nearest
+// explicit donor fallback when the corrected surface leaves that support.
+absl::Status
+SampleVertexComposition(SurfaceVertex3D& vertex, std::span<const LiquidParticleState3D> particles, double cell_width) {
+  const auto distance = [&](const LiquidParticleState3D& particle) {
+    return std::hypot(
+        vertex.position.x - particle.world_position.x,
+        vertex.position.y - particle.world_position.y,
+        vertex.position.z - particle.world_position.z
+    );
+  };
+  const LiquidParticleState3D* nearest = nullptr;
+  double nearest_distance = std::numeric_limits<double>::infinity();
+  for (const auto& particle : particles) {
+    const double separation = distance(particle);
+    const bool canonical_tie = nearest && separation == nearest_distance
+        && std::pair{particle.phase_id, particle.id} < std::pair{nearest->phase_id, nearest->id};
+    if (separation < nearest_distance || canonical_tie) {
+      nearest_distance = separation;
+      nearest = &particle;
+    }
+  }
+  if (!nearest) {
+    return absl::OutOfRangeError("surface composition distance is unrepresentable");
+  }
+  if (nearest->constituent_count == 0) {
+    return absl::OkStatus();
+  }
+  vertex.phase_id = nearest->phase_id;
+  std::array<LiquidConstituentVolume3D, kMaximumLiquidParticleConstituents3D> inventory{};
+  std::size_t count = 0;
+
+  for (const auto& particle : particles) {
+    if (particle.constituent_count == 0 || particle.phase_id != nearest->phase_id) {
+      continue;
+    }
+    const double weight = 1.0 - 0.5 * (distance(particle) / cell_width);
+    if (weight <= 0.0) {
+      continue;
+    }
+    const double weighted_volume = weight * (particle.reference_volume * particle.volume_ratio);
+    if (!std::isfinite(weighted_volume) || weighted_volume <= 0.0) {
+      return absl::OutOfRangeError("surface composition donor volume is unrepresentable");
+    }
+    for (const auto& constituent : std::span(particle.constituents).first(particle.constituent_count)) {
+      const auto end = inventory.begin() + static_cast<std::ptrdiff_t>(count);
+      const auto found = std::lower_bound(
+          inventory.begin(),
+          end,
+          constituent.substance_id,
+          [](const LiquidConstituentVolume3D& entry, std::uint64_t id) {
+            return entry.substance_id < id;
+          }
+      );
+      const double volume = weighted_volume * constituent.volume_fraction;
+      if (!std::isfinite(volume) || volume <= 0.0) {
+        return absl::OutOfRangeError("surface constituent contribution is unrepresentable");
+      }
+
+      if (found != end && found->substance_id == constituent.substance_id) {
+        found->volume_m3 += volume;
+      } else {
+        if (count == inventory.size()) {
+          return absl::ResourceExhaustedError("surface vertex constituent capacity exceeded");
+        }
+        std::move_backward(found, end, end + 1);
+        *found = {constituent.substance_id, volume};
+        ++count;
+      }
+    }
+  }
+  if (count == 0) {
+    vertex.constituent_count = nearest->constituent_count;
+    vertex.constituents = nearest->constituents;
+    return absl::OkStatus();
+  }
+  double total_volume = 0.0;
+  for (const auto& entry : std::span(inventory).first(count)) {
+    total_volume += entry.volume_m3;
+  }
+  if (!std::isfinite(total_volume) || total_volume <= 0.0) {
+    return absl::OutOfRangeError("surface constituent total is unrepresentable");
+  }
+  vertex.constituent_count = static_cast<std::uint8_t>(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    vertex.constituents[index] = {inventory[index].substance_id, inventory[index].volume_m3 / total_volume};
+  }
+  if (!ValidLiquidComposition3D(vertex.phase_id, std::span(vertex.constituents).first(count))) {
+    return absl::OutOfRangeError("surface composition normalization failed");
+  }
+  return absl::OkStatus();
 }
 bool SameGeometry(UniformMacGeometry3D a, UniformMacGeometry3D b) {
   return a.cell_width == b.cell_width && a.world_origin.x == b.world_origin.x && a.world_origin.y == b.world_origin.y
@@ -726,6 +820,10 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
   }
   result.corrected_metrics = *corrected;
   result.frame.volumes.push_back({component, material_volume, raw_metrics->signed_volume, corrected->signed_volume});
+  const bool has_explicit_composition =
+      std::ranges::any_of(endpoint.particles.values(), [](const LiquidParticleState3D& particle) {
+        return particle.constituent_count != 0;
+      });
   for (std::size_t index = 0; index < result.frame.mesh.vertices.size(); ++index) {
     auto& vertex = result.frame.mesh.vertices[index];
     const auto velocity = sample_carrier(carriers.size() - 1, vertex.position);
@@ -733,6 +831,14 @@ absl::StatusOr<SurfaceReconstructionResult3D> ReconstructSurfaceFrame3D(
       return velocity.status();
     }
     vertex.fluid_velocity = *velocity;
+    vertex.phase_id = 0;
+    vertex.constituent_count = 0;
+    if (has_explicit_composition) {
+      const auto composition = SampleVertexComposition(vertex, endpoint.particles.values(), cell_width_m);
+      if (!composition.ok()) {
+        return composition;
+      }
+    }
     if (previous != nullptr) {
       const auto original = previous->mesh.vertices[index].position;
       const double duration = source.last_clock.time - source.first_clock.time;

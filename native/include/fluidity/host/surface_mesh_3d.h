@@ -20,6 +20,9 @@ struct SurfaceVertex3D {
   std::uint64_t parent_id = 0;  // Repair lineage, zero if no parent.
   bool contact = false;  // Excluded from unconstrained volume offsets.
   bool unresolved_sheet = false;  // Excluded from volume offsets until sheet resolution.
+  std::uint64_t phase_id = 0;  // Stable phase when the active composition prefix is nonempty.
+  std::uint8_t constituent_count = 0;
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
 };
 struct SurfaceMesh3D {
   std::vector<SurfaceVertex3D> vertices{};

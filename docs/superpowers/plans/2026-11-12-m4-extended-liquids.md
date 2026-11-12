@@ -519,3 +519,11 @@ The checked uniform APIC merge conserves each explicit constituent using current
 The unequal-J fixture merged and split 9.5 m³ and 1.5 m³ of two aqueous constituents and rejected a cross-phase merge before certification. Eighteen CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidUniform|LiquidRemap|LiquidMixture'. Two real CUDA particle and phase scheduler regressions passed. The remap ran on the host. clang-format 19.1.5 passed. Receipts use out/m4-constituent-remap, including the initial checked-iterator failure in prefix insertion.
 
 This qualifies uniform particle adaptation. Grid band/core constituent remap, evaluated surface fractions, shared render geometry and full M4 workflow evidence remain open.
+
+## Reconstructed surface composition receipt
+
+Each reconstructed exterior vertex inherits the phase of its nearest particle. An exact distance tie uses phase ID and then particle ID. A two-cell linear tent weights same-phase donors by accepted current volume. The nearest particle supplies the fractions outside tent support. The surface cache stores explicit phase IDs and stable constituent fractions in an optional vertex-ordinal table, preserving the existing fixed vertex representation.
+
+The reconstruction and cache round-trip fixture checked phase 4 and the expected 25/75 mixture at every exterior vertex. The debug CPU simulator built and all 13 focused tests passed with ctest --preset windows-debug-cpu -j 4 -R 'EvaluatesAndCachesMixed|SurfaceCache3D|SurfaceMesh3D|SurfaceTracking3D'. clang-format 19.1.5 and git diff --check passed. Receipts use out/m4-surface-composition.
+
+Named renderer attributes, shared liquid–liquid render geometry and end-to-end three-source qualification remain open.

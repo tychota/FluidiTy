@@ -39,7 +39,9 @@ absl::Status Validate(const SurfaceFrame3D& frame, SurfaceCacheLimits3D limits) 
         || !detail::Finite(v.position) || !detail::Finite(v.geometric_velocity) || !detail::Finite(v.fluid_velocity)
         || !detail::Finite(v.normal) || std::abs(std::hypot(v.normal.x, v.normal.y, v.normal.z) - 1) > 1e-8
         || !detail::Nonnegative(v.age_seconds) || !detail::Nonnegative(v.wetness) || v.wetness > 1
-        || !detail::Nonnegative(v.thickness_m) || v.parent_id >= frame.mesh.next_id) {
+        || !detail::Nonnegative(v.thickness_m) || v.parent_id >= frame.mesh.next_id
+        || v.constituent_count > v.constituents.size()
+        || !ValidLiquidComposition3D(v.phase_id, std::span(v.constituents).first(v.constituent_count))) {
       return absl::InvalidArgumentError("invalid persistent surface vertex");
     }
     auto& component = components[v.component];
@@ -120,16 +122,35 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
   for (const auto& v : frame.volumes) {
     volumes.emplace_back(v.component, v.material_m3, v.raw_m3, v.corrected_m3);
   }
+  std::vector<std::uint32_t> composed_vertices;
+  for (std::size_t ordinal = 0; ordinal < frame.mesh.vertices.size(); ++ordinal) {
+    if (frame.mesh.vertices[ordinal].constituent_count != 0) {
+      composed_vertices.push_back(static_cast<std::uint32_t>(ordinal));
+    }
+  }
   const auto bytes = vertices.size() * sizeof(wire::SurfaceVertex) + triangles.size() * sizeof(wire::SurfaceTriangle)
       + volumes.size() * sizeof(wire::SurfaceVolume);
   return detail::Build<wire::SurfaceFrame>(
-      2 + (bytes + 511) / 512,
+      2 + (bytes + 511) / 512 + composed_vertices.size(),
       limits.cache,
       "FLMS",
       [&](auto& builder) -> absl::StatusOr<flatbuffers::Offset<wire::SurfaceFrame>> {
         const auto vertex_data = builder.CreateVectorOfStructs(vertices);
         const auto triangle_data = builder.CreateVectorOfStructs(triangles);
         const auto volume_data = builder.CreateVectorOfStructs(volumes);
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wire::SurfaceComposition>>> compositions;
+        if (!composed_vertices.empty()) {
+          const auto records =
+              detail::BuildVector<wire::SurfaceComposition>(builder, composed_vertices.size(), [&](std::size_t index) {
+                const auto ordinal = composed_vertices[index];
+                const auto packed = detail::PackComposition(builder, frame.mesh.vertices[ordinal]);
+                return wire::CreateSurfaceComposition(builder, ordinal, packed.phase_id, packed.constituents);
+              });
+          if (!records.ok()) {
+            return records.status();
+          }
+          compositions = *records;
+        }
         const auto clock = detail::Pack(frame.clock);
         return wire::CreateSurfaceFrame(
             builder,
@@ -140,7 +161,8 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeSurfaceFrame3D(const SurfaceFrame3D& fr
             frame.mesh.next_id,
             vertex_data,
             triangle_data,
-            volume_data
+            volume_data,
+            compositions
         );
       }
   );
@@ -179,6 +201,21 @@ absl::StatusOr<SurfaceFrame3D> DecodeSurfaceFrame3D(std::span<const std::uint8_t
         .contact = (v->flags() & 1) != 0,
         .unresolved_sheet = (v->flags() & 2) != 0,
     });
+  }
+  if (const auto* compositions = source->compositions()) {
+    if (compositions->size() > frame.mesh.vertices.size()) {
+      return absl::DataLossError("surface composition count exceeds vertices");
+    }
+    for (flatbuffers::uoffset_t index = 0; index < compositions->size(); ++index) {
+      const auto* composition = compositions->Get(index);
+      const auto ordinal = composition->vertex_ordinal();
+      if (ordinal >= frame.mesh.vertices.size()
+          || (index > 0 && compositions->Get(index - 1)->vertex_ordinal() >= ordinal)
+          || !detail::ValidCompositionEncoding(composition)) {
+        return absl::DataLossError("invalid surface composition record");
+      }
+      detail::UnpackComposition(composition, frame.mesh.vertices[ordinal]);
+    }
   }
   for (const auto* t : *source->triangles()) {
     frame.mesh.triangles.push_back({t->a(), t->b(), t->c()});

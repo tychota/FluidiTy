@@ -15,6 +15,50 @@ LiquidState3D Seed() {
   state.next_particle_id = 2;
   return state;
 }
+TEST(SurfaceReconstruction3D, EvaluatesAndCachesMixedSurfaceFractions) {
+  auto seed = Seed();
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(particles->Resize(2).ok());
+  (*particles)[0] = seed.particles[0];
+  (*particles)[0].reference_volume = 0.25;
+  (*particles)[0].phase_id = 4;
+  (*particles)[0].constituent_count = 1;
+  (*particles)[0].constituents[0] = {8, 1.0};
+  (*particles)[1] = (*particles)[0];
+  (*particles)[1].id = 2;
+  (*particles)[1].reference_volume = 0.75;
+  (*particles)[1].constituents[0] = {14, 1.0};
+  seed.particles = std::move(*particles);
+  seed.next_particle_id = 3;
+  const auto motion_bytes = EncodeMotionSeed3D(seed);
+  ASSERT_TRUE(motion_bytes.ok()) << motion_bytes.status();
+  const auto source = DecodeMotionFrame3D(motion_bytes->values());
+  ASSERT_TRUE(source.ok()) << source.status();
+  constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1000.0}, {14, 4, 1020.0}}};
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  scene.constituent_materials = kMaterials;
+  LiquidStepOptions3D step;
+  step.capacities = {16, 64, 128, 12288, 1};
+  const SurfaceReconstructionOptions3D options{.spacing_m = 0.25, .sigma_m = 0.25};
+  const auto reconstructed = ReconstructSurfaceFrame3D(*source, scene, step, nullptr, options);
+  ASSERT_TRUE(reconstructed.ok()) << reconstructed.status();
+  const auto encoded = EncodeSurfaceFrame3D(reconstructed->frame);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeSurfaceFrame3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_FALSE(decoded->mesh.vertices.empty());
+  for (const auto& vertex : decoded->mesh.vertices) {
+    EXPECT_EQ(vertex.phase_id, 4);
+    ASSERT_EQ(vertex.constituent_count, 2);
+    EXPECT_EQ(vertex.constituents[0].substance_id, 8);
+    EXPECT_DOUBLE_EQ(vertex.constituents[0].volume_fraction, 0.25);
+    EXPECT_EQ(vertex.constituents[1].substance_id, 14);
+    EXPECT_DOUBLE_EQ(vertex.constituents[1].volume_fraction, 0.75);
+  }
+}
+
 TEST(SurfaceReconstruction3D, DeepTankBandDoesNotProduceAnInternalShell) {
   constexpr int kWidth = 8;
   constexpr std::size_t kBandCount = 296;

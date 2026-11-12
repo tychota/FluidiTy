@@ -15,6 +15,11 @@ struct SurfaceVertex {
 }
 struct SurfaceTriangle { a:uint; b:uint; c:uint; }
 struct SurfaceVolume { component:ulong; material_m3:double; raw_m3:double; corrected_m3:double; }
+table SurfaceComposition {
+  vertex_ordinal:uint (id:0);
+  phase_id:ulong = null (id:1);
+  constituents:[fluidity.cache.v1.ConstituentFraction] (required, id:2);
+}
 table SurfaceFrame {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -24,6 +29,7 @@ table SurfaceFrame {
   vertices:[SurfaceVertex] (required, id:5);
   triangles:[SurfaceTriangle] (required, id:6);
   volumes:[SurfaceVolume] (required, id:7);
+  compositions:[SurfaceComposition] (id:8);
 }
 root_type SurfaceFrame;
 file_identifier "FLMS";
