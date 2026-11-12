@@ -80,3 +80,5 @@ Use a unit square in the x-y plane, unit depth, density 1 kg/m³ in both phases,
 - clang-format 19.1.5 --dry-run --Werror passed on all tracked native files.
 - EOS RED: python -m pytest reference/tests/test_eos.py -q -p no:cacheprovider. Exit 2, EOS oracle was missing.
 - EOS GREEN: the locked Python reference suite passed 302 tests. EOS covers Hencky and Tait n=7, finite acoustic coefficients, exact infinite sound speed, the Tait domain boundary, and small predictor log volume ratios. The one-cell compliant piston retains the physical pressure and demonstrates convergence at 16, 32 and 64 steps for each law. Log: out/m4-eos-reference.log.
+- Cavity RED: python -m pytest reference/tests/test_cavity.py -q -p no:cacheprovider. Exit 2, cavity oracle was missing.
+- Cavity GREEN: six focused cases and the full locked suite (308 cases) passed. Coverage includes submerged-sphere initial absolute pressure, signed capillary lift, compression/expansion, acoustic timestep, and the candidate radius cutoff. Component discovery, topology lineage, and production boundary integration are open. Log: out/m4-cavity-reference.log.
