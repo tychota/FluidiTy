@@ -2133,3 +2133,51 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$build/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 32 $case
 }
 ```
+
+
+### Floor-normal ghost continuation
+
+The original 32 s⁻¹ SM120 sweep reproduced all four native angles at the
+printed precision. The nominal fine case still failed at 28.239650°.
+Native regional controls at the same rate gave 26.560198° with decay
+inside one particle spacing of the floor and 28.991526° with decay
+above that layer. At the uniform rate the nominal fine run accumulated
+0.00468208 mean absolute log-plastic-J path. Of this, 0.00466315 came
+from steps whose particle centers started and ended above the floor.
+Particles arriving at the floor supplied only 0.00001893. Floor
+residents and departures supplied effectively zero.
+
+[Draft PR 111](https://github.com/tychota/FluidiTy/pull/111) supplies the
+stationary wall normal to the compatible below-floor ghost gather. PIC
+transport and the swept Coulomb law keep their incoming velocity. The
+one-particle slip oracle independently checks unchanged linear impulse,
+zero plastic volume change and the polar rotation from trial shear
+−0.0025. Both native and CUDA default dry-scene checks passed.
+
+| Case | Native angle at 1.5 s | Native angle at 3 s |
+|---|---:|---:|
+| Coarse | 33.714729° | 36.597489° |
+| Coarse half-step | 32.702577° | 29.470173° |
+| Fine | 32.270910° | 38.026750° |
+| Fine half-step | 31.172480° | 28.443207° |
+
+All four 1.5 s cases meet the declared angle, drift, energy and momentum
+bounds without affine damping. All four leave the angle band at 3 s.
+The nominal fine case keeps its 0.153218 m radius while its height
+increases from 0.096751 to 0.119822 m. Its accumulated cut stress work
+rises from +0.686445 to +1.049375 J. The dry solver pairs stress deposition
+with normalized weights while deformation uses the complete ghost
+derivative. These measurements motivate checking the transpose of the
+wall-constrained deformation gather for stress deposition. The 1.5 s
+snapshot alone does not qualify a settled pile.
+
+Use the local `codex/m5-sand-affine` diagnostic branch to rerun the
+three-second controls. Use the PR branch for the original four cases.
+The SM120 1.5 s candidate matrix is running separately.
+
+```powershell
+$build = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$build/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
