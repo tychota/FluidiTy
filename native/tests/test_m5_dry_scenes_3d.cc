@@ -938,6 +938,56 @@ bool TestPlanarMixedContactDetection() {
       || std::abs(committed_snow.transfer.particle_velocity.x - 2) > 1e-12) {
     return false;
   }
+  auto frame_snow = committed_snow;
+  frame_snow.transfer.trial_world_position.x = -0.875;
+  frame_snow.transfer.particle_velocity.x = 4;
+  fluidity::PlanarSnowPressureFrameSettings3D frame_settings{
+      .wall_cell = {0, 0, 0},
+      .wall_axis = FaceNormalAxis::kX,
+      .wall_on_low_face = true,
+      .surface_offset = 0.125,
+      .inverse_liquid_density = 1,
+      .outlet_pressure = 0,
+      .target_time = 0.125,
+      .nominal_step_duration = 0.125,
+      .maximum_path_length = 0.20,
+  };
+  const auto frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&frame_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (!frame.ok()) {
+    std::fprintf(stderr, "M5 moving snow frame: %s\n", frame.status().ToString().c_str());
+    return false;
+  }
+  const auto& frame_clock = frame->liquid.clock;
+  constexpr double kFrameTolerance = 2e-6;
+  if (frame->rejected_attempts != 1 || frame_clock.time != 0.125 || frame_clock.frame_ordinal != 1
+      || frame_clock.substep_ordinal != 0 || frame_clock.accepted_step_ordinal != 2 || frame_clock.epoch != 2
+      || std::abs(frame->liquid.cells[0].previous_pressure - 60.0 / 11.0) > kFrameTolerance
+      || std::abs(frame->liquid.particles[0].world_position.x - (-0.375 + 0.75 / 11.0)) > kFrameTolerance
+      || std::abs(frame->snow[0].transfer.trial_world_position.x - (-0.75 + 0.75 / 11.0)) > kFrameTolerance
+      || std::abs(frame->snow[0].transfer.particle_velocity.x - 12.0 / 11.0) > kFrameTolerance) {
+    return false;
+  }
+  frame_settings.maximum_path_length = 0.01;
+  const auto exhausted = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&frame_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (exhausted.status().code() != absl::StatusCode::kFailedPrecondition || accepted_liquid.clock.time != 0
+      || accepted_liquid.particles[0].world_position.x != -0.5 || frame_snow.transfer.trial_world_position.x != -0.875
+      || frame_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;

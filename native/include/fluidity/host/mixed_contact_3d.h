@@ -213,4 +213,38 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
     std::optional<double> wall_plane_coordinate = std::nullopt
 );
 
+struct PlanarSnowPressureFrameSettings3D {
+  CellIndex3D wall_cell;
+  FaceNormalAxis wall_axis;
+  bool wall_on_low_face;
+  double surface_offset;  // Meters from the outermost snow sample.
+  double inverse_liquid_density;  // m³/kg.
+  double outlet_pressure;  // Pa.
+  double target_time;  // Absolute frame end in seconds.
+  double nominal_step_duration;  // Upper bound in seconds.
+  double maximum_path_length;  // Per-step limit in meters.
+};
+
+struct PlanarSnowPressureFrame3D {
+  LiquidState3D liquid;
+  std::vector<PlasticSolidCheckpointParticle3D> snow;
+  std::size_t rejected_attempts;
+};
+
+// Drives the planar cut-cell scene to a completed frame. Snow records
+// describe one body. Liquid must have no sources or cavity state. Its
+// existing topology must match the frozen
+// cell and faces. The wall geometry is rebuilt after each accepted step.
+// Motion retries use the transaction's half-step schedule. On success the
+// returned states belong to the same completed frame. Errors publish no
+// frame and both input material states remain immutable.
+absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
+    const SparseMacGrid3D& grid,
+    const LiquidState3D& accepted_liquid,
+    std::span<const PlasticSolidCheckpointParticle3D> accepted_snow,
+    std::span<const SnowPressureContributor3D> contributors,
+    const PlanarSnowPressureFrameSettings3D& settings,
+    MixedPressureProjector3D project
+);
+
 }  // namespace fluidity

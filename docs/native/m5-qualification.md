@@ -38,6 +38,7 @@ clean Windows Release CUDA rebuild.
 | Joint planar pressure advection | Pass for one- and two-cell frozen fixtures | The projected regular-cell field updates liquid positions, volume and slopes. Snow advances with its pressure-corrected velocity. Crossing into an adjacent pressure cell succeeds. A late unsupported liquid destination or snow motion failure preserves both states. |
 | Moving subcell snow geometry | Pass for a single-cell planar outlet | The next pressure attempt reconstructs the moved wall from snow positions and recomputes wet volume and outlet distance. Two reciprocal native and CUDA steps match the analytic pressures and trajectories. A mismatched wall and volume reject without publication. |
 | Joint planar pressure acceptance and retry | Pass for a moving cut-cell fixture | The liquid frame transaction publishes pressure, carrier velocities, particle state and clock before the staged snow record is copied back. A motion rejection preserves both committed states and yields a half-step retry. Both backends pass. |
+| Planar snow–water frame driver | Pass for the bounded moving cut-cell scene | Reconstructs geometry between accepted steps, completes a frame after a rejected full step and two accepted half-steps, and publishes no frame when retries are exhausted. Native and CUDA pressure pass the same checks. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1102,6 +1103,20 @@ uses a preallocated liquid transaction and host scratch for the
 coupled stage. The production scheduler still needs to select and
 drive this geometry from the authored scene and own the joint
 checkpoint.
+
+The bounded frame driver owns the liquid transaction and snow
+candidates until frame completion. It rebuilds the front after each
+accepted step and uses the transaction's prescribed retry duration
+within each frozen attempt. With a 0.125 s frame and 0.20 m motion
+limit, the full step rejects and two 0.0625 s steps complete the
+frame. The final accepted pressure is 60/11 Pa and the wall speed
+is 12/11 m/s. The final accepted step and epoch are two, the frame
+ordinal is one, and the substep ordinal resets to zero. Both
+pressure backends match within 2e-6. A 0.01 m limit exhausts retries
+and returns no frame while preserving the caller's inputs. The
+driver uses explicit planar scene settings and supports liquid
+without sources or cavities. It does not yet serve as a resolved
+Blender scene runtime or write the accepted joint checkpoint.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

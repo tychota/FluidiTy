@@ -1034,4 +1034,96 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
   return PlanarSnowPressureAttempt3D{.outcome = *accepted, .pressure = std::move(*pressure)};
 }
 
+absl::StatusOr<PlanarSnowPressureFrame3D> AdvancePlanarSnowPressureFrame3D(
+    const SparseMacGrid3D& grid,
+    const LiquidState3D& accepted_liquid,
+    std::span<const PlasticSolidCheckpointParticle3D> accepted_snow,
+    std::span<const SnowPressureContributor3D> contributors,
+    const PlanarSnowPressureFrameSettings3D& settings,
+    MixedPressureProjector3D project
+) {
+  if (!std::isfinite(settings.nominal_step_duration) || settings.nominal_step_duration <= 0) {
+    return absl::InvalidArgumentError("invalid planar snow frame timestep");
+  }
+  if (accepted_liquid.sources.size() != 0 || accepted_liquid.next_cavity_id != 0) {
+    return absl::InvalidArgumentError("planar snow frame requires liquid without sources or cavities");
+  }
+  const LiquidStateCapacities3D capacities{
+      .particles = accepted_liquid.particles.capacity(),
+      .blocks = accepted_liquid.blocks.capacity(),
+      .cells = accepted_liquid.cells.capacity(),
+      .faces = accepted_liquid.faces.capacity(),
+      .sources = accepted_liquid.sources.capacity(),
+  };
+  auto transaction = LiquidFrameTransaction3D::Create(accepted_liquid, capacities);
+  if (!transaction.ok()) {
+    return transaction.status();
+  }
+  const auto begin = transaction->BeginFrame(settings.target_time);
+  if (!begin.ok()) {
+    return begin;
+  }
+
+  std::vector<PlasticSolidCheckpointParticle3D> snow(accepted_snow.begin(), accepted_snow.end());
+  std::size_t rejected_attempts = 0;
+  while (transaction->committed().clock.time < settings.target_time) {
+    const auto frozen = FreezePlanarSnowPressureCell3D(
+        grid,
+        settings.wall_cell,
+        settings.wall_axis,
+        settings.wall_on_low_face,
+        snow,
+        settings.surface_offset,
+        settings.inverse_liquid_density,
+        settings.outlet_pressure
+    );
+    if (!frozen.ok()) {
+      return frozen.status();
+    }
+    const double remaining = settings.target_time - transaction->committed().clock.time;
+    MacPressureInputs3D inputs{
+        grid,
+        std::min(remaining, settings.nominal_step_duration),
+        {&frozen->cell, 1},
+        frozen->faces
+    };
+    while (true) {
+      const auto attempt = AttemptPlanarSnowPressureStep3D(
+          *transaction,
+          inputs,
+          frozen->wall_face_ordinal,
+          contributors,
+          snow,
+          settings.maximum_path_length,
+          project,
+          frozen->wall_plane_coordinate
+      );
+      if (!attempt.ok()) {
+        return attempt.status();
+      }
+      if (attempt->outcome.disposition == LiquidAttemptDisposition3D::kAccepted) {
+        break;
+      }
+      if (!attempt->outcome.retry_duration.has_value()) {
+        return absl::FailedPreconditionError("planar snow frame exhausted its pressure or motion retries");
+      }
+      inputs.step_duration = *attempt->outcome.retry_duration;
+      ++rejected_attempts;
+    }
+  }
+  const auto finish = transaction->FinishFrame();
+  if (!finish.ok()) {
+    return finish;
+  }
+  auto liquid = CloneLiquidState3D(transaction->committed(), capacities);
+  if (!liquid.ok()) {
+    return liquid.status();
+  }
+  return PlanarSnowPressureFrame3D{
+      .liquid = std::move(*liquid),
+      .snow = std::move(snow),
+      .rejected_attempts = rejected_attempts,
+  };
+}
+
 }  // namespace fluidity
