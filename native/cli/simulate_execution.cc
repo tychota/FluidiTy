@@ -1243,6 +1243,8 @@ absl::Status ExecuteRigidBoxFrame(
     *initial = std::move(restored->liquid);
   }
 
+  std::size_t pressure_transfer_steps = 0;
+  std::size_t unsupported_pressure_transfer_steps = 0;
   const auto emit_pose = [&](std::string_view event, const LiquidClock3D& clock) {
     const auto vector = [](Vec3 value) {
       return "[" + Number(value.x) + "," + Number(value.y) + "," + Number(value.z) + "]";
@@ -1252,6 +1254,10 @@ absl::Status ExecuteRigidBoxFrame(
         event,
         ClockMembers(clock) + ",\"position\":" + vector(body.center) + ",\"orientation\":[" + Number(q.w) + ","
             + Number(q.vector.x) + "," + Number(q.vector.y) + "," + Number(q.vector.z) + "]"
+            + (inspect ? ""
+                       : ",\"pressure_transfer_steps\":" + std::to_string(pressure_transfer_steps)
+                       + ",\"unsupported_pressure_transfer_steps\":"
+                       + std::to_string(unsupported_pressure_transfer_steps))
     );
   };
   if (inspect) {
@@ -1313,6 +1319,11 @@ absl::Status ExecuteRigidBoxFrame(
         return step.status();
       }
       if (step->body) {
+        if (step->oriented_loads && step->oriented_loads->particle_pressure_impulse) {
+          ++pressure_transfer_steps;
+        } else if (scheduler->committed().particles.size() != 0) {
+          ++unsupported_pressure_transfer_steps;
+        }
         previous_pose = {body.center, body.orientation};
         body = *step->body;
         break;
