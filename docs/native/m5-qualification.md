@@ -4009,3 +4009,30 @@ foreach ($grid in 'coarse', 'fine') {
 
 The temporary budget instrumentation was restored after linking.
 The 3 s column matrix remains the qualification reference.
+
+### Apply the affine fallback mask after the sweep projection
+
+Starting at `eb8877c`, carry the row fallback mask through the
+swept Coulomb projection and clear the same rows again before
+storing the final affine fit. This prevents the derivative of
+the sweep from reintroducing a cleared velocity component.
+Native and SM120 default dry-scene suites pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 34.408843° | 0.167981 m |
+| Coarse half-step | 40.498004° | 0.156717 m |
+| Fine | 31.443051° | 0.159557 m |
+| Fine half-step | 34.693822° | 0.156304 m |
+
+Both fine cases retain their passing geometry at printed precision.
+The coarse nominal radius improves by 0.230 mm and still misses.
+The coarse half-step angle changes by 0.003230° and still misses.
+The source was restored after linking. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-mask-sweep-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
