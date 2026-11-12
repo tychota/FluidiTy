@@ -420,20 +420,53 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       }
     }
     const auto unscattered_force = face_force;
-    const auto wall_force = ScatterStationaryFloorGhostTranspose3D(
-        grid.view(),
-        validity,
-        deformation_tags,
-        face_force,
-        deposits,
-        needed,
-        &ghost_rows,
-        true
-    );
-    if (!wall_force.ok()) {
-      return wall_force.status();
+    // Thin faces can receive additional stress from the transpose, so
+    // reassess donors after scattering. Each pass removes at least one
+    // donor and rebuilds both maps from the original force.
+    constexpr int kMaximumDonorPasses = 8;
+    for (int pass = 0; pass < kMaximumDonorPasses; ++pass) {
+      face_force = unscattered_force;
+      const auto wall_force = ScatterStationaryFloorGhostTranspose3D(
+          grid.view(),
+          validity,
+          deformation_tags,
+          face_force,
+          deposits,
+          needed,
+          &ghost_rows,
+          true
+      );
+      if (!wall_force.ok()) {
+        return wall_force.status();
+      }
+      ghost_wall_force_y = *wall_force;
+      bool removed_donor = false;
+      for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
+        const double mass = deposits[slot].deposited_mass;
+        if (validity[slot] != LiquidFaceValidity3D::kValid || !deformation_tags[slot].structurally_eligible
+            || mass >= 0.01 * minimum_particle_mass) {
+          continue;
+        }
+        const auto face = floor_grid.FaceIndex(slot);
+        if (!face.ok()) {
+          return face.status();
+        }
+        const double gravity = face->axis == FaceNormalAxis::kY ? settings.gravity_y : 0;
+        const double drift_velocity = deposits[slot].deposited_pure_momentum / mass + settings.duration * gravity;
+        const double stressed_velocity = drift_velocity + settings.duration * (face_force[slot] / mass);
+        if (std::abs(drift_velocity) * settings.duration <= maximum_displacement
+            && std::abs(stressed_velocity) * settings.duration > maximum_displacement) {
+          validity[slot] = LiquidFaceValidity3D::kMissing;
+          removed_donor = true;
+        }
+      }
+      if (!removed_donor) {
+        break;
+      }
+      if (pass + 1 == kMaximumDonorPasses) {
+        return DurationExceeded("dry stress donor pass limit");
+      }
     }
-    ghost_wall_force_y = *wall_force;
     for (const auto& row : ghost_rows) {
       const auto slot = row.target_slot;
       if (deformation_tags[slot].structurally_eligible || unscattered_force[slot] == 0) {
