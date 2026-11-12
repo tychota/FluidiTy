@@ -4238,3 +4238,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Midpoint translation-relative affine limit
+
+Set the centered tangent affine limit to the arithmetic mean of
+the particle speed and the magnitude of translation along the
+affected component. Keep the independent face-motion bound.
+The native and SM120 default dry-scene tests both pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 31.031017° | 0.176675 m |
+| Coarse half-step | 36.377690° | 0.169311 m |
+| Fine | 27.002661° | 0.176119 m |
+| Fine half-step | 31.463839° | 0.169696 m |
+
+Every radius exceeds 0.16 m. The midpoint puts two angles in
+range but fails all four complete pile checks. The largest
+absolute vertical momentum residual is 5.52e-9 N·s. This
+control gives no basis for replacing the two-pass clearing
+candidate. The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-mean-limit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
