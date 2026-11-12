@@ -11,6 +11,7 @@
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "fluidity/host/solid_interaction_checkpoint_3d.h"
 #include "gtest/gtest.h"
 #include "liquid_regular_cell_transport_3d_cases.h"
 #include "liquid_tank_staging_3d_cases.h"
@@ -166,7 +167,7 @@ TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
   namespace wet = wetted_piston_pressure_test;
   auto scheduler = LiquidSubstepScheduler3D::Create({}, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
-  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  ASSERT_TRUE(scheduler->BeginFrame(wet::kDuration).ok());
   const RigidBody3D piston{
       .body_id = 17,
       .mass = 1000.0,
@@ -188,6 +189,31 @@ TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
       1e-12
   );
 
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  SolidInteractionCheckpoint3D solid{
+      .accepted_step = scheduler->committed().clock.accepted_step_ordinal,
+      .bodies = {{next, {piston.center, piston.orientation}}},
+      .sides = {},
+  };
+  const auto checkpoint = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid);
+  ASSERT_TRUE(checkpoint.ok()) << checkpoint.status();
+  ++solid.accepted_step;
+  EXPECT_EQ(
+      EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_EQ(DecodeSolidInteractionCheckpoint3D(*checkpoint).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto solid_only = EncodeSolidInteractionCheckpoint3D(solid);
+  ASSERT_TRUE(solid_only.ok()) << solid_only.status();
+  EXPECT_EQ(DecodeCoupledInteractionCheckpoint3D(*solid_only).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto restored = DecodeCoupledInteractionCheckpoint3D(*checkpoint);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  ASSERT_EQ(restored->solid.bodies.size(), 1);
+  auto replay = LiquidSubstepScheduler3D::Create(restored->liquid, wet::PlaneScene(0.75, wet::kPistonSpeed), Options());
+  ASSERT_TRUE(replay.ok()) << replay.status();
+  ASSERT_TRUE(scheduler->BeginFrame(2.0 * wet::kDuration).ok());
+  ASSERT_TRUE(replay->BeginFrame(2.0 * wet::kDuration).ok());
+
   scheduler->SetStageFaultHookForTesting({
       .before_stage =
           [](void*, LiquidPhysicalStage3D stage, double) {
@@ -206,6 +232,18 @@ TEST(LiquidSubstep3D, DynamicPlanarPistonFeedsAcceptedMotionIntoNextSolve) {
   ASSERT_TRUE(measured && measured->piston_pose);
   EXPECT_DOUBLE_EQ(measured->piston_pose->step_start_low_x_m, next.center.x);
   EXPECT_NEAR(second->loaded_piston->center.x, next.center.x + next.linear_velocity.x * wet::kDuration / 2.0, 1e-15);
+  const auto replayed =
+      replay->AttemptWithDynamicPlanarPiston(wet::kDuration / 2.0, restored->solid.bodies.front().body);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  ASSERT_TRUE(replayed->loaded_piston.has_value());
+  solid.bodies.front() = {*second->loaded_piston, {next.center, next.orientation}};
+  auto replay_solid = solid;
+  replay_solid.bodies.front().body = *replayed->loaded_piston;
+  const auto uninterrupted_bytes = EncodeCoupledInteractionCheckpoint3D(scheduler->committed(), solid);
+  const auto replay_bytes = EncodeCoupledInteractionCheckpoint3D(replay->committed(), replay_solid);
+  ASSERT_TRUE(uninterrupted_bytes.ok()) << uninterrupted_bytes.status();
+  ASSERT_TRUE(replay_bytes.ok()) << replay_bytes.status();
+  EXPECT_EQ(*uninterrupted_bytes, *replay_bytes);
 }
 
 TEST(LiquidSubstep3D, UnresolvedAnalyticSphereWithNoAirLinksCanAdvance) {
