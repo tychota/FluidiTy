@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "../src/dry_solid_step_3d_internal.h"
+#include "../src/plastic_solid_checkpoint_wire_3d.h"
 #include "fluidity/host/contact_face_bodies_3d.h"
 #include "fluidity/host/dry_solid_step_3d.h"
 #include "fluidity/host/plastic_solid_checkpoint_3d.h"
@@ -364,7 +365,20 @@ bool TestPlasticCheckpointHandoff() {
   if (!captured.ok()) {
     return false;
   }
-  auto restored = fluidity::RestoreDrySolidCheckpointParticles3D({&*captured, 1}, 9, 11, snow);
+  const auto packed = fluidity::internal::PackPlasticSolidCheckpointParticle3D(*captured);
+  flatbuffers::FlatBufferBuilder builder;
+  builder.Finish(builder.CreateVectorOfStructs(&packed, 1));
+  using WireVector = flatbuffers::Vector<const fluidity::solid::v1::PlasticParticle*>;
+  const auto* wire_records = flatbuffers::GetRoot<WireVector>(builder.GetBufferPointer());
+  if (wire_records->size() != 1) {
+    return false;
+  }
+  const auto decoded = fluidity::internal::UnpackPlasticSolidCheckpointParticle3D(*wire_records->Get(0));
+  if (decoded.particle_id != 7 || decoded.body_id != 9 || decoded.material_id != 11
+      || !same_vector(decoded.transfer.sorted_world_position, accepted.world_position)) {
+    return false;
+  }
+  auto restored = fluidity::RestoreDrySolidCheckpointParticles3D({&decoded, 1}, 9, 11, snow);
   if (!restored.ok() || restored->size() != 1 || !same_particle(accepted, restored->front())) {
     return false;
   }

@@ -16,7 +16,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
 | Isolated face body capacity | Pass | Four sorted distinct body records, accumulation for an existing body at capacity, fifth-body rejection, and range-failure rollback on CPU and CUDA. The host error is ResourceExhausted / E-CONTACT-BODY-CAPACITY. |
-| Plastic checkpoint handoff | Pass for the typed dry payload | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. Every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
+| Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -560,8 +560,27 @@ uses the same admissibility and acoustic-state check as the dry step.
 The next dry attempt bins from the accepted world position. The focused
 test restores a compressed snow particle with nonzero APIC fit, advances
 one step, and compares all state fields exactly on each backend.
-This is an in-memory handoff. The FLSI schema, mixed serialization and
-authored snow–water restart still need integration.
+The replay now passes through the generated PlasticParticle record in a
+FlatBuffers byte vector. The owning FLSI codec and authored snow–water
+restart still need integration.
+
+The shared plastic wire fragment is in
+schemas/simulate/plastic_solid_particle.fbs. A scratch FLSI envelope
+based on M6 ba644ea included that fragment and added the optional
+plastic_particles vector at field ID 6. Pinned flatc 25.12.19 passed
+schema conformance, read a legacy size-prefixed payload with the
+plastic vector absent, and preserved all selected fields of a
+plastic-bearing size-prefixed record. The schemas, inputs and decoded
+payloads are under out/m5-flsi-plastic.
+
+A plastic-bearing envelope must carry schema_version 2. The old
+structural reader sees the version but ignores field 6. M6's current
+native decoder rejects versions other than 1, preventing silent loss
+of plastic state. The new codec should keep the version 1 default for
+envelopes without plastic state, and reject a nonempty plastic vector
+under version 1. This version policy is coordinated with M6. The
+scratch schema establishes wire compatibility. It does not exercise
+the production codec or an accepted mixed restart.
 
 The mixed gate needs a versioned resolved scene carrying snow material
 parameters, liquid pressure and distinct body memberships in the same
