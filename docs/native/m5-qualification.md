@@ -722,6 +722,36 @@ velocity gradient and duration that produced that trial. Rebuild both dry
 scene targets and run the three-second commands above. The production
 source uses the specified Euler update.
 
+### Affine transfer feedback in the dense pile
+
+Run the same centered three-second cases with two temporary changes to
+the stored granular velocity slopes. The first sets the entire affine
+fit to zero before the next deposit. The second subtracts one third of
+the fit's trace from each diagonal entry. Both controls retain the
+actual gathered velocity gradient used for deformation, the constitutive
+law, and the wall update. They change only the affine momentum feedback.
+
+| h (m) | Baseline envelope | No affine envelope | Trace-free envelope | Baseline late dilation | No affine late dilation | Trace-free late dilation |
+|---|---:|---:|---:|---:|---:|---:|
+| 0.075 | 21.853351° | 44.659101° | 16.183305° | 0.002756145 | 0.000107975 | 0.001766199 |
+| 0.0625 | 20.623778° | 42.931884° | 16.503923° | 0.002007689 | 0.000309803 | 0.001935966 |
+
+The dilation values are mean signed changes in log plastic Jacobian
+over the final 0.05 s. Native values are shown. CUDA envelope results
+differ by at most 0.000003° at printed precision. Momentum and late-drift
+checks pass. With the fit set to zero, all measured late dilation occurs
+within 0.025 m of the floor. Removing only the trace makes the piles
+shallower, with dilation still present above the floor layer. The
+combined response establishes sensitivity to affine feedback. It does
+not yet isolate the effects of the symmetric deviatoric and skew parts.
+Neither control meets the repose gate.
+
+To reproduce from f053966, adjust the granular assignment of
+particle.velocity_slopes at the end of the dry step in
+native/src/dry_solid_step_3d.cc as described above. Rebuild both dry
+scene targets and run the three-second commands. The production
+solver uses the complete affine fit.
+
 ### Vertical grid alignment at the sand floor
 
 Repeat the 504-particle column drop to 1.5 s with nominal step h/80.
