@@ -241,6 +241,56 @@ TEST(AdaptiveLiquidRemap3D, ConservesApertureWeightedExteriorFluxAndChildDiverge
   EXPECT_EQ(topology->cells().size(), 2u);
 }
 
+TEST(AdaptiveLiquidRemap3D, PreservesRepresentableTinyExteriorShare) {
+  const auto topology = AdaptiveMacTopology3D::Create(std::array{kParent}, 0.5);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto fields = MakeFields(*topology);
+  const auto coarse_ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(coarse_ownership.ok()) << coarse_ownership.status();
+  const auto fine_family = PrepareAdaptiveRefinement3D(*topology, fields.pressures, kParent);
+  ASSERT_TRUE(fine_family.ok()) << fine_family.status();
+  const auto fine_ownership = BuildAdaptiveMacFaceOwnership3D(fine_family->topology);
+  ASSERT_TRUE(fine_ownership.ok()) << fine_ownership.status();
+
+  std::vector<double> coarse_apertures(coarse_ownership->exterior_faces.size());
+  coarse_apertures.front() = 0.5;
+  std::vector<double> coarse_fluxes(coarse_apertures.size());
+  coarse_fluxes.front() = 1;
+  std::vector<double> fine_apertures(fine_ownership->exterior_faces.size());
+  std::vector<double> expected_fluxes(fine_apertures.size());
+  constexpr std::array apertures{0x1p-55, 0.25, 0x1.fffffffffffffp-3, 0.0};
+  std::size_t subface = 0;
+  for (std::size_t index = 0; index < fine_ownership->exterior_faces.size(); ++index) {
+    const auto& face = fine_ownership->exterior_faces[index];
+    if (face.face_index.axis == FaceNormalAxis::kX && !face.cell_is_tail) {
+      ASSERT_LT(subface, apertures.size());
+      fine_apertures[index] = apertures[subface++];
+      expected_fluxes[index] = 2 * fine_apertures[index];
+    }
+  }
+  ASSERT_EQ(subface, apertures.size());
+  auto committed = fields.View();
+  committed.exterior = {coarse_apertures, coarse_fluxes, fine_apertures};
+  const auto refined = PrepareAdaptiveLiquidRefinement3D(*topology, committed, kParent, fields.stencil);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  EXPECT_EQ(refined->exterior_outward_fluxes_m3_per_s, expected_fluxes);
+
+  const AdaptiveLiquidRemapInput3D fine{
+      .inventories = refined->inventories,
+      .previous_pressures_pa = refined->family.previous_pressures,
+      .interior_fluxes_m3_per_s = refined->interior_fluxes_m3_per_s,
+      .exterior =
+          AdaptiveLiquidExteriorRemapInput3D{
+              fine_apertures,
+              refined->exterior_outward_fluxes_m3_per_s,
+              coarse_apertures,
+          },
+  };
+  const auto restored = PrepareAdaptiveLiquidCoarsening3D(refined->family.topology, fine, kParent);
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->exterior_outward_fluxes_m3_per_s, coarse_fluxes);
+}
+
 TEST(AdaptiveLiquidRemap3D, ReplaysConstituentInventoryWithoutCrossPhaseTransfer) {
   const auto topology = AdaptiveMacTopology3D::Create(kLeaves, 0.5);
   ASSERT_TRUE(topology.ok()) << topology.status();

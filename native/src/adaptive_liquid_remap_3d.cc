@@ -262,6 +262,19 @@ absl::Status SplitExteriorFlux(
     return absl::OkStatus();
   }
 
+  // A direct proportional split can retain shares smaller than the coarse
+  // flux quantum. Use it only when the exact signed sum is representable.
+  CompensatedSum proportional_sum;
+  for (std::size_t index = 0; index < fine_areas.size(); ++index) {
+    const double aperture_fraction = fine_areas[index] / coarse_area;
+    const double proportional_flux = coarse_flux * aperture_fraction;
+    subfaces[index].flux_m3_per_s = proportional_flux;
+    proportional_sum.Add(proportional_flux);
+  }
+  if (proportional_sum.Total() == coarse_flux && RepresentsSubfaceSum(subfaces, coarse_flux)) {
+    return absl::OkStatus();
+  }
+
   // Round cumulative aperture shares in units of the coarse flux's
   // binary64 quantum. Their consecutive differences sum exactly and
   // assign no flux to a zero-aperture subface.

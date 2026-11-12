@@ -21,10 +21,18 @@ committed integrated flux in canonical exterior-face order. Exterior flux is
 positive outward from its owner on either side of an axis. A face must keep
 its owner side and its aperture area, either unchanged or summed across its
 four subfaces. Sealed apertures carry zero flux. Exterior refinement splits
-flux in proportion to aperture and preserves its exact sum. Unequal shares
-are rounded in canonical order in units of the coarse flux's binary64 quantum.
-Coarsening uses the same exact-sum check as interior faces. Omitting these
-inputs selects the sealed mode.
+flux in proportion to aperture and preserves its exact sum. It keeps the
+directly computed binary64 shares if their compensated sum in canonical order
+equals the coarse flux and the exact-sum check confirms it. Otherwise, the
+split rounds each computed cumulative share to the nearest coarse-flux
+quantum, with ties toward the larger magnitude, then takes consecutive
+differences. Each resulting share can differ from the difference of the
+unrounded computed cumulative shares by at most one coarse-flux quantum.
+Aperture ratios and cumulative shares also incur ordinary binary64 rounding.
+The quantum is the spacing from the coarse flux magnitude to the next larger
+binary64 value in an unbounded exponent range, floored at the smallest
+positive subnormal. Coarsening uses the same exact-sum check as interior
+faces. Omitting the exterior inputs selects the sealed mode.
 
 Refinement gives each new sibling one eighth of the old parent's net outflow,
 including the outward flux on open exterior subfaces.
