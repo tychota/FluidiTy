@@ -177,6 +177,12 @@ inline void SetGradedTankMiscible3D(LiquidState3D& state, LiquidSceneInputs3D& s
   }
 }
 
+inline void SetGradedTankMiscibleViscosity3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  static constexpr std::array<LiquidConstituentMaterial3D, 2> kMaterials{{{8, 4, 1.5, 1.0}, {14, 4, 2.5, 10.0}}};
+  SetGradedTankMiscible3D(state, scene);
+  scene.constituent_materials = kMaterials;
+}
+
 inline absl::StatusOr<double> GradedTankCarrierEnergy3D(const LiquidState3D& state, const LiquidSceneInputs3D& scene) {
   std::vector<AdaptiveMacCellKey3D> keys;
   for (const auto& cell : state.adaptive_cells.values()) {

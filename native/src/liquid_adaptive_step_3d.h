@@ -13,13 +13,16 @@ namespace fluidity::liquid_step_internal {
 
 // Assemble nonzero symmetric-gradient quadratures per leaf from local staggered
 // face anchors and owned apertures. Dynamic viscosity is in Pa s. Stationary sealed faces are lifted as zero velocity.
-// All geometric arrays use canonical topology order. Rank-deficient anchor support fails without rows.
+// All geometric arrays use canonical topology order. An optional scratch span of leaf count + 1 stores
+// row offsets in leaf order; it must be disjoint from inputs and may change on failure.
+// Rank-deficient anchor support fails without rows.
 absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     const AdaptiveMacTopology3D& topology,
     Vec3 world_origin,
     double dynamic_viscosity,
     std::span<const GradedMacFace3D> faces,
-    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
+    std::span<std::size_t> leaf_row_offsets = {}
 );
 
 // Frozen graded tank ownership and staging. The owner is built at scheduler
@@ -71,6 +74,9 @@ class AdaptiveLiquidStep3D {
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<MacStrainRow3D> strain_rows_;
+  // Geometry at unit viscosity, kept only for composition-dependent quadrature.
+  std::vector<MacStrainRow3D> unit_strain_rows_;
+  std::vector<std::size_t> leaf_strain_row_offsets_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;
   std::vector<double> distances_;

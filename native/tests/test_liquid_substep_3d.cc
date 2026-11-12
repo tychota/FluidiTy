@@ -439,6 +439,68 @@ TEST(LiquidSubstep3D, GradedViscousTankDissipatesCarrierEnergyAcrossAcceptance) 
   EXPECT_LT(energy[1], energy[0]);
 }
 
+TEST(LiquidSubstep3D, GradedMiscibleViscosityUsesAcceptedLeafComposition) {
+  std::array<double, 4> energy{};
+  for (std::size_t mode = 0; mode < energy.size(); ++mode) {
+    LiquidState3D initial;
+    LiquidSceneInputs3D scene;
+    ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
+    test::SetGradedTankMiscible3D(initial, scene);
+    std::array<LiquidConstituentMaterial3D, 2> materials{};
+    std::ranges::copy(scene.constituent_materials, materials.begin());
+    if (mode == 1) {
+      materials[0].dynamic_viscosity_pa_s = 1.0;
+      materials[1].dynamic_viscosity_pa_s = 10.0;
+    }
+    if (mode == 2) {
+      materials[0].dynamic_viscosity_pa_s = 10.0;
+      materials[1].dynamic_viscosity_pa_s = 1.0;
+    }
+    if (mode == 3) {
+      scene.dynamic_viscosity = 2.0;
+      materials[0].dynamic_viscosity_pa_s = 0.0;
+      materials[1].dynamic_viscosity_pa_s = 0.0;
+    }
+    scene.constituent_materials = materials;
+    auto options = Options();
+    options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
+    auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+    ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+    ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+    bool reject = true;
+    scheduler->SetStageFaultHookForTesting({
+        .context = &reject,
+        .before_stage =
+            [](void* context, LiquidPhysicalStage3D stage, double) {
+              if (stage == LiquidPhysicalStage3D::kAccept && std::exchange(*static_cast<bool*>(context), false)) {
+                return absl::Status(absl::StatusCode::kAborted, {});
+              }
+              return absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler->Attempt(0.01);
+    ASSERT_TRUE(rejected.ok()) << rejected.status();
+    ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+    ExpectIdenticalSerializedState(initial, scheduler->committed());
+    const auto accepted = scheduler->Attempt(0.005);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+
+    const auto carrier_energy = test::GradedTankCarrierEnergy3D(scheduler->committed(), scene);
+    ASSERT_TRUE(carrier_energy.ok()) << carrier_energy.status();
+    energy[mode] = *carrier_energy;
+    ASSERT_TRUE(scheduler->diagnostics().accepted_measurement);
+    EXPECT_EQ(
+        scheduler->diagnostics().accepted_measurement->viscous_max_momentum_residual_kg_m_per_s.has_value(),
+        mode == 1 || mode == 2
+    );
+  }
+  EXPECT_LT(energy[1], energy[0]);
+  EXPECT_LT(energy[2], energy[0]);
+  EXPECT_GT(std::abs(energy[1] - energy[2]), 1e-6);
+  EXPECT_EQ(energy[3], energy[0]);
+}
+
 TEST(LiquidSubstep3D, GradedTaitDomainFailureKeepsTheAcceptedState) {
   LiquidState3D initial;
   LiquidSceneInputs3D scene;
