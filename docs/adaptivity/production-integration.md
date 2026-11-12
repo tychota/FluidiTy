@@ -103,6 +103,28 @@ gap, the coarsening halo restores the original 125-leaf graph and face
 history, with one fresh ID for the merged particle. A lone family without the
 required halo is refused in either direction. Duplicate child IDs fail
 preflight. The proposal is detached from accepted scheduler publication.
+### Accepted transfer basis in FLST
+
+An accepted particle may carry the quadratic adaptive basis flag. FLST v5
+stores only marked particle IDs in stable roster order inside the adaptive
+state table. The reader requires a nonempty, duplicate-free subsequence of
+the decoded particle roster. The field is absent in v1–v4, where the flag
+defaults to false. Ownership and width ages remain independently valid v5
+fields. Uniform states cannot carry the adaptive flag.
+
+The CUDA arena stores the flag beside the affine and PIC bits in its particle
+bank. Preparing and discarding a trial preserves the old flag and epoch.
+Publishing the trial switches the flag with the particle and topology state.
+The accepted basis is available to a subsequent scheduler attempt after
+restore. Continuing basis selection and any safe affine reset are scheduler
+policy.
+
+```powershell
+ctest --test-dir out/build/basis-green-cpu -R 'LiquidCache3D|LiquidState3D|Schema|Adaptive(Family|Band|Width|Closure|Physical)Replay.cpu' --output-on-failure
+ctest --test-dir out/build/basis-green-cuda -R 'Adaptive(Family|Band|Width|Closure|Physical)Replay.cuda' --output-on-failure
+& ./out/build/basis-green-cuda/fluidity_cuda_arena_tests.exe
+```
+
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.

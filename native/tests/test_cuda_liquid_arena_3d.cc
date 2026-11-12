@@ -210,6 +210,55 @@ TEST(CudaLiquidArena3D, PublicationRejectAndLeasedStorage) {
   EXPECT_FALSE(arena->PreparePublication(*trial, clock).ok());
   EXPECT_EQ(accepted->identity().clock.epoch, 1);
 }
+
+TEST(CudaLiquidArena3D, PublishesAndRollsBackAdaptiveQuadraticParticleBasis) {
+  ASSERT_NO_FATAL_FAILURE(CheckHardware());
+  constexpr LiquidStateCapacities3D capacity{2, 0, 1, 6, 0};
+  LiquidState3D initial;
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(1);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(6);
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(2);
+  ASSERT_TRUE(cells.ok());
+  ASSERT_TRUE(faces.ok());
+  ASSERT_TRUE(particles.ok());
+  ASSERT_TRUE(cells->Resize(1).ok());
+  ASSERT_TRUE(faces->Resize(6).ok());
+  ASSERT_TRUE(particles->Resize(2).ok());
+  (*particles)[0].id = 2;
+  (*particles)[1].id = 1;
+  (*particles)[1].quadratic_adaptive_transfer = true;
+  initial.next_particle_id = 3;
+  initial.adaptive_cells = std::move(*cells);
+  initial.adaptive_faces = std::move(*faces);
+  initial.particles = std::move(*particles);
+  ASSERT_TRUE(ValidateLiquidState3D(initial).ok());
+
+  auto arena = CudaLiquidArena3D::Create(capacity, 0, SIZE_MAX, false, true);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  ASSERT_TRUE(arena->Initialize(initial).ok());
+  auto old = arena->AcquireCommitted();
+  ASSERT_TRUE(old.ok());
+  auto trial = CloneLiquidState3D(initial, capacity);
+  auto readback = CloneLiquidState3D(initial, capacity);
+  ASSERT_TRUE(trial.ok());
+  ASSERT_TRUE(readback.ok());
+  trial->particles[0].quadratic_adaptive_transfer = true;
+  trial->particles[1].quadratic_adaptive_transfer = false;
+  constexpr LiquidClock3D accepted_clock{1, 1, 0, 1, 1};
+  ASSERT_TRUE(arena->PreparePublication(*trial, accepted_clock).ok());
+  arena->DiscardPublication();
+  ASSERT_TRUE(arena->AcquireCommitted()->Readback(*readback).ok());
+  EXPECT_EQ(*readback, initial);
+
+  ASSERT_TRUE(arena->PreparePublication(*trial, accepted_clock).ok());
+  arena->CommitPublication();
+  trial->clock = accepted_clock;
+  ASSERT_TRUE(arena->AcquireCommitted()->Readback(*readback).ok());
+  EXPECT_EQ(*readback, *trial);
+  ASSERT_TRUE(old->Readback(*readback).ok());
+  EXPECT_EQ(*readback, initial);
+}
+
 TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
   ASSERT_NO_FATAL_FAILURE(CheckHardware());
   constexpr LiquidStateCapacities3D capacity{0, 0, 2, 14, 0};
