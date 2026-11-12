@@ -358,6 +358,13 @@ class LiquidSubstepScheduler3D {
   // The accepted contact impulse updates the next velocity after pressure.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithCoupledGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Couples pressure traction to all six rigid degrees of freedom for a posed
+  // box with no particles. The start pose and twist drive the pressure solve.
+  // The solved load updates the twist before drift. Requires the CPU analytic
+  // stationary tank and conservative sweep clearance. Rejection publishes
+  // neither liquid state nor a candidate body.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithOrientedFloatingBoxPressure(double step_duration, RigidBody3D body, Vec3 body_half_extent);
   // Finishes an explicitly stepped frame; no physical bytes/epoch are changed.
   absl::Status FinishFrame();
   // Chooses dt from velocity/source/wall/acceleration/capillary/remaining bounds;
@@ -366,16 +373,23 @@ class LiquidSubstepScheduler3D {
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
  private:
+  enum class FloatingBoxMotion {
+    kVerticalGuide,
+    kTranslation,
+    kCoupledVerticalGuide,
+    kOrientedPressure
+  };
   struct FloatingBoxTrial {
     RigidBody3D body;
     AxisAlignedFloatingBoxGeometry3D geometry;
+    std::optional<OrientedFloatingBoxGeometry3D> oriented_geometry;
     Vec3 half_extent;
     bool coupled;
     bool vertical_guide;
     std::optional<double> added_mass_kg;
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
-  AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, bool coupled, bool vertical_guide);
+  AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, FloatingBoxMotion motion);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
