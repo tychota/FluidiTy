@@ -428,6 +428,74 @@ class GeometryCases {
     }
     return samples;
   }
+  void SharedLiquidInterfaceUsesSeriesResistanceAndOneJump() {
+    const auto grid = Grid();
+    auto samples = Sample([](double, double, double) {
+      return -1.0;
+    });
+    samples.candidates.push_back({-1, -2, -2});
+    for (auto& center : samples.centers) {
+      const auto index = center.cell_index;
+      if (index.y != -2 || index.z != -2 || (index.x != -2 && index.x != -1)) {
+        center.signed_distance = 1.0;
+      }
+    }
+    const auto frozen = Freeze(grid, samples);
+    ASSERT_TRUE(frozen.ok()) << frozen.status();
+    ASSERT_EQ(frozen->cells().size(), 2);
+    const auto faces = frozen->faces();
+    const auto shared = std::ranges::find_if(faces, [](const FrozenLiquidFace3D& face) {
+      const auto index = face.face_index.lattice_index;
+      return face.face_index.axis == FaceNormalAxis::kX && index.x == -1 && index.y == -2 && index.z == -2;
+    });
+    ASSERT_NE(shared, faces.end());
+    const auto ordinal = static_cast<std::size_t>(shared - faces.begin());
+    std::vector<double> velocities(faces.size(), 0.0);
+    std::array cells{
+        LiquidPressureCellFields3D{0.0, kInfinity, 0.0, 1000.0},
+        LiquidPressureCellFields3D{0.0, kInfinity, 0.0, 800.0},
+    };
+    std::array crossings{LiquidInternalInterface3D{ordinal, 0.25, 0.5, 6.0, 1.0}};
+    const LiquidPressureFields3D fields{
+        .cells = cells,
+        .predicted_face_velocities = velocities,
+        .ambient_pressure = 0.0,
+        .internal_interfaces = crossings,
+    };
+    for (const double expected_jump : {-2.0, 2.0}) {
+      const auto links = links_(*frozen, fields);
+      ASSERT_TRUE(links.ok()) << links.status();
+      const auto& face = links->faces[ordinal];
+      EXPECT_DOUBLE_EQ(face.inverse_density, 1.0 / 850.0);
+      const auto* internal = std::get_if<InternalMacPressureLink3D>(&face.pressure_link);
+      ASSERT_NE(internal, nullptr);
+      EXPECT_DOUBLE_EQ(internal->pressure_jump, expected_jump);
+
+      std::vector<MacPressureFace3D> sealed(links->faces.begin(), links->faces.end());
+      for (std::size_t index = 0; index < sealed.size(); ++index) {
+        if (index != ordinal) {
+          sealed[index].open_area = 0.0;
+          sealed[index].pressure_link = SealedMacPressureLink3D{};
+        }
+      }
+      const auto projection = project_({grid, 0.01, links->cells, sealed});
+      ASSERT_TRUE(projection.ok()) << projection.status();
+      ASSERT_EQ(projection->cell_pressures.size(), 2);
+      EXPECT_NEAR(projection->cell_pressures[1] - projection->cell_pressures[0], expected_jump, 1.0e-6);
+      EXPECT_NEAR(projection->corrected_face_velocities[ordinal], 0.0, 1.0e-9);
+
+      std::swap(cells[0].density, cells[1].density);
+      crossings[0].tail_fraction = 1.0 - crossings[0].tail_fraction;
+      crossings[0].curvature_tail_to_head = -crossings[0].curvature_tail_to_head;
+      crossings[0].normal_viscous_jump_tail_to_head = -crossings[0].normal_viscous_jump_tail_to_head;
+    }
+    cells[0].density.reset();
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+    cells[0].density = 1000.0;
+    crossings[0].face_ordinal = (ordinal + 1) % faces.size();
+    EXPECT_EQ(links_(*frozen, fields).status().code(), absl::StatusCode::kInvalidArgument);
+  }
+
   void CavityGasPressureAddsSignedCapillaryJumpOnce() {
     const auto grid = Grid();
     const auto samples = IsolatedLiquid(-0.25);

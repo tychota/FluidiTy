@@ -143,6 +143,11 @@ TEST(LiquidBoundaryGeometry3D, CavityGasPressureAddsSignedCapillaryJumpOnce) {
   cases.CavityGasPressureAddsSignedCapillaryJumpOnce();
 }
 
+TEST(LiquidBoundaryGeometry3D, SharedLiquidInterfaceUsesSeriesResistanceAndOneJump) {
+  GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
+  cases.SharedLiquidInterfaceUsesSeriesResistanceAndOneJump();
+}
+
 TEST(LiquidBoundaryGeometry3D, ThetaFixtureAndSignedPressureMapping) {
   GeometryCases cases(FreezeLiquidBoundaryGeometry3D, BuildLiquidPressureLinks3D);
   cases.ThetaFixtureAndSignedPressureMapping();

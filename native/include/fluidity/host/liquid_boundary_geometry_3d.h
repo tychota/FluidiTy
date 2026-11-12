@@ -108,6 +108,14 @@ struct LiquidAirCellPressure3D {
   CellIndex3D cell_index;  // Air-side center on the signed lattice.
   double gas_gauge_pressure;  // Pa before the liquid-side capillary lift.
 };
+struct LiquidInternalInterface3D {
+  std::size_t face_ordinal;  // Index into the exact frozen face order.
+  double tail_fraction;  // Fraction of the center-to-center segment in the tail phase, in [0,1].
+  double surface_tension;  // Nonnegative N/m for the phase pair.
+  double curvature_tail_to_head;  // Signed m⁻¹ with normal from tail phase to head phase.
+  double normal_viscous_jump_tail_to_head;  // Head-minus-tail normal viscous stress in Pa.
+};
+
 struct LiquidPressureFields3D {
   std::span<const LiquidPressureCellFields3D> cells;  // Frozen cell order.
   std::span<const double> predicted_face_velocities;  // Frozen face order, m/s.
@@ -119,6 +127,10 @@ struct LiquidPressureFields3D {
   // Optional unique (z,y,x) air centers in the frozen sample halo. A listed
   // pressure replaces ambient gas pressure on all incident open air links.
   std::span<const LiquidAirCellPressure3D> air_cell_pressures{};
+  // Certified crossings with distinct phases, strictly increasing by frozen
+  // face ordinal. Each needs a positive aperture, two liquid endpoints and
+  // explicit endpoint densities. The internal link receives one signed jump.
+  std::span<const LiquidInternalInterface3D> internal_interfaces{};
 };
 struct LiquidPressureProblem3D {
   std::vector<MacPressureCell3D> cells;

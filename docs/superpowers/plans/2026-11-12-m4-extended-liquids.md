@@ -479,3 +479,11 @@ The shared scheduler now samples density from current-volume-weighted constituen
 The single-cell fixture verified 1007.5 kg/m³ for equally weighted donors, the resulting inverse density on all six open links, and a Tait rest tangent of 4030 Pa at sound speed 2 m/s. Twenty-six CPU tests passed with ctest --preset windows-debug-cpu -j 4 -R 'Mixture|Eos|Tait|Drift|SourceRetryAndWholeFrameReplay'. Twenty-two real-device tests passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidSubstep3D|CudaLiquidBoundary3D'. The persistent CUDA substep carries the same registered composition as the CPU. clang-format 19.1.5 passed. Receipts use out/m4-mixture-pressure. Negative receipts retain the initial fixture with seven selected cells and the stale CUDA link failure resolved by a clean build.
 
 This qualifies single-phase mixture pressure coefficients. Constituent remap, evaluated surface fractions, and immiscible interface projection remain open.
+
+## Shared immiscible pressure link receipt
+
+The production CPU and CUDA link builders accept a certified internal phase crossing in frozen face order. Each crossing has two liquid endpoints with explicit densities and a positive aperture. Its mobility uses the series density resistance along the center segment, and one internal pressure jump applies signed normal viscous stress minus surface tension times curvature. A malformed or external crossing fails validation.
+
+The two-cell fixture measured mobility 1/850 m³/kg in both orientations, pressure differences of -2 and +2 Pa, and zero corrected interface velocity. Thirty-four CPU checks passed with ctest --preset windows-debug-cpu -j 1 -R 'LiquidBoundaryGeometry3D|Mixture'. Twenty-two real-device CUDA checks passed with ctest --preset windows-release-cuda -j 1 -R 'CudaLiquidBoundary3D|CudaLiquidSubstep3D'. Five Python multiphase oracle checks passed. Compute Sanitizer reported zero errors on CudaLiquidBoundary3D.GeometryAndCapillaryMatchOracle. clang-format 19.1.5 passed. Receipts use out/m4-shared-interface.
+
+The caller supplies crossing geometry and stresses. Production phase-field construction, pair settings, the internal capillary timestep bound and shared render geometry still need integration.

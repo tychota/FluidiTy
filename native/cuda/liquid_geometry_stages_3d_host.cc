@@ -405,6 +405,7 @@ absl::StatusOr<LiquidPressureProblemView3D> BuildLiquidLinks3D(
       || AliasesLiquidScratch3D(arena, geometry.center_distances) || AliasesLiquidScratch3D(arena, fields.cells)
       || AliasesLiquidScratch3D(arena, fields.predicted_face_velocities)
       || AliasesLiquidScratch3D(arena, fields.air_cell_pressures)
+      || AliasesLiquidScratch3D(arena, fields.internal_interfaces)
       || (!fields.wetted_piston_face_fluxes.empty() && AliasesLiquidScratch3D(arena, fields.wetted_piston_face_fluxes)
       )) {
     return Error(absl::StatusCode::kInvalidArgument);

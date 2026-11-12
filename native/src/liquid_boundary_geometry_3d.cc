@@ -565,11 +565,23 @@ absl::Status LinksCore(
   if (fields.cells.size() != geometry.cells.size() || fields.predicted_face_velocities.size() != geometry.faces.size()
       || (has_wetted_piston_face_fluxes && wetted_piston_face_fluxes.size() != geometry.faces.size())
       || fields.air_cell_pressures.size() > geometry.center_distances.size()
-      || !std::isfinite(fields.ambient_pressure)) {
+      || fields.internal_interfaces.size() > geometry.faces.size() || !std::isfinite(fields.ambient_pressure)) {
     return absl::Status(
         absl::StatusCode::kInvalidArgument,
         bounded ? "" : "Invalid pressure field extents or ambient pressure"
     );
+  }
+  const auto interfaces = fields.internal_interfaces;
+  for (std::size_t index = 0; index < interfaces.size(); ++index) {
+    const auto& crossing = interfaces[index];
+    if (crossing.face_ordinal >= geometry.faces.size()
+        || (index > 0 && interfaces[index - 1].face_ordinal >= crossing.face_ordinal)
+        || !std::isfinite(crossing.tail_fraction) || crossing.tail_fraction < 0.0 || crossing.tail_fraction > 1.0
+        || !std::isfinite(crossing.surface_tension) || crossing.surface_tension < 0.0
+        || !std::isfinite(crossing.curvature_tail_to_head)
+        || !std::isfinite(crossing.normal_viscous_jump_tail_to_head)) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "Invalid internal interface record");
+    }
   }
   const auto distances = geometry.center_distances;
   for (std::size_t ordinal = 0; ordinal < fields.air_cell_pressures.size(); ++ordinal) {
@@ -638,6 +650,33 @@ absl::Status LinksCore(
         }
         link.prescribed_wall_flux = signed_piston_flux;
       }
+    }
+    const auto crossing = std::ranges::lower_bound(interfaces, i, {}, &LiquidInternalInterface3D::face_ordinal);
+    if (crossing != interfaces.end() && crossing->face_ordinal == i) {
+      if (!has_head || !has_tail || face.open_area <= 0.0 || !fields.cells[head_found].density
+          || !fields.cells[tail_found].density) {
+        return absl::Status(
+            absl::StatusCode::kInvalidArgument,
+            bounded ? "" : "Internal interface requires two open liquid endpoints"
+        );
+      }
+      // Each phase contributes its density times its share of the distance.
+      // The resulting resistance acts once on this shared pressure link.
+      const double face_density =
+          std::lerp(*fields.cells[head_found].density, *fields.cells[tail_found].density, crossing->tail_fraction);
+      const double inverse_density = 1.0 / face_density;
+      const double pressure_jump = std::fma(
+          -crossing->surface_tension,
+          crossing->curvature_tail_to_head,
+          crossing->normal_viscous_jump_tail_to_head
+      );
+      if (!std::isnormal(inverse_density) || !std::isfinite(pressure_jump)) {
+        return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "Internal interface arithmetic overflow");
+      }
+      link.inverse_density = inverse_density;
+      link.pressure_link = InternalMacPressureLink3D{pressure_jump};
+      result.faces.storage[i] = link;
+      return false;
     }
     if (!tail.ok()) {
       if (face.open_area > 0) {
@@ -1383,7 +1422,9 @@ absl::StatusOr<LiquidPressureProblemView3D> LiquidBoundaryWorkspace3D::BuildLink
   }
   auto& bank = links_[1 - link_bank_];
   for (const auto override_bytes :
-       {std::as_bytes(fields.wetted_piston_face_fluxes), std::as_bytes(fields.air_cell_pressures)}) {
+       {std::as_bytes(fields.wetted_piston_face_fluxes),
+        std::as_bytes(fields.air_cell_pressures),
+        std::as_bytes(fields.internal_interfaces)}) {
     const auto reserved_cell_bytes = std::as_bytes(std::span(bank.cells.values().data(), bank.cells.capacity()));
     const auto reserved_face_bytes = std::as_bytes(std::span(bank.faces.values().data(), bank.faces.capacity()));
     if (ByteViewsOverlap(override_bytes, reserved_cell_bytes)
