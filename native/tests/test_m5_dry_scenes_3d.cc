@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <numeric>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -111,7 +112,8 @@ bool TestScene(
     bool compatible_floor = false,
     double symmetric_affine_decay_per_second = 0,
     std::string_view affine_decay_region = "all",
-    bool trace_early_contact = false
+    bool trace_early_contact = false,
+    bool retry_motion = false
 ) {
   std::vector<BlockIndex3D> blocks;
   const int maximum_block_y = compatible_floor ? 2 : 4;
@@ -187,6 +189,7 @@ bool TestScene(
   const bool extended_column = !snow && !release_cone && sand_end_time > 0.75;
   fluidity::DrySolidStepBudget3D total_budget{};
   int step = 0;
+  int retries = 0;
   constexpr std::array early_sample_times{0.10, 0.15, 0.20, 0.25, 0.35, 0.50};
   std::size_t early_sample = 0;
   for (double t = 0; t < time; ++step) {
@@ -196,8 +199,8 @@ bool TestScene(
       // Replay the original two sampling boundaries before extending the run.
       phase_end = t < 0.70 ? 0.70 : 0.75;
     }
-    const double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
-    const double step_duration = next_time - t;
+    double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
+    double step_duration = next_time - t;
     const double step_energy_blend = stored_velocity_decay_rate > 0
         ? std::min(1.0, std::exp(-stored_velocity_decay_rate * step_duration) / 0.99)
         : particle_energy_blend;
@@ -228,40 +231,50 @@ bool TestScene(
         std::ldexp(1.0, 4 - mass_bits),
         std::max<std::size_t>(128, particles.size()),
     };
+    const auto attempt = [&]() {
 #if defined(FLUIDITY_M5_CUDA_SCENES)
-    const auto status = fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, quantization, particles, &budget);
+      return fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, quantization, particles, &budget);
 #else
-    const auto quantized_deposit = [quantization](
-                                       const SparseMacGrid3D& layout,
-                                       std::span<const fluidity::MacTransferParticle3D> points,
-                                       std::span<fluidity::MacFaceDeposit3D> faces
-                                   ) {
-      std::vector<fluidity::MacFaceDepositQuanta3D> quanta(faces.size());
-      const auto deposited = fluidity::DepositMacQuanta3D(layout, points, quantization, quanta);
-      if (!deposited.ok()) {
-        return deposited;
-      }
-      for (std::size_t slot = 0; slot < faces.size(); ++slot) {
-        faces[slot] = {
-            .deposited_mass = static_cast<double>(quanta[slot].mass_quanta_sum) * quantization.mass_per_quantum,
-            .deposited_pure_momentum =
-                static_cast<double>(quanta[slot].pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
-        };
-      }
-      return absl::OkStatus();
-    };
-    const auto status = quantized_mass_bits == 0
-        ? fluidity::AdvanceDrySolid3D(*grid, material, settings, particles, &budget)
-        : fluidity::internal::AdvanceDrySolidWithTransfers3D(
-              *grid,
-              material,
-              settings,
-              particles,
-              quantized_deposit,
-              fluidity::GatherMac3D,
-              &budget
-          );
+      const auto quantized_deposit = [quantization](
+                                         const SparseMacGrid3D& layout,
+                                         std::span<const fluidity::MacTransferParticle3D> points,
+                                         std::span<fluidity::MacFaceDeposit3D> faces
+                                     ) {
+        std::vector<fluidity::MacFaceDepositQuanta3D> quanta(faces.size());
+        const auto deposited = fluidity::DepositMacQuanta3D(layout, points, quantization, quanta);
+        if (!deposited.ok()) {
+          return deposited;
+        }
+        for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+          faces[slot] = {
+              .deposited_mass = static_cast<double>(quanta[slot].mass_quanta_sum) * quantization.mass_per_quantum,
+              .deposited_pure_momentum =
+                  static_cast<double>(quanta[slot].pure_momentum_quanta_sum) * quantization.pure_momentum_per_quantum,
+          };
+        }
+        return absl::OkStatus();
+      };
+      return quantized_mass_bits == 0 ? fluidity::AdvanceDrySolid3D(*grid, material, settings, particles, &budget)
+                                      : fluidity::internal::AdvanceDrySolidWithTransfers3D(
+                                            *grid,
+                                            material,
+                                            settings,
+                                            particles,
+                                            quantized_deposit,
+                                            fluidity::GatherMac3D,
+                                            &budget
+                                        );
 #endif
+    };
+    auto status = attempt();
+    for (int retry = 0; retry_motion && retry < 8 && fluidity::internal::DrySolidDurationExceeded3D(status); ++retry) {
+      ++retries;
+      std::printf("sand retry t=%.9g dt=%.9g status=%s\n", t, step_duration, status.ToString().c_str());
+      next_time = std::midpoint(t, next_time);
+      step_duration = next_time - t;
+      settings.duration = step_duration;
+      status = attempt();
+    }
     if (!status.ok()) {
       std::fprintf(
           stderr,
@@ -390,6 +403,9 @@ bool TestScene(
       ++early_sample;
     }
     t = next_time;
+  }
+  if (retry_motion) {
+    std::printf("sand accepted_steps=%d retries=%d\n", step, retries);
   }
   double maximum_height = 0;
   double maximum_radius = 0;
@@ -1205,6 +1221,32 @@ int main(int argc, char** argv) {
     const bool reference = TestScene(0.075, 0.0009375, false, 0, 2, 0.10, false, 3);
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-motion-retry") {
+    return TestScene(
+               0.0625,
+               0.0625 / 40,
+               false,
+               0,
+               1,
+               0.10,
+               false,
+               3.0,
+               0,
+               {},
+               0.7,
+               false,
+               1,
+               0,
+               700,
+               true,
+               0,
+               "all",
+               false,
+               true
+           )
+        ? 0
+        : 1;
   }
   if (argc == 4 && std::string_view(argv[1]) == "--q-sand-contact-trace") {
     const std::string_view grid_name = argv[2];
