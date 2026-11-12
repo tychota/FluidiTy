@@ -2496,3 +2496,26 @@ foreach ($backend in 'cpu', 'cuda') {
   & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $bin "$tree/out/authored-upstream-873ae68-$backend" $backend
 }
 ```
+
+### Predicted first floor contact
+
+Starting at `b2d03c6`, build the same contact-local stencil mask for
+particles already on the floor or predicted to reach it within the
+step. The predicted height is
+`y + dt * (accepted_velocity_y + dt * gravity_y)`. The accepted
+Coulomb sweep and paired transfer are unchanged. Rebuild the native
+dry-scene target and repeat the 3 s matrix above. The default native
+dry-scene target passed.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 32.119155° | 0.136599 m |
+| Coarse half-step | 36.122549° | 0.138623 m |
+| Fine | Dry face-motion bound at step 1196 | |
+| Fine half-step | 29.857831° | 0.180331 m |
+
+The three completed cases retained cut stress work mismatch below
+2.2e-16 J and vertical momentum residual below 5.3e-8 N·s. Activating
+the mask during the predicted impact step moves the fine nominal
+rejection from step 1152 to 1196 and leaves the qualifying cases
+unchanged. The experimental source was restored after compiling.
