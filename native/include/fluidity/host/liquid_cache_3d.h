@@ -88,6 +88,15 @@ struct LiquidUpstreamContent3D {
   std::uint64_t byte_length = 0;
   LiquidDigest3D digest{};  // Exact upstream artifact bytes, never a local filename.
 };
+// One authored width demand authenticated against a specific accepted state.
+// The public FLRS route supplies no coarsening halo.
+struct LiquidAdaptiveWidthAction3D {
+  LiquidClock3D accepted_clock{};
+  LiquidDigest3D accepted_state_digest{};  // Canonical FLST bytes.
+  AdaptiveMacCellKey3D leaf{};
+  AdaptiveWidthDemand3D demand{};
+  double maximum_step_duration_s = 0;  // Evidence covers this duration and shorter retries.
+};
 inline constexpr std::uint32_t kLiquidOnlyResolvedModel3D = 1;
 inline constexpr std::uint32_t kPlasticBodyResolvedModel3D = 2;
 
@@ -106,6 +115,9 @@ struct LiquidResolvedSceneView3D {
   std::span<const LiquidUpstreamContent3D> upstream;
   // Required in model 2, ordered by body ID. The codec owns the parameters, while execution is gated.
   std::span<const PlasticSolidCheckpointBinding3D> plastic_bodies;
+  std::span<const LiquidAdaptiveWidthAction3D> adaptive_width_actions{};  // Strictly increasing accepted epoch.
+  std::uint32_t adaptive_width_cell_capacity = 0;
+  std::uint32_t adaptive_width_face_capacity = 0;
 };
 // Owning decoded scene; View() binds spans to this owner's arrays. Reacquire after
 // move; a view cannot outlive this object. No pointer into encoded bytes survives.
@@ -122,6 +134,9 @@ struct LiquidResolvedScene3D {
   LiquidRecords3D<LiquidPhasePair3D> phase_pairs;
   LiquidRecords3D<LiquidUpstreamContent3D> upstream;
   LiquidRecords3D<PlasticSolidCheckpointBinding3D> plastic_bodies;
+  LiquidRecords3D<LiquidAdaptiveWidthAction3D> adaptive_width_actions;
+  std::uint32_t adaptive_width_cell_capacity = 0;
+  std::uint32_t adaptive_width_face_capacity = 0;
   LiquidResolvedSceneView3D View() const;
 };
 // Exact unkeyed BLAKE3-256 over bytes; no domain prefix (standard known answers).
