@@ -125,6 +125,19 @@ cmake --build out/build/matched-pressure-cuda --target fluidity_m3_matched_press
 ctest --test-dir out/build/matched-pressure-cuda -V -R '^M3MatchedPressure' --no-tests=error
 ```
 
+### Persistent CUDA pressure workspace
+
+The production adaptive pressure stage uploads the frozen graph into reserved
+arena ranges and uses the bounded pressure hierarchy and result bank. A failed
+solve leaves the last published result intact. The sealed-cube control can
+exercise this same path with `fluidity_m3_matched_pressure --cuda-arena`.
+
+On SM120, median stage times were 15.7926 ms for the 512-cell uniform graph and
+4.6444 ms for the 176-cell graded graph at the error limits above. The allocating
+CUDA control in the same run took 24.6398 ms and 8.7352 ms. Peak allocated arena
+bytes were 9,360,128 and 3,396,608 for the two capacity tiers. Peak active
+pressure scratch was 7,411,928 and 2,540,864 bytes. These measurements cover
+the sealed-cube arena. Use the full-wave procedure below for the job-wide peak.
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

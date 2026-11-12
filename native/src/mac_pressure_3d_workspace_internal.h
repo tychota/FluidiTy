@@ -224,4 +224,9 @@ absl::StatusOr<PreparedMacPressureUploadView3D> PrepareBoundedMacPressureUpload3
     MacPressureScratch3D& scratch,
     bool seed_uniform_dirichlet_rest_pressure = false
 );
+
+// Pack an already checked explicit graph into the caller's bounded upload
+// scratch. The returned view borrows the original system and scratch.
+absl::StatusOr<PreparedMacPressureUploadView3D>
+PrepareBoundedAdaptiveMacPressureUpload3D(const PreparedMacPressureSystem3D& system, MacPressureScratch3D& scratch);
 }  // namespace fluidity::pressure_internal

@@ -29,6 +29,16 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
     MacPressureSolverOptions3D options,
     MacPressureWorkspace3D& workspace
 );
+// Projects a checked explicit adaptive graph in the same persistent pressure
+// ranges. Cell and face order comes from the frozen graph. The device and host
+// scratch are already reserved and the output borrows the workspace. The
+// uniform stage's capacity, numeric, lifetime and failure contracts apply.
+absl::StatusOr<MacPressureProjectionView3D> ProjectArenaAdaptivePressure3D(
+    CudaLiquidArena3D& arena,
+    const pressure_internal::PreparedMacPressureSystem3D& system,
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace
+);
 // Runs the host-orchestrated coupled projection using only pre-reserved device
 // ranges. The rows use the full-cell arena bound. Inputs and results use the
 // CPU projection's units and ordering. Arena capacity failure is

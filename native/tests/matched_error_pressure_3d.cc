@@ -19,6 +19,7 @@
 #include "mac_pressure_3d_system.h"
 
 #if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+#include "../cuda/liquid_pressure_stage_3d.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #endif
 
@@ -43,12 +44,16 @@ enum class Layout {
 enum class Backend {
   kCpu,
   kCuda,
+  kCudaArena,
 };
 
 struct BenchmarkCase {
   AdaptiveMacTopology3D topology;
   pressure_internal::PreparedMacPressureSystem3D system;
   std::optional<MacPressureWorkspace3D> workspace;
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+  std::optional<CudaLiquidArena3D> arena;
+#endif
   std::size_t coarse_cells;
   std::size_t mixed_faces;
 };
@@ -138,17 +143,31 @@ absl::StatusOr<BenchmarkCase> PrepareCase(Layout layout, Backend backend) {
     return system.status();
   }
   std::optional<MacPressureWorkspace3D> workspace;
-  if (backend == Backend::kCpu) {
+  if (backend != Backend::kCuda) {
     auto created = MacPressureWorkspace3D::Create(cells.size(), faces.size());
     if (!created.ok()) {
       return created.status();
     }
     workspace.emplace(std::move(*created));
   }
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+  std::optional<CudaLiquidArena3D> arena;
+  if (backend == Backend::kCudaArena) {
+    const LiquidStateCapacities3D capacities{1, 0, cells.size(), faces.size(), 0};
+    auto created = CudaLiquidArena3D::Create(capacities, 0, std::numeric_limits<std::size_t>::max(), true, true);
+    if (!created.ok()) {
+      return created.status();
+    }
+    arena.emplace(std::move(*created));
+  }
+#endif
   return BenchmarkCase{
       .topology = std::move(*topology),
       .system = std::move(*system),
       .workspace = std::move(workspace),
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+      .arena = std::move(arena),
+#endif
       .coarse_cells = coarse_count,
       .mixed_faces = mixed_faces,
   };
@@ -222,6 +241,28 @@ absl::StatusOr<Measurement> MeasureProjection(BenchmarkCase& fixture, Backend ba
     );
   }
 #if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+  if (backend == Backend::kCudaArena) {
+    auto& arena = *fixture.arena;
+    arena.SetWorkPhase(LiquidWorkPhase3D::kForcesGeometryPressure);
+    const auto projection =
+        cuda_internal::ProjectArenaAdaptivePressure3D(arena, fixture.system, {}, *fixture.workspace);
+    const auto stop = std::chrono::steady_clock::now();
+    if (!projection.ok()) {
+      return projection.status();
+    }
+    const auto receipt = arena.metrics();
+    if (receipt.compiled_architecture <= 0 || receipt.peak_active_device_scratch_bytes == 0
+        || receipt.peak_device_bytes > receipt.device_budget_bytes) {
+      return absl::FailedPreconditionError("bounded CUDA pressure lacks an arena receipt within budget");
+    }
+    return MeasurePhysicalProjection(
+        fixture,
+        *projection,
+        std::chrono::duration<double, std::milli>(stop - start).count(),
+        0.0,
+        receipt.compiled_architecture
+    );
+  }
   const auto result = pressure_internal::CudaProjectPreparedMacPressure3D(fixture.system);
   const auto stop = std::chrono::steady_clock::now();
   if (!result.ok()) {
@@ -287,6 +328,15 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
     std::cout << "      \"compiled_architecture\": " << measurements.front().compiled_architecture << ",\n"
               << "      \"median_cuda_solver_ms\": " << cuda_solver[cuda_solver.size() / 2] << ",\n";
   }
+#if defined(FLUIDITY_MATCHED_PRESSURE_CUDA)
+  if (fixture.arena) {
+    const auto receipt = fixture.arena->metrics();
+    std::cout << "      \"compiled_architecture\": " << receipt.compiled_architecture << ",\n"
+              << "      \"arena_peak_device_bytes\": " << receipt.peak_device_bytes << ",\n"
+              << "      \"arena_peak_active_device_scratch_bytes\": " << receipt.peak_active_device_scratch_bytes
+              << ",\n";
+  }
+#endif
   std::cout << "      \"project_ms\": [";
   for (std::size_t sample = 0; sample < measurements.size(); ++sample) {
     if (sample > 0) {
@@ -295,6 +345,21 @@ void PrintCase(const char* name, const BenchmarkCase& fixture, const Measurement
     std::cout << measurements[sample].elapsed_ms;
   }
   std::cout << "]\n    }";
+}
+
+std::string_view BackendName(Backend backend) {
+  switch (backend) {
+    case Backend::kCpu: {
+      return "cpu";
+    }
+    case Backend::kCuda: {
+      return "cuda";
+    }
+    case Backend::kCudaArena: {
+      return "cuda-arena";
+    }
+  }
+  return {};
 }
 
 absl::Status Benchmark(Backend backend) {
@@ -331,7 +396,7 @@ absl::Status Benchmark(Backend backend) {
   const bool passed =
       std::ranges::all_of(measurements[0], MeetsErrorBudget) && std::ranges::all_of(measurements[1], MeetsErrorBudget);
   std::cout << std::setprecision(10) << "{\n  \"benchmark\": \"manufactured_sealed_cube_pressure\",\n"
-            << "  \"backend\": \"" << (backend == Backend::kCpu ? "cpu" : "cuda") << "\",\n"
+            << "  \"backend\": \"" << BackendName(backend) << "\",\n"
             << "  \"domain_volume_m3\": " << kDomainVolume << ",\n"
             << "  \"pressure_linf_limit_pa\": " << kPressureErrorLimit << ",\n"
             << "  \"divergence_linf_limit_per_s\": " << kDivergenceErrorLimit << ",\n"
@@ -351,10 +416,20 @@ absl::Status Benchmark(Backend backend) {
 }  // namespace fluidity
 
 int main(int argc, char** argv) {
-  if (argc != 1 && (argc != 2 || std::string_view(argv[1]) != "--cuda")) {
+  if (argc > 2) {
     return 2;
   }
-  const auto backend = argc == 1 ? fluidity::Backend::kCpu : fluidity::Backend::kCuda;
+  auto backend = fluidity::Backend::kCpu;
+  if (argc == 2) {
+    const std::string_view argument = argv[1];
+    if (argument == "--cuda") {
+      backend = fluidity::Backend::kCuda;
+    } else if (argument == "--cuda-arena") {
+      backend = fluidity::Backend::kCudaArena;
+    } else {
+      return 2;
+    }
+  }
   const auto status = fluidity::Benchmark(backend);
   if (!status.ok()) {
     std::cerr << status << '\n';

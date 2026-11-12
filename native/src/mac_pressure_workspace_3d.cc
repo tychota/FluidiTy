@@ -1095,4 +1095,12 @@ absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D> pressure_inte
   }
   return upload;
 }
+
+absl::StatusOr<pressure_internal::PreparedMacPressureUploadView3D>
+pressure_internal::PrepareBoundedAdaptiveMacPressureUpload3D(
+    const PreparedMacPressureSystem3D& system,
+    MacPressureScratch3D& scratch
+) {
+  return PrepareUploadForSystem(BorrowMacPressureSystem3D(system), {}, scratch, false);
+}
 }  // namespace fluidity
