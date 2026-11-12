@@ -2376,6 +2376,37 @@ TEST(LiquidSubstep3D, SparseOrientedFloatingBoxRoutesUnsupportedPressureImpulse)
   EXPECT_EQ(*repeated_bytes, *accepted);
 }
 
+TEST(LiquidSubstep3D, WideCoupledOrientedFloatingBoxUsesIterativePressure) {
+  auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
+  scene.obstacle = AxisAlignedLiquidTank3D{0.125, 4.875, 0.125, 0.125, 4.875, 0.0};
+  auto initial = Initial();
+  initial.particles[0].world_position = {0.375, 0.25, 0.375};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  constexpr double kDuration = 0.015625;
+  const RigidBody3D body{
+      .body_id = 23,
+      .mass = 2.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .center = {0.5, 0.6875, 0.5},
+      .linear_velocity = {0.0, 0.125, 0.0},
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(kDuration).ok());
+  const auto accepted = scheduler->AttemptWithCoupledOrientedFloatingBox(kDuration, body, {0.125, 0.125, 0.125});
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_TRUE(accepted->body && accepted->oriented_loads)
+      << scheduler->diagnostics().failure_code << " stage " << static_cast<int>(scheduler->diagnostics().failed_stage);
+  EXPECT_EQ(scheduler->committed().cells.size(), 25u);
+  EXPECT_GT(scheduler->diagnostics().pressure_diagnostics.iteration_count, 0u);
+  EXPECT_LE(scheduler->diagnostics().pressure_diagnostics.max_cell_constraint_defect, 2e-5);
+  EXPECT_LT(accepted->body->linear_velocity.y, body.linear_velocity.y);
+  const auto& loads = *accepted->oriented_loads;
+  ASSERT_TRUE(loads.particle_pressure_impulse.has_value());
+  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+    EXPECT_NEAR((*loads.particle_pressure_impulse).*component, loads.pressure_grid_impulse.*component, 1e-12);
+  }
+}
+
 TEST(LiquidSubstep3D, OrientedFloatingBoxRejectsPressureWithNoReachableParticleSupport) {
   auto scene = wetted_piston_pressure_test::PlaneScene(0.75, 0.0);
   scene.obstacle = AxisAlignedLiquidTank3D{0.125, 2.875, 0.125, 0.125, 2.875, 0.0};

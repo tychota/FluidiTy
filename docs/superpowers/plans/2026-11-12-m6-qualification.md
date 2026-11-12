@@ -1,6 +1,6 @@
 # FluidiTy M6 qualification
 
-M6 remains open. This branch starts at upstream main
+M6 is qualified for translating planar Cutter slabs and one oriented floating box in a CPU planar, single-liquid tank. The original qualification branch started at upstream main
 `549fb3f844841b79d14b7beb9ecfb6db9727c976`. The evidence below applies to
 the bounded native operators and fixtures.
 
@@ -15,7 +15,7 @@ the bounded native operators and fixtures.
 | Isolated rigid integration | `RigidBody3D.AdvancesRotatedAsymmetricInertiaAndOffCenterForce` exercises world force, off-center torque, rotated unequal principal moments, the gyroscopic term, normalized quaternion and the shared pose drift. Separate fixtures check large-origin sweep bounds, invalid-inertia/duration rejection and byte replay. | Pass for isolated principal-axis bodies |
 | Production elastic and Cutter scene | Blender 5.2.3 LTS and 5.3.0 bake an authored translating slab and elastic seed box through the native CPU runner. The fixture measured 1.5 N s impulse and 1.125 J blade work, checked cut work within 1e-6 J, and inspected the same stable particle ID and side after restart. | Translating slab qualified, including stable side inspection. General cutter geometry and angular Cutter sweep remain open. |
 | Production checkpoint | The native Cutter and coupled CPU piston and floating-box fixtures replay accepted state byte for byte. Injected late rejection preserves the paired FLSI envelope. The Blender restart fixture also refuses an edited density and preserves its last committed artifact. | Pass for the exercised Cutter, guided piston, guided box, oriented particle contact, and coupled light-body replay paths. |
-| Two-way floating body | The oriented CPU scheduler has production-gather equilibrium and ordinary and coupled light-body trajectory evidence at two timesteps. The fixtures verify rotating contact, reciprocal impulse, pressure-flux consistency, late rejection, and byte-identical restart. | Grid pressure impulse matches tank and box traction in the ordinary and light trajectories, and compatible scatter closes the nonhydrostatic particle linear impulse. Sparse routing reports the change in angular impulse. Gravity-on equilibrium is qualified separately from zero-gravity transient momentum. |
+| Two-way floating body | The oriented CPU scheduler has production-gather equilibrium and ordinary and coupled light-body trajectory evidence at two timesteps. The fixtures verify rotating contact, reciprocal impulse, pressure-flux consistency, late rejection, and byte-identical restart. | Grid pressure impulse matches tank and box traction in the ordinary and light trajectories, and compatible scatter closes the nonhydrostatic particle linear impulse. Sparse routing reports the change in angular impulse. Gravity-on equilibrium is qualified separately from zero-gravity transient momentum. A 25-row production coupled case exercises the iterative solver beyond the dense refinement cutoff. |
 
 ## Floating-body entry and exit evidence
 
@@ -260,4 +260,6 @@ The production no-support control places the only particle above all wet pressur
 
 PR #97 integrated upstream main b56e06e. The clean Windows Debug CPU, schema, and CLI suite passed all 848 tests on 871ba14. Blender 5.2.3 LTS and 5.3.0 passed both the rigid and Cutter workflows with that build. The follow-up changes only the qualification report and adds the no-support test. Clang-format 19.1.5 passed for the native PR diff.
 
-The measured floating-body scope is one oriented box in a planar, single-liquid tank on CPU. The sparse case closes linear impulse and exposes the routing moment as a numerical defect. The current fixtures do not establish an angular impulse closure tolerance for sparse routing or a gravity-on transient whole-system budget. Coupled cases that exceed the 16-row dense refinement cutoff still need a dedicated production test of the iterative path.
+The measured floating-body scope is one oriented box in a planar, single-liquid tank on CPU. The sparse case closes linear impulse and exposes the routing moment as a numerical defect. The current fixtures do not establish an angular impulse closure tolerance for sparse routing or a gravity-on transient whole-system budget.
+
+The exact PR #97 head 7bc18a8 passed 849/849 Windows Debug tests before merge. The follow-up `WideCoupledOrientedFloatingBoxUsesIterativePressure` advances one coupled substep with 25 wet pressure rows, checks nonzero solver iterations and the 2e-5 per second physical-defect gate, and closes the particle pressure impulse within 1e-12 N s per axis. All 33 focused floating-body, rigid, contact, elastic and Cutter tests passed. A wider authored tank at the existing 1 m cell width also passed the Blender 5.3.0 bake and resume probe. Changing the original Blender fixture to 0.5 m cells rejected at interface construction before pressure. That variant remains outside this qualification.
