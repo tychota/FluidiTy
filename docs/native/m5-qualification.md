@@ -35,7 +35,7 @@ clean Windows Release CUDA rebuild.
 | One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
 | Reciprocal pressure for a planar snow interface | Pass for one- and two-cell frozen fixtures | Native and CUDA recover analytic flux, pressure, speed, and impulse with either wall orientation. The two-cell case reverses which pressure row is incident to the wall. An interior wall selection rejects. |
 | Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
-| Joint planar pressure advection | Pass for the frozen single-cell fixture | The projected regular-cell field advects liquid and updates its volume and slopes. Snow advances with its pressure-corrected velocity. A late snow path rejection preserves both original particle states. |
+| Joint planar pressure advection | Pass for one- and two-cell frozen fixtures | The projected regular-cell field updates liquid positions, volume and slopes. Snow advances with its pressure-corrected velocity. Crossing into an adjacent pressure cell succeeds. A late unsupported liquid destination or snow motion failure preserves both states. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1037,8 +1037,7 @@ drops 16 Pa. A 2 kg wall entering at 4 m/s solves to 2 m/s with
 the 32 Pa in the second row and reverses the impulse. Native and CUDA
 match the analytic values within 2e-6 in the measured units. Selecting
 the sealed face between the two cells rejects. The scatter uses the
-same pressure solve. The joint advection fixture below still uses
-one frozen cell.
+same pressure solve.
 
 The pressure scatter uses area fractions w to interpolate the wall
 velocity. Its inverse effective mass is Σ(w²/m). Applying the
@@ -1062,9 +1061,19 @@ and the liquid volume ratio stays 0.95. The 0.30 m path budget
 accepts these paths. Adding a 3 m/s tangential snow velocity exceeds
 the budget after the liquid candidate is staged. The rejection
 preserves both positions and velocities. The fixture passes with
-native and CUDA pressure to 1e-12 absolute tolerance. The host trial
-uses a fixed cell and explicit contributor fractions. Production
-still needs reconstructed geometry and rebinning across cells.
+native and CUDA pressure to 1e-12 absolute tolerance.
+
+The connected two-cell fixture starts liquid at x = −0.125 m.
+At 2 m/s it crosses the full shared face at x = 0 and finishes at
+x = 0.125 m. The starting cell's regular velocity field has zero
+divergence and preserves the liquid volume ratio of 0.95. The snow
+position advances to −0.875 m. A second liquid particle would cross
+the far outlet into an unsupported cell. That late failure preserves
+the first liquid particle and the snow candidate. Native and CUDA
+pressure pass with absolute tolerance 2e-6 in the measured units.
+This host trial permits one crossing through an open shared face.
+The full scene still needs moving snow geometry, general paths and
+scheduler acceptance.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

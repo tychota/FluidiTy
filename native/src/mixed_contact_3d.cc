@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <utility>
 
 #include "fluidity/base/liquid_regular_cell_transport_3d.h"
 #include "fluidity/host/liquid_wall_contact_3d.h"
 #include "fluidity/host/views.h"
+#include "liquid_substep_3d_internal.h"
 
 namespace fluidity {
 namespace {
@@ -587,8 +589,7 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
   if (!disjoint.ok()) {
     return disjoint;
   }
-  if (!std::isfinite(maximum_path_length) || maximum_path_length <= 0 || liquid.empty()
-      || inputs.pressure_cells.size() != 1 || inputs.pressure_faces.size() != 6) {
+  if (!std::isfinite(maximum_path_length) || maximum_path_length <= 0 || liquid.empty()) {
     return absl::InvalidArgumentError("invalid planar snow pressure transport extent");
   }
   std::vector<PlasticSolidCheckpointParticle3D> plastic_trial(plastic.begin(), plastic.end());
@@ -598,17 +599,35 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
   }
 
   const auto geometry = inputs.mac_grid.geometry();
-  const auto cell = inputs.pressure_cells.front().cell_index;
   const double width = geometry.cell_width;
   const double face_area = width * width;
-  const Vec3 low_corner{
-      std::fma(static_cast<double>(cell.x), width, geometry.world_origin.x),
-      std::fma(static_cast<double>(cell.y), width, geometry.world_origin.y),
-      std::fma(static_cast<double>(cell.z), width, geometry.world_origin.z),
-  };
   constexpr std::array components{&Vec3::x, &Vec3::y, &Vec3::z};
-  const std::array cell_lattice{cell.x, cell.y, cell.z};
-  LiquidRegularCellTransport3D sample{.active = true};
+  const auto cell_key = [](CellIndex3D cell) {
+    return std::array{cell.z, cell.y, cell.x};
+  };
+  const auto find_cell = [&](CellIndex3D index) -> std::optional<std::size_t> {
+    const auto key = cell_key(index);
+    const auto found = std::ranges::lower_bound(inputs.pressure_cells, key, {}, [&](const auto& pressure_cell) {
+      return cell_key(pressure_cell.cell_index);
+    });
+    if (found == inputs.pressure_cells.end() || cell_key(found->cell_index) != key) {
+      return std::nullopt;
+    }
+    return static_cast<std::size_t>(found - inputs.pressure_cells.begin());
+  };
+  const auto cell_corner = [&](CellIndex3D cell) {
+    return Vec3{
+        std::fma(static_cast<double>(cell.x), width, geometry.world_origin.x),
+        std::fma(static_cast<double>(cell.y), width, geometry.world_origin.y),
+        std::fma(static_cast<double>(cell.z), width, geometry.world_origin.z),
+    };
+  };
+  struct ProjectedCell {
+    LiquidRegularCellTransport3D sample{.active = true};
+    std::array<bool, 3> open_low{};
+    std::array<bool, 3> open_high{};
+  };
+  std::vector<ProjectedCell> projected_cells(inputs.pressure_cells.size());
   TranslatingHalfspace3D wall{};
   for (std::size_t ordinal = 0; ordinal < inputs.pressure_faces.size(); ++ordinal) {
     const auto& face = inputs.pressure_faces[ordinal];
@@ -617,36 +636,44 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
       return absl::InvalidArgumentError("invalid planar pressure transport face axis");
     }
     const auto lattice = face.face_index.lattice_index;
-    const std::array face_lattice{lattice.x, lattice.y, lattice.z};
     const auto component = components[axis];
-    const bool low_face = face_lattice[axis] == cell_lattice[axis];
+    const auto head = find_cell({lattice.x, lattice.y, lattice.z});
+    std::array tail_lattice{lattice.x, lattice.y, lattice.z};
+    std::optional<std::size_t> tail;
+    if (tail_lattice[axis] > std::numeric_limits<std::int32_t>::min()) {
+      --tail_lattice[axis];
+      tail = find_cell({tail_lattice[0], tail_lattice[1], tail_lattice[2]});
+    }
+    const bool fully_open = face.open_area == face_area;
     double normal_velocity = pressure->liquid_projection.corrected_face_velocities[ordinal];
     if (ordinal == wall_face_ordinal) {
       normal_velocity = pressure->solved_wall_normal_velocity;
-      const double inward_sign = low_face ? 1 : -1;
+      const double inward_sign = head.has_value() ? 1 : -1;
+      const auto plane = cell_corner({lattice.x, lattice.y, lattice.z});
       wall.unit_normal.*component = inward_sign;
-      wall.start_plane_coordinate = inward_sign * (low_corner.*component + (low_face ? 0 : width));
+      wall.start_plane_coordinate = inward_sign * (plane.*component);
       wall.wall_velocity.*component = normal_velocity;
     } else if (face.open_area == 0 && face.wall_normal_velocity == 0 && face.prescribed_wall_flux.value_or(0) == 0) {
       normal_velocity = 0;
-    } else if (face.open_area != face_area) {
+    } else if (!fully_open) {
       return absl::InvalidArgumentError("planar pressure transport requires full open or stationary sealed faces");
     }
-    Vec3& face_velocity = low_face ? sample.low_face_normal_velocity : sample.high_face_normal_velocity;
-    face_velocity.*component = normal_velocity;
+    if (head.has_value()) {
+      projected_cells[*head].sample.low_face_normal_velocity.*component = normal_velocity;
+      projected_cells[*head].open_low[axis] = fully_open;
+    }
+    if (tail.has_value()) {
+      projected_cells[*tail].sample.high_face_normal_velocity.*component = normal_velocity;
+      projected_cells[*tail].open_high[axis] = fully_open;
+    }
   }
 
-  const Vec3 gradient{
-      (sample.high_face_normal_velocity.x - sample.low_face_normal_velocity.x) / width,
-      (sample.high_face_normal_velocity.y - sample.low_face_normal_velocity.y) / width,
-      (sample.high_face_normal_velocity.z - sample.low_face_normal_velocity.z) / width,
-  };
   const TranslatingHalfspace3D liquid_side{
       {-wall.unit_normal.x, -wall.unit_normal.y, -wall.unit_normal.z},
       -wall.start_plane_coordinate,
       wall.wall_velocity,
   };
-  const auto fraction_in_cell = [&](Vec3 world_position) {
+  const auto fraction_in_cell = [&](Vec3 world_position, Vec3 low_corner) {
     return Vec3{
         (world_position.x - low_corner.x) / width,
         (world_position.y - low_corner.y) / width,
@@ -655,7 +682,15 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
   };
   std::vector<LiquidParticleState3D> liquid_trial(liquid.begin(), liquid.end());
   for (auto& particle : liquid_trial) {
-    sample.position_in_cell_widths = fraction_in_cell(particle.world_position);
+    const auto start_cell = liquid_step_internal::TankContainingCell(geometry, particle.world_position);
+    const auto start_ordinal = start_cell.has_value() ? find_cell(*start_cell) : std::nullopt;
+    if (!start_ordinal.has_value()) {
+      return absl::FailedPreconditionError("planar pressure liquid transport starts outside pressure support");
+    }
+    const Vec3 low_corner = cell_corner(*start_cell);
+    const auto& projected = projected_cells[*start_ordinal];
+    auto sample = projected.sample;
+    sample.position_in_cell_widths = fraction_in_cell(particle.world_position, low_corner);
     const auto field = internal::EvaluateRegularCellTransport3D(sample, width);
     if (!field.ok() || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0) {
       return absl::InvalidArgumentError("invalid planar pressure liquid transport state");
@@ -682,11 +717,31 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     if (!swept.ok()) {
       return swept.status();
     }
-    const auto end_fraction = fraction_in_cell(*end);
-    if (swept->contact_fraction.has_value() || !std::ranges::all_of(components, [&](auto component) {
-          return end_fraction.*component >= 0 && end_fraction.*component <= 1;
-        })) {
-      return absl::FailedPreconditionError("planar pressure liquid transport needs additional contact or rebinning");
+    if (swept->contact_fraction.has_value()) {
+      return absl::FailedPreconditionError("planar pressure liquid transport needs additional wall contact");
+    }
+    const auto end_fraction = fraction_in_cell(*end, low_corner);
+    std::size_t crossing_count = 0;
+    for (std::size_t axis = 0; axis < components.size(); ++axis) {
+      const double fraction = end_fraction.*components[axis];
+      if (fraction >= 0 && fraction <= 1) {
+        continue;
+      }
+      const bool open = fraction < 0 ? projected.open_low[axis] : projected.open_high[axis];
+      if (!open) {
+        return absl::FailedPreconditionError("planar pressure liquid transport crosses a closed face");
+      }
+      ++crossing_count;
+    }
+    if (crossing_count > 0) {
+      const auto destination = liquid_step_internal::TankContainingCell(geometry, *end);
+      if (crossing_count != 1 || !destination.has_value() || !find_cell(*destination).has_value()
+          || std::abs(static_cast<std::int64_t>(destination->x) - start_cell->x)
+                  + std::abs(static_cast<std::int64_t>(destination->y) - start_cell->y)
+                  + std::abs(static_cast<std::int64_t>(destination->z) - start_cell->z)
+              != 1) {
+        return absl::FailedPreconditionError("planar pressure liquid transport leaves adjacent pressure support");
+      }
     }
     const double volume_ratio = particle.volume_ratio * std::exp(inputs.step_duration * field->divergence);
     if (!std::isfinite(volume_ratio) || volume_ratio <= 0) {
@@ -694,6 +749,11 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     }
     particle.world_position = *end;
     particle.world_velocity = velocity;
+    const Vec3 gradient{
+        (sample.high_face_normal_velocity.x - sample.low_face_normal_velocity.x) / width,
+        (sample.high_face_normal_velocity.y - sample.low_face_normal_velocity.y) / width,
+        (sample.high_face_normal_velocity.z - sample.low_face_normal_velocity.z) / width,
+    };
     particle.velocity_slopes = {{gradient.x, 0, 0}, {0, gradient.y, 0}, {0, 0, gradient.z}};
     particle.affine_enabled = true;
     particle.pic_initialized = true;

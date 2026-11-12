@@ -144,8 +144,9 @@ absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
 );
 
 // Stages pressure traction, regular-cell liquid advection and snow
-// contributor drift in one frozen pressure cell. Non-wall faces must be fully open or stationary
-// sealed. Liquid stays in the frozen cell. Both materials stay on their
+// contributor drift in a frozen pressure domain. Non-wall faces must be fully open or stationary
+// sealed. Liquid can cross one open face into an adjacent pressure cell.
+// Both materials stay on their
 // respective sides of the translating wall without a second impulse. Position increments are limited
 // by maximum_path_length in meters. Advances volume from the same
 // regular-cell field. On success both spans receive the candidate state;

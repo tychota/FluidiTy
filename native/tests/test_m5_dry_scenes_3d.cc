@@ -602,6 +602,47 @@ bool TestPlanarMixedContactDetection() {
       || std::abs(connected->pressure_impulse_on_snow + 4) > kConnectedTolerance) {
     return false;
   }
+  auto crossing_snow = snow;
+  crossing_snow.transfer.trial_world_position = {-1.125, 0.25, 0.25};
+  crossing_snow.transfer.particle_velocity = {4, 0, 0};
+  std::array crossing_liquid{water, water};
+  crossing_liquid[0].world_position = {-0.125, 0.25, 0.25};
+  crossing_liquid[0].world_velocity = {};
+  crossing_liquid[0].volume_ratio = 0.95;
+  crossing_liquid[1].id = 8;
+  crossing_liquid[1].world_position = {0.875, 0.25, 0.25};
+  const std::array crossing_contributors{fluidity::SnowPressureContributor3D{3, 1}};
+  const auto escaped = fluidity::AdvancePlanarSnowPressure3D(
+      connected_inputs,
+      connected_low,
+      crossing_contributors,
+      crossing_liquid,
+      {&crossing_snow, 1},
+      0.3,
+      project
+  );
+  if (escaped.status().message() != "planar pressure liquid transport leaves adjacent pressure support"
+      || crossing_liquid[0].world_position.x != -0.125 || crossing_liquid[0].world_velocity.x != 0
+      || crossing_liquid[1].world_position.x != 0.875 || crossing_snow.transfer.trial_world_position.x != -1.125
+      || crossing_snow.transfer.particle_velocity.x != 4) {
+    return false;
+  }
+  const auto crossing = fluidity::AdvancePlanarSnowPressure3D(
+      connected_inputs,
+      connected_low,
+      crossing_contributors,
+      {crossing_liquid.data(), 1},
+      {&crossing_snow, 1},
+      0.3,
+      project
+  );
+  if (!crossing.ok() || std::abs(crossing_liquid[0].world_position.x - 0.125) > kConnectedTolerance
+      || std::abs(crossing_liquid[0].world_velocity.x - 2) > kConnectedTolerance
+      || std::abs(crossing_liquid[0].volume_ratio - 0.95) > kConnectedTolerance
+      || std::abs(crossing_snow.transfer.trial_world_position.x + 0.875) > kConnectedTolerance
+      || std::abs(crossing_snow.transfer.particle_velocity.x - 2) > kConnectedTolerance) {
+    return false;
+  }
   connected_faces[connected_low] = far_outlet;
   connected_faces[connected_low].face_index = low_wall->face_index;
   connected_faces[connected_high] = *low_wall;
