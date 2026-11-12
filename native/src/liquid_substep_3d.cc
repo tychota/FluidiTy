@@ -521,7 +521,7 @@ struct CavityStepScratch {
     for (std::size_t index = 0; index < state.cavity_components.size(); ++index) {
       const auto& saved = state.cavity_components[index];
       auto& lineage = previous_lineage[index];
-      lineage = {.id = saved.id};
+      lineage = {.id = saved.id, .inventory = std::nullopt};
       if (saved.id != 0) {
         lineage.inventory = LiquidCavityInventory3D{saved.initial_volume, saved.initial_absolute_pressure};
       }
@@ -573,7 +573,7 @@ struct CavityStepScratch {
     for (std::size_t index = 0; index < prepared->component_count; ++index) {
       const auto& lineage = candidates[index].state;
       auto& saved = state.cavity_components[index];
-      saved = {.id = lineage.id};
+      saved = {.id = lineage.id, .initial_volume = 0.0, .initial_absolute_pressure = 0.0};
       if (lineage.inventory) {
         saved.initial_volume = lineage.inventory->initial_volume;
         saved.initial_absolute_pressure = lineage.inventory->initial_absolute_pressure;
