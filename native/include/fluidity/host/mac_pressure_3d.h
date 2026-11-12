@@ -82,6 +82,7 @@ struct MacPressureProjection3D {
 
 struct MacPressureSolverOptions3D {
   std::size_t max_iterations = 256;  // Inclusive budget in [1, 256].
+  double cpu_residual_tolerance_scale = 1.0;  // CPU integrated and volume-scaled limits, in [1e-12, 1].
 };
 
 // Project frozen MAC velocities using mixed-precision multigrid PCG. The
