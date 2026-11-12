@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "fluidity/host/liquid_substep_3d.h"
 
 namespace fluidity::test {
@@ -211,6 +212,83 @@ inline absl::StatusOr<double> GradedTankCarrierEnergy3D(const LiquidState3D& sta
     }
   }
   return result;
+}
+
+inline absl::Status PopulateGradedRefinementClosureFixture3D(
+    LiquidState3D& state,
+    LiquidSceneInputs3D& scene,
+    bool cover_requested_children
+) {
+  state.geometry.cell_width = 0.5;
+  scene.field = LiquidHorizontalPlaneSurface3D{2};
+  scene.obstacle = AxisAlignedLiquidTank3D{0, 3, 0, 0, 2, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 2;
+  constexpr std::array keys{
+      AdaptiveMacCellKey3D{.lower_corner = {0, 0, 0}, .width_exponent = 2},
+      AdaptiveMacCellKey3D{.lower_corner = {4, 0, 0}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {4, 2, 0}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {4, 0, 2}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {4, 2, 2}, .width_exponent = 1},
+  };
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  const std::size_t particle_count = cover_requested_children ? 19 : 12;
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(particle_count);
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  if (!cells.ok() || !particles.ok() || !faces.ok()) {
+    return absl::ResourceExhaustedError("graded closure fixture storage failed");
+  }
+  if (!cells->Resize(keys.size()).ok() || !particles->Resize(particle_count).ok() || !faces->Resize(face_count).ok()) {
+    return absl::InternalError("graded closure fixture extent failed");
+  }
+  std::size_t particle_ordinal = 0;
+  for (std::size_t ordinal = 0; ordinal < topology->cells().size(); ++ordinal) {
+    const auto& leaf = topology->cells()[ordinal];
+    const auto lower = leaf.key.lower_corner;
+    const std::size_t samples = ordinal == 0 || (ordinal == 1 && cover_requested_children) ? 8 : 1;
+    const double particle_volume_m3 = leaf.cell_volume / static_cast<double>(samples);
+    for (std::size_t sample = 0; sample < samples; ++sample) {
+      const auto offset = [&](unsigned axis) {
+        if (samples == 1) {
+          return 0.5 * leaf.cell_width;
+        }
+        const bool high = ((sample >> axis) & 1) != 0;
+        return (high ? 0.75 : 0.25) * leaf.cell_width;
+      };
+      auto& particle = (*particles)[particle_ordinal];
+      particle.id = ++particle_ordinal;
+      particle.mass = scene.liquid_density * particle_volume_m3;
+      particle.reference_volume = particle_volume_m3;
+      particle.world_position = {0.5 * lower.x + offset(0), 0.5 * lower.y + offset(1), 0.5 * lower.z + offset(2)};
+      particle.pic_initialized = true;
+    }
+    (*cells)[ordinal] = {
+        .key = leaf.key,
+        .inventory =
+            {
+                .mass_kg = scene.liquid_density * leaf.cell_volume,
+                .reference_volume_m3 = leaf.cell_volume,
+                .current_volume_m3 = leaf.cell_volume,
+            },
+    };
+  }
+  for (auto& face : faces->values()) {
+    face.validity = LiquidFaceValidity3D::kPredicted;
+  }
+  state.next_particle_id = particle_ordinal + 1;
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  state.particles = std::move(*particles);
+  return ValidateLiquidState3D(state);
 }
 
 }  // namespace fluidity::test

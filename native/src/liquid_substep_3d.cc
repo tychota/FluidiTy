@@ -3087,6 +3087,58 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveFamily(double step_duration, Adapti
   });
 }
 
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveRefinementClosure(
+    double step_duration,
+    std::span<const AdaptiveMacCellKey3D> requested_parents
+) {
+  return AttemptPreparedAdaptiveState(step_duration, [&]() -> absl::StatusOr<LiquidState3D> {
+    if (requested_parents.empty()) {
+      return absl::InvalidArgumentError("adaptive refinement closure requires at least one parent");
+    }
+    if (requested_parents.size() > kMaximumAdaptiveLiquidCells3D) {
+      return absl::ResourceExhaustedError("adaptive refinement request exceeds the leaf limit");
+    }
+    const auto& accepted = committed();
+    const auto& topology = impl_->adaptive->topology();
+    const auto accepted_cells = accepted.adaptive_cells.values();
+    std::vector<std::size_t> requested_ordinals;
+    requested_ordinals.reserve(requested_parents.size());
+    for (const auto key : requested_parents) {
+      const auto ordinal = FindAdaptiveLeaf(accepted_cells, key);
+      if (!ordinal) {
+        return absl::FailedPreconditionError("adaptive refinement closure requires committed parent leaves");
+      }
+      requested_ordinals.push_back(*ordinal);
+    }
+    auto closure = topology.RefinementClosure(requested_ordinals, impl_->options.capacities.cells);
+    if (!closure.ok()) {
+      return closure.status();
+    }
+    std::ranges::sort(*closure, {}, [&](std::size_t ordinal) {
+      return std::tuple{-static_cast<int>(accepted_cells[ordinal].key.width_exponent), ordinal};
+    });
+
+    // Every forced neighbor is coarser than the parent that required it.
+    // Splitting in descending width order keeps each internal remap 2:1.
+    std::optional<LiquidState3D> staged;
+    for (const auto ordinal : *closure) {
+      const auto& source = staged ? *staged : accepted;
+      auto candidate = liquid_step_internal::PrepareAdaptiveLiquidFamilyCandidate3D(
+          source,
+          impl_->scene,
+          impl_->options.capacities,
+          accepted_cells[ordinal].key,
+          true
+      );
+      if (!candidate.ok()) {
+        return candidate.status();
+      }
+      staged.emplace(std::move(*candidate));
+    }
+    return std::move(*staged);
+  });
+}
+
 absl::StatusOr<LiquidAttemptOutcome3D>
 LiquidSubstepScheduler3D::AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request) {
   const auto& state = committed();
@@ -3160,7 +3212,7 @@ LiquidSubstepScheduler3D::AttemptWithAdaptiveWidth(double step_duration, const L
     if (exponent == 0) {
       return absl::FailedPreconditionError("adaptive width demand is below the resolved finest lattice");
     }
-    return AttemptWithAdaptiveFamily(step_duration, request.leaf, true);
+    return AttemptWithAdaptiveRefinementClosure(step_duration, std::span(&request.leaf, 1));
   }
   if (decision->change == AdaptiveWidthChange3D::kCoarsen) {
     return AttemptWithAdaptiveFamily(step_duration, parent, false);

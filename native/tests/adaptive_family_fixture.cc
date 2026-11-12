@@ -235,14 +235,75 @@ AdvanceWidth(LiquidSubstepScheduler3D& scheduler, bool earn_age, absl::FunctionR
 }
 
 absl::Status
+AdvanceRefinementClosure(LiquidSubstepScheduler3D& scheduler, absl::FunctionRef<absl::Status()> check_device_epoch) {
+  const auto started = scheduler.BeginFrame(0.01);
+  if (!started.ok()) {
+    return started;
+  }
+  constexpr std::array requested{AdaptiveMacCellKey3D{.lower_corner = {4, 0, 0}, .width_exponent = 1}};
+  const auto before = EncodeLiquidState3D(scheduler.committed());
+  if (!before.ok()) {
+    return before.status();
+  }
+  scheduler.SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject complete refinement closure")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler.AttemptWithAdaptiveRefinementClosure(0.01, requested);
+  scheduler.SetStageFaultHookForTesting({});
+  if (!rejected.ok()) {
+    return rejected.status();
+  }
+  const auto after = EncodeLiquidState3D(scheduler.committed());
+  if (!after.ok()) {
+    return after.status();
+  }
+  if (rejected->disposition != LiquidAttemptDisposition3D::kRetryDt || !rejected->retry_duration
+      || scheduler.diagnostics().failed_stage != LiquidPhysicalStage3D::kAccept
+      || !std::ranges::equal(before->values(), after->values())) {
+    return absl::FailedPreconditionError("late closure rejection changed accepted state");
+  }
+  const auto checked = check_device_epoch();
+  if (!checked.ok()) {
+    return checked;
+  }
+  const auto accepted = scheduler.AttemptWithAdaptiveRefinementClosure(*rejected->retry_duration, requested);
+  if (!accepted.ok()) {
+    return accepted.status();
+  }
+  if (accepted->disposition != LiquidAttemptDisposition3D::kAccepted
+      || scheduler.committed().adaptive_cells.size() != 19) {
+    return absl::FailedPreconditionError("refinement closure did not publish both families");
+  }
+  const auto remainder = scheduler.Attempt(0.01 - scheduler.committed().clock.time);
+  if (!remainder.ok()) {
+    return remainder.status();
+  }
+  if (remainder->disposition != LiquidAttemptDisposition3D::kAccepted) {
+    return absl::FailedPreconditionError("refinement closure remainder was rejected");
+  }
+  return scheduler.FinishFrame();
+}
+
+absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
   const bool width = scenario == "width";
-  const auto family_scenario = band || width ? std::string_view{} : scenario;
+  const bool batch = scenario == "closure";
+  const auto family_scenario = band || width || batch ? std::string_view{} : scenario;
+  const auto capacities = batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
-  const auto authored =
-      band ? test::PopulateGradedBandFixture3D(state, scene) : test::PopulateGradedFamilyFixture3D(state, scene);
+  const auto authored = [&] {
+    if (batch) {
+      return test::PopulateGradedRefinementClosureFixture3D(state, scene, true);
+    }
+    return band ? test::PopulateGradedBandFixture3D(state, scene) : test::PopulateGradedFamilyFixture3D(state, scene);
+  }();
   if (!authored.ok()) {
     return authored;
   }
@@ -270,7 +331,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : width ? 13 : 12)};
+  const std::uint8_t fixture_tag = batch ? 19 : (band ? 5 : (width ? 13 : 12));
+  const std::uint8_t fixture_identity[] = {1, 3, fixture_tag};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
     const std::uint8_t extended_identity[]{1, 4, 12, static_cast<std::uint8_t>(scenario == "eos" ? 1 : 2)};
@@ -281,7 +343,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     resume.resolved_fingerprint = LiquidContentDigest3D(extended_identity);
   }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
-  resume.capacities = kCapacities;
+  resume.capacities = capacities;
   if (mode == "resume") {
     std::ifstream file(checkpoint_path, std::ios::binary);
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(file), {}};
@@ -289,7 +351,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != (band ? 5U : 12U)
+    const std::size_t expected_cells = batch ? 19 : (band ? 5 : 12);
+    if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
     }
@@ -309,7 +372,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 #ifdef FLUIDITY_ADAPTIVE_FIXTURE_CUDA
   std::optional<CudaLiquidSubstepBackend3D> device;
   if (backend_name == "cuda") {
-    auto created = CudaLiquidSubstepBackend3D::Create(kCapacities, 0, false, false, true);
+    auto created = CudaLiquidSubstepBackend3D::Create(capacities, 0, false, false, true);
     if (!created.ok()) {
       return created.status();
     }
@@ -322,7 +385,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 #endif
   LiquidStepOptions3D options;
-  options.capacities = kCapacities;
+  options.capacities = capacities;
   if (scenario == "miscible" && mode != "resume") {
     // Equal and opposite edits preserve the parent inventory but would move substance
     // between children if prolongation ignored the particles' spatial composition.
@@ -370,7 +433,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       if (!epoch.ok()) {
         return epoch.status();
       }
-      auto readback = CloneLiquidState3D(scheduler->committed(), kCapacities);
+      auto readback = CloneLiquidState3D(scheduler->committed(), capacities);
       if (!readback.ok()) {
         return readback.status();
       }
@@ -387,8 +450,12 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   };
 
   if (mode != "resume") {
-    const auto refined =
-        band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true, family_scenario);
+    const auto refined = [&] {
+      if (batch) {
+        return AdvanceRefinementClosure(*scheduler, check_device_epoch);
+      }
+      return band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true, family_scenario);
+    }();
     if (!refined.ok()) {
       return refined;
     }
@@ -399,7 +466,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
     }
   }
-  if (width) {
+  if (width || batch) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -422,11 +489,23 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return absl::CancelledError("expected test process termination");
   }
 
-  const auto coarsened = width
-      ? AdvanceWidth(*scheduler, false, check_device_epoch)
-      : (band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false, family_scenario));
-  if (!coarsened.ok()) {
-    return coarsened;
+  const auto continued = [&] {
+    if (batch) {
+      return scheduler->AdvanceFrame(0.02);
+    }
+    if (width) {
+      return AdvanceWidth(*scheduler, false, check_device_epoch);
+    }
+    return band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false, family_scenario);
+  }();
+  if (!continued.ok()) {
+    return continued;
+  }
+  if (batch) {
+    const auto verified = check_device_epoch();
+    if (!verified.ok()) {
+      return verified;
+    }
   }
 #ifdef FLUIDITY_ADAPTIVE_FIXTURE_CUDA
   if (device && device->usage().compiled_architecture != 1200) {
@@ -450,7 +529,7 @@ int main(int argc, char** argv) {
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
-      && scenario != "width") {
+      && scenario != "width" && scenario != "closure") {
     return 2;
   }
   const std::string_view backend = argv[1];

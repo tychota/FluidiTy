@@ -374,6 +374,13 @@ class LiquidSubstepScheduler3D {
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
+  // Refine the requested committed parents and the necessary 2:1 closure.
+  // Coarser parents are prepared first. All changed inventories and signed
+  // subfaces must pass exact rebinning and remap before one physical trial.
+  // An empty request is invalid. Refusal or rejection leaves the committed
+  // topology, histories and inventories unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveRefinementClosure(double step_duration, std::span<const AdaptiveMacCellKey3D> requested_parents);
   // Try the width policy for one leaf and one possible sibling family. The
   // scheduler checks the accepted epoch, derives sibling membership from the
   // committed keys and freezes any topology change before the physical trial.
