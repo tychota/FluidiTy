@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <numeric>
 #include <tuple>
 
@@ -762,4 +763,173 @@ absl::StatusOr<double> RigidBodySweepDistanceBound3D(const RigidBodyStep3D& step
   return rounded_bound;
 }
 
+absl::StatusOr<std::optional<RigidBoxSweepHit3D>> SweepRigidBoxPoint3D(
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    Vec3 start_world_point,
+    Vec3 world_point_velocity
+) {
+  const auto error = [](absl::StatusCode code) {
+    return absl::Status(code, {});
+  };
+  if (!ValidDrift(drift) || !IsFinite(body_half_extent) || body_half_extent.x <= 0.0 || body_half_extent.y <= 0.0
+      || body_half_extent.z <= 0.0 || !IsFinite(start_world_point) || !IsFinite(world_point_velocity)) {
+    return error(absl::StatusCode::kInvalidArgument);
+  }
+  const Vec3 relative_start = Subtract(start_world_point, drift.start.center);
+  const Vec3 relative_travel = Scale(drift.duration, Subtract(world_point_velocity, drift.end.linear_velocity));
+  const Vec3 world_point_end = Add(start_world_point, Scale(drift.duration, world_point_velocity));
+  const double rotation_angle = Norm(Scale(drift.duration, drift.end.angular_velocity));
+  if (!IsFinite(relative_start) || !IsFinite(relative_travel) || !IsFinite(world_point_end)
+      || !std::isfinite(rotation_angle)) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+  const auto end_pose = SampleRigidBodyPose3D(drift, 1.0);
+  if (!end_pose.ok()) {
+    return error(end_pose.status().code());
+  }
+  if (rotation_angle > std::numbers::pi / 2.0) {
+    return error(absl::StatusCode::kAborted);
+  }
+
+  // The point relative to the box center is affine in the normalized time.
+  // Its norm is bounded by the larger endpoint norm. In rotating body
+  // coordinates, each gap changes at most by translation plus angular travel.
+  const double distance_scale = Norm(relative_start) + Norm(relative_travel) + Norm(body_half_extent);
+  const double roundoff = boundary_internal::AddUp(
+      128.0 * std::numeric_limits<double>::epsilon() * distance_scale,
+      std::numeric_limits<double>::min()
+  );
+  const double relative_radius = std::max(Norm(relative_start), Norm(Add(relative_start, relative_travel)));
+  const double gap_travel_bound =
+      boundary_internal::AddUp(std::fma(rotation_angle, relative_radius, Norm(relative_travel)), roundoff);
+  if (!std::isfinite(gap_travel_bound) || !std::isfinite(roundoff)) {
+    return error(absl::StatusCode::kOutOfRange);
+  }
+
+  // Normalize the same initial quaternion for every sample, including t=0.
+  // Only orientation is sampled here to keep the point path center-relative.
+  RigidBodyStep3D rotation = drift;
+  rotation.start.center = {};
+  rotation.end.linear_velocity = {};
+  const auto start_orientation = drift.start.orientation;
+  const double inverse_norm = 1.0 / std::hypot(start_orientation.w, Norm(start_orientation.vector));
+  rotation.start.orientation = {inverse_norm * start_orientation.w, Scale(inverse_norm, start_orientation.vector)};
+  struct GapSample {
+    double gap;
+    double next_gap;
+    double coordinate_magnitude;
+    std::size_t axis;
+    int sign;
+  };
+  const auto gap_at = [&](double fraction) -> absl::StatusOr<GapSample> {
+    const auto pose = SampleRigidBodyPose3D(rotation, fraction);
+    if (!pose.ok()) {
+      return error(pose.status().code());
+    }
+    const Vec3 relative_position{
+        std::fma(fraction, relative_travel.x, relative_start.x),
+        std::fma(fraction, relative_travel.y, relative_start.y),
+        std::fma(fraction, relative_travel.z, relative_start.z),
+    };
+    const auto orientation = pose->orientation;
+    const Vec3 local_point = Rotate({orientation.w, Scale(-1.0, orientation.vector)}, relative_position);
+    if (!IsFinite(local_point)) {
+      return error(absl::StatusCode::kOutOfRange);
+    }
+    constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+    GapSample result{
+        .gap = -std::numeric_limits<double>::infinity(),
+        .next_gap = -std::numeric_limits<double>::infinity(),
+        .coordinate_magnitude = 0.0,
+        .axis = 0,
+        .sign = 1,
+    };
+    for (std::size_t axis = 0; axis < kComponents.size(); ++axis) {
+      const auto component = kComponents[axis];
+      const double coordinate = local_point.*component;
+      const double gap = std::abs(coordinate) - body_half_extent.*component;
+      if (gap > result.gap) {
+        result.next_gap = result.gap;
+        result.gap = gap;
+        result.coordinate_magnitude = std::abs(coordinate);
+        result.axis = axis;
+        result.sign = coordinate < 0.0 ? -1 : 1;
+      } else {
+        result.next_gap = std::max(result.next_gap, gap);
+      }
+    }
+    return result;
+  };
+
+  const auto start_gap = gap_at(0.0);
+  if (!start_gap.ok()) {
+    return start_gap.status();
+  }
+  if (start_gap->gap <= roundoff) {
+    return error(start_gap->gap < -roundoff ? absl::StatusCode::kFailedPrecondition : absl::StatusCode::kAborted);
+  }
+
+  struct Interval {
+    double begin;
+    double end;
+  };
+  constexpr double kLeafWidth = 0x1p-40;
+  constexpr double kMaximumHitWidth = 0x1p-32;
+  constexpr int kMaximumProbes = 4096;
+  std::array<Interval, 41> pending;
+  std::size_t count = 1;
+  pending.front() = {0.0, 1.0};
+  std::optional<double> possible_entry;
+  for (int probe = 0; count > 0 && probe < kMaximumProbes; ++probe) {
+    const auto interval = pending[--count];
+    if (possible_entry && interval.begin - *possible_entry > kMaximumHitWidth) {
+      return error(absl::StatusCode::kAborted);
+    }
+    const double width = interval.end - interval.begin;
+    const double midpoint = std::midpoint(interval.begin, interval.end);
+    const auto middle = gap_at(midpoint);
+    if (!middle.ok()) {
+      return middle.status();
+    }
+    const double excursion = std::nextafter(gap_travel_bound * (0.5 * width), std::numeric_limits<double>::infinity());
+    if (middle->gap > boundary_internal::AddUp(roundoff, excursion)) {
+      continue;
+    }
+    if (width > kLeafWidth) {
+      // Visit the earlier half first so a preceding ambiguous contact cannot
+      // be skipped in favor of a later interior sample.
+      pending[count++] = {midpoint, interval.end};
+      pending[count++] = {interval.begin, midpoint};
+      continue;
+    }
+    if (!possible_entry) {
+      possible_entry = interval.begin;
+    }
+    const auto witness = gap_at(interval.end);
+    if (!witness.ok()) {
+      return witness.status();
+    }
+    if (witness->gap < -roundoff) {
+      const double bracket_width = interval.end - *possible_entry;
+      // Require the same face and sign throughout the bracket. Two distinct
+      // gaps can each change by the travel bound before the witness.
+      const double face_uncertainty = boundary_internal::AddUp(2.0 * roundoff, 2.0 * gap_travel_bound * bracket_width);
+      if (bracket_width > kMaximumHitWidth || witness->gap - witness->next_gap <= face_uncertainty
+          || witness->coordinate_magnitude <= face_uncertainty) {
+        return error(absl::StatusCode::kAborted);
+      }
+      return std::optional<RigidBoxSweepHit3D>{{
+          .fraction_lower = *possible_entry,
+          .fraction_upper = interval.end,
+          .body_axis = witness->axis,
+          .outward_sign = witness->sign,
+      }};
+    }
+  }
+  if (possible_entry || count > 0) {
+    return error(absl::StatusCode::kAborted);
+  }
+  return std::optional<RigidBoxSweepHit3D>{};
+}
 }  // namespace fluidity
