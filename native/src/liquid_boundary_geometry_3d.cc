@@ -698,15 +698,15 @@ absl::Status LinksCore(
       return MissingBoundarySample(bounded);
     }
     if (face.open_area > 0) {
-      const auto head_density = has_head ? fields.cells[head_found].density : std::nullopt;
-      const auto tail_density = has_tail ? fields.cells[tail_found].density : std::nullopt;
-      if (head_density || tail_density) {
-        const double adjacent_density = has_head ? head_density.value_or(geometry.liquid_density) : *tail_density;
+      const bool has_head_density = has_head && fields.cells[head_found].density.has_value();
+      const bool has_tail_density = has_tail && fields.cells[tail_found].density.has_value();
+      if (has_head_density || has_tail_density) {
+        const double head_density = has_head_density ? *fields.cells[head_found].density : geometry.liquid_density;
+        const double tail_density = has_tail_density ? *fields.cells[tail_found].density : geometry.liquid_density;
         // Internal centers contribute two equal half-cell distances. At a
         // free surface only the liquid-side density enters the mobility.
-        const double face_density = has_head && has_tail
-            ? std::midpoint(adjacent_density, tail_density.value_or(geometry.liquid_density))
-            : adjacent_density;
+        const double face_density =
+            has_head && has_tail ? std::midpoint(head_density, tail_density) : (has_head ? head_density : tail_density);
         link.inverse_density = 1.0 / face_density;
         if (!std::isnormal(link.inverse_density)) {
           return absl::Status(absl::StatusCode::kOutOfRange, bounded ? "" : "Pressure mobility is unrepresentable");
