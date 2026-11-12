@@ -2456,3 +2456,43 @@ nominal case passes all checks. All runs had late drift below 0.09°,
 kinetic energy below 0.00017 J, cut stress work mismatch below
 6.3e-16 J, and vertical momentum residual below 3.2e-9 N·s. The
 experiment restored the source multiplier after building.
+
+### Requalification against upstream 873ae68
+
+Upstream `873ae68` includes the M4 graded runtime and updated shared
+liquid substep code. The M5 review branch integrated it at `efb35dd`.
+The existing Windows Ninja build reported zero header dependencies for
+both planar test objects and reused stale objects after the update.
+The native planar test crashed and the CUDA planar test failed in that
+incremental run. Both passed in a fresh Release SM120 build.
+
+The fresh build passed all 11 M5 CTest targets. Blender 5.2.3 repeated
+the authored 20-frame bake, frame-10 resume and playback on native and
+SM120. Both runs retained the same minimum snow volume ratio
+(0.648350539), minimum log plastic Jacobian (−0.420240034), and emitted
+water gap (0.631821917 m). The tracked native sources passed
+clang-format 19.1.5.
+
+Use a fresh Release build directory with the qualified Windows CUDA
+toolchain, `120-real;120-virtual` architectures, the shared CUDA runtime,
+and `FLUIDITY_BUILD_BLENDER_BRIDGE=ON` with Alembic and Imath available.
+
+```powershell
+$b = 'out/build/m5-main-873ae68-clean'
+$targets = @(
+  'fluidity_m5_dry_scene_tests', 'fluidity_m5_planar_coupling_tests',
+  'fluidity_m5_plastic_checkpoint_tests', 'fluidity_m5_snow_compaction_tests',
+  'fluidity_m5_contact_scatter_tests', 'fluidity_m5_constitutive_tests',
+  'fluidity_cuda_m5_dry_scene_tests', 'fluidity_cuda_m5_planar_coupling_tests',
+  'fluidity_cuda_m5_plastic_checkpoint_tests', 'fluidity_cuda_m5_snow_compaction_tests',
+  'fluidity_cuda_m5_constitutive_tests', 'fluidity_simulate', 'fluidity_blender_bridge'
+)
+cmake --build $b --target @targets --parallel 8
+ctest --test-dir $b -R '^M5' --no-tests=error --output-on-failure
+$tree = (Get-Location).Path
+$bin = (Resolve-Path $b).Path
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+foreach ($backend in 'cpu', 'cuda') {
+  & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $bin "$tree/out/authored-upstream-873ae68-$backend" $backend
+}
+```
