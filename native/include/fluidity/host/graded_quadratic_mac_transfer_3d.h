@@ -116,4 +116,38 @@ class GradedQuadraticMacTransfer3D {
   Vec3 world_origin_;
 };
 
+// Frozen canonical inputs for one side of a topology change. Spans borrow
+// the physical aperture and carrier banks in transfer slot order.
+struct GradedQuadraticMacSupportSnapshot3D {
+  const GradedQuadraticMacTransfer3D& transfer;
+  std::span<const double> open_areas_m2;
+  std::span<const LiquidAdaptiveFaceState3D> carrier_faces;
+};
+
+// Propose F3 split using the committed coarse support and candidate fine
+// support. The required callback additionally certifies particle geometry,
+// phase and constitutive admissibility. No state changes on any failure.
+absl::StatusOr<LiquidUniformSplit3D> SplitGradedQuadraticLiquidParticle3D(
+    const LiquidParticleState3D& parent,
+    std::uint64_t first_child_id,
+    double parent_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+);
+
+// Propose F4 merge with committed fine and candidate coarse support. The
+// covariance and representability gates of the uniform operator apply.
+// The required callback and failure behavior are the same as for split.
+absl::StatusOr<LiquidUniformMerge3D> MergeGradedQuadraticLiquidParticles3D(
+    std::span<const LiquidParticleState3D> children,
+    std::uint64_t target_id,
+    double fine_cell_width_m,
+    const GradedQuadraticMacSupportSnapshot3D& committed,
+    const GradedQuadraticMacSupportSnapshot3D& candidate,
+    LiquidResamplingAdmissibility3D certify,
+    void* context
+);
+
 }  // namespace fluidity

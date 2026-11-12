@@ -8,6 +8,7 @@
 #if defined(_WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
+#include "../src/liquid_adaptive_family_candidate_3d.h"
 #include "../src/liquid_adaptive_step_3d.h"
 #include "../src/liquid_substep_3d_internal.h"
 #include "../src/viscosity_velocity_block_3d.h"
@@ -422,6 +423,124 @@ TEST(LiquidSubstep3D, GradedExplicitQuadraticRejectsChangedProjectedCarrier) {
   const auto slot = (**prepared).stencil.rows[0][0].face_slot;
   trial->adaptive_faces[slot].validity = LiquidFaceValidity3D::kPredicted;
   EXPECT_TRUE(absl::IsFailedPrecondition(owner->Gather(*trial, &**prepared)));
+}
+
+TEST(LiquidSubstep3D, CertifiesDetachedQuadraticSplitWithFullRefinementHalo) {
+  LiquidState3D state;
+  state.geometry.cell_width = 0.5;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{3};
+  scene.obstacle = AxisAlignedLiquidTank3D{-2, 3, -2, -2, 3, 0};
+  scene.world_acceleration = {};
+  scene.liquid_density = 2;
+
+  constexpr AdaptiveMacCellKey3D kCenter{.lower_corner = {0, 0, 0}, .width_exponent = 1};
+  constexpr LiquidStateCapacities3D kCapacities{512, 0, 512, 2400, 0};
+  std::vector<AdaptiveMacCellKey3D> keys;
+  std::vector<AdaptiveMacCellKey3D> requested;
+  std::vector<LiquidParticleState3D> roster;
+  std::uint64_t parent_id = 0;
+  for (int z = -2; z < 3; ++z) {
+    for (int y = -2; y < 3; ++y) {
+      for (int x = -2; x < 3; ++x) {
+        const AdaptiveMacCellKey3D key{.lower_corner = {2 * x, 2 * y, 2 * z}, .width_exponent = 1};
+        keys.push_back(key);
+        const bool refine = std::abs(x) <= 1 && std::abs(y) <= 1 && std::abs(z) <= 1;
+        if (refine) {
+          requested.push_back(key);
+        }
+        const bool center = x == 0 && y == 0 && z == 0;
+        if (!refine || center) {
+          roster.push_back({
+              .id = roster.size() + 1,
+              .world_position = {x + 0.5, y + 0.5, z + 0.5},
+              .mass = 2,
+              .pic_initialized = true,
+          });
+          if (center) {
+            parent_id = roster.back().id;
+          }
+          continue;
+        }
+        for (unsigned octant = 0; octant < 8; ++octant) {
+          roster.push_back({
+              .id = roster.size() + 1,
+              .world_position =
+                  {x + ((octant & 1u) == 0 ? 0.25 : 0.75),
+                   y + ((octant & 2u) == 0 ? 0.25 : 0.75),
+                   z + ((octant & 4u) == 0 ? 0.25 : 0.75)},
+              .mass = 0.25,
+              .reference_volume = 0.125,
+              .pic_initialized = true,
+          });
+        }
+      }
+    }
+  }
+
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  const auto face_count = ownership->interior_face_slots.size() + ownership->exterior_faces.size();
+  auto cells = LiquidRecords3D<LiquidAdaptiveCellState3D>::Create(keys.size());
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(roster.size());
+  auto faces = LiquidRecords3D<LiquidAdaptiveFaceState3D>::Create(face_count);
+  ASSERT_TRUE(cells.ok()) << cells.status();
+  ASSERT_TRUE(particles.ok()) << particles.status();
+  ASSERT_TRUE(faces.ok()) << faces.status();
+  ASSERT_TRUE(cells->Resize(keys.size()).ok());
+  ASSERT_TRUE(particles->Resize(roster.size()).ok());
+  ASSERT_TRUE(faces->Resize(face_count).ok());
+  for (std::size_t ordinal = 0; ordinal < keys.size(); ++ordinal) {
+    (*cells)[ordinal] = {
+        .key = topology->cells()[ordinal].key,
+        .inventory = {.mass_kg = 2, .reference_volume_m3 = 1, .current_volume_m3 = 1},
+    };
+  }
+  std::ranges::copy(roster, particles->values().begin());
+  for (auto& face : faces->values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  state.adaptive_cells = std::move(*cells);
+  state.adaptive_faces = std::move(*faces);
+  state.particles = std::move(*particles);
+  state.next_particle_id = roster.size() + 1;
+  ASSERT_TRUE(ValidateLiquidState3D(state).ok());
+  const auto before = EncodeLiquidState3D(state);
+  ASSERT_TRUE(before.ok()) << before.status();
+
+  const auto unsupported = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+      state,
+      scene,
+      kCapacities,
+      std::span(&kCenter, 1),
+      kCenter,
+      parent_id
+  );
+  EXPECT_EQ(unsupported.status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto staged = liquid_step_internal::PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
+      state,
+      scene,
+      kCapacities,
+      requested,
+      kCenter,
+      parent_id
+  );
+  ASSERT_TRUE(staged.ok()) << staged.status();
+  EXPECT_EQ(staged->adaptive_cells.size(), 314);
+  EXPECT_EQ(staged->particles.size(), state.particles.size() + 7);
+  EXPECT_EQ(staged->next_particle_id, state.next_particle_id + 8);
+  EXPECT_EQ(staged->clock, state.clock);
+  for (std::size_t ordinal = 0; ordinal < 8; ++ordinal) {
+    const auto& child = staged->particles[parent_id - 1 + ordinal];
+    EXPECT_EQ(child.id, state.next_particle_id + ordinal);
+    EXPECT_EQ(child.mass, 0.25);
+    EXPECT_EQ(child.reference_volume, 0.125);
+  }
+  const auto after = EncodeLiquidState3D(state);
+  ASSERT_TRUE(after.ok()) << after.status();
+  EXPECT_TRUE(std::ranges::equal(before->values(), after->values()));
 }
 
 TEST(LiquidSubstep3D, AppliesCertifiedBandPlacementFromAcceptedPlanarOccupancy) {
