@@ -123,4 +123,21 @@ inline absl::Status PopulateGradedFamilyFixture3D(LiquidState3D& state, LiquidSc
   return ValidateLiquidState3D(state);
 }
 
+inline absl::Status PopulateGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  const auto authored = PopulateGradedTankFixture3D(state, scene);
+  if (!authored.ok()) {
+    return authored;
+  }
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& cell : state.adaptive_cells.values()) {
+    cell.inventory.momentum_kg_m_per_s = {};
+  }
+  for (auto& face : state.adaptive_faces.values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  return ValidateLiquidState3D(state);
+}
+
 }  // namespace fluidity::test

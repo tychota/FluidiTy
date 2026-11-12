@@ -131,6 +131,124 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, PublishesAdaptiveBandRetirementAndReseed) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedBandFixture3D(state, scene).ok());
+  auto options = Options();
+  options.capacities = {8, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto key = state.adaptive_cells[1].key;
+  const LiquidHandoffCarrier3D carrier{.current_density = 2, .volume_ratio = 1};
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject band handoff")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected =
+      scheduler->AttemptWithAdaptiveBandRetirement(0.01, key, LiquidHandoffOccupancy3D::kFullLiquid, carrier);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ExpectIdenticalSerializedState(scheduler->committed(), state);
+  scheduler->SetStageFaultHookForTesting({});
+  const auto retired =
+      scheduler->AttemptWithAdaptiveBandRetirement(0.005, key, LiquidHandoffOccupancy3D::kFullLiquid, carrier);
+  ASSERT_TRUE(retired.ok()) << retired.status();
+  ASSERT_EQ(retired->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  const auto core_step = scheduler->Attempt(0.005);
+  ASSERT_TRUE(core_step.ok()) << core_step.status();
+  ASSERT_EQ(core_step->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  ASSERT_EQ(scheduler->committed().particles.size(), 4);
+  ASSERT_EQ(scheduler->committed().adaptive_cells[1].material_owner, AdaptiveLiquidMaterialOwner3D::kEulerian);
+  EXPECT_EQ(scheduler->committed().adaptive_cells[1].inventory.mass_kg, state.adaptive_cells[1].inventory.mass_kg);
+  const auto bytes = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto decoded = DecodeLiquidState3D(bytes->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  for (auto* run : {&*scheduler, &*restarted}) {
+    ASSERT_TRUE(run->BeginFrame(0.02).ok());
+    const auto reseeded =
+        run->AttemptWithAdaptiveCoreReseed(0.01, key, LiquidHandoffOccupancy3D::kFullLiquid, carrier, 1);
+    ASSERT_TRUE(reseeded.ok()) << reseeded.status();
+    ASSERT_EQ(reseeded->disposition, LiquidAttemptDisposition3D::kAccepted) << run->diagnostics().failure_code;
+    ASSERT_TRUE(run->FinishFrame().ok());
+    ASSERT_EQ(run->committed().particles.size(), 5);
+    EXPECT_EQ(run->committed().adaptive_cells[1].material_owner, AdaptiveLiquidMaterialOwner3D::kParticles);
+    EXPECT_EQ(run->committed().next_particle_id, state.next_particle_id + 1);
+  }
+  ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
+}
+
+TEST(LiquidSubstep3D, RejectsEulerianDrainThatWouldInvalidateRestart) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedBandFixture3D(state, scene).ok());
+  auto particles = LiquidRecords3D<LiquidParticleState3D>::Create(3);
+  ASSERT_TRUE(particles.ok());
+  ASSERT_TRUE(particles->Resize(3).ok());
+  (*particles)[0] = state.particles[0];
+  (*particles)[1] = state.particles[2];
+  (*particles)[2] = state.particles[4];
+  state.particles = std::move(*particles);
+  for (const auto ordinal : {1U, 3U}) {
+    auto& cell = state.adaptive_cells[ordinal];
+    cell.material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+    cell.inventory.mass_kg /= 2;
+    cell.inventory.reference_volume_m3 /= 2;
+    cell.inventory.current_volume_m3 /= 2;
+  }
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (const auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  ASSERT_TRUE(ownership.ok()) << ownership.status();
+  std::size_t donor_slot = state.adaptive_faces.size();
+  for (std::size_t face = 0; face < topology->interior_faces().size(); ++face) {
+    const auto& edge = topology->interior_faces()[face];
+    if (edge.tail_cell_ordinal == 1 && edge.head_cell_ordinal == 3) {
+      donor_slot = ownership->interior_face_slots[face];
+    }
+  }
+  ASSERT_LT(donor_slot, state.adaptive_faces.size());
+  std::array projection_shape{state.adaptive_cells.size(), state.adaptive_faces.size(), donor_slot};
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &projection_shape;
+  backend.project_adaptive = [](void* context,
+                                const pressure_internal::PreparedMacPressureSystem3D&,
+                                MacPressureSolverOptions3D) -> absl::StatusOr<MacPressureProjection3D> {
+    const auto [cells, faces, drained_slot] = *static_cast<const std::array<std::size_t, 3>*>(context);
+    MacPressureProjection3D result;
+    result.cell_pressures.resize(cells);
+    result.corrected_face_velocities.resize(faces);
+    // 2 m/s times 0.25 m² times 0.125 s drains precisely 0.0625 m³.
+    result.corrected_face_velocities[drained_slot] = 2;
+    return result;
+  };
+  backend.update_particles = [](void*, const LiquidParticleUpdateInputs3D&, std::span<LiquidParticleState3D>) {
+    return absl::OkStatus();
+  };
+  auto options = Options();
+  options.capacities = {3, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.125).ok());
+  const auto rejected = scheduler->Attempt(0.125);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ExpectIdenticalSerializedState(state, scheduler->committed());
+}
+
 TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
@@ -179,18 +297,21 @@ TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   EXPECT_NE(scheduler->committed().particles[0].world_position.x, state.particles[0].world_position.x);
 }
 
-TEST(LiquidSubstep3D, RejectsEulerianMaterialBeforeGradedSchedulerAdmission) {
+TEST(LiquidSubstep3D, RejectsDuplicateEulerianMaterialBeforeGradedSchedulerAdmission) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored = test::PopulateGradedTankFixture3D(state, scene);
   ASSERT_TRUE(authored.ok()) << authored;
   auto options = Options();
   options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
-  state.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  for (auto& face : state.adaptive_faces.values()) {
+    face.validity = LiquidFaceValidity3D::kValid;
+  }
+  state.adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
   const auto before = CloneLiquidState3D(state, options.capacities);
   ASSERT_TRUE(before.ok()) << before.status();
   const auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
-  EXPECT_EQ(scheduler.status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_EQ(scheduler.status().code(), absl::StatusCode::kAborted);
   EXPECT_EQ(state, *before);
 }
 

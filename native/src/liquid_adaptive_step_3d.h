@@ -44,6 +44,9 @@ class AdaptiveLiquidStep3D {
   AdaptiveMacTopology3D topology_;
   GradedMacTransfer3D transfer_;
   std::vector<std::size_t> interior_slots_;
+  // Nonempty only when an Eulerian core owns material in this frozen trial.
+  std::vector<std::uint8_t> core_faces_;
+  std::vector<double> core_fluxes_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;

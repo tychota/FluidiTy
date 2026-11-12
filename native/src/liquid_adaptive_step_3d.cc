@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 
 namespace fluidity::liquid_step_internal {
 namespace {
@@ -22,6 +23,10 @@ double NormalComponent(Vec3 value, FaceNormalAxis axis) {
     }
   }
   return 0;
+}
+
+bool IsEulerian(const LiquidAdaptiveCellState3D& cell) {
+  return cell.material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian;
 }
 
 bool IsWall(const AxisAlignedLiquidTank3D& tank, const AdaptiveMacExteriorFace3D& face, double plane) {
@@ -64,11 +69,6 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
   }
-  for (const auto& cell : initial.adaptive_cells.values()) {
-    if (cell.material_owner != AdaptiveLiquidMaterialOwner3D::kParticles) {
-      return absl::UnimplementedError("graded Simulate has no Eulerian liquid carrier");
-    }
-  }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
   }
@@ -80,9 +80,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   std::vector<AdaptiveMacCellKey3D> keys;
   keys.reserve(initial.adaptive_cells.size());
   for (const auto& cell : initial.adaptive_cells.values()) {
-    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || cell.inventory.enthalpy_j != 0
+    if (cell.occupancy != LiquidCellOccupancy3D::kLiquid || (!IsEulerian(cell) && cell.inventory.enthalpy_j != 0)
         || cell.inventory.phase_id != 0 || cell.inventory.constituent_count != 0) {
-      return absl::UnimplementedError("graded tank requires single-liquid particle-owned leaves");
+      return absl::UnimplementedError("graded tank requires a single implicit liquid");
     }
     keys.push_back(cell.key);
   }
@@ -104,6 +104,10 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   result.surface_height_ = plane->world_surface_height_y;
   result.subfaces_.resize(initial.adaptive_faces.size());
   const auto leaves = result.topology_.cells();
+  if (std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian)) {
+    result.core_faces_.resize(initial.adaptive_faces.size());
+    result.core_fluxes_.resize(result.topology_.interior_faces().size());
+  }
   result.pressure_cells_.resize(leaves.size());
   const auto origin = initial.geometry.world_origin;
   const double finest_width = initial.geometry.cell_width;
@@ -126,6 +130,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
         || world_lower.x >= world_upper.x || world_lower.y >= world_upper.y || world_lower.z >= world_upper.z) {
       return absl::InvalidArgumentError("graded leaf crosses a tank plane or has unrepresentable bounds");
     }
+    if (IsEulerian(initial.adaptive_cells[cell]) && initial.adaptive_cells[cell].inventory.current_volume_m3 <= 0) {
+      return absl::FailedPreconditionError("Eulerian core leaf must contain liquid");
+    }
     result.pressure_cells_[cell] = {
         .cell_index = lower,
         .fluid_volume = leaf.cell_volume,
@@ -136,8 +143,18 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   }
   const double inverse_density = 1 / scene.liquid_density;
   for (std::size_t face = 0; face < result.topology_.interior_faces().size(); ++face) {
-    result.subfaces_[ownership->interior_face_slots[face]] = {
-        .open_area_m2 = result.topology_.interior_faces()[face].face_area,
+    const auto& interior = result.topology_.interior_faces()[face];
+    const auto slot = ownership->interior_face_slots[face];
+    if (IsEulerian(initial.adaptive_cells[interior.tail_cell_ordinal])
+        || IsEulerian(initial.adaptive_cells[interior.head_cell_ordinal])) {
+      const auto& carrier = initial.adaptive_faces[slot];
+      if (carrier.validity != LiquidFaceValidity3D::kValid || !carrier.structurally_eligible || carrier.side_tag != 0) {
+        return absl::FailedPreconditionError("Eulerian core requires a valid implicit-liquid carrier");
+      }
+      result.core_faces_[slot] = 1;
+    }
+    result.subfaces_[slot] = {
+        .open_area_m2 = interior.face_area,
         .inverse_density_m3_per_kg = inverse_density,
     };
   }
@@ -149,6 +166,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     }
     if (axis != FaceNormalAxis::kY || !face.cell_is_tail || coordinate != result.surface_height_) {
       return absl::InvalidArgumentError("graded tank has an exterior subface away from a wall or the free surface");
+    }
+    if (IsEulerian(initial.adaptive_cells[face.cell_ordinal])) {
+      return absl::FailedPreconditionError("Eulerian core may not reach the open tank surface");
     }
     result.subfaces_[face.face_slot] = {
         .open_area_m2 = face.face_area,
@@ -166,6 +186,9 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     return material;
   }
   for (std::size_t cell = 0; cell < result.inventories_.size(); ++cell) {
+    if (IsEulerian(initial.adaptive_cells[cell])) {
+      continue;
+    }
     auto particle_owned = initial.adaptive_cells[cell];
     particle_owned.inventory = result.inventories_[cell];
     if (particle_owned != initial.adaptive_cells[cell]) {
@@ -181,7 +204,8 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
-      + inventories_.capacity() * sizeof(LiquidRemapInventory3D);
+      + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
+      + core_fluxes_.capacity() * sizeof(double);
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {
@@ -194,6 +218,10 @@ absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const Liq
     if (subfaces_[face].open_area_m2 == 0) {
       old_faces_[face].carrier_velocity = 0;
       old_faces_[face].validity = LiquidFaceValidity3D::kValid;
+      continue;
+    }
+    // The accepted Eulerian carrier is authoritative inside the core.
+    if (!core_faces_.empty() && core_faces_[face] != 0) {
       continue;
     }
     const auto& deposit = (*deposits)[face];
@@ -221,6 +249,9 @@ absl::Status AdaptiveLiquidStep3D::Project(
 ) {
   for (std::size_t cell = 0; cell < pressure_cells_.size(); ++cell) {
     pressure_cells_[cell].previous_pressure = trial.adaptive_cells[cell].previous_pressure;
+    if (IsEulerian(trial.adaptive_cells[cell])) {
+      pressure_cells_[cell].fluid_volume = trial.adaptive_cells[cell].inventory.current_volume_m3;
+    }
   }
   for (std::size_t face = 0; face < subfaces_.size(); ++face) {
     if (subfaces_[face].open_area_m2 > 0) {
@@ -355,6 +386,26 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!material.ok()) {
     return material;
   }
+  if (!core_faces_.empty()) {
+    for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
+      const auto slot = interior_slots_[face];
+      core_fluxes_[face] = subfaces_[slot].open_area_m2 * trial.adaptive_faces[slot].carrier_velocity;
+    }
+    const auto core =
+        PrepareAdaptiveLiquidCoreTransport3D(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
+    if (!core.ok()) {
+      return core.status();
+    }
+    for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+      if (IsEulerian(trial.adaptive_cells[cell])) {
+        const auto& updated_inventory = (*core)[cell].inventory;
+        if (updated_inventory.current_volume_m3 <= 0) {
+          return absl::AbortedError("Eulerian core trial emptied a pressure leaf");
+        }
+        inventories_[cell] = updated_inventory;
+      }
+    }
+  }
   for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
     trial.adaptive_cells[cell].inventory = inventories_[cell];
   }
@@ -367,6 +418,9 @@ absl::Status AdaptiveLiquidStep3D::AccumulateInventories(const LiquidState3D& st
     const auto leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
     if (!leaf.ok()) {
       return absl::Status(absl::StatusCode::kAborted, {});
+    }
+    if (IsEulerian(state.adaptive_cells[*leaf])) {
+      return absl::AbortedError("particle would duplicate Eulerian core ownership");
     }
     auto& inventory = inventories_[*leaf];
     inventory.mass_kg += particle.mass;
