@@ -34,6 +34,7 @@ clean Windows Release CUDA rebuild.
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | One-way pressure input to planar mixed contact | Pass for the frozen one-cell fixture | Native and CUDA pressure projection both match the analytic outlet speed and pressure. Host contact matches impact time, impulse, and final positions. A late motion-bound rejection preserves both input particles. |
 | Reciprocal pressure for a planar snow interface | Pass for the frozen single-cell fixture | Native and CUDA pressure solvers both recover the analytic speed, pressure, impulse, and work for the two wall orientations. The trial returns the pressure candidate and snow impulse together. |
+| Snow pressure traction scatter | Pass for one planar wall | Unequal-mass contributors receive the transpose-weighted pressure impulse. The recovered wall speed and total particle impulse match the native or CUDA pressure trial. Invalid geometry, a different body, and a failed pressure probe preserve particle state. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
 
@@ -1025,6 +1026,19 @@ The trial owns its frozen face copy and returns the candidate without
 writing either material's state. The scheduler still needs to generate
 the snow interface, distribute pressure traction over its contributors,
 and advance and publish both materials together.
+
+The pressure scatter uses area fractions w to interpolate the wall
+velocity. Its inverse effective mass is Σ(w²/m). Applying the
+transpose weights gives each contributor velocity change w I/m for
+face impulse I, recovering the wall velocity used by projection.
+For two equal-area contributors of mass 0.125 and 0.0625 kg, the
+incoming speeds 12 and 16 m/s produce an effective mass of 1/6 kg.
+The trial gives −2 N·s total impulse, particle speeds 4 and 0 m/s,
+and a weighted wall speed of 2 m/s. Both backend fixtures recover
+these values within 1e-12. Tangential velocities, positions, plastic
+history and the third body are preserved. Closing the liquid outlet
+makes the unit-speed pressure probe fail. The staged trial publishes
+no snow velocities in that case.
 
 Record matched CPU and target CUDA receipts for the authored mound,
 obstacle sweep and liquid source. They must include material mass and volume

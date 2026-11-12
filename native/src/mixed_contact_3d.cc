@@ -448,4 +448,111 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
   };
 }
 
+absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    std::span<const SnowPressureContributor3D> contributors,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    MixedPressureProjector3D project
+) {
+  const auto disjoint = CheckWritableViews(
+      {std::as_writable_bytes(plastic)},
+      {std::as_bytes(contributors), std::as_bytes(inputs.pressure_cells), std::as_bytes(inputs.pressure_faces)}
+  );
+  if (!disjoint.ok()) {
+    return disjoint;
+  }
+  if (contributors.empty() || wall_face_ordinal >= inputs.pressure_faces.size()) {
+    return absl::InvalidArgumentError("missing planar snow traction contributors or wall face");
+  }
+  constexpr std::array components{&Vec3::x, &Vec3::y, &Vec3::z};
+  const auto axis = static_cast<std::size_t>(inputs.pressure_faces[wall_face_ordinal].face_index.axis);
+  if (axis >= components.size()) {
+    return absl::InvalidArgumentError("invalid planar snow pressure axis");
+  }
+  const auto component = components[axis];
+  std::uint64_t previous_particle_id = 0;
+  for (const auto& particle : plastic) {
+    if (particle.particle_id <= previous_particle_id) {
+      return absl::InvalidArgumentError("planar snow particles must be ordered by nonzero ID");
+    }
+    previous_particle_id = particle.particle_id;
+  }
+
+  struct StagedNormalVelocity {
+    double* stored_velocity;
+    double impulse_per_mass;
+    double candidate_velocity;
+  };
+  std::vector<StagedNormalVelocity> staged;
+  staged.reserve(contributors.size());
+  double area_fraction_sum = 0;
+  double inverse_wall_mass = 0;
+  double incoming_wall_speed = 0;
+  previous_particle_id = 0;
+  std::uint64_t wall_body_id = 0;
+  auto particle = plastic.begin();
+  for (const auto& contributor : contributors) {
+    const double weight = contributor.area_fraction;
+    if (contributor.particle_id <= previous_particle_id || !std::isfinite(weight) || weight <= 0 || weight > 1) {
+      return absl::InvalidArgumentError("invalid planar snow traction contributor");
+    }
+    particle = std::ranges::lower_bound(
+        particle,
+        plastic.end(),
+        contributor.particle_id,
+        {},
+        &PlasticSolidCheckpointParticle3D::particle_id
+    );
+    if (particle == plastic.end() || particle->particle_id != contributor.particle_id) {
+      return absl::InvalidArgumentError("missing planar snow traction particle");
+    }
+    if (particle->body_id == 0 || (wall_body_id != 0 && particle->body_id != wall_body_id)) {
+      return absl::InvalidArgumentError("planar snow traction requires a single wall body");
+    }
+    wall_body_id = particle->body_id;
+    const double mass = particle->transfer.particle_mass;
+    double& normal_velocity = particle->transfer.particle_velocity.*component;
+    if (!std::isfinite(mass) || mass <= 0 || !std::isfinite(normal_velocity)) {
+      return absl::InvalidArgumentError("invalid planar snow traction mass or velocity");
+    }
+    const double weighted_inverse_mass = weight / mass;
+    staged.push_back({&normal_velocity, weighted_inverse_mass, 0});
+    area_fraction_sum += weight;
+    inverse_wall_mass += weight * weighted_inverse_mass;
+    incoming_wall_speed += weight * normal_velocity;
+    previous_particle_id = contributor.particle_id;
+  }
+  if (std::abs(area_fraction_sum - 1) > 1e-12) {
+    return absl::InvalidArgumentError("planar snow traction area fractions must sum to one");
+  }
+  const double wall_mass = 1 / inverse_wall_mass;
+  if (!std::isfinite(wall_mass) || wall_mass <= 0 || !std::isfinite(incoming_wall_speed)) {
+    return absl::OutOfRangeError("unrepresentable planar snow traction response");
+  }
+  auto trial = SolvePlanarSnowPressureTrial3D(inputs, wall_face_ordinal, wall_mass, incoming_wall_speed, project);
+  if (!trial.ok()) {
+    return trial.status();
+  }
+  double scattered_wall_speed = 0;
+  for (std::size_t ordinal = 0; ordinal < staged.size(); ++ordinal) {
+    auto& velocity = staged[ordinal];
+    velocity.candidate_velocity =
+        std::fma(velocity.impulse_per_mass, trial->pressure_impulse_on_snow, *velocity.stored_velocity);
+    if (!std::isfinite(velocity.candidate_velocity)) {
+      return absl::OutOfRangeError("unrepresentable planar snow traction velocity");
+    }
+    scattered_wall_speed += contributors[ordinal].area_fraction * velocity.candidate_velocity;
+  }
+  const double speed_scale = std::max(1.0, std::abs(trial->solved_wall_normal_velocity));
+  if (!std::isfinite(scattered_wall_speed)
+      || std::abs(scattered_wall_speed - trial->solved_wall_normal_velocity) > 2e-5 * speed_scale) {
+    return absl::FailedPreconditionError("scattered planar snow traction did not recover wall speed");
+  }
+  for (const auto& velocity : staged) {
+    *velocity.stored_velocity = velocity.candidate_velocity;
+  }
+  return trial;
+}
+
 }  // namespace fluidity

@@ -564,6 +564,63 @@ bool TestPlanarMixedContactDetection() {
           != absl::StatusCode::kInvalidArgument) {
     return false;
   }
+  std::array pressure_snow{snow, snow, snow};
+  pressure_snow[0].transfer.particle_mass = 0.125;
+  pressure_snow[0].transfer.particle_velocity = {12, 2, 3};
+  pressure_snow[1].particle_id = 4;
+  pressure_snow[1].transfer.particle_mass = 0.0625;
+  pressure_snow[1].transfer.particle_velocity = {16, 4, 5};
+  pressure_snow[2].particle_id = 5;
+  pressure_snow[2].body_id = 17;
+  const std::array traction{
+      fluidity::SnowPressureContributor3D{3, 0.5},
+      fluidity::SnowPressureContributor3D{4, 0.5},
+  };
+  const auto rejected_traction =
+      fluidity::ApplyPlanarSnowPressure3D(reciprocal_inputs, outlet_ordinal, traction, pressure_snow, project);
+  if (rejected_traction.status().code() != absl::StatusCode::kInvalidArgument
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[1].transfer.particle_velocity.x != 16) {
+    return false;
+  }
+  auto invalid_traction = traction;
+  invalid_traction[1].particle_id = 5;
+  const auto wrong_body = fluidity::ApplyPlanarSnowPressure3D(
+      reciprocal_inputs,
+      low_wall_ordinal,
+      invalid_traction,
+      pressure_snow,
+      project
+  );
+  if (wrong_body.status().code() != absl::StatusCode::kInvalidArgument
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[2].transfer.particle_velocity.x != -2) {
+    return false;
+  }
+  auto closed_faces = pressure_faces;
+  auto& closed_outlet = closed_faces[outlet_ordinal];
+  closed_outlet.open_area = 0;
+  closed_outlet.pressure_link = fluidity::SealedMacPressureLink3D{};
+  const fluidity::MacPressureInputs3D closed_inputs{*grid, 0.125, reciprocal_cells, closed_faces};
+  const auto failed_probe =
+      fluidity::ApplyPlanarSnowPressure3D(closed_inputs, low_wall_ordinal, traction, pressure_snow, project);
+  if (failed_probe.status().code() != absl::StatusCode::kFailedPrecondition
+      || pressure_snow[0].transfer.particle_velocity.x != 12 || pressure_snow[1].transfer.particle_velocity.x != 16) {
+    return false;
+  }
+  const auto applied_traction =
+      fluidity::ApplyPlanarSnowPressure3D(reciprocal_inputs, low_wall_ordinal, traction, pressure_snow, project);
+  const double first_velocity = pressure_snow[0].transfer.particle_velocity.x;
+  const double second_velocity = pressure_snow[1].transfer.particle_velocity.x;
+  const double transferred_momentum = 0.125 * (first_velocity - 12) + 0.0625 * (second_velocity - 16);
+  if (!applied_traction.ok() || std::abs(first_velocity - 4) > 1e-12 || std::abs(second_velocity) > 1e-12
+      || std::abs(transferred_momentum - applied_traction->pressure_impulse_on_snow) > 1e-12
+      || std::abs(applied_traction->solved_wall_normal_velocity - 2) > 1e-12
+      || std::abs(applied_traction->pressure_work_on_snow + 4) > 1e-12
+      || pressure_snow[0].transfer.particle_velocity.y != 2 || pressure_snow[1].transfer.particle_velocity.z != 5
+      || pressure_snow[2].transfer.particle_velocity.x != -2
+      || pressure_snow[1].transfer.trial_world_position.x != snow.transfer.trial_world_position.x
+      || pressure_snow[1].log_plastic_jacobian != snow.log_plastic_jacobian) {
+    return false;
+  }
   // The fixture transfers the outlet speed to one liquid particle with unit weight.
   // Stage that transfer with the mixed advance and publish the two particles together.
   water.world_velocity.x = 0;

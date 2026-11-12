@@ -122,4 +122,25 @@ absl::StatusOr<PlanarSnowPressureTrial3D> SolvePlanarSnowPressureTrial3D(
     MixedPressureProjector3D project
 );
 
+struct SnowPressureContributor3D {
+  std::uint64_t particle_id;
+  double area_fraction;  // Positive fraction of the selected wall's area.
+};
+
+// Interpolates wall speed by area fraction and distributes the pressure
+// impulse using the transpose of those weights. Particle and contributor
+// IDs must be strictly increasing and the contributor fractions must sum
+// to one within 1e-12. Contributors must belong to one body. Plastic
+// records are candidate state. Their span must
+// be disjoint from contributors and pressure inputs. On success, only the
+// participating particles' stored normal velocities change. Failure
+// leaves the entire plastic span unchanged.
+absl::StatusOr<PlanarSnowPressureTrial3D> ApplyPlanarSnowPressure3D(
+    const MacPressureInputs3D& inputs,
+    std::size_t wall_face_ordinal,
+    std::span<const SnowPressureContributor3D> contributors,
+    std::span<PlasticSolidCheckpointParticle3D> plastic,
+    MixedPressureProjector3D project
+);
+
 }  // namespace fluidity
