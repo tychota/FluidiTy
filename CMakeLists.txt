@@ -42,7 +42,8 @@ find_package(flatbuffers 25.12.19 EXACT CONFIG REQUIRED)
 find_package(blake3 1.8.5 EXACT CONFIG REQUIRED)
 include(cmake/LiquidCacheSchemas.cmake)
 add_library(fluidity_native STATIC
-    native/src/effects_source_3d.cc
+    native/src/contact_face_bodies_3d.cc
+  native/src/effects_source_3d.cc
     native/src/surface_closest_point_3d.cc
     native/src/surface_reconstruction_3d.cc
     native/src/surface_settings_3d.cc
@@ -183,6 +184,9 @@ if(FLUIDITY_ENABLE_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(fluidity_m5_contact_scatter_tests native/tests/test_m5_contact_scatter_3d.cc)
+  target_link_libraries(fluidity_m5_contact_scatter_tests PRIVATE fluidity_native)
+  add_test(NAME M5ContactScatter.native COMMAND fluidity_m5_contact_scatter_tests)
   add_executable(fluidity_m5_constitutive_tests native/tests/test_m5_constitutive_3d.cc)
   target_include_directories(fluidity_m5_constitutive_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/include")
   target_compile_features(fluidity_m5_constitutive_tests PRIVATE cxx_std_20)
