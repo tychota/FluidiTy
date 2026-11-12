@@ -665,3 +665,17 @@ The public capillary runner now launches the frozen 216-frame oscillating-drop-l
 $build = 'out/build/m4-bed51fd-release-clean'
 uv run --project reference --locked python -B tools/native/tests/run_capillary_drop.py --solver "$build/fluidity_simulate.exe" --fixture "$build/fluidity_liquid_acceptance_fixture.exe" --backend cpu --output out/m4-bed51fd-drop-cpu
 ```
+
+## Blender Mesh build and resume receipt
+
+Build Surface and Resume Surface now run the committed Bake cache through the native Mesh stage using Blender's background process, progress and cancellation controls. The panel exposes the output path, sampling spacing and Gaussian width. Attachment opens that output directory by default. The headless fixture built and resumed frames zero and one from the Blender-authored clear-water, dyed-water and oil bake. It compared the upstream publication bytes, rejected reuse without Resume, exercised relocation and a corrupt replacement, and rendered the saved attachment in a fresh extension-disabled process. The shared face count, 54 seam edges and dye and oil render response matched the earlier receipt. Free, plane, slab and tank simulation bakes still passed after the job-runner refactor.
+
+Receipts use out/m4-build-surface-final and out/m4-build-surface-domain-regression.log. To reproduce from the qualified authored Simulate cache:
+
+```powershell
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+$run = 'out/m4-build-surface-qualification'
+New-Item -ItemType Directory $run
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- build-attach out/m4-blender-authored-nonzero/simulate out/build/m4-bed51fd-release-clean "$run/attached.blend"
+& $blender -b --factory-startup --python-exit-code 1 --python tools/blender/verify_m4_shared_surface_usd.py -- reopen "$run/attached.blend"
+```

@@ -314,6 +314,8 @@ class FLUIDITY_OT_attach_surface(IdleOperator, bpy.types.Operator):
     directory: StringProperty(subtype="DIR_PATH")
 
     def invoke(self, context, _event):
+        if not self.directory:
+            self.directory = bpy.path.abspath(context.scene.fluidity.mesh_cache)
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 

@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 import shutil
 import sys
+import time
 
 import bpy
 
@@ -114,7 +115,7 @@ def prepare_material(blend):
     bpy.ops.wm.save_as_mainfile(filepath=str(blend))
 
 
-def attach(cache, binaries, blend):
+def attach(cache, binaries, blend, build=False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "blender"))
     import fluidity
 
@@ -128,6 +129,29 @@ def attach(cache, binaries, blend):
     scene.frame_set(0)
     bpy.context.preferences.filepaths.save_version = 0
     bpy.ops.wm.save_as_mainfile(filepath=str(blend))
+    if build:
+        settings = scene.fluidity
+        settings.bake_cache = str(cache)
+        source = cache
+        inputs = {path: path.read_bytes() for path in source.rglob("*") if path.suffix in {".flmf", ".flrs", ".flef"}}
+        cache = blend.with_name("built-mesh")
+        settings.mesh_cache = str(cache)
+        settings.mesh_spacing = settings.mesh_sigma = 0.25
+        for resume in (False, True):
+            assert bpy.ops.fluidity.build_surface(resume=resume) == {"FINISHED"}, settings.message
+            deadline = time.monotonic() + 90
+            while fluidity.jobs.is_running(scene) and time.monotonic() < deadline:
+                fluidity.jobs.tick()
+                time.sleep(0.01)
+            assert not fluidity.jobs.is_running(scene), settings.message
+            assert settings.message == "Surface build complete. Attach the committed surface to render.", (
+                settings.message, settings.diagnostic
+            )
+            assert settings.committed_frame == 1
+        assert {path: path.read_bytes() for path in inputs} == inputs
+        assert bpy.ops.fluidity.build_surface() == {"CANCELLED"}
+        assert (cache / "frames" / "00000000000000000001.flem").is_file()
+        print("PASS Build Surface, Resume Surface and read-only Bake inputs")
     relocated = blend.with_name("relocated-mesh")
     shutil.copytree(cache, relocated)
     assert bpy.ops.fluidity.attach_surface(directory=str(cache)) == {"FINISHED"}
@@ -207,4 +231,8 @@ def reopen(blend):
 
 if __name__ == "__main__":
     mode, *paths = sys.argv[sys.argv.index("--") + 1:]
-    {"prepare": prepare, "attach": attach, "reopen": reopen}[mode](*(Path(path).resolve() for path in paths))
+    arguments = [Path(path).resolve() for path in paths]
+    if mode == "build-attach":
+        attach(*arguments, build=True)
+    else:
+        {"prepare": prepare, "attach": attach, "reopen": reopen}[mode](*arguments)

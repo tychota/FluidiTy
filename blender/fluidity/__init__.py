@@ -8,6 +8,7 @@ from pathlib import Path
 import bpy
 from bpy.app.handlers import persistent
 from bpy.props import (
+    BoolProperty,
     CollectionProperty,
     EnumProperty,
     FloatProperty,
@@ -72,6 +73,9 @@ class FluidiTySettings(PropertyGroup):
     liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
     surface_object: PointerProperty(type=Object)
     attached_surface_cache: StringProperty()
+    mesh_cache: StringProperty(name="Surface Cache", default="//FluidiTy Surface", subtype="DIR_PATH")
+    mesh_spacing: FloatProperty(name="Surface Spacing (m)", default=0.0125, min=0.00001, precision=5)
+    mesh_sigma: FloatProperty(name="Surface Smoothing (m)", default=0.025, min=0.00001, precision=5)
     phase_tension: FloatProperty(
         name="Phase Interface Tension (N/m)", min=0, default=0, precision=4, update=invalidate_guidance
     )
@@ -380,6 +384,29 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         settings.message = "Read the committed frame."
 
 
+class FLUIDITY_OT_build_surface(SceneAction, Operator):
+    bl_idname = "fluidity.build_surface"
+    bl_label = "Build Surface"
+    bl_description = "Reconstruct native Mesh frames from the committed Bake cache"
+    resume: BoolProperty(default=False, options={"SKIP_SAVE"})
+
+    def perform(self, scene):
+        require_cadence(scene)
+        settings = scene.fluidity
+        source = project_path(settings.bake_cache)
+        output = project_path(settings.mesh_cache)
+        if source == output or source in output.parents or output in source.parents:
+            raise SceneError("cache", "Choose a separate, non-nested Surface cache directory.")
+        if not self.resume and output.exists():
+            raise SceneError("cache", "Choose a fresh Surface cache directory, or use Resume Surface.")
+        last_frame = playback.committed_last(source)
+        jobs.start_mesh(scene, source, output, last_frame, settings.mesh_spacing, settings.mesh_sigma, self.resume)
+        settings.committed_frame = -1
+        settings.target_frame = last_frame
+        settings.message = "Waiting for the first committed Surface frame."
+        if not bpy.app.timers.is_registered(tick):
+            bpy.app.timers.register(tick, first_interval=0.01)
+
 class FLUIDITY_OT_attach(SceneAction, Operator):
     bl_idname = "fluidity.attach"
     bl_description = "Validate and attach native Alembic Points playback without replacing artist display edits"
@@ -418,6 +445,7 @@ _CLASSES = (
     FLUIDITY_OT_cancel,
     FLUIDITY_OT_inspect,
     FLUIDITY_OT_attach,
+    FLUIDITY_OT_build_surface,
     FLUIDITY_OT_relink,
     FLUIDITY_Preferences,
     *authoring.CLASSES,

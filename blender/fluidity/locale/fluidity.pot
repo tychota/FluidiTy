@@ -783,3 +783,36 @@ msgstr ""
 
 msgid "Surface export timed out."
 msgstr ""
+
+msgid "Surface Cache"
+msgstr ""
+
+msgid "Surface Spacing (m)"
+msgstr ""
+
+msgid "Surface Smoothing (m)"
+msgstr ""
+
+msgid "Build Surface"
+msgstr ""
+
+msgid "Resume Surface"
+msgstr ""
+
+msgid "Reconstruct native Mesh frames from the committed Bake cache"
+msgstr ""
+
+msgid "Choose a separate, non-nested Surface cache directory."
+msgstr ""
+
+msgid "Choose a fresh Surface cache directory, or use Resume Surface."
+msgstr ""
+
+msgid "Waiting for the first committed Surface frame."
+msgstr ""
+
+msgid "Surface build complete. Attach the committed surface to render."
+msgstr ""
+
+msgid "Surface build failed. Committed frames are preserved."
+msgstr ""
