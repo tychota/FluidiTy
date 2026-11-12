@@ -584,6 +584,50 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
       && budget.granular_plastic_volume_changes == 0;
 }
 
+bool TestGridWallTractionBudget() {
+  constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  DrySolidParticle3D particle{
+      .world_position = {2.25, 0, 2.25},
+      .world_velocity = {1, 0, 0},
+      .mass = 1,
+      .reference_volume = 0.001,
+      .elastic_deformation = {{0.95, 0, 0}, {0, 0.95, 0}, {0, 0, 0.95}},
+  };
+  const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+  const DrySolidStep3D settings{
+      .duration = 0.001,
+      .floor_friction = 0.5,
+      .acoustic_cfl = 0.25,
+      .compatible_floor = true,
+  };
+  fluidity::DrySolidStepBudget3D budget{};
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+  const auto status =
+      fluidity::CudaAdvanceDrySolid3D(*grid, material, settings, {0x1p-42, 0x1p-38, 128}, {&particle, 1}, &budget);
+#else
+  const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
+#endif
+  if (!status.ok() || budget.grid_wall_impulse_y <= 0 || budget.grid_wall_friction_work >= 0) {
+    std::fprintf(
+        stderr,
+        "grid traction status=%s normal=%.9g work=%.9g\n",
+        status.ToString().c_str(),
+        budget.grid_wall_impulse_y,
+        budget.grid_wall_friction_work
+    );
+    return false;
+  }
+  const auto impulse = budget.grid_wall_tangent_impulse;
+  const double expected_impulse = settings.floor_friction * budget.grid_wall_impulse_y;
+  return impulse.x < 0 && impulse.y == 0 && std::abs(impulse.z) < 1e-10
+      && std::abs(std::hypot(impulse.x, impulse.z) - expected_impulse) < 1e-10
+      && std::abs(budget.cut_stress_work) < 1e-12;
+}
+
 bool TestUnsupportedFloorHasNoReaction() {
   constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
@@ -1377,9 +1421,9 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (!TestSandSurfaceFit() || !TestDryGridWallFriction() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
-      || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
-      || !TestCompatibleFloorStressWork() || !TestBoundedFloorDonorFallback() || !TestUncutStressWork()
-      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+      || !TestGridWallTractionBudget() || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual()
+      || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestBoundedFloorDonorFallback()
+      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

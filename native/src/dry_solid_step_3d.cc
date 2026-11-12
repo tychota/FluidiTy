@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -518,12 +519,82 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
       const double applied_impulse = stress_impulse * (mass / force_mass);
       const double omitted_impulse = stress_impulse - applied_impulse;
       trial_budget.omitted_stress_impulse_l1 += std::abs(omitted_impulse);
-      trial_budget.applied_stress_work += applied_impulse * velocity;
-      trial_budget.omitted_stress_work += omitted_impulse * velocity;
     }
     velocities[slot] = velocity;
   }
 
+  if (compatible_floor && settings.floor_friction > 0) {
+    constexpr std::array<int, 2> kTangentAxes{0, 2};
+    for (std::size_t index = 0; index < particles.size(); ++index) {
+      const double friction_limit = settings.floor_friction * particle_grid_normal_impulse[index];
+      if (friction_limit == 0) {
+        continue;
+      }
+      Vec3 tangent_velocity{};
+      Vec3 tangent_mobility{};
+      std::array<double, 3> weight_sums{};
+      const auto& stencils = boundary_deposits.compatible_stencils[index];
+      for (const int axis : kTangentAxes) {
+        for (const auto& sample : stencils[axis]) {
+          if (deposits[sample.face_slot].deposited_mass >= minimum_force_mass) {
+            weight_sums[axis] += sample.normalized_weight;
+          }
+        }
+        if (weight_sums[axis] == 0) {
+          continue;
+        }
+        for (const auto& sample : stencils[axis]) {
+          const auto slot = sample.face_slot;
+          const double mass = deposits[slot].deposited_mass;
+          if (mass < minimum_force_mass) {
+            continue;
+          }
+          const double weight = sample.normalized_weight / weight_sums[axis];
+          tangent_velocity.*kComponents[axis] += weight * velocities[slot];
+          tangent_mobility.*kComponents[axis] += weight * weight / mass;
+        }
+      }
+      if (tangent_mobility.x == 0 || tangent_mobility.z == 0) {
+        continue;
+      }
+      const auto impulse = SolveDryGridWallFriction3D(tangent_velocity, tangent_mobility, friction_limit);
+      if (!impulse.ok()) {
+        return impulse.status();
+      }
+      for (const int axis : kTangentAxes) {
+        for (const auto& sample : stencils[axis]) {
+          const auto slot = sample.face_slot;
+          const double mass = deposits[slot].deposited_mass;
+          if (mass < minimum_force_mass) {
+            continue;
+          }
+          const double weight = sample.normalized_weight / weight_sums[axis];
+          const double face_impulse = weight * ((*impulse).*kComponents[axis]);
+          const double before = velocities[slot];
+          velocities[slot] += face_impulse / mass;
+          if (!std::isfinite(velocities[slot])) {
+            return absl::OutOfRangeError("nonfinite dry friction face velocity");
+          }
+          if (std::abs(velocities[slot]) * settings.duration > maximum_displacement) {
+            return DurationExceeded("dry friction face motion bound");
+          }
+          if (budget != nullptr) {
+            trial_budget.grid_wall_tangent_impulse.*kComponents[axis] += face_impulse;
+            trial_budget.grid_wall_friction_work += face_impulse * std::midpoint(before, velocities[slot]);
+          }
+        }
+      }
+    }
+  }
+  if (budget != nullptr) {
+    for (std::size_t slot = 0; slot < grid.face_count(); ++slot) {
+      const double mass = deposits[slot].deposited_mass;
+      const double stress_impulse = settings.duration * face_force[slot];
+      const double applied_impulse = stress_impulse * (mass / std::max(mass, minimum_force_mass));
+      trial_budget.applied_stress_work += applied_impulse * velocities[slot];
+      trial_budget.omitted_stress_work += (stress_impulse - applied_impulse) * velocities[slot];
+    }
+  }
   std::vector<MacParticleGatherResult3D> gathers(particles.size());
   const auto& history = blend_stored_velocity ? old_velocities : velocities;
   if (compatible_floor) {
@@ -642,23 +713,6 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     if (std::hypot(velocity.x, velocity.y, velocity.z) * settings.duration > maximum_displacement) {
       return DurationExceeded("dry particle motion bound");
     }
-    if (compatible_floor && particle_grid_normal_impulse[index] > 0) {
-      const double tangent_speed = std::hypot(velocity.x, velocity.z);
-      if (tangent_speed > 0) {
-        const double friction_speed = settings.floor_friction * particle_grid_normal_impulse[index] / particle.mass;
-        const double retained_tangent = std::max(0.0, 1 - friction_speed / tangent_speed);
-        const Vec3 incoming = velocity;
-        velocity.x *= retained_tangent;
-        velocity.z *= retained_tangent;
-        if (budget != nullptr) {
-          const auto change = solid_detail::Combine(velocity, 1, incoming, -1);
-          trial_budget.wall_impulse_on_particles =
-              solid_detail::Combine(trial_budget.wall_impulse_on_particles, 1, change, particle.mass);
-          const auto midpoint = solid_detail::Combine(incoming, 0.5, velocity, 0.5);
-          trial_budget.particle_wall_kinetic_energy_change += particle.mass * solid_detail::Dot(midpoint, change);
-        }
-      }
-    }
     Vec3 stored_velocity = velocity;
     if (!retained_velocities.empty() && retained_velocities[index].eligible) {
       stored_velocity = solid_detail::Combine(velocity, 1, retained_velocities[index].correction, 1);
@@ -743,7 +797,9 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   }
   if (budget != nullptr
       && (!solid_detail::Finite(trial_budget.wall_impulse_on_particles)
-          || !std::isfinite(trial_budget.grid_wall_impulse_y) || !std::isfinite(trial_budget.proposed_stress_impulse_l1)
+          || !solid_detail::Finite(trial_budget.grid_wall_tangent_impulse)
+          || !std::isfinite(trial_budget.grid_wall_friction_work) || !std::isfinite(trial_budget.grid_wall_impulse_y)
+          || !std::isfinite(trial_budget.proposed_stress_impulse_l1)
           || !std::isfinite(trial_budget.omitted_stress_impulse_l1) || !std::isfinite(trial_budget.applied_stress_work)
           || !std::isfinite(trial_budget.omitted_stress_work) || !std::isfinite(trial_budget.cut_stress_work)
           || !std::isfinite(trial_budget.particle_wall_kinetic_energy_change))) {

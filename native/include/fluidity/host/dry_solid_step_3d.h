@@ -45,6 +45,8 @@ struct DrySolidStepBudget3D {
   double cut_stress_work = 0;  // Complete particle stress work plus unregularized compatible grid stress work, J.
   double omitted_stress_work = 0;  // Omitted stress impulse paired with that same field, J.
   double grid_wall_impulse_y = 0;  // Signed impulse from normal grid constraints on solid, N s.
+  Vec3 grid_wall_tangent_impulse{};  // Tangential impulse from the stationary grid traction, N s.
+  double grid_wall_friction_work = 0;  // Grid kinetic energy change from tangential traction, J.
   Vec3 wall_impulse_on_particles{};  // World impulse from the stored-velocity sweep on solid, N s.
   std::size_t particle_wall_contacts = 0;  // Count of swept particle contacts.
   std::size_t granular_projected_particles = 0;  // Granular trials changed by the return above relative roundoff.
