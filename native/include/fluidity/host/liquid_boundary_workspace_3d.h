@@ -127,6 +127,9 @@ class LiquidBoundaryWorkspace3D {
   // borrowing and failure-publication rules as Freeze.
   absl::StatusOr<FrozenLiquidBoundaryGeometryView3D>
   FreezeFloatingBox(const LiquidBoundaryGeometryViewInputs3D& inputs, const AxisAlignedFloatingBoxGeometry3D& box);
+  // Freezes the posed CPU box using the same capacity and publication rules.
+  absl::StatusOr<FrozenLiquidBoundaryGeometryView3D>
+  FreezeOrientedFloatingBox(const LiquidBoundaryGeometryViewInputs3D& inputs, const OrientedFloatingBoxGeometry3D& box);
   // Builds typed links from a live frozen view and finite pressure fields, with
   // the owning API's units/statuses. Checks view metadata and the exact incident
   // union before signed access/publication. Nonnormal full-cell area/volume or

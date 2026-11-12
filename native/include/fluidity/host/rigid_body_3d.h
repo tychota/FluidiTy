@@ -43,6 +43,9 @@ struct RigidBodyStep3D {
 // Checks finite world position and a unit body-to-world quaternion within 1e-12.
 absl::Status ValidateRigidBodyPose3D(RigidBodyPose3D pose);
 
+// Maps a finite body-frame vector to world axes using the unit orientation.
+// Invalid input returns InvalidArgument and an unrepresentable result OutOfRange.
+absl::StatusOr<Vec3> RotateRigidBodyVector3D(RigidOrientation3D orientation, Vec3 body_vector);
 // Checks body identity, positive finite mass and principal inertia, pose and
 // finite velocities and loads. A malformed body returns InvalidArgument.
 absl::Status ValidateRigidBody3D(const RigidBody3D& body);

@@ -13,6 +13,72 @@ constexpr auto kOwningLinks = static_cast<
 );
 }  // namespace
 
+TEST(LiquidBoundaryGeometry3D, OrientedBoxSubtractsWetVolumeAndBlocksFace) {
+  GeometryCases cases(kOwningFreeze, kOwningLinks);
+  const auto grid = cases.Grid();
+  const auto samples = cases.Sample([](double, double y, double) {
+    return y - 0.75;
+  });
+  const LiquidBoundaryGeometryInputs3D inputs{
+      grid,
+      samples.candidates,
+      samples.centers,
+      samples.corners,
+      {},
+      0.01,
+      1.0,
+      0.0,
+  };
+  const OrientedFloatingBoxGeometry3D box{
+      .pose =
+          {
+              .center = {0.0, 0.75, 0.5},
+              .orientation = {.w = std::sqrt(0.9), .vector = {0.0, std::sqrt(0.1), 0.0}},
+          },
+      .body_half_extent = {0.25, 0.25, 0.25},
+      .liquid_height = 0.75,
+  };
+  const auto frozen = FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(inputs, box);
+  ASSERT_TRUE(frozen.ok()) << frozen.status();
+  ASSERT_EQ(frozen->cells().size(), 1);
+  // The x=0 face and y=0.75 surface each bisect the yawed cube.
+  EXPECT_NEAR(frozen->cells().front().fluid_volume, 0.71875, 1e-13);
+  const auto low_x = std::ranges::find_if(frozen->faces(), [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
+  });
+  ASSERT_NE(low_x, frozen->faces().end());
+  EXPECT_NEAR(low_x->blocked_area, 0.3125, 1e-13);
+  EXPECT_NEAR(low_x->open_area, 0.6875, 1e-13);
+
+  const LiquidBoundaryGeometryViewInputs3D tank_inputs{
+      grid.view(),
+      samples.candidates,
+      samples.centers,
+      samples.corners,
+      AxisAlignedLiquidTank3D{-0.75, 0.875, 0.125, 0.125, 0.875, 0.0},
+      0.01,
+      1.0,
+      0.0,
+  };
+  auto workspace = LiquidBoundaryWorkspace3D::Create({.blocks = 8, .cells = 8, .faces = 48});
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto in_tank = workspace->FreezeOrientedFloatingBox(tank_inputs, box);
+  ASSERT_TRUE(in_tank.ok()) << in_tank.status();
+  ASSERT_EQ(in_tank->cells.size(), 1);
+  EXPECT_NEAR(in_tank->cells.front().fluid_volume, 0.37890625, 1e-13);
+  const auto tank_low_x = std::ranges::find_if(in_tank->faces, [](const auto& face) {
+    return face.face_index.axis == FaceNormalAxis::kX && face.face_index.lattice_index.x == -2;
+  });
+  ASSERT_NE(tank_low_x, in_tank->faces.end());
+  EXPECT_NEAR(tank_low_x->open_area, 0.34375, 1e-13);
+
+  auto overlaps_tank = box;
+  overlaps_tank.pose.center.z = 0.25;
+  const auto rejected = workspace->FreezeOrientedFloatingBox(tank_inputs, overlaps_tank);
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(rejected.status().message().empty());
+  EXPECT_NEAR(in_tank->cells.front().fluid_volume, 0.37890625, 1e-13);
+}
 TEST(LiquidBoundaryGeometry3D, FiniteBoxClipsPlanarLiquidVolumeAndApertures) {
   GeometryCases cases(kOwningFreeze, kOwningLinks);
   const auto grid = cases.Grid();

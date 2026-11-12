@@ -507,6 +507,235 @@ ComputeFloatingBoxGeometry(void* context, const GeometryInput& query) {
   }
   return output;
 }
+struct OrientedBoxContext {
+  const OrientedFloatingBoxGeometry3D& box;
+  std::array<boundary_internal::CartesianVector, 3> axes;
+  boundary_internal::CartesianVector world_extent;
+  bool bounded;
+};
+
+absl::StatusOr<boundary_internal::GeometryOutput>
+ComputeOrientedBoxGeometry(void* context, const GeometryInput& query) {
+  namespace clip = boundary_internal;
+  const auto& request = *static_cast<const OrientedBoxContext*>(context);
+  if (query.mode != GeometryMode::kCell && query.mode != GeometryMode::kFace) {
+    return CpuGeometry(request.bounded ? context : nullptr, query);
+  }
+  const bool face_query = query.mode == GeometryMode::kFace;
+  const double h = query.geometry.cell_width;
+  const double full_area = h * h;
+  clip::GeometryOutput output{};
+  clip::TankClipBounds outer;
+  if (!face_query && !clip::TankCellHasResolvedWorldExtent(query)) {
+    return UnrepresentableGeometry(request.bounded);
+  }
+  if (query.obstacle.kind == clip::ObstacleKind::kOpenTank) {
+    const auto bounds = clip::LocalTankBounds(query);
+    if (!bounds.ok()) {
+      return clip::ArithmeticStatus(bounds.status(), request.bounded);
+    }
+    outer = *bounds;
+    if (face_query) {
+      const auto tank_face = clip::ComputeTankFace(query, outer);
+      if (!tank_face.ok()) {
+        return clip::ArithmeticStatus(tank_face.status(), request.bounded);
+      }
+      output = *tank_face;
+      if (output.open_face_area == 0.0) {
+        return output;
+      }
+    }
+  }
+
+  if (!face_query) {
+    auto vertical_lattice = clip::TankAxis(query, 1);
+    const auto liquid_top = clip::TankClipCoordinate(request.box.liquid_height, vertical_lattice);
+    if (!liquid_top.ok()) {
+      return clip::ArithmeticStatus(liquid_top.status(), request.bounded);
+    }
+    for (int corner = 0; corner < 8; ++corner) {
+      auto lattice = vertical_lattice;
+      lattice.lattice_index += (corner >> 1) & 1;
+      const auto distance = clip::HorizontalPlaneLatticeDistance(request.box.liquid_height, lattice);
+      if (!distance.ok()) {
+        return clip::ArithmeticStatus(distance.status(), request.bounded);
+      }
+      if (query.corner_distances[corner] != *distance) {
+        return absl::Status(
+            absl::StatusCode::kInvalidArgument,
+            request.bounded ? "" : "oriented box requires horizontal liquid distance samples"
+        );
+      }
+    }
+    outer.high[1] = std::min(outer.high[1], *liquid_top);
+  }
+
+  const auto center = CartesianComponents(request.box.pose.center);
+  const auto half_extent = CartesianComponents(request.box.body_half_extent);
+  clip::CartesianVector local_center{};
+  std::array<bool, 3> clear_low{};
+  std::array<bool, 3> clear_high{};
+  bool separated = false;
+  for (int axis = 0; axis < 3; ++axis) {
+    const auto lattice = clip::TankAxis(query, axis);
+    const auto offset = clip::TankPlaneOffset(center[axis], lattice).Bounds();
+    if (!offset.finite()) {
+      return UnrepresentableGeometry(request.bounded);
+    }
+    local_center[axis] = offset.estimate / h;
+    constexpr double kInfinity = std::numeric_limits<double>::infinity();
+    const double box_low = std::nextafter(clip::AddDown(offset.lower, -request.world_extent[axis]) / h, -kInfinity);
+    const double box_high = std::nextafter(clip::AddUp(offset.upper, request.world_extent[axis]) / h, kInfinity);
+    const double domain_high = face_query && axis == query.axis ? 0.0 : outer.high[axis];
+    clear_low[axis] = box_low > outer.low[axis];
+    clear_high[axis] = box_high < domain_high;
+    separated |= box_low > domain_high || box_high < outer.low[axis];
+  }
+  const double outer_measure = clip::TankBoxMeasure(outer, h, face_query ? query.axis : -1);
+  if (!IsNormalOrZero(outer_measure)) {
+    return UnrepresentableGeometry(request.bounded);
+  }
+  if (separated || outer_measure == 0.0) {
+    if (face_query) {
+      output.open_face_area = outer_measure;
+      output.blocked_face_area = full_area - outer_measure;
+    } else {
+      output.high_side_liquid_volume = outer_measure;
+    }
+    return output;
+  }
+
+  std::array<clip::ClippingPlane, 6> planes{};
+  for (std::size_t axis = 0; axis < request.axes.size(); ++axis) {
+    for (std::size_t side = 0; side < 2; ++side) {
+      const auto normal = clip::Scale(request.axes[axis], side == 0 ? -1.0 : 1.0);
+      const double coordinate = Dot(normal, local_center) + half_extent[axis] / h;
+      if (!std::isfinite(coordinate)) {
+        return UnrepresentableGeometry(request.bounded);
+      }
+      planes[2 * axis + side] = {normal, coordinate};
+    }
+  }
+
+  double open_measure = 0.0;
+  double solid_measure = 0.0;
+  if (face_query) {
+    const int first_tangent = (query.axis + 1) % 3;
+    const int second_tangent = (query.axis + 2) % 3;
+    clip::ClippingPolygon inside;
+    constexpr std::array<std::array<bool, 2>, 4> kCornerBits{
+        {{false, false}, {true, false}, {true, true}, {false, true}}
+    };
+    for (const auto& corner : kCornerBits) {
+      clip::CartesianVector position{};
+      position[first_tangent] = corner[0] ? outer.high[first_tangent] : outer.low[first_tangent];
+      position[second_tangent] = corner[1] ? outer.high[second_tangent] : outer.low[second_tangent];
+      inside.push_back({position, 0.0});
+    }
+    for (const auto& plane : planes) {
+      const clip::ClippingPlane outside{clip::Scale(plane.normal, -1.0), -plane.plane_coordinate};
+      open_measure += clip::ComputeOpenFaceArea(inside, outside, h);
+      inside = clip::ClipPolygon(inside, plane);
+    }
+    solid_measure = clip::ComputeClippedArea(inside, h);
+  } else {
+    std::array<clip::ClippingVertex, 8> corners{};
+    for (std::size_t corner = 0; corner < corners.size(); ++corner) {
+      for (int axis = 0; axis < 3; ++axis) {
+        corners[corner].cell_width_position[axis] = ((corner >> axis) & 1) ? outer.high[axis] : outer.low[axis];
+      }
+    }
+    constexpr int kPermutations[6][3]{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    for (const auto& permutation : kPermutations) {
+      const auto a = corners[0];
+      const auto b = corners[std::size_t{1} << permutation[0]];
+      const auto c = corners[(std::size_t{1} << permutation[0]) | (std::size_t{1} << permutation[1])];
+      const auto d = corners[7];
+      clip::ClippingPolyhedron inside{{a, b, c}, {a, b, d}, {a, c, d}, {b, c, d}};
+      // Each outside piece is disjoint from the remaining interior and from
+      // the earlier pieces. Avoid subtracting a nearly full solid measure.
+      for (const auto& plane : planes) {
+        const clip::ClippingPlane outside{clip::Scale(plane.normal, -1.0), -plane.plane_coordinate};
+        open_measure += clip::ComputeClippedVolume(clip::ClipPolyhedron(inside, outside), h);
+        inside = clip::ClipPolyhedron(inside, plane);
+      }
+      solid_measure += clip::ComputeClippedVolume(inside, h);
+    }
+  }
+  constexpr double kMeasureRoundoff = 256 * std::numeric_limits<double>::epsilon();
+  if (!IsNormalOrZero(open_measure) || !IsNormalOrZero(solid_measure)
+      || std::abs((open_measure + solid_measure) / outer_measure - 1.0) > kMeasureRoundoff) {
+    return UnrepresentableGeometry(request.bounded);
+  }
+
+  if (face_query) {
+    output.open_face_area = std::min(open_measure, outer_measure);
+    output.blocked_face_area = full_area - output.open_face_area;
+    if (solid_measure > 0.0 && output.blocked_face_area == 0.0) {
+      return UnrepresentableGeometry(request.bounded);
+    }
+  } else {
+    if (solid_measure > 0.0 && open_measure > 0.0) {
+      // A clear pair of layers connects around a convex obstruction if a
+      // transverse wall supplies a clear passage between the layers.
+      bool connected = false;
+      for (int axis = 0; axis < 3; ++axis) {
+        const int a = (axis + 1) % 3;
+        const int b = (axis + 2) % 3;
+        connected |=
+            clear_low[axis] && clear_high[axis] && (clear_low[a] || clear_high[a] || clear_low[b] || clear_high[b]);
+      }
+      if (!connected) {
+        return absl::Status(
+            absl::StatusCode::kFailedPrecondition,
+            request.bounded ? "" : "oriented box wet-cell connectivity is uncertified"
+        );
+      }
+    }
+    output.high_side_liquid_volume = std::min(open_measure, outer_measure);
+  }
+  return output;
+}
+absl::StatusOr<OrientedBoxContext> PrepareOrientedBox(
+    const OrientedFloatingBoxGeometry3D& box,
+    UniformMacGeometry3D geometry,
+    const LiquidObstacle3D& obstacle,
+    std::span<const LiquidCenterDistance3D> center_distances,
+    bool bounded
+) {
+  constexpr std::array kBodyAxes{Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}, Vec3{0.0, 0.0, 1.0}};
+  const auto half_extent = CartesianComponents(box.body_half_extent);
+  OrientedBoxContext context{box, {}, {}, bounded};
+  for (std::size_t axis = 0; axis < kBodyAxes.size(); ++axis) {
+    if (!IsPositiveFinite(half_extent[axis])) {
+      return absl::Status(absl::StatusCode::kInvalidArgument, bounded ? "" : "invalid oriented box half extent");
+    }
+    const auto rotated = RotateRigidBodyVector3D(box.pose.orientation, kBodyAxes[axis]);
+    if (!rotated.ok()) {
+      return rotated.status();
+    }
+    context.axes[axis] = CartesianComponents(*rotated);
+    for (std::size_t component = 0; component < kBodyAxes.size(); ++component) {
+      const double extent = std::abs(context.axes[axis][component]) * half_extent[axis];
+      context.world_extent[component] = boundary_internal::AddUp(
+          context.world_extent[component],
+          std::nextafter(extent, std::numeric_limits<double>::infinity())
+      );
+    }
+  }
+  const auto center = box.pose.center;
+  const auto extent = context.world_extent;
+  const AxisAlignedFloatingBoxGeometry3D bounds{
+      .world_low = {center.x - extent[0], center.y - extent[1], center.z - extent[2]},
+      .world_high = {center.x + extent[0], center.y + extent[1], center.z + extent[2]},
+      .liquid_height = box.liquid_height,
+  };
+  const auto validation = ValidateFloatingBoxInputs(bounds, geometry, obstacle, center_distances, bounded);
+  if (!validation.ok()) {
+    return validation;
+  }
+  return context;
+}
 absl::Status FreezeCore(
     const LiquidBoundaryGeometryViewInputs3D& inputs,
     GeometryBackend backend,
@@ -1058,6 +1287,16 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGe
   FloatingBoxContext context{box, false};
   return boundary_internal::FreezeGeometry(inputs, {ComputeFloatingBoxGeometry, &context});
 }
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const OrientedFloatingBoxGeometry3D& box
+) {
+  auto context = PrepareOrientedBox(box, inputs.mac_grid.geometry(), inputs.obstacle, inputs.center_distances, false);
+  if (!context.ok()) {
+    return context.status();
+  }
+  return boundary_internal::FreezeGeometry(inputs, {ComputeOrientedBoxGeometry, &*context});
+}
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeLiquidBoundaryGeometry3D(
     const LiquidBoundaryGeometryInputs3D& inputs
 ) {
@@ -1086,6 +1325,19 @@ absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::Fr
   }
   FloatingBoxContext context{box, true};
   return FreezeWithBackend(inputs, {ComputeFloatingBoxGeometry, &context});
+}
+absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::FreezeOrientedFloatingBox(
+    const LiquidBoundaryGeometryViewInputs3D& inputs,
+    const OrientedFloatingBoxGeometry3D& box
+) {
+  if (inputs.cell_indices.size() > capacities_.cells || inputs.center_distances.size() > 27 * capacities_.cells) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  auto context = PrepareOrientedBox(box, inputs.mac_grid.geometry(), inputs.obstacle, inputs.center_distances, true);
+  if (!context.ok()) {
+    return context.status();
+  }
+  return FreezeWithBackend(inputs, {ComputeOrientedBoxGeometry, &*context});
 }
 absl::StatusOr<FrozenLiquidBoundaryGeometryView3D> LiquidBoundaryWorkspace3D::FreezeWithBackend(
     const LiquidBoundaryGeometryViewInputs3D& inputs,

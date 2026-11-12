@@ -95,6 +95,16 @@ absl::Status ValidateRigidBodyPose3D(RigidBodyPose3D pose) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<Vec3> RotateRigidBodyVector3D(RigidOrientation3D orientation, Vec3 body_vector) {
+  if (!IsUnit(orientation) || !IsFinite(body_vector)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto rotated = Rotate(orientation, body_vector);
+  if (!IsFinite(rotated)) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  return rotated;
+}
 absl::Status ValidateRigidBody3D(const RigidBody3D& body) {
   if (!ValidBody(body)) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});

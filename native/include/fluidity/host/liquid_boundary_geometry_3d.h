@@ -8,6 +8,7 @@
 
 #include "fluidity/base/liquid_boundary_math.h"
 #include "fluidity/host/mac_pressure_3d.h"
+#include "fluidity/host/rigid_body_3d.h"
 
 namespace fluidity {
 
@@ -61,6 +62,11 @@ struct AxisAlignedFloatingBoxGeometry3D {
   Vec3 world_low;  // Lower solid corner at freeze time, meters.
   Vec3 world_high;  // Upper solid corner at freeze time, meters.
   double liquid_height;  // World Y coordinate of the horizontal free surface, meters.
+};
+struct OrientedFloatingBoxGeometry3D {
+  RigidBodyPose3D pose;
+  Vec3 body_half_extent;  // Positive half extents in body-frame meters.
+  double liquid_height;  // World Y coordinate of the horizontal free surface.
 };
 struct FrozenLiquidCell3D {
   CellIndex3D cell_index;
@@ -116,6 +122,13 @@ absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeFloatingBoxLiquidBoundaryGe
     const AxisAlignedFloatingBoxGeometry3D& box
 );
 
+// CPU geometry freeze for the posed box under a horizontal surface. Supports
+// a stationary tank with strict clearance. Rejects cut pressure cells whose
+// connected exterior cannot be established, and publishes no result on error.
+absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeOrientedFloatingBoxLiquidBoundaryGeometry3D(
+    const LiquidBoundaryGeometryInputs3D& inputs,
+    const OrientedFloatingBoxGeometry3D& box
+);
 namespace boundary_internal {
 struct GeometryBackend;
 absl::StatusOr<FrozenLiquidBoundaryGeometry3D> FreezeGeometry(const LiquidBoundaryGeometryInputs3D&, GeometryBackend);
