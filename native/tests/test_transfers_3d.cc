@@ -286,6 +286,77 @@ TEST(MacTransfer3D, UncutElasticWorkBalancesAtTranslatedCorner) {
   );
 }
 
+TEST(MacTransfer3D, MaskedElasticWorkReportsDerivativeMismatch) {
+  const auto mac_grid = SparseMacGrid3D::Create(kTranslatedGeometry, kCornerBlocks, kCornerBlocks.size());
+  ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();
+  const Vec3 position = CornerParticle(kTranslatedGeometry).trial_world_position;
+  std::vector<double> completed_face_velocities(mac_grid->face_count());
+  SampleField(
+      *mac_grid,
+      [position](std::size_t axis_index, Vec3 anchor) {
+        const double displacement = Components(anchor)[axis_index] - Components(position)[axis_index];
+        return displacement * displacement + 2.0 * displacement;
+      },
+      completed_face_velocities
+  );
+  std::vector<std::uint8_t> compatible_faces(mac_grid->face_count(), 1);
+  for (std::size_t face_slot = 0; face_slot < compatible_faces.size(); ++face_slot) {
+    const auto face_index = mac_grid->view().FaceIndex(face_slot);
+    ASSERT_TRUE(face_index.ok()) << face_index.status();
+    if (face_index->axis == FaceNormalAxis::kX && face_index->lattice_index.x < 4) {
+      compatible_faces[face_slot] = 0;
+    }
+  }
+  constexpr Mat3 kStress{
+      .x_row = {6.0, 0.0, 0.0},
+      .y_row = {},
+      .z_row = {},
+  };
+  constexpr double kDt = 0.125;
+  constexpr double kVolume = 0.25;
+  constexpr double kCompatibleDerivative = 800.0 / 529.0;
+  std::vector<double> face_forces(mac_grid->face_count(), 999.0);
+  const auto budget = DepositCutElasticStress3D(
+      *mac_grid,
+      position,
+      position,
+      kVolume,
+      kStress,
+      kDt,
+      compatible_faces,
+      completed_face_velocities,
+      face_forces
+  );
+  ASSERT_TRUE(budget.ok()) << budget.status();
+  ExpectNear(budget->complete_velocity_gradient.x_row.x, 2.0);
+  ExpectNear(budget->compatible_velocity_gradient.x_row.x, kCompatibleDerivative);
+  ExpectNear(budget->cut_work, kDt * kVolume * 6.0 * (2.0 - kCompatibleDerivative));
+  ExpectNear(budget->grid_stress_work, -kDt * kVolume * 6.0 * kCompatibleDerivative);
+  ExpectNear(budget->stress_impulse, Vec3{});
+  ExpectNear(budget->stress_angular_impulse_about_particle, Vec3{});
+  for (std::size_t face_slot = 0; face_slot < compatible_faces.size(); ++face_slot) {
+    if (compatible_faces[face_slot] == 0) {
+      EXPECT_EQ(face_forces[face_slot], 0.0);
+    }
+  }
+
+  const auto accepted_forces = face_forces;
+  std::ranges::fill(compatible_faces, 0);
+  const auto rejected = DepositCutElasticStress3D(
+      *mac_grid,
+      position,
+      position,
+      kVolume,
+      kStress,
+      kDt,
+      compatible_faces,
+      completed_face_velocities,
+      face_forces
+  );
+  EXPECT_EQ(rejected.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_EQ(face_forces, accepted_forces);
+}
+
 TEST(MacTransfer3D, RoundsContributionsBeforeSummation) {
   const auto mac_grid = SparseMacGrid3D::Create(kUnitGeometry, kCornerBlocks, kCornerBlocks.size());
   ASSERT_TRUE(mac_grid.ok()) << mac_grid.status();

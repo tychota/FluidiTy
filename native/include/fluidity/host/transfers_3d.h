@@ -83,4 +83,35 @@ absl::Status DepositElasticStress3D(
     std::span<double> normal_face_forces
 );
 
+struct CutElasticWorkBudget3D {
+  Mat3 complete_velocity_gradient;  // True complete-basis gradient in inverse seconds.
+  Mat3 compatible_velocity_gradient;  // Gradient of the renormalized compatible interpolant.
+  double cut_work;  // dt * V0 * stress : (complete - compatible), joules.
+  double grid_stress_work;  // dt times face velocity dotted with stress force, joules.
+  Vec3 stress_impulse;  // Sum of deposited normal face impulses, newton-seconds.
+  Vec3 stress_angular_impulse_about_particle;  // Moment of those impulses, newton-meter-seconds.
+};
+
+// Deposits one particle's cut stress to compatible faces and measures the
+// work mismatch against a supplied complete, ghost-filled velocity field.
+// All views span owned face slots. Mask bytes must be zero or one. Velocity
+// is in m/s and dt is finite and positive in seconds. Position, volume and
+// stress follow DepositElasticStress3D. The force output must be disjoint
+// from both read views. Each normal component requires positive compatible
+// weight or the call fails with FailedPrecondition. Invalid data or views
+// return InvalidArgument, and nonfinite arithmetic returns OutOfRange.
+// Failure leaves the force output unchanged. The caller supplies certified
+// ghost values and accounts for contact reactions and blade work separately.
+absl::StatusOr<CutElasticWorkBudget3D> DepositCutElasticStress3D(
+    const SparseMacGrid3D& mac_grid,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    double dt,
+    std::span<const std::uint8_t> compatible_faces,
+    std::span<const double> completed_face_velocities,
+    std::span<double> normal_face_forces
+);
+
 }  // namespace fluidity

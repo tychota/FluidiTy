@@ -343,4 +343,128 @@ absl::Status DepositElasticStress3D(
   return absl::OkStatus();
 }
 
+absl::StatusOr<CutElasticWorkBudget3D> DepositCutElasticStress3D(
+    const SparseMacGrid3D& mac_grid,
+    Vec3 sorted_particle_world_position,
+    Vec3 trial_particle_world_position,
+    double reference_volume,
+    Mat3 kirchhoff_stress,
+    double dt,
+    std::span<const std::uint8_t> compatible_faces,
+    std::span<const double> completed_face_velocities,
+    std::span<double> normal_face_forces
+) {
+  const auto face_count = mac_grid.face_count();
+  if (compatible_faces.size() != face_count || completed_face_velocities.size() != face_count
+      || normal_face_forces.size() != face_count) {
+    return absl::InvalidArgumentError("cut stress requires complete face views");
+  }
+  const auto alias_status = CheckWritableViews(
+      {std::as_bytes(normal_face_forces)},
+      {std::as_bytes(compatible_faces), std::as_bytes(completed_face_velocities)}
+  );
+  if (!alias_status.ok()) {
+    return alias_status;
+  }
+  if (!IsFinite(kirchhoff_stress) || !std::isfinite(reference_volume) || reference_volume <= 0.0 || !std::isfinite(dt)
+      || dt <= 0.0) {
+    return absl::InvalidArgumentError("invalid cut stress, reference volume or step duration");
+  }
+
+  struct FaceForce {
+    std::size_t face_slot;
+    double stress_force_contribution;
+  };
+  std::array<FaceForce, kNormalComponentAccess.size() * MacFaceStencil3D{}.size()> staged_forces;
+  std::size_t contribution_count = 0;
+  CutElasticWorkBudget3D budget{};
+  double grid_stress_power = 0.0;
+  double cut_stress_power = 0.0;
+  for (const auto component : kNormalComponentAccess) {
+    const auto stencil = BuildOwnedMacFaceStencil3D(
+        mac_grid,
+        component.axis,
+        sorted_particle_world_position,
+        trial_particle_world_position
+    );
+    if (!stencil.ok()) {
+      return stencil.status();
+    }
+    double compatible_weight = 0.0;
+    Vec3 compatible_weight_gradient{};
+    for (const auto& sample : *stencil) {
+      const auto mask = compatible_faces[sample.face_slot];
+      if (mask > 1 || !std::isfinite(completed_face_velocities[sample.face_slot])) {
+        return absl::InvalidArgumentError("invalid mask or completed face velocity");
+      }
+      if (mask == 1) {
+        compatible_weight += sample.weight;
+        compatible_weight_gradient.x += sample.weight_gradient.x;
+        compatible_weight_gradient.y += sample.weight_gradient.y;
+        compatible_weight_gradient.z += sample.weight_gradient.z;
+      }
+    }
+    if (compatible_weight <= 0.0) {
+      return absl::FailedPreconditionError("cut support has no compatible weight");
+    }
+
+    auto& complete_row = budget.complete_velocity_gradient.*component.velocity_slope_row;
+    auto& compatible_row = budget.compatible_velocity_gradient.*component.velocity_slope_row;
+    const Vec3 stress_row = kirchhoff_stress.*component.velocity_slope_row;
+    for (const auto& sample : *stencil) {
+      const double face_velocity = completed_face_velocities[sample.face_slot];
+      complete_row.x += face_velocity * sample.weight_gradient.x;
+      complete_row.y += face_velocity * sample.weight_gradient.y;
+      complete_row.z += face_velocity * sample.weight_gradient.z;
+      if (compatible_faces[sample.face_slot] == 0) {
+        continue;
+      }
+      const double normalized_weight = sample.weight / compatible_weight;
+      // Differentiate the normalization, including the moving weight sum.
+      const Vec3 normalized_gradient{
+          (sample.weight_gradient.x - normalized_weight * compatible_weight_gradient.x) / compatible_weight,
+          (sample.weight_gradient.y - normalized_weight * compatible_weight_gradient.y) / compatible_weight,
+          (sample.weight_gradient.z - normalized_weight * compatible_weight_gradient.z) / compatible_weight,
+      };
+      compatible_row.x += face_velocity * normalized_gradient.x;
+      compatible_row.y += face_velocity * normalized_gradient.y;
+      compatible_row.z += face_velocity * normalized_gradient.z;
+
+      const double stress_force_contribution = -reference_volume * Dot(stress_row, normalized_gradient);
+      if (!std::isfinite(stress_force_contribution)) {
+        return absl::OutOfRangeError("nonfinite cut stress force");
+      }
+      staged_forces[contribution_count++] = {sample.face_slot, stress_force_contribution};
+      grid_stress_power += face_velocity * stress_force_contribution;
+      Vec3 impulse{};
+      impulse.*component.velocity_component = dt * stress_force_contribution;
+      const Vec3 offset = sample.face_offset_from_particle;
+      budget.stress_impulse.*component.velocity_component += impulse.*component.velocity_component;
+      budget.stress_angular_impulse_about_particle.x += offset.y * impulse.z - offset.z * impulse.y;
+      budget.stress_angular_impulse_about_particle.y += offset.z * impulse.x - offset.x * impulse.z;
+      budget.stress_angular_impulse_about_particle.z += offset.x * impulse.y - offset.y * impulse.x;
+    }
+    const Vec3 gradient_difference{
+        complete_row.x - compatible_row.x,
+        complete_row.y - compatible_row.y,
+        complete_row.z - compatible_row.z,
+    };
+    cut_stress_power += reference_volume * Dot(stress_row, gradient_difference);
+  }
+  budget.cut_work = dt * cut_stress_power;
+  budget.grid_stress_work = dt * grid_stress_power;
+  if (!IsFinite(budget.complete_velocity_gradient) || !IsFinite(budget.compatible_velocity_gradient)
+      || !std::isfinite(budget.cut_work) || !std::isfinite(budget.grid_stress_work) || !IsFinite(budget.stress_impulse)
+      || !IsFinite(budget.stress_angular_impulse_about_particle)) {
+    return absl::OutOfRangeError("nonfinite cut stress budget");
+  }
+
+  std::ranges::fill(normal_face_forces, 0.0);
+  for (std::size_t contribution_index = 0; contribution_index < contribution_count; ++contribution_index) {
+    const auto& contribution = staged_forces[contribution_index];
+    normal_face_forces[contribution.face_slot] = contribution.stress_force_contribution;
+  }
+  return budget;
+}
+
 }  // namespace fluidity
