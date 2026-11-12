@@ -134,27 +134,52 @@ absl::StatusOr<GradedQuadraticMacStencil3D> GradedQuadraticMacTransfer3D::Bind(
     std::span<const double> open_areas_m2,
     std::span<const LiquidAdaptiveFaceState3D> carrier_faces
 ) const {
-  const auto anchors = anchors_.faces();
-  if (open_areas_m2.size() != anchors.size() || carrier_faces.size() != anchors.size()) {
-    return absl::InvalidArgumentError("quadratic aperture and carrier extents must cover the canonical faces");
+  if (open_areas_m2.size() != anchors_.faces().size()) {
+    return absl::InvalidArgumentError("quadratic apertures must cover the canonical faces");
   }
-  const auto sorted_leaf = anchors_.ParticleLeafOrdinal(particle.transfer.sorted_world_position);
+  return BindWithLayout(
+      particle,
+      topology_,
+      anchors_,
+      world_origin_,
+      ownership_.interior_face_slots,
+      [&](std::size_t slot) {
+        return open_areas_m2[slot];
+      },
+      carrier_faces
+  );
+}
+
+absl::StatusOr<GradedQuadraticMacStencil3D> GradedQuadraticMacTransfer3D::BindWithLayout(
+    const GradedQuadraticMacParticle3D& particle,
+    const AdaptiveMacTopology3D& topology,
+    const GradedMacTransfer3D& transfer,
+    Vec3 world_origin,
+    std::span<const std::size_t> interior_slots,
+    absl::FunctionRef<double(std::size_t)> open_area_m2,
+    std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+) {
+  const auto anchors = transfer.faces();
+  if (interior_slots.size() != topology.interior_faces().size() || carrier_faces.size() != anchors.size()) {
+    return absl::InvalidArgumentError("quadratic slot and carrier extents must cover the canonical layout");
+  }
+  const auto sorted_leaf = transfer.ParticleLeafOrdinal(particle.transfer.sorted_world_position);
   if (!sorted_leaf.ok()) {
     return sorted_leaf.status();
   }
-  const auto trial_leaf = anchors_.ParticleLeafOrdinal(particle.transfer.trial_world_position);
+  const auto trial_leaf = transfer.ParticleLeafOrdinal(particle.transfer.trial_world_position);
   if (!trial_leaf.ok()) {
     return trial_leaf.status();
   }
-  const auto leaves = topology_.cells();
+  const auto leaves = topology.cells();
   const auto& leaf = leaves[*trial_leaf];
   const auto width_exponent = leaf.key.width_exponent;
   if (leaves[*sorted_leaf].key.width_exponent != width_exponent) {
     return absl::FailedPreconditionError("quadratic transfer endpoints must use the same adaptive level");
   }
 
-  const auto interior_faces = topology_.interior_faces();
-  const UniformMacGeometry3D level_geometry{world_origin_, leaf.cell_width};
+  const auto interior_faces = topology.interior_faces();
+  const UniformMacGeometry3D level_geometry{world_origin, leaf.cell_width};
   GradedQuadraticMacStencil3D bound{.cell_width_m = leaf.cell_width, .rows = {}};
   for (const auto component : internal::kNormalComponentAccess) {
     const auto geometry = BuildMacFaceGeometryStencil3D(
@@ -182,7 +207,10 @@ absl::StatusOr<GradedQuadraticMacStencil3D> GradedQuadraticMacTransfer3D::Bind(
         return absl::FailedPreconditionError("quadratic support requires both incident leaves at the particle level");
       }
       const auto ordinal = static_cast<std::size_t>(face - interior_faces.begin());
-      const auto slot = ownership_.interior_face_slots[ordinal];
+      const auto slot = interior_slots[ordinal];
+      if (slot >= anchors.size()) {
+        return absl::InvalidArgumentError("quadratic canonical slot lies outside the face extent");
+      }
       if (!MatchesAnchorDisplacement(
               anchors[slot].world_anchor,
               particle.transfer.trial_world_position,
@@ -190,7 +218,7 @@ absl::StatusOr<GradedQuadraticMacStencil3D> GradedQuadraticMacTransfer3D::Bind(
           )) {
         return absl::OutOfRangeError("quadratic sample displacement differs from its physical adaptive anchor");
       }
-      const auto aperture = CheckOpenArea(open_areas_m2[slot], face->face_area);
+      const auto aperture = CheckOpenArea(open_area_m2(slot), face->face_area);
       if (!aperture.ok()) {
         return aperture;
       }
@@ -228,20 +256,51 @@ absl::StatusOr<std::vector<MacFaceDeposit3D>> GradedQuadraticMacTransfer3D::Depo
     if (!bound.ok()) {
       return bound.status();
     }
-    for (const auto component : internal::kNormalComponentAccess) {
-      const auto status = internal::AccumulateMacParticleComponent(
-          bound->rows[static_cast<std::size_t>(component.axis)],
-          particle.transfer,
-          component,
-          std::span(deposits),
-          internal::AccumulateMacFaceDeposit
-      );
-      if (!status.ok()) {
-        return status;
-      }
+    const auto status = AccumulateBoundDeposit(particle.transfer, *bound, deposits);
+    if (!status.ok()) {
+      return status;
     }
   }
   return deposits;
+}
+
+absl::Status GradedQuadraticMacTransfer3D::AccumulateBoundDeposit(
+    const MacTransferParticle3D& particle,
+    const GradedQuadraticMacStencil3D& bound,
+    std::span<MacFaceDeposit3D> deposits
+) {
+  for (const auto component : internal::kNormalComponentAccess) {
+    const auto status = internal::AccumulateMacParticleComponent(
+        bound.rows[static_cast<std::size_t>(component.axis)],
+        particle,
+        component,
+        deposits,
+        internal::AccumulateMacFaceDeposit
+    );
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status GradedQuadraticMacTransfer3D::CheckBoundCarriers(
+    const GradedQuadraticMacStencil3D& bound,
+    std::int64_t side_tag,
+    std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+) {
+  for (const auto& row : bound.rows) {
+    for (const auto& sample : row) {
+      if (sample.face_slot >= carrier_faces.size()) {
+        return absl::InvalidArgumentError("quadratic carrier extent does not cover the frozen slot");
+      }
+      const auto checked = CheckCarrier(carrier_faces[sample.face_slot], side_tag);
+      if (!checked.ok()) {
+        return checked;
+      }
+    }
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<MacParticleGatherResult3D> GradedQuadraticMacTransfer3D::Gather(
@@ -257,13 +316,24 @@ absl::StatusOr<MacParticleGatherResult3D> GradedQuadraticMacTransfer3D::Gather(
   if (!bound.ok()) {
     return bound.status();
   }
-  for (const auto& row : bound->rows) {
-    for (const auto& sample : row) {
-      const auto checked = CheckCarrier(new_carrier_faces[sample.face_slot], particle.side_tag);
-      if (!checked.ok()) {
-        return checked;
-      }
-    }
+  Vec3 old_pic_velocity{};
+  return GatherBound(*bound, particle.side_tag, old_carrier_faces, new_carrier_faces, old_pic_velocity);
+}
+
+absl::StatusOr<MacParticleGatherResult3D> GradedQuadraticMacTransfer3D::GatherBound(
+    const GradedQuadraticMacStencil3D& bound,
+    std::int64_t side_tag,
+    std::span<const LiquidAdaptiveFaceState3D> old_carrier_faces,
+    std::span<const LiquidAdaptiveFaceState3D> new_carrier_faces,
+    Vec3& old_pic_velocity
+) {
+  const auto old_status = CheckBoundCarriers(bound, side_tag, old_carrier_faces);
+  if (!old_status.ok()) {
+    return old_status;
+  }
+  const auto new_status = CheckBoundCarriers(bound, side_tag, new_carrier_faces);
+  if (!new_status.ok()) {
+    return new_status;
   }
   const auto old_velocity = [&](std::size_t slot) {
     return old_carrier_faces[slot].carrier_velocity;
@@ -271,22 +341,25 @@ absl::StatusOr<MacParticleGatherResult3D> GradedQuadraticMacTransfer3D::Gather(
   const auto new_velocity = [&](std::size_t slot) {
     return new_carrier_faces[slot].carrier_velocity;
   };
+  Vec3 old_pic{};
   MacParticleGatherResult3D gathered{};
   for (const auto component : internal::kNormalComponentAccess) {
     const auto row = internal::GatherMacVelocityComponentFromSlots(
-        bound->rows[static_cast<std::size_t>(component.axis)],
-        bound->cell_width_m,
+        bound.rows[static_cast<std::size_t>(component.axis)],
+        bound.cell_width_m,
         old_velocity,
         new_velocity
     );
     if (!row.ok()) {
       return row.status();
     }
+    old_pic.*component.velocity_component = row->old_pic_velocity;
     gathered.new_pic_velocity.*component.velocity_component = row->new_pic_velocity;
     gathered.grid_velocity_increment.*component.velocity_component = row->grid_velocity_increment;
     gathered.fitted_velocity_slopes.*component.velocity_slope_row = row->fitted_velocity_slope_row;
     gathered.velocity_gradient.*component.velocity_slope_row = row->velocity_gradient_row;
   }
+  old_pic_velocity = old_pic;
   return gathered;
 }
 

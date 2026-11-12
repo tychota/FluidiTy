@@ -460,65 +460,73 @@ absl::StatusOr<std::vector<MacFaceDeposit3D>> GradedMacTransfer3D::Deposit(
   }
   std::vector<MacFaceDeposit3D> deposits(faces_.size());
   for (const auto& particle : particles) {
-    if (!std::isfinite(particle.mass) || particle.mass <= 0 || !Finite(particle.world_velocity)
-        || (particle.affine_enabled
-            && (!Finite(particle.velocity_slopes.x_row) || !Finite(particle.velocity_slopes.y_row)
-                || !Finite(particle.velocity_slopes.z_row)))) {
-      return absl::InvalidArgumentError("invalid adaptive transfer deposition particle");
-    }
-    const auto width = ParticleSupportWidth(particle.world_position);
-    if (!width.ok()) {
-      return width.status();
-    }
-    const auto support = BuildSupport(std::span(face_support_bounds_), faces_, carrier_faces, particle, *width, false);
-    if (!support.ok()) {
-      return support.status();
-    }
-    Matrix3D unused_slopes{};
-    const bool use_affine = particle.affine_enabled && FitAllComponents(*support, unused_slopes);
-    const auto velocity = Components(particle.world_velocity);
-    const Matrix3D slopes{
-        Components(particle.velocity_slopes.x_row),
-        Components(particle.velocity_slopes.y_row),
-        Components(particle.velocity_slopes.z_row),
-    };
-    const auto status = VisitSupport(
-        std::span(face_support_bounds_),
-        faces_,
-        carrier_faces,
-        particle,
-        *width,
-        false,
-        [&](std::size_t slot, std::size_t axis, const Components3D& offset, double weight) {
-          const auto& component = (*support)[axis];
-          const double mass_contribution = particle.mass * (weight / component.weight_sum);
-          double face_velocity = velocity[axis];
-          if (use_affine) {
-            const Components3D centered_offset_m{
-                (offset[0] - component.mean_offset[0]) * *width,
-                (offset[1] - component.mean_offset[1]) * *width,
-                (offset[2] - component.mean_offset[2]) * *width,
-            };
-            face_velocity += Dot(slopes[axis], centered_offset_m);
-          }
-          const double momentum_contribution = mass_contribution * face_velocity;
-          if (mass_contribution == 0 || (face_velocity != 0 && momentum_contribution == 0)) {
-            return absl::OutOfRangeError("adaptive transfer contribution underflows");
-          }
-          auto& deposit = deposits[slot];
-          deposit.deposited_mass += mass_contribution;
-          deposit.deposited_pure_momentum += momentum_contribution;
-          if (!std::isfinite(deposit.deposited_mass) || !std::isfinite(deposit.deposited_pure_momentum)) {
-            return absl::OutOfRangeError("adaptive transfer deposition is nonfinite");
-          }
-          return absl::OkStatus();
-        }
-    );
+    const auto status = AccumulateParticleDeposit(particle, carrier_faces, deposits);
     if (!status.ok()) {
       return status;
     }
   }
   return deposits;
+}
+
+absl::Status GradedMacTransfer3D::AccumulateParticleDeposit(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidAdaptiveFaceState3D> carrier_faces,
+    std::span<MacFaceDeposit3D> deposits
+) const {
+  if (!std::isfinite(particle.mass) || particle.mass <= 0 || !Finite(particle.world_velocity)
+      || (particle.affine_enabled
+          && (!Finite(particle.velocity_slopes.x_row) || !Finite(particle.velocity_slopes.y_row)
+              || !Finite(particle.velocity_slopes.z_row)))) {
+    return absl::InvalidArgumentError("invalid adaptive transfer deposition particle");
+  }
+  const auto width = ParticleSupportWidth(particle.world_position);
+  if (!width.ok()) {
+    return width.status();
+  }
+  const auto support = BuildSupport(std::span(face_support_bounds_), faces_, carrier_faces, particle, *width, false);
+  if (!support.ok()) {
+    return support.status();
+  }
+  Matrix3D unused_slopes{};
+  const bool use_affine = particle.affine_enabled && FitAllComponents(*support, unused_slopes);
+  const auto velocity = Components(particle.world_velocity);
+  const Matrix3D slopes{
+      Components(particle.velocity_slopes.x_row),
+      Components(particle.velocity_slopes.y_row),
+      Components(particle.velocity_slopes.z_row),
+  };
+  return VisitSupport(
+      std::span(face_support_bounds_),
+      faces_,
+      carrier_faces,
+      particle,
+      *width,
+      false,
+      [&](std::size_t slot, std::size_t axis, const Components3D& offset, double weight) {
+        const auto& component = (*support)[axis];
+        const double mass_contribution = particle.mass * (weight / component.weight_sum);
+        double face_velocity = velocity[axis];
+        if (use_affine) {
+          const Components3D centered_offset_m{
+              (offset[0] - component.mean_offset[0]) * *width,
+              (offset[1] - component.mean_offset[1]) * *width,
+              (offset[2] - component.mean_offset[2]) * *width,
+          };
+          face_velocity += Dot(slopes[axis], centered_offset_m);
+        }
+        const double momentum_contribution = mass_contribution * face_velocity;
+        if (mass_contribution == 0 || (face_velocity != 0 && momentum_contribution == 0)) {
+          return absl::OutOfRangeError("adaptive transfer contribution underflows");
+        }
+        auto& deposit = deposits[slot];
+        deposit.deposited_mass += mass_contribution;
+        deposit.deposited_pure_momentum += momentum_contribution;
+        if (!std::isfinite(deposit.deposited_mass) || !std::isfinite(deposit.deposited_pure_momentum)) {
+          return absl::OutOfRangeError("adaptive transfer deposition is nonfinite");
+        }
+        return absl::OkStatus();
+      }
+  );
 }
 
 absl::StatusOr<GradedMacParticleGather3D> GradedMacTransfer3D::Gather(

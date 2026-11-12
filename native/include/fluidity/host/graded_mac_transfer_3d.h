@@ -14,6 +14,9 @@
 #include "fluidity/host/liquid_state_3d.h"
 
 namespace fluidity {
+namespace liquid_step_internal {
+class AdaptiveLiquidStep3D;
+}
 
 // Physical staggered anchor at the center of a canonical owned subface.
 struct GradedMacFace3D {
@@ -123,6 +126,16 @@ class GradedMacTransfer3D {
   ) const;
 
  private:
+  friend class liquid_step_internal::AdaptiveLiquidStep3D;
+
+  // Add one radial particle in canonical slot order to prevalidated scratch.
+  // The caller owns the scratch and discards partial values on failure.
+  absl::Status AccumulateParticleDeposit(
+      const LiquidParticleState3D& particle,
+      std::span<const LiquidAdaptiveFaceState3D> carrier_faces,
+      std::span<MacFaceDeposit3D> deposits
+  ) const;
+
   struct LeafBox {
     Vec3 lower;
     Vec3 upper;
