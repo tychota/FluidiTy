@@ -347,6 +347,46 @@ TEST(Viscosity, FullCell3DStrainUsesHarmonicShearAcrossPhases) {
   EXPECT_NEAR(shear.quadrature_weight * shear_strain / 2.0, exact_traction, kTolerance);
 }
 
+TEST(Viscosity, CutCell3DStrainWeightsCompleteEdgeWithLiquidVolume) {
+  const std::array blocks{BlockIndex3D{0, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());
+  ASSERT_TRUE(grid.ok()) << grid.status();
+  const std::array cells{
+      MacViscosityCell3D{.cell_index = {0, 0, 0}, .dynamic_viscosity = 2.0},
+      MacViscosityCell3D{.cell_index = {1, 0, 0}, .dynamic_viscosity = 4.0},
+      MacViscosityCell3D{.cell_index = {0, 1, 0}, .dynamic_viscosity = 8.0},
+      MacViscosityCell3D{.cell_index = {1, 1, 0}, .dynamic_viscosity = 16.0},
+  };
+  std::array<std::array<double, 8>, 4> octants{};
+  octants[0][3] = 0.125;
+  octants[1][2] = octants[1][6] = 0.125;
+  octants[2][1] = 0.0625;
+  octants[3][0] = 0.125;
+  const auto rows = AssembleCutCellMacStrain3D(grid->view(), cells, octants);
+  ASSERT_TRUE(rows.ok()) << rows.status();
+  ASSERT_EQ(rows->size(), 13);
+  constexpr std::array kNormalWeights{0.5, 2.0, 1.0, 4.0};
+  for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+      const auto& row = (*rows)[3 * cell + axis];
+      EXPECT_EQ(row.quadrature_weight, kNormalWeights[cell]);
+      EXPECT_EQ(row.term_count, 2);
+    }
+  }
+  const auto& shear = rows->back();
+  EXPECT_EQ(shear.first_axis, FaceNormalAxis::kX);
+  EXPECT_EQ(shear.second_axis, FaceNormalAxis::kY);
+  EXPECT_EQ(shear.term_count, 4);
+  // Total volume is 9/16 m³. The volume-weighted harmonic viscosity is 4 Pa s.
+  EXPECT_NEAR(shear.quadrature_weight, 9.0, kTolerance);
+
+  octants[0][3] = 0.126;
+  EXPECT_EQ(
+      AssembleCutCellMacStrain3D(grid->view(), cells, octants).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+}
+
 TEST(Viscosity, FullCell3DStrainRejectsDuplicatesAndMissingFaceOwners) {
   const std::array blocks{BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{0.0, 0.0, 0.0}, 1.0}, blocks, blocks.size());

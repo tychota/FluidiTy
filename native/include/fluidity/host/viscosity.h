@@ -77,6 +77,21 @@ struct MacStrainRow3D {
 absl::StatusOr<std::vector<MacStrainRow3D>>
 AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells);
 
+// Uses the same complete stencils and ordering as AssembleFullCellMacStrain3D.
+// Per-cell octants are liquid volumes in m³, with x/y/z bits from low to high.
+// A normal row uses the sum of its cell octants. An edge uses the two
+// incident octants in each of its four cells and volume-weighted harmonic
+// viscosity. Each cell must have positive volume and each octant must lie
+// within [0, h³/8]. Missing cells at a cut edge require separate boundary
+// stencils; this routine emits only the complete edge rows. Returns
+// InvalidArgument for mismatched or invalid measures and the full-cell
+// statuses for geometry, face ownership and arithmetic. Errors carry no rows.
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes
+);
+
 // Builds one half-cell shear row for a flat, grid-aligned wall.
 // The normal velocity derivative along the tangent is prescribed in s⁻¹. The face slot carries the tangential
 // component at h/2 from the wall. Wall speed is signed along that component,

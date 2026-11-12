@@ -88,6 +88,43 @@ double HarmonicEdgeViscosity(std::array<double, 4> viscosities) {
   return minimum * (4.0 / reciprocal_sum);
 }
 
+// Form each V/mu as an exponent-separated value. Rescale by the largest
+// exponent before summing, then evaluate 4*V²/sum(V/mu) without first
+// rounding the effective viscosity or overflowing an intermediate product.
+absl::StatusOr<double> CutShearWeight(const std::array<double, 4>& volumes, const std::array<double, 4>& viscosities) {
+  std::array<BinaryProduct, 4> resistances{};
+  double edge_volume = 0.0;
+  int largest_exponent = std::numeric_limits<int>::min();
+  for (std::size_t quadrant = 0; quadrant < volumes.size(); ++quadrant) {
+    const double volume = volumes[quadrant];
+    if (volume == 0.0) {
+      continue;
+    }
+    const double viscosity = viscosities[quadrant];
+    if (viscosity == 0.0) {
+      return 0.0;
+    }
+    edge_volume += volume;
+    const auto resistance = FactorProduct(volume, 1.0, 1.0, viscosity);
+    resistances[quadrant] = resistance;
+    largest_exponent = std::max(largest_exponent, resistance.exponent);
+  }
+  if (edge_volume == 0.0) {
+    return 0.0;
+  }
+  double normalized_resistance = 0.0;
+  for (const auto resistance : resistances) {
+    if (resistance.fraction > 0.0) {
+      normalized_resistance += std::scalbn(resistance.fraction, resistance.exponent - largest_exponent);
+    }
+  }
+  const double weight = FactorProduct(edge_volume, edge_volume, 1.0, normalized_resistance).Value(2 - largest_exponent);
+  if (!std::isnormal(weight) || weight <= 0.0) {
+    return absl::OutOfRangeError("cut shear strain quadrature is outside normal double range");
+  }
+  return weight;
+}
+
 double StrainWeight3D(double viscosity, double spacing, int multiplicity_exponent) {
   int spacing_exponent;
   const double spacing_fraction = std::frexp(spacing, &spacing_exponent);
@@ -700,8 +737,12 @@ absl::Status AssembleMacStrain2D(
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::vector<MacStrainRow3D>>
-AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells) {
+namespace {
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleMacStrain(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes
+) {
   std::vector<MacStrainRow3D> rows;
   const auto maximum_rows = CheckedExtentProduct(cells.size(), 6);
   if (!maximum_rows.ok() || *maximum_rows > rows.max_size()) {
@@ -731,9 +772,34 @@ AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const Mac
   if (!std::isnormal(normal_coefficient)) {
     return absl::OutOfRangeError("normal strain coefficient is outside normal double range");
   }
+  const bool cut = !liquid_octant_volumes.empty();
+  const double maximum_octant_volume = spacing * spacing * spacing / 8.0;
+  if (cut && !std::isnormal(maximum_octant_volume)) {
+    return absl::OutOfRangeError("viscosity octant capacity is outside normal double range");
+  }
   rows.reserve(*maximum_rows);
-  for (const auto& cell : cells) {
-    const double quadrature_weight = StrainWeight3D(cell.dynamic_viscosity, spacing, 1);
+  for (std::size_t cell_ordinal = 0; cell_ordinal < cells.size(); ++cell_ordinal) {
+    const auto& cell = cells[cell_ordinal];
+    double quadrature_weight;
+    if (cut) {
+      const auto& octants = liquid_octant_volumes[cell_ordinal];
+      double liquid_volume = 0.0;
+      for (const double volume : octants) {
+        if (!std::isfinite(volume) || volume < 0.0 || volume > maximum_octant_volume) {
+          return absl::InvalidArgumentError("viscosity octant volume is outside its cell bound");
+        }
+        liquid_volume += volume;
+      }
+      if (liquid_volume == 0.0) {
+        return absl::InvalidArgumentError("viscosity cell requires positive liquid volume");
+      }
+      if (!std::isfinite(liquid_volume)) {
+        return absl::OutOfRangeError("viscosity liquid volume is unrepresentable");
+      }
+      quadrature_weight = ScaledProduct(cell.dynamic_viscosity, liquid_volume, 2.0);
+    } else {
+      quadrature_weight = StrainWeight3D(cell.dynamic_viscosity, spacing, 1);
+    }
     if (cell.dynamic_viscosity > 0.0 && !std::isnormal(quadrature_weight)) {
       return absl::OutOfRangeError("normal strain quadrature is outside normal double range");
     }
@@ -774,15 +840,45 @@ AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const Mac
         if (second == nullptr || diagonal == nullptr) {
           continue;
         }
-        const double edge_viscosity = HarmonicEdgeViscosity(
-            {cell.dynamic_viscosity, first->dynamic_viscosity, second->dynamic_viscosity, diagonal->dynamic_viscosity}
-        );
-        if (!std::isfinite(edge_viscosity)) {
-          return absl::OutOfRangeError("edge viscosity is unrepresentable");
+        const std::array viscosities{
+            cell.dynamic_viscosity,
+            first->dynamic_viscosity,
+            second->dynamic_viscosity,
+            diagonal->dynamic_viscosity,
+        };
+        if (!std::isnormal(shear_coefficient)) {
+          return absl::OutOfRangeError("shear strain coefficient is outside normal double range");
         }
-        const double quadrature_weight = StrainWeight3D(edge_viscosity, spacing, 2);
-        if (!std::isnormal(shear_coefficient) || (edge_viscosity > 0.0 && !std::isnormal(quadrature_weight))) {
-          return absl::OutOfRangeError("shear strain coefficient or quadrature is outside normal double range");
+        double quadrature_weight;
+        if (cut) {
+          const std::size_t first_bit = std::size_t{1} << first_axis;
+          const std::size_t second_bit = std::size_t{1} << second_axis;
+          const std::size_t edge_axis_bit = 7 ^ (first_bit | second_bit);
+          const auto edge_quarter_volume = [&](const MacViscosityCell3D* adjacent_cell, std::size_t octant) {
+            const auto cell_ordinal = static_cast<std::size_t>(adjacent_cell - cells.data());
+            const auto& octants = liquid_octant_volumes[cell_ordinal];
+            return octants[octant] + octants[octant | edge_axis_bit];
+          };
+          const std::array volumes{
+              edge_quarter_volume(&cell, first_bit | second_bit),
+              edge_quarter_volume(first, second_bit),
+              edge_quarter_volume(second, first_bit),
+              edge_quarter_volume(diagonal, 0),
+          };
+          const auto cut_weight = CutShearWeight(volumes, viscosities);
+          if (!cut_weight.ok()) {
+            return cut_weight.status();
+          }
+          quadrature_weight = *cut_weight;
+        } else {
+          const double edge_viscosity = HarmonicEdgeViscosity(viscosities);
+          if (!std::isfinite(edge_viscosity)) {
+            return absl::OutOfRangeError("edge viscosity is unrepresentable");
+          }
+          quadrature_weight = StrainWeight3D(edge_viscosity, spacing, 2);
+          if (edge_viscosity > 0.0 && !std::isnormal(quadrature_weight)) {
+            return absl::OutOfRangeError("shear strain quadrature is outside normal double range");
+          }
         }
         const std::array faces{
             ViscosityFace(first_axis, first_index),
@@ -807,6 +903,24 @@ AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const Mac
     }
   }
   return rows;
+}
+
+}  // namespace
+
+absl::StatusOr<std::vector<MacStrainRow3D>>
+AssembleFullCellMacStrain3D(const SparseMacGridView3D& grid, std::span<const MacViscosityCell3D> cells) {
+  return AssembleMacStrain(grid, cells, {});
+}
+
+absl::StatusOr<std::vector<MacStrainRow3D>> AssembleCutCellMacStrain3D(
+    const SparseMacGridView3D& grid,
+    std::span<const MacViscosityCell3D> cells,
+    std::span<const std::array<double, 8>> liquid_octant_volumes
+) {
+  if (liquid_octant_volumes.size() != cells.size()) {
+    return absl::InvalidArgumentError("viscosity octant volumes differ from cell count");
+  }
+  return AssembleMacStrain(grid, cells, liquid_octant_volumes);
 }
 
 absl::StatusOr<MacStrainRow3D> MakeMacTangentialWallStrain3D(
