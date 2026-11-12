@@ -2568,3 +2568,39 @@ foreach ($grid in 'coarse', 'fine') {
   }
 }
 ```
+
+At the same 3 s endpoint, reducing the timestep further gave the
+following results. Neither grid converges into the acceptance band
+over these refinements.
+
+| Native case | Quarter nominal step angle / radius | Eighth nominal step angle / radius |
+|---|---|---|
+| Coarse | 39.358297° / 0.130208 m | 47.749195° / 0.114218 m |
+| Fine | 38.591885° / 0.147827 m | 43.549693° / 0.132036 m |
+
+```powershell
+foreach ($grid in 'coarse', 'fine') {
+  foreach ($step in 'quarter', 'eighth') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-reflected-timestep $grid $step
+  }
+}
+```
+
+The timestep-switch control uses the same 3 s fixture and chooses
+the other duration at the first step whose starting time is at
+least 0.50 s. It adds no sampling boundary at 0.50 s. In the fixture
+time loop, substitute `t >= 0.50 ? duration * scale : duration`
+for `duration` in both uses in the `next_time` calculation.
+Use scale 0.5 for nominal-to-half or 2.0 for half-to-nominal.
+
+| Native case | Nominal then half angle / radius | Half then nominal angle / radius |
+|---|---|---|
+| Coarse | 34.076557° / 0.135997 m (pass) | 33.418104° / 0.142172 m (pass) |
+| Fine | 28.148776° / 0.185503 m | 27.512464° / 0.180912 m |
+
+Both switched fine cases finish and miss both geometric limits.
+Their results are closer to each other than to the results of
+quartering the fixed step. All four switched runs retain vertical
+momentum residual below 8.2e-9 N·s and late angle drift below 0.09°.
+The variable-step fixture was restored after compilation. The
+original fixed-step acceptance matrix still governs Q-SAND.
