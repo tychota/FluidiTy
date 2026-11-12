@@ -42,6 +42,7 @@ With the extension installed, select a static domain box, a static emitter box w
 - Release CUDA CTest passed 912 of 912 tests serially, including the real-CUDA gas replay process.
 - The independent reference suite passed 357 tests with BLAS and OpenMP threads capped.
 - The CPU and CUDA Blender add-on scenes both passed the 13-frame bake, four-field inspection, native Volume attachment, and fresh-process Cycles render checks. The CPU render preserved 30 tracked files, and the CUDA render preserved 31 including its device compatibility record.
+- NVIDIA Compute Sanitizer memcheck reported zero errors for the real-CUDA gas CLI process test.
 - Clang-format 19.1.5 passed on all 386 tracked native source files.
 
 The M4 pressure/history work overlaps the MAC pressure interface. The M5 restart work and M6 interaction work overlap liquid committed state and checkpoint codecs. M7 uses the existing pressure/boundary primitives and the process and filesystem contracts, with gas-specific resolved state and completed-frame checkpoints. No active earlier milestone was needed to run the fixed-domain gas acceptance.
