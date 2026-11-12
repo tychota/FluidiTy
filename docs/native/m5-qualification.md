@@ -4152,3 +4152,34 @@ foreach ($bin in 'sand-affine-motion-limit-bin', 'sand-affine-limit-margin-bin')
   }
 }
 ```
+
+### Identify the limiter's unlabelled grid rejections
+
+Rebuild the 99%-of-limit affine-deposit control with diagnostics
+at the sparse stencil and owner lookup failure sites. Three runs
+reject because a face owner lies outside the allocated grid.
+
+| Native case | First rejection | Missing face index / owner block |
+|---|---|---|
+| Coarse | Step 316 | (−5, −1, −9) / (−2, −1, −3) |
+| Coarse half-step | Step 1110 | (12, −1, −1) / (3, −1, −1) |
+| Fine | Step 330 | (1, −1, −9) / (0, −1, −3) |
+| Fine half-step | Step 1059 face-motion bound | |
+
+The original fixture allocates horizontal block indices −2
+through 2. A full extra ring, and a ring confined to the bottom
+two block layers, each exceed the existing 24,576-face transfer
+capacity and reject at step zero. These runs therefore do not
+supply settled geometry. The existing component-wise clearing
+candidate remains intact and Q-SAND stays open.
+
+```powershell
+foreach ($bin in 'sand-affine-limit-status-bin', 'sand-affine-limit-halo-bin', 'sand-affine-floor-halo-bin') {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "out/pr-m5-sand-affine/out/$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
+
+The temporary status labels and halo controls were restored
+after linking.
