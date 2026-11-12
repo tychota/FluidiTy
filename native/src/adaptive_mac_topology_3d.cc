@@ -342,6 +342,87 @@ AdaptiveMacTopology3D::Create(std::span<const AdaptiveMacCellKey3D> leaf_keys, d
   return result;
 }
 
+absl::StatusOr<std::vector<std::size_t>> AdaptiveMacTopology3D::RefinementClosure(
+    std::span<const std::size_t> requested_parents,
+    std::size_t maximum_candidate_cells
+) const {
+  if (cells_.empty()) {
+    return absl::InvalidArgumentError("refinement closure requires a frozen topology");
+  }
+  const std::size_t cell_limit = std::min(maximum_candidate_cells, kMaxLeafCount);
+  if (cells_.size() > cell_limit) {
+    return absl::ResourceExhaustedError("refinement closure cannot hold the committed leaves");
+  }
+  for (const auto ordinal : requested_parents) {
+    if (ordinal >= cells_.size()) {
+      return absl::InvalidArgumentError("refinement request is outside the committed leaf order");
+    }
+    if (cells_[ordinal].key.width_exponent == 0) {
+      return absl::FailedPreconditionError("refinement request is already at the finest width");
+    }
+  }
+
+  const std::size_t maximum_families = (cell_limit - cells_.size()) / 7;
+  std::vector<std::size_t> closure;
+  closure.reserve(maximum_families);
+  std::vector<std::uint8_t> marked(cells_.size());
+  const auto include_parent = [&](std::size_t ordinal) -> absl::Status {
+    if (marked[ordinal] != 0) {
+      return absl::OkStatus();
+    }
+    if (closure.size() == maximum_families) {
+      return absl::ResourceExhaustedError("refinement closure exceeds the candidate leaf capacity");
+    }
+    marked[ordinal] = 1;
+    closure.push_back(ordinal);
+    return absl::OkStatus();
+  };
+  for (const auto ordinal : requested_parents) {
+    const auto included = include_parent(ordinal);
+    if (!included.ok()) {
+      return included;
+    }
+  }
+
+  // A split can only require a neighbor that was one level coarser in the
+  // committed topology. That coarser leaf covers the full tangential overlap
+  // of the finer endpoint, so one adjacent lattice probe per direction suffices.
+  for (std::size_t pending = 0; pending < closure.size(); ++pending) {
+    const auto& parent = cells_[closure[pending]].key;
+    if (parent.width_exponent == kMaxWidthExponent) {
+      continue;
+    }
+    const auto coarser_exponent = static_cast<std::uint8_t>(parent.width_exponent + 1);
+    const auto width = WidthInFinestCells(parent.width_exponent);
+    const auto coarser_width = WidthInFinestCells(coarser_exponent);
+    const auto lower = Coordinates(parent.lower_corner);
+    for (int dz = -1; dz <= 1; ++dz) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dx == 0 && dy == 0 && dz == 0) {
+            continue;
+          }
+          const std::array direction{dx, dy, dz};
+          LatticeCoordinates neighbor_lower{};
+          for (std::size_t axis = 0; axis < direction.size(); ++axis) {
+            const auto sample = ContactAxis(lower[axis], width, direction[axis]).values().front();
+            neighbor_lower[axis] = FloorToWidth(sample, coarser_width);
+          }
+          const auto neighbor = FindAtLowerCorner(cells_, neighbor_lower);
+          if (neighbor && cells_[*neighbor].key.width_exponent == coarser_exponent) {
+            const auto included = include_parent(*neighbor);
+            if (!included.ok()) {
+              return included;
+            }
+          }
+        }
+      }
+    }
+  }
+  std::ranges::sort(closure);
+  return closure;
+}
+
 std::span<const AdaptiveMacLeaf3D> AdaptiveMacTopology3D::cells() const {
   return cells_;
 }

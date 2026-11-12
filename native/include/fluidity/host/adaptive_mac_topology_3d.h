@@ -48,6 +48,15 @@ class AdaptiveMacTopology3D {
   static absl::StatusOr<AdaptiveMacTopology3D>
   Create(std::span<const AdaptiveMacCellKey3D> leaf_keys, double finest_cell_width);
 
+  // Return the minimal canonical set of committed parent ordinals to split
+  // once so the resulting leaves stay 2:1 across faces, edges and corners.
+  // Requests may be in any order or repeated. The proposed leaf count must
+  // fit maximum_candidate_cells and the topology limit. Invalid ordinals
+  // return InvalidArgument, a finest-level request returns FailedPrecondition
+  // and excess capacity returns ResourceExhausted. The topology stays frozen.
+  absl::StatusOr<std::vector<std::size_t>>
+  RefinementClosure(std::span<const std::size_t> requested_parents, std::size_t maximum_candidate_cells) const;
+
   // Views borrow this object. Cells are ordered by signed (z,y,x) lower
   // corner. Face slots are the order (normal axis,z,y,x,width exponent).
   // Width of the common finest lattice in meters.
