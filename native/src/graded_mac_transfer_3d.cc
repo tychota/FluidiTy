@@ -133,9 +133,14 @@ struct ComponentSupport {
 };
 using ParticleSupport = std::array<ComponentSupport, 3>;
 
+bool IsEligibleCarrier(const LiquidAdaptiveFaceState3D& carrier, std::int64_t side_tag, bool gather) {
+  return carrier.structurally_eligible && carrier.side_tag == side_tag
+      && (!gather || carrier.validity != LiquidFaceValidity3D::kMissing);
+}
+
 // Evaluate the compact, area-weighted transfer on canonical global slots.
 // All offsets use the particle's owning leaf width to condition the fit.
-template <typename Bounds, typename Visit>
+template <bool IncludeMasked = false, typename Bounds, typename Visit>
 absl::Status VisitSupport(
     std::span<const Bounds> bounds,
     std::span<const GradedMacFace3D> faces,
@@ -147,11 +152,10 @@ absl::Status VisitSupport(
 ) {
   const auto visit_slot = [&](std::size_t slot) {
     const auto& carrier = carriers[slot];
-    if (!carrier.structurally_eligible || carrier.side_tag != particle.side_tag) {
-      return absl::OkStatus();
-    }
-    if (gather && carrier.validity == LiquidFaceValidity3D::kMissing) {
-      return absl::OkStatus();
+    if constexpr (!IncludeMasked) {
+      if (!IsEligibleCarrier(carrier, particle.side_tag, gather)) {
+        return absl::OkStatus();
+      }
     }
     const auto& face = faces[slot];
     const Components3D offset{
@@ -178,7 +182,7 @@ absl::Status VisitSupport(
   return VisitFaceSupportSlots(bounds, Components(particle.world_position), leaf_width, 0, faces.size(), visit_slot);
 }
 
-template <typename Bounds>
+template <bool GeometryOnly = false, typename Bounds>
 absl::StatusOr<ParticleSupport> BuildSupport(
     std::span<const Bounds> bounds,
     std::span<const GradedMacFace3D> faces,
@@ -202,7 +206,9 @@ absl::StatusOr<ParticleSupport> BuildSupport(
           component.mean_offset[spatial] += weight * offset[spatial];
         }
         if (gather) {
-          component.velocity_scale = std::max(component.velocity_scale, std::abs(carriers[slot].carrier_velocity));
+          if constexpr (!GeometryOnly) {
+            component.velocity_scale = std::max(component.velocity_scale, std::abs(carriers[slot].carrier_velocity));
+          }
           component.uses_low_mass |= carriers[slot].validity == LiquidFaceValidity3D::kLowMass;
         }
         return absl::OkStatus();
@@ -229,7 +235,7 @@ absl::StatusOr<ParticleSupport> BuildSupport(
       particle,
       leaf_width,
       gather,
-      [&](std::size_t slot, std::size_t axis, const Components3D& offset, double weight) {
+      [&]([[maybe_unused]] std::size_t slot, std::size_t axis, const Components3D& offset, double weight) {
         auto& component = support[axis];
         const double normalized_weight = weight / component.weight_sum;
         const Components3D centered{
@@ -237,11 +243,16 @@ absl::StatusOr<ParticleSupport> BuildSupport(
             offset[1] - component.mean_offset[1],
             offset[2] - component.mean_offset[2],
         };
-        const double scaled_velocity =
-            component.velocity_scale == 0 ? 0 : carriers[slot].carrier_velocity / component.velocity_scale;
-        component.scaled_velocity_mean += normalized_weight * scaled_velocity;
+        double scaled_velocity = 0;
+        if constexpr (!GeometryOnly) {
+          scaled_velocity =
+              component.velocity_scale == 0 ? 0 : carriers[slot].carrier_velocity / component.velocity_scale;
+          component.scaled_velocity_mean += normalized_weight * scaled_velocity;
+        }
         for (std::size_t row = 0; row < 3; ++row) {
-          component.velocity_covariance[row] += normalized_weight * centered[row] * scaled_velocity;
+          if constexpr (!GeometryOnly) {
+            component.velocity_covariance[row] += normalized_weight * centered[row] * scaled_velocity;
+          }
           for (std::size_t column = 0; column <= row; ++column) {
             component.covariance[row][column] += normalized_weight * centered[row] * centered[column];
           }
@@ -293,6 +304,31 @@ bool SolveAffineSlope(const ComponentSupport& component, Components3D& slope) {
       residual -= factor[column][row] * slope[column];
     }
     slope[row] = residual / factor[row][row];
+  }
+  return true;
+}
+
+// Compare the normalized moments in leaf-width units, as used by the
+// uniform resampling formulas. A floating-point match is diagnostic only.
+bool MatchesUniformMoments(const GradedMacSupportMomentWitness3D& witness, LiquidUniformResamplingBasis3D basis) {
+  for (std::size_t axis = 0; axis < witness.rows.size(); ++axis) {
+    const auto& row = witness.rows[axis];
+    if (row.normalized_weight_sum != 1 || Components(row.mean_offset) != Components3D{}) {
+      return false;
+    }
+    const Matrix3D covariance{
+        Components(row.centered_covariance.x_row),
+        Components(row.centered_covariance.y_row),
+        Components(row.centered_covariance.z_row),
+    };
+    for (std::size_t spatial = 0; spatial < covariance.size(); ++spatial) {
+      Components3D expected{};
+      const bool cubic_normal = basis == LiquidUniformResamplingBasis3D::kCubicNormal && spatial == axis;
+      expected[spatial] = cubic_normal ? 1.0 / 3 : 0.25;
+      if (covariance[spatial] != expected) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -522,6 +558,121 @@ absl::StatusOr<GradedMacParticleGather3D> GradedMacTransfer3D::Gather(
       .velocity_slopes = {Cartesian(slopes[0]), Cartesian(slopes[1]), Cartesian(slopes[2])},
       .affine_enabled = use_affine,
   };
+}
+
+absl::StatusOr<GradedMacSupportMomentWitness3D> GradedMacTransfer3D::MeasureSupportMoments(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+) const {
+  if (carrier_faces.size() != faces_.size()) {
+    return absl::InvalidArgumentError("adaptive support witness requires canonical face extent");
+  }
+  for (const auto& carrier : carrier_faces) {
+    if (carrier.validity > LiquidFaceValidity3D::kLowMass || !std::isfinite(carrier.carrier_velocity)) {
+      return absl::InvalidArgumentError("adaptive support witness requires valid finite carriers");
+    }
+  }
+  const auto width = ParticleSupportWidth(particle.world_position);
+  if (!width.ok()) {
+    return width.status();
+  }
+  const auto bounds = std::span(face_support_bounds_);
+  const auto support = BuildSupport<true>(bounds, faces_, carrier_faces, particle, *width, true);
+  if (!support.ok()) {
+    return support.status();
+  }
+
+  GradedMacSupportMomentWitness3D witness{.leaf_width_m = *width};
+  for (std::size_t axis = 0; axis < witness.rows.size(); ++axis) {
+    const auto& component = (*support)[axis];
+    const auto& covariance = component.covariance;
+    Components3D unused_slopes{};
+    witness.rows[axis] = {
+        .unnormalized_weight_sum = component.weight_sum,
+        .mean_offset = Cartesian(component.mean_offset),
+        .centered_covariance =
+            {
+                {covariance[0][0], covariance[1][0], covariance[2][0]},
+                {covariance[1][0], covariance[1][1], covariance[2][1]},
+                {covariance[2][0], covariance[2][1], covariance[2][2]},
+            },
+        .full_rank = SolveAffineSlope(component, unused_slopes),
+        .uses_low_mass = component.uses_low_mass,
+    };
+  }
+
+  // Visit positive geometric support before masking so a normalized fit cannot
+  // hide missing, incompatible-side, or structurally ineligible carriers.
+  const auto measured = VisitSupport<true>(
+      bounds,
+      faces_,
+      carrier_faces,
+      particle,
+      *width,
+      false,
+      [&](std::size_t slot, std::size_t axis, const Components3D&, double weight) {
+        if (!std::isfinite(weight) || weight <= 0) {
+          return absl::OutOfRangeError("adaptive support witness weight is unrepresentable");
+        }
+        witness.has_width_transition |= faces_[slot].width_m != *width;
+        if (!IsEligibleCarrier(carrier_faces[slot], particle.side_tag, true)) {
+          witness.has_masked_support = true;
+          return absl::OkStatus();
+        }
+        auto& row = witness.rows[axis];
+        ++row.positive_sample_count;
+        row.normalized_weight_sum += weight / row.unnormalized_weight_sum;
+        return absl::OkStatus();
+      }
+  );
+  if (!measured.ok()) {
+    return measured;
+  }
+  for (const auto& row : witness.rows) {
+    const auto& covariance = row.centered_covariance;
+    if (!std::isfinite(row.normalized_weight_sum) || !Finite(row.mean_offset) || !Finite(covariance.x_row)
+        || !Finite(covariance.y_row) || !Finite(covariance.z_row)) {
+      return absl::OutOfRangeError("adaptive support witness moments are nonfinite");
+    }
+  }
+  witness.matches_quadratic_moments = MatchesUniformMoments(witness, LiquidUniformResamplingBasis3D::kQuadratic);
+  witness.matches_cubic_normal_moments = MatchesUniformMoments(witness, LiquidUniformResamplingBasis3D::kCubicNormal);
+  return witness;
+}
+
+absl::Status GradedMacTransfer3D::CheckUniformResamplingSupport(
+    const LiquidParticleState3D& particle,
+    double requested_leaf_width_m,
+    LiquidUniformResamplingBasis3D basis,
+    std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+) const {
+  if (!std::isfinite(requested_leaf_width_m) || requested_leaf_width_m <= 0) {
+    return absl::InvalidArgumentError("uniform resampling requires a finite positive leaf width");
+  }
+  if (basis != LiquidUniformResamplingBasis3D::kQuadratic && basis != LiquidUniformResamplingBasis3D::kCubicNormal) {
+    return absl::InvalidArgumentError("uniform resampling requires a recognized basis");
+  }
+  const auto witness = MeasureSupportMoments(particle, carrier_faces);
+  if (!witness.ok()) {
+    return witness.status();
+  }
+  if (!particle.affine_enabled || std::ranges::any_of(witness->rows, [](const auto& row) {
+        return !row.full_rank || row.uses_low_mass;
+      })) {
+    return absl::FailedPreconditionError("uniform resampling requires usable full-rank affine support");
+  }
+  if (witness->has_masked_support) {
+    return absl::FailedPreconditionError("uniform resampling refuses masked graded support");
+  }
+  if (witness->leaf_width_m != requested_leaf_width_m || witness->has_width_transition) {
+    return absl::FailedPreconditionError("uniform resampling refuses a graded width mismatch or transition");
+  }
+  const bool moment_match = basis == LiquidUniformResamplingBasis3D::kQuadratic ? witness->matches_quadratic_moments
+                                                                                : witness->matches_cubic_normal_moments;
+  if (!moment_match) {
+    return absl::FailedPreconditionError("actual graded transfer does not have the required uniform support moments");
+  }
+  return absl::FailedPreconditionError("graded radial weights cannot certify complete uniform tensor support");
 }
 
 }  // namespace fluidity

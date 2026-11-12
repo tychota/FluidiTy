@@ -47,6 +47,53 @@ double AffinePressure(const AdaptiveMacLeaf3D& cell) {
   return (index.x + 2.0 * index.y - 0.5 * index.z) / 16.0 + cell.cell_width * 2.5 / 16.0;
 }
 
+TEST(AdaptiveMacTopology3D, ClosesRefinementAcrossFacesEdgesAndCorners) {
+  for (std::size_t contact_axes = 1; contact_axes <= 3; ++contact_axes) {
+    SCOPED_TRACE(contact_axes);
+    std::array<std::int32_t, 3> fine_lower{-4, -4, -4};
+    for (std::size_t axis = 0; axis < contact_axes; ++axis) {
+      fine_lower[axis] -= 2;
+    }
+    const std::array keys{
+        AdaptiveMacCellKey3D{.lower_corner = {-4, -4, -4}, .width_exponent = 2},
+        AdaptiveMacCellKey3D{.lower_corner = {fine_lower[0], fine_lower[1], fine_lower[2]}, .width_exponent = 1},
+    };
+    const auto topology = AdaptiveMacTopology3D::Create(keys, 0.5);
+    ASSERT_TRUE(topology.ok()) << topology.status();
+    constexpr std::array<std::size_t, 1> requested{0};
+    const auto closure = topology->RefinementClosure(requested, 16);
+    ASSERT_TRUE(closure.ok()) << closure.status();
+    EXPECT_EQ(*closure, (std::vector<std::size_t>{0, 1}));
+    EXPECT_EQ(topology->RefinementClosure(requested, 15).status().code(), absl::StatusCode::kResourceExhausted);
+  }
+}
+
+TEST(AdaptiveMacTopology3D, RefinementClosureIsTransitiveAndCanonical) {
+  const std::array keys{
+      AdaptiveMacCellKey3D{.lower_corner = {32, 32, 32}, .width_exponent = 0},
+      AdaptiveMacCellKey3D{.lower_corner = {0, 0, 0}, .width_exponent = 3},
+      AdaptiveMacCellKey3D{.lower_corner = {-6, -6, -6}, .width_exponent = 1},
+      AdaptiveMacCellKey3D{.lower_corner = {-4, -4, -4}, .width_exponent = 2},
+  };
+  const auto topology = AdaptiveMacTopology3D::Create(keys, 1);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  constexpr std::array<std::size_t, 1> first{0};
+  constexpr std::array<std::size_t, 3> unordered{2, 0, 2};
+  for (const auto requested : {std::span<const std::size_t>(first), std::span<const std::size_t>(unordered)}) {
+    const auto closure = topology->RefinementClosure(requested, 25);
+    ASSERT_TRUE(closure.ok()) << closure.status();
+    EXPECT_EQ(*closure, (std::vector<std::size_t>{0, 1, 2}));
+  }
+  constexpr std::array<std::size_t, 1> finest{3};
+  EXPECT_EQ(topology->RefinementClosure(finest, 25).status().code(), absl::StatusCode::kFailedPrecondition);
+  constexpr std::array<std::size_t, 1> outside{4};
+  EXPECT_EQ(topology->RefinementClosure(outside, 25).status().code(), absl::StatusCode::kInvalidArgument);
+  const auto empty = topology->RefinementClosure({}, keys.size());
+  ASSERT_TRUE(empty.ok()) << empty.status();
+  EXPECT_TRUE(empty->empty());
+  EXPECT_EQ(topology->cells().size(), keys.size());
+}
+
 TEST(AdaptiveMacTopology3D, BindsTransferRowsWithoutAliasingSplitCoarseFaces) {
   const std::array keys{
       AdaptiveMacCellKey3D{.lower_corner = {-2, 0, 0}, .width_exponent = 1},

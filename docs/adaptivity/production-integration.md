@@ -29,7 +29,11 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    carrier data. Feed the physical, interface, support and camera upper bounds
    to the width policy. Persist the eligible seconds with the accepted state,
    reset them on veto, and apply deterministic 2:1 closure at faces, edges and
-   corners before preparing a family candidate. Qualify interrupted versus
+   corners before preparing a family candidate. The frozen topology now
+   computes the minimum refinement closure in canonical leaf order and checks
+   the proposed cell count before remap. The remaining transaction must apply
+   all selected families and publish their combined inventory and face changes.
+   Qualify interrupted versus
    uninterrupted policy decisions and ensure a rejected trial cannot earn age.
 2. Extend remap from exact particle rebinning to certified split and merge.
    Preserve mass, reference and current volumes, momentum, constituent inventory
@@ -50,6 +54,14 @@ a fresh process. The mixed-owner band uses the same acceptance boundary.
    52.36 ms to 21.08 ms and deposit from 80.01 ms to 32.34 ms on 2,592 leaves,
    8,400 faces and 1,024 particles with identical output. It adds 50,352 bytes
    to the frozen owner in that fixture. [Transfer index](https://github.com/tychota/FluidiTy/pull/114)
+
+### Actual graded support moments
+
+`GradedMacTransfer3D::MeasureSupportMoments` measures partition, weighted mean and centered covariance from the canonical radial gather support. The same affine pivot test reports rank for each velocity component. The witness also records positive geometric support removed by masks and support at other face widths.
+
+At a cell center away from boundaries and width transitions, the measured radial stencil has 28 positive samples per velocity row. In leaf-width-squared units, the binary64 normal and transverse covariances agree with `167/396` and `76/165` within `1e-15`. The affine field reproduces despite the mismatch with the quadratic variance `1/4` and cubic-normal variance `1/3`. A signed coarse/fine fixture also reproduces its affine field and reports the width transition.
+
+`CheckUniformResamplingSupport` refuses the radial stencil, including an accidental binary64 moment match, because uniform split and merge require the complete unmasked tensor support. The checked witness leaves split and merge disabled.
 
 ## Production band and M2 boundary
 
