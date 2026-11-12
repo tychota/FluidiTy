@@ -117,6 +117,37 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       }
     }
   }
+  // In axes aligned with an inclined layer, prescribe normal traction
+  // -p and shear p*t. Equal lateral compression -(1 + 2*t*t)*p
+  // minimizes the Drucker-Prager stress ratio for this traction.
+  // For a 30-degree cone the limiting t is sqrt(4/3), not tan(30 degrees).
+  constexpr double kNormalPressure = 1;
+  const double traction_limit = ::sqrt(4.0 / 3);
+  for (const double factor : kShearFactors) {
+    const double shear = kNormalPressure * factor * traction_limit;
+    const double lateral_pressure = kNormalPressure + 2 * shear * shear / kNormalPressure;
+    const double average_pressure = 0.5 * (lateral_pressure + kNormalPressure);
+    const double principal_split = ::hypot(0.5 * (lateral_pressure - kNormalPressure), shear);
+    const Vec3 principal_stress{
+        -average_pressure - principal_split,
+        -lateral_pressure,
+        -average_pressure + principal_split
+    };
+    const double trace_stress = principal_stress.x + principal_stress.y + principal_stress.z;
+    const double trace_strain =
+        trace_stress / (2 * cohesionless_sand.shear_modulus + 3 * cohesionless_sand.lame_lambda);
+    const double volumetric_stress = cohesionless_sand.lame_lambda * trace_strain;
+    const double inverse_shear_scale = 0.5 / cohesionless_sand.shear_modulus;
+    const Vec3 trial{
+        ::exp((principal_stress.x - volumetric_stress) * inverse_shear_scale),
+        ::exp((principal_stress.y - volumetric_stress) * inverse_shear_scale),
+        ::exp((principal_stress.z - volumetric_stress) * inverse_shear_scale),
+    };
+    if (!ReturnGranularPrincipal3D(trial, 0, cohesionless_sand, state)
+        || Near(state.elastic_stretches.x, trial.x) != (factor < 1) || !Near(state.log_plastic_jacobian, 0)) {
+      return 11;
+    }
+  }
   return 0;
 }
 

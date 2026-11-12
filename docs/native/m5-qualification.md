@@ -3080,3 +3080,33 @@ foreach ($friction in 'none', 'low') {
 The temporary harness changes only the floor coefficient in the
 fine nominal cone control. The solver and harness sources were
 restored after linking.
+
+### Inclined-layer traction admitted by the specified material
+
+The specified 30° Drucker–Prager cone is calibrated in triaxial
+compression. For a cohesionless incline, take pressure `p` normal
+to the slope and shear traction `p*t`, where `t = tan(slope)`.
+With the two lateral compressive stresses both equal to `a*p`,
+the squared deviator-to-compressive-trace ratio is
+`[(2/3)(a-1)^2 + 2t^2] / (2a+1)^2`. Its minimum for this traction
+occurs at `a = 1 + 2t^2`, giving `2t^2 / (9 + 12t^2)`.
+
+The squared cone limit for the specified material is `8/75`.
+This stress family reaches yield at `t = sqrt(4/3)`, or
+49.106605°. It includes stress states that are admissible at slopes
+above 35°. This calculation assumes freely selectable lateral
+stress. It makes no prediction of the lateral stress, deformation
+compatibility, or final shape in the finite pile.
+
+The shared constitutive oracle constructs the principal stretches
+for traction ratios at 0.999 and 1.001 times that limit. It checks
+that the former stays elastic, the latter yields, and both retain
+plastic volume. The native test and actual SM120 constitutive kernel
+both pass. The original material law and Q-SAND acceptance window
+remain in place.
+
+```powershell
+$b = 'out/build/m5-main-195af13-clean'
+cmake --build $b --target fluidity_m5_constitutive_tests fluidity_cuda_m5_constitutive_tests
+ctest --test-dir $b -R '^M5Constitutive\.' --no-tests=error --output-on-failure
+```
