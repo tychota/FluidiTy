@@ -3782,3 +3782,31 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
 }
 & "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Refit affine rows without fallback samples
+
+Starting at `eb8877c`, refit each affected stored affine row from
+non-fallback samples in the same component stencil. Use quadratic
+sample weights and the existing bounded QR fit. Keep a zero row
+when the remaining samples lack full rank. The reconstructed
+deformation gradient and paired stress transpose are unchanged.
+Both native and SM120 default dry-scene targets pass.
+
+| Native case at 3 s | Clear affected row angle / radius | Refit affected row angle / radius |
+|---|---|---|
+| Coarse | 34.329576° / 0.168211 m | 24.948769° / 0.186773 m |
+| Coarse half-step | 40.501234° / 0.156712 m | 27.879467° / 0.180336 m |
+| Fine | 31.443051° / 0.159557 m | 19.421900° / 0.195526 m |
+| Fine half-step | 34.693822° / 0.156304 m | 23.177521° / 0.181263 m |
+
+The refit lowers all four angles and increases all four radii.
+It overshoots the desired coarse half-step angle change and loses
+both fine-grid passes. Vertical momentum residual stays below
+2.1e-8 N·s. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-refit-affine-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
