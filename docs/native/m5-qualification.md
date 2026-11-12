@@ -2222,3 +2222,38 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+
+### Mass-weighted paired floor reconstruction
+
+The four SM120 cases for draft PR 111 finished and reproduced
+33.714729°, 32.702577°, 32.270910°, and 31.172480° at 1.5 s. The
+native three-second overshoot and flattening evidence remains.
+
+Local commit `f2e0739` weights each affine QR donor by deposited
+face mass and uses the same reconstruction coefficients in stress
+deposition and deformation. The work oracle preserves the affine
+field across a donor mass ratio of 1e8. Its work residual was
+1.81e-12 J on native and SM120. The nominal fine case finished the
+1.5 s interval at 36.312561° on both backends. The native continuation
+still hit the face-motion bound, at step 1176 instead of step 170.
+
+Local commit `52e2c90` also reconstructs faces below the existing
+force-mass floor. Their deposited PIC momentum remains available to
+transport. The same reconstruction supplies the deformation sample
+and sends the transposed stress force to eligible donors. Every
+native run finished through 3 s. The absolute vertical momentum
+residual stayed below 1e-8 N·s and the cut-work mismatch below
+3e-16 J. The angles still miss the gate.
+
+| Case | Weighted at 1.5 s | Weighted at 3 s | Weighted with cutoff at 1.5 s | Weighted with cutoff at 3 s |
+|---|---:|---:|---:|---:|
+| Coarse | 34.925916° | 37.649598° | 34.636386° | 35.659991° |
+| Coarse half-step | 37.105986° | 32.182352° | 37.555997° | 32.243641° |
+| Fine | 36.312561° | Motion bound | 37.508583° | 37.729420° |
+| Fine half-step | 35.038188° | 24.872650° | 35.704764° | 29.311134° |
+
+Use the isolated `codex/m5-sand-affine` commits and the same two-horizon
+commands from the preceding section. The weighted binaries are in
+`out/pr-m5-sand-affine/out/floor-mass-weighted-bin`. The native cutoff
+binary is in `out/pr-m5-sand-affine/out/floor-supported-bin`.
