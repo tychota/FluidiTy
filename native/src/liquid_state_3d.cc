@@ -7,6 +7,8 @@
 #include <tuple>
 #include <utility>
 
+#include "liquid_adaptive_state_internal_3d.h"
+
 namespace fluidity {
 namespace {
 // Device staging and host acceptance use this clock arithmetic. Only the final interval may snap
@@ -187,23 +189,21 @@ unsigned AdaptiveFaceCoverage(
 
 // Count exactly the canonical owned subfaces without allocating inside a
 // transaction attempt. Pairwise contacts enforce grading at edges and corners.
-absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
-  const auto cells = state.adaptive_cells.values();
-  const auto faces = state.adaptive_faces.values();
-  if (cells.empty()) {
-    return faces.empty() ? absl::OkStatus() : absl::Status(absl::StatusCode::kInvalidArgument, {});
+absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRecordView3D& records) {
+  if (records.cell_count == 0) {
+    return records.face_count == 0 ? absl::OkStatus() : absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  if (cells.size() > kMaximumAdaptiveLiquidCells3D || faces.size() > kMaximumAdaptiveLiquidFaces3D) {
+  if (records.cell_count > kMaximumAdaptiveLiquidCells3D || records.face_count > kMaximumAdaptiveLiquidFaces3D) {
     return absl::Status(absl::StatusCode::kResourceExhausted, {});
   }
-  if (state.blocks.size() != 0 || state.cells.size() != 0 || state.faces.size() != 0) {
-    return absl::Status(absl::StatusCode::kInvalidArgument, {});
-  }
-  for (std::size_t ordinal = 0; ordinal < cells.size(); ++ordinal) {
-    const auto& cell = cells[ordinal];
+  const auto cell_at = [&](std::size_t ordinal) {
+    return records.read_cell(records.context, ordinal);
+  };
+  for (std::size_t ordinal = 0; ordinal < records.cell_count; ++ordinal) {
+    const auto cell = cell_at(ordinal);
     if (cell.key.width_exponent > 30 || cell.occupancy > LiquidCellOccupancy3D::kSolid
-        || (ordinal > 0 && LatticeSortKey(cells[ordinal - 1].key.lower_corner) >= LatticeSortKey(cell.key.lower_corner)
-        )) {
+        || (ordinal > 0
+            && LatticeSortKey(cell_at(ordinal - 1).key.lower_corner) >= LatticeSortKey(cell.key.lower_corner))) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     const auto width = AdaptiveWidth(cell);
@@ -215,7 +215,7 @@ absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
         return absl::Status(absl::StatusCode::kOutOfRange, {});
       }
     }
-    const double width_m = std::ldexp(state.geometry.cell_width, cell.key.width_exponent);
+    const double width_m = std::ldexp(records.finest_cell_width, cell.key.width_exponent);
     const double volume_m3 = width_m * width_m * width_m;
     if (!Positive(volume_m3)) {
       return absl::Status(absl::StatusCode::kOutOfRange, {});
@@ -231,15 +231,15 @@ absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
 
   std::array<AdaptiveSideCoverage, kMaximumAdaptiveLiquidCells3D> coverage{};
   std::size_t subface_count = 0;
-  for (std::size_t first = 0; first < cells.size(); ++first) {
-    const auto lower = AdaptiveLowerCorner(cells[first]);
-    const auto width = AdaptiveWidth(cells[first]);
-    for (std::size_t second = first + 1; second < cells.size(); ++second) {
-      const auto other_lower = AdaptiveLowerCorner(cells[second]);
+  for (std::size_t first = 0; first < records.cell_count; ++first) {
+    const auto lower = AdaptiveLowerCorner(cell_at(first));
+    const auto width = AdaptiveWidth(cell_at(first));
+    for (std::size_t second = first + 1; second < records.cell_count; ++second) {
+      const auto other_lower = AdaptiveLowerCorner(cell_at(second));
       if (other_lower[2] > lower[2] + width) {
         break;
       }
-      const auto other_width = AdaptiveWidth(cells[second]);
+      const auto other_width = AdaptiveWidth(cell_at(second));
       std::size_t contact_count = 0;
       std::size_t normal_axis = 0;
       bool tail_is_first = false;
@@ -274,15 +274,16 @@ absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
       }
     }
   }
-  for (const auto& sides : std::span(coverage).first(cells.size())) {
+  for (const auto& sides : std::span(coverage).first(records.cell_count)) {
     for (const auto covered : sides) {
       subface_count += covered == 0 ? 1 : 4 - std::popcount(covered);
     }
   }
-  if (subface_count != faces.size()) {
+  if (subface_count != records.face_count) {
     return absl::Status(absl::StatusCode::kInvalidArgument, {});
   }
-  for (const auto& face : faces) {
+  for (std::size_t ordinal = 0; ordinal < records.face_count; ++ordinal) {
+    const auto face = records.read_face(records.context, ordinal);
     if (face.validity > LiquidFaceValidity3D::kLowMass || !std::isfinite(face.carrier_velocity)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
@@ -290,7 +291,32 @@ absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
   return absl::OkStatus();
 }
 
+absl::Status ValidateAdaptiveRecords(const LiquidState3D& state) {
+  if (state.adaptive_cells.size() != 0
+      && (state.blocks.size() != 0 || state.cells.size() != 0 || state.faces.size() != 0)) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  return ValidateAdaptiveRecordView({
+      .context = &state,
+      .finest_cell_width = state.geometry.cell_width,
+      .cell_count = state.adaptive_cells.size(),
+      .face_count = state.adaptive_faces.size(),
+      .read_cell =
+          [](const void* context, std::size_t ordinal) {
+            return static_cast<const LiquidState3D*>(context)->adaptive_cells[ordinal];
+          },
+      .read_face =
+          [](const void* context, std::size_t ordinal) {
+            return static_cast<const LiquidState3D*>(context)->adaptive_faces[ordinal];
+          },
+  });
+}
+
 }  // namespace
+
+absl::Status liquid_state_internal::ValidateAdaptiveRecordView3D(const AdaptiveRecordView3D& records) {
+  return ValidateAdaptiveRecordView(records);
+}
 
 bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const {
   return std::tie(id, tag, affine_enabled, mass, reference_volume, volume_ratio, side_tag, pic_initialized)

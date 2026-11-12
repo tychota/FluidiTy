@@ -226,6 +226,19 @@ TEST(LiquidCache3D, AdaptiveCheckpointRestoresAcceptedTopologyAndDiscardsRejecte
   ASSERT_TRUE(uninterrupted.ok()) << uninterrupted.status();
   ASSERT_TRUE(interrupted.ok()) << interrupted.status();
   EXPECT_EQ(Copy(*uninterrupted), Copy(*interrupted));
+  auto excess = resume;
+  excess.capacities.cells = kMaximumAdaptiveLiquidCells3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  excess = resume;
+  excess.capacity_replay_reservations = resume.capacities;
+  excess.capacity_replay_reservations.faces = kMaximumAdaptiveLiquidFaces3D + 1;
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(resumed->committed(), excess).status().code(), absl::StatusCode::kInvalidArgument);
+  auto altered = Copy(*interrupted);
+  wire::GetMutableLiquidState(altered.data())
+      ->mutable_resume()
+      ->mutable_capacities()
+      ->mutate_cells(kMaximumAdaptiveLiquidCells3D + 1);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(altered).status().code(), absl::StatusCode::kDataLoss);
 
   auto malformed = CloneLiquidState3D(restored->state, resume.capacities);
   ASSERT_TRUE(malformed.ok());
@@ -938,6 +951,31 @@ TEST(LiquidCache3D, InvalidSemanticInputAllocatesNoDecodedOwners) {
   ASSERT_TRUE(encoded.ok());
   auto bytes = Copy(*encoded);
   wire::GetMutableLiquidState(bytes.data())->mutable_particles()->GetMutableObject(0)->mutate_volume_ratio(0);
+  codec_allocations = 0;
+  codec_frees = 0;
+  const auto previous = _CrtSetAllocHook(CodecAllocationHook);
+  absl::StatusCode code;
+  {
+    auto decoded = DecodeLiquidState3D(bytes);
+    code = decoded.status().code();
+  }
+  _CrtSetAllocHook(previous);
+  EXPECT_EQ(code, absl::StatusCode::kDataLoss);
+  EXPECT_EQ(codec_allocations, 0);
+  EXPECT_EQ(codec_frees, 0);
+}
+TEST(LiquidCache3D, InvalidAdaptiveOwnershipAllocatesNoDecodedOwners) {
+  LiquidState3D state;
+  state.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+  state.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+  const auto encoded = EncodeLiquidState3D(state);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  auto bytes = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableLiquidState(bytes.data())
+                  ->mutable_adaptive()
+                  ->mutable_cells()
+                  ->GetMutableObject(0)
+                  ->mutate_width_exponent(31));
   codec_allocations = 0;
   codec_frees = 0;
   const auto previous = _CrtSetAllocHook(CodecAllocationHook);
