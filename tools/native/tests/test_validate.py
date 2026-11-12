@@ -69,6 +69,13 @@ SNAPSHOT_3D_CASES = (
 MEMCHECK_OPERATOR_CASES = (
     *SNAPSHOT_3D_CASES,
     *SUBSTEP_3D_CASES,
+    "CudaLiquidSubstep3D.FullCellViscosityMatchesCpuWithoutDeviceAllocation",
+    "CudaLiquidSubstep3D.TaitComplianceMatchesCpu",
+    "CudaLiquidSubstep3D.EosHydrostaticCompressionMatchesColumn",
+    "CudaLiquidSubstep3D.OpenIncompressibleDriftMatchesCpu",
+    "CudaLiquidSubstep3D.ParticlePhaseCrossingMatchesCpuAfterCapillaryRetry",
+    "CudaLiquidSubstep3D.DiscoveredCavitySurvivesCheckpointResume",
+    "CudaLiquidSubstep3D.PreparedCavityBoundariesMatchCpuAfterRetry",
     *WETTED_PISTON_CASES,
     *BOUNDARY_3D_CASES,
     "CudaTransfer.DepositAnalyticAndCpuParity",
@@ -80,6 +87,13 @@ MEMCHECK_OPERATOR_CASES = (
     "CudaTransfer.GatherFailurePreservesOutputs",
     *MAC_TRANSFER_3D_CASES,
     *MAC_PRESSURE_3D_CASES,
+    "CudaMacPressure3D.BackwardEulerStandingWaveMatchesAnalyticMode",
+    "CudaMacPressure3D.BackwardEulerPressurePulseMatchesModalOracle",
+    "CudaMacPressure3D.WaterHammerValveClosureMatchesAcousticOracle",
+    "CudaMacPressure3D.CompliantPistonConvergesToEosCompression",
+    "CudaMacViscosity3D.CoupledProjectionBalancesMomentumAndCompliantFlux",
+    "CudaMacViscosity3D.VelocityBlockMatchesCpuAndTrueResidual",
+    "CudaMacViscosity3D.RejectsExhaustionAndEliminatedMomentum",
     "CudaPressure.NeumannJumpMatchesFixture",
     "CudaPressure.ComplianceRetainsMeanPressure",
     "CudaPressure.DirichletAndWallFluxMatchAnalyticAndCpu",
@@ -781,13 +795,14 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
     _, _, output, run, _ = scenario
     assert run(f"windows-{config}-cuda") == 0
     gpu_report = ET.parse(output / "ctest-gpu.xml").getroot()
-    assert gpu_report.attrib == {"name": "gpu", "tests": "48", "failures": "0", "skipped": "0"}
+    expected_gpu = {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
+    assert gpu_report.attrib == {"name": "gpu", "tests": str(len(expected_gpu)), "failures": "0", "skipped": "0"}
     gpu_names = {case.attrib["name"] for case in gpu_report.findall("testcase")}
-    assert gpu_names == {*PROBE_CASES, *MEMCHECK_OPERATOR_CASES, OPERATOR_ERROR_CASE, *GRAPH_CASES}
+    assert gpu_names == expected_gpu
     evidence = json.loads((output / "summary.json").read_bytes())["evidence"]
     assert evidence["gpu"] == {
         "status": "passed",
-        "tests": 48,
+        "tests": len(expected_gpu),
         "device": "NVIDIA GeForce RTX 5060 Ti",
         "compute_capability": "12.0",
         "compiled_architecture": 1200,
@@ -838,7 +853,7 @@ def test_cuda_success_reports_operator_and_graph_measurements(scenario, config):
             "tool": "memcheck",
             "local_connection": "named-pipes",
             "errors": 0,
-            "tests": 46,
+            "tests": 1 + len(MEMCHECK_OPERATOR_CASES) + len(GRAPH_CASES),
         }
     else:
         assert evidence["sanitizer"] == {"status": "not_run", "reason": "release_only"}
