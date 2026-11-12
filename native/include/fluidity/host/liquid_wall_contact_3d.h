@@ -91,6 +91,15 @@ absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxContact3D(
     Vec3 body_half_extent,
     double particle_mass
 );
+// Resolves a rotating box and a stationary, frictionless open tank. Returns
+// only the box reaction. Competing impacts or an uncertified corrected path
+// return Aborted so the caller can retry at a smaller duration.
+absl::StatusOr<RigidBoxContact3D> ResolveRotatingBoxInTankContact3D(
+    const LiquidWallContactInputs3D& inputs,
+    const RigidBodyStep3D& drift,
+    Vec3 body_half_extent,
+    double particle_mass
+);
 // Stable blade ID and incident side in the blade's authored normal convention.
 // Zero ID and zero sign denote an unassigned particle. Assigned signs are +/-1.
 struct ElasticBladeSide3D {

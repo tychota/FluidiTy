@@ -74,6 +74,42 @@ TEST(LiquidWallContact3D, TangentialRotatingEntryCarriesPointWithoutNormalImpuls
   const auto endpoint = result->contact.world_position;
   EXPECT_NEAR(std::cos(0.25) * endpoint.x + std::sin(0.25) * endpoint.y, 0.5, 1e-14);
 }
+TEST(LiquidWallContact3D, RotatingBoxInTankSeparatesReactionsAndRetriesCompetingHits) {
+  const RigidBody3D body{
+      .body_id = 1,
+      .mass = 1.0,
+      .principal_inertia = {1.0, 1.0, 1.0},
+      .angular_velocity = {0.0, 0.0, 0.1},
+  };
+  const auto drift = AdvanceRigidBody3D(body, 1.0);
+  ASSERT_TRUE(drift.ok()) << drift.status();
+  constexpr Vec3 kExtent{0.5, 0.5, 0.5};
+  LiquidWallContactInputs3D input{
+      .start_world_position = {2.5, 0.0, 0.0},
+      .stored_world_velocity = {1.0, 0.0, 0.0},
+      .advecting_world_velocity = {1.0, 0.0, 0.0},
+      .obstacle = AxisAlignedLiquidTank3D{-3.0, 3.0, -3.0, -3.0, 3.0, 0.0},
+      .step_duration = 1.0,
+  };
+  const auto tank_only = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  ASSERT_TRUE(tank_only.ok()) << tank_only.status();
+  EXPECT_DOUBLE_EQ(tank_only->contact.world_position.x, 3.0);
+  EXPECT_DOUBLE_EQ(tank_only->body_impulse.x, 0.0);
+  EXPECT_DOUBLE_EQ(tank_only->body_angular_impulse.z, 0.0);
+
+  input.start_world_position = {-2.0, 0.125, 0.0};
+  input.stored_world_velocity = {3.0, 0.0, 0.0};
+  input.advecting_world_velocity = input.stored_world_velocity;
+  const auto box_only = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  ASSERT_TRUE(box_only.ok()) << box_only.status();
+  EXPECT_GT(box_only->body_impulse.x, 0.0);
+  EXPECT_NE(box_only->body_angular_impulse.z, 0.0);
+
+  input.stored_world_velocity = {6.0, 0.0, 0.0};
+  input.advecting_world_velocity = input.stored_world_velocity;
+  const auto competing = ResolveRotatingBoxInTankContact3D(input, *drift, kExtent, 1.0);
+  EXPECT_EQ(competing.status().code(), absl::StatusCode::kAborted);
+}
 TEST(LiquidWallContact3D, FiniteBoxDetectsCrossingAndReturnsOneBodyReaction) {
   const TranslatingContactBox3D box{{1.0, 0.0, 0.0}, {1.25, 1.0, 1.0}, {0.25, 0.0, 0.0}};
   const LiquidWallContactInputs3D input{
