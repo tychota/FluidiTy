@@ -3050,3 +3050,33 @@ foreach ($grid in 'fine', 'coarse') {
 The temporary entry point enables the existing cone fixture with
 particle multiplier two, zero release height, and compatible floor
 traction. Both solver and harness sources were restored after linking.
+
+### Floor friction in the supported cone control
+
+Keep the fine nominal cone, the 3 s endpoint, and the 30° material.
+Change the stationary floor friction coefficient alone.
+
+| Floor friction | Envelope angle | Radius | Quadrant slope range |
+|---:|---:|---:|---:|
+| 0.70 | 39.324139° | 0.160078 m | 50.432561–53.494205° |
+| 0.35 | 36.998082° | 0.160488 m | 50.651142–50.706666° |
+| 0 | 0.543053° | 0.450327 m | 0° |
+
+Halving the floor coefficient decreases the envelope angle by 2.33°
+with less than 0.5 mm additional radial spread. The surface fits
+stay above 50° in that run. The frictionless cone spreads nearly
+flat. Thus the supported shape is sensitive to basal friction,
+while the moderate change leaves a steep fitted surface. The new
+runs retain vertical momentum residual below 9e-8 N·s. The original
+column and floor coefficient still govern qualification.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-wall-cone-friction-bin'
+foreach ($friction in 'none', 'low') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-wall-cone-friction $friction
+}
+```
+
+The temporary harness changes only the floor coefficient in the
+fine nominal cone control. The solver and harness sources were
+restored after linking.
