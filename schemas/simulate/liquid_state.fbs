@@ -46,6 +46,7 @@ table AdaptiveCell {
   phase_id:ulong (id:9);
   constituents:[AdaptiveConstituentVolume] (id:10);
   material_owner:AdaptiveMaterialOwner = null (id:11);
+  coarsening_eligible_duration_s:double = null (id:12);
 }
 table AdaptiveFace {
   carrier_velocity:double (id:0);

@@ -110,6 +110,7 @@ void PackLiquidArenaState3D(
         cell.inventory.constituents[constituent].volume_m3 = record.inventory.constituents[constituent].volume_m3;
       }
       cell.previous_pressure = record.previous_pressure;
+      cell.coarsening_eligible_duration_s = record.coarsening_eligible_duration_s;
     }
     auto* adaptive_faces = At<LiquidAdaptiveFaceState3D>(destination, layout.face_records_byte_offset);
     for (std::size_t ordinal = 0; ordinal < source.adaptive_faces.size(); ++ordinal) {

@@ -421,6 +421,110 @@ TEST(LiquidCache3D, AdaptiveMaterialOwnerDefaultsToParticlesAndRejectsUnknownWir
   EXPECT_EQ(EncodeLiquidState3D(initial).status().code(), absl::StatusCode::kInvalidArgument);
 }
 
+TEST(LiquidCache3D, ZeroAdaptiveWidthAgePreservesCanonicalVersionOneThroughThreeBytes) {
+  LiquidState3D initial;
+  const std::array expected_digests{
+      "e51a1b49f6058ff7e91dbd729e29e4fdbdd6288041700dc829304c139acb7849",
+      "42a37eb036a927bd7577906ddc7974a0c4728deba17cf4c31ea972a7b102fce4",
+      "3cb3512ee09e83e4d2054e005a38a65c2ac50a732ea79a4f03dae0fc0e170d2e",
+  };
+  for (std::size_t version = 1; version <= expected_digests.size(); ++version) {
+    if (version == 2) {
+      initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+      initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+    }
+    if (version == 3) {
+      initial.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+    }
+    const auto encoded = EncodeLiquidState3D(initial);
+    ASSERT_TRUE(encoded.ok()) << encoded.status();
+    const auto* root = wire::GetLiquidState(encoded->values().data());
+    ASSERT_EQ(root->schema_version(), version);
+    EXPECT_EQ(
+        std::string(LiquidDigestHex3D(LiquidContentDigest3D(encoded->values())).data()),
+        expected_digests[version - 1]
+    );
+    const auto decoded = DecodeLiquidState3D(encoded->values());
+    ASSERT_TRUE(decoded.ok()) << decoded.status();
+    EXPECT_EQ(*decoded, initial);
+    if (version >= 2) {
+      EXPECT_DOUBLE_EQ(decoded->adaptive_cells[0].coarsening_eligible_duration_s, 0);
+      EXPECT_FALSE(root->adaptive()->cells()->Get(0)->coarsening_eligible_duration_s().has_value());
+    }
+  }
+}
+
+TEST(LiquidCache3D, AdaptiveWidthAgeUsesVersionFourAndRoundTripsCanonicalCheckpoint) {
+  LiquidState3D initial;
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(2);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(14);
+  initial.adaptive_cells[0].key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1};
+  initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
+  initial.adaptive_cells[0].coarsening_eligible_duration_s = 0.125;
+  auto resume = Resume();
+  resume.capacities = {0, 0, 2, 14, 0};
+  resume.capacity_replay_reservations = {};
+
+  const auto particle_bytes = EncodeLiquidCheckpoint3D(initial, resume);
+  ASSERT_TRUE(particle_bytes.ok()) << particle_bytes.status();
+  const auto* root = wire::GetLiquidState(particle_bytes->values().data());
+  ASSERT_EQ(root->schema_version(), 4U);
+  const auto* cells = root->adaptive()->cells();
+  EXPECT_EQ(cells->Get(0)->coarsening_eligible_duration_s(), 0.125);
+  EXPECT_FALSE(cells->Get(1)->coarsening_eligible_duration_s().has_value());
+  EXPECT_FALSE(cells->Get(0)->material_owner().has_value());
+  const auto particle_checkpoint = DecodeLiquidCheckpoint3D(particle_bytes->values());
+  ASSERT_TRUE(particle_checkpoint.ok()) << particle_checkpoint.status();
+  EXPECT_EQ(particle_checkpoint->state, initial);
+
+  initial.adaptive_cells[1].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  const auto mixed_bytes = EncodeLiquidCheckpoint3D(initial, resume);
+  ASSERT_TRUE(mixed_bytes.ok()) << mixed_bytes.status();
+  EXPECT_EQ(wire::GetLiquidState(mixed_bytes->values().data())->schema_version(), 4U);
+  const auto restored = DecodeLiquidCheckpoint3D(mixed_bytes->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->state, initial);
+  EXPECT_EQ(restored->resume, resume);
+  const auto repeated = EncodeLiquidCheckpoint3D(restored->state, restored->resume);
+  ASSERT_TRUE(repeated.ok()) << repeated.status();
+  EXPECT_EQ(Copy(*repeated), Copy(*mixed_bytes));
+}
+
+TEST(LiquidCache3D, RejectsInvalidAdaptiveWidthAgeInRawAndWireState) {
+  LiquidState3D initial;
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(6);
+  initial.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  auto legacy_bytes = EncodeLiquidState3D(initial);
+  ASSERT_TRUE(legacy_bytes.ok()) << legacy_bytes.status();
+  auto* legacy_root = wire::GetMutableLiquidState(legacy_bytes->values().data());
+  ASSERT_EQ(legacy_root->schema_version(), 3U);
+  ASSERT_TRUE(legacy_root->mutate_schema_version(4));
+  EXPECT_EQ(DecodeLiquidState3D(legacy_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+
+  initial.adaptive_cells[0].coarsening_eligible_duration_s = 0.25;
+  auto age_bytes = EncodeLiquidState3D(initial);
+  ASSERT_TRUE(age_bytes.ok()) << age_bytes.status();
+  auto* age_root = wire::GetMutableLiquidState(age_bytes->values().data());
+  ASSERT_EQ(age_root->schema_version(), 4U);
+  const auto restored = DecodeLiquidState3D(age_bytes->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(*restored, initial);
+  ASSERT_TRUE(age_root->mutate_schema_version(3));
+  EXPECT_EQ(DecodeLiquidState3D(age_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  ASSERT_TRUE(age_root->mutate_schema_version(4));
+  auto* age_record = age_root->mutable_adaptive()->mutable_cells()->GetMutableObject(0);
+  ASSERT_TRUE(age_record->mutate_coarsening_eligible_duration_s(0));
+  EXPECT_EQ(DecodeLiquidState3D(age_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  for (double age : {-0.5, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+    initial.adaptive_cells[0].coarsening_eligible_duration_s = age;
+    EXPECT_EQ(ValidateLiquidState3D(initial).code(), absl::StatusCode::kInvalidArgument);
+    EXPECT_EQ(EncodeLiquidState3D(initial).status().code(), absl::StatusCode::kInvalidArgument);
+    ASSERT_TRUE(age_record->mutate_coarsening_eligible_duration_s(age));
+    EXPECT_EQ(DecodeLiquidState3D(age_bytes->values()).status().code(), absl::StatusCode::kDataLoss);
+  }
+}
+
 TEST(LiquidCache3D, AdaptiveCheckpointRestoresAcceptedTopologyAndDiscardsRejectedTrial) {
   LiquidState3D initial;
   initial.geometry.cell_width = 0.5;
