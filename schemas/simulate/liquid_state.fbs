@@ -31,6 +31,30 @@ table ResumeMetadata {
   capacities:Capacities (required, id:2);
   replay_capacities:Capacities (required, id:3);
 }
+struct AdaptiveConstituentVolume { substance_id:ulong; volume_m3:double; }
+table AdaptiveCell {
+  lower_corner:Index3 (required, id:0);
+  width_exponent:ubyte (id:1);
+  occupancy:Occupancy = Liquid (id:2);
+  mass_kg:double (id:3);
+  reference_volume_m3:double (id:4);
+  current_volume_m3:double (id:5);
+  momentum_kg_m_per_s:Vector3 (required, id:6);
+  enthalpy_j:double (id:7);
+  previous_pressure:double (id:8);
+  phase_id:ulong (id:9);
+  constituents:[AdaptiveConstituentVolume] (id:10);
+}
+table AdaptiveFace {
+  carrier_velocity:double (id:0);
+  validity:Validity (id:1);
+  side:long (id:2);
+  structurally_eligible:bool = true (id:3);
+}
+table AdaptiveState {
+  cells:[AdaptiveCell] (required, id:0);
+  faces:[AdaptiveFace] (required, id:1);
+}
 table CavityGasCell {
   index:Index3 (required, id:0);
   gas_volume:double (id:1);
@@ -45,30 +69,6 @@ table CavitySnapshot {
   next_id:ulong (id:0);
   gas:[CavityGasCell] (required, id:1);
   inventories:[CavityInventory] (required, id:2);
-}
-struct AdaptiveConstituentVolume { substance_id:ulong; volume_m3:double; }
-table AdaptiveCell {
-  lower_corner:Index3 (required, id:0);
-  width_exponent:ubyte (id:1);
-  occupancy:Occupancy = Liquid (id:2);
-  mass_kg:double (id:3);
-  reference_volume_m3:double (id:4);
-  current_volume_m3:double (id:5);
-  momentum_kg_m_per_s:Vector3 (required, id:6);
-  enthalpy_j:double (id:7);
-  previous_pressure:double (id:8);
-  phase_id:ulong = null (id:9);
-  constituents:[AdaptiveConstituentVolume] (id:10);
-}
-table AdaptiveFace {
-  carrier_velocity:double (id:0);
-  validity:Validity (id:1);
-  side:long (id:2);
-  structurally_eligible:bool = true (id:3);
-}
-table AdaptiveState {
-  cells:[AdaptiveCell] (required, id:0);
-  faces:[AdaptiveFace] (required, id:1);
 }
 table LiquidState {
   schema_version:uint = 1 (id:0);

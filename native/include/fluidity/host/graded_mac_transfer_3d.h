@@ -45,6 +45,11 @@ class GradedMacTransfer3D {
     return faces_;
   }
 
+  // Bytes reserved by the frozen leaf boxes and canonical face geometry.
+  std::size_t reserved_bytes() const {
+    return leaves_.capacity() * sizeof(LeafBox) + faces_.capacity() * sizeof(GradedMacFace3D);
+  }
+
   // Deposit mass in kg and positive-normal momentum in kg*m/s. Results are in
   // canonical global slot order. Each particle must lie in a half-open leaf
   // box. Only same-side, structurally eligible subfaces participate. Incoming

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -9,23 +10,38 @@
 
 namespace fluidity {
 
+struct AdaptiveLiquidExteriorRemapInput3D {
+  // All spans follow BuildAdaptiveMacFaceOwnership3D exterior order for
+  // their respective topologies. Areas are in m². Positive flux is outward
+  // from the owning cell on either side of the world-axis normal.
+  std::span<const double> committed_open_areas_m2;
+  std::span<const double> committed_outward_fluxes_m3_per_s;
+  std::span<const double> candidate_open_areas_m2;
+};
+
 struct AdaptiveLiquidRemapInput3D {
   std::span<const LiquidRemapInventory3D> inventories;  // Committed cell order.
   std::span<const double> previous_pressures_pa;  // Committed cell order.
   std::span<const double> interior_fluxes_m3_per_s;  // Committed face order, positive along its normal.
+  std::optional<AdaptiveLiquidExteriorRemapInput3D> exterior = std::nullopt;
 };
 
 struct AdaptiveLiquidRemapProposal3D {
   AdaptiveFamilyChange3D family;
   std::vector<LiquidRemapInventory3D> inventories;  // Candidate cell order.
   std::vector<double> interior_fluxes_m3_per_s;  // Candidate face order, positive along its normal.
+  std::vector<double> exterior_outward_fluxes_m3_per_s;  // Candidate exterior order. Empty in sealed mode.
 };
 
-// Propose one aligned refinement on a sealed geometric topology. Input spans
-// cover the committed topology exactly. The caller provides same-width parent
-// inventory samples in x/y/z low/high order. Preserves retained inventories
-// and warm starts, remaps outer faces, and redistributes new sibling fluxes
-// to preserve the parent's volume-scaled divergence within binary64 roundoff.
+// Propose one aligned refinement. Input spans cover their respective
+// topologies exactly. Omit exterior fields for a sealed geometric topology.
+// Otherwise provide finite apertures in [0, geometric area] with zero flux on
+// sealed faces. Aperture must match across unchanged faces and partitions.
+// The caller provides same-width parent inventory samples in x/y/z low/high
+// order. Retained inventories and warm starts are copied. Outer flux is
+// conserved, with exterior splits weighted by aperture within binary64
+// roundoff. New sibling fluxes preserve the parent's volume-scaled divergence
+// within binary64 roundoff, including exterior outflow.
 absl::StatusOr<AdaptiveLiquidRemapProposal3D> PrepareAdaptiveLiquidRefinement3D(
     const AdaptiveMacTopology3D& committed_topology,
     const AdaptiveLiquidRemapInput3D& committed,

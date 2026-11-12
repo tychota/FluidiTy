@@ -102,8 +102,6 @@ class LiquidRecords3D {
   std::size_t capacity_ = 0;
 };
 
-
-
 struct LiquidParticleState3D {
   std::uint64_t id = 0;  // Nonzero, unique, below next_particle_id; array order is stable sort order, not ID order.
   std::uint32_t tag = 0;  // Packed substance/phase/flags, preserved verbatim.
@@ -166,20 +164,6 @@ struct LiquidClock3D {
   std::uint64_t epoch = 0;  // Coherent version identity, advances once per accepted step.
   bool operator==(const LiquidClock3D&) const = default;
 };
-struct LiquidCavityGasState3D {
-  CellIndex3D cell_index;
-  double gas_volume;  // Positive geometric m³.
-  std::size_t component;  // Canonical label of this gas cell.
-  bool operator==(const LiquidCavityGasState3D& other) const;
-};
-
-struct LiquidCavityComponentState3D {
-  std::uint64_t id;  // Zero for an untracked component.
-  double initial_volume;  // Positive m³ for a tracked component, otherwise zero.
-  double initial_absolute_pressure;  // Positive Pa for a tracked component, otherwise zero.
-  bool operator==(const LiquidCavityComponentState3D&) const = default;
-};
-
 inline constexpr std::size_t kMaximumAdaptiveLiquidCells3D = 4096;
 inline constexpr std::size_t kMaximumAdaptiveLiquidFaces3D = 24576;
 
@@ -203,6 +187,20 @@ struct LiquidAdaptiveFaceState3D {
   bool operator==(const LiquidAdaptiveFaceState3D&) const = default;
 };
 
+struct LiquidCavityGasState3D {
+  CellIndex3D cell_index;
+  double gas_volume;  // Positive geometric m³.
+  std::size_t component;  // Canonical label of this gas cell.
+  bool operator==(const LiquidCavityGasState3D& other) const;
+};
+
+struct LiquidCavityComponentState3D {
+  std::uint64_t id;  // Zero for an untracked component.
+  double initial_volume;  // Positive m³ for a tracked component, otherwise zero.
+  double initial_absolute_pressure;  // Positive Pa for a tracked component, otherwise zero.
+  bool operator==(const LiquidCavityComponentState3D&) const = default;
+};
+
 struct LiquidState3D {
   UniformMacGeometry3D geometry{{0.0, 0.0, 0.0}, 1.0};
   LiquidClock3D clock;
@@ -214,14 +212,14 @@ struct LiquidState3D {
   LiquidRecords3D<LiquidCellState3D> cells;
   LiquidRecords3D<LiquidFaceState3D> faces;
   LiquidRecords3D<LiquidSourceState3D> sources;
-  std::uint64_t next_cavity_id = 0;  // Zero disables cavity state.
-  LiquidRecords3D<LiquidCavityGasState3D> cavity_gas;  // Sorted (z,y,x) step-start snapshot.
-  LiquidRecords3D<LiquidCavityComponentState3D> cavity_components;  // First-member label order.
   // Nonempty adaptive_cells selects graded ownership. geometry names the finest
   // lattice, and blocks/cells/faces are empty. The cells/faces capacity fields
   // reserve the corresponding adaptive records in this mode.
   LiquidRecords3D<LiquidAdaptiveCellState3D> adaptive_cells;
   LiquidRecords3D<LiquidAdaptiveFaceState3D> adaptive_faces;
+  std::uint64_t next_cavity_id = 0;  // Zero disables cavity state.
+  LiquidRecords3D<LiquidCavityGasState3D> cavity_gas;  // Sorted (z,y,x) step-start snapshot.
+  LiquidRecords3D<LiquidCavityComponentState3D> cavity_components;  // First-member label order.
   bool operator==(const LiquidState3D&) const;
 };
 struct LiquidStateCapacities3D {

@@ -54,6 +54,11 @@ class AdaptiveMacTopology3D {
   double finest_cell_width() const {
     return finest_cell_width_;
   }
+  // Bytes reserved by the owned leaf and interior face arrays.
+  std::size_t reserved_bytes() const {
+    return cells_.capacity() * sizeof(AdaptiveMacLeaf3D)
+        + interior_faces_.capacity() * sizeof(AdaptiveMacInteriorFace3D);
+  }
   std::span<const AdaptiveMacLeaf3D> cells() const;
   std::span<const AdaptiveMacInteriorFace3D> interior_faces() const;
 

@@ -79,7 +79,8 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&scene.field);
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
-      || !scene.sources.empty() || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
+      || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
+      || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
   }
@@ -205,6 +206,15 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     }
   }
   return result;
+}
+
+std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
+  return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
+      + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
+      + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
+      + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
+      + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
+      + inventories_.capacity() * sizeof(LiquidRemapInventory3D);
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {

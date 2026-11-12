@@ -10,7 +10,7 @@ enum Axis:ubyte { X = 0, Y = 1, Z = 2 }
 enum Occupancy:ubyte { Air = 0, Liquid = 1, Solid = 2 }
 enum Validity:ubyte { Missing = 0, Valid = 1, Predicted = 2, LowMass = 3 }
 enum Backend:ubyte { Cpu = 0, Cuda = 1 }
-enum ContentKind:ubyte { State = 0, Points = 1, ResolvedScene = 2, Manifest = 3 }
+enum ContentKind:ubyte { State = 0, Points = 1, ResolvedScene = 2, Manifest = 3, CoupledState = 4 }
 struct ConstituentFraction { substance_id:ulong; volume_fraction:double; }
 table Particle {
   id:ulong (id:0);

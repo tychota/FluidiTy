@@ -646,6 +646,21 @@ def case_cuda_replay(executable, fixture, directory, cuda):
 
 
 def case_execution_validation(executable, fixture, directory, cuda):
+    mixed_scene, _ = make_scene(executable, fixture, directory, "cpu", "plastic-body")
+    mixed_cache = directory / "mixed-cache"
+    mixed_initial = Path(str(mixed_scene) + ".flsi")
+    mixed_args = ["run", "--stage", "simulate", "--scene", mixed_scene, "--cache", mixed_cache]
+    for initial_args in ([], ["--initial-state", mixed_initial]):
+        rejected = execute(executable, *mixed_args, *initial_args, success=False)[-1]
+        assert rejected["field"] == "scene"
+        assert "coupled liquid-solid scheduler" in rejected["cause"]
+    corrupted = bytearray(mixed_initial.read_bytes())
+    corrupted[-1] ^= 1
+    mixed_initial.write_bytes(corrupted)
+    rejected = execute(executable, *mixed_args, "--initial-state", mixed_initial, success=False)[-1]
+    assert rejected["field"] == "initial_state"
+    assert rejected["code"] == "E-SIMULATE-DATA_LOSS"
+    assert not mixed_cache.exists()
     scene, initial = make_scene(executable, fixture, directory, "cpu")
     cache = directory / "cache"
     args = ["run", "--stage", "simulate", "--scene", scene, "--cache", cache]

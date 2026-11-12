@@ -230,7 +230,10 @@ TEST(CudaLiquidArena3D, AdaptivePublicationAndGrowthKeepBothEpochsIntact) {
            .reference_volume_m3 = 0.5,
            .current_volume_m3 = 0.75,
            .momentum_kg_m_per_s = {1, -2, 3},
-           .enthalpy_j = -4},
+           .enthalpy_j = -4,
+           .phase_id = 9,
+           .constituent_count = 2,
+           .constituents = {{{11, 0.25}, {21, 0.5}}}},
       .previous_pressure = -2,
   };
   initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};

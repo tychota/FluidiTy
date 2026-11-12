@@ -198,7 +198,8 @@ absl::StatusOr<std::size_t> ReservationBytes(
     std::size_t phase_pair_count,
     std::size_t workspace_bytes,
     std::size_t staging_bytes,
-    bool cavity_enabled
+    bool cavity_enabled,
+    bool adaptive = false
 ) {
   std::size_t total = 0;
   const auto add = [&](std::size_t count, std::size_t stride) -> absl::Status {
@@ -210,8 +211,8 @@ absl::StatusOr<std::size_t> ReservationBytes(
   };
   STEP_TRY(add(capacities.particles, 3 * sizeof(LiquidParticleState3D)));
   STEP_TRY(add(capacities.blocks, 3 * sizeof(LiquidBlockState3D)));
-  STEP_TRY(add(capacities.cells, 3 * sizeof(LiquidCellState3D)));
-  STEP_TRY(add(capacities.faces, 3 * sizeof(LiquidFaceState3D)));
+  STEP_TRY(add(capacities.cells, 3 * (adaptive ? sizeof(LiquidAdaptiveCellState3D) : sizeof(LiquidCellState3D))));
+  STEP_TRY(add(capacities.faces, 3 * (adaptive ? sizeof(LiquidAdaptiveFaceState3D) : sizeof(LiquidFaceState3D))));
   STEP_TRY(add(capacities.sources, 3 * sizeof(LiquidSourceState3D)));
   STEP_TRY(add(source_count, sizeof(LiquidEmissionSource3D)));
   STEP_TRY(add(constituent_material_count, sizeof(LiquidConstituentMaterial3D)));
@@ -2414,7 +2415,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       scene.phase_pairs.size(),
       bytes->total_bytes,
       staging->reserved_bytes,
-      scene.cavity.has_value()
+      scene.cavity.has_value(),
+      adaptive_mode
   );
   if (!reservation_bytes.ok()) {
     return reservation_bytes.status();
@@ -2560,6 +2562,10 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
     if (!adaptive.ok()) {
       return adaptive.status();
     }
+    if (adaptive->reserved_bytes() > static_cast<std::size_t>(PTRDIFF_MAX) - impl->reservation_bytes) {
+      return Error(absl::StatusCode::kResourceExhausted);
+    }
+    impl->reservation_bytes += adaptive->reserved_bytes();
     impl->adaptive = std::move(*adaptive);
   }
   STEP_TRY(backend.initialize(backend.context, initial_version));
@@ -2789,6 +2795,9 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     FloatingBoxTrial* floating_box
 ) {
   auto& impl = *impl_;
+  if (impl.adaptive && (piston_load != nullptr || floating_box != nullptr)) {
+    return absl::UnimplementedError("graded Simulate does not support coupled rigid trials");
+  }
   auto& diagnostics = impl.diagnostics;
   if (!impl.frame_active || !std::isfinite(step_duration) || step_duration <= 0
       || step_duration > impl.target_time - committed().clock.time) {

@@ -20,10 +20,10 @@ pressure, the volume change, and the accepted carrier bank.
   formula for each exposed leaf, with that leaf's density and width. The
   minimum controls rejection. The authored plane has zero curvature.
 
-Uniform FLST v1 retains the published cavity field 13. Integrated graded FLST
-v3 uses field 14. Regenerate prerelease M3 v2 graded checkpoints from their
-fixture inputs before using this build. The public CLI tests start from a
-v3 seed and resume from a v3 frame-ten checkpoint in a new process.
+Uniform FLST v1 retains the published cavity field 13. The draft now uses
+the integrated M3 FLST v2 layout on main, with graded records at field 14.
+Regenerate the prerelease fixtures from the original M3 branch, which
+used field 13, and from the initial M4 draft, which used version 3.
 
 ## Reproduce
 

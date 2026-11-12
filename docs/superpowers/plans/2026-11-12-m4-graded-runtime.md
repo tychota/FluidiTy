@@ -2,7 +2,7 @@
 
 Use the accepted transaction, face ownership, and fresh-process replay from M3 `fc01a85` and the qualified uniform M4 on main. Keep all candidate physical records in the existing inactive state until acceptance. A failed candidate must preserve the published host clock and CUDA epoch.
 
-1. Integrate M3 into current main. Preserve the published uniform cavity wire slot and assign graded checkpoints version 3 and their own field. Regenerate prerelease M3 v2 fixture checkpoints with this build. Check the uniform cache tests, graded rollback and interrupted CLI replay.
+1. Integrate M3 into current main. Preserve the published uniform cavity wire slot and reuse the integrated M3 version 2 layout with its own field. Regenerate prerelease checkpoints with this build. Check the uniform cache tests, graded rollback and interrupted CLI replay.
 2. At each attempt, freeze EOS compliance and density from the accepted per-leaf pressure and material. Derive each particle's volume update from the owned projected face fluxes. Check pressure, the F6 constraint and volume change with finite constant modulus and Hencky compression, then reject a candidate and replay from a completed checkpoint on both backends.
 3. Accumulate stable-ID constituent volumes from the particles that own each leaf. Use their additive-volume density on pressure faces. Publish and serialize the same canonical inventory through both banks. Exercise clear and dyed water and check each total, restart identity, and lack of cross-phase admission.
 4. Use the existing exterior capillary step bound on each exposed leaf. The authored plane has zero curvature. Check the finest exposed width controls the step, the oversize attempt rolls back, and the smaller attempt publishes.
