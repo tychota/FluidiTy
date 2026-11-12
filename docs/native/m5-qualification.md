@@ -4183,3 +4183,32 @@ foreach ($bin in 'sand-affine-limit-status-bin', 'sand-affine-limit-halo-bin', '
 
 The temporary status labels and halo controls were restored
 after linking.
+
+### Translation-relative affine limit
+
+Retain the completed tangent fit and cap each centered tangent
+affine velocity contribution at the particle's translational
+speed, in addition to the face-motion limit. Scale the entire
+row by the tightest eligible sample bound. This retains the
+zero weighted mean of the affine contribution and leaves the
+normal component unchanged. Both default dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 29.729848° | 0.179070 m |
+| Coarse half-step | 31.784807° | 0.178050 m |
+| Fine | 24.652927° | 0.181935 m |
+| Fine half-step | 29.952541° | 0.171396 m |
+
+All four native runs now finish at the original timesteps. The
+coarse half-step angle is in range, but all four radii exceed the
+limit. The other three angles fall below 30°. Vertical momentum
+residual stays below 1.5e-8 N·s. The source was restored after
+linking, leaving the component-wise clearing candidate intact.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-relative-limit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
