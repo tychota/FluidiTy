@@ -1331,19 +1331,46 @@ double PressureTractionImpulseResidual(const OrientedFloatingBoxLoads3D& loads, 
   );
 }
 
+struct PressureFaceMeasurement {
+  std::size_t slot;
+  FaceNormalAxis axis;
+  double predicted_velocity;
+  double velocity_change;
+  double pressure_dual_mass;
+  double deposited_mass;
+  Vec3 gathered_impulse{};
+};
+
 struct FloatingBoxPressureMeasurements {
   double energy_blend;
   double wall_flux{};
   Vec3 grid_impulse{};
   Vec3 particle_pressure_impulse{};
   Vec3 particle_prepressure_impulse{};
-  std::vector<std::pair<std::size_t, double>> predicted_faces;
+  std::vector<PressureFaceMeasurement> pressure_faces;
+  std::vector<double> deposited_face_masses;
   std::vector<double> prepressure_velocities;
 };
 
 LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurements& measurements) {
   auto backend = CpuLiquidSubstepBackend3D();
   backend.context = &measurements;
+  backend.deposit = [](void* context,
+                       const LiquidBoundaryDepositViewInputs3D& inputs,
+                       LiquidBoundaryWorkspace3D& workspace) -> absl::StatusOr<LiquidBoundaryFaceDepositsView3D> {
+    auto& measured = *static_cast<FloatingBoxPressureMeasurements*>(context);
+    auto result = CpuLiquidSubstepBackend3D().deposit(nullptr, inputs, workspace);
+    if (!result.ok()) {
+      return result.status();
+    }
+    measured.deposited_face_masses.clear();
+    for (const auto& quanta : result->face_quanta) {
+      measured.deposited_face_masses.push_back(
+          static_cast<double>(quanta.mass_quanta_sum) * inputs.quantization.mass_per_quantum
+      );
+    }
+    return result;
+  };
   backend.project = [](void* context,
                        SparseMacGridView3D grid,
                        double duration,
@@ -1362,13 +1389,23 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
     measured.grid_impulse = ExpectedPressureGridImpulse(problem, result->cell_pressures, duration);
     measured.particle_pressure_impulse = {};
     measured.particle_prepressure_impulse = {};
-    measured.predicted_faces.clear();
-    for (const auto& face : problem.faces) {
+    measured.pressure_faces.clear();
+    for (std::size_t index = 0; index < problem.faces.size(); ++index) {
+      const auto& face = problem.faces[index];
       const auto slot = grid.FaceSlot(face.face_index);
       if (!slot.ok()) {
         return slot.status();
       }
-      measured.predicted_faces.emplace_back(*slot, face.predicted_normal_velocity);
+      const double pressure_dual_mass =
+          face.open_area == 0.0 ? 0.0 : face.open_area * face.pressure_gradient_distance / face.inverse_density;
+      measured.pressure_faces.push_back({
+          .slot = *slot,
+          .axis = face.face_index.axis,
+          .predicted_velocity = face.predicted_normal_velocity,
+          .velocity_change = result->corrected_face_velocities[index] - face.predicted_normal_velocity,
+          .pressure_dual_mass = pressure_dual_mass,
+          .deposited_mass = measured.deposited_face_masses.at(*slot),
+      });
     }
     return result;
   };
@@ -1383,8 +1420,8 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
     // velocities supplied by projection. The production gather runs last.
     const auto velocities = inputs.new_history.face_velocities;
     measured.prepressure_velocities.assign(velocities.begin(), velocities.end());
-    for (const auto& [slot, predicted] : measured.predicted_faces) {
-      measured.prepressure_velocities[slot] = predicted;
+    for (const auto& face : measured.pressure_faces) {
+      measured.prepressure_velocities[face.slot] = face.predicted_velocity;
     }
     auto baseline_inputs = inputs;
     baseline_inputs.new_history.face_velocities = measured.prepressure_velocities;
@@ -1393,10 +1430,6 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
       return baseline.status();
     }
     const auto baseline_particle = baseline->particles.front();
-    auto result = CpuLiquidSubstepBackend3D().gather(nullptr, inputs, workspace);
-    if (!result.ok()) {
-      return result.status();
-    }
     // The trajectory seeds already have initialized PIC history and the
     // scheduler preserves it. Reproduce the pre-contact stored-velocity blend.
     const auto stored_velocity = [&](const LiquidBoundaryParticleGather3D& gathered, double Vec3::* component) {
@@ -1405,6 +1438,26 @@ LiquidSubstepBackend3D MeasureFloatingBoxPressure(FloatingBoxPressureMeasurement
       return gathered.new_pic_velocity.*component + alpha * gathered.particle_minus_old_pic_velocity.*component;
     };
     const auto& particle = inputs.particles.front().transfer;
+    for (auto& face : measured.pressure_faces) {
+      if (face.velocity_change == 0.0) {
+        continue;
+      }
+      measured.prepressure_velocities[face.slot] = velocities[face.slot];
+      const auto single_face = CpuLiquidSubstepBackend3D().gather(nullptr, baseline_inputs, workspace);
+      measured.prepressure_velocities[face.slot] = face.predicted_velocity;
+      if (!single_face.ok()) {
+        return single_face.status();
+      }
+      for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+        const double before = stored_velocity(baseline_particle, component);
+        const double after = stored_velocity(single_face->particles.front(), component);
+        face.gathered_impulse.*component += particle.particle_mass * (after - before);
+      }
+    }
+    auto result = CpuLiquidSubstepBackend3D().gather(nullptr, inputs, workspace);
+    if (!result.ok()) {
+      return result.status();
+    }
     for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
       const double before = stored_velocity(baseline_particle, component);
       const double after = stored_velocity(result->particles.front(), component);
@@ -1421,14 +1474,37 @@ void ExpectFloatingBoxPressureMeasurement(
     const OrientedFloatingBoxLoads3D& loads,
     const FloatingBoxPressureMeasurements& measured
 ) {
-  for (const auto component : {&Vec3::x, &Vec3::y, &Vec3::z}) {
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  Vec3 mass_weight_difference{};
+  Vec3 gather_weight_difference{};
+  Vec3 reconstructed_gather{};
+  for (const auto& face : measured.pressure_faces) {
+    const auto normal = kComponents[static_cast<std::size_t>(face.axis)];
+    mass_weight_difference.*normal += (face.deposited_mass - face.pressure_dual_mass) * face.velocity_change;
+    gather_weight_difference.*normal -= face.deposited_mass * face.velocity_change;
+    for (const auto component : kComponents) {
+      gather_weight_difference.*component += face.gathered_impulse.*component;
+      reconstructed_gather.*component += face.gathered_impulse.*component;
+    }
+  }
+  for (const auto component : kComponents) {
     EXPECT_NEAR(loads.pressure_grid_impulse.*component, measured.grid_impulse.*component, 1e-12);
+    EXPECT_NEAR(reconstructed_gather.*component, measured.particle_pressure_impulse.*component, 1e-12);
+    EXPECT_NEAR(
+        mass_weight_difference.*component + gather_weight_difference.*component,
+        measured.particle_pressure_impulse.*component - measured.grid_impulse.*component,
+        1e-12
+    );
     EXPECT_NEAR(
         loads.liquid_gather_impulse.*component,
         measured.particle_pressure_impulse.*component + measured.particle_prepressure_impulse.*component,
         1e-12
     );
   }
+  std::cout << "pressure_face_weights mass_difference_n_s="
+            << std::hypot(mass_weight_difference.x, mass_weight_difference.y, mass_weight_difference.z)
+            << " gather_difference_n_s="
+            << std::hypot(gather_weight_difference.x, gather_weight_difference.y, gather_weight_difference.z) << '\n';
 }
 
 TEST(LiquidSubstep3D, OrientedFloatingBoxProductionGatherReplaysTrajectory) {
