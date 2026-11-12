@@ -174,7 +174,7 @@ absl::Status ApplyForces(
 }
 struct BoxParticleReaction {
   const TranslatingContactBox3D& box;
-  double vertical_impulse = 0.0;
+  Vec3 impulse{};
 };
 
 // For a static, frictionless tank, every trajectory component is monotone
@@ -295,8 +295,8 @@ absl::Status UpdateParticle(
       return resolved.status();
     }
     contact = resolved->contact;
-    box_reaction->vertical_impulse += resolved->body_impulse.y;
-    if (!std::isfinite(box_reaction->vertical_impulse)) {
+    box_reaction->impulse = liquid_step_internal::Add(box_reaction->impulse, resolved->body_impulse);
+    if (!liquid_step_internal::Finite(box_reaction->impulse)) {
       return Error(absl::StatusCode::kOutOfRange);
     }
   } else {
@@ -397,7 +397,7 @@ absl::StatusOr<double> UpdateCpuLiquidParticlesWithPistonReaction3D(
   return piston_impulse;
 }
 
-absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
+absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
     const LiquidParticleUpdateInputs3D& inputs,
     const TranslatingContactBox3D& box,
     std::span<LiquidParticleState3D> trial_particles
@@ -425,8 +425,20 @@ absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
       return status;
     }
   }
-  return reaction.vertical_impulse;
+  return reaction.impulse;
 }
+absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+) {
+  const auto impulse = UpdateCpuLiquidParticlesWithBoxImpulse3D(inputs, box, trial_particles);
+  if (!impulse.ok()) {
+    return impulse.status();
+  }
+  return impulse->y;
+}
+
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
   return {
       .context = nullptr,

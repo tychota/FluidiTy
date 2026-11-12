@@ -293,6 +293,12 @@ class LiquidSubstepScheduler3D {
   // force and torque. Half extents are in meters and must stay clear of walls.
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
   AttemptWithGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
+  // Advances an axis-aligned box with all three translations free. Uses the
+  // same stationary tank and material restrictions as the guided attempt.
+  // A rotational constraint absorbs torque. Wall flux and drift use the
+  // old velocity, and solved pressure and contact update the next velocity.
+  absl::StatusOr<LiquidFloatingBoxAttempt3D>
+  AttemptWithTranslatingFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent);
   // Couples vertical wall flux and body inertia over one frozen pressure solve.
   // Requires the incompressible, zero-surface-tension scene.
   // The coupled velocity drives final flux, drift and particle contact.
@@ -310,12 +316,13 @@ class LiquidSubstepScheduler3D {
   struct FloatingBoxTrial {
     RigidBody3D body;
     AxisAlignedFloatingBoxGeometry3D geometry;
-    double half_height;
+    Vec3 half_extent;
     bool coupled;
+    bool vertical_guide;
     std::optional<double> added_mass_kg;
   };
   absl::StatusOr<LiquidFloatingBoxAttempt3D>
-  AttemptGuidedFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, bool coupled);
+  AttemptFloatingBox(double step_duration, RigidBody3D body, Vec3 half_extent, bool coupled, bool vertical_guide);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,

@@ -243,5 +243,12 @@ absl::StatusOr<double> UpdateCpuLiquidParticlesWithBoxReaction3D(
     const TranslatingContactBox3D& box,
     std::span<LiquidParticleState3D> trial_particles
 );
+// Same checked update, returning all three world components of box impulse.
+absl::StatusOr<Vec3> UpdateCpuLiquidParticlesWithBoxImpulse3D(
+    const LiquidParticleUpdateInputs3D& inputs,
+    const TranslatingContactBox3D& box,
+    std::span<LiquidParticleState3D> trial_particles
+);
+
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D();
 }  // namespace fluidity
