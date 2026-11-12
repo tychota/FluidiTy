@@ -2091,3 +2091,40 @@ ctest --test-dir $cuda -R '^(CudaLiquidSubstep3D\.|CudaLiquidBoundary3D\.|Simula
 ```
 
 Q-SAND remains open at the extended settling endpoint.
+
+
+### Symmetric APIC decay in physical time
+
+The diagnostic on local branch `codex/m5-sand-affine`, commit
+`cb69c2b`, decays the symmetric part of the stored affine fit by
+exp(−rate × dt) after each accepted step. It retains the skew part,
+the full deformation update, and the 30° constitutive friction angle.
+All cases use the existing compatible-floor column, particle spacing,
+grid widths, timesteps, and 1.50 s endpoint. The solver itself is unchanged.
+
+| Case | Baseline | 2 s⁻¹ | 8 s⁻¹ | 32 s⁻¹ |
+|---|---:|---:|---:|---:|
+| Coarse | 29.962967° | 29.964813° | 29.897517° | 30.072721° |
+| Coarse half-step | 32.042153° | 32.149358° | 32.485220° | 33.921460° |
+| Fine | 27.424648° | 27.505456° | 27.677068° | 28.239650° |
+| Fine half-step | 29.277572° | 29.353186° | 29.584487° | 30.475180° |
+
+All twelve native cases meet the drift and momentum checks. The highest
+rate passes three angles but leaves the nominal fine-grid angle at
+28.24°. The coarse half-step angle also approaches the upper limit as
+the decay grows. Uniform damping of the symmetric fit does not establish
+a converged repose result. Both default dry-scene CTest targets passed.
+
+```powershell
+$build = 'out/pr-m5-sand-affine/out/build/sand-affine-sm120'
+cmake --build $build --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+ctest --test-dir $build -R '^M5DryScenes\.' --no-tests=error --output-on-failure
+foreach ($rate in 2, 8, 32) {
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "$build/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay $rate $case
+  }
+}
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$build/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 32 $case
+}
+```
