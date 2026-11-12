@@ -4088,3 +4088,34 @@ foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain the bounded tangent affine fit
+
+Starting at `3008848`, retain the completed field's tangent affine
+rows even when they contain bounded ghost samples. Continue
+clearing the normal row when its stencil uses fallback. Both
+default dry-scene targets pass. All four native qualification
+runs reject at the dry face-motion bound before 3 s.
+
+| Native case | First rejected step |
+|---|---:|
+| Coarse | 284 |
+| Coarse half-step | 1073 |
+| Fine | 304 |
+| Fine half-step | 1052 |
+
+The fine nominal rejecting Z face carries 1.090134e-6 kg and
+already moves at 18.824297 m/s after deposition, above the
+18 m/s bound. Its stress force is zero. The coarse nominal
+rejecting X face begins at −18.163190 m/s, and stress reduces
+the magnitude to 18.145946 m/s. These nominal failures come
+from the affine deposit's incoming face velocity. They differ
+from the earlier stress-driven thin-face failure. Both source
+controls were restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-bounded-affine-retain-bin'
+foreach ($case in 'fine', 'fine-half', 'coarse', 'coarse-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
