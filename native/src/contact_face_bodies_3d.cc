@@ -1,5 +1,6 @@
 #include "fluidity/host/contact_face_bodies_3d.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace fluidity {
@@ -74,6 +75,65 @@ absl::StatusOr<ContactFaceParticleResponse3D> ResolveContactFaceParticles3D(
     }
   }
   return response;
+}
+
+absl::StatusOr<ContactFaceBatchResponse3D> StageContactFaceBatch3D(
+    std::span<const ContactParticleIdentity3D> particles,
+    std::span<const DetectedContactFace3D> faces
+) {
+  std::uint64_t previous_particle_id = 0;
+  for (const auto& particle : particles) {
+    if (particle.particle_id <= previous_particle_id || particle.body_id == 0 || !std::isfinite(particle.mass)
+        || particle.mass <= 0) {
+      return absl::InvalidArgumentError("invalid contact batch particle or order");
+    }
+    previous_particle_id = particle.particle_id;
+  }
+
+  constexpr double kWeightTolerance = 1e-12;
+  ContactFaceBatchResponse3D batch;
+  batch.face_contacts.reserve(faces.size());
+  batch.velocity_deltas.resize(particles.size());
+  std::vector<double> particle_weight_sums(particles.size());
+  for (std::size_t face_index = 0; face_index < faces.size(); ++face_index) {
+    const auto& face = faces[face_index];
+    if (face_index > 0 && face.face_slot <= faces[face_index - 1].face_slot) {
+      return absl::InvalidArgumentError("invalid contact batch face order");
+    }
+    const auto response = ResolveContactFaceParticles3D(
+        face.contributors,
+        face.first_body_id,
+        face.second_body_id,
+        face.normal_toward_first,
+        face.friction_coefficient
+    );
+    if (!response.ok()) {
+      return response.status();
+    }
+
+    for (std::size_t contributor_index = 0; contributor_index < face.contributors.size(); ++contributor_index) {
+      const auto& contributor = face.contributors[contributor_index];
+      const auto particle =
+          std::ranges::lower_bound(particles, contributor.particle_id, {}, &ContactParticleIdentity3D::particle_id);
+      if (particle == particles.end() || particle->particle_id != contributor.particle_id
+          || particle->body_id != contributor.body_id || particle->mass != contributor.mass) {
+        return absl::InvalidArgumentError("face contributor does not match contact batch particle");
+      }
+      const auto particle_index = static_cast<std::size_t>(particle - particles.begin());
+      particle_weight_sums[particle_index] += contributor.weight;
+      if (particle_weight_sums[particle_index] > 1 + kWeightTolerance) {
+        return absl::InvalidArgumentError("contact batch weights exceed unity");
+      }
+      auto& velocity_delta = batch.velocity_deltas[particle_index];
+      velocity_delta =
+          distinct_contact_detail::AddScaled(velocity_delta, response->velocity_deltas[contributor_index], 1);
+      if (!distinct_contact_detail::Finite(velocity_delta)) {
+        return absl::OutOfRangeError("unrepresentable contact batch velocity delta");
+      }
+    }
+    batch.face_contacts.push_back(response->face_contact);
+  }
+  return batch;
 }
 
 }  // namespace fluidity

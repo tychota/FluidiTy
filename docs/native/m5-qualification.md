@@ -18,6 +18,7 @@ M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 | Isolated face body capacity | Pass | Four sorted distinct body records, accumulation for an existing body at capacity, fifth-body rejection, and range-failure rollback on CPU and CUDA. The host error is ResourceExhausted / E-CONTACT-BODY-CAPACITY. |
 | Isolated face pair application | Pass | Two bodies receive equal-and-opposite updates to their stored face momenta. The fixture checks normal closure, sliding friction, combined momentum, an unaffected third body, and rejection rollback on native and SM120. |
 | Isolated face-to-particle scatter | Pass | A native host fixture deposits an unequal-weight pair, resolves it and recovers both face impulses by summing particle mass times velocity increment. The third body is untouched, and malformed contributor order rejects. The shared per-particle scatter arithmetic also ran on SM120. |
+| Isolated multi-face contact staging | Pass | A native host fixture stages two detected faces in slot order, aggregates repeated contributors, and checks combined particle momentum. A missing body on the later face, duplicate slot, and excess total weight each reject the batch. |
 | Plastic checkpoint handoff | Pass for the typed dry payload and wire record | The snow fixture captures and restores a compressed state with nonzero log plastic Jacobian and APIC fit. After a FlatBuffers record round trip, every particle field matches the uninterrupted next accepted step on native and CUDA. Invalid plastic state, wrong material ID and duplicate particle IDs reject. |
 | Production distinct-body water coupling | Open | The production liquid scheduler and resolved scene still lack the solid integration described below. |
 | Authored Blender snow–water scene | Gated | The scene requires a real mixed solver, compatible checkpoints and distinct published material channels. |
@@ -595,8 +596,12 @@ leaves a third body untouched and preserves the whole face on failure.
 The host face bridge now returns per-particle increments using the same
 weights as the deposit. For a body with face mass M and impulse I, each
 contributor with weight w receives w I / M, so particle mass times the
-increments sums to I. The scheduler still owns detection, cross-face
-ordering, per-particle aggregation, and accepted publication. The coupled
+increments sums to I. The host batch bridge accepts a single vector-contact weight partition.
+It resolves one supplied pair per face, verifies contributors against the
+stable particle table and sums their increments in face-slot order.
+The test checks that a later malformed face returns no staged output.
+The bridge does not construct detection geometry, order simultaneous
+pairs on one face, integrate pressure, or publish accepted mixed state. The coupled
 scheduler must resolve contact with signed incoming relative normal speed,
 apply each impulse once, preserve nonpenetration over the actual obstacle
 sweep, and account for pressure traction and obstacle work without counting

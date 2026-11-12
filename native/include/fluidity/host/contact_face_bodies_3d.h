@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <span>
 #include <vector>
 
@@ -52,6 +53,38 @@ absl::StatusOr<ContactFaceParticleResponse3D> ResolveContactFaceParticles3D(
     std::uint64_t second_body_id,
     Vec3 normal_toward_first,
     double friction_coefficient
+);
+
+struct ContactParticleIdentity3D {
+  std::uint64_t particle_id;  // Nonzero stable identity.
+  std::uint64_t body_id;  // Nonzero stable body identity.
+  double mass;  // Full particle mass in kg.
+};
+
+struct DetectedContactFace3D {
+  std::size_t face_slot;  // Owned face slot in this contact stencil.
+  std::span<const ContactFaceParticle3D> contributors;
+  std::uint64_t first_body_id;
+  std::uint64_t second_body_id;
+  Vec3 normal_toward_first;  // World unit normal pointing toward the first body.
+  double friction_coefficient;  // Finite nonnegative Coulomb coefficient.
+};
+
+struct ContactFaceBatchResponse3D {
+  std::vector<DistinctBodyContact3D> face_contacts;  // In input face order.
+  std::vector<Vec3> velocity_deltas;  // In input particle order, world m/s.
+};
+
+// Stages one detected pair per face using a single vector-contact stencil.
+// Faces are strictly ordered by slot, and particles by stable ID. Each face
+// contributor must match the particle table's body and mass. Contributor
+// weights across this batch may total at most one per particle, within 1e-12.
+// Each face uses its supplied incoming velocities. Outputs sum in face order
+// and are published only on success. Status categories match the single-face
+// resolver. Invalid batch ordering, identity or weights return InvalidArgument.
+absl::StatusOr<ContactFaceBatchResponse3D> StageContactFaceBatch3D(
+    std::span<const ContactParticleIdentity3D> particles,
+    std::span<const DetectedContactFace3D> faces
 );
 
 }  // namespace fluidity

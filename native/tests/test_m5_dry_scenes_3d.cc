@@ -329,6 +329,42 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
+bool TestContactFaceBatch() {
+  constexpr std::array particles{
+      fluidity::ContactParticleIdentity3D{1, 9, 2},
+      fluidity::ContactParticleIdentity3D{2, 11, 6},
+  };
+  constexpr std::array contributors{
+      fluidity::ContactFaceParticle3D{1, 9, 2, 0.5, {-2, 3, 0}},
+      fluidity::ContactFaceParticle3D{2, 11, 6, 0.5, {2, 0, 0}},
+  };
+  const std::array faces{
+      fluidity::DetectedContactFace3D{3, contributors, 9, 11, {1, 0, 0}, 0.25},
+      fluidity::DetectedContactFace3D{6, contributors, 9, 11, {1, 0, 0}, 0.25},
+  };
+  const auto batch = fluidity::StageContactFaceBatch3D(particles, faces);
+  if (!batch.ok() || batch->face_contacts.size() != 2 || batch->velocity_deltas.size() != 2
+      || std::abs(batch->velocity_deltas[0].x - 3) > 1e-12 || std::abs(batch->velocity_deltas[1].x + 1) > 1e-12
+      || std::abs(2 * batch->velocity_deltas[0].y + 6 * batch->velocity_deltas[1].y) > 1e-12) {
+    return false;
+  }
+  auto invalid = faces;
+  invalid[1].second_body_id = 99;
+  if (fluidity::StageContactFaceBatch3D(particles, invalid).ok()) {
+    return false;
+  }
+  invalid = faces;
+  invalid[1].face_slot = invalid[0].face_slot;
+  if (fluidity::StageContactFaceBatch3D(particles, invalid).ok()) {
+    return false;
+  }
+  auto excessive = contributors;
+  excessive[0].weight = 0.75;
+  invalid = faces;
+  invalid[1].contributors = excessive;
+  return !fluidity::StageContactFaceBatch3D(particles, invalid).ok();
+}
+
 bool TestContactFaceParticleScatter() {
   constexpr std::array particles{
       fluidity::ContactFaceParticle3D{1, 9, 2, 0.5, {-2, 3, 0}},
@@ -713,9 +749,10 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff() || !TestSandSurfaceFit()
-      || !TestWallImpulseBudget() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
-      || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
+  if (!TestContactFaceBatch() || !TestContactFaceParticleScatter() || !TestPlasticCheckpointHandoff()
+      || !TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
+      || !TestStoredResidualMomentum() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
+      || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);
