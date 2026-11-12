@@ -129,6 +129,25 @@ publication because the child inventories need certified resampling.
 ctest --test-dir <qualified-build> -R '^Adaptive(Family|Band)Replay' -V --output-on-failure --no-tests=error
 ~~~
 
+## Physical aperture follow-up
+
+The wall-strain slice lifts the prescribed Cartesian wall flux of a fully
+blocked graded subface into its normal and affine shear rows. The coupled
+operator omits the blocked slot from its velocity unknowns. The affine
+fixture reproduces the exact strain from an exterior anchor shared by
+normal and shear rows. A moving partial aperture still requires its own
+wall quadrature.
+
+The graded planar geometry now exposes the wet-open area centroid in
+world coordinates. The pressure area and incidence are unchanged. The
+centroid is absent on dry or completely blocked subfaces. The translated
+2:1 fixture checks both wet centroids against independently computed
+rectangles and checks the dry slots.
+
+~~~powershell
+ctest --test-dir <qualified-build> -R 'GradedLiquidBoundaryGeometry3D|GradedViscousTensorReproducesAffineStrain' --output-on-failure --no-tests=error
+~~~
+
 ## Remaining M4 gates
 
 The full graded planar-extension and Couette matrix needs independently
@@ -160,3 +179,13 @@ frame two. Mesh stopped after frame one because its raw scaffold encloses
 1.32813 m³ against 1.76750 m³ of accepted material. The fixed-cache
 continuation is a separate control. The full fresh reference wave and
 interrupted replay remain open.
+
+The fresh reproduction on the later graded baseline had the same frame-two
+deficit. Under the existing 0.0625 m displacement cap, a diagnostic build
+reached 1.40856 m³ with stored normals and 1.38051 m³ with recomputed
+geometric normals. The respective runs rejected 68 and 52 trial moves on
+topology. An experimental density-level re-extraction passed scaffold
+correction, then the tracked mesh refused six self-intersections. Frames
+zero and one published in that run. Reversing the candidate order reached
+the projection stage and failed its local repair guard. The experimental
+changes stayed out of main.
