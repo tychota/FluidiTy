@@ -551,16 +551,17 @@ bool TestWallImpulseBudget(bool compatible_floor = false) {
 #else
   const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
-  // The reflected normal ghost gives L_yy = -1/s for this incoming
-  // uniform field. Sliding with friction 0.5 gives post-impact L_xy = -0.5/s.
-  // At zero trace, the cone return retains only the simple-shear polar rotation.
-  const double trial_shear = compatible_floor ? -0.005 : 0;
-  const double expected_rotation_xy = trial_shear / std::hypot(2.0, trial_shear);
+  // The reflected field has L_yy = -1/s and zero shear at this particle.
+  // This compression stays elastic at the chosen friction angle. The
+  // swept velocity still removes inward normal motion.
+  const auto& elastic = particle.elastic_deformation;
+  const double determinant = elastic.x_row.x * elastic.y_row.y * elastic.z_row.z;
+  const double expected_determinant = compatible_floor ? 0.99 : 1.0;
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
       && std::abs(budget.particle_wall_kinetic_energy_change + 0.875) < 1e-9 && budget.grid_wall_impulse_y == 0
-      && budget.cut_stress_work == 0 && budget.granular_projected_particles == (compatible_floor ? 1U : 0U)
-      && std::abs(particle.elastic_deformation.x_row.y - expected_rotation_xy) < 1e-10
+      && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
+      && std::abs(determinant - expected_determinant) < 1e-10 && std::abs(elastic.x_row.y) < 1e-10
       && budget.granular_plastic_volume_changes == 0;
 }
 
@@ -956,6 +957,58 @@ bool TestCompatibleFloorStressWork() {
       && std::hypot(oracle->stress_impulse.x, oracle->stress_impulse.y, oracle->stress_impulse.z) < 1e-11;
 }
 
+bool TestBoundedFloorDonorFallback() {
+  constexpr std::array blocks{BlockIndex3D{0, 0, 0}, BlockIndex3D{1, 0, 0}};
+  const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+  if (!grid.ok()) {
+    return false;
+  }
+  const auto target = grid->FaceSlot({fluidity::FaceNormalAxis::kX, {0, 0, 0}});
+  const auto donor = grid->FaceSlot({fluidity::FaceNormalAxis::kX, {3, 0, 0}});
+  const auto distant = grid->FaceSlot({fluidity::FaceNormalAxis::kX, {5, 0, 0}});
+  if (!target.ok() || !donor.ok() || !distant.ok()) {
+    return false;
+  }
+  const auto count = grid->face_count();
+  std::vector<fluidity::LiquidFaceValidity3D> validity(count, fluidity::LiquidFaceValidity3D::kMissing);
+  const std::vector<fluidity::LiquidBoundaryFaceTag3D> tags(count);
+  std::vector<double> forces(count);
+  std::vector<std::uint8_t> needed(count);
+  std::vector<fluidity::internal::StationaryFloorGhostRow3D> rows;
+  validity[*donor] = fluidity::LiquidFaceValidity3D::kValid;
+  forces[*target] = 2;
+  needed[*target] = 1;
+  const auto reaction = fluidity::internal::ScatterStationaryFloorGhostTranspose3D(
+      grid->view(),
+      validity,
+      tags,
+      forces,
+      {},
+      needed,
+      &rows,
+  );
+  if (!reaction.ok() || *reaction != 0 || forces[*target] != 0 || forces[*donor] != 2 || rows.size() != 1
+      || !rows.front().fallback || rows.front().terms.size() != 1 || rows.front().terms.front().donor_slot != *donor
+      || rows.front().terms.front().coefficient != 1) {
+    return false;
+  }
+  validity[*donor] = fluidity::LiquidFaceValidity3D::kMissing;
+  validity[*distant] = fluidity::LiquidFaceValidity3D::kValid;
+  forces[*donor] = 0;
+  forces[*target] = 2;
+  const auto prior = forces;
+  const auto rejected = fluidity::internal::ScatterStationaryFloorGhostTranspose3D(
+      grid->view(),
+      validity,
+      tags,
+      forces,
+      {},
+      needed,
+      &rows,
+  );
+  return rejected.status().code() == absl::StatusCode::kFailedPrecondition && forces == prior;
+}
+
 bool TestUncutStressWork() {
   const BlockIndex3D block{0, 0, 0};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, {&block, 1}, 1);
@@ -1306,8 +1359,8 @@ int main(int argc, char** argv) {
   }
   if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true)
       || !TestUnsupportedFloorHasNoReaction() || !TestStoredVelocityResidual() || !TestStoredResidualMomentum()
-      || !TestCompatibleFloorStressWork() || !TestUncutStressWork() || !TestRollbackOnUnsupportedDestination()
-      || !TestRejectsInadmissibleInitialState()) {
+      || !TestCompatibleFloorStressWork() || !TestBoundedFloorDonorFallback() || !TestUncutStressWork()
+      || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;
   }
   const bool coarse_sand = TestScene(0.075, 0.001875, false);

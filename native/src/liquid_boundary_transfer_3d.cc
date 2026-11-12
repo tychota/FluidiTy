@@ -1126,7 +1126,26 @@ absl::StatusOr<double> internal::ScatterStationaryFloorGhostTranspose3D(
     }
     if (count == 0) {
       if (tags[target].structurally_eligible) {
-        return absl::FailedPreconditionError("floor ghost transpose has no compatible donor");
+        // Extend only the constant fallback, keeping the affine fit local.
+        constexpr double kFallbackRadiusSquared = 16.0;
+        std::size_t fallback_slot = anchors.size();
+        double closest = kFallbackRadiusSquared;
+        for (const auto donor : live_slots) {
+          if (anchors[donor].axis != anchors[target].axis) {
+            continue;
+          }
+          const auto offset = Difference(anchors[donor].anchor_in_cell_widths, target_position);
+          const double distance = Dot(offset, offset);
+          if (distance < closest || (distance == closest && fallback_slot == anchors.size())) {
+            closest = distance;
+            fallback_slot = donor;
+          }
+        }
+        if (fallback_slot == anchors.size()) {
+          return absl::FailedPreconditionError("floor ghost transpose has no compatible donor within four cells");
+        }
+        scattered_force[fallback_slot] += force[target];
+        row.terms.push_back({fallback_slot, 1});
       }
       if (gather_needed) {
         row.fallback = true;

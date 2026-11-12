@@ -634,10 +634,11 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     const bool granular_floor_impact = std::holds_alternative<GranularParameters3D>(material)
         && !settings.platen.has_value() && contact->contact_fraction.has_value();
+    const bool split_deformation = granular_floor_impact && !compatible_floor;
     const double incoming_duration =
-        granular_floor_impact ? settings.duration * *contact->contact_fraction : settings.duration;
+        split_deformation ? settings.duration * *contact->contact_fraction : settings.duration;
     Mat3 trial = TrialDeformation(particle.elastic_deformation, particle_gather.velocity_gradient, incoming_duration);
-    if (granular_floor_impact) {
+    if (split_deformation) {
       // Compose the two deformation increments in physical order across impact.
       const double projected_duration = settings.duration - incoming_duration;
       const Mat3 projected_gradient = ProjectStationaryFloorVelocityGradient3D(
