@@ -177,7 +177,8 @@ absl::StatusOr<FrozenPlanarSnowPressureCell3D> FreezePlanarSnowPressureCell3D(
 // incident cell along the wall axis and must match its wet volume.
 // Advances volume from the same
 // regular-cell field. On success both spans receive the candidate state;
-// otherwise neither span changes. With a snow layer material, all snow
+// otherwise neither span changes. Liquid retains its incoming affine enable
+// flag. With a snow layer material, all snow
 // particles drift and the affine change of normal thickness drives a
 // constitutive return. Pressure contributors must be on the front layer.
 // The caller owns rebinning and acceptance.
@@ -242,7 +243,7 @@ struct PlanarSnowPressureFrame3D {
 // front at the beginning of each step within 1e-10 cell widths.
 // Liquid must have no sources or cavity state. Its
 // existing topology must match the frozen
-// cell and faces. Each accepted step must reconstruct its end wall in
+// liquid cell and faces. Each accepted step must reconstruct its end wall in
 // that cell and agree with the pressure-driven wall trajectory within
 // the scatter speed tolerance integrated over the step plus 1e-10 cell widths.
 // Motion retries use the transaction's half-step schedule. On success the

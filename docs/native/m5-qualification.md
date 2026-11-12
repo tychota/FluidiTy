@@ -1480,6 +1480,12 @@ separate fixture starts with two particles tied at the front and applies
 traction to only the retreating particle. The final pose check still
 rejects the split front and preserves both input states.
 
+The planar transaction preserves each liquid particle's affine enable
+flag while completing PIC initialization. The fixture starts with affine
+transfer disabled and carries that state through acceptance and checkpoint
+replay on both backends. A pressure row whose committed cell is marked as
+air rejects before the trial begins, preserving the occupancy and clock.
+
 The authored Blender snow–water scene still requires production liquid
 integration with general moving-interface reconstruction and internal snow
 stress evolution. Run both planar fixtures with the build and CTest

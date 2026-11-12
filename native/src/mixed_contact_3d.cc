@@ -880,7 +880,6 @@ absl::StatusOr<PlanarSnowPressureTrial3D> AdvancePlanarSnowPressure3D(
     particle.world_position = *end;
     particle.world_velocity = velocity;
     particle.velocity_slopes = {{gradient.x, 0, 0}, {0, gradient.y, 0}, {0, 0, gradient.z}};
-    particle.affine_enabled = true;
     particle.pic_initialized = true;
     particle.volume_ratio = volume_ratio;
   }
@@ -1045,6 +1044,9 @@ absl::StatusOr<PlanarSnowPressureAttempt3D> AttemptPlanarSnowPressureStep3D(
     const auto stored = committed.cells[ordinal].cell_index;
     if (index.x != stored.x || index.y != stored.y || index.z != stored.z) {
       return absl::InvalidArgumentError("planar pressure transaction cell mismatch");
+    }
+    if (committed.cells[ordinal].occupancy != LiquidCellOccupancy3D::kLiquid) {
+      return absl::InvalidArgumentError("planar pressure transaction requires liquid cell occupancy");
     }
     rows[ordinal].previous_pressure = committed.cells[ordinal].previous_pressure;
   }

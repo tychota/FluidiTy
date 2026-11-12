@@ -526,6 +526,7 @@ bool TestPlanarMixedContactDetection() {
   accepted_liquid.particles[0].world_position = {-0.5, 0.25, 0.25};
   accepted_liquid.particles[0].world_velocity = {};
   accepted_liquid.particles[0].volume_ratio = 0.95;
+  accepted_liquid.particles[0].affine_enabled = false;
   accepted_liquid.cells[0].cell_index = first_frozen->cell.cell_index;
   for (std::size_t ordinal = 0; ordinal < first_frozen->faces.size(); ++ordinal) {
     const auto index = first_frozen->faces[ordinal].face_index;
@@ -575,6 +576,7 @@ bool TestPlanarMixedContactDetection() {
   if (!accepted_attempt.ok() || accepted_attempt->outcome.disposition != fluidity::LiquidAttemptDisposition3D::kAccepted
       || !accepted_attempt->pressure.has_value() || committed.clock.time != 0.0625
       || committed.clock.accepted_step_ordinal != 1 || committed.clock.epoch != 1
+      || committed.particles[0].affine_enabled || !committed.particles[0].pic_initialized
       || std::abs(committed.cells[0].previous_pressure - 12) > 1e-12
       || std::abs(committed.faces[first_frozen->wall_face_ordinal].carrier_velocity - 2) > 1e-12
       || std::abs(committed.particles[0].world_position.x + 0.375) > 1e-12
@@ -598,6 +600,21 @@ bool TestPlanarMixedContactDetection() {
       .nominal_step_duration = 0.125,
       .maximum_path_length = 0.20,
   };
+  accepted_liquid.cells[0].occupancy = fluidity::LiquidCellOccupancy3D::kAir;
+  const auto air_pressure_frame = fluidity::AdvancePlanarSnowPressureFrame3D(
+      *grid,
+      accepted_liquid,
+      {&committed_snow, 1},
+      single_traction,
+      frame_settings,
+      project
+  );
+  if (air_pressure_frame.status().message() != "planar pressure transaction requires liquid cell occupancy"
+      || accepted_liquid.cells[0].occupancy != fluidity::LiquidCellOccupancy3D::kAir
+      || accepted_liquid.clock.time != 0) {
+    return false;
+  }
+  accepted_liquid.cells[0].occupancy = fluidity::LiquidCellOccupancy3D::kLiquid;
   const auto frame = fluidity::AdvancePlanarSnowPressureFrame3D(
       *grid,
       accepted_liquid,
