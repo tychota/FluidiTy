@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 #include "absl/status/status.h"
@@ -11,6 +12,9 @@
 #include "fluidity/base/mac_types_3d.h"
 
 namespace fluidity {
+
+class AdaptiveMacTopology3D;
+struct AdaptiveMacFaceOwnership3D;
 
 struct CoarseFinePatch3D {
   Vec3 world_origin;  // Common lattice origin at the junction in meters.
@@ -50,6 +54,41 @@ class CoarseFineStencil3D {
   std::size_t row_count_{};
 };
 
+class AdaptiveMacStencilBinding3D {
+ public:
+  // One optional global slot per input stencil row. A missing slot has no
+  // geometric owner and must be excluded from deposition and gathering.
+  std::span<const std::optional<std::size_t>> slots() const {
+    return std::span(slots_).first(row_count_);
+  }
+
+ private:
+  friend absl::StatusOr<AdaptiveMacStencilBinding3D> BindAdaptiveMacStencil3D(
+      const AdaptiveMacTopology3D&,
+      const AdaptiveMacFaceOwnership3D&,
+      const CoarseFineStencil3D&,
+      CellIndex3D,
+      std::uint8_t
+  );
+  std::array<std::optional<std::size_t>, CoarseFineStencil3D::kMaxRows> slots_{};
+  std::size_t row_count_ = 0;
+};
+
+// Map a patch stencil to the matching frozen topology and its ownership.
+// The patch origin is a signed finest-lattice coordinate aligned to the
+// supplied coarse exponent (1..30). Level 1 is exactly one exponent finer.
+// The caller pairs the stencil with the patch's world origin and width.
+// Exact geometry and width are required; a subdivided coarse face has no
+// slot of its former width. Returns InvalidArgument for malformed alignment
+// or ownership extents and OutOfRange for unrepresentable face coordinates.
+// No allocation and no output on failure.
+absl::StatusOr<AdaptiveMacStencilBinding3D> BindAdaptiveMacStencil3D(
+    const AdaptiveMacTopology3D& topology,
+    const AdaptiveMacFaceOwnership3D& ownership,
+    const CoarseFineStencil3D& stencil,
+    CellIndex3D patch_origin_finest,
+    std::uint8_t coarse_width_exponent
+);
 enum class CoarseFineMaskDisposition3D : std::uint8_t {
   kComplete,
   kPicRequiredIncomplete,
