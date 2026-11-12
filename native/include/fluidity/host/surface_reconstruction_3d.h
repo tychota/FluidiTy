@@ -25,18 +25,25 @@ struct SurfaceReconstructionResult3D {
 };
 
 // Connects the density reference, accepted carrier, persistent tracking and
-// measured correction for a closed material component and stationary planar contact.
+// measured correction for a closed material component. Supports stationary
+// halfspace contact and a stationary open tank with a planar liquid field.
 // Frame zero can also seed up to 16 separate sphere-union components, sharing
 // the lattice budget evenly. Nested or intersecting render surfaces fail closed.
 // World lattice bounds snap to fixed spacing; they do not change the query
 // origin. Projection uses a measured, volume-qualified geometric scaffold rather
 // than repeatedly undoing/reapplying the raw field's volume deficit. Uses the
 // complete Simulate field/particles to preserve known signs
-// farther than 2h from the physical interface. Does not infer occupancy from
+// farther than 2h from the physical interface. Cached resolved cavities use
+// the complete source field and require one inward mesh boundary per cavity,
+// one outward boundary, and stable cavity IDs across a tracked interval.
+// Does not infer occupancy from
 // missing samples. Records field discrepancy rather than certifying it.
 // Seed requires one zero-clock sample and no predecessor. Later intervals must
 // match the supplied checked SurfaceFrame clock and preserve raw component count
-// and Euler characteristic. Moving obstacles and multi-component tracking or repair
+// and Euler characteristic. Two-phase sheets may be retessellated with
+// reciprocal correspondence within half a source cell width and identical
+// incident phase labels. Unmatched exterior vertices receive new IDs.
+// Moving obstacles and multi-component tracking or repair
 // return Unimplemented/FailedPrecondition until their repair adapters qualify.
 // Missing support propagates; volume or unsafe geometry failure publishes no
 // result. Inputs are borrowed and never modified. At most 65 source samples and

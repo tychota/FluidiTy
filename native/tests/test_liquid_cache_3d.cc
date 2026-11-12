@@ -74,6 +74,124 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, ResolvedPhasePairIsCanonicalAndChangesFingerprint) {
+  constexpr std::array<LiquidConstituentMaterial3D, 3> kMaterials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  LiquidResolvedSceneView3D scene;
+  scene.scene.constituent_materials = kMaterials;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+
+  std::array<LiquidPhasePair3D, 1> pairs{{{4, 5, 0.031}}};
+  scene.scene.phase_pairs = pairs;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto view = decoded->View();
+  ASSERT_EQ(view.scene.phase_pairs.size(), 1);
+  const auto* forward = FindLiquidPhasePair3D(view.scene.phase_pairs, 4, 5);
+  ASSERT_NE(forward, nullptr);
+  EXPECT_EQ(FindLiquidPhasePair3D(view.scene.phase_pairs, 5, 4), forward);
+  EXPECT_EQ(FindLiquidPhasePair3D(view.scene.phase_pairs, 4, 4), nullptr);
+  EXPECT_DOUBLE_EQ(forward->surface_tension, 0.031);
+  const auto fingerprint = ResolvedSceneFingerprint(view);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+
+  pairs[0] = {5, 4, 0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  pairs[0] = {4, 6, 0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  pairs[0] = {4, 5, -0.031};
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidCache3D, ParticleCompositionSurvivesStateAndSourceEncoding) {
+  auto state = PopulatedState();
+  auto& particle = state.particles[0];
+  particle.phase_id = 4;
+  particle.constituent_count = 2;
+  particle.constituents[0] = {8, 0.25};
+  particle.constituents[1] = {14, 0.75};
+  const auto bytes = EncodeLiquidState3D(state);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto decoded = DecodeLiquidState3D(bytes->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_TRUE(decoded->particles[0] == particle);
+  EXPECT_EQ(decoded->particles[1].constituent_count, 0);
+
+  const auto points = BuildLiquidPointFrame3D(state);
+  ASSERT_TRUE(points.ok()) << points.status();
+  const auto point_bytes = EncodeLiquidPointFrame3D(*points);
+  ASSERT_TRUE(point_bytes.ok()) << point_bytes.status();
+  const auto decoded_points = DecodeLiquidPointFrame3D(point_bytes->values());
+  ASSERT_TRUE(decoded_points.ok()) << decoded_points.status();
+  EXPECT_EQ(decoded_points->points[0].phase_id, 4);
+  ASSERT_EQ(decoded_points->points[0].constituent_count, 2);
+  EXPECT_EQ(decoded_points->points[0].constituents[0], (LiquidConstituentFraction3D{8, 0.25}));
+  EXPECT_EQ(decoded_points->points[0].constituents[1], (LiquidConstituentFraction3D{14, 0.75}));
+  EXPECT_EQ(decoded_points->points[1].constituent_count, 0);
+
+  LiquidEmissionSource3D source;
+  source.emitted_particle_template = particle;
+  LiquidResolvedSceneView3D scene;
+  scene.scene.sources = std::span(&source, 1);
+  std::array<LiquidConstituentMaterial3D, 3> materials{{
+      {8, 4, 1000.0},
+      {14, 4, 1020.0},
+      {25, 5, 820.0},
+  }};
+  scene.scene.constituent_materials = materials;
+  const auto resolved = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  const auto loaded = DecodeLiquidResolvedScene3D(resolved->values());
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  ASSERT_EQ(loaded->View().scene.sources.size(), 1);
+  ASSERT_EQ(loaded->View().scene.constituent_materials.size(), 3);
+  EXPECT_EQ(loaded->View().scene.constituent_materials[2].phase_id, 5);
+  EXPECT_DOUBLE_EQ(loaded->View().scene.constituent_materials[2].density_kg_per_m3, 820.0);
+  const auto encoded_again = EncodeLiquidResolvedScene3D(loaded->View());
+  ASSERT_TRUE(encoded_again.ok()) << encoded_again.status();
+  EXPECT_TRUE(std::ranges::equal(resolved->values(), encoded_again->values()));
+  EXPECT_TRUE(loaded->View().scene.sources[0].emitted_particle_template == particle);
+
+  particle.constituents[1].substance_id = 8;
+  EXPECT_EQ(EncodeLiquidState3D(state).status().code(), absl::StatusCode::kInvalidArgument);
+  materials[1].phase_id = 5;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+  materials[1].phase_id = 4;
+  source.emitted_particle_template.constituents[1].volume_fraction = 0.5;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidCache3D, CheckpointPreservesCavitySnapshot) {
+  auto state = PopulatedState();
+  state.next_cavity_id = 12;
+  state.cavity_gas = *LiquidRecords3D<LiquidCavityGasState3D>::Create(2);
+  state.cavity_components = *LiquidRecords3D<LiquidCavityComponentState3D>::Create(2);
+  ASSERT_TRUE(state.cavity_gas.Resize(2).ok());
+  ASSERT_TRUE(state.cavity_components.Resize(2).ok());
+  state.cavity_gas[0] = {{-1, 0, 0}, 0.75, 0};
+  state.cavity_gas[1] = {{1, 0, 0}, 0.25, 1};
+  state.cavity_components[0] = {11, 1.0, 104000.0};
+
+  const auto bytes = EncodeLiquidCheckpoint3D(state, Resume());
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto decoded = DecodeLiquidCheckpoint3D(bytes->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_TRUE(decoded->state == state);
+  const auto cloned = CloneLiquidState3D(decoded->state, Resume().capacities);
+  ASSERT_TRUE(cloned.ok()) << cloned.status();
+  EXPECT_TRUE(*cloned == state);
+
+  state.cavity_components[1] = state.cavity_components[0];
+  EXPECT_EQ(EncodeLiquidCheckpoint3D(state, Resume()).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, Blake3KnownAnswersAndExactByteIdentity) {
   EXPECT_EQ(
       std::string(LiquidDigestHex3D(LiquidContentDigest3D({})).data()),
@@ -367,6 +485,69 @@ TEST(LiquidCache3D, ResolvedHorizontalPlaneRequiresTankAndMaterializedPayloads) 
   }
 
   scene.scene.friction_coefficient = 0.125;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidCache3D, ResolvedViscosityRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.dynamic_viscosity = 12.5;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_DOUBLE_EQ(decoded->View().scene.dynamic_viscosity, 12.5);
+  const auto fingerprint = ResolvedSceneFingerprint(decoded->View());
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*baseline, *fingerprint);
+  scene.scene.dynamic_viscosity = -1.0;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidCache3D, ResolvedCavityEquilibriumRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.cavity = LiquidSceneCavity3D{
+      .atmospheric_absolute_pressure = 100000.0,
+      .birth_hydrostatic_gauge_pressure = 4000.0,
+  };
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_TRUE(decoded->scene.cavity);
+  EXPECT_DOUBLE_EQ(decoded->scene.cavity->atmospheric_absolute_pressure, 100000.0);
+  EXPECT_DOUBLE_EQ(decoded->scene.cavity->birth_hydrostatic_gauge_pressure, 4000.0);
+  const auto fingerprint = ResolvedSceneFingerprint(decoded->View());
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*fingerprint, *baseline);
+  scene.scene.cavity->birth_hydrostatic_gauge_pressure = -1.0;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
+TEST(LiquidCache3D, ResolvedEosRoundTripsAndChangesFingerprint) {
+  LiquidResolvedSceneView3D scene;
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  scene.scene.eos = LiquidSceneEos3D{.reference_sound_speed = 2.0, .law = LiquidEosLaw::kTait};
+  scene.scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  const auto round_trip = decoded->View();
+  ASSERT_TRUE(round_trip.scene.eos.has_value());
+  EXPECT_EQ(round_trip.scene.eos->reference_sound_speed, 2.0);
+  EXPECT_EQ(round_trip.scene.eos->law, LiquidEosLaw::kTait);
+  ASSERT_TRUE(round_trip.scene.drift.has_value());
+  EXPECT_EQ(round_trip.scene.drift->correction_time, 0.2);
+  EXPECT_EQ(round_trip.scene.drift->maximum_rate, 0.3);
+  const auto fingerprint = ResolvedSceneFingerprint(round_trip);
+  ASSERT_TRUE(fingerprint.ok()) << fingerprint.status();
+  EXPECT_NE(*baseline, *fingerprint);
+  scene.scene.bulk_modulus = 4000.0;
   EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
 }
 

@@ -5,6 +5,14 @@ Local branch `codex/m5-granular-snow`, based on verified upstream
 M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 [design](../superpowers/specs/2026-11-07-fluidity-design.md).
 
+The branch now includes main through 160e2fa. Constitutive models,
+face contact, impulse scatter, dry snow, and plastic checkpoint records
+landed in GitHub PRs 74, 80, 81, 82, and 83. Draft PR 75 continues the
+milestone qualification. The dry snow and plastic checkpoint PRs were
+rebuilt and passed native and CUDA tests after integrating main. The
+refreshed milestone branch passed all nine M5 CTest targets after a
+clean Windows Release CUDA rebuild.
+
 | Gate | Status | Evidence |
 |---|---|---|
 | Granular constitutive invariants | Pass | Elastic compression, translated tensile apex, compressed shear return to the cone at fixed trace, plastic volume transfer, and invalid-state output preservation. |

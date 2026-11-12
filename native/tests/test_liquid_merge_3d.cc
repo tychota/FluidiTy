@@ -92,6 +92,59 @@ TEST(LiquidUniformMerge3D, ConservesCounterstreamingMomentsAndDissipatesEnergy) 
   EXPECT_LT(merged_energy, 205.0 / 24.0);
 }
 
+TEST(LiquidUniformMerge3D, ConservesConstituentVolumesAcrossMergeAndSplit) {
+  auto children = CounterstreamingChildren();
+  children[0].phase_id = 4;
+  children[0].constituent_count = 2;
+  children[0].constituents[0] = {8, 0.25};
+  children[0].constituents[1] = {14, 0.75};
+  children[1].phase_id = 4;
+  children[1].constituent_count = 1;
+  children[1].constituents[0] = {8, 1.0};
+  Certification certification;
+  const auto merged = MergeUniformLiquidParticles3D(children, 10, 1.0, kCubic, Certify, &certification);
+  ASSERT_TRUE(merged.ok()) << merged.status();
+  EXPECT_EQ(merged->particle.phase_id, 4);
+  ASSERT_EQ(merged->particle.constituent_count, 2);
+  const double current_volume = merged->particle.reference_volume * merged->particle.volume_ratio;
+  EXPECT_EQ(merged->particle.constituents[0].substance_id, 8);
+  EXPECT_DOUBLE_EQ(merged->particle.constituents[0].volume_fraction * current_volume, 9.5);
+  EXPECT_EQ(merged->particle.constituents[1].substance_id, 14);
+  EXPECT_DOUBLE_EQ(merged->particle.constituents[1].volume_fraction * current_volume, 1.5);
+
+  const auto split = SplitUniformLiquidParticle3D(
+      merged->particle,
+      merged->next_particle_id,
+      2.0,
+      kCubic,
+      [](const LiquidParticleState3D&, double, LiquidUniformResamplingBasis3D, void*) {
+        return absl::OkStatus();
+      },
+      nullptr
+  );
+  ASSERT_TRUE(split.ok()) << split.status();
+  std::array<double, 2> recovered{};
+  for (const auto& child : split->children) {
+    EXPECT_EQ(child.phase_id, 4);
+    ASSERT_EQ(child.constituent_count, 2);
+    const double volume = child.reference_volume * child.volume_ratio;
+    for (std::size_t index = 0; index < recovered.size(); ++index) {
+      EXPECT_EQ(child.constituents[index], merged->particle.constituents[index]);
+      recovered[index] += child.constituents[index].volume_fraction * volume;
+    }
+  }
+  EXPECT_DOUBLE_EQ(recovered[0], 9.5);
+  EXPECT_DOUBLE_EQ(recovered[1], 1.5);
+
+  children[1].phase_id = 5;
+  certification = {};
+  EXPECT_EQ(
+      MergeUniformLiquidParticles3D(children, 10, 1.0, kCubic, Certify, &certification).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  EXPECT_EQ(certification.calls, 0);
+}
+
 TEST(LiquidUniformMerge3D, UsesMassWeightsForCentersAndCrossMoments) {
   auto children = CounterstreamingChildren();
   children[1].mass = 3.0;

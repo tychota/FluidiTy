@@ -65,6 +65,73 @@ void ExpectInventory(const LiquidRemapInventory3D& actual, const LiquidRemapInve
   EXPECT_DOUBLE_EQ(actual.enthalpy_j, expected.enthalpy_j);
 }
 
+TEST(LiquidBandHandoff3D, ConservesSamePhaseConstituentsThroughGridAndParticleOwners) {
+  auto carrier = kCarrier;
+  carrier.phase_id = 4;
+  auto particles = kBand;
+  particles[0].phase_id = 4;
+  particles[0].constituent_count = 1;
+  particles[0].constituents[0] = {14, 1};
+  particles[1].phase_id = 4;
+  particles[1].constituent_count = 1;
+  particles[1].constituents[0] = {8, 1};
+  const auto core = RetireLiquidBandCell3D(kCell, particles, kCore.enthalpy_j, carrier);
+  ASSERT_TRUE(core.ok()) << core.status();
+  ExpectInventory(*core, kCore);
+  ASSERT_EQ(core->constituent_count, 2);
+  EXPECT_EQ(core->phase_id, 4);
+  EXPECT_EQ(core->constituents[0].substance_id, 8);
+  EXPECT_DOUBLE_EQ(core->constituents[0].volume_m3, 6);
+  EXPECT_EQ(core->constituents[1].substance_id, 14);
+  EXPECT_DOUBLE_EQ(core->constituents[1].volume_m3, 2);
+
+  LiquidRemapStencil3D neighbors{};
+  neighbors.fill({*core, *core});
+  auto& oil = neighbors[0][1];
+  oil.phase_id = 5;
+  oil.constituent_count = 1;
+  oil.constituents[0] = {25, oil.current_volume_m3};
+  oil.mass_kg *= 2;
+  const auto children = ProlongLiquidInventory3D(*core, neighbors);
+  ASSERT_TRUE(children.ok()) << children.status();
+  for (const auto& child : *children) {
+    ASSERT_EQ(child.constituent_count, 2);
+    EXPECT_EQ(child.phase_id, 4);
+    EXPECT_DOUBLE_EQ(child.mass_kg, 1);
+    EXPECT_DOUBLE_EQ(child.constituents[0].volume_m3, 0.75);
+    EXPECT_DOUBLE_EQ(child.constituents[1].volume_m3, 0.25);
+  }
+  const auto restricted = RestrictLiquidInventory3D(*children);
+  ASSERT_TRUE(restricted.ok()) << restricted.status();
+  const auto band = ReseedLiquidCoreCell3D(kCell, *restricted, carrier, 8, 8, 30);
+  ASSERT_TRUE(band.ok()) << band.status();
+  for (const auto& particle : band->particles()) {
+    ASSERT_EQ(particle.constituent_count, 2);
+    EXPECT_EQ(particle.phase_id, 4);
+    EXPECT_EQ(particle.constituents[0], (LiquidConstituentFraction3D{8, 0.75}));
+    EXPECT_EQ(particle.constituents[1], (LiquidConstituentFraction3D{14, 0.25}));
+  }
+  const auto retired_again = RetireLiquidBandCell3D(kCell, band->particles(), band->enthalpy_j(), carrier);
+  ASSERT_TRUE(retired_again.ok()) << retired_again.status();
+  ExpectInventory(*retired_again, kCore);
+  EXPECT_DOUBLE_EQ(retired_again->constituents[0].volume_m3, 6);
+  EXPECT_DOUBLE_EQ(retired_again->constituents[1].volume_m3, 2);
+
+  particles[0].phase_id = 5;
+  particles[0].constituents[0] = {25, 1};
+  EXPECT_EQ(
+      RetireLiquidBandCell3D(kCell, particles, kCore.enthalpy_j, carrier).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto mixed_children = *children;
+  mixed_children[0] = oil;
+  EXPECT_EQ(RestrictLiquidInventory3D(mixed_children).status().code(), absl::StatusCode::kFailedPrecondition);
+  carrier.phase_id = 5;
+  EXPECT_EQ(
+      ReseedLiquidCoreCell3D(kCell, *restricted, carrier, 8, 8, 30).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+}
 TEST(LiquidBandHandoff3D, ConservesSignedInventoryAcrossExclusiveOwnershipRoundTrip) {
   const auto core = RetireLiquidBandCell3D(kCell, kBand, kCore.enthalpy_j, kCarrier);
   ASSERT_TRUE(core.ok()) << core.status();

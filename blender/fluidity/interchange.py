@@ -10,7 +10,7 @@ import bpy
 from bpy.props import EnumProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 
-from . import jobs, playback
+from . import jobs, playback, surface_playback
 from .preferences import get_preferences
 from .scene_inputs import require_cadence
 
@@ -307,7 +307,31 @@ class FLUIDITY_OT_export_usd(IdleOperator, bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FLUIDITY_OT_attach_surface(IdleOperator, bpy.types.Operator):
+    bl_idname = "fluidity.attach_surface"
+    bl_label = "Attach Surface Cache"
+    bl_description = "Attach committed Mesh frames with their phase and composition attributes"
+    directory: StringProperty(subtype="DIR_PATH")
+
+    def invoke(self, context, _event):
+        if not self.directory:
+            self.directory = bpy.path.abspath(context.scene.fluidity.mesh_cache)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from . import project_path
+
+        try:
+            surface_playback.attach(context.scene, project_path(self.directory))
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Surface attached. Save the project to keep the binding.")
+        return {"FINISHED"}
+
 CLASSES = (
+    FLUIDITY_OT_attach_surface,
     FLUIDITY_OT_select_role,
     FLUIDITY_OT_select_playback,
     FLUIDITY_OT_initialize_scene,

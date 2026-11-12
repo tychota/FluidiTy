@@ -711,3 +711,129 @@ msgstr ""
 msgid "World-space initial liquid velocity in m/s"
 msgstr ""
 
+
+msgid "Source Box"
+msgstr ""
+
+msgid "Substance ID"
+msgstr ""
+
+msgid "Miscibility Phase"
+msgstr ""
+
+msgid "Particles per Second"
+msgstr ""
+
+msgid "Emitted Particle Volume (m³)"
+msgstr ""
+
+msgid "Edit Liquid Sources"
+msgstr ""
+
+msgid "Add Liquid Source"
+msgstr ""
+
+msgid "Interactions"
+msgstr ""
+
+msgid "Phase Interface Tension (N/m)"
+msgstr ""
+
+msgid "Give each substance ID one phase and density."
+msgstr ""
+
+msgid "Give each source box positive volume."
+msgstr ""
+
+msgid "Assign sources to at most two miscibility phases."
+msgstr ""
+
+msgid "Choose a boundary model for the liquid sources."
+msgstr ""
+
+msgid "Assign a distinct box to each liquid source."
+msgstr ""
+
+msgid "Attach Surface Cache"
+msgstr ""
+
+msgid "Attach Surface Cache..."
+msgstr ""
+
+msgid "Attach committed Mesh frames with their phase and composition attributes"
+msgstr ""
+
+msgid "Surface attached. Save the project to keep the binding."
+msgstr ""
+
+msgid "The saved Surface binding is not a FluidiTy object."
+msgstr ""
+
+msgid "Restore the FluidiTy Surface cache reader before relinking."
+msgstr ""
+
+msgid "Blender could not open the verified Surface archive."
+msgstr ""
+
+msgid "Blender could not find the native Surface reader."
+msgstr ""
+
+msgid "Blender could not read the last committed Surface sample."
+msgstr ""
+
+msgid "Surface export timed out."
+msgstr ""
+
+msgid "Surface Cache"
+msgstr ""
+
+msgid "Surface Spacing (m)"
+msgstr ""
+
+msgid "Surface Smoothing (m)"
+msgstr ""
+
+msgid "Build Surface"
+msgstr ""
+
+msgid "Resume Surface"
+msgstr ""
+
+msgid "Reconstruct native Mesh frames from the committed Bake cache"
+msgstr ""
+
+msgid "Choose a separate, non-nested Surface cache directory."
+msgstr ""
+
+msgid "Choose a fresh Surface cache directory, or use Resume Surface."
+msgstr ""
+
+msgid "Waiting for the first committed Surface frame."
+msgstr ""
+
+msgid "Surface build complete. Attach the committed surface to render."
+msgstr ""
+
+msgid "Surface build failed. Committed frames are preserved."
+msgstr ""
+
+msgid "Set Viscosity"
+msgstr ""
+
+msgid "Dynamic Viscosity (Pa·s)"
+msgstr ""
+
+msgid "Planar Tank Fill"
+msgstr ""
+
+msgid "Fill Surface Height (m)"
+msgstr ""
+
+msgid "Give each substance ID one phase, density and viscosity."
+msgstr ""
+
+msgid "Place the fill height above the tank floor and inside the domain."
+msgstr ""
+
+msgid "Place each source box below the planar fill height."
+msgstr ""
