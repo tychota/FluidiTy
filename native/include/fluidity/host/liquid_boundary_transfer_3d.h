@@ -106,4 +106,13 @@ struct LiquidBoundaryGatherResults3D {
 absl::StatusOr<LiquidBoundaryGatherResults3D> GatherLiquidBoundaryParticles3D(const LiquidBoundaryGatherInputs3D& inputs
 );
 
+// Gathers one elastic particle, retrying deficient 2h fits with a 3h
+// same-component donor radius.
+// A nonnull output receives completed new-time velocities in owned-slot
+// order, with zeros outside the stencil. Failure preserves the output.
+absl::StatusOr<LiquidBoundaryGatherResults3D> GatherElasticBoundaryParticle3D(
+    const LiquidBoundaryGatherInputs3D& inputs,
+    std::vector<double>* completed_new_face_velocities
+);
+
 }  // namespace fluidity

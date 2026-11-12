@@ -342,7 +342,8 @@ FLUIDITY_HD inline Value<ContactOutput> ResolveTankContact(const ContactInput& i
   return result;
 }
 
-FLUIDITY_HD inline Value<ContactOutput> ResolveContact(const ContactInput& inputs) {
+FLUIDITY_HD inline Value<ContactOutput>
+ResolveContact(const ContactInput& inputs, Vec3* certified_plane_hit = nullptr) {
   if (!HasFiniteComponents(inputs.start_world_position) || !HasFiniteComponents(inputs.stored_world_velocity)
       || !HasFiniteComponents(inputs.advecting_world_velocity)) {
     return Error::kInvalid;
@@ -521,6 +522,9 @@ FLUIDITY_HD inline Value<ContactOutput> ResolveContact(const ContactInput& input
   if (!numeric::isfinite(result.incoming_stored_relative_normal_speed)
       || !numeric::isfinite(result.incoming_advecting_relative_normal_speed)) {
     return UncertifiedContact();
+  }
+  if (certified_plane_hit != nullptr) {
+    *certified_plane_hit = hit_position;
   }
   result.diagnostic = initially_penetrating ? 2 : 1;
   return result;
