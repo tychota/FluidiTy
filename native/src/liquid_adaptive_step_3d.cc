@@ -387,6 +387,11 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   result.subfaces_.resize(initial.adaptive_faces.size());
   const auto leaves = result.topology_.cells();
   if (std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian)) {
+    auto core_transport = AdaptiveLiquidCoreTransportWorkspace3D::Create(leaves.size());
+    if (!core_transport.ok()) {
+      return core_transport.status();
+    }
+    result.core_transport_.emplace(std::move(*core_transport));
     result.core_faces_.resize(initial.adaptive_faces.size());
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
   }
@@ -508,13 +513,14 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
 }
 
 std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
+  const std::size_t core_transport_bytes = core_transport_ ? core_transport_->reserved_bytes() : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
       + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
-      + core_fluxes_.capacity() * sizeof(double);
+      + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes;
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {
@@ -919,13 +925,12 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!material.ok()) {
     return material;
   }
-  if (!core_faces_.empty()) {
+  if (core_transport_) {
     for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
       const auto slot = interior_slots_[face];
       core_fluxes_[face] = subfaces_[slot].open_area_m2 * trial.adaptive_faces[slot].carrier_velocity;
     }
-    const auto core =
-        PrepareAdaptiveLiquidCoreTransport3D(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
+    const auto core = core_transport_->Prepare(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
     if (!core.ok()) {
       return core.status();
     }
