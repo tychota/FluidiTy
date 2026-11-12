@@ -1,7 +1,9 @@
+#include <utility>
 #include <vector>
 
 #include "../src/dry_solid_step_3d_internal.h"
 #include "fluidity/host/cuda_dry_solid_step_3d.h"
+#include "fluidity/host/cuda_liquid_boundary_3d.h"
 #include "fluidity/host/cuda_transfers_3d.h"
 
 namespace fluidity {
@@ -42,7 +44,33 @@ absl::Status CudaAdvanceDrySolid3D(
     CudaOperatorMeasurement measurement{};
     return CudaGatherMac3D(layout, points, old_velocities, new_velocities, results, measurement);
   };
-  return internal::AdvanceDrySolidWithTransfers3D(grid, material, settings, particles, deposit, gather, budget);
+  const auto floor_deposit = [](const LiquidBoundaryDepositInputs3D& inputs
+                             ) -> absl::StatusOr<LiquidBoundaryFaceDeposits3D> {
+    auto deposited = CudaDepositCompatibleMacQuanta3D(inputs);
+    if (!deposited.ok()) {
+      return deposited.status();
+    }
+    return std::move(deposited->deposits);
+  };
+  const auto floor_gather = [](const LiquidBoundaryGatherInputs3D& inputs
+                            ) -> absl::StatusOr<LiquidBoundaryGatherResults3D> {
+    auto gathered = CudaGatherLiquidBoundaryParticles3D(inputs);
+    if (!gathered.ok()) {
+      return gathered.status();
+    }
+    return std::move(gathered->gathered);
+  };
+  const internal::DrySolidFloorTransfers3D floor_transfers{quantization, floor_deposit, floor_gather};
+  return internal::AdvanceDrySolidWithTransfers3D(
+      grid,
+      material,
+      settings,
+      particles,
+      deposit,
+      gather,
+      budget,
+      &floor_transfers
+  );
 }
 
 }  // namespace fluidity

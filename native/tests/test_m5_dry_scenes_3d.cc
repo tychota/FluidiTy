@@ -107,12 +107,15 @@ bool TestScene(
     bool reset_column_velocity = false,
     double granular_modulus_scale = 1,
     double stored_velocity_decay_rate = 0,
-    double granular_lambda = 700
+    double granular_lambda = 700,
+    bool compatible_floor = false
 ) {
   std::vector<BlockIndex3D> blocks;
+  const int maximum_block_y = compatible_floor ? 2 : 4;
+  const int maximum_block_x = compatible_floor ? 2 : 3;
   for (int z = -2; z <= 2; ++z) {
-    for (int y = -1; y <= 4; ++y) {
-      for (int x = -3; x <= 3; ++x) {
+    for (int y = -1; y <= maximum_block_y; ++y) {
+      for (int x = -maximum_block_x; x <= maximum_block_x; ++x) {
         blocks.push_back({x, y, z});
       }
     }
@@ -192,6 +195,7 @@ bool TestScene(
         .floor_friction = floor_friction,
         .acoustic_cfl = 0.25,
         .particle_energy_blend = step_energy_blend,
+        .compatible_floor = compatible_floor,
     };
     if (snow && t < 0.35) {
       const double speed = t < 0.23 ? -0.4 : 0.5;
@@ -311,6 +315,7 @@ bool TestScene(
     total_budget.proposed_stress_impulse_l1 += budget.proposed_stress_impulse_l1;
     total_budget.omitted_stress_impulse_l1 += budget.omitted_stress_impulse_l1;
     total_budget.omitted_stress_work += budget.omitted_stress_work;
+    total_budget.cut_stress_work += budget.cut_stress_work;
     total_budget.grid_wall_impulse_y += budget.grid_wall_impulse_y;
     total_budget.wall_impulse_on_particles.y += budget.wall_impulse_on_particles.y;
     total_budget.particle_wall_contacts += budget.particle_wall_contacts;
@@ -354,6 +359,9 @@ bool TestScene(
       total_budget.wall_impulse_on_particles.y,
       total_budget.particle_wall_contacts
   );
+  if (compatible_floor) {
+    std::printf("compatible floor total cut stress work_J=%.9g\n", total_budget.cut_stress_work);
+  }
   const double gravity_impulse_y = (snow ? 0.0 : -9.81) * (300 * volume * particles.size()) * time;
   const double vertical_residual = final_momentum_y - reset_impulse_y - gravity_impulse_y
       - total_budget.grid_wall_impulse_y - total_budget.wall_impulse_on_particles.y;
@@ -431,7 +439,7 @@ bool TestSandSurfaceFit() {
       && std::abs(slopes.maximum_degrees - 30) < 1e-11;
 }
 
-bool TestWallImpulseBudget() {
+bool TestWallImpulseBudget(bool compatible_floor = false) {
   constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
   const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
   if (!grid.ok()) {
@@ -445,7 +453,12 @@ bool TestWallImpulseBudget() {
       .elastic_deformation = kIdentity,
   };
   const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
-  const DrySolidStep3D settings{.duration = 0.01, .floor_friction = 0.5, .acoustic_cfl = 0.25};
+  const DrySolidStep3D settings{
+      .duration = 0.01,
+      .floor_friction = 0.5,
+      .acoustic_cfl = 0.25,
+      .compatible_floor = compatible_floor,
+  };
   fluidity::DrySolidStepBudget3D budget{};
 #if defined(FLUIDITY_M5_CUDA_SCENES)
   const auto status =
@@ -455,7 +468,7 @@ bool TestWallImpulseBudget() {
 #endif
   return status.ok() && budget.particle_wall_contacts == 1 && std::abs(budget.wall_impulse_on_particles.x + 0.5) < 1e-9
       && std::abs(budget.wall_impulse_on_particles.y - 1) < 1e-9 && budget.omitted_stress_impulse_l1 == 0
-      && budget.grid_wall_impulse_y == 0 && budget.granular_projected_particles == 0
+      && budget.grid_wall_impulse_y == 0 && budget.cut_stress_work == 0 && budget.granular_projected_particles == 0
       && budget.granular_plastic_volume_changes == 0;
 }
 
@@ -824,6 +837,24 @@ int main(int argc, char** argv) {
     const bool refined = TestScene(0.0625, 0.00078125, false, 0, 2, 0.10, false, 3);
     return reference && refined ? 0 : 1;
   }
+  if (argc == 2
+      && (std::string_view(argv[1]) == "--q-sand-compatible-floor"
+          || std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle")) {
+    const bool extended = std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle";
+    const double end_time = extended ? 1.5 : 0.75;
+    bool all_pass = true;
+    for (const double width : {0.075, 0.0625}) {
+      const bool nominal =
+          TestScene(width, width / 40, false, 0, 1, 0.10, false, end_time, 0, {}, 0.7, false, 1, 0, 700, true);
+      all_pass = all_pass && nominal;
+      if (extended) {
+        const bool half_step =
+            TestScene(width, width / 80, false, 0, 1, 0.10, false, end_time, 0, {}, 0.7, false, 1, 0, 700, true);
+        all_pass = all_pass && half_step;
+      }
+    }
+    return all_pass ? 0 : 1;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-floor-grid-phase") {
     bool all_pass = true;
     for (const double width : {0.075, 0.0625}) {
@@ -916,7 +947,7 @@ int main(int argc, char** argv) {
   if (capacity.code() != absl::StatusCode::kResourceExhausted || capacity.message() != "E-CONTACT-BODY-CAPACITY") {
     return 1;
   }
-  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestStoredVelocityResidual()
+  if (!TestSandSurfaceFit() || !TestWallImpulseBudget() || !TestWallImpulseBudget(true) || !TestStoredVelocityResidual()
       || !TestStoredResidualMomentum() || !TestCompatibleFloorStressWork() || !TestUncutStressWork()
       || !TestRollbackOnUnsupportedDestination() || !TestRejectsInadmissibleInitialState()) {
     return 1;

@@ -890,6 +890,37 @@ compatible floor transfer and contact budget.
 Run the native and CUDA M5DryScenes tests for the floor fixture, and
 the MacTransfer3D elastic blade cases for the shared M6 caller.
 
+### Compatible floor transfer in the dry step
+
+The opt-in granular floor path uses compatible affine deposition, the
+matching normalized stress derivative, and the transpose of compatible
+mass weights for PIC velocity. The complete same-side ghost gather
+supplies the true deformation gradient and the APIC fit. Rank fallback
+disables the affine fit. The stationary floor still resolves normal and
+friction impulses through the swept particle contact. The grid leaves
+the incident velocity available to that sweep. The mode uses PIC stored
+velocity and the bounded boundary-transfer capacities.
+
+At 0.75 s the 63-particle column gives the following results. Native
+and CUDA print the same angles and cut work at this precision.
+
+| h (m) | dt (s) | Envelope | Late drift | Cut stress work (J) | Vertical momentum residual (N·s) |
+|---|---:|---:|---:|---:|---:|
+| 0.075 | 0.001875 | 35.186895° | 0.819790° | 0.036394718 | -0.000013837 |
+| 0.0625 | 0.0015625 | 32.361234° | 0.611646° | -0.029489823 | -0.000100054 |
+
+Both cases meet the kinetic energy, late drift, and vertical momentum
+bounds. The coarse angle exceeds 35°. The one-particle fixture checks
+the original analytic Coulomb impulse on the new transfer path and
+zero cut work for zero stress. Cut work measures the difference between
+the complete pre-contact deformation field and the normalized stress
+deposition. It does not include work from the subsequent particle sweep.
+
+~~~powershell
+.\out\build\windows-release-cuda\fluidity_m5_dry_scene_tests.exe --q-sand-compatible-floor
+.\out\build\windows-release-cuda\fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor
+~~~
+
 ### Paired floor reflection and grid-reaction friction
 
 The follow-up used the transpose of the reflection map for stress force.
