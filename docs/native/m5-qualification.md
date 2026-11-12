@@ -1782,3 +1782,29 @@ The resolved mixed input and joint checkpoint changes landed in
 A clean Windows Release CPU build of the standalone PR passed all 81
 selected cache, schema, plastic checkpoint, and CLI regressions. The
 merge into the milestone branch preserved its tested source tree.
+
+### Sampled solid geometry for the pressure grid
+
+The shared clipper uses signed liquid and solid samples at lattice
+corners. Each of the pressure grid's six tetrahedra interpolates both
+fields linearly. Wet volume lies inside the liquid and outside the solid.
+A shared face uses the same two triangles and four solid samples in
+either incident cell. A zero solid plateau is closed.
+
+For a unit cell pair and the oblique solid boundary x + y = 1.25,
+the wet volumes below y = 0.75 are 0.125 and 0.71875 m³.
+Both cells give exactly the same 0.75 m² aperture within each backend.
+Native and SM120 agree with the analytic volumes and aperture within
+2e-14 in their respective units. A native fixture with only the high
+corner exterior checks non-affine samples, giving 1 m³ volume and
+1 m² on each high face of a 2 m cell. All 37 native boundary geometry
+tests and the CUDA M5 invariant executable pass.
+
+```powershell
+ctest --test-dir out/build/m5-resolved-clean -R '^LiquidBoundaryGeometry3D\.' --output-on-failure
+ctest --test-dir out/build/windows-release-cuda -R '^M5Constitutive\.cuda$' --output-on-failure
+```
+
+The production freeze still needs particle-derived snow samples, pressure
+flux and traction on the same moving boundary, and connectivity checks
+for cells cut into separate wet regions.
