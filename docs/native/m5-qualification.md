@@ -1992,3 +1992,31 @@ The authored gate still needs Blender snow authoring and an
 end-to-end bake with obstacle compaction, water reaching the mound,
 separate Blender material assignment, and authenticated playback
 after restart.
+
+
+### Authored Blender qualification attempt
+
+[Draft PR 107](https://github.com/tychota/FluidiTy/pull/107) at
+`931399d` adds Blender Snow controls and a native model-2 resolver.
+Blender 5.2.3 verified separate water and snow materials, repeat
+attachment, and both native Alembic point channels after reopening a
+saved project backed by the independently qualified mixed CLI cache.
+
+The authored 30-particle mound, animated platen and water source
+resolve and publish frames 0 through 2. The native run exhausts its
+duration retries in frame 3 after hitting a dry face-motion bound.
+Maximum published snow speed increases from about 0.20 m/s in frame 1
+to 2.21 m/s in frame 2. Smaller maximum timesteps of 0.0025, 0.001
+and 0.0005 s fail before publishing frame 1. These results warrant
+checking reciprocal pressure load, wall flux and kinetic work per
+attempt before altering the scene or acceptance bounds. The authored
+and Q-SAND gates remain open.
+
+```powershell
+$tree = (Resolve-Path out/pr-m5-blender-snow).Path
+$build = Join-Path $tree 'out/build/blender-snow-cpu'
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+cmake --build $build --target fluidity_simulate fluidity_blender_bridge
+& $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $build "$tree/out/authored-repro" cpu
+& $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_points.py" -- $tree $build (Resolve-Path out/pr-m5-mixed-cli/out/diagnostic-mixed/cache).Path "$tree/out/verified-mixed-channels.blend"
+```
