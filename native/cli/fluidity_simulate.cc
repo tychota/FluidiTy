@@ -877,6 +877,16 @@ int Main(std::vector<std::string> arguments, [[maybe_unused]] bool public_cli) {
 #endif
   fluidity::simulate::ProtocolWriter writer;
   fluidity::simulate::Diagnostic diagnostic;
+  if (!public_cli && !arguments.empty() && arguments.front() == "gas-resolve") {
+    const auto status = fluidity::simulate::ResolveGasAuthoring(arguments, writer);
+    if (status.ok()) {
+      return 0;
+    }
+    diagnostic.field = "gas_scene";
+    diagnostic.cause = std::string(status.message());
+    static_cast<void>(writer.Error(status, diagnostic));
+    return 1;
+  }
   if (!public_cli && !arguments.empty()
       && (arguments.front() == "cutter-frame" || arguments.front() == "cutter-inspect"
           || arguments.front() == "rigid-frame" || arguments.front() == "rigid-inspect"

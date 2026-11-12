@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import bpy
 from mathutils import Vector
@@ -20,10 +21,6 @@ def command(executable, *args):
     return [json.loads(line) for line in run.stdout.splitlines()]
 
 
-def solver_vector(vector):
-    return dict(x=float(vector.x), y=float(vector.z), z=float(-vector.y))
-
-
 def snapshot(paths):
     return {str(path): (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns) for path in paths}
 
@@ -31,13 +28,17 @@ def snapshot(paths):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--solver", required=True, type=Path)
-    parser.add_argument("--flatc", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root / "blender"))
-    from fluidity.gas_volume import GAS_GRID_NAMES, attach_gas_volume, export_gas_volume_frame
+    import fluidity
+    from fluidity import jobs
+    from fluidity.gas_volume import GAS_GRID_NAMES
+
+    fluidity.register()
+    jobs.BIN_DIR = args.solver.resolve().parent
 
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -48,6 +49,13 @@ def main():
     scene.render.fps = 24
     scene.frame_start = 0
     scene.frame_end = 12
+
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.5, -0.5, 0.75))
+    domain = bpy.context.object
+    domain.name = "Gas Domain"
+    domain.dimensions = (1.0, 1.0, 1.5)
+    domain.display_type = "WIRE"
+    domain.hide_render = True
 
     bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.375, -0.5, 0.1875))
     source = bpy.context.object
@@ -68,47 +76,32 @@ def main():
         field.field.strength = strength
         field.field.keyframe_insert(data_path="strength", frame=frame)
 
-    keys = []
-    draft = []
-    for frame in range(scene.frame_end + 1):
-        scene.frame_set(frame)
-        evaluated = bpy.context.evaluated_depsgraph_get()
-        emitter = source.evaluated_get(evaluated)
-        wind = field.evaluated_get(evaluated)
-        direction = wind.matrix_world.to_quaternion() @ Vector((0, 0, 1))
-        keys.append(dict(time_s=frame / 24, fuel_kg_per_m3_s=emitter["Fuel Rate"], heat_w_per_m3=emitter["Heat Rate"]))
-        draft.append(dict(time_s=frame / 24, acceleration_m_per_s2=solver_vector(direction * wind.field.strength)))
-    bounds = [solver_vector(source.matrix_world @ Vector(corner)) for corner in source.bound_box]
-    lower = {axis: min(corner[axis] for corner in bounds) for axis in ("x", "y", "z")}
-    upper = {axis: max(corner[axis] for corner in bounds) for axis in ("x", "y", "z")}
-    identity = command(args.solver, "schema")[-1]
-    zero = dict(x=0.0, y=0.0, z=0.0)
-    packet = dict(
-        backend=args.backend.capitalize(),
-        build_digest=dict(bytes=list(bytes.fromhex(identity["build_digest"]))),
-        world_origin_m=zero,
-        extent=dict(x=8, y=12, z=8),
-        cell_width_m=0.125,
-        open_boundaries=59,
-        initial_velocity_m_per_s=zero,
-        gravity_m_per_s2=dict(x=0.0, y=-9.81, z=0.0),
-        substeps_per_frame=4,
-        emitters=[dict(lower_m=lower, upper_m=upper, keys=keys)],
-        draft=draft,
-        reaction=dict(ignition_temperature_k=299.0, burn_rate_per_s=7.0, heat_per_fuel_j_per_kg=4000000.0, soot_yield=0.2),
+    settings = scene.fluidity
+    settings.gas_enabled = True
+    settings.domain = domain
+    settings.gas_source = source
+    settings.gas_wind = field
+    settings.backend = args.backend
+    settings.bake_cache = "//bake"
+    settings.preview_cache = "//preview"
+    bpy.context.preferences.filepaths.save_version = 0
+    blend = output / "Fire in a draft.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend), relative_remap=False)
+    assert bpy.ops.fluidity.check_scene() == {"FINISHED"}, (settings.message, settings.diagnostic)
+    assert bpy.ops.fluidity.bake() == {"FINISHED"}, (settings.message, settings.diagnostic)
+    deadline = time.monotonic() + 180
+    while jobs.is_running(scene):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Gas bake did not finish")
+        jobs.tick()
+        time.sleep(0.01)
+    assert settings.committed_frame == scene.frame_end and not settings.diagnostic, (
+        settings.message, settings.diagnostic
     )
-    scene_input = output / "fire-in-a-draft.json"
-    scene_input.write_text(json.dumps(packet, indent=2), encoding="utf-8")
-    subprocess.run([str(args.flatc), "-b", "-o", str(output),
-                    str(root / "schemas/simulate/gas_scene.fbs"), str(scene_input)], check=True)
-    resolved = scene_input.with_suffix(".flgs")
-    assert command(args.solver, "validate", resolved)[-1]["model"] == "gas"
-    assert command(args.solver, "simulate", resolved, "--cache", cache, "--frame-end", scene.frame_end)[-1]["frame"] == 12
     assert command(args.solver, "replay", cache, "--frame", 12, "--substep", 0)[-1]["frame"] == 12
-
-    paths = [output / f"fire_{frame:04d}.vdb" for frame in range(scene.frame_end + 1)]
-    for frame, path in enumerate(paths):
-        export_gas_volume_frame(args.solver, cache, frame, path)
+    assert bpy.ops.fluidity.attach() == {"FINISHED"}, (settings.message, settings.diagnostic)
+    obj = bpy.data.objects["FluidiTy Fire Volume"]
+    paths = [output / "bake-volumes" / f"fire_{frame:04d}.vdb" for frame in range(scene.frame_end + 1)]
     grids, metadata = openvdb.readAll(str(paths[-1]))
     by_name = {grid.name: grid for grid in grids}
     assert set(by_name) == set(GAS_GRID_NAMES)
@@ -120,8 +113,9 @@ def main():
         assert by_name[name].activeVoxelCount() > 0 and by_name[name].evalMinMax()[1] > 0.0, name
     assert by_name["density"].transform.indexToWorld((0, 0, 0)) == (0.0625, -0.0625, 0.0625)
 
-    obj = attach_gas_volume(scene, paths[0], 0, len(paths))
     scene.frame_set(12)
+    assert bpy.ops.fluidity.inspect() == {"FINISHED"}, (settings.message, settings.diagnostic)
+    assert all(name in settings.point_detail for name in ("Density", "Temperature", "Fuel", "Flame"))
     obj.data.grids.load()
     assert {grid.name for grid in obj.data.grids} == set(GAS_GRID_NAMES)
     tracked = paths + [path for path in cache.rglob("*") if path.is_file()]
@@ -149,7 +143,7 @@ def main():
     scene.world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.0
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.exposure = 2.0
-    obj.data.filepath = "//fire_0000.vdb"
+    obj.data.filepath = "//bake-volumes/fire_0000.vdb"
     bpy.context.preferences.filepaths.save_version = 0
     bpy.ops.wm.save_as_mainfile(filepath=str(output / "Fire in a draft.blend"), relative_remap=False)
     report = {name: {"voxels": grid.activeVoxelCount(), "min_max": grid.evalMinMax()} for name, grid in by_name.items()}

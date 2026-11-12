@@ -4,6 +4,9 @@
 
 namespace fluidity::simulate {
 
+// Encodes the add-on gas authoring packet using the embedded scene schema.
+absl::Status ResolveGasAuthoring(std::span<const std::string> arguments, ProtocolWriter& writer);
+
 // Identifies a resolved gas input or a cache initialized with one.
 bool IsGasCommand(const Command& command);
 

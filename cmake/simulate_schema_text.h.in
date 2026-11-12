@@ -1,3 +1,5 @@
 #pragma once
 inline constexpr char kResolvedSchemaText[] = R"fluidity(@simulate_common_schema@
 @simulate_resolved_schema@)fluidity";
+inline constexpr char kGasSchemaText[] = R"fluidity(@simulate_common_schema@
+@simulate_gas_schema@)fluidity";

@@ -28,9 +28,9 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     root = Path(bpy.data.filepath).parent
     cache = root / "bake"
-    tracked = [*root.glob("fire_*.vdb"), *[path for path in cache.rglob("*") if path.is_file()]]
+    tracked = [*(root / "bake-volumes").glob("fire_*.vdb"), *[path for path in cache.rglob("*") if path.is_file()]]
     before = receipt(tracked)
-    assert len(list(root.glob("fire_*.vdb"))) == 13
+    assert len(list((root / "bake-volumes").glob("fire_*.vdb"))) == 13
     scene = bpy.context.scene
     obj = bpy.data.objects["FluidiTy Fire Volume"]
     assert obj.asset_data and obj.data.materials[0].asset_data

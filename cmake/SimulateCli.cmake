@@ -2,10 +2,12 @@ find_package(Threads REQUIRED)
 find_package(CLI11 2.7.2 EXACT CONFIG REQUIRED)
 # Embed the exact runtime schema at configure time; reconfigure when it changes.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs")
+  "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs" "${PROJECT_SOURCE_DIR}/schemas/simulate/gas_scene.fbs")
 file(READ "${PROJECT_SOURCE_DIR}/schemas/simulate/common.fbs" simulate_common_schema)
 file(READ "${PROJECT_SOURCE_DIR}/schemas/simulate/resolved_scene.fbs" simulate_resolved_schema)
 string(REPLACE "include \"common.fbs\";" "" simulate_resolved_schema "${simulate_resolved_schema}")
+file(READ "${PROJECT_SOURCE_DIR}/schemas/simulate/gas_scene.fbs" simulate_gas_schema)
+string(REPLACE "include \"common.fbs\";" "" simulate_gas_schema "${simulate_gas_schema}")
 configure_file("${PROJECT_SOURCE_DIR}/cmake/simulate_schema_text.h.in"
   "${FLUIDITY_CACHE_GENERATED_DIR}/simulate_schema_text.h" @ONLY)
 add_library(fluidity_blender_resolve STATIC native/cli/blender_resolve.cc)

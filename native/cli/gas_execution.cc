@@ -11,9 +11,11 @@
 #include <utility>
 #include <vector>
 
+#include "flatbuffers/idl.h"
 #include "fluidity/host/gas_checkpoint_3d.h"
 #include "gas_scene_generated.h"
 #include "simulate_job.h"
+#include "simulate_schema_text.h"
 #if defined(FLUIDITY_SIMULATE_CUDA)
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "simulate_cuda_compatibility.h"
@@ -390,6 +392,36 @@ absl::StatusOr<std::string> RunGas(const Command& command, SimulateJob& job, Dia
 }
 
 }  // namespace
+
+absl::Status ResolveGasAuthoring(std::span<const std::string> arguments, ProtocolWriter& writer) {
+  if (arguments.size() != 3) {
+    return absl::InvalidArgumentError("expected gas-resolve PACKET SCENE");
+  }
+  const auto path_from_utf8 = [](std::string_view text) {
+    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+  };
+  const auto packet = files::ReadBytes(path_from_utf8(arguments[1]), LiquidCacheLimits3D{.maximum_bytes = 1024 * 1024});
+  if (!packet.ok()) {
+    return packet.status();
+  }
+  const auto bytes = packet->values();
+  if (bytes.empty() || std::ranges::find(bytes, std::uint8_t{0}) != bytes.end()) {
+    return absl::InvalidArgumentError("invalid gas authoring JSON bytes");
+  }
+  const std::string json(bytes.begin(), bytes.end());
+  flatbuffers::IDLOptions options;
+  options.strict_json = true;
+  flatbuffers::Parser parser(options);
+  if (!parser.Parse(kGasSchemaText) || !parser.ParseJson(json.c_str())) {
+    return absl::InvalidArgumentError(parser.error_);
+  }
+  const auto payload = std::span(parser.builder_.GetBufferPointer(), parser.builder_.GetSize());
+  const auto status = files::PublishBytes(path_from_utf8(arguments[2]), payload, kLimits, {});
+  if (!status.ok()) {
+    return status;
+  }
+  return writer.Emit("result", "\"command\":\"gas-resolve\",\"model\":\"gas\"");
+}
 
 bool IsGasCommand(const Command& command) {
   if (!command.scene_path.empty()) {

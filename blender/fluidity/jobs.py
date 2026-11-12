@@ -403,6 +403,8 @@ def tick():
                 settings.message = "Cutter bake complete. Inspect a committed frame for particle sides."
             elif isinstance(job, RigidJob):
                 settings.message = "Rigid bake complete."
+            elif job.stage == "gas":
+                settings.message = "Gas bake complete. Attach the committed Volume to render."
             elif job.stage == "mesh":
                 settings.message = "Surface build complete. Attach the committed surface to render."
             else:

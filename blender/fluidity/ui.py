@@ -101,6 +101,13 @@ class FLUIDITY_PT_inputs(ChildPanel, bpy.types.Panel):
         column = controls(self.layout, scene)
         settings = scene.fluidity
         input_object(column, settings, "domain", "Domain")
+        column.prop(settings, "gas_enabled")
+        if settings.gas_enabled:
+            column.prop(settings, "gas_source")
+            column.prop(settings, "gas_wind")
+            column.prop(settings, "cell_width")
+            column.prop(settings, "gas_substeps")
+            return
         column.prop(settings, "boundary_mode")
         if settings.boundary_mode == "TANK":
             column.label(text="Open Top · Five Solid Walls", icon="MESH_CUBE")
@@ -248,7 +255,13 @@ class FLUIDITY_PT_cache(ChildPanel, bpy.types.Panel):
         row = column.row(align=True)
         row.operator("fluidity.bake", icon="RENDER_ANIMATION")
         row.operator("fluidity.resume", icon="RECOVER_LAST")
-        if scene.fluidity.rigid_box:
+        if scene.fluidity.gas_enabled:
+            column.operator("fluidity.attach", text="Attach Gas Volume", icon="VOLUME_DATA")
+            column.operator("fluidity.inspect", text="Inspect Gas Fields", icon="VIEWZOOM")
+            if scene.fluidity.inspect_frame >= 0:
+                for field in scene.fluidity.point_detail.split(" | "):
+                    column.label(text=field, translate=False)
+        elif scene.fluidity.rigid_box:
             column.operator("fluidity.attach", text="Attach Rigid Motion", icon="ACTION")
             column.operator("fluidity.inspect", icon="VIEWZOOM")
             if scene.fluidity.inspect_frame >= 0:

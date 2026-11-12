@@ -18,7 +18,7 @@ def export_gas_volume_frame(solver, cache, frame, destination):
     import openvdb
 
     completed = subprocess.run(
-        [os.fspath(solver), "inspect", os.fspath(cache), "--frame", str(frame)],
+        [os.fspath(solver), "check", "--cache", os.fspath(cache), "--frame", str(frame)],
         capture_output=True, encoding="utf-8", check=True, timeout=90,
     )
     result = json.loads(completed.stdout.splitlines()[-1])

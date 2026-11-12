@@ -19,7 +19,7 @@ from bpy.props import (
 )
 from bpy.types import Object, Operator, PropertyGroup
 
-from . import authoring, interchange, jobs, playback, ui
+from . import authoring, gas_authoring, interchange, jobs, playback, ui
 from .preferences import FLUIDITY_Preferences, preview_end
 from .scene_inputs import SceneError, cutter_frame_packet, require_cadence, rigid_scene_packets, scene_inputs
 from .translations import TRANSLATIONS
@@ -72,6 +72,10 @@ class FLUIDITY_OT_liquid_source(Operator):
         return {"FINISHED"}
 
 class FluidiTySettings(PropertyGroup):
+    gas_enabled: BoolProperty(name="Low-Mach Gas", update=invalidate_guidance)
+    gas_source: PointerProperty(name="Fuel and Heat Source", type=Object, update=invalidate_guidance)
+    gas_wind: PointerProperty(name="Wind Field", type=Object, update=invalidate_guidance)
+    gas_substeps: IntProperty(name="Gas Substeps", default=4, min=1, max=64, update=invalidate_guidance)
     liquid_sources: CollectionProperty(type=FluidiTyLiquidSource)
     planar_fill: BoolProperty(name="Planar Tank Fill", update=invalidate_guidance)
     fill_height: FloatProperty(name="Fill Surface Height (m)", default=1.0, update=invalidate_guidance)
@@ -326,6 +330,13 @@ class FLUIDITY_OT_check_scene(SceneAction, Operator):
     bl_label = "Check Scene"
 
     def perform(self, scene):
+        if scene.fluidity.gas_enabled:
+            cache_paths(scene.fluidity)
+            with tempfile.TemporaryDirectory(prefix="fluidity-gas-check-") as directory:
+                path = gas_authoring.prepare(gas_authoring.scene_packet(scene), directory)
+                jobs.checked("simulate", "check", "--scene", path)
+            scene.fluidity.message = "Gas scene is ready to bake."
+            return
         if scene.fluidity.cutter:
             cache_paths(scene.fluidity)
             jobs.check_cutter(cutter_frame_packet(scene))
@@ -352,7 +363,9 @@ class StartJob(SceneAction):
 
     def perform(self, scene):
         settings = scene.fluidity
-        if settings.rigid_box:
+        if settings.gas_enabled:
+            packet = gas_authoring.scene_packet(scene)
+        elif settings.rigid_box:
             packet = rigid_scene_packets(scene, self.preview)
         elif settings.cutter:
             packet = cutter_frame_packet(scene)
@@ -364,7 +377,9 @@ class StartJob(SceneAction):
             raise SceneError("cache", "Choose a fresh cache directory, or use Resume for an existing bake.")
         last_frame = preview_end(scene) if self.preview else scene.frame_end
         try:
-            if settings.rigid_box:
+            if settings.gas_enabled:
+                gas_authoring.start(scene, cache, packet, last_frame, self.resume)
+            elif settings.rigid_box:
                 jobs.start_rigid(scene, cache, packet, last_frame, self.resume)
             elif settings.cutter:
                 jobs.start_cutter(scene, cache, packet, last_frame, self.resume)
@@ -429,6 +444,16 @@ class FLUIDITY_OT_inspect(SceneAction, Operator):
         cache = project_path(settings.attached_cache or settings.bake_cache)
         settings.inspect_frame = -1
         settings.point_detail = ""
+        if settings.gas_enabled:
+            record = jobs.checked("simulate", "check", "--cache", cache, "--frame", scene.frame_current)
+            channels = zip(*record["gas_fields"], strict=True)
+            settings.point_detail = " | ".join(
+                f"{name} {min(values):.4g}–{max(values):.4g}"
+                for name, values in zip(("Density", "Temperature", "Fuel", "Flame", "Soot"), channels, strict=True)
+            )
+            settings.inspect_frame = scene.frame_current
+            settings.message = "Gas fields inspected from the committed frame."
+            return
         if settings.rigid_box:
             result = jobs.inspect_rigid(project_path(settings.bake_cache), scene.frame_current)
             x, y, z = result["position"]
@@ -491,6 +516,10 @@ class FLUIDITY_OT_attach(SceneAction, Operator):
 
     def perform(self, scene):
         bake, preview = cache_paths(scene.fluidity)
+        if scene.fluidity.gas_enabled:
+            gas_authoring.attach(scene, preview if self.preview else bake)
+            scene.fluidity.message = "Gas Volume attached. Save the project to keep the binding."
+            return
         if scene.fluidity.rigid_box:
             playback.attach_rigid(scene, preview if self.preview else bake, self.preview)
             scene.fluidity.message = "Rigid motion attached to a separate animated object."
