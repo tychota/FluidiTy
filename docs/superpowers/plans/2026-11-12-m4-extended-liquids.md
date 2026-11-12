@@ -511,3 +511,11 @@ The scheduler now supports an active configured pair in the common-radius partic
 The planar water–oil fixture verified the shared crossing at one-half of the segment, zero signed curvature, densities of 1015 and 820 kg/m³, and a capillary retry. A co-located unresolved pair left committed state unchanged. The broad CPU scheduler, geometry and mixture suite passed 140 cases before the final guard. Eight focused CPU checks and 23 serial real-device CUDA checks passed after it. CPU and CUDA matched on the particle-derived crossing and retry. Compute Sanitizer reported zero errors on that CUDA case. clang-format 19.1.5 passed. Receipts use out/m4-particle-phase-crossings.
 
 The phase reconstruction and density staging are host-side. Curved, moving and shared render interface qualification, constituent remap, and the full clear/dyed-water and oil workflow remain open.
+
+## Uniform constituent split and merge receipt
+
+The checked uniform APIC merge conserves each explicit constituent using current J V0 volume, while its kinematic moments retain the existing mass weights. The target keeps the ordered union of stable substance IDs. It refuses incompatible phases, composition modes or capacity. The existing admissibility callback sees the composed target and remains responsible for the selected EOS and support gate. Uniform split copies composition and checks each constituent share remains representable.
+
+The unequal-J fixture merged and split 9.5 m³ and 1.5 m³ of two aqueous constituents and rejected a cross-phase merge before certification. Eighteen CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidUniform|LiquidRemap|LiquidMixture'. Two real CUDA particle and phase scheduler regressions passed. The remap ran on the host. clang-format 19.1.5 passed. Receipts use out/m4-constituent-remap, including the initial checked-iterator failure in prefix insertion.
+
+This qualifies uniform particle adaptation. Grid band/core constituent remap, evaluated surface fractions, shared render geometry and full M4 workflow evidence remain open.
