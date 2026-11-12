@@ -22,6 +22,16 @@ struct AcceptedDrySolid3D {
 absl::StatusOr<AcceptedDrySolid3D>
 EvaluateAcceptedDrySolid3D(const DrySolidParticle3D& particle, const DrySolidMaterial3D& material);
 
+// Differentiates the stationary y-up floor Coulomb velocity map at the
+// incoming world velocity. The input and result gradients are in inverse
+// seconds. Supply finite values and a nonnegative friction coefficient.
+// At a branch boundary, use the branch chosen by the wall response.
+Mat3 ProjectStationaryFloorVelocityGradient3D(
+    Vec3 incoming_velocity,
+    Mat3 incoming_gradient,
+    double friction_coefficient
+);
+
 // Accumulates one particle's uncut reference-volume stress into private step scratch.
 // The caller provides one initialized force slot per owned face. On failure discard scratch.
 absl::Status AccumulateDrySolidStress3D(
