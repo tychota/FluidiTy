@@ -431,3 +431,11 @@ Production surface reconstruction accepts a stationary open tank with a planar f
 An 8 m cube fixture had 296 particles on its boundary band and no particles in the 6 m interior cube. A frame-zero Simulate motion payload reconstructed one outward boundary and no inward shell, with measured volume within 0.5 percent of 512 m³. The separate closed-cavity fixture retained one inward boundary. These establish native production geometry evidence for both Q-CAVITY conditions at frame zero. A 1 m surface lattice failed volume correction after rounding the tank corners. A 0.5 m lattice passed. The coarse failure is preserved in the negative receipt.
 
 The simulator built and 23 CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'SurfaceReconstruction3D|SurfaceOccupancy3D|SurfaceMesh3D|SurfaceCache3D'. clang-format 19.1.5 passed. Receipts use out/m4-deep-tank-surface. This tank case is stationary and planar. Moving tank contact and complete M4 end-to-end qualification remain outside this receipt.
+
+## Native phase-local mixture receipt
+
+The bounded host mixture operator reduces current-volume contributions by stable substance ID and applies the additive-volume density law. Materials carry a phase ID. Cross-phase contributions fail before publishing fractions. Validation also covers sorted inputs, representability, output capacity and aliasing. Reduction preserves donor order within each substance.
+
+The native fixture matches the independent aqueous oracle at 25 percent clear water, 75 percent dyed water, and 1015 kg/m³. Oil stays in a separate phase. Invalid inputs leave fraction storage unchanged. Eighteen CPU mixture, remap and EOS checks passed with ctest --preset windows-debug-cpu -R 'LiquidMixture3D|LiquidRemap|LiquidEos3D'. All five Python multiphase reference checks passed with python -m pytest reference/tests/test_multiphase.py -q -p no:cacheprovider. Three existing real-device CUDA regressions passed for Tait, viscosity and cavity. Mixing runs on the host. Receipts use out/m4-mixture, including the pre-implementation build failure.
+
+Particle constituent state, conservative transfer and remap, scene material resolution, and inspect/render publication remain open.
