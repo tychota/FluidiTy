@@ -100,6 +100,44 @@ AccumulateRigidBodyPointForce3D(RigidBody3D body, Vec3 force_world_position, Vec
   return body;
 }
 
+absl::StatusOr<RigidBody3D> AccumulateRigidBodyPressure3D(
+    RigidBody3D body,
+    std::span<const double> solved_pressures,
+    double ambient_pressure,
+    std::span<const RigidPressurePatch3D> patches
+) {
+  if (!ValidBody(body) || !std::isfinite(ambient_pressure)) {
+    return absl::InvalidArgumentError("invalid rigid body or ambient pressure");
+  }
+  std::uint64_t previous_patch_id = 0;
+  for (const auto& patch : patches) {
+    if (patch.patch_id <= previous_patch_id || patch.body_id != body.body_id) {
+      return absl::InvalidArgumentError("invalid rigid pressure patch identity or order");
+    }
+    previous_patch_id = patch.patch_id;
+    if (patch.pressure_cell_index >= solved_pressures.size()) {
+      return absl::InvalidArgumentError("rigid pressure patch cell index is out of bounds");
+    }
+    const double pressure = solved_pressures[patch.pressure_cell_index];
+    const double normal_length = Norm(patch.outward_body_normal);
+    if (!std::isfinite(pressure) || !std::isfinite(patch.wetted_area) || patch.wetted_area <= 0.0
+        || !IsFinite(patch.world_centroid) || !std::isfinite(normal_length) || std::abs(normal_length - 1.0) > 1e-12) {
+      return absl::InvalidArgumentError("invalid rigid pressure patch sample");
+    }
+    const double pressure_difference = pressure - ambient_pressure;
+    const Vec3 pressure_force = Scale(-patch.wetted_area * pressure_difference, patch.outward_body_normal);
+    if (!IsFinite(pressure_force)) {
+      return absl::OutOfRangeError("unrepresentable rigid pressure force");
+    }
+    const auto loaded = AccumulateRigidBodyPointForce3D(body, patch.world_centroid, pressure_force);
+    if (!loaded.ok()) {
+      return loaded.status();
+    }
+    body = *loaded;
+  }
+  return body;
+}
+
 absl::StatusOr<RigidBodyStep3D> AdvanceRigidBody3D(RigidBody3D committed_body, double duration) {
   if (!ValidBody(committed_body) || !std::isfinite(duration) || duration <= 0.0) {
     return absl::InvalidArgumentError("invalid rigid body or duration");
