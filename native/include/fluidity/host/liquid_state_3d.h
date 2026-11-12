@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -13,6 +14,7 @@
 
 #include "absl/status/statusor.h"
 #include "fluidity/base/liquid_boundary_transfer_types_3d.h"
+#include "fluidity/host/liquid_mixture_3d.h"
 
 namespace fluidity {
 
@@ -98,6 +100,8 @@ class LiquidRecords3D {
   std::size_t capacity_ = 0;
 };
 
+inline constexpr std::size_t kMaximumLiquidParticleConstituents3D = 8;
+
 struct LiquidParticleState3D {
   std::uint64_t id = 0;  // Nonzero, unique, below next_particle_id; array order is stable sort order, not ID order.
   std::uint32_t tag = 0;  // Packed substance/phase/flags, preserved verbatim.
@@ -110,8 +114,15 @@ struct LiquidParticleState3D {
   double volume_ratio = 1.0;  // Positive dimensionless J.
   std::int64_t side_tag = 0;  // Equality identifies a material/body side.
   bool pic_initialized = false;  // False means a newly emitted particle must start with PIC.
+  std::uint64_t phase_id = 0;  // Stable miscibility phase for an explicit composition.
+  std::uint8_t constituent_count = 0;  // Zero is the legacy implicit single liquid.
+  // Active fractions are positive, sorted by stable substance ID, and sum to one.
+  std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> constituents{};
   bool operator==(const LiquidParticleState3D&) const;
 };
+// Checks the bounded active fraction prefix and its unit sum to floating-point
+// tolerance. Legacy particles require zero phase ID. Inactive slots are ignored.
+bool ValidLiquidParticleComposition3D(const LiquidParticleState3D& particle);
 struct LiquidBlockState3D {
   BlockIndex3D block_index{};  // Canonical unique (z,y,x) order, signed 4-cell blocks.
   std::uint64_t generation = 0;

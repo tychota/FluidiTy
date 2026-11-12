@@ -74,6 +74,37 @@ LiquidResumeMetadata3D Resume() {
   resume.capacity_replay_reservations = {8, 8, 8, 8, 8};
   return resume;
 }
+TEST(LiquidCache3D, ParticleCompositionSurvivesStateAndSourceEncoding) {
+  auto state = PopulatedState();
+  auto& particle = state.particles[0];
+  particle.phase_id = 4;
+  particle.constituent_count = 2;
+  particle.constituents[0] = {8, 0.25};
+  particle.constituents[1] = {14, 0.75};
+  const auto bytes = EncodeLiquidState3D(state);
+  ASSERT_TRUE(bytes.ok()) << bytes.status();
+  const auto decoded = DecodeLiquidState3D(bytes->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  EXPECT_TRUE(decoded->particles[0] == particle);
+  EXPECT_EQ(decoded->particles[1].constituent_count, 0);
+
+  LiquidEmissionSource3D source;
+  source.emitted_particle_template = particle;
+  LiquidResolvedSceneView3D scene;
+  scene.scene.sources = std::span(&source, 1);
+  const auto resolved = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(resolved.ok()) << resolved.status();
+  const auto loaded = DecodeLiquidResolvedScene3D(resolved->values());
+  ASSERT_TRUE(loaded.ok()) << loaded.status();
+  ASSERT_EQ(loaded->View().scene.sources.size(), 1);
+  EXPECT_TRUE(loaded->View().scene.sources[0].emitted_particle_template == particle);
+
+  particle.constituents[1].substance_id = 8;
+  EXPECT_EQ(EncodeLiquidState3D(state).status().code(), absl::StatusCode::kInvalidArgument);
+  source.emitted_particle_template.constituents[1].volume_fraction = 0.5;
+  EXPECT_EQ(EncodeLiquidResolvedScene3D(scene).status().code(), absl::StatusCode::kInvalidArgument);
+}
+
 TEST(LiquidCache3D, CheckpointPreservesCavitySnapshot) {
   auto state = PopulatedState();
   state.next_cavity_id = 12;

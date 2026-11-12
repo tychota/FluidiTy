@@ -83,6 +83,11 @@ void ExpectState(const LiquidState3D& cpu, const LiquidState3D& gpu) {
     const auto& cuda_particle = gpu.particles[index];
     EXPECT_EQ(cpu_particle.id, cuda_particle.id);
     EXPECT_EQ(cpu_particle.tag, cuda_particle.tag);
+    EXPECT_EQ(cpu_particle.phase_id, cuda_particle.phase_id);
+    ASSERT_EQ(cpu_particle.constituent_count, cuda_particle.constituent_count);
+    for (std::size_t constituent = 0; constituent < cpu_particle.constituent_count; ++constituent) {
+      EXPECT_EQ(cpu_particle.constituents[constituent], cuda_particle.constituents[constituent]);
+    }
     const std::array cpu_velocity_slopes{
         cpu_particle.velocity_slopes.x_row,
         cpu_particle.velocity_slopes.y_row,
@@ -1486,6 +1491,10 @@ void CheckSlabWallSamplesAndRefreshFailures() {
 TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
   std::cout << "CTEST_FULL_OUTPUT\n";
   auto initial = Initial();
+  initial.particles[0].phase_id = 4;
+  initial.particles[0].constituent_count = 2;
+  initial.particles[0].constituents[0] = {8, 0.25};
+  initial.particles[0].constituents[1] = {14, 0.75};
   auto options = Options();
   auto cpu = LiquidSubstepScheduler3D::Create(initial, Scene(), options);
   ASSERT_TRUE(cpu.ok()) << cpu.status();
@@ -1502,6 +1511,13 @@ TEST(CudaLiquidSubstep3D, PersistentSubstepMatchesCpu) {
       << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - wall_start).count()
       << '\n';
   ExpectState(cpu->committed(), gpu->committed());
+  const auto mixed =
+      std::ranges::find(gpu->committed().particles.values(), initial.particles[0].id, &LiquidParticleState3D::id);
+  ASSERT_NE(mixed, gpu->committed().particles.values().end());
+  EXPECT_EQ(mixed->phase_id, 4);
+  ASSERT_EQ(mixed->constituent_count, 2);
+  EXPECT_EQ(mixed->constituents[0], (LiquidConstituentFraction3D{8, 0.25}));
+  EXPECT_EQ(mixed->constituents[1], (LiquidConstituentFraction3D{14, 0.75}));
   EXPECT_EQ(before.device_allocation_count, backend->usage().device_allocation_count);
   EXPECT_EQ(before.device_free_count, backend->usage().device_free_count);
   const auto final_usage = backend->usage();

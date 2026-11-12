@@ -22,6 +22,7 @@ struct LiquidConstituentVolume3D {
 struct LiquidConstituentFraction3D {
   std::uint64_t substance_id;
   double volume_fraction;  // Constituent current volume divided by total current volume.
+  bool operator==(const LiquidConstituentFraction3D&) const = default;
 };
 
 struct LiquidMixture3D {

@@ -666,7 +666,7 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
     const auto* source = root->sources()->Get(index);
     if (!AllFieldsPresent(source, wire::EmissionSource::VT_PARTICLE_TEMPLATE)
         || !AllFieldsPresent(source->particle_template(), wire::Particle::VT_PIC_INITIALIZED)
-        || !detail::ValidParticleBooleans(source->particle_template()) || !ValidSource(ReadSource(source))
+        || !detail::ValidParticleEncoding(source->particle_template()) || !ValidSource(ReadSource(source))
         || (index > 0 && root->sources()->Get(index - 1)->ordinal() >= source->ordinal())) {
       return detail::Corrupt();
     }

@@ -150,6 +150,26 @@ absl::Status CheckCapacities(LiquidStateCapacities3D capacity, bool cavity_enabl
 }
 }  // namespace
 
+bool ValidLiquidParticleComposition3D(const LiquidParticleState3D& particle) {
+  if (particle.constituent_count == 0) {
+    return particle.phase_id == 0;
+  }
+  if (particle.constituent_count > particle.constituents.size()) {
+    return false;
+  }
+  double sum = 0.0;
+  for (std::size_t index = 0; index < particle.constituent_count; ++index) {
+    const auto& entry = particle.constituents[index];
+    if (!Positive(entry.volume_fraction) || entry.volume_fraction > 1.0
+        || (index > 0 && particle.constituents[index - 1].substance_id >= entry.substance_id)) {
+      return false;
+    }
+    sum += entry.volume_fraction;
+  }
+  constexpr double kTolerance = 8.0 * std::numeric_limits<double>::epsilon();
+  return std::abs(sum - 1.0) <= kTolerance;
+}
+
 bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const {
   return std::tie(id, tag, affine_enabled, mass, reference_volume, volume_ratio, side_tag, pic_initialized)
       == std::tie(
@@ -164,7 +184,12 @@ bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const
       )
       && Components(world_position) == Components(other.world_position)
       && Components(world_velocity) == Components(other.world_velocity)
-      && Components(velocity_slopes) == Components(other.velocity_slopes);
+      && Components(velocity_slopes) == Components(other.velocity_slopes) && phase_id == other.phase_id
+      && constituent_count == other.constituent_count && constituent_count <= constituents.size()
+      && std::ranges::equal(
+             std::span(constituents).first(constituent_count),
+             std::span(other.constituents).first(other.constituent_count)
+      );
 }
 bool LiquidBlockState3D::operator==(const LiquidBlockState3D& other) const {
   return LatticeSortKey(block_index) == LatticeSortKey(other.block_index)
@@ -249,7 +274,8 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
     }
     if (!Finite(particle.world_position) || !Finite(particle.world_velocity) || !Finite(particle.velocity_slopes.x_row)
         || !Finite(particle.velocity_slopes.y_row) || !Finite(particle.velocity_slopes.z_row)
-        || !Positive(particle.mass) || !Positive(particle.reference_volume) || !Positive(particle.volume_ratio)) {
+        || !Positive(particle.mass) || !Positive(particle.reference_volume) || !Positive(particle.volume_ratio)
+        || !ValidLiquidParticleComposition3D(particle)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     // Stable spatial order is not ID order. Check uniqueness without sorting or

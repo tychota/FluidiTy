@@ -436,6 +436,7 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
         || !Finite(particle.velocity_slopes.z_row) || !std::isfinite(particle.mass) || particle.mass <= 0
         || !std::isfinite(particle.reference_volume) || particle.reference_volume <= 0
         || !std::isfinite(particle.volume_ratio) || particle.volume_ratio <= 0
+        || !ValidLiquidParticleComposition3D(particle)
         || ((tank || (scene.drift && scene.drift->maximum_rate > 0.0)) && particle.side_tag != 0)) {
       return Error(absl::StatusCode::kInvalidArgument);
     }

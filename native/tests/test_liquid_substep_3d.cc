@@ -1692,6 +1692,10 @@ TEST(LiquidSubstep3D, SourceRetryAndWholeFrameReplayProduceIdenticalBirths) {
   source.particles_per_second = 400;
   source.world_position = {2.5, 2.5, 2.5};
   source.world_position_jitter = {0.2, 0.2, 0.2};
+  source.emitted_particle_template.phase_id = 4;
+  source.emitted_particle_template.constituent_count = 2;
+  source.emitted_particle_template.constituents[0] = {8, 0.25};
+  source.emitted_particle_template.constituents[1] = {14, 0.75};
   auto scene = Scene();
   scene.sources = std::span(&source, 1);
   scene.ambient_pressure = 3;
@@ -1741,6 +1745,14 @@ TEST(LiquidSubstep3D, SourceRetryAndWholeFrameReplayProduceIdenticalBirths) {
   ASSERT_TRUE(replay->AdvanceFrame(0.0234375).ok());
   ASSERT_EQ(replay->diagnostics().capacity_replays, 1);
   EXPECT_TRUE(replay->committed() == reference->committed());
+  for (const auto& particle : replay->committed().particles.values()) {
+    if (particle.id != 1) {
+      EXPECT_EQ(particle.phase_id, 4);
+      ASSERT_EQ(particle.constituent_count, 2);
+      EXPECT_EQ(particle.constituents[0], (LiquidConstituentFraction3D{8, 0.25}));
+      EXPECT_EQ(particle.constituents[1], (LiquidConstituentFraction3D{14, 0.75}));
+    }
+  }
   ExpectIdenticalSerializedState(reference->committed(), replay->committed());
   std::cout << "f9_retry_attempts=" << retry->diagnostics().attempts
             << " f9_replay_attempts=" << replay->diagnostics().attempts

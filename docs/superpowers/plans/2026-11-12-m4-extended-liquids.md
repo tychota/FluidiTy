@@ -439,3 +439,11 @@ The bounded host mixture operator reduces current-volume contributions by stable
 The native fixture matches the independent aqueous oracle at 25 percent clear water, 75 percent dyed water, and 1015 kg/m³. Oil stays in a separate phase. Invalid inputs leave fraction storage unchanged. Eighteen CPU mixture, remap and EOS checks passed with ctest --preset windows-debug-cpu -R 'LiquidMixture3D|LiquidRemap|LiquidEos3D'. All five Python multiphase reference checks passed with python -m pytest reference/tests/test_multiphase.py -q -p no:cacheprovider. Three existing real-device CUDA regressions passed for Tait, viscosity and cavity. Mixing runs on the host. Receipts use out/m4-mixture, including the pre-implementation build failure.
 
 Particle constituent state, conservative transfer and remap, scene material resolution, and inspect/render publication remain open.
+
+## Particle composition state receipt
+
+Particles and resolved source templates now carry optional explicit phase and stable substance IDs with current-volume fractions. The native record reserves eight inline fractions to preserve bounded, trivially copyable particle state. Active fractions must be positive, strictly ordered and sum to one within FP64 tolerance. Legacy particles use no explicit composition, and optional wire fields preserve their existing canonical bytes.
+
+The native codec fixture round-trips a two-constituent particle and source, rejects invalid sums and duplicate IDs, and preserves the legacy scene golden. A source replay fixture retained exact fractions through emission, retry and capacity replay. Thirty-nine CPU checks passed with ctest --preset windows-debug-cpu -j 4 -R 'LiquidCache3D|LiquidState3D|LiquidMixture3D|SourceRetryAndWholeFrameReplay'. A clean CUDA build and 22 serial real-device scheduler and boundary checks passed. The persistent-substep fixture explicitly verifies that CUDA advection retains both fractions. Both simulator builds and clang-format 19.1.5 passed. Receipts use out/m4-particle-composition.
+
+The new fields are transported with the particle state. Phase-local grid reduction, constituent remap, scene substance definitions, and inspected/rendered fractions are still open.

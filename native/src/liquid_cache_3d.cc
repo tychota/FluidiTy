@@ -149,7 +149,7 @@ absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits
   }
   for (flatbuffers::uoffset_t index = 0; index < state->particles()->size(); ++index) {
     const auto* particle = state->particles()->Get(index);
-    if (!cache_detail::ValidParticleBooleans(particle) || particle->id() == 0
+    if (!cache_detail::ValidParticleEncoding(particle) || particle->id() == 0
         || particle->id() >= state->next_particle_id()
         || !cache_detail::ValidParticle(cache_detail::Unpack(particle))) {
       return cache_detail::Corrupt();
