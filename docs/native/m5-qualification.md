@@ -3110,3 +3110,29 @@ $b = 'out/build/m5-main-195af13-clean'
 cmake --build $b --target fluidity_m5_constitutive_tests fluidity_cuda_m5_constitutive_tests
 ctest --test-dir $b -R '^M5Constitutive\.' --no-tests=error --output-on-failure
 ```
+
+### Accepted stresses in the settled cone
+
+Probe the fine nominal wall-face cone at 3 s with the specified
+Euler increment. Select particles at least 0.025 m above the floor
+and at least 0.025 m from the axis. Evaluate each accepted Kirchhoff
+stress and divide its deviator norm by 0.326598632 times the
+compressive trace magnitude. Evaluate traction on a plane whose
+outward normal tilts radially by the measured envelope angle.
+
+All 60 sampled particles are in compression. Mean yield utilization
+is 0.961280208, and 49 samples reach at least 95% of yield. The
+maximum traction angle on the chosen planes is 29.737809°, and no
+sample exceeds 35°. The envelope itself is 39.324139°. The material
+admits higher traction angles in the analytic inclined-layer family,
+but these sampled cone stresses do not exhibit them on the chosen
+planes. The probe uses a common envelope tilt and samples interior
+particles, so it does not establish local free-surface traction.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-cone-stress-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-cone-stress
+```
+
+The temporary diagnostic reads the accepted state with
+`EvaluateAcceptedDrySolid3D` after the cone step loop. The source
+and fixture were restored after linking. Q-SAND remains open.
