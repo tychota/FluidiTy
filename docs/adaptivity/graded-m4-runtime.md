@@ -16,6 +16,12 @@ pressure, the volume change, and the accepted carrier bank.
   substance ID, and the additive-volume mixture sets the face mobility.
   The cell inventory is included in the CUDA bank, semantic comparison and
   checkpoint. Particle composition metadata is retained on the host.
+- A constant-viscosity tank uses an implicit coupled solve. The normal rows
+  are the signed open-area flux derivatives divided by leaf volume, so
+  their trace is the same divergence used in pressure. The shear rows
+  symmetrize gradients from local affine fits on actual staggered anchors.
+  Stationary sealed normal velocities are lifted as zero. The CUDA inverse
+  uses the existing reserved pressure ranges on the arena stream.
 - Planar exterior capillarity uses the existing liquid-air timestep
   formula for each exposed leaf, with that leaf's density and width. The
   minimum controls rejection. The authored plane has zero curvature.
@@ -46,23 +52,32 @@ compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --
 
 ## Qualification receipt
 
-Source commit `01356af` passed all 802 CPU-labeled tests, including 51 focused cases. The RTX 5060 Ti
-(driver 610.88, CUDA 13.4, SM120) passed all four graded epoch tests.
-Compute Sanitizer reported zero errors across those four tests.
+Source commit `bc73967`, based on main `b56e06e`, passed all 811 Windows
+Debug CPU tests, 23 focused graded and coupled-pressure cases, three CPU
+CLI checks, and two real-CUDA CLI checks. The RTX 5060 Ti (driver 610.88,
+CUDA 13.4, SM120) passed all seven graded adaptive cases and four
+focused uniform viscosity regressions. The viscous retry/readback test
+recorded unchanged device allocation and free counters and reserved
+device and pinned bytes. Compute Sanitizer reported zero errors on that
+case. The earlier runtime source `01356af` passed the 67-case CUDA
+operator suite before the signed-jump and graded tensor follow-ups.
 
-Each replay kills the process after publishing frame 10 and starts a
-third process to resume to frame 11. The frame-ten checkpoint and final
+Each direct replay kills the process after publishing frame 10 and starts
+a third process to resume to frame 11. The frame-ten checkpoint and final
 state match the uninterrupted run byte for byte on each backend.
 
 | Case | Backend | Frame 10 checkpoint BLAKE3 | Frame 11 state BLAKE3 |
 | --- | --- | --- | --- |
-| EOS | CPU | `1455a734060c0284ba9f2db6f87ab19ee879e26731e64f62523725ea4f71b60d` | `a365c90e13d6d8bc944d72c538e8d7ea6b9b9e624301f486beee21e82c9d127b` |
-| EOS | CUDA | `6016c2566382b54504f0fce3a4e17791a9e3f09443f7c594c0a45453b54d26cb` | `5d82cccf7d4818ed1b92e714ebe137b958064220fcccd035d2a1519c6f99247d` |
-| Miscible | CPU and CUDA | `e2960a2310d656af3a6c7fa0b63f4cbc499210fb55a450dc5ed6f14fc67e0648` | `9d701b00555e4e8423015ddc4af3c873d64cd878121e64f5f177336032ca15c3` |
+| EOS | CPU | `b342fe7a960b9ffbf3e02aef2939df1f8a716a0207f18f751c85afe29080e347` | `b667831f0d877efd94f2094e9393e80743cb3ebf36ec4744f09befd2aa0d63f4` |
+| EOS | CUDA | `fb283d9ebb3861d276a293472f51f99f629ffe4eabc654ae58d4f6dbe01ce125` | `58796c0187b5490a1b0ea9ac65c3a0b95bc7f4fc41cb9614dd4c01119e5fb648` |
+| Miscible | CPU and CUDA | `97ad25246808ea1adb255e9fad59196d803cca062a77c0d08e85d699bbd24f53` | `3eae555010ca81525c16318f3ea4db2f800bc59229d78a5df044e00b597d6ae4` |
+| Viscous | CPU and CUDA | `2dd95839509f248e3db2b0004e2955e7a066a2651b8bd2a436c2730b9bcb0645` | `7a55f31798622d93c1db1ea1b80450e92e2df6c7db24facba424b51d53754b34` |
 
-The local replay and GPU receipts are `out/m4-graded-cpu-replay.log`,
-`out/m4-graded-cuda-replay.log`, `out/m4-graded-cuda-rollback.log` and
-`out/m4-graded-cuda-memcheck.log`.
+The local receipts are `out/m4-graded-tensor-cpu.xml`,
+`out/m4-graded-tensor-cpu-focused.log`, `out/m4-graded-tensor-cpu-replay.log`,
+`out/m4-graded-tensor-cuda-replay.log`, `out/m4-graded-tensor-cuda-rollback.log`,
+`out/m4-graded-tensor-cuda-memcheck.log`, `out/m4-graded-tensor-cuda-uniform.log`,
+`out/m4-graded-tensor-cli-cpu.log` and `out/m4-graded-tensor-cli-cuda.log`.
 
 ## Coarse/fine interface operator controls
 
@@ -88,11 +103,16 @@ The interface receipts are `out/m4-graded-traction-cpu.log`,
 
 ## Remaining M4 gates
 
-The graded runtime still needs tensor strain quadrature and a coupled
-viscous solve with adaptive planar-extension and Couette qualification,
-a supported immiscible interface with conservative transport and curved
-pressure jump, and trapped-air geometry and pressure. Adaptive Mesh needs
-authoritative occupancy, shared-interface geometry, persistent IDs and
-composition output. These can be developed on fixed authored topology.
-Live refine/coarsen, family remap, moving and cut geometry, band handoff,
-and the full fixed-cache wave remain integration and qualification work.
+Full graded viscosity qualification still needs the planar-extension and
+Couette traction matrix at ratios 1, 10 and 1000 and the required resolution
+and timestep controls. The current graded tensor path qualifies a constant
+viscosity and stationary geometry. It reserves device velocity workspace,
+and the bounded prepared graph and host orchestration still allocate.
+
+Immiscible transport needs a phase-resolved geometry and conservative
+material transfer. Trapped-air pressure needs a graded domain that admits
+resolved gas occupancy and supplies gas-side aperture and cavity lineage.
+Adaptive Mesh still needs authoritative occupancy, shared-interface
+geometry, persistent IDs and composition output. Live refine/coarsen,
+moving and cut geometry, band handoff, and the full fixed-cache wave
+remain separate integration and qualification work.
