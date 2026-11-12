@@ -13,10 +13,15 @@
 
 namespace fluidity::pressure_test {
 
+enum class AcousticInitialPressure {
+  kStandingWave,
+  kLocalizedPulse
+};
+
 // A unit-length, unit-area column with sealed ends. The cosine pressure and
 // sine velocity modes are an exact eigenpair of the staggered incidence.
 template <typename Project>
-void ExpectBackwardEulerStandingWave(Project project) {
+void ExpectBackwardEulerAcousticColumn(AcousticInitialPressure initial, Project project) {
   constexpr double kDensity = 1000.0;
   constexpr double kSoundSpeed = 2.0;
   constexpr double kBulkModulus = kDensity * kSoundSpeed * kSoundSpeed;
@@ -30,7 +35,11 @@ void ExpectBackwardEulerStandingWave(Project project) {
   for (const int cell_count : {8, 16}) {
     const double spacing = 1.0 / cell_count;
     const double lattice_angle = std::numbers::pi * spacing;
-    const double frequency = kSoundSpeed * 2.0 * std::sin(lattice_angle / 2.0) / spacing;
+    const bool pulse = initial == AcousticInitialPressure::kLocalizedPulse;
+    const int pulse_cell = cell_count / 4;
+    // The sealed-column cosine basis is orthogonal. The constant mode
+    // carries the pulse mean, and every nonconstant mode has squared norm N/2.
+    const double mean_pressure = pulse ? kInitialPressureAmplitude / cell_count : 0.0;
     for (const double step_duration : {0.01, 0.025}) {
       SCOPED_TRACE(::testing::Message() << "cells=" << cell_count << " dt=" << step_duration);
       std::vector<MacPressureCell3D> cells;
@@ -40,7 +49,8 @@ void ExpectBackwardEulerStandingWave(Project project) {
             .cell_index = {static_cast<std::int32_t>(cell), 0, 0},
             .fluid_volume = spacing,
             .bulk_modulus = kBulkModulus,
-            .previous_pressure = kInitialPressureAmplitude * std::cos(lattice_angle * (cell + 0.5)),
+            .previous_pressure = pulse ? (cell == pulse_cell ? kInitialPressureAmplitude : 0.0)
+                                       : kInitialPressureAmplitude * std::cos(lattice_angle * (cell + 0.5)),
         });
       }
       for (int face = 1; face < cell_count; ++face) {
@@ -54,9 +64,6 @@ void ExpectBackwardEulerStandingWave(Project project) {
             .predicted_normal_velocity = 0.0,
         });
       }
-      const double frequency_step = frequency * step_duration;
-      const double damping = 1.0 / std::hypot(1.0, frequency_step);
-      const double phase_step = std::atan(frequency_step);
       double accumulated_error_bound = 0.0;
       for (int step = 1; step <= kStepCount; ++step) {
         SCOPED_TRACE(step);
@@ -77,19 +84,36 @@ void ExpectBackwardEulerStandingWave(Project project) {
         // to the pressure equation, so its L2 norm bounds accumulated error.
         accumulated_error_bound += kBulkModulus * step_duration * std::sqrt(squared_defect);
         double squared_error = 0.0;
-        const double amplitude = kInitialPressureAmplitude * std::pow(damping, step);
-        const double pressure_amplitude = amplitude * std::cos(step * phase_step);
-        const double scaled_velocity_amplitude = amplitude * std::sin(step * phase_step);
+        std::vector<double> expected_pressure(cells.size(), mean_pressure);
+        std::vector<double> expected_scaled_velocity(faces.size());
+        const int mode_limit = pulse ? cell_count : 2;
+        for (int mode = 1; mode < mode_limit; ++mode) {
+          const double mode_angle = mode * lattice_angle;
+          const double frequency = kSoundSpeed * 2.0 * std::sin(mode_angle / 2.0) / spacing;
+          const double frequency_step = frequency * step_duration;
+          const double damping = 1.0 / std::hypot(1.0, frequency_step);
+          const double phase = step * std::atan(frequency_step);
+          const double initial_amplitude =
+              pulse ? 2.0 * mean_pressure * std::cos(mode_angle * (pulse_cell + 0.5)) : kInitialPressureAmplitude;
+          const double amplitude = initial_amplitude * std::pow(damping, step);
+          const double pressure_amplitude = amplitude * std::cos(phase);
+          const double scaled_velocity_amplitude = amplitude * std::sin(phase);
+          for (std::size_t cell = 0; cell < cells.size(); ++cell) {
+            expected_pressure[cell] += pressure_amplitude * std::cos(mode_angle * (static_cast<double>(cell) + 0.5));
+          }
+          for (std::size_t face = 0; face < faces.size(); ++face) {
+            expected_scaled_velocity[face] +=
+                scaled_velocity_amplitude * std::sin(mode_angle * static_cast<double>(face + 1));
+          }
+        }
         for (std::size_t cell = 0; cell < cells.size(); ++cell) {
-          const double expected = pressure_amplitude * std::cos(lattice_angle * (static_cast<double>(cell) + 0.5));
-          const double error = projected->cell_pressures[cell] - expected;
+          const double error = projected->cell_pressures[cell] - expected_pressure[cell];
           squared_error += error * error;
           maximum_pressure_error = std::max(maximum_pressure_error, std::abs(error));
           cells[cell].previous_pressure = projected->cell_pressures[cell];
         }
         for (std::size_t face = 0; face < faces.size(); ++face) {
-          const double expected = scaled_velocity_amplitude * std::sin(lattice_angle * static_cast<double>(face + 1));
-          const double error = kImpedance * projected->corrected_face_velocities[face] - expected;
+          const double error = kImpedance * projected->corrected_face_velocities[face] - expected_scaled_velocity[face];
           squared_error += error * error;
           maximum_scaled_velocity_error = std::max(maximum_scaled_velocity_error, std::abs(error));
           faces[face].predicted_normal_velocity = projected->corrected_face_velocities[face];
@@ -99,16 +123,17 @@ void ExpectBackwardEulerStandingWave(Project project) {
       }
     }
   }
-  // A fixture-level waveform gate of 0.05% of the initial amplitude is
-  // independent of the solver's defect certificate.
-  EXPECT_LE(maximum_pressure_error, 0.0005 * kInitialPressureAmplitude);
-  EXPECT_LE(maximum_scaled_velocity_error, 0.0005 * kInitialPressureAmplitude);
+  // Independently cap pointwise waveform error as a fraction of the initial
+  // amplitude. The single-cell pulse excites the full spectrum.
+  const double waveform_tolerance = initial == AcousticInitialPressure::kLocalizedPulse ? 0.001 : 0.0005;
+  EXPECT_LE(maximum_pressure_error, waveform_tolerance * kInitialPressureAmplitude);
+  EXPECT_LE(maximum_scaled_velocity_error, waveform_tolerance * kInitialPressureAmplitude);
   const std::chrono::duration<double, std::milli> elapsed = std::chrono::steady_clock::now() - start;
-  ::testing::Test::RecordProperty("standing_wave_pressure_iterations", static_cast<int>(iterations));
-  ::testing::Test::RecordProperty("standing_wave_wall_milliseconds", std::to_string(elapsed.count()));
-  ::testing::Test::RecordProperty("standing_wave_max_pressure_error_pa", std::to_string(maximum_pressure_error));
+  ::testing::Test::RecordProperty("acoustic_pressure_iterations", static_cast<int>(iterations));
+  ::testing::Test::RecordProperty("acoustic_wall_milliseconds", std::to_string(elapsed.count()));
+  ::testing::Test::RecordProperty("acoustic_max_pressure_error_pa", std::to_string(maximum_pressure_error));
   ::testing::Test::RecordProperty(
-      "standing_wave_max_scaled_velocity_error_pa",
+      "acoustic_max_scaled_velocity_error_pa",
       std::to_string(maximum_scaled_velocity_error)
   );
 }

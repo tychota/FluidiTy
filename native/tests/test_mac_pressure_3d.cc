@@ -27,9 +27,23 @@ namespace {
 TEST(MacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
   auto workspace = MacPressureWorkspace3D::Create(16, 15);
   ASSERT_TRUE(workspace.ok()) << workspace.status();
-  pressure_test::ExpectBackwardEulerStandingWave([&](const auto& system) {
-    return workspace->ProjectPrepared(system);
-  });
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialPressure::kStandingWave,
+      [&](const auto& system) {
+        return workspace->ProjectPrepared(system);
+      }
+  );
+}
+
+TEST(MacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
+  auto workspace = MacPressureWorkspace3D::Create(16, 15);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialPressure::kLocalizedPulse,
+      [&](const auto& system) {
+        return workspace->ProjectPrepared(system);
+      }
+  );
 }
 
 using pressure_internal::EvaluateMacPressure3D;

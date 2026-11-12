@@ -111,16 +111,36 @@ void SortFaces(AffineProblem& problem, const SparseMacGrid3D& grid) {
 
 TEST(CudaMacPressure3D, BackwardEulerStandingWaveMatchesAnalyticMode) {
   double kernel_milliseconds = 0.0;
-  pressure_test::ExpectBackwardEulerStandingWave([&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
-    auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
-    if (!result.ok()) {
-      return result.status();
-    }
-    EXPECT_EQ(result->measurement.compiled_architecture, 1200);
-    kernel_milliseconds += result->measurement.kernel_ms;
-    return std::move(result->projection);
-  });
-  RecordProperty("standing_wave_kernel_milliseconds", std::to_string(kernel_milliseconds));
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialPressure::kStandingWave,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
+}
+
+TEST(CudaMacPressure3D, BackwardEulerPressurePulseMatchesModalOracle) {
+  double kernel_milliseconds = 0.0;
+  pressure_test::ExpectBackwardEulerAcousticColumn(
+      pressure_test::AcousticInitialPressure::kLocalizedPulse,
+      [&](const auto& system) -> absl::StatusOr<MacPressureProjection3D> {
+        auto result = pressure_internal::CudaProjectPreparedMacPressure3D(system);
+        if (!result.ok()) {
+          return result.status();
+        }
+        EXPECT_EQ(result->measurement.compiled_architecture, 1200);
+        kernel_milliseconds += result->measurement.kernel_ms;
+        return std::move(result->projection);
+      }
+  );
+  RecordProperty("acoustic_kernel_milliseconds", std::to_string(kernel_milliseconds));
 }
 
 TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {

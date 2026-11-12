@@ -100,6 +100,7 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     GPU_PRESSURE_3D_MULTILEVEL_CASE,
     GPU_PRESSURE_3D_EXPLICIT_CASE,
     "CudaMacPressure3D.BackwardEulerStandingWaveMatchesAnalyticMode",
+    "CudaMacPressure3D.BackwardEulerPressurePulseMatchesModalOracle",
     "CudaMacPressure3D.RejectsIncompatibleAndUnconverged",
     "CudaMacViscosity3D.CoupledProjectionBalancesMomentumAndCompliantFlux",
     "CudaMacViscosity3D.VelocityBlockMatchesCpuAndTrueResidual",
