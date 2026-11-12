@@ -184,7 +184,8 @@ struct LiquidSubstepBackend3D {
       const LiquidPressureProblemView3D& problem,
       double dynamic_viscosity,
       std::span<const double> cell_dynamic_viscosity,
-      MacPressureSolverOptions3D options
+      MacPressureSolverOptions3D options,
+      MacPressureWorkspace3D& workspace
   );
   using Gather = absl::StatusOr<LiquidBoundaryGatherView3D>(
       void* context,

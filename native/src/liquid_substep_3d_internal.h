@@ -3,15 +3,13 @@
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "liquid_eos_sensor_3d.h"
 #include "liquid_isolated_drop_3d.h"
+#include "mac_viscous_pressure_3d.h"
 namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
-using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<MacViscousPressureProjection3D>(
-    const MacPressureInputs3D&,
-    std::span<const MacStrainRow3D>,
-    MacPressureSolverOptions3D
-)>;
+using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<
+    MacViscousPressureProjection3D>(const pressure_internal::UniformViscousPressureInputs3D&, std::span<const MacStrainRow3D>, MacPressureSolverOptions3D, MacPressureWorkspace3D&)>;
 
 // Builds strain rows from the same geometry as pressure, then runs the
 // coupled backend. Admits full cells and connected cut free surfaces. A
@@ -24,6 +22,7 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectUniformViscosity(
     double dynamic_viscosity,
     std::span<const double> cell_dynamic_viscosity,
     MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace,
     ProjectViscousPressure3D project
 );
 // Backtraces a uniform cell center in the committed MAC carrier field, then

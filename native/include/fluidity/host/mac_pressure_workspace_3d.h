@@ -10,6 +10,7 @@
 namespace fluidity {
 namespace pressure_internal {
 struct BoundedCudaPressureAccess3D;
+struct CoupledPressureWorkspaceAccess3D;
 class PreparedMacPressureSystem3D;
 }  // namespace pressure_internal
 // Scalar observations of the original checked pressure system. These
@@ -100,6 +101,7 @@ class MacPressureWorkspace3D {
  private:
   friend class LiquidStepWorkspace3D;
   friend struct pressure_internal::BoundedCudaPressureAccess3D;
+  friend struct pressure_internal::CoupledPressureWorkspaceAccess3D;
   MacPressureWorkspace3D() = default;
   struct ProjectionBank {
     LiquidRecords3D<double> pressures;

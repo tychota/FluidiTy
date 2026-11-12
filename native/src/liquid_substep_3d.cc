@@ -1106,7 +1106,8 @@ struct LiquidSubstepScheduler3D::Impl {
             pressure_problem,
             scene.dynamic_viscosity,
             cell_dynamic_viscosity,
-            options.pressure_solver_options
+            options.pressure_solver_options,
+            workspace.pressure()
         );
         if (!result.ok()) {
           return result.status();

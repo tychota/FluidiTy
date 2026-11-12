@@ -374,6 +374,7 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUnif
     double dynamic_viscosity,
     std::span<const double> cell_dynamic_viscosity,
     MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace,
     ProjectViscousPressure3D project
 ) {
   const auto grid = geometry.mac_grid;
@@ -430,12 +431,7 @@ absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectUnif
   if (!strain.ok()) {
     return strain.status();
   }
-  const auto blocks = grid.active_block_indices();
-  const auto owning_grid = SparseMacGrid3D::Create(grid.geometry(), blocks, blocks.size());
-  if (!owning_grid.ok()) {
-    return owning_grid.status();
-  }
-  return project({*owning_grid, geometry.step_duration, problem.cells, problem.faces}, *strain, options);
+  return project({grid, geometry.step_duration, problem.cells, problem.faces}, *strain, options, workspace);
 }
 
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
@@ -572,14 +568,16 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
              std::span<const double> cell_dynamic_viscosity,
-             MacPressureSolverOptions3D options) {
+             MacPressureSolverOptions3D options,
+             MacPressureWorkspace3D& workspace) {
             return liquid_step_internal::ProjectUniformViscosity(
                 geometry,
                 problem,
                 dynamic_viscosity,
                 cell_dynamic_viscosity,
                 options,
-                ProjectMacViscousPressure3D
+                workspace,
+                pressure_internal::ProjectWorkspaceMacViscousPressure3D
             );
           },
       .gather =

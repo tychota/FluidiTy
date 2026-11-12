@@ -203,7 +203,8 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
              const LiquidPressureProblemView3D& problem,
              double dynamic_viscosity,
              std::span<const double> cell_dynamic_viscosity,
-             MacPressureSolverOptions3D options) {
+             MacPressureSolverOptions3D options,
+             MacPressureWorkspace3D& workspace) {
             auto& arena = static_cast<Impl*>(context)->arena;
             return liquid_step_internal::ProjectUniformViscosity(
                 geometry,
@@ -211,10 +212,18 @@ CudaLiquidSubstepBackend3D::operations(bool enable_gather_runs, bool enable_gath
                 dynamic_viscosity,
                 cell_dynamic_viscosity,
                 options,
-                [&](const MacPressureInputs3D& inputs,
+                workspace,
+                [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
                     std::span<const MacStrainRow3D> rows,
-                    MacPressureSolverOptions3D controls) {
-                  return cuda_internal::ProjectArenaViscousPressure3D(arena, inputs, rows, controls);
+                    MacPressureSolverOptions3D controls,
+                    MacPressureWorkspace3D& pressure_workspace) {
+                  return cuda_internal::ProjectArenaViscousPressure3D(
+                      arena,
+                      inputs,
+                      rows,
+                      controls,
+                      pressure_workspace
+                  );
                 }
             );
           },

@@ -140,10 +140,12 @@ TEST(LiquidSubstep3D, SamplesResolvedConstituentViscosityInCoupledProjection) {
                                const LiquidPressureProblemView3D& problem,
                                double viscosity,
                                std::span<const double> cell_viscosity,
-                               MacPressureSolverOptions3D controls) {
+                               MacPressureSolverOptions3D controls,
+                               MacPressureWorkspace3D& workspace) {
     auto& observed = *static_cast<std::vector<double>*>(context);
     observed.assign(cell_viscosity.begin(), cell_viscosity.end());
-    return CpuLiquidSubstepBackend3D().project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls);
+    return CpuLiquidSubstepBackend3D()
+        .project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls, workspace);
   };
   auto mixture = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
   ASSERT_TRUE(mixture.ok()) << mixture.status();
@@ -213,13 +215,15 @@ TEST(LiquidSubstep3D, CouplesImmiscibleViscosityAcrossPlanarTankCells) {
                                const LiquidPressureProblemView3D& problem,
                                double viscosity,
                                std::span<const double> cell_viscosity,
-                               MacPressureSolverOptions3D controls) {
+                               MacPressureSolverOptions3D controls,
+                               MacPressureWorkspace3D& workspace) {
     ++static_cast<Audit*>(context)->viscous_calls;
     EXPECT_EQ(cell_viscosity.size(), 4);
     for (std::size_t index = 0; index < cell_viscosity.size(); ++index) {
       EXPECT_DOUBLE_EQ(cell_viscosity[index], problem.cells[index].cell_index.x == 2 ? 40.0 : 120.0);
     }
-    return CpuLiquidSubstepBackend3D().project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls);
+    return CpuLiquidSubstepBackend3D()
+        .project_viscous(nullptr, geometry, problem, viscosity, cell_viscosity, controls, workspace);
   };
   auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
   ASSERT_TRUE(scheduler.ok()) << scheduler.status();
@@ -1596,15 +1600,19 @@ TEST(LiquidSubstep3D, ViscousCartesianCutPistonUsesWallNormalStrainAndFlux) {
                                const LiquidPressureProblemView3D& problem,
                                double viscosity,
                                std::span<const double> cell_viscosity,
-                               MacPressureSolverOptions3D options) {
+                               MacPressureSolverOptions3D options,
+                               MacPressureWorkspace3D& workspace) {
     return liquid_step_internal::ProjectUniformViscosity(
         geometry,
         problem,
         viscosity,
         cell_viscosity,
         options,
-        [&](const MacPressureInputs3D& inputs, std::span<const MacStrainRow3D> rows, MacPressureSolverOptions3D controls
-        ) {
+        workspace,
+        [&](const pressure_internal::UniformViscousPressureInputs3D& inputs,
+            std::span<const MacStrainRow3D> rows,
+            MacPressureSolverOptions3D controls,
+            MacPressureWorkspace3D& pressure_workspace) {
           if (!rows.empty() && rows[0].low_cell.x == 0 && rows[0].low_cell.y == 0 && rows[0].low_cell.z == 0
               && rows[0].first_axis == FaceNormalAxis::kX && rows[0].second_axis == FaceNormalAxis::kX) {
             EXPECT_DOUBLE_EQ(rows[0].quadrature_weight, 15.0);
@@ -1612,7 +1620,8 @@ TEST(LiquidSubstep3D, ViscousCartesianCutPistonUsesWallNormalStrainAndFlux) {
             EXPECT_DOUBLE_EQ(rows[0].terms[1].coefficient, 1.0 / 0.75);
             ++static_cast<PistonAudit*>(context)->wall_rows;
           }
-          const auto result = ProjectMacViscousPressure3D(inputs, rows, controls);
+          const auto result =
+              pressure_internal::ProjectWorkspaceMacViscousPressure3D(inputs, rows, controls, pressure_workspace);
           if (result.ok()) {
             auto& observed = *static_cast<PistonAudit*>(context);
             observed.top_outward_flux = 0.0;

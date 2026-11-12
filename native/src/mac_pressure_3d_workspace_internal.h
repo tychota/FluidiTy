@@ -77,6 +77,24 @@ class MacPressureScratchMark3D {
   MacPressureScratch3D& scratch_;
   std::size_t mark_;
 };
+// The coupled pressure stage borrows the same reserved arena as the inviscid
+// stage. No inviscid setup borrow may remain live across the coupled call.
+struct CoupledPressureWorkspaceAccess3D {
+  static bool Fits(const MacPressureWorkspace3D& workspace, std::size_t cells, std::size_t faces) {
+    return cells <= workspace.cell_capacity_ && faces <= workspace.face_capacity_;
+  }
+
+  static std::span<std::max_align_t> Storage(MacPressureWorkspace3D& workspace) {
+    return workspace.scratch_.values();
+  }
+
+  static void RecordUsage(MacPressureWorkspace3D& workspace, const MacPressureScratch3D& scratch) {
+    workspace.scratch_used_bytes_ = scratch.used();
+    const auto projection_used = workspace.used_bytes() - workspace.scratch_used_bytes_;
+    workspace.high_water_bytes_ = std::max(workspace.high_water_bytes_, projection_used + scratch.high_water());
+  }
+};
+
 // Prepared coefficients and hierarchy borrow the scratch arena until its next
 // reuse. These flat spans can be uploaded without reconstructing owning vectors.
 struct PreparedMacPressureView3D {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../src/mac_viscous_pressure_3d.h"
 #include "fluidity/host/cuda_liquid_arena_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "fluidity/host/viscosity.h"
@@ -34,8 +35,9 @@ absl::StatusOr<MacPressureProjectionView3D> ProjectLiquidPressure3D(
 // ResourceExhausted, runtime failure poisons the arena, and errors publish no result.
 absl::StatusOr<MacViscousPressureProjection3D> ProjectArenaViscousPressure3D(
     CudaLiquidArena3D& arena,
-    const MacPressureInputs3D& inputs,
+    const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
-    MacPressureSolverOptions3D options
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace
 );
 }  // namespace fluidity::cuda_internal

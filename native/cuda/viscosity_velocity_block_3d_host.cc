@@ -283,14 +283,16 @@ absl::StatusOr<MacViscousPressureProjection3D> CudaProjectMacViscousPressure3D(
 
 absl::StatusOr<MacViscousPressureProjection3D> cuda_internal::ProjectArenaViscousPressure3D(
     CudaLiquidArena3D& arena,
-    const MacPressureInputs3D& inputs,
+    const pressure_internal::UniformViscousPressureInputs3D& inputs,
     std::span<const MacStrainRow3D> strain_rows,
-    MacPressureSolverOptions3D options
+    MacPressureSolverOptions3D options,
+    MacPressureWorkspace3D& workspace
 ) {
-  return pressure_internal::ProjectMacViscousPressureWithVelocitySolver3D(
+  return pressure_internal::ProjectWorkspaceMacViscousPressureWithVelocitySolver3D(
       inputs,
       strain_rows,
       options,
+      workspace,
       [&](const MacViscousVelocityBlockInputs3D& block,
           std::span<const double> rhs,
           MacViscousVelocityBlockOptions3D controls) {
