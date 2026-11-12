@@ -352,7 +352,8 @@ absl::Status ValidateAdaptiveRecordView(const liquid_state_internal::AdaptiveRec
     if (!IsNonnegativeFinite(inventory.mass_kg) || !IsNonnegativeFinite(inventory.reference_volume_m3)
         || !IsNonnegativeFinite(inventory.current_volume_m3) || inventory.current_volume_m3 > volume_m3
         || !Finite(inventory.momentum_kg_m_per_s) || !std::isfinite(inventory.enthalpy_j)
-        || !std::isfinite(cell.previous_pressure) || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
+        || !std::isfinite(cell.previous_pressure) || !IsNonnegativeFinite(cell.coarsening_eligible_duration_s)
+        || !liquid_remap_internal::ValidConstituentInventory(inventory)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     may_have_contacts |= lower[2] <= prior_upper_z;
@@ -450,7 +451,9 @@ bool LiquidFaceState3D::operator==(const LiquidFaceState3D& other) const {
 bool LiquidAdaptiveCellState3D::operator==(const LiquidAdaptiveCellState3D& other) const {
   return LatticeSortKey(key.lower_corner) == LatticeSortKey(other.key.lower_corner)
       && key.width_exponent == other.key.width_exponent && occupancy == other.occupancy
-      && material_owner == other.material_owner && inventory.mass_kg == other.inventory.mass_kg
+      && material_owner == other.material_owner
+      && coarsening_eligible_duration_s == other.coarsening_eligible_duration_s
+      && inventory.mass_kg == other.inventory.mass_kg
       && inventory.reference_volume_m3 == other.inventory.reference_volume_m3
       && inventory.current_volume_m3 == other.inventory.current_volume_m3
       && Components(inventory.momentum_kg_m_per_s) == Components(other.inventory.momentum_kg_m_per_s)

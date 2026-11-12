@@ -86,6 +86,34 @@ Simulate run and its arena. The full-wave time and simultaneous GPU memory
 remain unmeasured.
 
 
+### Manufactured CUDA pressure control
+
+The same sealed 8 m³ graph and error thresholds now run on SM120. The nine
+samples per layout alternate execution order after one warm-up each. Both
+backends produced the same measured pressure and divergence maxima for each
+layout. The Release wall and CUDA event times below were observed on the
+qualification machine while other builds shared the host.
+
+| Backend | Layout | Cells | Pressure error (Pa) | Divergence error (s⁻¹) | Median call (ms) | Median CUDA solver (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| CPU | Finest uniform | 512 | 1.1921e-6 | 5.9605e-6 | 0.754 | |
+| CPU | Graded | 176 | 1.0729e-6 | 8.9010e-6 | 0.216 | |
+| SM120 | Finest uniform | 512 | 1.1921e-6 | 5.9605e-6 | 53.760 | 28.985 |
+| SM120 | Graded | 176 | 1.0729e-6 | 8.9010e-6 | 30.762 | 7.550 |
+
+The CUDA event interval covers the solver stream between warm-start evaluation
+and final status synchronization. The call interval also covers hierarchy
+preparation, device allocation, upload, download and cleanup. This bounded
+control records CPU workspace bytes and executed GPU architecture. The job-wide
+GPU memory check requires the simultaneous arena, solver, and pipeline peak.
+
+```powershell
+cmake --build out/build/matched-pressure-cuda --target fluidity_m3_matched_pressure
+ctest --test-dir out/build/matched-pressure-cuda -V -R '^M3MatchedPressure' --no-tests=error
+```
+
+### Full wave
+
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.
 - Record unprofiled launch-to-exit time including every requested stage and pipeline drain, published-frame intervals, retries, active levels, remap work and simultaneous peak GPU bytes. Include old and new owners, graph/solver scratch, stage buffers and in-flight snapshots in the memory measurement. Use a matched short capture for profiling, separate from the acceptance run. [CUDA optimization procedure](../native/cuda-optimization.md)
 - Run all 240 frames of the reference wave. Require at most 10,800 s and GPU peak at most `min(0.70 × total, 0.80 × free_at_job_start)`. The temporary uniform-sparse narrow-band path may qualify at most 21,600 s under the same cap and leaves adaptivity open. Qualify cage/native Multires when the authored reference output requests it.

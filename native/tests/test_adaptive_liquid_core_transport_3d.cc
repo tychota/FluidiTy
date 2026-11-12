@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <vector>
@@ -79,6 +80,43 @@ TEST(AdaptiveLiquidCoreTransport3D, AdvectsBothOrientationsAcrossCoarseFineSubfa
     }
   }
   EXPECT_EQ(candidate_total, committed_total);
+}
+
+TEST(AdaptiveLiquidCoreTransport3D, WorkspaceReusesRecordsAndPreservesLastSuccessOnRefusal) {
+  const auto topology = AdaptiveMacTopology3D::Create(kTransportLeaves, 1.0);
+  ASSERT_TRUE(topology.ok()) << topology.status();
+  const auto cells = CoreCells(*topology);
+  const std::array fluxes{1.0, -0.5, 0.0};
+  const auto expected = PrepareAdaptiveLiquidCoreTransport3D(*topology, cells, fluxes, 0.5);
+  ASSERT_TRUE(expected.ok()) << expected.status();
+  auto workspace = AdaptiveLiquidCoreTransportWorkspace3D::Create(cells.size());
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  const auto reserved_bytes = workspace->reserved_bytes();
+  EXPECT_GT(reserved_bytes, cells.size() * sizeof(LiquidAdaptiveCellState3D));
+
+  const auto first = workspace->Prepare(*topology, cells, fluxes, 0.5);
+  ASSERT_TRUE(first.ok()) << first.status();
+  ASSERT_TRUE(std::ranges::equal(*first, *expected));
+  const auto* output_records = first->data();
+  const auto overfill = workspace->Prepare(*topology, cells, std::array{2.0, 0.0, 0.0}, 0.5);
+  EXPECT_EQ(overfill.status().code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(std::ranges::equal(*first, *expected));
+
+  const std::array zero_fluxes{0.0, 0.0, 0.0};
+  const auto second = workspace->Prepare(*topology, cells, zero_fluxes, 0.5);
+  ASSERT_TRUE(second.ok()) << second.status();
+  EXPECT_EQ(second->data(), output_records);
+  EXPECT_TRUE(std::ranges::equal(*second, cells));
+  EXPECT_EQ(workspace->reserved_bytes(), reserved_bytes);
+  EXPECT_EQ(
+      workspace->Prepare(*topology, *second, zero_fluxes, 0.5).status().code(),
+      absl::StatusCode::kInvalidArgument
+  );
+  EXPECT_TRUE(std::ranges::equal(*second, cells));
+
+  auto undersized = AdaptiveLiquidCoreTransportWorkspace3D::Create(cells.size() - 1);
+  ASSERT_TRUE(undersized.ok()) << undersized.status();
+  EXPECT_EQ(undersized->Prepare(*topology, cells, fluxes, 0.5).status().code(), absl::StatusCode::kResourceExhausted);
 }
 
 TEST(AdaptiveLiquidCoreTransport3D, RejectsGrossOverdrawEvenWithIncomingVolume) {

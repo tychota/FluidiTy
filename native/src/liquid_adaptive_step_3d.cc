@@ -226,7 +226,8 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     Vec3 world_origin,
     double dynamic_viscosity,
     std::span<const GradedMacFace3D> faces,
-    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
+    std::span<std::size_t> leaf_row_offsets
 ) {
   if (faces.size() != subfaces.size() || !std::isfinite(dynamic_viscosity) || dynamic_viscosity <= 0.0) {
     return absl::InvalidArgumentError("graded viscosity needs one physical record per face and positive viscosity");
@@ -240,6 +241,12 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     return absl::InvalidArgumentError("graded strain face extent does not match canonical ownership");
   }
   const auto leaves = topology.cells();
+  if (!leaf_row_offsets.empty()) {
+    if (leaf_row_offsets.size() != leaves.size() + 1) {
+      return absl::InvalidArgumentError("graded strain row offsets need one entry per leaf and an end offset");
+    }
+    leaf_row_offsets.front() = 0;
+  }
   std::vector<std::array<MacStrainRow3D, 3>> normal_rows(leaves.size());
   constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
   for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
@@ -317,6 +324,9 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     if (!status.ok()) {
       return status;
     }
+    if (!leaf_row_offsets.empty()) {
+      leaf_row_offsets[cell + 1] = rows.size();
+    }
   }
   if (rows.empty()) {
     return absl::FailedPreconditionError("graded viscosity has no open strain support");
@@ -337,9 +347,14 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   if (plane == nullptr || tank == nullptr || tank->piston_velocity_x != 0 || scene.target_divergence != 0
       || initial.next_cavity_id != 0 || options.whitewater_capture || !scene.sources.empty()
-      || options.ocean_boundary.has_value() || options.motion_sample_intervals != 0
-      || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
+      || options.ocean_boundary.has_value() || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate currently requires a stationary conforming planar tank");
+  }
+  if (options.motion_sample_intervals != 0
+      && (scene.surface_tension != 0 || scene.dynamic_viscosity != 0 || scene.drift || scene.eos || scene.cavity
+          || scene.cavity_provider.prepare || !scene.phase_pairs.empty() || !scene.constituent_materials.empty()
+          || !std::isinf(scene.bulk_modulus))) {
+    return absl::UnimplementedError("graded motion capture requires the implicit incompressible tank");
   }
   if (initial.particles.size() == 0) {
     return absl::InvalidArgumentError("graded Simulate requires particle-owned material");
@@ -387,6 +402,11 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   result.subfaces_.resize(initial.adaptive_faces.size());
   const auto leaves = result.topology_.cells();
   if (std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian)) {
+    auto core_transport = AdaptiveLiquidCoreTransportWorkspace3D::Create(leaves.size());
+    if (!core_transport.ok()) {
+      return core_transport.status();
+    }
+    result.core_transport_.emplace(std::move(*core_transport));
     result.core_faces_.resize(initial.adaptive_faces.size());
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
   }
@@ -473,19 +493,6 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
         .exterior_pressure_pa = scene.ambient_pressure,
     };
   }
-  if (scene.dynamic_viscosity > 0.0) {
-    auto rows = AssembleGradedViscousStrainRows3D(
-        result.topology_,
-        origin,
-        scene.dynamic_viscosity,
-        result.transfer_.faces(),
-        result.subfaces_
-    );
-    if (!rows.ok()) {
-      return rows.status();
-    }
-    result.strain_rows_ = std::move(*rows);
-  }
   result.old_faces_.resize(initial.adaptive_faces.size());
   result.gathered_.resize(initial.particles.size());
   result.distances_.resize(initial.particles.size());
@@ -504,17 +511,62 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
       return absl::InvalidArgumentError("graded tank inventory must match its particle-owned material");
     }
   }
+  const bool composition_viscosity =
+      phase_id != 0 && std::ranges::any_of(scene.constituent_materials, [&](const auto& material) {
+        return material.phase_id == phase_id && material.dynamic_viscosity_pa_s.has_value();
+      });
+  bool can_apply_viscosity = scene.dynamic_viscosity > 0.0;
+  if (composition_viscosity) {
+    // Only substances already present in this closed tank can enter a leaf during transport.
+    can_apply_viscosity = std::ranges::any_of(result.inventories_, [&](const auto& inventory) {
+      const auto constituents = std::span(inventory.constituents).first(inventory.constituent_count);
+      return std::ranges::any_of(constituents, [&](const auto& constituent) {
+        const auto material = std::ranges::lower_bound(
+            scene.constituent_materials,
+            constituent.substance_id,
+            {},
+            &LiquidConstituentMaterial3D::substance_id
+        );
+        return material->dynamic_viscosity_pa_s.value_or(scene.dynamic_viscosity) > 0.0;
+      });
+    });
+  }
+  if (can_apply_viscosity) {
+    if (composition_viscosity) {
+      result.leaf_strain_row_offsets_.resize(leaves.size() + 1);
+    }
+    auto rows = AssembleGradedViscousStrainRows3D(
+        result.topology_,
+        origin,
+        composition_viscosity ? 1.0 : scene.dynamic_viscosity,
+        result.transfer_.faces(),
+        result.subfaces_,
+        result.leaf_strain_row_offsets_
+    );
+    if (!rows.ok()) {
+      return rows.status();
+    }
+    if (composition_viscosity) {
+      result.strain_rows_.reserve(rows->size());
+      result.unit_strain_rows_ = std::move(*rows);
+    } else {
+      result.strain_rows_ = std::move(*rows);
+    }
+  }
   return result;
 }
 
 std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
+  const std::size_t core_transport_bytes = core_transport_ ? core_transport_->reserved_bytes() : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
       + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
+      + (strain_rows_.capacity() + unit_strain_rows_.capacity()) * sizeof(MacStrainRow3D)
+      + leaf_strain_row_offsets_.capacity() * sizeof(std::size_t)
       + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
       + inventories_.capacity() * sizeof(LiquidRemapInventory3D) + core_faces_.capacity() * sizeof(std::uint8_t)
-      + core_fluxes_.capacity() * sizeof(double);
+      + core_fluxes_.capacity() * sizeof(double) + core_transport_bytes;
 }
 
 absl::Status AdaptiveLiquidStep3D::Deposit(const LiquidState3D& trial, const LiquidStepOptions3D& options) {
@@ -629,6 +681,9 @@ absl::Status AdaptiveLiquidStep3D::Project(
       return advected;
     }
   }
+  if (!unit_strain_rows_.empty()) {
+    strain_rows_.clear();
+  }
   for (std::size_t cell = 0; cell < pressure_cells_.size(); ++cell) {
     auto& pressure_cell = pressure_cells_[cell];
     if (!eos) {
@@ -642,6 +697,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
     const auto& inventory = trial.adaptive_cells[cell].inventory;
     double density = scene.liquid_density;
+    double viscosity = scene.dynamic_viscosity;
     if (inventory.constituent_count != 0) {
       std::array<LiquidConstituentFraction3D, kMaximumLiquidParticleConstituents3D> fractions{};
       const auto mixture = MixLiquidConstituentVolumes3D(
@@ -654,6 +710,35 @@ absl::Status AdaptiveLiquidStep3D::Project(
         return mixture.status();
       }
       density = mixture->density_kg_per_m3;
+      if (!unit_strain_rows_.empty()) {
+        viscosity = 0.0;
+        for (const auto& fraction : std::span(fractions).first(mixture->constituent_count)) {
+          const auto material = std::ranges::lower_bound(
+              scene.constituent_materials,
+              fraction.substance_id,
+              {},
+              &LiquidConstituentMaterial3D::substance_id
+          );
+          viscosity = std::fma(
+              fraction.volume_fraction,
+              material->dynamic_viscosity_pa_s.value_or(scene.dynamic_viscosity),
+              viscosity
+          );
+        }
+      }
+    }
+    if (!unit_strain_rows_.empty() && viscosity > 0.0) {
+      // The accepted leaf inventory supplies the current-volume mixture. Freeze its weights for this solve.
+      const auto begin = leaf_strain_row_offsets_[cell];
+      const auto end = leaf_strain_row_offsets_[cell + 1];
+      for (auto ordinal = begin; ordinal < end; ++ordinal) {
+        auto row = unit_strain_rows_[ordinal];
+        row.quadrature_weight *= viscosity;
+        if (!std::isnormal(row.quadrature_weight)) {
+          return absl::OutOfRangeError("graded constituent viscosity quadrature is unrepresentable");
+        }
+        strain_rows_.push_back(row);
+      }
     }
     reference_density_[cell] = density;
     predictor_density_[cell] = density;
@@ -919,13 +1004,12 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!material.ok()) {
     return material;
   }
-  if (!core_faces_.empty()) {
+  if (core_transport_) {
     for (std::size_t face = 0; face < interior_slots_.size(); ++face) {
       const auto slot = interior_slots_[face];
       core_fluxes_[face] = subfaces_[slot].open_area_m2 * trial.adaptive_faces[slot].carrier_velocity;
     }
-    const auto core =
-        PrepareAdaptiveLiquidCoreTransport3D(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
+    const auto core = core_transport_->Prepare(topology_, trial.adaptive_cells.values(), core_fluxes_, duration);
     if (!core.ok()) {
       return core.status();
     }

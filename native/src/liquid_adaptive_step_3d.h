@@ -1,7 +1,9 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
+#include "fluidity/host/adaptive_liquid_core_transport_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
@@ -13,13 +15,16 @@ namespace fluidity::liquid_step_internal {
 
 // Assemble nonzero symmetric-gradient quadratures per leaf from local staggered
 // face anchors and owned apertures. Dynamic viscosity is in Pa s. Stationary sealed faces are lifted as zero velocity.
-// All geometric arrays use canonical topology order. Rank-deficient anchor support fails without rows.
+// All geometric arrays use canonical topology order. An optional scratch span of leaf count + 1 stores
+// row offsets in leaf order; it must be disjoint from inputs and may change on failure.
+// Rank-deficient anchor support fails without rows.
 absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     const AdaptiveMacTopology3D& topology,
     Vec3 world_origin,
     double dynamic_viscosity,
     std::span<const GradedMacFace3D> faces,
-    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
+    std::span<std::size_t> leaf_row_offsets = {}
 );
 
 // Frozen graded tank ownership and staging. The owner is built at scheduler
@@ -68,9 +73,13 @@ class AdaptiveLiquidStep3D {
   // Nonempty only when an Eulerian core owns material in this frozen trial.
   std::vector<std::uint8_t> core_faces_;
   std::vector<double> core_fluxes_;
+  std::optional<AdaptiveLiquidCoreTransportWorkspace3D> core_transport_;
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces_;
   std::vector<MacPressureCell3D> pressure_cells_;
   std::vector<MacStrainRow3D> strain_rows_;
+  // Geometry at unit viscosity, kept only for composition-dependent quadrature.
+  std::vector<MacStrainRow3D> unit_strain_rows_;
+  std::vector<std::size_t> leaf_strain_row_offsets_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;
   std::vector<double> distances_;
