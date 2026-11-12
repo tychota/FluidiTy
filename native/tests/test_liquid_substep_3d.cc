@@ -132,6 +132,99 @@ TEST(LiquidSubstep3D, PublishesLiveAdaptiveFamilyOnlyAfterAcceptance) {
   ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
 }
 
+TEST(LiquidSubstep3D, GradedWidthHysteresisCreditsOnlyAcceptedCertifiedTime) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedFamilyFixture3D(state, scene).ok());
+  auto options = Options();
+  options.capacities = {12, 0, 12, 64, 0};
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto parent = state.adaptive_cells[0].key;
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  const std::array halo{AdaptiveCoarsenHaloSample3D{.demand = {.maximum_width = 2}}};
+  LiquidAdaptiveWidthRequest3D request{
+      .accepted_epoch = state.clock.epoch,
+      .leaf = parent,
+      .demand = {.maximum_width = 0.5},
+      .parent_and_halo = {},
+      .complete_halo = false,
+      .hysteresis_duration_s = 0.01,
+  };
+  const auto refined = scheduler->AttemptWithAdaptiveWidth(0.01, request);
+  ASSERT_TRUE(refined.ok()) << refined.status();
+  ASSERT_EQ(refined->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+
+  request.leaf.width_exponent = 0;
+  request.demand.maximum_width = 2;
+  request.parent_and_halo = halo;
+  request.complete_halo = true;
+  ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
+  EXPECT_EQ(scheduler->AttemptWithAdaptiveWidth(0.005, request).status().code(), absl::StatusCode::kFailedPrecondition);
+  request.accepted_epoch = scheduler->committed().clock.epoch;
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject graded width trial")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveWidth(0.01, request);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  EXPECT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ASSERT_EQ(rejected->retry_duration, 0.005);
+  for (const auto& leaf : scheduler->committed().adaptive_cells.values()) {
+    EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+  }
+  scheduler->SetStageFaultHookForTesting({});
+  for (double expected_age : {0.005, 0.01}) {
+    request.accepted_epoch = scheduler->committed().clock.epoch;
+    const auto accepted = scheduler->AttemptWithAdaptiveWidth(0.005, request);
+    ASSERT_TRUE(accepted.ok()) << accepted.status();
+    EXPECT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_EQ(scheduler->committed().adaptive_cells.size(), 12);
+    for (const auto& leaf : scheduler->committed().adaptive_cells.values()) {
+      EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, leaf.key.lower_corner.x < 2 ? expected_age : 0.0);
+    }
+  }
+  ASSERT_TRUE(scheduler->FinishFrame().ok());
+  const auto encoded = EncodeLiquidState3D(scheduler->committed());
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidState3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  auto restarted = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(restarted.ok()) << restarted.status();
+  auto vetoed = LiquidSubstepScheduler3D::Create(*decoded, scene, options);
+  ASSERT_TRUE(vetoed.ok()) << vetoed.status();
+  ASSERT_TRUE(vetoed->BeginFrame(0.03).ok());
+  request.accepted_epoch = vetoed->committed().clock.epoch;
+  request.complete_halo = false;
+  const auto kept = vetoed->AttemptWithAdaptiveWidth(0.03 - 0.02, request);
+  ASSERT_TRUE(kept.ok()) << kept.status();
+  ASSERT_EQ(kept->disposition, LiquidAttemptDisposition3D::kAccepted);
+  EXPECT_EQ(vetoed->committed().adaptive_cells.size(), 12);
+  for (const auto& leaf : vetoed->committed().adaptive_cells.values()) {
+    EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+  }
+  request.complete_halo = true;
+  for (auto* run : {&*scheduler, &*restarted}) {
+    ASSERT_TRUE(run->BeginFrame(0.03).ok());
+    request.accepted_epoch = run->committed().clock.epoch;
+    const auto coarsened = run->AttemptWithAdaptiveWidth(0.03 - 0.02, request);
+    ASSERT_TRUE(coarsened.ok()) << coarsened.status();
+    ASSERT_EQ(coarsened->disposition, LiquidAttemptDisposition3D::kAccepted);
+    ASSERT_TRUE(run->FinishFrame().ok());
+    EXPECT_EQ(run->committed().adaptive_cells.size(), 5);
+    for (const auto& leaf : run->committed().adaptive_cells.values()) {
+      EXPECT_DOUBLE_EQ(leaf.coarsening_eligible_duration_s, 0);
+    }
+  }
+  ExpectIdenticalSerializedState(scheduler->committed(), restarted->committed());
+}
+
 TEST(LiquidSubstep3D, PublishesAdaptiveBandRetirementAndReseed) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;

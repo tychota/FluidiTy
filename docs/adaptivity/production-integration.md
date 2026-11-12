@@ -89,3 +89,31 @@ remain unmeasured.
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.
 - Record unprofiled launch-to-exit time including every requested stage and pipeline drain, published-frame intervals, retries, active levels, remap work and simultaneous peak GPU bytes. Include old and new owners, graph/solver scratch, stage buffers and in-flight snapshots in the memory measurement. Use a matched short capture for profiling, separate from the acceptance run. [CUDA optimization procedure](../native/cuda-optimization.md)
 - Run all 240 frames of the reference wave. Require at most 10,800 s and GPU peak at most `min(0.70 × total, 0.80 × free_at_job_start)`. The temporary uniform-sparse narrow-band path may qualify at most 21,600 s under the same cap and leaves adaptivity open. Qualify cage/native Multires when the authored reference output requests it.
+
+
+## Accepted width policy
+
+The native scheduler can apply an epoch-bound width request to one selected
+leaf per physical trial. It derives all eight siblings from the committed
+signed keys. An immediately required refinement or a coarsening with enough
+previously accepted eligible time prepares a replacement before the trial.
+If the family remains eligible, the inactive version receives the accepted
+interval credit. A veto or absence of fresh evidence clears that age on
+acceptance. Rejection leaves the age and the existing topology unchanged.
+
+The width fixture rejects late, retries at the required smaller timestep,
+checkpoints eight eligible siblings in a v4 state, and coarsens on the same
+next step after hard interruption. CPU and SM120 produce the same checkpoint
+and final BLAKE3 values.
+
+- Checkpoint `f9b23fa77c51d215ca7de7c40f6d47549c025aeec09a55c74e1130ab818fb4ba`
+- Final state `efdee2fa2e750765d4b0c7e3a1c24e4e51e533b195ee117f89b22739987bcab5`
+
+```powershell
+ctest --test-dir out/build/width-scheduler-cpu -V -R 'GradedWidthHysteresis|AdaptiveWidthReplay.cpu' --no-tests=error
+ctest --test-dir out/build/width-scheduler-cuda -V -R '^AdaptiveWidthReplay.cuda$' --no-tests=error
+```
+
+The caller still supplies the physical, camera, particle support and
+movement evidence. Automatic scene evaluation, multi-family grading closure,
+and resampling for families that cannot be exactly rebinned remain open.

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -8,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "graded_tank_fixture.h"
@@ -143,9 +145,78 @@ absl::Status AdvanceBand(LiquidSubstepScheduler3D& scheduler, double frame_end, 
 }
 
 absl::Status
+AdvanceWidth(LiquidSubstepScheduler3D& scheduler, bool earn_age, absl::FunctionRef<absl::Status()> check_device_epoch) {
+  constexpr double kHysteresisDuration = 0.01;
+  const double frame_end = earn_age ? 0.02 : 0.03;
+  const auto started = scheduler.BeginFrame(frame_end);
+  if (!started.ok()) {
+    return started;
+  }
+  const std::array halo{AdaptiveCoarsenHaloSample3D{.demand = {.maximum_width = 2}}};
+  LiquidAdaptiveWidthRequest3D request{
+      .accepted_epoch = scheduler.committed().clock.epoch,
+      .leaf = {.lower_corner = kParent.lower_corner, .width_exponent = 0},
+      .demand = {.maximum_width = 2},
+      .parent_and_halo = halo,
+      .complete_halo = true,
+      .hysteresis_duration_s = kHysteresisDuration,
+  };
+  double duration = frame_end - scheduler.committed().clock.time;
+  if (earn_age) {
+    scheduler.SetStageFaultHookForTesting({
+        .context = nullptr,
+        .before_stage =
+            [](void*, LiquidPhysicalStage3D stage, double) {
+              return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject eligible age")
+                                                             : absl::OkStatus();
+            },
+    });
+    const auto rejected = scheduler.AttemptWithAdaptiveWidth(duration, request);
+    scheduler.SetStageFaultHookForTesting({});
+    const auto credited = std::ranges::any_of(scheduler.committed().adaptive_cells.values(), [](const auto& cell) {
+      return cell.coarsening_eligible_duration_s != 0;
+    });
+    if (!rejected.ok() || rejected->disposition != LiquidAttemptDisposition3D::kRetryDt || credited
+        || !rejected->retry_duration || scheduler.committed().clock.epoch != request.accepted_epoch) {
+      return absl::FailedPreconditionError("rejected width trial advanced accepted age");
+    }
+    const auto verified_rollback = check_device_epoch();
+    if (!verified_rollback.ok()) {
+      return verified_rollback;
+    }
+    const auto retried = scheduler.AttemptWithAdaptiveWidth(*rejected->retry_duration, request);
+    if (!retried.ok()) {
+      return retried.status();
+    }
+    if (retried->disposition != LiquidAttemptDisposition3D::kAccepted) {
+      return absl::FailedPreconditionError("width retry did not accept the smaller interval");
+    }
+    request.accepted_epoch = scheduler.committed().clock.epoch;
+    duration = frame_end - scheduler.committed().clock.time;
+  }
+  const auto attempted = scheduler.AttemptWithAdaptiveWidth(duration, request);
+  if (!attempted.ok()) {
+    return attempted.status();
+  }
+  if (attempted->disposition != LiquidAttemptDisposition3D::kAccepted
+      || scheduler.committed().adaptive_cells.size() != (earn_age ? 12U : 5U)) {
+    return absl::FailedPreconditionError("width trial did not publish the expected topology");
+  }
+  const auto eligible_count =
+      std::ranges::count_if(scheduler.committed().adaptive_cells.values(), [](const auto& cell) {
+        return cell.coarsening_eligible_duration_s == kHysteresisDuration;
+      });
+  if (eligible_count != (earn_age ? 8 : 0)) {
+    return absl::FailedPreconditionError("width trial did not publish the expected eligible age");
+  }
+  return scheduler.FinishFrame();
+}
+
+absl::Status
 Run(std::string_view backend_name, std::string_view mode, const char* checkpoint_path, std::string_view scenario) {
   const bool band = scenario == "band";
-  const auto family_scenario = band ? std::string_view{} : scenario;
+  const bool width = scenario == "width";
+  const auto family_scenario = band || width ? std::string_view{} : scenario;
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored =
@@ -160,7 +231,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     scene.dynamic_viscosity = 2.0;
   }
   LiquidResumeMetadata3D resume;
-  const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : 12)};
+  const std::uint8_t fixture_identity[] = {1, 3, static_cast<std::uint8_t>(band ? 5 : width ? 13 : 12)};
   resume.resolved_fingerprint = LiquidContentDigest3D(fixture_identity);
   if (scenario == "eos" || scenario == "viscous") {
     const std::uint8_t extended_identity[]{1, 4, 12, static_cast<std::uint8_t>(scenario == "eos" ? 1 : 2)};
@@ -178,6 +249,15 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != (band ? 5U : 12U)
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
+    }
+    if (width
+        && std::ranges::count_if(
+               checkpoint->state.adaptive_cells.values(),
+               [](const auto& cell) {
+                 return cell.coarsening_eligible_duration_s == 0.01;
+               }
+           ) != 8) {
+      return absl::DataLossError("fixture checkpoint lost the accepted width eligibility");
     }
     state = std::move(checkpoint->state);
   }
@@ -204,12 +284,46 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!scheduler.ok()) {
     return scheduler.status();
   }
+  const auto check_device_epoch = [&]() -> absl::Status {
+#ifdef FLUIDITY_ADAPTIVE_FIXTURE_CUDA
+    if (device) {
+      const auto epoch = device->AcquireCommitted();
+      if (!epoch.ok()) {
+        return epoch.status();
+      }
+      auto readback = CloneLiquidState3D(scheduler->committed(), kCapacities);
+      if (!readback.ok()) {
+        return readback.status();
+      }
+      const auto copied = epoch->Readback(*readback);
+      if (!copied.ok()) {
+        return copied;
+      }
+      if (*readback != scheduler->committed()) {
+        return absl::DataLossError("device width state differs from the committed host epoch");
+      }
+    }
+#endif
+    return absl::OkStatus();
+  };
 
   if (mode != "resume") {
     const auto refined =
         band ? AdvanceBand(*scheduler, 0.01, true) : AdvanceFamily(*scheduler, 0.01, true, family_scenario);
     if (!refined.ok()) {
       return refined;
+    }
+    if (width) {
+      const auto aged = AdvanceWidth(*scheduler, true, check_device_epoch);
+      if (!aged.ok()) {
+        return aged;
+      }
+    }
+  }
+  if (width) {
+    const auto verified = check_device_epoch();
+    if (!verified.ok()) {
+      return verified;
     }
   }
   if (mode == "interrupt") {
@@ -229,8 +343,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return absl::CancelledError("expected test process termination");
   }
 
-  const auto coarsened =
-      band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false, family_scenario);
+  const auto coarsened = width
+      ? AdvanceWidth(*scheduler, false, check_device_epoch)
+      : (band ? AdvanceBand(*scheduler, 0.02, false) : AdvanceFamily(*scheduler, 0.02, false, family_scenario));
   if (!coarsened.ok()) {
     return coarsened;
   }
@@ -255,7 +370,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
-  if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous") {
+  if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "width") {
     return 2;
   }
   const std::string_view backend = argv[1];
