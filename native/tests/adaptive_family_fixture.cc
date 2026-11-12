@@ -294,11 +294,20 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   const bool band = scenario == "band";
   const bool width = scenario == "width";
   const bool batch = scenario == "closure";
-  const auto family_scenario = band || width || batch ? std::string_view{} : scenario;
-  const auto capacities = batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
+  const bool exchange = scenario == "exchange";
+  const auto family_scenario = band || width || batch || exchange ? std::string_view{} : scenario;
+  const auto capacities = [&] {
+    if (exchange) {
+      return LiquidStateCapacities3D{3, 0, 8, 36, 0};
+    }
+    return batch ? LiquidStateCapacities3D{19, 0, 19, 160, 0} : kCapacities;
+  }();
   LiquidState3D state;
   LiquidSceneInputs3D scene;
   const auto authored = [&] {
+    if (exchange) {
+      return test::PopulateGradedOwnerExchangeFixture3D(state, scene);
+    }
     if (batch) {
       return test::PopulateGradedRefinementClosureFixture3D(state, scene, true);
     }
@@ -342,6 +351,10 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     const std::uint8_t extended_identity[]{1, 4, 12, 3};
     resume.resolved_fingerprint = LiquidContentDigest3D(extended_identity);
   }
+  if (exchange) {
+    const std::uint8_t exchange_identity[]{1, 4, 8, 4};
+    resume.resolved_fingerprint = LiquidContentDigest3D(exchange_identity);
+  }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = capacities;
   if (mode == "resume") {
@@ -351,7 +364,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     if (!checkpoint.ok()) {
       return checkpoint.status();
     }
-    const std::size_t expected_cells = batch ? 19 : (band ? 5 : 12);
+    const std::size_t expected_cells = exchange ? 8 : (batch ? 19 : (band ? 5 : 12));
     if (checkpoint->resume != resume || checkpoint->state.adaptive_cells.size() != expected_cells
         || (band && checkpoint->state.adaptive_cells[1].material_owner != AdaptiveLiquidMaterialOwner3D::kEulerian)) {
       return absl::DataLossError("fixture checkpoint identity, topology, or ownership differs");
@@ -386,6 +399,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 #endif
   LiquidStepOptions3D options;
   options.capacities = capacities;
+  if (exchange) {
+    options.maximum_step_duration = 0.125;
+  }
   if (scenario == "miscible" && mode != "resume") {
     // Equal and opposite edits preserve the parent inventory but would move substance
     // between children if prolongation ignored the particles' spatial composition.
@@ -442,14 +458,14 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
         return copied;
       }
       if (*readback != scheduler->committed()) {
-        return absl::DataLossError("device width state differs from the committed host epoch");
+        return absl::DataLossError("device state differs from the committed host epoch");
       }
     }
 #endif
     return absl::OkStatus();
   };
 
-  if (mode != "resume") {
+  if (!exchange && mode != "resume") {
     const auto refined = [&] {
       if (batch) {
         return AdvanceRefinementClosure(*scheduler, check_device_epoch);
@@ -490,6 +506,23 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   }
 
   const auto continued = [&] {
+    if (exchange) {
+      constexpr double kDuration = 0.125;
+      const auto begun = scheduler->BeginFrame(kDuration);
+      if (!begun.ok()) {
+        return begun;
+      }
+      const auto attempted = scheduler->AttemptWithAdaptiveOwnerExchange(kDuration);
+      if (!attempted.ok()) {
+        return attempted.status();
+      }
+      const auto& particles = scheduler->committed().particles;
+      if (attempted->disposition != LiquidAttemptDisposition3D::kAccepted || particles[0].mass != 0.25
+          || particles[1].mass != 0.125) {
+        return absl::FailedPreconditionError("replay did not publish the expected projected owner exchange");
+      }
+      return scheduler->FinishFrame();
+    }
     if (batch) {
       return scheduler->AdvanceFrame(0.02);
     }
@@ -501,7 +534,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   if (!continued.ok()) {
     return continued;
   }
-  if (batch) {
+  if (batch || exchange) {
     const auto verified = check_device_epoch();
     if (!verified.ok()) {
       return verified;
@@ -512,6 +545,23 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     return absl::FailedPreconditionError("fixture requires SM120 device code");
   }
 #endif
+  if (exchange) {
+    const auto encoded = EncodeLiquidCheckpoint3D(scheduler->committed(), resume);
+    if (!encoded.ok()) {
+      return encoded.status();
+    }
+    auto decoded = DecodeLiquidCheckpoint3D(encoded->values());
+    if (!decoded.ok()) {
+      return decoded.status();
+    }
+    auto restarted = LiquidSubstepScheduler3D::Create(decoded->state, scene, options);
+    if (!restarted.ok()) {
+      return restarted.status();
+    }
+    if (restarted->committed() != scheduler->committed()) {
+      return absl::DataLossError("projected owner exchange changed during checkpoint restart");
+    }
+  }
   const auto final_state = EncodeLiquidState3D(scheduler->committed());
   if (!final_state.ok()) {
     return final_state.status();
@@ -529,7 +579,7 @@ int main(int argc, char** argv) {
   }
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
-      && scenario != "width" && scenario != "closure") {
+      && scenario != "width" && scenario != "closure" && scenario != "exchange") {
     return 2;
   }
   const std::string_view backend = argv[1];

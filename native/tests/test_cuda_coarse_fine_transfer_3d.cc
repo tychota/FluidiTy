@@ -382,6 +382,49 @@ TEST(CudaAdaptiveSimulate3D, PublishesCertifiedPlanarBandPlacement) {
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
+TEST(CudaAdaptiveSimulate3D, PublishesProjectedOwnerExchangeWithLateDeviceRollback) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedOwnerExchangeFixture3D(state, scene).ok());
+  LiquidStepOptions3D options;
+  options.capacities = {3, 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.maximum_step_duration = 0.125;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  const auto expect_device_state = [&](const LiquidState3D& expected) {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, expected);
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(0.125).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject projected owner exchange")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveOwnerExchange(0.125);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt) << scheduler->diagnostics().failure_code;
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  ASSERT_NO_FATAL_FAILURE(expect_device_state(state));
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = scheduler->AttemptWithAdaptiveOwnerExchange(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].mass, 0.1875);
+  EXPECT_DOUBLE_EQ(scheduler->committed().particles[1].mass, 0.1875);
+  ASSERT_NO_FATAL_FAILURE(expect_device_state(scheduler->committed()));
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaAdaptiveSimulate3D, PublishesEulerianOwnerAndReseedsDeviceEpoch) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
