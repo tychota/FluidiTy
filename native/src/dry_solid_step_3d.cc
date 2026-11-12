@@ -672,7 +672,19 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
     }
     particle.world_position = contact->world_position;
     particle.world_velocity = contact->stored_world_velocity;
-    particle.velocity_slopes = contact->contact_fraction.has_value() ? Mat3{} : particle_gather.fitted_velocity_slopes;
+    particle.velocity_slopes = particle_gather.fitted_velocity_slopes;
+    if (contact->contact_fraction.has_value()) {
+      particle.velocity_slopes = {};
+      if (compatible_floor) {
+        // Store the derivative of the same Coulomb velocity projection
+        // used by the swept floor contact at the incoming state.
+        particle.velocity_slopes = ProjectStationaryFloorVelocityGradient3D(
+            stored_velocity,
+            particle_gather.fitted_velocity_slopes,
+            settings.floor_friction
+        );
+      }
+    }
     particle.elastic_deformation = state.elastic_deformation;
     particle.log_plastic_jacobian = state.log_plastic_jacobian;
   }
