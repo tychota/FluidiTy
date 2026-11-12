@@ -123,6 +123,25 @@ TEST(LiquidBoundaryGeometry3D, SnowParticleSamplesDriveCutCellFreeze) {
   });
   ASSERT_NE(face, frozen->faces().end());
   ASSERT_TRUE(face->prescribed_wall_flux.has_value());
+  const auto loads = StagePlasticSolidPressureFace3D(grid.view(), *sampled, *face, 13.0, 5.0, 0.01);
+  ASSERT_TRUE(loads.ok()) << loads.status();
+  double impulse = 0.0;
+  double pressure_work = 0.0;
+  for (const auto& load : *loads) {
+    EXPECT_EQ(load.particle_id, 7);
+    EXPECT_DOUBLE_EQ(load.impulse.y, 0.0);
+    EXPECT_DOUBLE_EQ(load.impulse.z, 0.0);
+    impulse += load.impulse.x;
+    pressure_work += load.impulse.x * (2.0 + 4.0 * load.world_offset.y);
+  }
+  EXPECT_NEAR(impulse, 0.08 * face->blocked_area, 2e-14);
+  EXPECT_NEAR(pressure_work, 0.08 * *face->prescribed_wall_flux, 2e-14);
+  auto stale_face = *face;
+  stale_face.prescribed_wall_flux = *stale_face.prescribed_wall_flux + 0.1;
+  EXPECT_EQ(
+      StagePlasticSolidPressureFace3D(grid.view(), *sampled, stale_face, 13.0, 5.0, 0.01).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
 }
 
 TEST(LiquidBoundaryGeometry3D, SampledSolidPlateauIsClosed) {

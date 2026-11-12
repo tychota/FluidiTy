@@ -1,11 +1,13 @@
 #include "fluidity/host/plastic_solid_boundary_3d.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <tuple>
 #include <utility>
 
 #include "absl/status/status.h"
+#include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 
 namespace fluidity {
 namespace {
@@ -68,6 +70,14 @@ absl::StatusOr<PlasticSolidBoundarySamples3D> SamplePlasticSolidBoundary3D(
   if (!owners.ok()) {
     return owners.status();
   }
+  auto offsets = LiquidRecords3D<Vec3>::Create(liquid_corner_keys.size());
+  if (!offsets.ok()) {
+    return offsets.status();
+  }
+  const auto offset_extent = offsets->Resize(liquid_corner_keys.size());
+  if (!offset_extent.ok()) {
+    return offset_extent;
+  }
   const auto corner_extent = corners->Resize(liquid_corner_keys.size());
   if (!corner_extent.ok()) {
     return corner_extent;
@@ -127,8 +137,107 @@ absl::StatusOr<PlasticSolidBoundarySamples3D> SamplePlasticSolidBoundary3D(
     }
     corners->values()[ordinal] = {index, nearest_distance - support_radius, wall_velocity};
     owners->values()[ordinal] = nearest_particle->particle_id;
+    offsets->values()[ordinal] = nearest_offset;
   }
-  return PlasticSolidBoundarySamples3D{.corners = std::move(*corners), .particle_ids = std::move(*owners)};
+  return PlasticSolidBoundarySamples3D{
+      .corners = std::move(*corners),
+      .particle_ids = std::move(*owners),
+      .particle_offsets = std::move(*offsets)
+  };
+}
+
+absl::StatusOr<std::array<PlasticSolidPressureImpulse3D, 4>> StagePlasticSolidPressureFace3D(
+    SparseMacGridView3D grid,
+    const PlasticSolidBoundarySamples3D& samples,
+    const FrozenLiquidFace3D& face,
+    double tail_pressure,
+    double head_pressure,
+    double step_duration
+) {
+  if (!std::isfinite(step_duration) || step_duration <= 0 || !std::isfinite(tail_pressure)
+      || !std::isfinite(head_pressure) || samples.corners.size() != samples.particle_ids.size()
+      || samples.corners.size() != samples.particle_offsets.size()) {
+    return absl::Status(absl::StatusCode::kInvalidArgument, {});
+  }
+  const auto slot = grid.FaceSlot(face.face_index);
+  if (!slot.ok() || *slot != face.face_slot || !face.prescribed_wall_flux) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+
+  const auto corners = samples.corners.values();
+  const auto lattice = face.face_index.lattice_index;
+  const int normal_axis = static_cast<int>(face.face_index.axis);
+  std::array<int, 2> transverse_axes{};
+  int transverse_count = 0;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (axis != normal_axis) {
+      transverse_axes[transverse_count++] = axis;
+    }
+  }
+  std::array<std::size_t, 4> ordinals{};
+  std::array<double, 4> solid_distance{};
+  std::array<double, 4> normal_velocity{};
+  for (int corner = 0; corner < 4; ++corner) {
+    std::array<std::int32_t, 3> key{lattice.x, lattice.y, lattice.z};
+    for (int bit = 0; bit < 2; ++bit) {
+      if ((corner & (1 << bit)) != 0) {
+        auto& ordinate = key[transverse_axes[bit]];
+        if (ordinate == std::numeric_limits<std::int32_t>::max()) {
+          return absl::Status(absl::StatusCode::kOutOfRange, {});
+        }
+        ++ordinate;
+      }
+    }
+    const auto corner_key = CornerKey({key[0], key[1], key[2]});
+    const auto found = std::ranges::lower_bound(corners, corner_key, {}, [](const SolidCornerDistance3D& sample) {
+      return CornerKey(sample.corner_index);
+    });
+    if (found == corners.end() || CornerKey(found->corner_index) != corner_key) {
+      return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+    }
+    ordinals[corner] = static_cast<std::size_t>(found - corners.begin());
+    solid_distance[corner] = found->signed_distance;
+    normal_velocity[corner] = boundary_internal::CartesianComponents(found->wall_velocity)[normal_axis];
+  }
+
+  const double width = grid.geometry().cell_width;
+  const auto weights = boundary_internal::MeasureSampledSolidFaceWeights(width, solid_distance);
+  if (!weights.ok()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+  double blocked_area = 0;
+  double wall_flux = 0;
+  double flux_scale = 0;
+  for (int corner = 0; corner < 4; ++corner) {
+    const double contribution = (*weights)[corner] * normal_velocity[corner];
+    blocked_area += (*weights)[corner];
+    wall_flux += contribution;
+    flux_scale += std::abs(contribution);
+  }
+  constexpr double kRoundoffSlack = 64 * std::numeric_limits<double>::epsilon();
+  if (!std::isfinite(flux_scale) || !std::isfinite(face.blocked_area) || !std::isfinite(*face.prescribed_wall_flux)
+      || std::abs(face.blocked_area - blocked_area) > kRoundoffSlack * width * width
+      || std::abs(*face.prescribed_wall_flux - wall_flux) > kRoundoffSlack * flux_scale) {
+    return absl::Status(absl::StatusCode::kFailedPrecondition, {});
+  }
+  const auto forces = boundary_internal::ComputeSampledSolidFacePressureForces(*weights, tail_pressure, head_pressure);
+  if (!forces.ok()) {
+    return absl::Status(absl::StatusCode::kOutOfRange, {});
+  }
+
+  std::array<PlasticSolidPressureImpulse3D, 4> loads{};
+  constexpr std::array kComponents{&Vec3::x, &Vec3::y, &Vec3::z};
+  for (int corner = 0; corner < 4; ++corner) {
+    const auto ordinal = ordinals[corner];
+    const double impulse = (*forces)[corner] * step_duration;
+    if (!std::isfinite(impulse)) {
+      return absl::Status(absl::StatusCode::kOutOfRange, {});
+    }
+    loads[corner].particle_id = samples.particle_ids.values()[ordinal];
+    loads[corner].world_offset = samples.particle_offsets.values()[ordinal];
+    loads[corner].impulse.*kComponents[normal_axis] = impulse;
+  }
+  return loads;
 }
 
 }  // namespace fluidity
