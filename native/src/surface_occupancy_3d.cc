@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "absl/status/status.h"
+#include "fluidity/host/liquid_state_3d.h"
 
 namespace fluidity {
 namespace {
@@ -134,6 +135,110 @@ absl::StatusOr<SurfaceLattice3D> ApplySurfaceOccupancy3D(
     return coverage;
   }
   return result;
+}
+
+absl::StatusOr<SurfaceLattice3D> ApplyAdaptiveSurfaceOccupancy3D(
+    const SurfaceLattice3D& particle_density,
+    std::span<const std::uint8_t> particle_support,
+    const LiquidState3D& accepted,
+    std::size_t maximum_nodes
+) {
+  const auto& extent = particle_density.extent;
+  const auto [nx, ny, nz] = extent;
+  const auto node_count = particle_density.values.size();
+  const double spacing = particle_density.spacing;
+  const Vec3 origin = particle_density.origin;
+  if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) || !std::isfinite(spacing)
+      || spacing <= 0 || std::min({nx, ny, nz}) < 2 || nx > node_count / ny / nz || nx * ny * nz != node_count
+      || particle_support.size() != node_count) {
+    return absl::InvalidArgumentError("invalid adaptive surface lattice or support extent");
+  }
+  if (node_count > maximum_nodes) {
+    return absl::ResourceExhaustedError("surface occupancy node budget exceeded");
+  }
+  if (accepted.adaptive_cells.values().empty() || accepted.clock.substep_ordinal != 0) {
+    return absl::FailedPreconditionError("surface occupancy requires a completed adaptive frame");
+  }
+  const auto validated = ValidateLiquidState3D(accepted);
+  if (!validated.ok()) {
+    return validated;
+  }
+  if (!HasDistinctWorldNodes(particle_density)) {
+    return absl::OutOfRangeError("surface lattice cannot represent distinct world nodes");
+  }
+
+  std::vector<SurfaceOccupancyClass3D> classifications(node_count);
+  for (std::size_t node = 0; node < node_count; ++node) {
+    if (particle_support[node] > 1) {
+      return absl::InvalidArgumentError("invalid particle support classification");
+    }
+    if (particle_support[node] == 1) {
+      classifications[node] = SurfaceOccupancyClass3D::kSupportedInterface;
+    }
+  }
+
+  const std::array surface_origin{origin.x, origin.y, origin.z};
+  const auto state_origin = accepted.geometry.world_origin;
+  const std::array leaf_origin{state_origin.x, state_origin.y, state_origin.z};
+  const double finest_width = accepted.geometry.cell_width;
+  // Find the half-open node range by evaluating the exact coordinates used
+  // by the extractor. A node shared by adjacent leaves goes to the high leaf.
+  const auto lower_bound = [&](std::size_t axis, double boundary) {
+    std::size_t first = 0;
+    std::size_t last = extent[axis];
+    while (first < last) {
+      const auto middle = first + (last - first) / 2;
+      if (surface_origin[axis] + middle * spacing < boundary) {
+        first = middle + 1;
+      } else {
+        last = middle;
+      }
+    }
+    return first;
+  };
+  for (const auto& cell : accepted.adaptive_cells.values()) {
+    const double lattice_width = std::ldexp(1.0, cell.key.width_exponent);
+    const double leaf_width = std::ldexp(finest_width, cell.key.width_exponent);
+    const auto& inventory = cell.inventory;
+    SurfaceOccupancyClass3D classification;
+    if (cell.occupancy == LiquidCellOccupancy3D::kLiquid
+        && inventory.current_volume_m3 == leaf_width * leaf_width * leaf_width) {
+      classification = SurfaceOccupancyClass3D::kCertifiedLiquid;
+    } else if (cell.occupancy == LiquidCellOccupancy3D::kAir && inventory.mass_kg == 0
+               && inventory.reference_volume_m3 == 0 && inventory.current_volume_m3 == 0) {
+      classification = SurfaceOccupancyClass3D::kCertifiedAir;
+    } else {
+      continue;
+    }
+    const auto corner = cell.key.lower_corner;
+    const std::array indices{corner.x, corner.y, corner.z};
+    std::array<std::size_t, 3> first{};
+    std::array<std::size_t, 3> last{};
+    for (std::size_t axis = 0; axis < first.size(); ++axis) {
+      const double lower = std::fma(static_cast<double>(indices[axis]), finest_width, leaf_origin[axis]);
+      const double upper = std::fma(indices[axis] + lattice_width, finest_width, leaf_origin[axis]);
+      if (!std::isfinite(lower) || !std::isfinite(upper) || lower >= upper) {
+        return absl::OutOfRangeError("adaptive leaf world bounds are unrepresentable");
+      }
+      first[axis] = lower_bound(axis, lower);
+      last[axis] = lower_bound(axis, upper);
+    }
+    for (std::size_t x = first[0]; x < last[0]; ++x) {
+      for (std::size_t y = first[1]; y < last[1]; ++y) {
+        for (std::size_t z = first[2]; z < last[2]; ++z) {
+          auto& node = classifications[(x * ny + y) * nz + z];
+          if (node == SurfaceOccupancyClass3D::kUnknown) {
+            node = classification;
+          }
+        }
+      }
+    }
+  }
+  return ApplySurfaceOccupancy3D(
+      particle_density,
+      {.world_origin_m = origin, .spacing_m = spacing, .extent = extent, .classifications = classifications},
+      maximum_nodes
+  );
 }
 
 }  // namespace fluidity
