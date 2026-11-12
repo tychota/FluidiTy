@@ -446,7 +446,8 @@ absl::StatusOr<SurfaceFrame3D> DecodeSurfaceFrame3D(std::span<const std::uint8_t
         if (!detail::ValidCompositionEncoding(record)) {
           return absl::DataLossError("invalid shared surface composition record");
         }
-        SurfaceInterfaceComposition3D entry{.vertex_ordinal = record->vertex_ordinal()};
+        SurfaceInterfaceComposition3D entry{};
+        entry.vertex_ordinal = record->vertex_ordinal();
         detail::UnpackComposition(record, entry);
         target.side_compositions.push_back(entry);
       }
