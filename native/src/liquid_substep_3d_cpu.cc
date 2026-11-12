@@ -272,15 +272,16 @@ UpdateParticles(void*, const LiquidParticleUpdateInputs3D& inputs, std::span<Liq
   }
   return absl::OkStatus();
 }
-// Full-cell strain plus interior shear supplies natural tangential slip
-// at static walls. Moving no-slip wall rows and cut quadratures are separate.
-absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
-    void*,
+
+}  // namespace
+
+absl::StatusOr<MacViscousPressureProjection3D> liquid_step_internal::ProjectFullCellViscosity(
     SparseMacGridView3D grid,
     double step_duration,
     const LiquidPressureProblemView3D& problem,
     double dynamic_viscosity,
-    MacPressureSolverOptions3D options
+    MacPressureSolverOptions3D options,
+    ProjectViscousPressure3D project
 ) {
   const double width = grid.geometry().cell_width;
   const double full_area = width * width;
@@ -309,10 +310,9 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
   if (!owning_grid.ok()) {
     return owning_grid.status();
   }
-  return ProjectMacViscousPressure3D({*owning_grid, step_duration, problem.cells, problem.faces}, *strain, options);
+  return project({*owning_grid, step_duration, problem.cells, problem.faces}, *strain, options);
 }
 
-}  // namespace
 LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
   return {
       .context = nullptr,
@@ -441,7 +441,22 @@ LiquidSubstepBackend3D CpuLiquidSubstepBackend3D() {
              MacPressureWorkspace3D& workspace) {
             return ProjectMacPressure3D(grid, step_duration, problem, options, workspace);
           },
-      .project_viscous = ProjectFullCellViscosity,
+      .project_viscous =
+          [](void*,
+             SparseMacGridView3D grid,
+             double step_duration,
+             const LiquidPressureProblemView3D& problem,
+             double dynamic_viscosity,
+             MacPressureSolverOptions3D options) {
+            return liquid_step_internal::ProjectFullCellViscosity(
+                grid,
+                step_duration,
+                problem,
+                dynamic_viscosity,
+                options,
+                ProjectMacViscousPressure3D
+            );
+          },
       .gather =
           [](void*, const LiquidBoundaryGatherViewInputs3D& inputs, LiquidBoundaryWorkspace3D& workspace) {
             return GatherLiquidBoundaryParticles3D(inputs, workspace);

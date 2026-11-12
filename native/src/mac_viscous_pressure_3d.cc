@@ -349,9 +349,6 @@ absl::StatusOr<MacViscousPressureProjection3D> ProjectMacViscousPressureWithVelo
     MacPressureSolverOptions3D options,
     SolveViscousVelocity3D solve_velocity_block
 ) {
-  if (solve_velocity_block == nullptr) {
-    return absl::InvalidArgumentError("coupled pressure requires a velocity solver");
-  }
   if (options.max_iterations == 0 || options.max_iterations > kPressureIterationBudget) {
     return absl::InvalidArgumentError("invalid coupled pressure iteration budget");
   }

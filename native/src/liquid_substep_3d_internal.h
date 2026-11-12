@@ -1,10 +1,28 @@
 #pragma once
+#include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
 #include "liquid_isolated_drop_3d.h"
 namespace fluidity::liquid_step_internal {
 inline absl::Status Error(absl::StatusCode code) {
   return absl::Status(code, {});
 }
+using ProjectViscousPressure3D = absl::FunctionRef<absl::StatusOr<MacViscousPressureProjection3D>(
+    const MacPressureInputs3D&,
+    std::span<const MacStrainRow3D>,
+    MacPressureSolverOptions3D
+)>;
+
+// Builds full-cell strain rows and runs the chosen coupled pressure backend.
+// This geometry admits full or sealed faces with natural static-wall slip.
+// Partial cells and faces return Unimplemented. Errors carry no projection.
+absl::StatusOr<MacViscousPressureProjection3D> ProjectFullCellViscosity(
+    SparseMacGridView3D grid,
+    double step_duration,
+    const LiquidPressureProblemView3D& problem,
+    double dynamic_viscosity,
+    MacPressureSolverOptions3D options,
+    ProjectViscousPressure3D project
+);
 class OceanInletParticles3D {
  public:
   static absl::StatusOr<OceanInletParticles3D> Create(const OceanBoundarySettings3D& settings, double density);
