@@ -67,6 +67,17 @@ absl::Status GatherMac3D(
 absl::StatusOr<Mat3>
 NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, double first_lame_parameter);
 
+// Bounds continuous Neo-Hookean wave speed in m/s at reference density in
+// kg/m³. Material inputs match the stress law. Returns InvalidArgument for
+// invalid inputs, FailedPrecondition for an uncertified tangent, and
+// OutOfRange for unrepresentable arithmetic.
+absl::StatusOr<double> NeoHookeanAcousticSpeedBound3D(
+    Mat3 deformation_gradient,
+    double shear_modulus,
+    double first_lame_parameter,
+    double reference_density
+);
+
 // Replaces the owned normal face forces (newtons) with one elastic particle's
 // uncut stress contribution, using true physical basis derivatives. Positions
 // and support rules match BuildOwnedMacFaceStencil3D. Reference volume is in

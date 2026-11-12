@@ -265,8 +265,10 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     const ElasticBladeGridStep3D& settings,
     SolidInteractionCheckpoint3D& checkpoint
 ) {
-  if (!std::isfinite(settings.duration) || settings.duration <= 0.0 || checkpoint.elastic_particles.empty()
-      || checkpoint.elastic_particles.size() != checkpoint.sides.size()) {
+  const bool valid_acoustic_cfl =
+      std::isfinite(settings.acoustic_cfl) && settings.acoustic_cfl > 0.0 && settings.acoustic_cfl <= 1.0;
+  if (!valid_acoustic_cfl || !std::isfinite(settings.duration) || settings.duration <= 0.0
+      || checkpoint.elastic_particles.empty() || checkpoint.elastic_particles.size() != checkpoint.sides.size()) {
     return absl::InvalidArgumentError("invalid elastic grid step duration or particle state");
   }
   if (checkpoint.elastic_particles.size() > kLiquidBoundaryParticleCapacity3D
@@ -300,6 +302,20 @@ absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     );
     if (!stress.ok()) {
       return stress.status();
+    }
+    const double reference_density = particle.transfer.particle_mass / particle.reference_volume;
+    const auto wave_speed_bound = NeoHookeanAcousticSpeedBound3D(
+        particle.deformation_gradient,
+        settings.shear_modulus,
+        settings.first_lame_parameter,
+        reference_density
+    );
+    if (!wave_speed_bound.ok()) {
+      return wave_speed_bound.status();
+    }
+    const double acoustic_duration_limit = settings.acoustic_cfl * mac_grid.geometry().cell_width / *wave_speed_bound;
+    if (settings.duration > acoustic_duration_limit) {
+      return absl::FailedPreconditionError("elastic grid step exceeds the acoustic duration limit");
     }
     particles.push_back({.transfer = particle.transfer, .side_tag = side.side.sign, .affine_enabled = true});
     stresses.push_back(*stress);

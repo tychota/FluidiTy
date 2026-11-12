@@ -122,6 +122,35 @@ absl::Status DepositWithFaceAccumulator(
 
 using internal::GatherMacVelocityComponent;
 
+absl::StatusOr<double> ResolvedElasticVolumeRatio(Mat3 deformation_gradient) {
+  const Vec3 x = deformation_gradient.x_row;
+  const Vec3 y = deformation_gradient.y_row;
+  const Vec3 z = deformation_gradient.z_row;
+  const Vec3 cofactor{
+      y.y * z.z - y.z * z.y,
+      y.z * z.x - y.x * z.z,
+      y.x * z.y - y.y * z.x,
+  };
+  const double volume_ratio = Dot(x, cofactor);
+  if (!std::isfinite(volume_ratio)) {
+    return absl::OutOfRangeError("nonfinite elastic volume ratio");
+  }
+  // Bound cancellation in the cofactor expansion before taking log(J).
+  const double determinant_magnitude_bound = std::abs(x.x) * (std::abs(y.y * z.z) + std::abs(y.z * z.y))
+      + std::abs(x.y) * (std::abs(y.z * z.x) + std::abs(y.x * z.z))
+      + std::abs(x.z) * (std::abs(y.x * z.y) + std::abs(y.y * z.x));
+  if (!std::isfinite(determinant_magnitude_bound)) {
+    return absl::OutOfRangeError("nonfinite elastic determinant bound");
+  }
+  const double determinant_error_bound = (16.0 * std::numeric_limits<double>::epsilon()) * determinant_magnitude_bound
+      + 16.0 * std::numeric_limits<double>::denorm_min();
+  if (volume_ratio <= determinant_error_bound) {
+    return absl::InvalidArgumentError("elastic deformation requires a resolved positive determinant");
+  }
+
+  return volume_ratio;
+}
+
 }  // namespace
 
 absl::Status DepositMac3D(
@@ -266,32 +295,14 @@ NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, dou
       || shear_modulus <= 0.0 || first_lame_parameter < 0.0) {
     return absl::InvalidArgumentError("invalid Neo-Hookean input");
   }
+  const auto volume_ratio = ResolvedElasticVolumeRatio(deformation_gradient);
+  if (!volume_ratio.ok()) {
+    return volume_ratio.status();
+  }
   const Vec3 x = deformation_gradient.x_row;
   const Vec3 y = deformation_gradient.y_row;
   const Vec3 z = deformation_gradient.z_row;
-  const Vec3 cofactor{
-      y.y * z.z - y.z * z.y,
-      y.z * z.x - y.x * z.z,
-      y.x * z.y - y.y * z.x,
-  };
-  const double volume_ratio = Dot(x, cofactor);
-  if (!std::isfinite(volume_ratio)) {
-    return absl::OutOfRangeError("nonfinite elastic volume ratio");
-  }
-  // Bound cancellation in the cofactor expansion before taking log(J).
-  const double determinant_magnitude_bound = std::abs(x.x) * (std::abs(y.y * z.z) + std::abs(y.z * z.y))
-      + std::abs(x.y) * (std::abs(y.z * z.x) + std::abs(y.x * z.z))
-      + std::abs(x.z) * (std::abs(y.x * z.y) + std::abs(y.y * z.x));
-  if (!std::isfinite(determinant_magnitude_bound)) {
-    return absl::OutOfRangeError("nonfinite elastic determinant bound");
-  }
-  const double determinant_error_bound = (16.0 * std::numeric_limits<double>::epsilon()) * determinant_magnitude_bound
-      + 16.0 * std::numeric_limits<double>::denorm_min();
-  if (volume_ratio <= determinant_error_bound) {
-    return absl::InvalidArgumentError("elastic deformation requires a resolved positive determinant");
-  }
-
-  const double volumetric_stress = first_lame_parameter * std::log(volume_ratio);
+  const double volumetric_stress = first_lame_parameter * std::log(*volume_ratio);
   const double xy_stress = shear_modulus * Dot(x, y);
   const double xz_stress = shear_modulus * Dot(x, z);
   const double yz_stress = shear_modulus * Dot(y, z);
@@ -304,6 +315,44 @@ NeoHookeanKirchhoffStress3D(Mat3 deformation_gradient, double shear_modulus, dou
     return absl::OutOfRangeError("nonfinite Kirchhoff stress");
   }
   return kirchhoff_stress;
+}
+
+absl::StatusOr<double> NeoHookeanAcousticSpeedBound3D(
+    Mat3 deformation_gradient,
+    double shear_modulus,
+    double first_lame_parameter,
+    double reference_density
+) {
+  if (!IsFinite(deformation_gradient) || !std::isfinite(shear_modulus) || shear_modulus <= 0.0
+      || !std::isfinite(first_lame_parameter) || first_lame_parameter < 0.0 || !std::isfinite(reference_density)
+      || reference_density <= 0.0) {
+    return absl::InvalidArgumentError("invalid Neo-Hookean acoustic input");
+  }
+  const auto volume_ratio = ResolvedElasticVolumeRatio(deformation_gradient);
+  if (!volume_ratio.ok()) {
+    return volume_ratio.status();
+  }
+  const double volumetric_tangent = first_lame_parameter * (1.0 - std::log(*volume_ratio));
+  if (volumetric_tangent < -shear_modulus) {
+    return absl::FailedPreconditionError("elastic acoustic ellipticity cannot be certified");
+  }
+
+  // The infinity norm of F F^T bounds its largest eigenvalue, s_max^2.
+  const std::array rows{deformation_gradient.x_row, deformation_gradient.y_row, deformation_gradient.z_row};
+  double stretch_squared_bound = 0.0;
+  for (const Vec3 row : rows) {
+    double gram_row_sum = 0.0;
+    for (const Vec3 column : rows) {
+      gram_row_sum += std::abs(Dot(row, column));
+    }
+    stretch_squared_bound = std::max(stretch_squared_bound, gram_row_sum);
+  }
+  const double stiffness_bound = std::max(0.0, volumetric_tangent) + shear_modulus * (1.0 + stretch_squared_bound);
+  const double wave_speed_bound = std::sqrt(stiffness_bound) / std::sqrt(reference_density);
+  if (!std::isfinite(wave_speed_bound) || wave_speed_bound <= 0.0) {
+    return absl::OutOfRangeError("unrepresentable elastic wave speed");
+  }
+  return wave_speed_bound;
 }
 
 absl::Status DepositElasticStress3D(

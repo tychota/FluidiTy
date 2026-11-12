@@ -49,6 +49,7 @@ struct ElasticBladeGridStep3D {
   double shear_modulus;  // Pascals.
   double first_lame_parameter;  // Pascals.
   MacDepositQuantization3D quantization;
+  double acoustic_cfl = 0.5;  // Discrete safety factor in (0, 1].
   double minimum_face_mass = 0.0;  // Kilograms.
   double retained_velocity_fraction = 0.0;
   double friction_coefficient = 0.0;
@@ -66,7 +67,8 @@ struct ElasticBladeGridStepResult3D {
 // translating slab. Deposits compatible mass and momentum, adds the explicit
 // stress force, and completes old/new same-side histories for particle
 // acceptance. Faces changing side or entering the slab carry no new-time
-// donor mass. The caller controls the explicit time step. Contact results
+// donor mass. The step must satisfy dt <= acoustic_cfl * h / c_safe
+// for each particle. Contact results
 // are in particle order and failure preserves the entire checkpoint.
 absl::StatusOr<ElasticBladeGridStepResult3D> StepElasticBladeGrid3D(
     const SparseMacGrid3D& mac_grid,

@@ -552,6 +552,25 @@ TEST(MacTransfer3D, ElasticBladeStepBuildsHistoriesAndReplaysUniformTransport) {
   ASSERT_TRUE(bytes.ok()) << bytes.status();
   auto restored = DecodeSolidInteractionCheckpoint3D(*bytes);
   ASSERT_TRUE(restored.ok()) << restored.status();
+  const auto wave_speed = NeoHookeanAcousticSpeedBound3D(kIdentity, 2.0, 1.0, 8.0);
+  ASSERT_TRUE(wave_speed.ok()) << wave_speed.status();
+  ExpectNear(*wave_speed, std::sqrt(5.0 / 8.0));
+  auto stretched = kIdentity;
+  stretched.x_row.x = 2.0;
+  const auto stretched_speed = NeoHookeanAcousticSpeedBound3D(stretched, 2.0, 1.0, 8.0);
+  ASSERT_TRUE(stretched_speed.ok()) << stretched_speed.status();
+  ExpectNear(*stretched_speed, std::sqrt((11.0 - std::log(2.0)) / 8.0));
+  stretched.x_row.x = 32.0;
+  EXPECT_EQ(
+      NeoHookeanAcousticSpeedBound3D(stretched, 2.0, 1.0, 8.0).status().code(),
+      absl::StatusCode::kFailedPrecondition
+  );
+  auto oversized = settings;
+  oversized.duration = 2.0;
+  EXPECT_EQ(StepElasticBladeGrid3D(*grid, oversized, *restored).status().code(), absl::StatusCode::kFailedPrecondition);
+  const auto after_oversized = EncodeSolidInteractionCheckpoint3D(*restored);
+  ASSERT_TRUE(after_oversized.ok()) << after_oversized.status();
+  EXPECT_EQ(*after_oversized, *bytes);
   auto rejected_settings = settings;
   rejected_settings.quantization.declared_particle_capacity = 0;
   EXPECT_FALSE(StepElasticBladeGrid3D(*grid, rejected_settings, *restored).ok());
