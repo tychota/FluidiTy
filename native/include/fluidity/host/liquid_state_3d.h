@@ -13,6 +13,8 @@
 
 #include "absl/status/statusor.h"
 #include "fluidity/base/liquid_boundary_transfer_types_3d.h"
+#include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/liquid_remap_3d.h"
 
 namespace fluidity {
 
@@ -153,6 +155,29 @@ struct LiquidClock3D {
   std::uint64_t epoch = 0;  // Coherent version identity, advances once per accepted step.
   bool operator==(const LiquidClock3D&) const = default;
 };
+inline constexpr std::size_t kMaximumAdaptiveLiquidCells3D = 4096;
+inline constexpr std::size_t kMaximumAdaptiveLiquidFaces3D = 24576;
+
+// A graded leaf in canonical signed (z,y,x) lower-corner order. Inventory is
+// the extensive Eulerian owner in SI units; previous pressure is in Pa.
+struct LiquidAdaptiveCellState3D {
+  AdaptiveMacCellKey3D key{};
+  LiquidCellOccupancy3D occupancy = LiquidCellOccupancy3D::kLiquid;
+  LiquidRemapInventory3D inventory{};
+  double previous_pressure = 0;
+  bool operator==(const LiquidAdaptiveCellState3D& other) const;
+};
+
+// The record index is the global canonical subface slot reconstructed from the
+// accepted leaf keys, including exterior and sealed faces.
+struct LiquidAdaptiveFaceState3D {
+  double carrier_velocity = 0;  // Positive Cartesian normal, m/s.
+  LiquidFaceValidity3D validity = LiquidFaceValidity3D::kMissing;
+  std::int64_t side_tag = 0;
+  bool structurally_eligible = true;
+  bool operator==(const LiquidAdaptiveFaceState3D&) const = default;
+};
+
 struct LiquidState3D {
   UniformMacGeometry3D geometry{{0.0, 0.0, 0.0}, 1.0};
   LiquidClock3D clock;
@@ -164,6 +189,11 @@ struct LiquidState3D {
   LiquidRecords3D<LiquidCellState3D> cells;
   LiquidRecords3D<LiquidFaceState3D> faces;
   LiquidRecords3D<LiquidSourceState3D> sources;
+  // Nonempty adaptive_cells selects graded ownership. geometry names the finest
+  // lattice, and blocks/cells/faces are empty. The cells/faces capacity fields
+  // reserve the corresponding adaptive records in this mode.
+  LiquidRecords3D<LiquidAdaptiveCellState3D> adaptive_cells;
+  LiquidRecords3D<LiquidAdaptiveFaceState3D> adaptive_faces;
   bool operator==(const LiquidState3D&) const;
 };
 struct LiquidStateCapacities3D {

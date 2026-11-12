@@ -38,14 +38,20 @@ absl::Status Invalid() {
   return cache_detail::Error(absl::StatusCode::kInvalidArgument);
 }
 LiquidStateCapacities3D Counts(const LiquidState3D& state) {
-  return {state.particles.size(), state.blocks.size(), state.cells.size(), state.faces.size(), state.sources.size()};
+  return {
+      state.particles.size(),
+      state.blocks.size(),
+      std::max(state.cells.size(), state.adaptive_cells.size()),
+      std::max(state.faces.size(), state.adaptive_faces.size()),
+      state.sources.size(),
+  };
 }
 LiquidStateCapacities3D Counts(const wire::LiquidState* state) {
   return {
       state->particles()->size(),
       state->blocks()->size(),
-      state->cells()->size(),
-      state->faces()->size(),
+      std::max(state->cells()->size(), state->adaptive() ? state->adaptive()->cells()->size() : 0U),
+      std::max(state->faces()->size(), state->adaptive() ? state->adaptive()->faces()->size() : 0U),
       state->sources()->size(),
   };
 }
@@ -137,6 +143,24 @@ std::size_t Owner(const wire::LiquidState* state, const wire::Index3* index) {
 // decoded record owner. Stable particle order is checked for unique IDs, not sorted.
 absl::Status ValidateWireState(const wire::LiquidState* state, LiquidCacheLimits3D limits) {
   CACHE_TRY(BoundCounts(Counts(state), limits));
+  if ((state->schema_version() == 2) != (state->adaptive() != nullptr)) {
+    return cache_detail::Error(absl::StatusCode::kFailedPrecondition);
+  }
+  if (const auto* adaptive = state->adaptive()) {
+    if (adaptive->cells()->size() > kMaximumAdaptiveLiquidCells3D
+        || adaptive->faces()->size() > kMaximumAdaptiveLiquidFaces3D) {
+      return cache_detail::Error(absl::StatusCode::kResourceExhausted);
+    }
+    if (adaptive->cells()->size() == 0 || state->blocks()->size() != 0 || state->cells()->size() != 0
+        || state->faces()->size() != 0) {
+      return cache_detail::Corrupt();
+    }
+    for (const auto* face : *adaptive->faces()) {
+      if (!cache_detail::ValidBoolean(face, wire::AdaptiveFace::VT_STRUCTURALLY_ELIGIBLE)) {
+        return cache_detail::Corrupt();
+      }
+    }
+  }
   if (!cache_detail::Finite(cache_detail::Unpack(state->world_origin())) || !cache_detail::Positive(state->cell_width())
       || !cache_detail::ValidClock(cache_detail::Unpack(state->clock())) || state->next_particle_id() == 0) {
     return cache_detail::Corrupt();
@@ -251,6 +275,35 @@ absl::StatusOr<LiquidState3D> MaterializeState(const wire::LiquidState* state) {
   CACHE_TRY(cache_detail::Materialize(result.sources, state->sources(), [](const auto* source) {
     return LiquidSourceState3D{source->ordinal(), source->next_child(), source->fractional_remainder()};
   }));
+  if (const auto* adaptive = state->adaptive()) {
+    CACHE_TRY(cache_detail::Materialize(result.adaptive_cells, adaptive->cells(), [](const auto* cell) {
+      const auto* lower = cell->lower_corner();
+      return LiquidAdaptiveCellState3D{
+          .key = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = cell->width_exponent()},
+          .occupancy = static_cast<LiquidCellOccupancy3D>(cell->occupancy()),
+          .inventory =
+              {
+                  .mass_kg = cell->mass_kg(),
+                  .reference_volume_m3 = cell->reference_volume_m3(),
+                  .current_volume_m3 = cell->current_volume_m3(),
+                  .momentum_kg_m_per_s = cache_detail::Unpack(cell->momentum_kg_m_per_s()),
+                  .enthalpy_j = cell->enthalpy_j(),
+              },
+          .previous_pressure = cell->previous_pressure(),
+      };
+    }));
+    CACHE_TRY(cache_detail::Materialize(result.adaptive_faces, adaptive->faces(), [](const auto* face) {
+      return LiquidAdaptiveFaceState3D{
+          .carrier_velocity = face->carrier_velocity(),
+          .validity = static_cast<LiquidFaceValidity3D>(face->validity()),
+          .side_tag = face->side(),
+          .structurally_eligible = face->structurally_eligible(),
+      };
+    }));
+    if (!ValidateLiquidState3D(result).ok()) {
+      return cache_detail::Corrupt();
+    }
+  }
   return result;
 }
 absl::StatusOr<LiquidCacheBytes3D>
@@ -260,8 +313,9 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
   if (resume && (state.clock.substep_ordinal != 0 || !ValidResume(*resume, Counts(state)))) {
     return Invalid();
   }
-  const auto table_count =
-      state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size() + state.sources.size() + 1;
+  const bool adaptive = state.adaptive_cells.size() != 0;
+  const auto table_count = state.particles.size() + state.blocks.size() + state.cells.size() + state.faces.size()
+      + state.sources.size() + state.adaptive_cells.size() + state.adaptive_faces.size() + (adaptive ? 2 : 1);
   return cache_detail::Build<wire::LiquidState>(
       table_count,
       limits,
@@ -340,11 +394,58 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
               &packed_replay_reservations
           );
         }
+        flatbuffers::Offset<wire::AdaptiveState> adaptive_state_offset;
+        if (adaptive) {
+          const auto adaptive_cells = cache_detail::BuildVector<wire::AdaptiveCell>(
+              builder,
+              state.adaptive_cells.size(),
+              [&](std::size_t ordinal) {
+                const auto& cell = state.adaptive_cells[ordinal];
+                const auto lower = cell.key.lower_corner;
+                const auto& inventory = cell.inventory;
+                const wire::Index3 index(lower.x, lower.y, lower.z);
+                const auto momentum = cache_detail::Pack(inventory.momentum_kg_m_per_s);
+                return wire::CreateAdaptiveCell(
+                    builder,
+                    &index,
+                    cell.key.width_exponent,
+                    static_cast<wire::Occupancy>(cell.occupancy),
+                    inventory.mass_kg,
+                    inventory.reference_volume_m3,
+                    inventory.current_volume_m3,
+                    &momentum,
+                    inventory.enthalpy_j,
+                    cell.previous_pressure
+                );
+              }
+          );
+          if (!adaptive_cells.ok()) {
+            return adaptive_cells.status();
+          }
+          const auto adaptive_faces = cache_detail::BuildVector<wire::AdaptiveFace>(
+              builder,
+              state.adaptive_faces.size(),
+              [&](std::size_t ordinal) {
+                const auto& face = state.adaptive_faces[ordinal];
+                return wire::CreateAdaptiveFace(
+                    builder,
+                    face.carrier_velocity,
+                    static_cast<wire::Validity>(face.validity),
+                    face.side_tag,
+                    face.structurally_eligible
+                );
+              }
+          );
+          if (!adaptive_faces.ok()) {
+            return adaptive_faces.status();
+          }
+          adaptive_state_offset = wire::CreateAdaptiveState(builder, *adaptive_cells, *adaptive_faces);
+        }
         const auto origin = cache_detail::Pack(state.geometry.world_origin);
         const auto clock = cache_detail::Pack(state.clock);
         return wire::CreateLiquidState(
             builder,
-            1,
+            adaptive ? 2 : 1,
             0,
             &origin,
             state.geometry.cell_width,
@@ -356,7 +457,8 @@ EncodeState(const LiquidState3D& state, const LiquidResumeMetadata3D* resume, Li
             *cells,
             *faces,
             *sources,
-            resume_metadata_offset
+            resume_metadata_offset,
+            adaptive_state_offset
         );
       }
   );
@@ -465,7 +567,7 @@ absl::StatusOr<LiquidCacheBytes3D> EncodeLiquidState3D(const LiquidState3D& stat
   return EncodeState(state, nullptr, limits);
 }
 absl::StatusOr<LiquidState3D> DecodeLiquidState3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits);
+  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
   if (!state.ok()) {
     return state.status();
   }
@@ -478,7 +580,7 @@ EncodeLiquidCheckpoint3D(const LiquidState3D& state, const LiquidResumeMetadata3
 }
 absl::StatusOr<LiquidCheckpoint3D>
 DecodeLiquidCheckpoint3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
-  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits);
+  auto state = cache_detail::Verify<wire::LiquidState>(bytes, wire::LiquidStateIdentifier(), limits, 2);
   if (!state.ok()) {
     return state.status();
   }

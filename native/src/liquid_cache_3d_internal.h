@@ -192,8 +192,12 @@ Build(std::size_t table_count, LiquidCacheLimits3D limits, const char* file_iden
   return std::move(*memory);
 }
 template <typename Root>
-absl::StatusOr<const Root*>
-Verify(std::span<const std::uint8_t> bytes, const char* expected_file_identifier, LiquidCacheLimits3D limits) {
+absl::StatusOr<const Root*> Verify(
+    std::span<const std::uint8_t> bytes,
+    const char* expected_file_identifier,
+    LiquidCacheLimits3D limits,
+    std::uint32_t maximum_schema_version = 1
+) {
   if (bytes.size() > limits.maximum_bytes || bytes.size() >= FLATBUFFERS_MAX_BUFFER_SIZE) {
     return Error(absl::StatusCode::kResourceExhausted);
   }
@@ -209,7 +213,7 @@ Verify(std::span<const std::uint8_t> bytes, const char* expected_file_identifier
     return Corrupt();
   }
   const auto* root = flatbuffers::GetRoot<Root>(bytes.data());
-  if (root->schema_version() != 1) {
+  if (root->schema_version() == 0 || root->schema_version() > maximum_schema_version) {
     return Error(absl::StatusCode::kFailedPrecondition);
   }
   if (root->byte_length() != bytes.size()) {
