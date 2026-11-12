@@ -76,10 +76,77 @@ auto FaceKey(FaceIndex3D index) {
   return std::tuple(index.axis, index.lattice_index.z, index.lattice_index.y, index.lattice_index.x);
 }
 
+using liquid_step_internal::BalanceSealedLiquidDrift3D;
+using liquid_step_internal::LiquidVolumeDriftRate3D;
+using liquid_step_internal::Staging;
+
+// Check physical compatibility before adding any sensor correction.
+absl::Status ApplyIncompressibleDrift(
+    SparseMacGridView3D grid,
+    double step_duration,
+    LiquidSceneDrift3D controls,
+    Staging& staging,
+    MacPressureWorkspace3D& workspace,
+    LiquidPressureProblemView3D& problem
+) {
+  const auto components = workspace.ClassifyPhysicalComponents(grid, step_duration, problem);
+  if (!components.ok()) {
+    return components.status();
+  }
+  auto& corrected = *staging.drift_pressure_cells;
+  auto& sealed = *staging.sealed_drift_cells;
+  STEP_TRY(corrected.Resize(problem.cells.size()));
+  std::ranges::copy(problem.cells, corrected.values().begin());
+  const auto add_correction = [&](std::size_t cell, double correction) {
+    if (correction != 0.0) {
+      corrected[cell].target_divergence += correction;
+    }
+    return std::isfinite(corrected[cell].target_divergence) ? absl::OkStatus() : Error(absl::StatusCode::kOutOfRange);
+  };
+  for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+    if (std::ranges::binary_search(components->sealed_roots, components->roots[cell])) {
+      continue;
+    }
+    const auto correction =
+        LiquidVolumeDriftRate3D((*staging.drift_sensors)[cell], 0.0, controls.correction_time, controls.maximum_rate);
+    if (!correction.ok()) {
+      return correction.status();
+    }
+    STEP_TRY(add_correction(cell, *correction));
+  }
+  STEP_TRY(sealed.Resize(problem.cells.size()));
+  for (const std::size_t root : components->sealed_roots) {
+    std::size_t sensed_count = 0;
+    for (std::size_t cell = 0; cell < problem.cells.size(); ++cell) {
+      const auto& sensor = (*staging.drift_sensors)[cell];
+      if (components->roots[cell] != root || sensor.sampled_reference_volume == 0.0) {
+        continue;
+      }
+      const double raw_rate = -std::log(sensor.mean_volume_ratio) / controls.correction_time;
+      if (!std::isfinite(raw_rate)) {
+        return Error(absl::StatusCode::kOutOfRange);
+      }
+      sealed[sensed_count++] = {
+          .cell_ordinal = cell,
+          .fluid_volume = problem.cells[cell].fluid_volume,
+          .raw_rate = raw_rate,
+      };
+    }
+    const auto sensed_cells = sealed.values().first(sensed_count);
+    STEP_TRY(BalanceSealedLiquidDrift3D(sensed_cells, controls.maximum_rate));
+    for (const auto& cell : sensed_cells) {
+      STEP_TRY(add_correction(cell.cell_ordinal, cell.corrected_rate));
+    }
+  }
+  problem.cells = corrected.values();
+  return absl::OkStatus();
+}
+
 bool CanStageRegularCellTransport(const LiquidSceneInputs3D& scene, const AxisAlignedLiquidTank3D* tank) {
   return tank && tank->piston_velocity_x == 0 && std::holds_alternative<LiquidParticleSphereUnion3D>(scene.field)
       && scene.sources.empty() && scene.target_divergence == 0 && std::isinf(scene.bulk_modulus) && !scene.eos
-      && scene.surface_tension == 0 && scene.dynamic_viscosity == 0;
+      && (!scene.drift || scene.drift->maximum_rate == 0.0) && scene.surface_tension == 0
+      && scene.dynamic_viscosity == 0;
 }
 
 // Continue projected changes only when the new donors are a strict subset of
@@ -723,6 +790,11 @@ struct LiquidSubstepScheduler3D::Impl {
     // stages still execute, including transfer/forces and backend particle update.
     if (!links->cells.empty()) {
       auto pressure_problem = *links;
+      if (staging.drift_pressure_cells) {
+        STEP_TRY(
+            ApplyIncompressibleDrift(grid, step_duration, *scene.drift, staging, workspace.pressure(), pressure_problem)
+        );
+      }
       pressure_problem.seed_uniform_dirichlet_rest_pressure = exact_curvature.has_value();
       std::optional<MacViscousPressureProjection3D> viscous_projection;
       std::span<const double> projected_cell_pressures;
@@ -1135,7 +1207,8 @@ absl::StatusOr<LiquidSubstepScheduler3D> LiquidSubstepScheduler3D::Create(
       CanStageRegularCellTransport(scene, tank),
       needs_wetted_piston,
       needs_isolated_drop,
-      scene.drift && scene.drift->maximum_rate > 0.0
+      scene.drift && scene.drift->maximum_rate > 0.0,
+      scene.drift && scene.drift->maximum_rate > 0.0 && !scene.eos
   );
   if (!staging.ok()) {
     return staging.status();
@@ -1346,7 +1419,8 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrame(double target, LiquidProgres
           impl_->staging.regular_transport.has_value(),
           impl_->staging.wetted_piston.has_value(),
           impl_->staging.isolated_drop_pressure_faces.has_value(),
-          impl_->staging.drift_sensors.has_value()
+          impl_->staging.drift_sensors.has_value(),
+          impl_->staging.drift_pressure_cells.has_value()
       );
       if (!staging.ok()) {
         return staging.status();

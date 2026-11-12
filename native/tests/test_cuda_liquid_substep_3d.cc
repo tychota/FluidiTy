@@ -1187,6 +1187,28 @@ TEST(CudaLiquidSubstep3D, TaitComplianceMatchesCpu) {
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
+TEST(CudaLiquidSubstep3D, OpenIncompressibleDriftMatchesCpu) {
+  auto initial = Initial();
+  initial.particles[0].volume_ratio = 1.02;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
+  scene.world_acceleration = {};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 0.2, .maximum_rate = 0.3};
+  const auto options = Options();
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto gpu = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(gpu.ok()) << gpu.status();
+  auto cpu = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(cpu.ok()) << cpu.status();
+  const auto gpu_status = gpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(gpu_status.ok()) << gpu_status;
+  const auto cpu_status = cpu->AdvanceFrame(0.01);
+  ASSERT_TRUE(cpu_status.ok()) << cpu_status;
+  ExpectState(cpu->committed(), gpu->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
 TEST(CudaLiquidSubstep3D, FullCellViscosityMatchesCpuWithoutDeviceAllocation) {
   auto initial = Initial();
   initial.particles[0].world_position = {2.5, 2.5, 2.5};

@@ -76,7 +76,7 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
     }
   }
   if (scene.drift
-      && (!scene.eos || !detail::Positive(scene.drift->correction_time)
+      && ((!scene.eos && !std::isinf(scene.bulk_modulus)) || !detail::Positive(scene.drift->correction_time)
           || !detail::Nonnegative(scene.drift->maximum_rate))) {
     return Invalid();
   }
@@ -128,7 +128,8 @@ absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheL
   } else if (const auto* drop = std::get_if<LiquidIsolatedCovarianceDrop3D>(&scene.field)) {
     if (!detail::Positive(drop->physical_radius) || !detail::Positive(drop->seed_covariance_scale)
         || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
-        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.target_divergence != 0) {
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.drift
+        || scene.target_divergence != 0) {
       return Invalid();
     }
   } else {

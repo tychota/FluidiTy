@@ -62,7 +62,7 @@ struct LiquidSceneInputs3D {
   double surface_tension = 0;  // N/m.
   double ambient_pressure = 0;  // Pa, gauge.
   double bulk_modulus = std::numeric_limits<double>::infinity();  // Legacy constant modulus in Pa.
-  std::optional<LiquidSceneDrift3D> drift;  // Optional finite-EOS source for side-zero liquid.
+  std::optional<LiquidSceneDrift3D> drift;  // Optional particle-band correction for side-zero liquid.
   std::optional<LiquidSceneEos3D> eos;  // Requires infinite legacy modulus. Absence keeps legacy behavior.
   double target_divergence = 0;  // 1/s, pressure constraint source.
   double friction_coefficient = 0;

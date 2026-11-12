@@ -182,6 +182,68 @@ TEST(LiquidSubstep3D, ExpandedEosDensityTightensCapillaryStep) {
   ExpectIdenticalSerializedState(initial, scheduler->committed());
 }
 
+TEST(LiquidSubstep3D, IncompressibleDriftBalancesSealedBandAndChecksPhysicalSources) {
+  struct Observation {
+    std::vector<MacPressureFace3D> sealed_faces;
+    std::vector<MacPressureCell3D> corrected_cells;
+  } observation;
+  auto backend = CpuLiquidSubstepBackend3D();
+  backend.context = &observation;
+  backend.links = [](void* context,
+                     const FrozenLiquidBoundaryGeometryView3D& geometry,
+                     const LiquidPressureFields3D& fields,
+                     LiquidBoundaryWorkspace3D& workspace) {
+    auto result = CpuLiquidSubstepBackend3D().links(nullptr, geometry, fields, workspace);
+    if (result.ok()) {
+      auto& faces = static_cast<Observation*>(context)->sealed_faces;
+      faces.assign(result->faces.begin(), result->faces.end());
+      for (auto& face : faces) {
+        if (std::holds_alternative<DirichletMacPressureLink3D>(face.pressure_link)) {
+          face.open_area = 0.0;
+          face.pressure_link = SealedMacPressureLink3D{};
+        }
+      }
+      result->faces = faces;
+    }
+    return result;
+  };
+  backend.project = [](void* context,
+                       SparseMacGridView3D grid,
+                       double duration,
+                       const LiquidPressureProblemView3D& problem,
+                       MacPressureSolverOptions3D options,
+                       MacPressureWorkspace3D& workspace) {
+    auto& corrected = static_cast<Observation*>(context)->corrected_cells;
+    corrected.assign(problem.cells.begin(), problem.cells.end());
+    return CpuLiquidSubstepBackend3D().project(nullptr, grid, duration, problem, options, workspace);
+  };
+  auto initial = Initial(2);
+  initial.particles[1].world_position.x = 3.5;
+  initial.particles[0].volume_ratio = 2.0;
+  LiquidSceneInputs3D scene;
+  scene.field = LiquidHorizontalPlaneSurface3D{3.0};
+  scene.obstacle = AxisAlignedLiquidTank3D{2.0, 4.0, 2.0, 2.0, 4.0, 0.0};
+  scene.world_acceleration = {};
+  scene.drift = LiquidSceneDrift3D{.correction_time = 1.0, .maximum_rate = 0.3};
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  const auto advanced = scheduler->AdvanceFrame(0.01);
+  ASSERT_TRUE(advanced.ok()) << advanced;
+  ASSERT_EQ(observation.corrected_cells.size(), 4U);
+  EXPECT_NEAR(observation.corrected_cells[0].target_divergence, -0.3, 1e-14);
+  EXPECT_NEAR(observation.corrected_cells[1].target_divergence, 0.3, 1e-14);
+  EXPECT_EQ(observation.corrected_cells[2].target_divergence, 0.0);
+  EXPECT_EQ(observation.corrected_cells[3].target_divergence, 0.0);
+
+  observation.corrected_cells.clear();
+  scene.target_divergence = 0.01;
+  auto incompatible = LiquidSubstepScheduler3D::Create(initial, scene, Options(), backend);
+  ASSERT_TRUE(incompatible.ok()) << incompatible.status();
+  EXPECT_EQ(incompatible->AdvanceFrame(0.01).code(), absl::StatusCode::kFailedPrecondition);
+  EXPECT_TRUE(observation.corrected_cells.empty());
+  ExpectIdenticalSerializedState(initial, incompatible->committed());
+}
+
 TEST(LiquidSubstep3D, FiniteEosDriftUsesOnlySensedCells) {
   struct Observation {
     std::size_t sensed = 0;

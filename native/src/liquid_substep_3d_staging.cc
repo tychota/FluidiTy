@@ -268,7 +268,8 @@ absl::StatusOr<Staging> Staging::Create(
     bool needs_regular_transport,
     bool needs_wetted_piston,
     bool needs_isolated_drop,
-    bool needs_drift_sensors
+    bool needs_drift_sensors,
+    bool needs_incompressible_drift
 ) {
   if (capacities.cells > 4096 || capacities.faces > 24576 || capacities.particles > 1024) {
     return Error(absl::StatusCode::kResourceExhausted);
@@ -288,6 +289,10 @@ absl::StatusOr<Staging> Staging::Create(
   STEP_TRY(Reserve(staging.pressure_fields, capacities.cells, staging.reserved_bytes));
   if (needs_drift_sensors) {
     STEP_TRY(Reserve(staging.drift_sensors.emplace(), capacities.cells, staging.reserved_bytes));
+  }
+  if (needs_incompressible_drift) {
+    STEP_TRY(Reserve(staging.drift_pressure_cells.emplace(), capacities.cells, staging.reserved_bytes));
+    STEP_TRY(Reserve(staging.sealed_drift_cells.emplace(), capacities.cells, staging.reserved_bytes));
   }
   STEP_TRY(Reserve(staging.incident_velocities, capacities.faces, staging.reserved_bytes));
   STEP_TRY(Reserve(staging.gathered, capacities.particles, staging.reserved_bytes));
@@ -337,8 +342,9 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
     }
   }
   if (scene.drift
-      && (!scene.eos || !std::isfinite(scene.drift->correction_time) || scene.drift->correction_time <= 0.0
-          || !std::isfinite(scene.drift->maximum_rate) || scene.drift->maximum_rate < 0.0)) {
+      && ((!scene.eos && !std::isinf(scene.bulk_modulus)) || !std::isfinite(scene.drift->correction_time)
+          || scene.drift->correction_time <= 0.0 || !std::isfinite(scene.drift->maximum_rate)
+          || scene.drift->maximum_rate < 0.0)) {
     return Error(absl::StatusCode::kInvalidArgument);
   }
   const bool valid_step = std::isfinite(options.particle_energy_blend) && options.particle_energy_blend >= 0
@@ -384,8 +390,8 @@ ValidateScene(const LiquidState3D& initial, const LiquidSceneInputs3D& scene, co
     if (!std::isfinite(drop->physical_radius) || drop->physical_radius <= 0
         || !std::isfinite(drop->seed_covariance_scale) || drop->seed_covariance_scale <= 0
         || !std::holds_alternative<std::monostate>(scene.obstacle) || !scene.sources.empty()
-        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.target_divergence != 0
-        || initial.particles.size() != kMaxIsolatedDropParticles3D) {
+        || scene.surface_tension <= 0 || !std::isinf(scene.bulk_modulus) || scene.eos || scene.drift
+        || scene.target_divergence != 0 || initial.particles.size() != kMaxIsolatedDropParticles3D) {
       return Error(absl::StatusCode::kInvalidArgument);
     }
     for (const auto& particle : initial.particles.values()) {

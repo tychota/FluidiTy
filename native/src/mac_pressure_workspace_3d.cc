@@ -792,6 +792,25 @@ absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectWithP
   published_bank_ = candidate_bank;
   return result;
 }
+absl::StatusOr<MacPressureWorkspace3D::PhysicalComponents> MacPressureWorkspace3D::ClassifyPhysicalComponents(
+    SparseMacGridView3D grid,
+    double step_duration,
+    const LiquidPressureProblemView3D& problem
+) {
+  if (problem.cells.size() > cell_capacity_ || problem.faces.size() > face_capacity_) {
+    return absl::Status(absl::StatusCode::kResourceExhausted, {});
+  }
+  MacPressureScratch3D scratch(scratch_.values());
+  const auto prepared = Prepare({grid, step_duration, problem.cells, problem.faces}, scratch);
+  scratch_used_bytes_ = scratch.used();
+  const std::size_t projection_used = used_bytes() - scratch_used_bytes_;
+  high_water_bytes_ = std::max(high_water_bytes_, projection_used + scratch.high_water());
+  if (!prepared.ok()) {
+    return prepared.status();
+  }
+  return PhysicalComponents{prepared->component_ordinals(), prepared->gauge_cell_ordinals()};
+}
+
 absl::StatusOr<MacPressureProjectionView3D> MacPressureWorkspace3D::ProjectPrepared(
     const pressure_internal::PreparedMacPressureSystem3D& system,
     MacPressureSolverOptions3D options

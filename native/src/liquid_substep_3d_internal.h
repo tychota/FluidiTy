@@ -71,6 +71,8 @@ struct Staging {
   LiquidRecords3D<LiquidPrescribedWallSample3D> new_walls;
   LiquidRecords3D<LiquidPressureCellFields3D> pressure_fields;
   std::optional<LiquidRecords3D<CellVolumeRatioSensor3D>> drift_sensors;
+  std::optional<LiquidRecords3D<MacPressureCell3D>> drift_pressure_cells;
+  std::optional<LiquidRecords3D<SealedLiquidDriftCell3D>> sealed_drift_cells;
   LiquidRecords3D<double> incident_velocities;
   LiquidRecords3D<LiquidBoundaryParticleGather3D> gathered;
   LiquidRecords3D<double> particle_distances;
@@ -92,7 +94,8 @@ struct Staging {
       bool needs_regular_transport = false,
       bool needs_wetted_piston = false,
       bool needs_isolated_drop = false,
-      bool needs_drift_sensors = false
+      bool needs_drift_sensors = false,
+      bool needs_incompressible_drift = false
   );
 };
 bool Finite(Vec3 value);

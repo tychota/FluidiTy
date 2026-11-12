@@ -72,6 +72,19 @@ class MacPressureWorkspace3D {
       const pressure_internal::PreparedMacPressureSystem3D& system,
       MacPressureSolverOptions3D options = {}
   );
+  struct PhysicalComponents {
+    std::span<const std::size_t> roots;  // Component root for each input cell.
+    std::span<const std::size_t> sealed_roots;  // Unanchored roots in ascending order.
+  };
+  // Validates the uniform problem including physical source and wall-flux
+  // compatibility. Inputs follow the uniform projection contract and are
+  // disjoint from scratch. Results borrow scratch until its next use or owner
+  // move/destruction. Leaves previously published projections intact.
+  absl::StatusOr<PhysicalComponents> ClassifyPhysicalComponents(
+      SparseMacGridView3D grid,
+      double step_duration,
+      const LiquidPressureProblemView3D& problem
+  );
   // Exact reservation returned by QueryMacPressureWorkspaceBytes3D.
   MacPressureWorkspaceBytes3D bytes() const {
     return bytes_;

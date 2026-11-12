@@ -88,6 +88,7 @@ GPU_OPERATOR_MEMCHECK_CASES = {
     *GPU_SUBSTEP_CASES,
     "CudaLiquidSubstep3D.FullCellViscosityMatchesCpuWithoutDeviceAllocation",
     "CudaLiquidSubstep3D.TaitComplianceMatchesCpu",
+    "CudaLiquidSubstep3D.OpenIncompressibleDriftMatchesCpu",
     *GPU_WETTED_PISTON_CASES,
     GPU_BOUNDARY_TRANSFER_3D_CASE,
     GPU_BOUNDARY_COUPLED_3D_CASE,
