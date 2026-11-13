@@ -177,7 +177,8 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
         }
         return absl::OkStatus();
       }
-      current = runtime.Allocate(staged.faces.size(), face_results);
+      current = parallel_deposit ? runtime.AllocateZeroed(staged.faces.size(), face_results)
+                                 : runtime.Allocate(staged.faces.size(), face_results);
       if (!current.ok()) {
         return current;
       }
@@ -190,10 +191,6 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
         if (!current.ok()) {
           return current;
         }
-        current = cuda_internal::CheckCuda(
-            cudaMemsetAsync(face_results, 0, std::span(staged.face_results).size_bytes(), runtime.stream()),
-            "Initialize boundary deposit output"
-        );
       } else {
         current = runtime.Allocate(1, report);
       }
