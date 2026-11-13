@@ -7248,3 +7248,29 @@ time passes both bounds. The temporary fixture was restored.
 
 The final argument selects the temporarily extended diagnostic
 mode. In the unmodified runner it selects 3 s.
+
+### Check long-horizon persistence across the sand matrix
+
+Extend the other three native column cases on 3008848 with the
+same 12 s endpoint and exact 3 s sampling boundaries.
+
+| Case | Angle at 3 s | 6 s | 9 s | 12 s | Radius at 3–12 s (m) |
+|---|---:|---:|---:|---:|---:|
+| Coarse | 34.328° | 28.831° | 25.319° | 21.948° | 0.168211 |
+| Fine | 31.443° | 25.812° | 22.605° | 19.604° | 0.159557 |
+| Fine half-step | 34.694° | 30.870° | 27.988° | 25.473° | 0.156304 |
+
+Both fine cases pass the angle and radius checks at 3 s and
+fall below 30° by 9 s. The outermost radius stays fixed to
+the reported precision in these three runs while maximum
+height falls throughout. With the preceding coarse half-step
+result, all four angles are below 30° by 12 s. The result
+points to late height loss as a common failure across the
+matrix. The temporary fixture was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-coarse-long-horizon-bin'
+foreach ($case in 'coarse', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
