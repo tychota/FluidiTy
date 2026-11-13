@@ -8646,3 +8646,19 @@ foreach ($variant in 'single-strain', 'single-strain-refined') {
   & "out/pr-m5-sand-affine/out/sand-affine-$variant-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-single-particle-strain
 }
 ```
+
+### Clamp the wall-face normal velocity in the stationary strain control
+
+Repeat the one-second stationary particle probe with incoming normal
+velocity clamped on grid faces exactly at the floor. At 1 ms, grid
+support rises from 0.067010 N to 0.924153 N and swept support falls
+from 0.932990 N to 0.075847 N. Their sum remains 1 N. The final
+elastic yy entry and Jacobian reproduce the unclamped values to
+12 significant digits at all four timesteps. The clamp changes
+the transport and impulse partition while the deformation
+reconstruction already assigns zero velocity to the wall face.
+The temporary solver and fixture edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-single-strain-clamp-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
+```
