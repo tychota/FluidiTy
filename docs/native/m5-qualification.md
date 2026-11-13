@@ -8620,3 +8620,29 @@ This minimal native case reproduces the two support paths and
 exhibits duration-proportional impulse from rest. It supplies a
 reference for testing changes to wall transfer before rerunning
 the pile. The temporary fixture was restored. Q-SAND remains open.
+
+### Measure deformation drift for the stationary wall particle
+
+Extend the compressed single-particle control on c58b4ba to
+one second under gravity −1 m/s². Keep the same initial stress.
+In each run the final particle height and normal velocity are zero.
+
+| Timestep (ms) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 1 | 0.949494657882 | 0.857043687601 |
+| 0.5 | 0.949747022563 | 0.857209061712 |
+| 0.25 | 0.949873434515 | 0.857291960170 |
+| 0.125 | 0.949936698045 | 0.857333462395 |
+
+The initial yy entry is 0.95 and the initial Jacobian is
+0.857375. Halving the step approximately halves the drift
+in each quantity at fixed physical time. The static particle
+therefore gives a small reproducible strain-drift case even
+with exact zero normal translation at accepted endpoints.
+The temporary source was restored.
+
+```powershell
+foreach ($variant in 'single-strain', 'single-strain-refined') {
+  & "out/pr-m5-sand-affine/out/sand-affine-$variant-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-single-particle-strain
+}
+```
