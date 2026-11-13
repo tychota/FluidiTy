@@ -11435,3 +11435,13 @@ The native compatible-floor matrix exits 1. Only the coarse
 nominal angle meets the band. All four cases meet the radius,
 short drift and kinetic-energy bounds. The fine half-step
 keeps flattening despite the compatible transfer.
+
+
+The parallel owning CUDA transfer candidate at a03f8ee
+ran the same six-second command in 374 s of wall time,
+while the original CUDA matrix was still running on the
+same device. The optimized matrix exits 1. All four
+geometry, short drift, and last-second drift lines match
+the native output at printed precision. This duration is
+a shared-device observation and is not a controlled
+before-and-after speedup measurement.
