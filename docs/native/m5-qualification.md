@@ -12429,3 +12429,28 @@ all four dense angles and radii pass at 3 s, while both dense
 half-step cases fail persistence. The sparse cases all miss
 the angle band at 6 s. CUDA was untested and the source edit
 was restored.
+
+#### Combine above-floor affine attenuation and resident compression with rotation
+
+On 3c582c1, apply both preceding controls from the sections
+on above-floor APIC expansion and incident rotation with
+resident compression. The deposit attenuation is unchanged
+and the deformation correction applies only at zero-fraction
+ordinary-floor granular hits. Build the native dry-scene
+target and run without arguments, with
+`--q-sand-column-long-settle 6`, and with
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle | Sparse final drift | Dense angle | Dense radius (m) | Dense final drift |
+|---|---:|---:|---:|---:|---:|
+| Coarse | 42.163343° | 0.800365° | 37.025709° | 0.156213 | 0.409451° |
+| Fine | 37.375190° | 0.536487° | 35.655646° | 0.163239 | 0.813339° |
+| Coarse half-step | 33.766763° | 0.202970° | 35.132700° | 0.137850 | 6.222385° |
+| Fine half-step | 35.735615° | 0.205914° | 32.966197° | 0.148634 | 5.739108° |
+
+All three commands exit 1. The default angle is 51.541239°.
+Every sparse final drift is below one degree, but three
+angles overshoot. Dense half-step drift remains above five
+degrees. The combined control therefore does not address
+the dense persistence failure. CUDA was untested and the
+temporary source edit was restored.
