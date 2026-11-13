@@ -7082,3 +7082,32 @@ foreach ($variant in 'wall-face-clamp-trace', 'wall-face-cap-only') {
   }
 }
 ```
+
+### Clamp normal velocity only for the compatible PIC gather
+
+On 3008848, make a copy of the post-traction velocity field and
+zero incoming normal velocity on occupied faces exactly on the
+floor. Use the copy for compatible PIC advection and stored
+translation. The unmodified post-traction field supplies the
+deformation gradient and APIC fit. Account for the normal
+stopping impulse in the wall momentum budget.
+
+| Native case | Outcome |
+|---|---|
+| Coarse | 3.945917° envelope, 0.354413 m radius at 3 s |
+| Coarse half-step | 6.265034° envelope, 0.362445 m radius at 3 s |
+| Fine | FailedPrecondition at step 773 |
+| Fine half-step | FailedPrecondition at step 2555 |
+
+The two completed coarse runs spread to more than twice the
+allowed radius. Their paired cut stress work residual stays
+within 1.4e-16 J. Keeping the work identity alone therefore
+does not prevent spreading when the two velocity fields diverge.
+The temporary code was restored and Q-SAND stays open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-advection-clamp-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
