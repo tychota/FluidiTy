@@ -12068,3 +12068,32 @@ The steepening seen with rotation-only deposition also occurs
 with the full diagonal mean, which retains trace and shear.
 Averaging the horizontal entries alone has a much smaller effect.
 CUDA and dense sampling were untested. Both source edits were restored.
+
+#### Separate collapse and settlement in granular APIC diagonal averaging
+
+On 2d068b4, repeat the ordinary-floor sparse six-second matrix.
+Immediately before each step, average the three diagonal entries
+of the input affine slopes, preserving trace and off-diagonal
+entries. Apply this change either on steps starting before
+0.75 s or on steps starting at or after 0.75 s. Use the
+unmodified solver, initial conditions and acceptance checks.
+Build the native dry-scene executable and run it with
+`--q-sand-column-long-settle 6` for each time window.
+
+| Case | Baseline at 6 s | Before 0.75 s only | From 0.75 s only |
+|---|---:|---:|---:|
+| Coarse | 33.842809° | 29.946711° | 33.316463° |
+| Fine | 23.424520° | 22.903833° | 21.892961° |
+| Coarse half-step | 17.104058° | 24.077650° | 16.984032° |
+| Fine half-step | 13.060319° | 22.688298° | 14.306082° |
+
+Early averaging produces 60.86°, 58.93°, 66.83° and 65.62°
+at 0.75 s in the same order as the table. By six seconds
+those piles have fallen below 30°. Late averaging starts
+from the baseline 0.75 s state and misses the final angle
+band in three cases. The coarse case ends in band but
+drifts 1.514891° in the final approximately one-second
+window. Both commands exit 1. The early control raises
+the two half-step final angles by 6.97° and 9.63°, while
+late averaging changes them by at most 1.25°. The fixture
+edit was restored. CUDA and dense sampling were untested.
