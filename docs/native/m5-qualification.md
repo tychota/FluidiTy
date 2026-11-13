@@ -8042,3 +8042,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Test the energy blend with compatible grid history
+
+On 255739e, use the compatible PIC weights for both pre-force
+and post-contact grid velocity. Reuse the existing momentum-
+corrected retained translation blend at energy 0.6. Keep the
+existing support eligibility filter, particle advection and
+paired stress transfer.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.807934° | 0.166554 |
+| Coarse half-step | 38.295968° | 0.159574 |
+| Fine | 31.108506° | 0.156379 |
+| Fine half-step | 33.609119° | 0.157328 |
+
+Both fine cases pass. The coarse half-step angle is 2.21° lower
+than baseline and remains above 35°. The coarse nominal radius
+remains above 0.16 m. The absolute cut work residual is at most
+1.3e-16 J. This tests retained translation in the existing
+contact path. The temporary solver edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-compatible-energy-blend-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
