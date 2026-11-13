@@ -6915,3 +6915,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Gather deformation before the wall traction correction
+
+On 3008848, reconstruct the ghost velocities for the deformation
+gradient from the field after stress and gravity, before the grid
+applies tangential wall traction. Keep the fully corrected field
+for PIC advection and APIC storage. Use the original 63-particle
+column with a 0.10 m release gap.
+
+| Native case at 3 s | Envelope | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 35.544793° | 0.147847 | 0.221276 |
+| Coarse half-step | 39.943048° | 0.139890 | 0.143500 |
+| Fine | 31.512106° | 0.149593 | 0.212256 |
+| Fine half-step | 35.415479° | 0.146974 | 0.118880 |
+
+All four radii fall within the declared interval. The fine nominal
+run passes; the other three exceed 35°. The pre-traction gradient
+and post-traction stress work use different velocity fields, so
+this diagnostic is insufficient to qualify their work identity.
+The experimental change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-pre-traction-gradient-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
