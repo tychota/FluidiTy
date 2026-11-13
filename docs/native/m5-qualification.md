@@ -11076,3 +11076,28 @@ The default native dry scene passes. Both extended matrices
 fail. Both fine cases cross below 30° between 3 and 6 s,
 and the coarse nominal case remains above 35°. This native
 control was not run on CUDA. Temporary edits were restored.
+
+
+#### Measure single-particle sensitivity of the envelope
+
+On 9db511b, run the unchanged native three-second column
+matrix. At the final accepted state, omit each of the 63
+particles in turn and recompute both maxima and the same
+atan2 envelope. Record the minimum and maximum of the 63
+estimates. This measures sensitivity to a single sampled
+particle in a fixed state. It does not measure variation
+between particle samplings of the simulation.
+
+| Case | Full sample | Leave-one-out range |
+|---|---:|---:|
+| Coarse | 30.519543° | 22.897593–30.519543° |
+| Fine | 23.904249° | 19.776255–23.904249° |
+| Coarse half-step | 22.853454° | 17.244575–22.853454° |
+| Fine half-step | 20.811628° | 17.042990–20.811628° |
+
+The coarse pass has a 0.52° margin over the lower bound
+and its estimate falls by 7.62° on a single omission.
+The three other cases remain below the band for every
+omission. The full-sample checks are unchanged and the
+native matrix fails. CUDA was untested for this trace.
+The temporary fixture edit was restored.
