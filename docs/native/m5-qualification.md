@@ -7395,3 +7395,27 @@ source of repeated loading. The temporary trace was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-column-return-height-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Reset carried motion once at the late settlement boundary
+
+On 3008848, run the native fine half-step column to 12 s.
+At 3 s, clear stored translation and affine velocity slopes
+once. Preserve particle positions and material history.
+Account for the reset as an external impulse in the vertical
+momentum check.
+
+| Time (s) | Baseline envelope | Envelope after reset |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 30.873008° |
+| 9 | 27.988015° | 27.990623° |
+| 12 | 25.473317° | 25.474255° |
+
+The final radius is unchanged at printed precision and the
+final angle differs by less than 0.001°. The late height loss
+persists when the state at 3 s starts from rest. The temporary
+fixture change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-motion-reset-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
