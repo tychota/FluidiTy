@@ -9476,3 +9476,26 @@ paired stress-work residual is 8.39e-17 J or less.
 Run the same experimental native binary with
 `--q-sand-symmetric-affine-decay 0 fine-half all 24 half`.
 The isolated tracked sources are clean.
+
+### Compare three late timesteps from one wall-anchored pile
+
+Use the same native wall-anchored binary and the same formed
+pile at 3 s. Double the late step and compare with the
+constant and halved runs. The radius is 0.154708 m in all
+three runs from 3 to 24 s.
+
+| Late timestep (ms) | Envelope at 24 s | Height loss from 3 to 24 s (mm) |
+|---:|---:|---:|
+| 0.390625 | 31.969522° | 21.282 |
+| 0.781250 | 28.418463° | 34.125 |
+| 1.562500 | 22.311591° | 54.353 |
+
+Each doubling increases cumulative height loss by about 60%
+over the same elapsed time. The larger step takes fewer
+updates and produces more creep, ruling out a constant loss
+per update for these runs. The result alone leaves the
+small-timestep limit undetermined.
+
+Run `--q-sand-symmetric-affine-decay 0 fine-half all 24 double`
+with the existing experimental executable. It exits 1 on
+the angle bound and gives a stress-work residual of −1.03e-16 J.
