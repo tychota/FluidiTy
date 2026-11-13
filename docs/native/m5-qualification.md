@@ -12097,3 +12097,32 @@ window. Both commands exit 1. The early control raises
 the two half-step final angles by 6.97° and 9.63°, while
 late averaging changes them by at most 1.25°. The fixture
 edit was restored. CUDA and dense sampling were untested.
+
+#### Separate floor and elevated stress in the six-second apex support probe
+
+On 555595b, copy each ordinary-floor sparse state at six seconds
+and clear translation and affine slopes. Identify the highest
+particle in the original state. For each copy, keep all elastic
+deformations, keep only those starting at y <= 1e-8 m, keep only
+those above that height, or reset them all. Set each discarded
+elastic deformation to the identity and preserve plastic volume,
+positions, and mass. Advance each copy one step with the original
+duration, gravity, floor friction and acoustic CFL. Divide the
+apex's vertical stored velocity by duration. Run the native
+dry-scene executable with `--q-sand-column-long-settle 6`.
+
+| Case | All stress (m/s²) | Floor only (m/s²) | Elevated only (m/s²) | Zero stress (m/s²) |
+|---|---:|---:|---:|---:|
+| Coarse | 1.598239 | 0.890146 | -9.101908 | -9.810000 |
+| Fine | -0.328745 | -0.328745 | -9.810000 | -9.810000 |
+| Coarse half-step | -4.654775 | -4.654775 | -9.810000 | -9.810000 |
+| Fine half-step | -6.243399 | -6.243399 | -9.810000 | -9.810000 |
+
+Floor particles provide all measured stress support for the
+three shallow apex particles. That support ranges from 3.57 to
+9.48 m/s² against 9.81 m/s² gravity. The coarse nominal
+apex also receives 0.71 m/s² from elevated stress. The probe
+measures the response of the existing discrete path from rest.
+The four original angles reproduce the baseline and the command
+exits 1. CUDA and dense sampling were untested. The fixture
+edit was restored.
