@@ -6321,3 +6321,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain only skew wall-normal cross derivatives
+
+On 3008848, replace the xy/yx and zy/yz pairs of stored
+affine derivatives with their skew parts after wall contact
+processing. This leaves diagonal derivatives and the paired
+stress/deformation transfer in place. The operation can
+reintroduce individual entries previously cleared by the
+fallback or wall projection. Both default dry-scene tests
+pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 28.767140° | 0.187589 |
+| Coarse half-step | 36.478565° | 0.169735 |
+| Fine | 25.848083° | 0.182295 |
+| Fine half-step | 29.065959° | 0.175760 |
+
+All four radii increase and exceed the radius limit. Both
+fine passes are lost. The experimental source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-skew-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
