@@ -4638,3 +4638,32 @@ $b = 'out/build/m5-main-d6e8c6e-release'
 & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle
 & "$b/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle
 ```
+
+### Compare the envelope with quadrant slopes on the clearing candidate
+
+Enable the existing FitSandSurface diagnostic for the original
+63-particle release by removing its sampling multiplier guard.
+Keep the original acceptance estimator and thresholds. Both
+default dry-scene tests pass, and the extended native results
+retain their previous geometry at printed precision.
+
+| Case at 3 s | Envelope | Signed quadrant surface slopes |
+|---|---:|---:|
+| Coarse | 34.329576° | −29.244900° to 0° |
+| Coarse half-step | 40.501234° | −53.356394° to −41.730394° |
+| Fine | 31.443051° | −21.608041° to 0° |
+| Fine half-step | 34.693822° | −38.218587° to −6.538925° |
+
+All four quadrants meet the minimum bin count in each case.
+The spread between quadrant fits and the envelope, including
+in the two passing fine cases, shows that the sparse release
+gives weak evidence for a uniform surface slope. The quadrant
+range combines pile shape and sampling effects. The source
+was restored after linking. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-surface-audit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
