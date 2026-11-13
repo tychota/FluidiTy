@@ -5947,3 +5947,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Activate the floor mask within one quadratic support radius
+
+On 3008848, activate the floor mask for particles below
+1.5 cell widths plus contact tolerance. Keep the stress
+transpose, traction and swept contact. Both default dry-scene
+targets fail without an assertion label.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 38.409591° | 0.195349 |
+| Coarse half-step | 43.557439° | 0.198574 |
+| Fine | 33.778061° | 0.178510 |
+| Fine half-step | 42.372202° | 0.181372 |
+
+All four extended native runs finish and exceed the radius
+limit. Particle sweep work falls in magnitude in every case.
+Cut stress work residual remains below 8e-16 J. The mask
+changes the transfer for particles above the contact plane
+and does not resolve Q-SAND. The source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-geometric-mask-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
