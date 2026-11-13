@@ -5866,3 +5866,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Accumulate the Coulomb impulse on the clearing candidate
+
+On 3008848, run eight alternating block-coordinate sweeps.
+For each reaction point subtract its previous impulse
+contribution from the local velocity, solve over the full
+Coulomb disk and scatter the impulse difference. The impulse
+stored at each point stays inside one disk across sweeps.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.755154° | 0.166721 |
+| Coarse half-step | 40.852828° | 0.154997 |
+| Fine | 31.387507° | 0.158873 |
+| Fine half-step | 34.667450° | 0.155669 |
+
+Compared with the eight equal-cap sweeps, each radius changes
+by less than 0.35 mm. Both fine cases pass and both coarse
+failures persist. The fixed sweep count supplies no convergence
+certificate. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-accumulated-traction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
