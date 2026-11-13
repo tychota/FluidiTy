@@ -8581,3 +8581,26 @@ restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-reversed-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Keep the unprojected APIC slope after swept contact
+
+On c58b4ba, keep the compatible-floor fitted slope when a
+particle hits the floor. Preserve the swept velocity update,
+deformation gather and stress transpose. Run the native
+fine half-step to 12 s.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 34.501934° | 0.161718 |
+| 6 | 30.693454° | 0.161718 |
+| 9 | 27.664889° | 0.161718 |
+| 12 | 25.355121° | 0.161718 |
+
+The apex loses 34.52 mm after 3 s, compared with 33.74 mm
+with projection. The radius exceeds the limit and the angle
+continues to fall below 30°. The temporary solver edit was
+restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-no-affine-wall-projection-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
