@@ -11218,3 +11218,26 @@ other particles remain possible. In all four cases the last
 first crossing occurs before 1.4 s. The matrix reproduces
 the baseline geometry and exits 1. CUDA was untested and
 the temporary fixture edit was restored.
+
+
+#### Increase horizontal force regularization for the dense pile
+
+On 30b8c8b, increase the stress acceleration denominator
+floor from 1e-4 to 1e-3 times the minimum particle mass
+on granular x and z faces. Keep the vertical denominator,
+APIC deposit, and wall update unchanged. Repeat the native
+dense column command with the four end times set to 3 s.
+
+| Case | Angle | Radius (m) | Omitted stress impulse L1 (N·s) |
+|---|---:|---:|---:|
+| Coarse | 29.701663° | 0.170304 | 0.000261082 |
+| Fine | 26.984940° | 0.182075 | 0.000404656 |
+| Coarse half-step | 21.852960° | 0.172973 | 0.000460565 |
+| Fine half-step | 20.623852° | 0.185666 | 0.000148400 |
+
+Relative to the dense baseline, the maximum radius change
+is 0.014 mm and the maximum angle change is 0.031°. All
+four cases still miss the radius and angle bounds. The
+tenfold horizontal mass floor does not materially affect
+the spread in this control. The native command exits 1.
+CUDA was untested and both temporary edits were restored.
