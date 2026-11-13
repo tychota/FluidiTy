@@ -4457,3 +4457,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Prefer a tangent donor directly above the target
+
+When the full-rank tangent fit requires a negative coefficient,
+prefer the closest eligible donor with the target's horizontal
+coordinates and a greater height. Keep the ordinary nearest
+donor when that column has no donor above the target. Use the
+unit-weight row in both the gather and the stress transpose.
+Both native and SM120 default dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 36.226259° | 0.176449 m | Angle and radius |
+| Coarse half-step | 41.134146° | 0.157529 m | Angle |
+| Fine | 33.404733° | 0.164515 m | Radius |
+| Fine half-step | 36.766082° | 0.159392 m | Angle |
+
+All four angles and radii increase relative to nearest-donor
+clearing. The fine half-step mean log plastic Jacobian falls
+from 0.146 to 0.089, but the pile leaves the angle window.
+This control loses both fine passes. The source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-vertical-donor-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
