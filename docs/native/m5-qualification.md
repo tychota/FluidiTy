@@ -10887,3 +10887,30 @@ friction therefore supports the pile, but raising the
 existing Coulomb cap does not arrest the residual flattening.
 Both native matrices fail. CUDA was untested for the two
 controls. The fixture edit was restored.
+
+
+#### Compare bulk settlement with the envelope
+
+On 006be35, repeat the unchanged native three-second matrix.
+At the first accepted endpoint at or after 1.5 s and at 3 s,
+report arithmetic mean height and radius over all 63 equal-mass
+particles. Count particles within 1e-8 m of the floor. Keep
+the original envelope and acceptance checks.
+
+| Case | Mean height near 1.5 s → 3 s (mm) | Mean radius near 1.5 s → 3 s (mm) | Floor count near 1.5 s → 3 s |
+|---|---:|---:|---:|
+| Coarse | 8.702 → 3.676 | 82.109 → 83.281 | 39 → 56 |
+| Fine | 6.295 → 2.535 | 87.672 → 88.290 | 46 → 59 |
+| Coarse half-step | 16.210 → 5.777 | 83.580 → 85.146 | 30 → 43 |
+| Fine half-step | 11.786 → 3.377 | 90.275 → 91.572 | 30 → 50 |
+
+The fine samples start at 1.501562500 s and 1.500781250 s
+respectively. Mean height falls by 60–71% in the three
+cases that miss the final angle band. Their mean radii
+grow by at most 1.57 mm. The passing coarse case also loses
+58% of its mean height while its highest particle rises
+from 75.240 to 80.950 mm. Its passing envelope therefore
+coexists with substantial bulk settlement. The native
+matrix reproduces the baseline angles and fails. The
+temporary fixture edit was restored. CUDA was untested
+for the bulk trace.
