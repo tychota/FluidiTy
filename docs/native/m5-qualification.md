@@ -7138,3 +7138,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Partition late wall support between grid and particle contact
+
+On 3008848, record the accepted grid wall impulse and swept particle
+wall impulse for each step of the original native column matrix.
+Sum the vertical components after the exact 0.75 s phase boundary.
+For the final 0.05 s, prorate the step crossing 2.95 s.
+
+| Case | Grid / particle, 0.75–3 s (N·s) | Grid / particle, 2.95–3 s (N·s) |
+|---|---:|---:|
+| Coarse | 33.306 / 18.942 | 0.483 / 0.675 |
+| Coarse half-step | 42.999 / 9.161 | 0.875 / 0.285 |
+| Fine | 29.533 / 22.744 | 0.490 / 0.670 |
+| Fine half-step | 40.645 / 11.606 | 0.714 / 0.443 |
+
+Halving the step shifts 9.7–11.1 N·s of support to the grid after
+0.75 s while combined support remains close to 52.2 N·s in every
+case. The effect persists in the final 0.05 s. The grid and particle
+contact paths apply their friction impulses at different stages,
+so this partition is a candidate for explaining timestep sensitivity.
+Final angles and radii reproduce the preceding baseline. The trace
+was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-support-phase-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
