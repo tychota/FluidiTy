@@ -28,6 +28,8 @@ ctest --test-dir out/build/band-cuda -R 'PublishesProjectedOwnerExchangeWithLate
 
 A projected horizontal circulation reduced its positive-normal carrier from 1 to 0.75 m/s without changing the material owners or leaf masses. The low-mass control retained the 1 m/s Eulerian carrier and used pure PIC despite a nonzero old-PIC residual. CPU and SM120 CUDA preserved the previous epoch on late rejection. Both hard-kill replays used checkpoint BLAKE3 `fd09a91e11d7554ec2bc027f52d15c17c5751246993bca174dfa094af8d23829` and produced accepted state BLAKE3 `fb8e73ed9042c283fb3190924c6f427859c793e0052d3ba3f0b2800acfa1263f`. Both reopened the accepted checkpoint.
 
+The Stokes control confirms relaxation uses the blended or fallback carrier in the predictor. A projected nonzero mixed material flux still rejects the attempt before publication.
+
 Automatic placement from the 6h band, combined overlap and mixed-face transport, and mixed exchange with migrating particles remain integration work. Family remap on Eulerian-owned layouts remains unavailable. A handoff candidate currently requires half-open particle coverage, so it can refuse particles exactly on solid upper tank planes. Graded transfer and core transport still use transient host allocations. The matched-error full wave and simultaneous GPU memory gates remain open.
 
 ## Certified planar placement in Simulate
