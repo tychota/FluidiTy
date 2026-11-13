@@ -5540,3 +5540,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Translate only the x grid coordinate
+
+On 3008848, shift the grid origin to (h/2, 0, 0). Report
+maximum absolute x and z coordinates separately, in addition
+to the unchanged radial envelope. Both default dry-scene
+tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) | Maximum absolute x (m) | Maximum absolute z (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 31.535825° | 0.178566 | 0.132723 | 0.141835 |
+| Coarse half-step | 38.765678° | 0.159629 | 0.114436 | 0.121270 |
+| Fine | 28.238483° | 0.171877 | 0.125646 | 0.143783 |
+| Fine half-step | 32.534593° | 0.170746 | 0.109987 | 0.141036 |
+
+All four cases fail. The x extent is smaller than the z
+extent by 6.8–31.0 mm across the matrix. The result shows
+directional spread under a one-axis translation in addition
+to the radius sensitivity under a two-axis translation.
+The temporary fixture edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-axis-phase-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
