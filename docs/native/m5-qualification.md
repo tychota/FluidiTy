@@ -9790,3 +9790,23 @@ sensitivity within the swept deformation treatment.
 Run each variant with `FLUIDITY_ENABLE_Q_SAND=ON` and
 `ctest --test-dir out/build -R '^(QSand|M5DryScenes)\.' --output-on-failure`.
 The temporary solver source was restored after each build.
+
+### Separate first impact and sustained floor contact
+
+On 72cdcda, restrict the existing swept deformation split to
+particles starting above the floor in the first control, then
+to particles starting on the floor in the second. Keep the
+position sweep and Coulomb impulse in both controls.
+
+| Deformation split | Coarse | Fine | Coarse half-step | Fine half-step |
+|---|---:|---:|---:|---:|
+| First impact only | 20.804356° | 20.578893° | 28.040286° | 26.585617° |
+| Sustained contact only | 29.004946° | 26.721486° | 29.004619° | 27.031849° |
+
+The sustained-contact control is within 0.11° of baseline in
+all four cases. Restricting the split to first impact lowers
+both nominal-step angles by more than 6°. The baseline effect
+therefore depends on treating repeated floor contact. Both
+controls pass default dry-scene tests and fail the opt-in
+Q-SAND matrix on native and SM120, with cross-backend angle
+agreement within 0.000001°. The solver source was restored.
