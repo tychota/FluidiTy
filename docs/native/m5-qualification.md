@@ -8733,3 +8733,27 @@ solver change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-stationary-gravity-free-gradient-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
 ```
+
+### Exclude the gravity kick from deformation in the sand matrix
+
+Apply the stationary probe's gravity-free donor field on 5ff4866
+to the standard native column. Transport still receives gravity.
+
+| Case | Envelope at 3 s | Radius (m) | Cut work difference (J) |
+|---|---:|---:|---:|
+| Coarse | 30.471411° | 0.159529 | −0.686541 |
+| Coarse half-step | 39.298344° | 0.148766 | −0.442620 |
+| Fine | 26.529011° | 0.156566 | −0.521062 |
+| Fine half-step | 34.087972° | 0.151180 | −0.365688 |
+
+The coarse nominal and fine half-step pass the endpoint checks.
+The other angles fail in opposite directions. The different
+velocity fields used for force work and deformation produce
+a substantial work difference. The temporary edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-sand-gravity-free-gradient-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
