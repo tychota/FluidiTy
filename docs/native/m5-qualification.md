@@ -8684,3 +8684,27 @@ position and velocity remain zero and total support remains
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-single-zero-ghost-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
 ```
+
+### Vary the load in the stationary particle strain probe
+
+Keep the initial isotropic stretch at 0.95 and step the
+single particle for one second at 1 ms on c58b4ba. All four
+loads maintain zero final normal position and velocity.
+
+| Gravity magnitude (m/s²) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 0.25 | 0.950205304844 | 0.857684929967 |
+| 0.5 | 0.949968363503 | 0.857471129273 |
+| 1 | 0.949494657882 | 0.857043687601 |
+| 2 | 0.948547954460 | 0.856189442739 |
+
+With the initial stress held fixed across runs, the normal
+strain drift changes sign between 0.25 and 0.5 m/s². The
+change in the final yy entry is approximately linear in
+the applied gravity over the tested range. The sweep balances
+the remainder of the load at each endpoint. The temporary
+fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-single-load-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
+```
