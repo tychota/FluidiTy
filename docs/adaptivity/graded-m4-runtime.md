@@ -148,6 +148,31 @@ rectangles and checks the dry slots.
 ctest --test-dir <qualified-build> -R 'GradedLiquidBoundaryGeometry3D|GradedViscousTensorReproducesAffineStrain' --output-on-failure --no-tests=error
 ~~~
 
+## Moving planar cut viscosity
+
+The coupled solver uses the frozen wet-open and wet-wall centroids on the
+signed pressure graph. Wet volumes weight the strain quadratures. The sparse
+moving halfspace fixture uses 0.125 Pa s and checks pressure and momentum
+residuals, late rollback, and interrupted replay.
+
+CPU and SM120 matched the checkpoint BLAKE3
+a17c960e10dba93f6c5a1d032f5ae8f48cb756bd9497e383a1c83c66ec84b857
+and final state BLAKE3
+65267f14d15463e790340dac100c27d141eeef6a1a0866ea62652137237d8226.
+Compute Sanitizer reported zero errors.
+
+~~~powershell
+ctest --test-dir out/build/graded-cpu-final -V -R '^AdaptivePhysicalViscousReplay.cpu$' --no-tests=error
+ctest --test-dir out/build/graded-cuda-final -V -R '^AdaptivePhysicalViscousReplay.cuda$' --no-tests=error
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/build/graded-cuda-final/fluidity_adaptive_family_fixture.exe cuda continuous unused physical-viscous
+~~~
+
+With viscosity set to 0.125 Pa s, the two-leaf physical-wetting control
+refused before projection because its initial wet region supplies fewer
+than four local face anchors. Viscous membership changes still need a
+strain stencil with sufficient support on that start geometry.
+
 ## Remaining M4 gates
 
 The full graded planar-extension and Couette matrix needs independently
@@ -155,9 +180,10 @@ fixed traction references at viscosity ratios 1, 10 and 1000, two
 resolutions and smaller timesteps. Apply the spec's 5% normalized RMS
 threshold, fixture maximum and absolute floor. The current graded tensor
 path covers stationary geometry, including constant and miscible
-constituent-dependent viscosity. Moving and cut geometry need the
-physical wall and interface quadratures. The prepared graph and host
-orchestration still allocate.
+constituent-dependent viscosity. The moving planar halfspace uses wet
+centroids and wet-volume quadratures. A graded two-phase traction fixture
+still needs a material-interface stencil that preserves stress across the
+viscosity jump. The prepared graph and host orchestration still allocate.
 
 Graded trapped air needs resolved gas occupancy, liquid–gas apertures on
 the canonical subfaces, and checkpointed component lineage. Graded
