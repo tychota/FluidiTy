@@ -9144,3 +9144,23 @@ work is −0.004815 J, close to the negative of the trial gain.
 The separate midpoint grid work remains 0.160047 J. A full
 energy balance must account for the work evaluated at different
 stages and for transfers. The temporary trace was restored.
+
+### Separate gravity and traction contributions to the stress work receipt
+
+On 43ec90c, dot the applied stress impulse with each successive
+normal and tangent face velocity in the native fine half-step.
+The midpoint column uses the average immediately across the
+stress kick. The other columns use the velocity at the named stage.
+
+| Interval | Stress midpoint (J) | Stress endpoint (J) | After gravity (J) | After grid traction (J) |
+|---|---:|---:|---:|---:|
+| 0–3 s | −1.981555 | −1.436895 | −1.840663 | −2.065886 |
+| 3–6 s | 0.054758 | 0.274670 | 0.018456 | −0.008212 |
+| 6–9 s | 0.051397 | 0.211092 | 0.024016 | 0.003841 |
+| 9–12 s | 0.053892 | 0.123673 | 0.008923 | −0.000444 |
+
+From 3 to 12 s, the stress endpoint adds 0.449387 J relative
+to the midpoint evaluation. Gravity shifts that receipt down by
+0.558040 J and grid traction by another 0.056201 J. These
+differences are cross terms with the stress impulse. The
+trace was restored and the trajectory reproduces baseline.
