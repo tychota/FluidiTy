@@ -12276,3 +12276,28 @@ with the interval and give no consistent slope across scales.
 All four original gate results reproduce the native baseline
 and the command exits 1. The supplemental fit was not run on
 CUDA. The temporary fixture edit was restored.
+
+#### Hold normal speed constant in the post-impact Coulomb derivative
+
+On 2a705d8, zero the gathered normal row in a copy supplied
+to the post-impact Coulomb gradient on the ordinary granular
+floor. The incoming gradient and normal speed used for the
+Coulomb cap are unchanged. This removes the derivative of
+the cap with respect to normal speed while preserving the
+tangential speed derivative and the stick/slip decision.
+Build the native dry-scene target and run it without arguments
+and with `--q-sand-column-long-settle 6`.
+
+| Case | Baseline at 6 s | Frozen normal speed at 6 s |
+|---|---:|---:|
+| Coarse | 33.842809° | 33.610925° |
+| Fine | 23.424520° | 23.190354° |
+| Coarse half-step | 17.104058° | 17.104058° |
+| Fine half-step | 13.060319° | 13.060319° |
+
+The default test passes at 32.791300°. The matrix exits 1.
+Both half-step angles match baseline at printed precision.
+The nominal angles change by less than 0.235°. This term
+alone does not explain the timestep sensitivity in the
+sparse pile. CUDA and dense sampling were untested.
+The temporary source edit was restored.
