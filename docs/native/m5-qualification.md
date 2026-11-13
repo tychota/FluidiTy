@@ -4991,3 +4991,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Shorten the mass-weighted tangent donor search
+
+On 3008848, reduce the affine fit radius for mass-weighted
+tangent rows from two cell widths to sqrt(3) cell widths.
+Keep the normal search and the existing constant fallback
+radius. Both default dry-scene targets fail after the
+stationary ghost transpose work check and before the
+mass-weighted work result is printed.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 34.088360° | 0.171779 m | Radius |
+| Coarse half-step | 40.487704° | 0.160588 m | Angle and radius |
+| Fine | 31.038061° | 0.163967 m | Radius |
+| Fine half-step | 34.204129° | 0.158460 m | Pass |
+
+All radii increase relative to the original clearing runs.
+The nominal fine case loses its pass, and the coarse
+half-step adds a radius failure. The temporary source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-local-tangent-radius-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
