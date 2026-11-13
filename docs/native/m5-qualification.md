@@ -7843,3 +7843,20 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Restrict the current floor patch to closing particles
+
+On 255739e, keep the existing floor proximity test and exclude
+a particle if its stored vertical velocity plus the gravity
+kick points away from the floor. All four native outcomes match
+the baseline at printed precision, including the cut work
+residuals. The coarse half-step remains at 40.501234°. This
+velocity criterion does not change the measured trajectories.
+The temporary code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-unilateral-patch-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
