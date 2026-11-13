@@ -10773,3 +10773,45 @@ three extended cases and fails the default coarse case at
 occurs on uncut stencils in this comparison. Both native
 Q-SAND matrices fail. The temporary source was restored.
 CUDA was untested.
+
+#### Trace the coarse collapse with uncut compression retention
+
+On 68ae076, sample the native coarse nominal angle at the
+first accepted step at or after each 0.1 s mark. Compare
+the original solver with the uncut exp(−400 dt) control.
+
+| Time (s) | Baseline | Uncut control |
+|---|---:|---:|
+| 0.10125 | 79.287674° | 79.287674° |
+| 0.200625 | 72.108231° | 72.702763° |
+| 0.30000 | 47.080203° | 60.609532° |
+| 0.500625 | 37.962759° | 50.694881° |
+| 0.800625 | 32.226688° | 41.792279° |
+| 1.50000 | 29.113507° | 32.888475° |
+
+The largest sampled gap is 13.529329° at 0.3 s, during
+the initial collapse. By 1.5 s the gap falls to 3.774968°
+and the control has lost 5.17° over the final half-second.
+The short-horizon overshoot begins during collapse, and
+its later angle pass does not establish settlement.
+Both native matrices exit 1. Temporary sources were restored.
+
+#### Start uncut retention after the initial collapse
+
+On 68ae076, enable uncut exp(−400 dt) compression retention
+only after the 0.75 s accepted sample. All four angles at
+the switch match baseline. Use the original 1.5 s gate.
+
+| Case | Baseline | Late-only retention | Retention from release |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 29.225909° | 32.888475° |
+| Fine | 26.761332° | 27.022180° | 32.192299° |
+| Coarse half-step | 29.006384° | 29.758772° | 36.841241° |
+| Fine half-step | 27.033753° | 27.565543° | 33.641611° |
+
+Late-only retention raises the final angles by 0.11° to
+0.75° and all four remain below 30°. It passes the default
+native test, which ends at the switch time. The larger
+changes seen when retention starts at release depend on
+earlier history. The temporary solver and fixture were
+restored. CUDA was untested for this control.
