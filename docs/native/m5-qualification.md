@@ -11657,3 +11657,20 @@ Its final-second angle loss increases from 1.747565° to
 reduces measured plastic volume activity in that case
 without preserving pile height. CUDA was untested and the
 temporary fixture edit was restored.
+
+
+#### Advect with the retained residual outside floor contact
+
+On bb4a0e7, repeat final-second velocity retention at energy
+0.6. Add 0.6 times the stored residual correction to the PIC
+advection speed when both the original and corrected sweeps
+remain outside contact. Keep the stored velocity and the
+deformation update on their original paths. This isolates
+the advection part of the design's separation policy.
+
+Three cases reproduce the native baseline at printed precision.
+The coarse half-step reaches 16.810816°, compared with
+16.681018° for stored-only retention and 17.104058° for the
+unmodified solver. The coarse half-step loses 2.040808° over
+the last second. The native matrix exits 1. CUDA was untested
+and both temporary edits were restored.
