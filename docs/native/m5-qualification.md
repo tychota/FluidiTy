@@ -6277,3 +6277,22 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
 }
 ```
+
+### Requalification against upstream 6472b77
+
+The milestone branch integrated upstream 6472b77 at b58e678.
+The upstream changes include the graded sampled liquid runtime
+and public band reseeding. They leave the dry step, M5 material
+law and boundary transfer sources unchanged from d6e8c6e.
+
+A clean Windows Release SM120 build passed all 11 M5 CTest
+targets. The Blender 5.2.3 authored bake, frame-10 checkpoint
+resume and playback passed on native and SM120. Both measured
+a minimum snow volume ratio of 0.648350539, a minimum log
+plastic Jacobian of −0.420240034 and a water gap of 0.631821917 m.
+All tracked native sources passed clang-format 19.1.5.
+
+Use the earlier clean-build and Blender commands with
+out/build/m5-main-6472b77-release, out/authored-upstream-6472b77-cpu,
+and out/authored-upstream-6472b77-cuda. The default dry-scene
+targets do not include the extended sand matrix. Q-SAND remains open.
