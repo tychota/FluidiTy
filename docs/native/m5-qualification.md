@@ -5074,3 +5074,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Classify tangent fallback attempts
+
+Instrument the donor reconstruction on 3008848 before each
+gather-needed tangent fallback. These are construction attempts,
+including rows superseded when the motion check removes a donor
+and rebuilds the map. Both default dry-scene tests pass. Removing
+the trace lines recovers each original native 3 s log.
+
+| Case | Empty local neighborhood | Rank-deficient fit | Negative affine coefficient |
+|---|---:|---:|---:|
+| Coarse | 0 | 10456 | 128747 |
+| Coarse half-step | 0 | 0 | 186186 |
+| Fine | 0 | 30254 | 167069 |
+| Fine half-step | 0 | 2686 | 258431 |
+
+Negative coefficients trigger 85–100% of fallback attempts
+in each case. The coarse half-step never uses a rank fallback.
+The accepted-row counts in the preceding trace exclude
+discarded construction passes. The temporary instrumentation
+was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-fallback-reasons-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3 |
+    Where-Object { $_ -like 'fallback reason *' } | Group-Object
+}
+```
