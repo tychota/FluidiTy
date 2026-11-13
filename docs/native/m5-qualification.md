@@ -10053,3 +10053,26 @@ and spreads beyond the radius limit. Both eighth-steps remain
 above 35°. The maximum cut stress-work residual is 2.34e-16 J.
 The native CTest matrix fails. The temporary solver and test
 edits were restored. CUDA was untested for this extension.
+
+### Measure wall friction across the refined paired blend
+
+On 0f9e7cb, keep the equal paired blend at the fine grid width
+of 0.0625 m. Sum individual magnitudes of tangential wall
+impulse for contacts starting at the floor from 0.75 to 1.5 s.
+Use the sum of their normal impulses as the denominator.
+Count impulses within 1e-9 relative of the Coulomb cap.
+
+| Step (ms) | Tangential impulse (N·s) | Normal impulse (N·s) | Ratio | At cap / contacts |
+|---|---:|---:|---:|---:|
+| 1.562500 | 2.141890 | 14.449638 | 0.1482 | 0 / 15360 |
+| 0.781250 | 3.291302 | 13.550246 | 0.2429 | 0 / 19123 |
+| 0.390625 | 5.038844 | 13.175313 | 0.3824 | 0 / 22132 |
+| 0.1953125 | 7.088584 | 13.189027 | 0.5375 | 1752 / 34560 |
+
+Finer steps increase tangential impulse at sustained contact
+while the normal impulse stays within 9% of the nominal run.
+The ratio approaches the 0.7 cap and the eighth-step reaches
+it in 5.1% of contacts. The native diagnostic reproduces the
+previously measured angles and exits 1. The trace measures
+association with timestep and does not isolate a causal wall
+friction change. The temporary solver and fixture were restored.
