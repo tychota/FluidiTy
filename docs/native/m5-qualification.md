@@ -4428,3 +4428,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Prefer a same-height tangent donor
+
+For the full-rank tangent reconstruction with negative
+coefficients, choose the closest donor at the target height
+when available. Keep the ordinary nearest donor otherwise.
+Use the chosen donor for the gather and stress transpose and
+keep the fallback flag. Both native and SM120 default
+dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 29.072970° | 0.169978 m | Angle and radius |
+| Coarse half-step | 35.141869° | 0.159110 m | Angle |
+| Fine | 29.112553° | 0.158882 m | Angle |
+| Fine half-step | 32.589855° | 0.153616 m | Pass |
+
+The same-height rule moves the coarse half-step angle down
+5.36° but increases mean log plastic Jacobian in every case.
+The coarse nominal mean rises from 0.328605 to 1.116065.
+The fine nominal angle also falls below range. This control
+does not resolve Q-SAND. The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-level-donor-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
