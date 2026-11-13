@@ -439,14 +439,20 @@ bool TestScene(
   const bool short_drift_in_range = settling_drift <= 2;
   const bool radius_in_range = release_cone || (maximum_radius > 0.10 && maximum_radius < 0.16);
   const bool kinetic_energy_in_range = kinetic_energy < 0.01;
-  const bool passed = angle_in_range && short_drift_in_range && radius_in_range && kinetic_energy_in_range;
+  const bool persistence_required = extended_column && time >= 3;
+  const bool persistence_in_range = !persistence_required
+      || (long_window_sample_time > 0 && long_window_angle >= 30 && long_window_angle <= 35
+          && std::abs(envelope_angle - long_window_angle) <= 2);
+  const bool passed =
+      angle_in_range && short_drift_in_range && radius_in_range && kinetic_energy_in_range && persistence_in_range;
   if (!passed) {
     std::printf(
-        "sand acceptance angle=%s short_drift=%s radius=%s kinetic_energy=%s\n",
+        "sand acceptance angle=%s short_drift=%s radius=%s kinetic_energy=%s persistence=%s\n",
         angle_in_range ? "pass" : "fail",
         short_drift_in_range ? "pass" : "fail",
         radius_in_range ? "pass" : "fail",
-        kinetic_energy_in_range ? "pass" : "fail"
+        kinetic_energy_in_range ? "pass" : "fail",
+        persistence_required ? (persistence_in_range ? "pass" : "fail") : "not checked"
     );
   }
   std::fflush(stdout);
