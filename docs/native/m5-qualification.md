@@ -9286,3 +9286,30 @@ a different force operator open.
 The instrumented native run used
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 It reproduced 25.473317° and exited 1. The source was restored.
+
+### Resolve the original vertical kick into normal and shear terms
+
+On 43ec90c, split the original force on y-faces into the
+normal-stress term −V₀ τyy ∂yN and the remaining shear terms
+−V₀ (τyx ∂xN + τyz ∂zN). Center their velocity increments
+and the floor reconstruction increment over each compatible
+vertical PIC stencil using the same face mass denominator.
+
+| Interval | Cut normal stress (J) | Cut shear stress (J) | Normal–shear cross (J) | Normal–reconstruction cross (J) | Shear–reconstruction cross (J) |
+|---|---:|---:|---:|---:|---:|
+| 0–3 s | 0.123776 | 0.003111 | −0.013500 | −0.108623 | 0.002879 |
+| 3–6 s | 0.069032 | 0.002039 | −0.003373 | −0.016627 | −0.001959 |
+| 6–9 s | 0.053589 | 0.001258 | −0.000424 | 0.029860 | −0.001563 |
+| 9–12 s | 0.011375 | 0.000580 | 0.001107 | 0.016053 | −0.001351 |
+
+From 3 to 12 s, normal stress alone accounts for 0.133996 J
+of cut-stencil variance. Shear and its cross term with the
+normal stress contribute a net 0.001186 J. The change in
+sign of the reconstruction cross term is also concentrated
+in its interaction with normal stress. This points to the
+normal load discretization as the next operator to test.
+
+Run the instrumented native scene with
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+The run reproduced 25.473317° and exited 1. The isolated
+source was restored and its worktree was clean.
