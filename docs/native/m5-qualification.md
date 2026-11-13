@@ -9810,3 +9810,23 @@ therefore depends on treating repeated floor contact. Both
 controls pass default dry-scene tests and fail the opt-in
 Q-SAND matrix on native and SM120, with cross-backend angle
 agreement within 0.000001°. The solver source was restored.
+
+### Preserve the Coulomb-projected affine fit after contact
+
+On 72cdcda, apply the existing swept Coulomb gradient map
+to the stored APIC fit when a granular particle hits the
+stationary floor. Keep the baseline deformation and sweep.
+Run the native and SM120 Q-SAND and default dry-scene tests.
+
+| Case | Baseline | Projected affine storage |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.083229° |
+| Fine | 26.761332° | 26.790663° |
+| Coarse half-step | 29.006384° | 28.883736° |
+| Fine half-step | 27.033753° | 26.915365° |
+
+Both backends pass the default dry-scene tests and fail the
+four-case Q-SAND matrix. The largest angle change is 0.123°.
+This rules out clearing the post-contact affine fit as the
+dominant effect in the tested merged solver. The temporary
+solver edit was restored.
