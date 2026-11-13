@@ -11358,3 +11358,25 @@ angle gain across both samplings is 0.77°. Both extended
 runs fail. Most of the response to this attenuation requires
 changing the initial collapse. CUDA was untested and the
 temporary edits were restored.
+
+
+#### Attenuate positive horizontal trace during collapse only
+
+On ec9f2c7, halve positive horizontal APIC trace up to
+the accepted 0.75 s sample, then use the original transfer.
+Run the default native scene and both three-second matrices.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 37.042214° | 32.521315° | 0.162503 |
+| Fine | 35.025561° | 30.320245° | 0.166853 |
+| Coarse half-step | 29.510845° | 26.970362° | 0.159899 |
+| Fine half-step | 28.473819° | 24.630873° | 0.173583 |
+
+The default test retains the 52.495345° full-run overshoot.
+No dense case passes both geometry bounds. Dense radii grow
+by 10.0–27.0 mm relative to full-run attenuation, and both
+half-step angles fall below 30°. Initial attenuation changes
+the collapse, while continued attenuation was also needed
+for the earlier dense endpoint passes. All three invocations
+fail. CUDA was untested and both temporary edits were restored.
