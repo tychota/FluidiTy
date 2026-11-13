@@ -9499,3 +9499,26 @@ small-timestep limit undetermined.
 Run `--q-sand-symmetric-affine-decay 0 fine-half all 24 double`
 with the existing experimental executable. It exits 1 on
 the angle bound and gives a stress-work residual of −1.03e-16 J.
+
+### Alternate late timesteps with the wall-anchored fit
+
+Keep the native fine half-step through 3 s. Alternate between
+0.390625 and 1.171875 ms afterward, in both orders. Each pair
+has the same duration as two constant 0.781250 ms steps.
+
+| Late schedule | Angle at 12 s | Angle at 18 s | Angle at 24 s | Height loss from 3 to 24 s (mm) |
+|---|---:|---:|---:|---:|
+| Constant | 32.725580° | 30.215362° | 28.418463° | 34.125 |
+| Alternating | 31.801372° | 29.195923° | 27.268000° | 38.098 |
+| Alternating reversed | 31.801199° | 29.195780° | 27.267835° | 38.099 |
+
+The alternating runs lose about 12% more height than the
+constant run. Reversing the order changes the final angle
+by 0.000165°. Their common mean timestep therefore hides
+an effect of the step-size variation. The radius remains
+0.154708 m and the absolute stress-work residual stays
+below 8.5e-17 J.
+
+Use the existing wall-anchored native diagnostic with
+`--q-sand-symmetric-affine-decay 0 fine-half all 24 alternating`
+and repeat with `alternating-reversed`. Both exit 1.
