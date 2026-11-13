@@ -9625,3 +9625,32 @@ height drops by 8.34 mm from 12 to 18 s with late refinement.
 The stress-work residual is 1.62e-16 J. The native diagnostic
 exits 1 with
 `--q-sand-symmetric-affine-decay 0 fine-half all 18 half`.
+
+### Combine wall-anchored reconstruction and vertical stress midpoint
+
+On 43ec90c, use the full wall-anchored reflected row in the
+continuation and its force transpose. Apply the vertical
+stress midpoint offset through those same rows for deformation
+and its work receipt. PIC, APIC storage and wall contact use
+the final field as before.
+
+| Native case | Angle at 3 s | 12 s | 18 s | Radius at 18 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 41.384° | 36.064° | 29.343° | 0.212261 |
+| Coarse half-step | 43.809° | 39.459° | 39.382° | 0.166836 |
+| Fine | 38.269° | 32.465° | 28.122° | 0.176331 |
+| Fine half-step | 38.167° | 34.594° | 33.900° | 0.157910 |
+
+The fine half-step exits 0. It loses 0.50 mm in height from
+15 to 18 s, compared with 4.04 mm using the wall fit alone.
+The other three cases exit 1. The coarse half-step changes
+by less than 0.10° from 12 to 18 s and exceeds both the
+angle and radius bounds. Both nominal-step cases spread
+late and end below 30°. The stationary strain probe passes
+all four refinements and the maximum absolute paired work
+residual is 1.61e-16 J.
+
+Run the experimental native binary with
+`--q-sand-single-particle-strain` and
+`--q-sand-symmetric-affine-decay 0 <case> all 18`.
+Both temporary solver edits were restored before the runs.
