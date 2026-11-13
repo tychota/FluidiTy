@@ -11195,3 +11195,26 @@ appears. The trace does not exclude effects from prior floor
 contact or grid forces. The native matrix reproduces the
 baseline geometry and exits 1. CUDA was untested and the
 fixture edit was restored.
+
+
+#### Check floor history before the radius crossing
+
+On e1f4567, repeat the native dense three-second run. Record
+the first accepted endpoint at height at most 1e-8 m and the
+first accepted endpoint at radius at least 0.16 m for each
+particle. Report the cohort still at or beyond the limit
+at 3 s.
+
+| Case | Outside at 3 s | Earlier floor endpoint | First-crossing time range (s) |
+|---|---:|---:|---:|
+| Coarse | 12 | 0 | 0.676875–1.177500 |
+| Fine | 20 | 0 | 0.403125–0.723438 |
+| Coarse half-step | 12 | 0 | 0.933750–1.394063 |
+| Fine half-step | 20 | 0 | 0.516406–0.907813 |
+
+No member of this cohort had an accepted floor endpoint
+before crossing. Grid-mediated effects from floor contact on
+other particles remain possible. In all four cases the last
+first crossing occurs before 1.4 s. The matrix reproduces
+the baseline geometry and exits 1. CUDA was untested and
+the temporary fixture edit was restored.
