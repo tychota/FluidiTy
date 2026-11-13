@@ -10694,3 +10694,23 @@ kinetic energy and fail the upper angle bound. The default
 native sand case also fails at 50.248767°. The result
 isolates the dominant vertical feedback to yy in this
 control. Temporary sources were restored. CUDA was untested.
+
+#### Separate compressive and extensional vertical affine feedback
+
+On 48302e2, run the registered native matrix while dropping
+the yy deposit term only when it is negative or only when it
+is positive. Use the original timesteps for this comparison.
+
+| Case | Baseline | Drop compression | Drop extension |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 37.099832° | 27.619309° |
+| Fine | 26.761332° | 36.036959° | 25.824766° |
+| Coarse half-step | 29.006384° | 49.762374° | 28.756002° |
+| Fine half-step | 27.033753° | 46.949070° | 26.741414° |
+
+Dropping compression raises every angle above 35° and fails
+the default native dry-scene test. Dropping extension lowers
+every angle and passes the default test. Both matrices fail.
+The influence of the yy term is concentrated in its negative
+values in this control. Temporary source was restored.
+CUDA was untested.
