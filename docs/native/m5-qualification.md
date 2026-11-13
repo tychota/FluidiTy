@@ -12519,3 +12519,26 @@ all four miss the angle band. Every dense native radius
 exceeds 0.16 m. Two dense cases miss the angle band and two
 exceed one degree of final drift. Dense CUDA was untested.
 The temporary solver and fixture edits were restored.
+
+#### Combine resident floor compression with volumetric APIC attenuation
+
+On bb2d77d, retain min(0, incoming yy) in the projected gradient
+at zero-fraction ordinary-floor granular hits. At deposit,
+subtract one quarter of max(0, min(horizontal trace, total trace))
+from each horizontal diagonal entry. Build the native dry-scene
+target. Run without arguments, with `--q-sand-column-long-settle 6`,
+and with `--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle at 6 s | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 35.891483° | 36.721958° | 0.165004 |
+| Fine | 32.176903° | 33.042230° | 0.167704 |
+| Coarse half-step | 35.369021° | 29.215302° | 0.162576 |
+| Fine half-step | 32.859685° | 27.710259° | 0.173388 |
+
+All three commands exit 1. The default angle is 41.713225°.
+The sparse fine cases pass, while both coarse angles overshoot.
+All dense radii exceed 0.16 m despite decreasing relative to
+the baseline. Dense half-step final drift is below one degree
+in both cases, but neither reaches 30°. CUDA was untested and
+the experimental source edit was restored.
