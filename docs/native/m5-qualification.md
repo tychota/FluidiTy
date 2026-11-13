@@ -7372,3 +7372,26 @@ fails the 30° lower bound. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-cuda-long-horizon-bin/fluidity_cuda_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Locate late return losses in the loaded fine column
+
+Run the native fine half-step column on 3008848 to 12 s.
+Sum the Hencky energy lost during return by particle height
+at the beginning of each accepted step. The run reproduces
+the baseline angles and radii at printed precision.
+
+| Interval | Below 0.025 m (mJ) | 0.025 to 0.075 m (mJ) | At least 0.075 m (mJ) |
+|---|---:|---:|---:|
+| 3–6 s | 10.251 | 41.144 | 4.256 |
+| 6–9 s | 6.697 | 4.918 | 3.021 |
+| 9–12 s | 1.080 | 3.466 | 1.025 |
+
+Particles above the lowest 25 mm account for 76% of the return
+loss from 3 to 12 s. The upper band contains fewer particles as
+the pile drops, so these totals measure each band's contribution
+to total loss. They cannot identify a per-particle rate or the
+source of repeated loading. The temporary trace was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-column-return-height-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
