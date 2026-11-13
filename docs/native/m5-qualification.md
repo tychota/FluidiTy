@@ -8662,3 +8662,25 @@ The temporary solver and fixture edits were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-single-strain-clamp-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
 ```
+
+### Compare zero ghost continuation in the stationary strain control
+
+Repeat the four native refinements on c58b4ba with zero
+below-floor normal ghost continuation and its paired transpose.
+
+| Timestep (ms) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 1 | 0.949636113758 | 0.857171328294 |
+| 0.5 | 0.949817992901 | 0.857273106617 |
+| 0.25 | 0.949908980437 | 0.857324038906 |
+| 0.125 | 0.949954486213 | 0.857349515852 |
+
+Normal ghost reflection contributes to the strain drift.
+Zero continuation reduces the yy drift by about 28% at each
+timestep, with a first-order residual. The accepted normal
+position and velocity remain zero and total support remains
+1 N. The temporary edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-single-zero-ghost-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-single-particle-strain
+```
