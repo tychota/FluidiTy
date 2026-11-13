@@ -5619,3 +5619,22 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Reproduce grid phase and settling horizon from the test runner
+
+The tracked compatible-floor diagnostic accepts the optional
+arguments case, phase, and endpoint, in that order. Cases are
+all, coarse, coarse-half, fine, and fine-half. Phases are
+aligned, half-x, half-z, and half-xz. Endpoints are 1.5, 3,
+and 6 seconds. The default remains the aligned 1.5 s matrix.
+
+Both default dry-scene CTest targets pass. The runner rejects
+invalid case, phase, and endpoint selectors with exit 2.
+The native command below finishes with angle 19.558582° and
+radius 0.146728 m, returning a geometry failure. This command
+uses the tracked compatible-floor solver.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+& "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle fine half-x 3
+```

@@ -880,10 +880,19 @@ int main(int argc, char** argv) {
       && (std::string_view(argv[1]) == "--q-sand-compatible-floor"
           || std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle")) {
     const bool extended = std::string_view(argv[1]) == "--q-sand-compatible-floor-long-settle";
-    if (argc > 3 || (argc == 3 && !extended)) {
+    if (argc > 5 || (argc > 2 && !extended)) {
       return 2;
     }
-    const std::string_view selected = argc == 3 ? argv[2] : "";
+    const std::string_view selected = argc >= 3 ? argv[2] : "all";
+    const std::string_view phase = argc >= 4 ? argv[3] : "aligned";
+    if (phase != "aligned" && phase != "half-x" && phase != "half-z" && phase != "half-xz") {
+      return 2;
+    }
+    const std::string_view endpoint = argc == 5 ? argv[4] : "1.5";
+    if (endpoint != "1.5" && endpoint != "3" && endpoint != "6") {
+      return 2;
+    }
+    const double end_time = extended ? (endpoint == "6" ? 6.0 : endpoint == "3" ? 3.0 : 1.5) : 0.75;
     struct FloorCase {
       std::string_view name;
       double cell_width;
@@ -898,7 +907,7 @@ int main(int argc, char** argv) {
     bool ran_case = false;
     bool all_pass = true;
     for (const auto& floor_case : cases) {
-      if ((!extended && floor_case.steps_per_cell_width == 80) || (!selected.empty() && selected != floor_case.name)) {
+      if ((!extended && floor_case.steps_per_cell_width == 80) || (selected != "all" && selected != floor_case.name)) {
         continue;
       }
       ran_case = true;
@@ -911,9 +920,13 @@ int main(int argc, char** argv) {
           1,
           0.10,
           false,
-          extended ? 1.5 : 0.75,
+          end_time,
           0,
-          {},
+          {
+              phase == "half-x" || phase == "half-xz" ? 0.5 * width : 0,
+              0,
+              phase == "half-z" || phase == "half-xz" ? 0.5 * width : 0,
+          },
           0.7,
           false,
           1,
