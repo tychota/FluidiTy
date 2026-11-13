@@ -11241,3 +11241,27 @@ four cases still miss the radius and angle bounds. The
 tenfold horizontal mass floor does not materially affect
 the spread in this control. The native command exits 1.
 CUDA was untested and both temporary edits were restored.
+
+
+#### Reduce horizontal APIC deposition in the dense column
+
+On b5e0042, scale the x and z rows of the granular APIC
+deposit by zero or one half. Retain the vertical row, fitted
+slope storage, deformation gather, stress, and contact.
+Run the native dense column at 3 s and the default native
+dry-scene test at its original endpoint.
+
+| Case | Dense baseline radius (m) | Zero retention angle / radius (m) | Half retention angle / radius (m) |
+|---|---:|---:|---:|
+| Coarse | 0.170290 | 37.965752° / 0.138150 | 34.472800° / 0.148559 |
+| Fine | 0.182075 | 36.157305° / 0.143913 | 32.805200° / 0.155027 |
+| Coarse half-step | 0.172975 | 43.445968° / 0.120120 | 35.365751° / 0.133155 |
+| Fine half-step | 0.185666 | 41.610549° / 0.127542 | 33.231875° / 0.142933 |
+
+Every dense radius passes with either control. Half retention
+puts three angles in band, but the coarse half-step exceeds
+35° and the default coarse pile reaches 52.852714° with a
+0.092381 m radius. Zero retention makes the default failure
+larger. These results identify horizontal affine transfer as
+a contributor to spread and show the regression from uniform
+attenuation. CUDA was untested and temporary edits were restored.
