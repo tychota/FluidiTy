@@ -593,6 +593,55 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedSampledLiquidGeom
   return result;
 }
 
+absl::StatusOr<double> EvaluateGradedSampledLiquidDistance3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidCornerSample3D> samples,
+    std::size_t leaf_ordinal,
+    Vec3 position_m
+) {
+  if (leaf_ordinal >= geometry.leaves().size()) {
+    return absl::InvalidArgumentError("Sampled liquid query names an invalid leaf");
+  }
+  const auto& measured = geometry.leaves()[leaf_ordinal];
+  const auto& key = geometry.topology().cells()[leaf_ordinal].key;
+  const auto point = CartesianComponents(position_m);
+  const auto low = CartesianComponents(measured.world_lower_m);
+  const auto high = CartesianComponents(measured.world_upper_m);
+  CartesianVector fraction{};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!(point[axis] >= low[axis] && point[axis] < high[axis])) {
+      return absl::FailedPreconditionError("Sampled liquid query is outside its canonical leaf");
+    }
+    fraction[axis] = (point[axis] - low[axis]) / (high[axis] - low[axis]);
+  }
+  std::array axes{0, 1, 2};
+  std::ranges::sort(axes, [&](int left, int right) {
+    return fraction[left] == fraction[right] ? left < right : fraction[left] > fraction[right];
+  });
+  const std::array corner_bits{0, 1 << axes[0], (1 << axes[0]) | (1 << axes[1]), 7};
+  const std::array weights{
+      1 - fraction[axes[0]],
+      fraction[axes[0]] - fraction[axes[1]],
+      fraction[axes[1]] - fraction[axes[2]],
+      fraction[axes[2]],
+  };
+  double distance = 0;
+  for (std::size_t vertex = 0; vertex < corner_bits.size(); ++vertex) {
+    const auto corner = SampleOrder(LatticeCorner(key.lower_corner, key.width_exponent, corner_bits[vertex]));
+    const auto found = std::ranges::lower_bound(samples, corner, {}, [](const auto& entry) {
+      return SampleOrder(entry.corner);
+    });
+    if (found == samples.end() || SampleOrder(found->corner) != corner) {
+      return absl::FailedPreconditionError("Sampled liquid query lacks a canonical corner");
+    }
+    distance = std::fma(weights[vertex], found->liquid_distance_m, distance);
+  }
+  if (!std::isfinite(distance)) {
+    return absl::OutOfRangeError("Sampled liquid distance is unrepresentable");
+  }
+  return distance;
+}
+
 absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,

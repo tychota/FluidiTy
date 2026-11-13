@@ -330,8 +330,22 @@ struct LiquidAdaptivePhysicalExteriorPressure3D {
   double distance_m;  // Positive pressure gradient distance.
 };
 
+struct GradedLiquidCornerSample3D {
+  CellCornerIndex3D corner;
+  double liquid_distance_m;
+  double solid_distance_m;
+};
+
+// Canonical sampled start/end fields and leaf-order whole-air certificates.
+// Each sample must be nonsolid for the sampled physical runtime.
+struct LiquidAdaptiveSampledPhysicalGeometry3D {
+  std::span<const GradedLiquidCornerSample3D> start_corners;
+  std::span<const GradedLiquidCornerSample3D> end_corners;
+  std::span<const std::uint8_t> certified_air_leaves;
+};
+
 // Borrowed for one synchronous attempt. The resolved scene supplies the
-// translating halfspace at time zero and the horizontal planar liquid surface.
+// translating halfspace and the plane for attempts without sampled geometry.
 struct LiquidAdaptivePhysicalGeometryRequest3D {
   LiquidClock3D accepted_clock;  // Must equal the current committed clock.
   // One independent source per canonical leaf. Certified air requires zero.
@@ -342,6 +356,8 @@ struct LiquidAdaptivePhysicalGeometryRequest3D {
   // A finite end height authorizes one wet/air change. The resolved scene
   // supplies the start height. The same endpoint is required on replay.
   std::optional<double> end_surface_height_m = std::nullopt;
+  // Explicit sampled endpoints, mutually exclusive with end_surface_height_m.
+  std::optional<LiquidAdaptiveSampledPhysicalGeometry3D> sampled = std::nullopt;
 };
 
 // Width evidence for one accepted leaf and its candidate sibling family.

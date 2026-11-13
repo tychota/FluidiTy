@@ -436,6 +436,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu physical-air)
   set_tests_properties(AdaptivePhysicalAirReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptivePhysicalSampledReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu physical-sampled)
+  set_tests_properties(AdaptivePhysicalSampledReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   foreach(transition IN ITEMS wetting drying)
     add_test(NAME AdaptivePhysicalWetTransitionReplay.cpu.${transition}
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
@@ -483,6 +487,10 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda physical-air)
     set_tests_properties(AdaptivePhysicalAirReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptivePhysicalSampledReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda physical-sampled)
+    set_tests_properties(AdaptivePhysicalSampledReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
     foreach(transition IN ITEMS wetting drying)
       add_test(NAME AdaptivePhysicalWetTransitionReplay.cuda.${transition}
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"

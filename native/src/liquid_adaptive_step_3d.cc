@@ -15,6 +15,7 @@
 #include "fluidity/host/liquid_eos.h"
 #include "graded_liquid_boundary_geometry_3d.h"
 #include "graded_liquid_sparse_publication_3d.h"
+#include "graded_sampled_liquid_boundary_geometry_3d.h"
 #include "liquid_substep_3d_internal.h"
 #include "mac_deposit_3d_internal.h"
 #include "mac_pressure_3d_arithmetic.h"
@@ -637,6 +638,7 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       ? physical_trial_->wet_open_faces.capacity() * sizeof(std::uint8_t)
           + physical_trial_->end_fluid_volumes_m3.capacity() * sizeof(double)
           + (physical_trial_->sparse_geometry ? physical_trial_->sparse_geometry->reserved_bytes() : 0)
+          + (physical_trial_->sampled_end_geometry ? physical_trial_->sampled_end_geometry->reserved_bytes() : 0)
       : 0;
   return topology_.reserved_bytes() + transfer_.reserved_bytes() + interior_slots_.capacity() * sizeof(std::size_t)
       + physical_trial_bytes + subfaces_.capacity() * sizeof(pressure_internal::AdaptiveMacPressureSubface3D)
@@ -680,6 +682,20 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       .plane_coordinate_m = surface_height_,
   };
   const bool changing_membership = request.end_surface_height_m.has_value();
+  const auto& sampled = request.sampled;
+  if (sampled && changing_membership) {
+    return absl::InvalidArgumentError("Sampled geometry and a planar endpoint are mutually exclusive");
+  }
+  if (sampled) {
+    const auto nonsolid = [](const auto& corner) {
+      return corner.solid_distance_m > 0;
+    };
+    if (start_halfspace->wall_velocity.x != 0 || start_halfspace->wall_velocity.y != 0
+        || start_halfspace->wall_velocity.z != 0 || !std::ranges::all_of(sampled->start_corners, nonsolid)
+        || !std::ranges::all_of(sampled->end_corners, nonsolid)) {
+      return absl::FailedPreconditionError("Sampled physical trials require stationary nonsolid support");
+    }
+  }
   auto end_surface = surface;
   if (changing_membership) {
     end_surface.plane_coordinate_m = *request.end_surface_height_m;
@@ -688,13 +704,20 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     }
     *end_halfspace = EndGradedLiquidWetTransitionSolid3D(*start_halfspace, duration);
   }
-  auto start_geometry = FreezeGradedPlanarLiquidGeometry3D(
-      topology_,
-      accepted.geometry.world_origin,
-      *start_halfspace,
-      surface,
-      duration
-  );
+  auto start_geometry = sampled ? FreezeGradedSampledLiquidGeometry3D(
+                                      topology_,
+                                      accepted.geometry.world_origin,
+                                      duration,
+                                      sampled->start_corners,
+                                      sampled->certified_air_leaves
+                                  )
+                                : FreezeGradedPlanarLiquidGeometry3D(
+                                      topology_,
+                                      accepted.geometry.world_origin,
+                                      *start_halfspace,
+                                      surface,
+                                      duration
+                                  );
   if (!start_geometry.ok()) {
     return start_geometry.status();
   }
@@ -702,13 +725,20 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
   if (!changing_membership) {
     frozen_end_wall.wall_velocity = {};
   }
-  const auto end_geometry = FreezeGradedPlanarLiquidGeometry3D(
-      topology_,
-      accepted.geometry.world_origin,
-      frozen_end_wall,
-      end_surface,
-      duration
-  );
+  auto end_geometry = sampled ? FreezeGradedSampledLiquidGeometry3D(
+                                    topology_,
+                                    accepted.geometry.world_origin,
+                                    duration,
+                                    sampled->end_corners,
+                                    sampled->certified_air_leaves
+                                )
+                              : FreezeGradedPlanarLiquidGeometry3D(
+                                    topology_,
+                                    accepted.geometry.world_origin,
+                                    frozen_end_wall,
+                                    end_surface,
+                                    duration
+                                );
   if (!end_geometry.ok()) {
     return end_geometry.status();
   }
@@ -721,6 +751,8 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       .end_fluid_volumes_m3 = {},
       .sparse_geometry = std::nullopt,
       .wet_transition = std::nullopt,
+      .sampled_end_geometry = std::nullopt,
+      .sampled_end_corners = {},
   };
   bool has_known_air = false;
   std::size_t changed_leaves = 0;
@@ -731,6 +763,19 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     const auto& start_leaf = start_geometry->leaves()[cell];
     const auto& end_leaf = end_geometry->leaves()[cell];
     const auto& record = accepted.adaptive_cells[cell];
+    if (sampled) {
+      const auto& low = start_leaf.world_lower_m;
+      const auto& high = start_leaf.world_upper_m;
+      for (const double x : {low.x, high.x}) {
+        for (const double y : {low.y, high.y}) {
+          for (const double z : {low.z, high.z}) {
+            if (!(SolidDistance(start_wall, {x, y, z}) > 0)) {
+              return absl::FailedPreconditionError("Sampled physical trial intersects the resolved wall");
+            }
+          }
+        }
+      }
+    }
     const double target_divergence_s_inv = request.target_divergences_s_inv[cell];
     const bool start_air = record.occupancy == LiquidCellOccupancy3D::kAir;
     if (changing_membership) {
@@ -779,7 +824,21 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
   }
   for (const auto& particle : accepted.particles.values()) {
     const double wall_distance = SolidDistance(start_wall, particle.world_position);
-    if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= surface_height_) {
+    if (sampled) {
+      const auto leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
+      if (!leaf.ok()) {
+        return leaf.status();
+      }
+      const auto distance = EvaluateGradedSampledLiquidDistance3D(
+          *start_geometry,
+          sampled->start_corners,
+          *leaf,
+          particle.world_position
+      );
+      if (!distance.ok() || *distance >= 0) {
+        return absl::FailedPreconditionError("Sampled physical trial starts outside reconstructed liquid");
+      }
+    } else if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= surface_height_) {
       return absl::FailedPreconditionError("Graded physical trial starts with a particle outside the liquid");
     }
   }
@@ -808,6 +867,17 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
   auto pressure = ComposeGradedPlanarLiquidPressureInputs3D(*start_geometry, cells, faces, domain);
   if (!pressure.ok()) {
     return pressure.status();
+  }
+  if (sampled) {
+    for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+      const bool start_wet = physical.wet_open_faces[slot] != 0;
+      const bool end_wet = end_geometry->subfaces()[slot].wet_open_area_m2 > 0;
+      if (start_wet != end_wet) {
+        return absl::FailedPreconditionError("Sampled physical trial changes canonical wet carrier support");
+      }
+    }
+    physical.sampled_end_geometry = std::move(*end_geometry);
+    physical.sampled_end_corners = sampled->end_corners;
   }
   pressure_cells_ = std::move(pressure->cells);
   subfaces_ = std::move(pressure->subfaces);
@@ -1793,7 +1863,22 @@ absl::Status AdaptiveLiquidStep3D::Update(
         wet_transition ? wet_transition->request.end_liquid_plane_coordinate_m : surface_height_;
     for (const auto& particle : trial.particles.values()) {
       const double wall_distance = SolidDistance(physical_trial_->end_wall, particle.world_position);
-      if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= end_surface_height_m) {
+      if (physical_trial_->sampled_end_geometry) {
+        const auto leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
+        if (!leaf.ok()) {
+          return leaf.status();
+        }
+        const auto distance = EvaluateGradedSampledLiquidDistance3D(
+            *physical_trial_->sampled_end_geometry,
+            physical_trial_->sampled_end_corners,
+            *leaf,
+            particle.world_position
+        );
+        if (!distance.ok() || *distance >= 0) {
+          return absl::AbortedError("Sampled physical trial ends outside reconstructed liquid");
+        }
+      } else if (!std::isfinite(wall_distance) || wall_distance < 0
+                 || particle.world_position.y >= end_surface_height_m) {
         return absl::AbortedError("Graded physical trial moved a particle outside the liquid");
       }
     }
