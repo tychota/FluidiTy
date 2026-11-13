@@ -8524,3 +8524,22 @@ the same initial geometry and unchanged printed radius of
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-double-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Substep deformation and return on a frozen grid gradient
+
+On 255739e, run the native fine half-step through 12 s. Split
+each compatible-floor constitutive update into two equal
+Euler increments using the same gathered gradient. Apply
+granular return after each increment. Grid transfer, wall
+contact and advection still advance at the original timestep.
+
+The envelope angles at 3, 6, 9 and 12 s are 34.683069°,
+30.849602°, 27.959452° and 25.451087°. The largest difference
+from baseline is 0.029°. The 12 s radius is 0.156627 m and
+late height loss is 33.84 mm. Splitting return on the frozen
+gradient leaves the observed creep nearly intact. The
+temporary solver change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-constitutive-substeps-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
