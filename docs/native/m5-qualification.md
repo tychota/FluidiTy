@@ -12476,3 +12476,26 @@ six-second baseline. This confirms that the late half-step
 angle loss is vertical collapse at essentially fixed radius.
 The matrix exits 1. CUDA and dense sampling were untested.
 The temporary fixture edit was restored.
+
+#### Extend resident floor compression to twelve seconds
+
+On 39fe7a6, retain min(0, incoming yy) in the projected
+gradient for ordinary granular floor hits at zero fraction.
+Use the same sparse 12 s endpoint as the preceding baseline.
+Build the native dry-scene target and run
+`--q-sand-column-long-settle 12`.
+
+| Case | Compression angle at 6 s | Compression angle at 12 s | Final ≈1 s drift | Radius at 12 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 36.442893° | 36.295710° | 0.001830° | 0.142033 |
+| Fine | 30.159032° | 29.959037° | 0.001188° | 0.147397 |
+| Coarse half-step | 34.609817° | 35.255504° | 0.266517° | 0.142443 |
+| Fine half-step | 30.112880° | 28.195258° | 0.216714° | 0.152230 |
+
+The unmodified half-step piles flatten to 2.304259° and 0°.
+With resident compression both retain substantial height,
+and all four final drift magnitudes are below one degree.
+All four angles miss the 30–35° band and the matrix exits 1.
+The 6 s fine angle passes therefore do not persist through
+12 s. CUDA and dense sampling were untested at this horizon.
+The temporary solver and fixture edits were restored.
