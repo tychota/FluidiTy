@@ -93,6 +93,8 @@ struct StagedTransfer {
 absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
   staged.query.face_count = staged.faces.size();
   staged.query.particle_count = staged.particles.size();
+  const bool parallel_deposit =
+      staged.query.operation == cuda_internal::BoundaryTransferOperation3D::kDeposit && staged.query.particle_count > 0;
   staged.face_results.resize(staged.faces.size());
   staged.particle_results.resize(staged.particles.size());
   CudaOperatorMeasurement measurement{};
@@ -131,7 +133,18 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
       if (!current.ok()) {
         return current;
       }
-      current = runtime.Allocate(1, report);
+      if (parallel_deposit) {
+        current = runtime.Upload(std::span<const cuda_internal::BoundaryTransferReport3D>(&staged.report, 1), report);
+        if (!current.ok()) {
+          return current;
+        }
+        current = cuda_internal::CheckCuda(
+            cudaMemsetAsync(face_results, 0, std::span(staged.face_results).size_bytes(), runtime.stream()),
+            "Initialize boundary deposit output"
+        );
+      } else {
+        current = runtime.Allocate(1, report);
+      }
       if (!current.ok()) {
         return current;
       }
@@ -139,18 +152,26 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
       if (!current.ok()) {
         return current;
       }
-      current = cuda_internal::CheckCuda(
-          static_cast<cudaError_t>(cuda_internal::LaunchLiquidBoundaryTransfer3D(
-              query,
-              faces,
-              particles,
-              face_results,
-              particle_results,
-              report,
-              runtime.stream()
-          )),
-          "Launch boundary transfer"
-      );
+      const int launch_result = parallel_deposit ? cuda_internal::LaunchLiquidBoundaryDeposit3D(
+                                                       query,
+                                                       faces,
+                                                       particles,
+                                                       face_results,
+                                                       particle_results,
+                                                       report,
+                                                       staged.query.particle_count,
+                                                       runtime.stream()
+                                                   )
+                                                 : cuda_internal::LaunchLiquidBoundaryTransfer3D(
+                                                       query,
+                                                       faces,
+                                                       particles,
+                                                       face_results,
+                                                       particle_results,
+                                                       report,
+                                                       runtime.stream()
+                                                   );
+      current = cuda_internal::CheckCuda(static_cast<cudaError_t>(launch_result), "Launch boundary transfer");
       if (!current.ok()) {
         return current;
       }
@@ -175,7 +196,16 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
         return measured.status();
       }
       measurement = *measured;
-      return boundary_internal::ArithmeticStatus(staged.report.error);
+      if (!parallel_deposit) {
+        return boundary_internal::ArithmeticStatus(staged.report.error);
+      }
+      if (staged.report.first_parallel_error == cuda_internal::kNoParallelTransferError) {
+        return absl::OkStatus();
+      }
+      const auto error = static_cast<boundary_internal::Error>(
+          staged.report.first_parallel_error % cuda_internal::kBoundaryTransferErrorCodeCount
+      );
+      return boundary_internal::ArithmeticStatus(error);
     };
     status = execute();
   }
