@@ -370,6 +370,14 @@ struct LiquidAdaptiveBandRequest3D {
   std::size_t reseed_particle_count = 1;
 };
 
+// One authored retirement request, bounded by its evidence duration.
+struct LiquidAdaptiveBandTrial3D {
+  LiquidAdaptiveBandRequest3D request;
+  double maximum_step_duration_s;
+};
+using LiquidAdaptiveBandSelector3D =
+    absl::FunctionRef<absl::StatusOr<std::optional<LiquidAdaptiveBandTrial3D>>(const LiquidState3D&)>;
+
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
 // Errors have empty messages. Physical state is published only by successful acceptance.
@@ -605,6 +613,14 @@ class LiquidSubstepScheduler3D {
       LiquidProgressObserver3D observer = {}
   );
 
+  // Run authenticated retirement requests using the ordinary frame retry path.
+  // Borrowed evidence must be identical when the accepted state is unchanged.
+  absl::Status AdvanceFrameWithAdaptiveBand(
+      double target_time,
+      LiquidAdaptiveBandSelector3D select,
+      LiquidProgressObserver3D observer = {}
+  );
+
   // Advances liquid and snow to target_time using both materials' step bounds.
   // Copies the initial records from inputs before advancing, so they may alias
   // accepted_snow. On failure after the frame begins, accepted_snow matches
@@ -643,9 +659,16 @@ class LiquidSubstepScheduler3D {
       LiquidProgressObserver3D observer,
       std::optional<LiquidSnowStepInputs3D> snow_inputs,
       std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow,
-      const LiquidAdaptiveWidthSelector3D* select_width = nullptr
+      const LiquidAdaptiveWidthSelector3D* select_width = nullptr,
+      const LiquidAdaptiveBandSelector3D* select_band = nullptr
   );
   struct SnowTrial;
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptAdaptiveBandPlacement(
+      double step_duration,
+      const LiquidAdaptiveBandRequest3D& request,
+      bool retirement_only,
+      LiquidWorkPhaseObserver3D work_phase
+  );
   struct AdaptiveStateTrial;
   struct AdaptivePhysicalTrial;
   struct AdaptiveWidthAgeTrial;

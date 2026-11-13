@@ -103,8 +103,47 @@ absl::Status ValidateAdaptiveWidthPlan(LiquidResolvedSceneView3D input, LiquidCa
   return absl::OkStatus();
 }
 
+constexpr std::uint32_t kAdaptiveBandSceneVersion = 3;
+
+absl::Status ValidateAdaptiveBandActions(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
+  const auto actions = input.adaptive_band_actions;
+  if (actions.empty()) {
+    return absl::OkStatus();
+  }
+  if (actions.size() > limits.maximum_upstream_records || actions.size() > (1 << 20)) {
+    return detail::Error(absl::StatusCode::kResourceExhausted);
+  }
+  const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&input.scene.obstacle);
+  if (!input.adaptive_width_actions.empty() || input.model_version != kLiquidOnlyResolvedModel3D || tank == nullptr
+      || tank->piston_velocity_x != 0 || !std::holds_alternative<LiquidHorizontalPlaneSurface3D>(input.scene.field)) {
+    return Invalid();
+  }
+  for (std::size_t index = 0; index < actions.size(); ++index) {
+    const auto& action = actions[index];
+    const auto& carrier = action.carrier;
+    if (!detail::ValidClock(action.accepted_clock) || action.accepted_state_digest == LiquidDigest3D{}
+        || (index != 0 && actions[index - 1].accepted_clock.epoch >= action.accepted_clock.epoch)
+        || action.leaf.width_exponent > 30 || !detail::Positive(action.maximum_step_duration_s)
+        || !detail::Nonnegative(action.margins.particle_support_radius_m)
+        || !detail::Nonnegative(action.margins.accepted_sweep_m) || action.margins.reseed_radius_m != 0
+        || !detail::Positive(carrier.current_density) || !detail::Positive(carrier.volume_ratio) || carrier.tag != 0
+        || carrier.side_tag != 0 || carrier.phase_id != 0 || !detail::Finite(carrier.cell_center_velocity)
+        || !detail::Finite(carrier.velocity_slopes.x_row) || !detail::Finite(carrier.velocity_slopes.y_row)
+        || !detail::Finite(carrier.velocity_slopes.z_row)) {
+      return Invalid();
+    }
+    const auto lower = action.leaf.lower_corner;
+    const std::int64_t width = std::int64_t{1} << action.leaf.width_exponent;
+    if (lower.x % width != 0 || lower.y % width != 0 || lower.z % width != 0) {
+      return Invalid();
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ValidateResolvedScene(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
   SCENE_TRY(ValidateAdaptiveWidthPlan(input, limits));
+  SCENE_TRY(ValidateAdaptiveBandActions(input, limits));
   SCENE_TRY(CheckSceneRecordCounts(
       input.scene.sources.size(),
       input.upstream.size(),
@@ -475,6 +514,7 @@ LiquidResolvedSceneView3D LiquidResolvedScene3D::View() const {
       .adaptive_width_actions = adaptive_width_actions.values(),
       .adaptive_width_cell_capacity = adaptive_width_cell_capacity,
       .adaptive_width_face_capacity = adaptive_width_face_capacity,
+      .adaptive_band_actions = adaptive_band_actions.values(),
   };
   result.scene.sources = sources.values();
   result.scene.constituent_materials = constituent_materials.values();
@@ -492,7 +532,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
       + (tank != nullptr) + input.options.whitewater_capture.has_value() + input.options.ocean_boundary.has_value();
   return detail::Build<wire::ResolvedScene>(
       tables + input.scene.constituent_materials.size() + input.scene.phase_pairs.size() + input.plastic_bodies.size()
-          + (input.adaptive_width_actions.empty() ? 0 : 1 + input.adaptive_width_actions.size()),
+          + (input.adaptive_width_actions.empty() ? 0 : 1 + input.adaptive_width_actions.size())
+          + input.adaptive_band_actions.size(),
       limits,
       wire::ResolvedSceneIdentifier(),
       [&](flatbuffers::FlatBufferBuilder& builder) -> absl::StatusOr<flatbuffers::Offset<wire::ResolvedScene>> {
@@ -818,12 +859,55 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
               *actions
           );
         }
+        flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wire::AdaptiveBandAction>>> band_actions;
+        if (!input.adaptive_band_actions.empty()) {
+          const auto actions = detail::BuildVector<wire::AdaptiveBandAction>(
+              builder,
+              input.adaptive_band_actions.size(),
+              [&](std::size_t index) {
+                const auto& action = input.adaptive_band_actions[index];
+                auto accepted_clock = action.accepted_clock;
+                accepted_clock.time = detail::Canonical(accepted_clock.time);
+                const auto clock = detail::Pack(accepted_clock);
+                const auto digest = detail::Pack(action.accepted_state_digest);
+                const auto corner = action.leaf.lower_corner;
+                const wire::Index3 lower(corner.x, corner.y, corner.z);
+                const auto& carrier = action.carrier;
+                const auto velocity = detail::PackCanonical(carrier.cell_center_velocity);
+                const wire::Matrix3 slopes(
+                    detail::PackCanonical(carrier.velocity_slopes.x_row),
+                    detail::PackCanonical(carrier.velocity_slopes.y_row),
+                    detail::PackCanonical(carrier.velocity_slopes.z_row)
+                );
+                return wire::CreateAdaptiveBandAction(
+                    builder,
+                    &clock,
+                    &digest,
+                    &lower,
+                    action.leaf.width_exponent,
+                    action.maximum_step_duration_s,
+                    detail::Canonical(action.margins.particle_support_radius_m),
+                    detail::Canonical(action.margins.accepted_sweep_m),
+                    carrier.current_density,
+                    carrier.volume_ratio,
+                    &velocity,
+                    &slopes
+                );
+              }
+          );
+          if (!actions.ok()) {
+            return actions.status();
+          }
+          band_actions = *actions;
+        }
+        const std::uint32_t version =
+            band_actions.o != 0 ? kAdaptiveBandSceneVersion : (width_plan.o != 0 ? kAdaptiveWidthSceneVersion : 1);
         const auto origin = detail::PackCanonical(input.geometry.world_origin);
         const auto acceleration = detail::PackCanonical(scene.world_acceleration);
         const auto build = detail::Pack(input.build_digest);
         return wire::CreateResolvedScene(
             builder,
-            width_plan.o == 0 ? 1 : kAdaptiveWidthSceneVersion,
+            version,
             0,
             input.model_version,
             static_cast<wire::Backend>(input.backend),
@@ -841,7 +925,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
             constituent_materials,
             phase_pairs,
             plastic_bodies,
-            width_plan
+            width_plan,
+            band_actions
         );
       }
   );
@@ -849,7 +934,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
 absl::StatusOr<LiquidResolvedScene3D>
 DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
   auto verified =
-      detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits, kAdaptiveWidthSceneVersion);
+      detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits, kAdaptiveBandSceneVersion);
   if (!verified.ok()) {
     return verified.status();
   }
@@ -985,6 +1070,42 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
       };
     }));
     const auto valid = ValidateAdaptiveWidthPlan(result->View(), limits);
+    if (!valid.ok()) {
+      return absl::IsResourceExhausted(valid) ? valid : detail::Corrupt();
+    }
+  }
+  const auto* band_actions = root->adaptive_band_actions();
+  if ((root->schema_version() == kAdaptiveBandSceneVersion) != (band_actions != nullptr)) {
+    return detail::Corrupt();
+  }
+  if (band_actions != nullptr) {
+    if (band_actions->size() == 0) {
+      return detail::Corrupt();
+    }
+    if (band_actions->size() > limits.maximum_upstream_records || band_actions->size() > (1 << 20)) {
+      return detail::Error(absl::StatusCode::kResourceExhausted);
+    }
+    SCENE_TRY(detail::Materialize(result->adaptive_band_actions, band_actions, [](const auto* action) {
+      const auto* lower = action->lower_corner();
+      const auto* slopes = action->velocity_slopes();
+      return LiquidAdaptiveBandAction3D{
+          .accepted_clock = detail::Unpack(action->accepted_clock()),
+          .accepted_state_digest = detail::Unpack(action->accepted_state()),
+          .leaf = {.lower_corner = {lower->x(), lower->y(), lower->z()}, .width_exponent = action->width_exponent()},
+          .maximum_step_duration_s = action->maximum_step_duration_s(),
+          .margins =
+              {.particle_support_radius_m = action->particle_support_radius_m(),
+               .accepted_sweep_m = action->accepted_sweep_m()},
+          .carrier =
+              {.current_density = action->current_density(),
+               .volume_ratio = action->volume_ratio(),
+               .cell_center_velocity = detail::Unpack(action->cell_center_velocity()),
+               .velocity_slopes =
+                   {detail::Unpack(&slopes->x_row()), detail::Unpack(&slopes->y_row()), detail::Unpack(&slopes->z_row())
+                   }},
+      };
+    }));
+    const auto valid = ValidateAdaptiveBandActions(result->View(), limits);
     if (!valid.ok()) {
       return absl::IsResourceExhausted(valid) ? valid : detail::Corrupt();
     }

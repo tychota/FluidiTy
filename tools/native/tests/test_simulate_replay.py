@@ -35,8 +35,8 @@ def records(text):
     return result
 
 
-def invoke(executable, *args, success=True):
-    process = subprocess.run([str(executable), *map(str, args)], capture_output=True, encoding="utf-8", timeout=30)
+def invoke(executable, *args, success=True, timeout=30):
+    process = subprocess.run([str(executable), *map(str, args)], capture_output=True, encoding="utf-8", timeout=timeout)
     output = records(process.stdout)
     assert (process.returncode == 0) == success, (process.returncode, process.stdout, process.stderr)
     if success:
@@ -262,8 +262,8 @@ def case_cuda_device(executable, fixture, directory, cuda):
     print(json.dumps(result, ensure_ascii=True, allow_nan=False))
 
 
-def execute(executable, *args, success=True):
-    process = subprocess.run([str(executable), *map(str, args)], capture_output=True, encoding="utf-8", timeout=120)
+def execute(executable, *args, success=True, timeout=120):
+    process = subprocess.run([str(executable), *map(str, args)], capture_output=True, encoding="utf-8", timeout=timeout)
     output = records(process.stdout)
     assert (process.returncode == 0) == success, (process.returncode, process.stdout, process.stderr)
     if success:
@@ -287,7 +287,7 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     initial_modes = (
         "initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level",
         "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-effects",
-        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous", "graded-width", "graded-width-stale",
+        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous", "graded-width", "graded-width-stale", "graded-band", "graded-band-bad-carrier",
     )
     initial = ["--initial-state", str(scene) + ".flst"] if mode in initial_modes else []
     return scene, initial
@@ -658,6 +658,60 @@ def graded_width_replay_case(executable, fixture, directory, backend):
     assert snapshot(cache) == before
     print(json.dumps({"width_backend": backend, "first_state": accepted["state_digest"],
                       "completed_state": endpoint["state_digest"]}, sort_keys=True))
+
+
+def graded_band_replay_case(executable, fixture, directory, backend):
+    scene, initial = make_scene(executable, fixture, directory, backend, "graded-band")
+    cache = directory / "cache"
+    common = ["--stage", "simulate", "--scene", scene, "--backend", backend, "--cache", cache]
+    frames = execute(executable, "run", *common, *initial, "--frame-end", 1, "--trace")
+    accepted = next(record for record in frames if record.get("substep") == 1)
+    assert accepted["cell_count"] == 72 and accepted["particle_count"] == 71, accepted
+    assert accepted["time_seconds"] == 0.005
+    endpoint = frames[-1]
+    assert endpoint["frame"] == 1 and endpoint["particle_count"] == 71
+    assert len(list((cache / "checkpoints").glob("*.flcr"))) == 1
+    before = snapshot(cache)
+    for frame, substep, expected in [(0, 1, accepted), (1, 0, endpoint)]:
+        replay = invoke(executable, "replay", *common, "--frame", frame, "--substep", substep)
+        assert replay["state_digest"] == expected["state_digest"], replay
+    motion = json.loads(subprocess.check_output([str(fixture), "band-source", str(cache)], text=True))
+    seed, final = motion[0]["samples"][0], motion[1]["samples"][-1]
+    assert seed["eulerian_cells"] == 0 and final["eulerian_cells"] == 1
+    assert seed["first_particle_id"] == 1 and final["first_particle_id"] == 2
+    assert seed["next_particle_id"] == final["next_particle_id"] == 73
+    assert final["state_digest"] == endpoint["state_digest"]
+
+    mesh = directory / "mesh"
+    mesh_args = ["--stage", "mesh", "--cache", cache, "--output-cache", mesh]
+    surface = execute(executable, "run", *mesh_args, "--frame-end", 1,
+                      "--surface-spacing", 0.1875, "--surface-sigma", 0.375, timeout=240)[-1]
+    assert surface["retained_ids"] == surface["vertex_count"] > 0, surface
+    assert abs(surface["volume_relative_error"]) <= 0.005, surface
+    topology = json.loads(subprocess.check_output([str(fixture), "mesh-topology", str(mesh)], text=True))
+    assert topology == {"outer_boundaries": 1, "inner_boundaries": 0, "material_m3": 9}, topology
+    mesh_before = snapshot(mesh)
+    replay = invoke(executable, "replay", *mesh_args, "--frame", 1, "--substep", 0, timeout=240)
+    assert replay["payload_digest"] == surface["payload_digest"]
+    assert snapshot(cache) == before and snapshot(mesh) == mesh_before
+
+    bad_scene, bad_initial = make_scene(executable, fixture, directory, backend, "graded-band-bad-carrier")
+    bad_cache = directory / "bad-cache"
+    refused = execute(executable, "run", "--stage", "simulate", "--scene", bad_scene, "--backend", backend,
+                     "--cache", bad_cache, *bad_initial, "--frame-end", 1, success=False)[-1]
+    assert refused["code"] == "E-SIMULATE-FAILED_PRECONDITION", refused
+    assert not (bad_cache / "frames" / "00000000000000000001.flmf").exists()
+    print(json.dumps({"band_backend": backend, "state": endpoint["state_digest"],
+                      "mesh": surface["payload_digest"], "retained_ids": surface["retained_ids"],
+                      "volume_relative_error": surface["volume_relative_error"]}, sort_keys=True))
+
+
+def case_cpu_graded_band(executable, fixture, directory, cuda):
+    graded_band_replay_case(executable, fixture, directory, "cpu")
+
+
+def case_cuda_graded_band(executable, fixture, directory, cuda):
+    graded_band_replay_case(executable, fixture, directory, "cuda")
 
 
 def case_cpu_graded_width(executable, fixture, directory, cuda):
@@ -1192,7 +1246,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--executable", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "cpu_graded_width", "cuda_graded_width", "execution_validation", "cuda_execution", "cuda_replay", "cuda_mixed", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
+    parser.add_argument("--case", choices=["arguments", "schema", "identity", "inspection", "cpu_device", "cuda_device", "cpu_execution", "cpu_replay", "cpu_graded_replay", "cuda_graded_replay", "cpu_graded_width", "cuda_graded_width", "cpu_graded_band", "cuda_graded_band", "execution_validation", "cuda_execution", "cuda_replay", "cuda_mixed", "cpu_lifecycle", "cuda_lifecycle", "cpu_effects", "cuda_effects", "cpu_mesh", "cpu_ocean", "cuda_ocean"], required=True)
     parser.add_argument("--cuda", action="store_true")
     args = parser.parse_args()
     assert args.executable.is_file() and args.fixture.is_file(), "required process executable is missing"

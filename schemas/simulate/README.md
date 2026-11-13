@@ -33,6 +33,16 @@ on a reduced timestep retry. It supplies no coarsening halo. Run, resume and
 replay use the same plan and reject stale evidence before attempting the
 physical step.
 
+Resolved scenes with authored band retirement actions use FLRS schema
+version 3. The version 3 route accepts only stationary graded planar tanks
+and explicit retirement. The action authenticates its accepted clock,
+canonical state digest, leaf, duration ceiling, support/sweep margins and
+caller-certified implicit-liquid affine carrier. Native placement derives
+the leaf's occupancy and interface distance from the accepted state and
+refuses a carrier that disagrees with its inventory. Width and band plans
+are separate resolved variants. Existing v1 and v2 scenes retain their
+canonical bytes.
+
 Physical state persists geometry, clock/epoch, seed and next ID; particle
 ID/tag/position/stored velocity/APIC slopes/affine flag/mass/reference volume/J/side/PIC;
 block indices/generation/activation and inactive ages; cell occupancy and pressure;
