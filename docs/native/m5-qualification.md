@@ -5994,3 +5994,20 @@ upward velocity of 6.66812827038e-7 m/s. Both exceed the
 isolated fixture tolerances. The geometric mask therefore
 applies an early wall reaction through stress scatter.
 The diagnostic source was restored after linking.
+
+### Exclude zero-weight faces from the contact mask
+
+On 3008848, mark a face in the floor contact patch only
+when a particle already at the floor has positive quadratic
+weight on that face. Both default dry-scene tests pass on
+native and SM120. The four native extended logs match the
+original clearing runs byte for byte. This rules out the
+zero-weight entries as a source of geometry differences in
+this matrix. The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-positive-contact-mask-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
