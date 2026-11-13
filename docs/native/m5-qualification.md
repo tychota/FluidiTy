@@ -6296,3 +6296,28 @@ Use the earlier clean-build and Blender commands with
 out/build/m5-main-6472b77-release, out/authored-upstream-6472b77-cpu,
 and out/authored-upstream-6472b77-cuda. The default dry-scene
 targets do not include the extended sand matrix. Q-SAND remains open.
+
+### Clear horizontal derivatives of the normal affine row
+
+On 3008848, zero the x and z derivatives of stored normal
+velocity after the wall sweep. Keep its vertical derivative
+and the existing tangent feedback. Both default native and
+SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Failed check |
+|---|---:|---:|---|
+| Coarse | 31.759420° | 0.179910 | Radius |
+| Coarse half-step | 39.827983° | 0.154348 | Angle |
+| Fine | 28.378341° | 0.177818 | Angle and radius |
+| Fine half-step | 35.494428° | 0.160308 | Angle and radius |
+
+The nominal runs spread farther by 11.699 and 18.261 mm,
+respectively. Both fine passes are lost. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-no-cross-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
