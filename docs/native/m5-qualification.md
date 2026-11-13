@@ -12126,3 +12126,27 @@ measures the response of the existing discrete path from rest.
 The four original angles reproduce the baseline and the command
 exits 1. CUDA and dense sampling were untested. The fixture
 edit was restored.
+
+#### Offset ordinary-floor granular contact by particle reference spacing
+
+On 65c7cd0, pass a per-particle floor height of
+`0.25 * cbrt(reference_volume)` to the ordinary-floor granular
+sweep. Leave the grid origin, transfer, stress scatter,
+compatible-floor path, snow path and angle estimator unchanged.
+The fixture still measures height from the original physical
+plane, so its angle includes the added clearance.
+
+| Case | Sparse 6 s angle | Dense 3 s angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 19.022598° | 28.581353° | 0.170913 |
+| Fine | 5.153735° | 26.334554° | 0.182571 |
+| Coarse half-step | 17.183332° | 22.616351° | 0.173931 |
+| Fine half-step | 13.543265° | 21.343035° | 0.186041 |
+
+Build the native dry-scene target and run it without arguments,
+with `--q-sand-column-long-settle 6`, and with
+`--q-sand-dense-column-long-settle 3`. All three commands exit
+1. The default run exits before scene output. Both matrices
+fail every angle and persistence check, and the dense matrix
+also fails every radius check. This offset does not produce
+a stable pile. CUDA was untested and the source edit was restored.
