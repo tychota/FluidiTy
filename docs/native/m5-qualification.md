@@ -6426,3 +6426,30 @@ The geometry reproduces the original clearing matrix.
 This audit covers individual traction updates with frozen
 normal reaction. It does not establish a coupled contact
 solution or close Q-SAND. The instrumentation was restored.
+
+### Prevent a downward normal affine deposit from reversing sign
+
+On 3008848, limit the normal affine row of particles with
+nonpositive vertical velocity immediately before deposit.
+Use the centered offsets of the current eligible normal
+stencil and scale the whole row by the largest fraction
+that keeps its reconstructed samples nonpositive.
+Both default dry-scene tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.836707° | 0.168481 |
+| Coarse half-step | 42.871228° | 0.146503 |
+| Fine | 31.353075° | 0.162246 |
+| Fine half-step | 38.654455° | 0.151479 |
+
+Both half-step piles become narrower and steeper. The
+nominal radii exceed the bound. All four fail at least
+one check. The temporary solver edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-no-reversal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
