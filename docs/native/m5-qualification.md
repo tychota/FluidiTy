@@ -9550,3 +9550,29 @@ original time levels.
 Run the isolated native diagnostic with
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 The temporary solver source was restored.
+
+### Check vertical midpoint sampling across the native sand matrix
+
+Use the vertical midpoint diagnostic above with exact
+reflection and unchanged transport. Run each case to 18 s.
+
+| Case | Angle at 3 s | 12 s | 18 s | Radius at 18 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 36.127° | 30.163° | 25.221° | 0.196341 |
+| Coarse half-step | 41.216° | 33.767° | 33.161° | 0.168535 |
+| Fine | 33.888° | 27.779° | 27.756° | 0.167741 |
+| Fine half-step | 35.061° | 29.673° | 28.982° | 0.159789 |
+
+All four exit 1. The coarse half-step changes by only 0.015°
+from 15 to 18 s, but its radius exceeds 0.16 m. The fine
+half-step stays inside the radius bound and falls below 30°.
+The paired work residual is at most 6.2e-16 J. The stationary
+strain probe passes all four refinements with exact zero
+position and velocity. Its final elastic yy stretch at the
+1 ms timestep is 0.949272811491, versus 0.949494657882 in the
+original probe. The midpoint sample preserves the existing
+refinement bound and leaves a larger strain error at 1 ms.
+
+Run the experimental native executable with
+`--q-sand-symmetric-affine-decay 0 <case> all 18` and
+`--q-sand-single-particle-strain`. The isolated source is clean.
