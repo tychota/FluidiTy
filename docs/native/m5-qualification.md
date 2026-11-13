@@ -7054,3 +7054,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Separate the wall-face normal clamp from its traction cap
+
+Repeat the four native column cases on 3008848 with either the
+wall-face normal clamp alone or the stopping impulse added to the
+traction cap alone. Keep the particle sweep in both controls.
+
+| Case | Clamp alone, first rejected step and stencil | Cap alone, envelope and radius at 3 s |
+|---|---|---:|
+| Coarse | 428, wall x traction | 35.052610° / 0.167978 m |
+| Coarse half-step | 1465, wall x traction | 41.018846° / 0.160015 m |
+| Fine | 501, wall z traction | 31.863409° / 0.161358 m |
+| Fine half-step | 1382, destination | 35.290548° / 0.155641 m |
+
+The clamp-only cases all reject a required MAC stencil. The
+combined clamp and cap completed the four runs in the preceding
+control. The cap-only cases complete and all miss the declared
+angle or radius bound. Their paired cut stress work residual stays
+within 6.5e-16 J. Both temporary solver changes were restored.
+
+```powershell
+foreach ($variant in 'wall-face-clamp-trace', 'wall-face-cap-only') {
+  $bin = "out/pr-m5-sand-affine/out/sand-affine-$variant-bin"
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
