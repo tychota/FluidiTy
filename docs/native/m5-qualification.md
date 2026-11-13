@@ -5132,3 +5132,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Project the tangent target onto the two nearest donors
+
+On 3008848, for mass-weighted full-rank tangent rows with
+negative coefficients, project the target onto the segment
+between the nearest donor and the next nearest donor. Clamp
+the projection to the segment and use its two linear weights
+for both gather and force scatter. Keep the fallback flag.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 34.104916° | 0.169664 m | Radius |
+| Coarse half-step | 40.837993° | 0.157062 m | Angle |
+| Fine | 31.204066° | 0.160834 m | Radius |
+| Fine half-step | 34.554525° | 0.157460 m | Pass |
+
+The segment rule preserves the fine half-step pass but
+increases all four radii. Both coarse failures persist.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-nearest-segment-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
