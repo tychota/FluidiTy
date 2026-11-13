@@ -12566,3 +12566,22 @@ volumetric correction raises both half-step angles by
 about 12° from baseline. The trace-preserving correction
 raises them by less than 1°. Neither qualifies Q-SAND.
 CUDA and dense sampling were untested. The source edit was restored.
+
+#### Apply volumetric floor compression only after positive-time impacts
+
+On a8476fd, add one third of min(0, incoming yy) to each
+diagonal entry of the projected gradient only for ordinary
+granular floor hits with positive incoming duration.
+This complements the preceding volumetric control at
+zero-fraction hits. Leave the incoming gradient, sweep,
+stress scatter, and acceptance criteria unchanged.
+
+Build the native dry-scene target and run
+`--q-sand-column-long-settle 6`. In coarse, fine, coarse
+half-step and fine half-step order the angles are
+33.846206°, 23.425065°, 17.107071°, and 13.060889°.
+The largest change from the ordinary baseline is 0.003397°.
+The matrix exits 1. The large response to volumetric
+compression at zero-fraction hits is absent in the
+positive-time impact control. CUDA and dense sampling
+were untested. The temporary source edit was restored.
