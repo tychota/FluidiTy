@@ -148,3 +148,18 @@ remain outside this control.
 cmake --build out/e --parallel 2 --target fluidity_native_tests
 ctest --test-dir out/e -V -R 'GradedLiquidBoundaryGeometry3D.MatchesUniformCurvedPressureAndGeometryError'
 ```
+
+
+The CUDA test constructs the same frozen graphs through the shared fixture.
+The persistent SM120 arena met the same four limits and reproduced the
+reported CPU metrics at the displayed precision. Device reservation count,
+free count and live bytes remained fixed across both solves. The full CUDA
+MAC pressure suite passed 12 tests, and Compute Sanitizer found zero errors
+in the curved arena case.
+
+```powershell
+cmake --build out/g --parallel 2 --target fluidity_cuda_operator_tests
+ctest --test-dir out/g -V -R '^CudaMacPressure3D'
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/g/fluidity_cuda_operator_tests.exe '--gtest_filter=CudaMacPressure3D.MatchesUniformCurvedPressureAndGeometryErrorInArena'
+```
