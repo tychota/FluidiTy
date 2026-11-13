@@ -10032,3 +10032,24 @@ and 0.131221 m on the fine grid. The integrated cut work
 residual stays below 2.4e-16 J. This finite-time result leaves
 the smaller-step settlement behavior unqualified. The
 temporary sources were restored. CUDA was untested.
+
+### Extend the refined paired blend through three seconds
+
+On 64db21c, rerun the equal paired blend with the same quarter
+and eighth timesteps and a 3 s endpoint. Keep the material,
+particle sampling and acceptance criteria.
+
+| Case | Angle at 1.5 s | Angle at 3 s | Radius at 3 s (m) |
+|---|---:|---:|---:|
+| Coarse quarter-step | 39.880769° | 33.384357° | 0.142157 |
+| Fine quarter-step | 35.920061° | 31.251002° | 0.163865 |
+| Coarse eighth-step | 49.489569° | 39.228247° | 0.128871 |
+| Fine eighth-step | 44.069917° | 35.200336° | 0.151239 |
+
+Angles fall by 4.67° to 10.26° after the original endpoint.
+Only the coarse quarter-step satisfies both angle and radius
+bounds at 3 s. The fine quarter-step enters the angle band
+and spreads beyond the radius limit. Both eighth-steps remain
+above 35°. The maximum cut stress-work residual is 2.34e-16 J.
+The native CTest matrix fails. The temporary solver and test
+edits were restored. CUDA was untested for this extension.
