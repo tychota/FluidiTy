@@ -5663,3 +5663,29 @@ foreach ($phase in 'aligned', 'half-x') {
   & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle fine $phase 6
 }
 ```
+
+### Reset compatible-floor motion during the six-second trace
+
+Temporarily enable the existing TestScene reset_column_velocity
+argument in the tracked compatible-floor command. The diagnostic
+zeros stored velocity and affine slopes at 0.75 s and retains
+particle positions, elastic deformation, and plastic history.
+It then advances to 6 s with the same gravity and wall settings.
+
+| Native fine-grid phase | Kinetic energy removed (J) | Angle without reset | Angle after reset | Radius after reset (m) |
+|---|---:|---:|---:|---:|
+| Aligned | 0.00392945 | 18.236314° | 18.288757° | 0.148422 |
+| Half-cell x | 0.00335059 | 11.621296° | 11.674413° | 0.146663 |
+
+Both runs complete and fail the angle requirement. The reset
+moves each final angle by less than 0.054° and leaves the
+6.61° grid-alignment difference. Motion carried at 0.75 s
+does not account for the late geometry in these cases. The
+fixture was restored and the original native target rebuilt.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+foreach ($phase in 'aligned', 'half-x') {
+  & "$b/fluidity_m5_floor_reset_diagnostic.exe" --q-sand-compatible-floor-long-settle fine $phase 6
+}
+```
