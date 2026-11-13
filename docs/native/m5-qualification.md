@@ -7195,3 +7195,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Apply the full grid friction cap in one pass
+
+On 3008848, replace the forward and reverse half-cap sweeps
+with a single forward sweep using the full Coulomb cap. Keep
+the same reaction points, particle sweep and stress work pair.
+
+| Native case at 3 s | Envelope | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.017268° | 0.171584 |
+| Coarse half-step | 40.122559° | 0.159098 |
+| Fine | 30.064790° | 0.160835 |
+| Fine half-step | 34.431922° | 0.157467 |
+
+Only the fine half-step passes. The coarse half-step stays above
+40°, and the fine nominal radius crosses the 0.16 m limit. This
+complements the previous accumulated-sweep tests by measuring the
+full cap on the first visit alone. The paired cut stress work
+residual stays within 3e-16 J. The temporary code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-single-full-traction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
