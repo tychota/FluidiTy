@@ -10714,3 +10714,41 @@ every angle and passes the default test. Both matrices fail.
 The influence of the yy term is concentrated in its negative
 values in this control. Temporary source was restored.
 CUDA was untested.
+
+#### Retain part of the compressive vertical affine feedback
+
+On 302f85e, scale only negative yy at the ordinary granular
+deposit. Keep the registered timesteps and acceptance bounds.
+
+| Case | Baseline | 75% retention | 50% retention |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 29.398108° | 31.949424° |
+| Fine | 26.761332° | 28.912552° | 31.497797° |
+| Coarse half-step | 29.006384° | 35.972185° | 41.928780° |
+| Fine half-step | 27.033753° | 33.386845° | 39.020718° |
+
+The 75% control passes the fine half-step only. The 50%
+control passes both nominal cases and overshoots both
+half-steps. The default native sand case fails at 37.89°
+and 43.13° respectively. A fixed retention fraction leaves
+a large timestep dependence. Temporary source was restored.
+CUDA was untested for these diagnostic controls.
+
+#### Scale compressive retention by physical time
+
+On 302f85e, multiply negative yy by exp(−400 dt), with
+dt in seconds, at ordinary granular deposit. At the
+registered steps the factor ranges from 0.472 to 0.732.
+
+| Case | Final angle |
+|---|---:|
+| Coarse | 32.238003° |
+| Fine | 31.145172° |
+| Coarse half-step | 37.620263° |
+| Fine half-step | 33.832469° |
+
+Three native cases pass, and the coarse half-step exceeds
+35°. The default native sand case also fails at 43.616929°.
+This reduces the half-step overshoot of constant 50%
+retention, while leaving the short-horizon regression and
+Q-SAND failure. Temporary source was restored. CUDA was untested.
