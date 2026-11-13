@@ -11496,3 +11496,23 @@ exits 1 with angles 30.519543°, 23.904277°, 22.853454°, and
 Returning at the actual contact split leaves the observed
 flattening intact. CUDA and dense sampling were untested.
 The solver edit was restored.
+
+
+#### Refine the ordinary-floor timestep at fixed grid width
+
+On a7bb264, repeat the native sparse 3 s command with the
+two half-step durations halved again. Keep the nominal
+cases and the same floor, material, sampling and bounds.
+
+| Case | Quarter-step duration (s) | Half-step angle | Quarter-step angle | Quarter-step radius (m) | Quarter-step final ≈1 s drift |
+|---|---:|---:|---:|---:|---:|
+| Coarse | 0.00046875 | 22.853454° | 27.727291° | 0.140939 | 4.174450° |
+| Fine | 0.000390625 | 20.811628° | 25.706297° | 0.156032 | 3.315365° |
+
+Both angles increase by about 4.9° with this refinement
+and remain below 30°. Both also lose more than 3° over
+the last second while passing the final 0.05 s drift
+check. The nominal cases reproduce baseline and the
+matrix exits 1. This refinement does not establish a
+settled angle. CUDA was untested and the fixture edit
+was restored.
