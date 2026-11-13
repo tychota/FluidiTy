@@ -9654,3 +9654,27 @@ Run the experimental native binary with
 `--q-sand-single-particle-strain` and
 `--q-sand-symmetric-affine-decay 0 <case> all 18`.
 Both temporary solver edits were restored before the runs.
+
+### Refine the combined wall fit and midpoint operator
+
+Use the combined native executable above at width 0.0625 m.
+Compare the 0.00078125 s step with 0.000390625 s applied
+either at release or after the matched 3 s formed state.
+
+| Schedule | Angle at 3 s | 12 s | 18 s | Radius at 18 s (m) |
+|---|---:|---:|---:|---:|
+| Constant half-step | 38.167104° | 34.593606° | 33.900254° | 0.157910 |
+| Quarter-step after 3 s | 38.167104° | 35.985957° | 34.804493° | 0.157910 |
+| Constant quarter-step | 45.759652° | 37.208375° | 35.442095° | 0.157809 |
+
+The late-refined run passes the 18 s endpoint and loses
+1.51 mm of height from 15 to 18 s, compared with 0.50 mm
+at constant half-step. The fully refined run exceeds 35°
+at 18 s and loses 2.92 mm in the same interval. The apparent
+plateau in the half-step is sensitive to timestep and release
+history. Both new runs preserve the stress-work receipt
+within 1.9e-16 J.
+
+Run `--q-sand-symmetric-affine-decay 0 fine-half all 18 half`
+and `--q-sand-symmetric-affine-decay 0 fine-quarter all 18`.
+The first exits 0 and the second exits 1.
