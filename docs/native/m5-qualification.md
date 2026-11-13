@@ -8162,3 +8162,20 @@ its positive deformation trace open. The fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-volume-transitions-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Resolve the sustained-contact deformation trace by axis
+
+On 255739e, integrate dt times each diagonal component of the
+gathered velocity gradient over accepted steps from 3 to 12 s.
+Include particles whose centers begin and end the step on the
+floor. On the native fine half-step the sums are 0.704347 in x,
+1.934036 in y, and 0.637268 in z. The normal component accounts
+for 59.0% of the summed first-order trace. The particle center
+normal displacement is zero on these steps. The gradient trace
+measures local deformation and differs from the finite-step
+log determinant. The run reproduces the baseline and the
+temporary trace was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-floor-diagonal-trace-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
