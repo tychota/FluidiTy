@@ -10834,3 +10834,31 @@ The 1.5 s pass is transient. Every case loses another
 2.72° or more by 3 s and falls below the angle band. The
 short default coarse endpoint also exceeds 35°. CUDA was
 untested for this diagnostic. Both sources were restored.
+
+
+#### Compare the unchanged solver at three seconds
+
+On 0240092, change the four end times from 1.5 to 3.0 s in
+the shared `--q-sand-column-long-settle` fixture. Keep the
+solver, material, sampling, and acceptance bounds fixed.
+Build both dry-scene executables and run the matrix.
+
+```powershell
+cmake --build out/requalified --target fluidity_m5_dry_scene_tests fluidity_cuda_m5_dry_scene_tests
+ctest --test-dir out/requalified -R '^QSand\.' --output-on-failure
+```
+
+| Case | Baseline angle, native and SM120 | Baseline 0.05 s drift | Native collapse-only angle |
+|---|---:|---:|---:|
+| Coarse | 30.519543° | 0.074589° | 29.018562° |
+| Fine | 23.904249° | 0.055416° | 27.851871° |
+| Coarse half-step | 22.853454° | 0.137065° | 26.687394° |
+| Fine half-step | 20.811628° | 0.171848° | 25.493112° |
+
+Both baseline matrices fail. All four cases meet the radius,
+kinetic energy, and short drift bounds. The correction keeps
+three cases steeper by 3.83–4.68° at 3 s, but all three remain
+below 30°. The coarse case loses 1.50° with the correction.
+The fine half-step baseline still loses 3.83° in the last
+second even though its final kinetic energy is 0.000037 J.
+The fixture edit was restored.
