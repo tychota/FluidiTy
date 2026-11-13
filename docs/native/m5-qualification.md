@@ -7657,3 +7657,31 @@ combined as a linear force decomposition. The trace was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-rest-gravity-pair-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Match zero normal velocity on the active floor patch
+
+On 255739e, set occupied normal grid faces to zero at y = 0
+inside the existing contact patch. Add only the inward stopping
+impulse to the grid friction cap. The deformation ghost field
+already imposes zero there. Keep the particle sweep for any
+remaining contacts.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.272849° | 0.167545 |
+| Coarse half-step | 41.662864° | 0.158736 |
+| Fine | 31.721785° | 0.157737 |
+| Fine half-step | 37.730761° | 0.156337 |
+
+All four cases complete and the fine nominal case passes. The
+absolute cut stress work residual stays below 3.9e-16 J. The
+bilateral zeroing also stops outward motion on the active patch,
+so it serves as a diagnostic rather than a unilateral contact
+candidate. The temporary edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-active-wall-zero-normal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
