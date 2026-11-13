@@ -5315,3 +5315,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Measure spread before extension-only support rejection
+
+On 3008848, repeat the extension-only control and record the
+committed particle positions when the first step rejects.
+The rejection steps reproduce the previous trace. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case | Last accepted time (s) | Radius (m) | Particles at or beyond 0.16 m |
+|---|---:|---:|---:|
+| Coarse | 2.154375 | 0.699260 | 29 of 63 |
+| Coarse half-step | 2.533125 | 0.534872 | 30 of 63 |
+| Fine | 0.578125 | 0.505945 | 38 of 63 |
+| Fine half-step | 1.642188 | 0.641397 | 44 of 63 |
+
+The pile has already reached more than three times the
+radius limit in every case. Between 46% and 70% of the
+equal-mass particles are beyond the limit. These are
+pre-rejection measurements, not settled radii. Enlarging
+the grid alone would leave the observed early spreading
+mechanism in place. Both temporary edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-extension-radius-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
