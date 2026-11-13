@@ -10542,3 +10542,32 @@ margin above the lower bound. At that step the grid-width
 gap increases from 3.351° to 4.968°. The other three cases
 fail angle alone. Native and SM120 agree to six decimal
 places. The temporary fixture was restored.
+
+#### Double particle sampling at matched timesteps
+
+On 48de18d, use the original grid origin and double sampling
+per axis at both widths. Run the same two absolute timesteps
+through 1.5 s on native. The annular estimator resolves all
+four quadrants in each case.
+
+| Grid width (m) | Step (ms) | Envelope | Radius (m) | Quadrant slope |
+|---|---:|---:|---:|---:|
+| 0.075 | 1.5625 | 25.763030° | 0.168944 | 11.791403° |
+| 0.0625 | 1.5625 | 25.002454° | 0.182075 | 21.925421° |
+| 0.075 | 0.78125 | 27.342640° | 0.166654 | 4.997874° |
+| 0.0625 | 0.78125 | 23.529643° | 0.183927 | 13.925098° |
+
+All four cases fail the angle and radius checks and pass the
+short drift and kinetic energy checks. The smaller-step
+fine-grid deficit in envelope angle grows from 3.35° at the
+original sampling to 3.81°. The independent slope is shallower
+than the envelope in every case. The fixture exits 1.
+The temporary fixture was restored. CUDA was untested.
+
+SM120 reproduces the four dense matched-step failures on
+48de18d. Envelope angles and fitted quadrant slopes agree
+with native within 0.000002°. Radii agree to six decimal
+places. All cases fail angle and radius and pass kinetic
+energy and short drift. The CUDA fixture exits 1 with
+`--q-sand-dense-column-long-settle` after matching the two
+absolute timesteps. The temporary fixture was restored.
