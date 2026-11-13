@@ -9405,3 +9405,24 @@ Run the experimental native scene binary with
 `--q-sand-symmetric-affine-decay 0 <case> all 18`.
 The fine half-step exits 0 and the other cases exit 1.
 The experimental source was restored before the runs.
+
+### Check persistence of the wall-anchored fine half-step
+
+Extend the diagnostic horizon parser to 24 s on 43ec90c
+and rebuild the full wall-anchored fit. The material,
+transport, angle estimator and acceptance bounds are unchanged.
+Run the native diagnostic with
+`--q-sand-symmetric-affine-decay 0 fine-half all 24`.
+
+| Time | Envelope | Height (m) | Radius (m) |
+|---|---:|---:|---:|
+| 18 s | 30.215362° | 0.090097 | 0.154708 |
+| 21 s | 29.268099° | 0.086705 | 0.154708 |
+| 24 s | 28.418463° | 0.083715 | 0.154708 |
+
+The run exits 1. The fit delays the lower-bound crossing
+until after 18 s. The pile loses another 6.38 mm of height
+between 18 and 24 s at fixed radius, despite drifting only
+0.013509° over the final 0.05 s. The paired stress-work
+residual is −8.30e-17 J. Both temporary sources were restored
+before running the rebuilt executable.
