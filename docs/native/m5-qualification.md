@@ -12232,3 +12232,23 @@ by less than 0.073° in every case. Combining it with the
 collapse control keeps all radii and final drift within their
 limits, but every angle falls below 30°. Both matrices exit 1.
 CUDA and dense sampling were untested. Both edits were restored.
+
+#### Repeat the combined arrival and collapse controls at dense sampling
+
+Use the same native executable as the preceding combined control,
+with additive tangential arrival correction and diagonal APIC
+averaging before 0.75 s. Run `--q-sand-dense-column-long-settle 3`
+with 504 particles. Compare with the unmodified dense baseline.
+
+| Case | Baseline angle | Combined angle | Baseline radius (m) | Combined radius (m) | Combined final drift |
+|---|---:|---:|---:|---:|---:|
+| Coarse | 29.703637° | 27.382271° | 0.170290 | 0.166422 | 0.048279° |
+| Fine | 26.954622° | 27.203813° | 0.182075 | 0.175204 | 0.523100° |
+| Coarse half-step | 21.853351° | 23.608954° | 0.172975 | 0.179292 | 4.673116° |
+| Fine half-step | 20.623778° | 22.939049° | 0.185666 | 0.188458 | 2.636972° |
+
+All four dense angles and radii miss their bounds and the
+command exits 1. Both half-step radii increase, and both
+half-step drifts exceed one degree over the final approximately
+one-second window. The sparse radius and drift improvements
+therefore do not hold at dense sampling. CUDA was untested.
