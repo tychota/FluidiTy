@@ -6505,3 +6505,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Reduce in-plane tangent feedback by one quarter
+
+On 3008848, multiply the four horizontal derivatives of
+stored tangent velocity by 0.75 after the wall sweep.
+Keep vertical shear and the normal row. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.891824° | 0.164596 |
+| Coarse half-step | 45.879210° | 0.140118 |
+| Fine | 32.539370° | 0.156057 |
+| Fine half-step | 40.135741° | 0.151842 |
+
+Each result falls between full retention and full in-plane
+clearing in both angle and radius. Even this reduction
+raises the half-step angles by more than 5°. Only the
+nominal fine case passes. The source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-damp-tangent-plane-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
