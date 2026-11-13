@@ -5209,3 +5209,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain one quarter of the in-plane affine fit on fallback
+
+On 3008848, scale the fitted tangent row's x and z derivatives
+by 0.25 when its stencil uses fallback and clear its y derivative.
+Clear the affected normal row as before. Both default dry-scene
+tests pass on native and SM120. All four extended native runs
+finish within the motion bound.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 32.832010° | 0.172028 m | Radius |
+| Coarse half-step | 39.657508° | 0.158163 m | Angle |
+| Fine | 30.721120° | 0.159111 m | Pass |
+| Fine half-step | 33.967595° | 0.159180 m | Pass |
+
+The partial fit avoids the early rejections of full in-plane
+retention. It reduces both coarse angles and increases both
+coarse radii, leaving the two original failures. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-quarter-in-plane-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
