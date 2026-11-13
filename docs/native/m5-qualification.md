@@ -12382,3 +12382,25 @@ and final drift magnitudes pass, but two sparse angles
 miss the band. All dense radii exceed 0.16 m and three
 dense angles miss the band. Both matrices exit 1.
 CUDA was untested and the temporary source edit was restored.
+
+#### Taper positive horizontal APIC expansion across the bottom cell
+
+On 62d518f, reduce positive horizontal trace in the ordinary
+granular APIC deposit by half at the floor, tapering the
+reduction linearly to zero at one cell width above it.
+Apply the correction equally to xx and zz. Keep the remaining
+deposit, deformation and contact on their original paths.
+
+| Case | Sparse angle at 6 s | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 36.693231° | 31.453640° | 0.170684 |
+| Fine | 26.959741° | 28.300727° | 0.180841 |
+| Coarse half-step | 20.732937° | 23.806462° | 0.172571 |
+| Fine half-step | 14.997625° | 22.304677° | 0.185392 |
+
+Build the native dry-scene target and run it without arguments,
+with `--q-sand-column-long-settle 6`, and with
+`--q-sand-dense-column-long-settle 3`. All exit 1. The default
+angle is 36.034513°. Dense radii change by at most 1.24 mm and
+all still exceed 0.16 m. This floor-local control was tested
+alone. CUDA was untested and the temporary source edit was restored.
