@@ -4950,3 +4950,20 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Remove mass weighting from tangent fits
+
+On 3008848, set tangent affine fit row scales to one and
+retain the mass-weighted normal fit and rank fallback. Both
+default native and SM120 dry-scene tests pass. Every native
+3 s log matches the clearing candidate byte for byte. In this
+fixture the tangent fit weighting has no observable effect
+after the bounded reconstruction and clearing rules. The
+temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-unweighted-tangent-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
