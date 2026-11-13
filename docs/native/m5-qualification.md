@@ -10470,3 +10470,23 @@ whole-pile correction. Both fine cases still miss 30° and
 the fine half-step radius is 0.160757 m. Both default native
 dry-scene tests pass and both Q-SAND matrices fail. CUDA was
 untested. The temporary solver source was restored.
+
+#### Smooth the pre-kick correction across the bottom cell
+
+On fa9c791, replace the sharp one-cell cutoff with a cubic
+smoothstep falloff from full correction at the floor to
+zero at one grid cell. Keep gravity-centered displacement
+and the existing gate limits.
+
+| Case | Sharp cutoff | Smooth falloff | Smooth radius (m) |
+|---|---:|---:|---:|
+| Coarse | 33.637073° | 33.284429° | 0.144036 |
+| Fine | 29.742537° | 30.473579° | 0.153564 |
+| Coarse half-step | 31.096001° | 30.728948° | 0.143619 |
+| Fine half-step | 28.918862° | 28.685323° | 0.157818 |
+
+The smooth control passes three of the four native 1.5 s
+cases and the default dry-scene test. The fine half-step
+meets the radius bound and misses the angle bound. Q-SAND
+still fails. CUDA and later horizons were untested. The
+experimental solver source was restored.
