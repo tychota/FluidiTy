@@ -8967,3 +8967,19 @@ The two horizontal extensions together outweigh vertical
 compression at every refinement. Both contributions are
 approximately first order in the timestep. The temporary
 fixture was restored.
+
+### Use pre-force tangential donors for deformation
+
+On 43ec90c, reconstruct x and z deformation donors from
+deposited momentum divided by mass. Keep the post-force normal
+field and leave the original transport and stress work paths.
+
+At 1 ms the stationary particle ends at yy stretch 0.949494802608
+and Jacobian 0.856919059353. The original Jacobian was
+0.857043687601 at the same step. The near-identical normal
+compression produces more total compression once the horizontal
+post-force response is removed.
+
+The native fine half-step ends at 35.059702° and 0.181033 m
+at 3 s, with a cut work difference of 4.115359 J. The
+deformation-only change fails both bounds and was restored.
