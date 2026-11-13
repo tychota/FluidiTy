@@ -11674,3 +11674,28 @@ The coarse half-step reaches 16.810816°, compared with
 unmodified solver. The coarse half-step loses 2.040808° over
 the last second. The native matrix exits 1. CUDA was untested
 and both temporary edits were restored.
+
+
+#### Probe ordinary-floor force balance at six seconds
+
+On 260b100, copy each native sparse column at 6 s. Clear
+translation and APIC slopes on the copy, then advance one
+ordinary step at the case's nominal duration, original
+gravity, and floor friction. Divide the resulting stored
+velocity by duration. All particles have equal mass. The
+above-floor group starts the probe above 1e-8 m.
+
+| Case | RMS acceleration (m/s²) | Mean vertical (m/s²) | Above-floor count | Above-floor mean vertical (m/s²) |
+|---|---:|---:|---:|---:|
+| Coarse | 0.297 | 0.053 | 2 | 1.663 |
+| Fine | 1.279 | −0.185 | 3 | −3.882 |
+| Coarse half-step | 1.112 | −0.193 | 2 | −6.077 |
+| Fine half-step | 1.839 | −0.393 | 3 | −8.247 |
+
+The half-step piles' few remaining elevated particles
+accelerate downward at 62–84% of gravity from rest. This
+probe includes the current stress, transfer, and contact.
+It measures their combined support and does not identify
+one term as the cause. All main trajectories reproduce the
+baseline. The command exits 1, CUDA was untested, and the
+temporary fixture edit was restored.
