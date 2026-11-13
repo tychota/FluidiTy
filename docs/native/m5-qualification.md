@@ -9522,3 +9522,31 @@ below 8.5e-17 J.
 Use the existing wall-anchored native diagnostic with
 `--q-sand-symmetric-affine-decay 0 fine-half all 24 alternating`
 and repeat with `alternating-reversed`. Both exit 1.
+
+### Sample the vertical stress kick at midpoint for deformation
+
+On 43ec90c with exact reflection, subtract half the vertical
+stress kick from the deformation donor field. Pass this
+offset through the same ghost rows before applying the
+quadratic derivative. Retain the final grid field for
+transport, stored APIC velocity and wall traction. Evaluate
+the vertical contribution to the stress-work receipt at
+the same field used for deformation.
+
+| Time | Original fine half-step | Vertical midpoint |
+|---|---:|---:|
+| 3 s | 34.693822° | 35.061270° |
+| 6 s | 30.869627° | 33.660867° |
+| 9 s | 27.988015° | 30.608857° |
+| 12 s | 25.473317° | 29.672977° |
+
+The radius is 0.159789 m from 3 s onward. Height loss from
+3 to 12 s falls from 33.74 mm to 21.10 mm. The paired work
+residual is 1.58e-16 J. The native run exits 1 on the angle
+bound. This isolates vertical stress time centering while
+leaving horizontal deformation and all advection at their
+original time levels.
+
+Run the isolated native diagnostic with
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+The temporary solver source was restored.
