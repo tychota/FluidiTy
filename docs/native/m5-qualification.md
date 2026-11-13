@@ -4328,3 +4328,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   }
 }
 ```
+
+### Extended settling with component-wise affine clearing
+
+Starting from the clean candidate at 3008848, temporarily
+change the explicit endpoint in the symmetric-affine-decay
+diagnostic from 3 s to 6 s. Use zero decay and keep the scene,
+timesteps and acceptance checks. Both default dry-scene CTest
+targets pass with the diagnostic change. The extended matrix
+below ran on native.
+
+| Case | Angle at 3 s | Angle at 6 s | Radius at 6 s | Result at 6 s |
+|---|---:|---:|---:|---|
+| Coarse | 34.329576° | 28.832126° | 0.168211 m | Angle and radius |
+| Coarse half-step | 40.501234° | 34.203702° | 0.164440 m | Radius |
+| Fine | 31.443051° | 25.811618° | 0.159557 m | Angle |
+| Fine half-step | 34.693822° | 30.869627° | 0.156304 m | Pass |
+
+All four angles fall by more than 3.8° between 3 s and 6 s,
+despite passing the 0.05 s angle-drift check at both endpoints.
+The coarse half-step spreads another 7.728 mm and misses the
+radius limit after entering the angle window. Longer settling
+therefore does not resolve Q-SAND, and the two passing fine
+cases at 3 s do not demonstrate long-time repose. Source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-6s-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
+}
+```
