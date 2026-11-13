@@ -6146,3 +6146,35 @@ foreach ($mode in 'compression', 'expansion') {
   }
 }
 ```
+
+### Trace compressive vertical affine feedback by height
+
+On 3008848, immediately before particle publication, accumulate
+max(0, minus the vertical derivative of stored normal velocity).
+Group by accepted height below one cell width or at least one
+cell width. Means are over particle-step samples in each group.
+The late window uses the last ceiling(0.05/dt) accepted steps.
+Both default dry-scene tests pass. Removing the trace lines
+recovers all four original native 3 s logs.
+
+| Case | Full near mean (1/s) | Full upper mean (1/s) | Late near mean (1/s) | Late upper mean (1/s) | Near share of late sum |
+|---|---:|---:|---:|---:|---:|
+| Coarse | 0.3422 | 0.9937 | 0.0208 | 0.2442 | 55.7% |
+| Coarse half-step | 0.2286 | 0.6557 | 0.0995 | 0.1235 | 77.4% |
+| Fine | 0.2517 | 1.2035 | 0.0131 | 0.2211 | 46.7% |
+| Fine half-step | 0.2791 | 0.7768 | 0.0184 | 0.1245 | 58.5% |
+
+Upper particles have the larger mean compressive slope in
+every case. The near-floor group still accounts for almost
+half or more of the late sum because it contains more
+particles. These slopes drive the next deposit. The trace
+does not measure constitutive strain or stress. The
+temporary instrumentation was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-trace-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3 |
+    Where-Object { $_ -like 'vertical feedback *' }
+}
+```
