@@ -5984,3 +5984,13 @@ than 1e-12 N·s of grid wall impulse. The broader mask
 includes this airborne particle's stencil. The diagnostic
 reported the first failing fixture without isolating a
 single predicate. Both temporary changes were restored.
+
+The airborne budget trace reports identical values on native
+and SM120. The step returns OK, deposits 2.66725130815e-6 N·s
+of proposed stress impulse in L1, and registers zero particle
+wall contacts. It nevertheless records an upward grid wall
+impulse of 6.66812827038e-7 N·s and gives the 1 kg particle an
+upward velocity of 6.66812827038e-7 m/s. Both exceed the
+isolated fixture tolerances. The geometric mask therefore
+applies an early wall reaction through stress scatter.
+The diagnostic source was restored after linking.
