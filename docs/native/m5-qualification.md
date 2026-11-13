@@ -5514,3 +5514,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Translate the clearing candidate grid by half a cell
+
+On 3008848, set the fixture grid origin to (h/2, 0, h/2).
+Keep the release coordinates, floor, timesteps, and estimator.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 32.519113° | 0.180497 m |
+| Coarse half-step | 36.732337° | 0.161567 m |
+| Fine | 29.155897° | 0.179221 m |
+| Fine half-step | 34.880324° | 0.171549 m |
+
+All four radii exceed 0.16 m. The largest radius increase
+is 19.664 mm in the nominal fine case. The coarse half-step
+angle moves 3.769° toward the window and still exceeds 35°.
+Both fine passes disappear under translation of the grid
+alone. The temporary fixture edit was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-half-phase-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
