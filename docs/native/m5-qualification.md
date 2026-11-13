@@ -5638,3 +5638,28 @@ uses the tracked compatible-floor solver.
 $b = 'out/build/m5-main-d6e8c6e-release'
 & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle fine half-x 3
 ```
+
+### Measure six-second grid alignment sensitivity on the tracked solver
+
+Run the tracked compatible-floor diagnostic at 0.0625 m
+and 0.0015625 s with the original release. Both native
+cases complete and return geometry failure.
+
+| Grid phase | Angle at 6 s | Radius (m) | Final 0.05 s angle drift |
+|---|---:|---:|---:|
+| Aligned | 18.236314° | 0.148503 | 0.069169° |
+| Half-cell x | 11.621296° | 0.146728 | 0.149468° |
+
+The shift leaves a 6.615° difference at six seconds. The
+shifted angle has fallen 7.937° since the previous three-second
+measurement while the radius matches at printed precision.
+Both endpoints pass the short drift check. The late geometry
+change therefore comes from declining height in the shifted
+case. CUDA was not run for this six-second comparison.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+foreach ($phase in 'aligned', 'half-x') {
+  & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-compatible-floor-long-settle fine $phase 6
+}
+```
