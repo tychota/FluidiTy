@@ -10288,3 +10288,24 @@ removes its impulse from the advancing particle velocity.
 This control shows that the previous improvement depends on
 keeping that impulse in transport. The temporary source was
 restored. CUDA was untested.
+
+#### Center displacement while retaining the stored velocity kick
+
+On 04b21df, average the pre-force and final PIC velocities
+for the ordinary granular wall sweep path. Keep the final
+PIC velocity as the stored velocity entering contact and
+keep the original deformation gradient. The wall sweep
+therefore sees a different path and impact time.
+
+| Case | Baseline | Midpoint displacement |
+|---|---:|---:|
+| Coarse | 29.113507° | 27.032886° |
+| Fine | 26.761332° | 24.422122° |
+| Coarse half-step | 29.006384° | 28.555911° |
+| Fine half-step | 27.033753° | 26.757779° |
+
+The default native dry-scene test passes. All four sand
+angles fall and Q-SAND still fails. This control isolates
+the time level of advection and the associated contact
+timing from the stored velocity update. The temporary
+source was restored. CUDA was untested.
