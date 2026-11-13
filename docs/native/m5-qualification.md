@@ -10914,3 +10914,28 @@ coexists with substantial bulk settlement. The native
 matrix reproduces the baseline angles and fails. The
 temporary fixture edit was restored. CUDA was untested
 for the bulk trace.
+
+
+#### Separate compression from extension in post-contact deformation
+
+On e611eb7, repeat the native three-second matrix and
+replace only the yy component of the post-impact deformation
+gradient with the gathered yy rate, its compressive part
+min(0, yy), or half that compressive rate. The swept wall
+impulse, transport and APIC storage use their original paths.
+
+| Case | Baseline | Signed yy | Full compression | Half compression |
+|---|---:|---:|---:|---:|
+| Coarse | 30.519543° | 12.916662° | 39.909968° | 38.235365° |
+| Fine | 23.904249° | 12.742297° | 32.235648° | 30.910923° |
+| Coarse half-step | 22.853454° | 23.649621° | 31.686193° | 27.489086° |
+| Fine half-step | 20.811628° | 22.741347° | 31.861087° | 26.817953° |
+
+Full compression puts three cases in band at 3 s, while
+coarse overshoots and the default native dry-scene test
+fails at 35.674372°. The signed and half-compression controls
+pass the default native test. All three extended matrices
+fail. The opposing response to signed and compression-only
+updates shows that extension matters to the contact split.
+These were native controls. The fixture and solver edits
+were restored.
