@@ -161,6 +161,7 @@ table AdaptiveBandAction {
   volume_ratio:double (id:8);
   cell_center_velocity:Vector3 (required, id:9);
   velocity_slopes:Matrix3 (required, id:10);
+  reseed:bool = null (id:11);
 }
 table ResolvedScene {
   schema_version:uint = 1 (id:0);

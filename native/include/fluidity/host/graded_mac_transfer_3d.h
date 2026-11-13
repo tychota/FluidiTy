@@ -10,6 +10,7 @@
 #include "absl/status/statusor.h"
 #include "fluidity/base/mac_transfer_types_3d.h"
 #include "fluidity/host/adaptive_mac_topology_3d.h"
+#include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_resampling_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 
@@ -56,6 +57,8 @@ struct GradedMacSupportMomentWitness3D {
 
 class GradedMacTransfer3D {
  public:
+  static constexpr double kSupportRadiusInLeafWidths = 2;
+
   // Freeze the physical leaf boxes and all owned subface anchors. world_origin
   // is the world position in m of the finest lattice's zero corner. Returns
   // InvalidArgument for invalid topology or origin, OutOfRange if world
@@ -123,6 +126,15 @@ class GradedMacTransfer3D {
       double requested_leaf_width_m,
       LiquidUniformResamplingBasis3D basis,
       std::span<const LiquidAdaptiveFaceState3D> carrier_faces
+  ) const;
+
+  // Check every positive radial donor at this position and side. Requires
+  // a same-level stencil, valid finite carriers and full rank on all three rows.
+  // An optional affine carrier must reproduce each normal velocity exactly.
+  absl::Status CheckCompleteRadialSupport(
+      const LiquidParticleState3D& particle,
+      std::span<const LiquidAdaptiveFaceState3D> carriers,
+      const LiquidHandoffCarrier3D* affine = nullptr
   ) const;
 
  private:
