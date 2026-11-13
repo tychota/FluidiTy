@@ -97,8 +97,8 @@ struct LiquidAdaptiveWidthAction3D {
   AdaptiveWidthDemand3D demand{};
   double maximum_step_duration_s = 0;  // Evidence covers this duration and shorter retries.
 };
-// Authored retirement evidence for one fully occupied stationary tank leaf.
-// The supplied implicit-liquid carrier certifies support at this accepted state.
+// Authored retirement or one-center-seed evidence for one fully occupied stationary tank leaf.
+// Reseed requires the implicit-liquid carrier to match the accepted radial donors.
 struct LiquidAdaptiveBandAction3D {
   LiquidClock3D accepted_clock{};
   LiquidDigest3D accepted_state_digest{};
@@ -106,6 +106,7 @@ struct LiquidAdaptiveBandAction3D {
   double maximum_step_duration_s = 0;
   LiquidBandMargins3D margins{};
   LiquidHandoffCarrier3D carrier{};
+  bool reseed = false;  // True selects one center seed. False selects retirement.
 };
 inline constexpr std::uint32_t kLiquidOnlyResolvedModel3D = 1;
 inline constexpr std::uint32_t kPlasticBodyResolvedModel3D = 2;

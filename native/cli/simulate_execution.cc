@@ -923,6 +923,7 @@ absl::StatusOr<std::string> ExecuteCommand(
              .margins = action->margins,
              .destination_carrier = action->carrier},
         .maximum_step_duration_s = action->maximum_step_duration_s,
+        .certify_reseed = action->reseed,
     };
   };
   if (!band_actions.empty()) {
@@ -946,8 +947,16 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
   }
   if (adaptive_mode && !loaded_checkpoint) {
+    const auto reseed_count =
+        static_cast<std::size_t>(std::ranges::count(band_actions, true, &LiquidAdaptiveBandAction3D::reseed));
+    const auto starting_particle_count = starting_state.particles.size();
+    if (reseed_count != 0
+        && (starting_particle_count > kCapacities.particles
+            || reseed_count > kCapacities.particles - starting_particle_count)) {
+      return absl::ResourceExhaustedError("authored reseed reservations exceed the public particle capacity");
+    }
     resume.capacities = {
-        .particles = starting_state.particles.size(),
+        .particles = starting_particle_count + reseed_count,
         .blocks = 0,
         .cells = width_actions.empty() ? starting_state.adaptive_cells.size() : scene.adaptive_width_cell_capacity,
         .faces = width_actions.empty() ? starting_state.adaptive_faces.size() : scene.adaptive_width_face_capacity,

@@ -115,6 +115,16 @@ class AdaptiveLiquidStep3D {
       MacPressureWorkspace3D& workspace,
       LiquidAcceptedStepMeasurement3D& measurement
   );
+  absl::Status CheckReseedSupport(
+      const LiquidParticleState3D& seed,
+      std::span<const LiquidAdaptiveFaceState3D> donors,
+      const LiquidHandoffCarrier3D* accepted_affine = nullptr
+  ) const {
+    return transfer_.CheckCompleteRadialSupport(seed, donors, accepted_affine);
+  }
+  absl::Status CheckOldReseedSupport(const LiquidParticleState3D& seed) const {
+    return CheckReseedSupport(seed, old_faces_);
+  }
   absl::Status Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr);
   absl::Status Update(
       LiquidState3D& trial,
