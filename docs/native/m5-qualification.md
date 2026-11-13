@@ -5263,3 +5263,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain only in-plane extension on tangent fallback rows
+
+On 3008848, keep the x derivative of the x affine row and
+the z derivative of the z row when the corresponding stencil
+uses fallback. Clear all other derivatives in affected rows.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case | First rejected step |
+|---|---:|
+| Coarse | 1150 |
+| Coarse half-step | 2703 |
+| Fine | 370 |
+| Fine half-step | 2102 |
+
+All four runs return an unlabeled FailedPrecondition before
+3 s. Full extensional feedback alone is sufficient for early
+rejection, while the preceding spin-only control completes
+the matrix. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-in-plane-extension-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
