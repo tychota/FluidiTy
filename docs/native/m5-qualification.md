@@ -6719,3 +6719,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Measure late constitutive return activity in the cone
+
+Enable the existing return counters for the same 371-particle
+cone on 3008848 from 0.75 s through 3 s. The fractions weight
+the number of affected particles by the accepted step duration.
+Both default dry-scene tests pass and the four native cone
+geometries reproduce the preceding run at printed precision.
+
+| Case | Particle-time fraction with a projected state | Fraction with plastic volume change |
+|---|---:|---:|
+| Coarse | 76.36% | 0% |
+| Coarse half-step | 69.62% | 0% |
+| Fine | 66.83% | 0.320% |
+| Fine half-step | 67.48% | 0.081% |
+
+Constitutive return remains active despite the small change
+in plastic volume. The two coarse cases record no late volume
+changes at the existing reporting tolerance. These counters
+measure frequency and do not quantify the size of each shear
+correction. The temporary fixture change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-cone-yield-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
