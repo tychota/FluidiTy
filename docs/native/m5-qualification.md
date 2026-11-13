@@ -9989,3 +9989,26 @@ residual stays below 4.2e-16 J. Removing the second deformation
 correction resolves the single-particle regression and leaves
 the sand result sensitive to grid width and timestep.
 The temporary solver and fixture edits were restored.
+
+### Compare paired blends of normalized and complete derivatives
+
+On 5fd3ae8, blend the normalized derivative with the complete
+ghost derivative, applying the same weights to the stress
+transpose. Use the blended gradient for the entire deformation
+step and preserve the swept position and impulse update.
+
+| Case | Half complete | Three quarters complete |
+|---|---:|---:|
+| Coarse | 29.541652° | 32.867041° |
+| Fine | 28.543189° | 29.961114° |
+| Coarse half-step | 33.852203° | 35.974314° |
+| Fine half-step | 31.796255° | 33.619922° |
+
+Both variants pass the default native dry-scene test.
+The half blend passes both half-step cases and misses both
+nominal cases. The three-quarter blend passes the coarse
+nominal case, misses the fine nominal and coarse half-step
+angle bounds, and exceeds the fine half-step radius bound
+by 1.60 mm. The absolute work residual is below 3.2e-16 J.
+The temporary edits were restored. Neither blend was tested
+on CUDA.
