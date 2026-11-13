@@ -8503,3 +8503,24 @@ temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-vertical-half-phase-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Double the timestep only after the pile forms
+
+On 255739e, start from the same native fine half-step state
+at 3 s and double the timestep to 0.0015625 s. Compare the
+three schedules that share the original 3 s state.
+
+| Late timestep (ms) | Angle at 6 s | 9 s | 12 s | Height loss after 3 s (mm) |
+|---|---:|---:|---:|---:|
+| 0.390625 | 32.589° | 30.870° | 29.371° | 20.24 |
+| 0.781250 | 30.870° | 27.988° | 25.473° | 33.74 |
+| 1.562500 | 27.944° | 23.566° | 20.430° | 49.98 |
+
+Height loss increases across all three late step sizes with
+the same initial geometry and unchanged printed radius of
+0.156304 m. Even the smallest tested late step misses the
+12 s angle bound. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-double-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
