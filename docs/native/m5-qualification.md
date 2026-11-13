@@ -8318,3 +8318,24 @@ is 8.26e-17 J. The early angle pass is temporary.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-zero-normal-ghost-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Track particle height quantiles during late settlement
+
+On 255739e, sort the native fine half-step particle heights at
+each sample and use index floor(p * (N - 1)) for each quantile.
+
+| Time (s) | Median (mm) | 90th percentile (mm) | 95th percentile (mm) | Maximum (mm) |
+|---|---:|---:|---:|---:|
+| 3 | 9.289 | 60.528 | 63.520 | 108.205 |
+| 6 | 0 | 30.998 | 53.389 | 93.434 |
+| 9 | 0 | 1.678 | 44.700 | 83.067 |
+| 12 | 0 | 0 | 34.076 | 74.464 |
+
+The median reaches the floor by 6 s, and the 90th percentile
+reaches it by 12 s. The 95th percentile and apex also descend.
+The loss of height affects the full distribution. The original
+angle estimator is used for the gate. Temporary tracing was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-height-distribution-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
