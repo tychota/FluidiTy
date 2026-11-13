@@ -11149,3 +11149,25 @@ particles, including cases that already exceeded the limit
 at 0.75 s. The maximum-radius check remains in effect. The
 matrix exits 1 with the same final geometry as before. CUDA
 was untested for this trace. The temporary edit was restored.
+
+
+#### Check resident compression at dense sampling
+
+On 84c3e93, apply the zero-fraction compression diagnostic
+to the native 504-particle column at the same 3 s endpoint.
+Use the original dense column bounds and retain the swept
+wall impulse, transport, and APIC storage.
+
+| Case | Dense baseline angle | Dense compression angle | Dense compression radius (m) |
+|---|---:|---:|---:|
+| Coarse | 29.703637° | 35.033895° | 0.172380 |
+| Fine | 26.954622° | 29.949241° | 0.182183 |
+| Coarse half-step | 21.853351° | 27.032469° | 0.173593 |
+| Fine half-step | 20.623778° | 25.609058° | 0.184981 |
+
+The angles increase by 2.99–5.33°, while the radii change
+by at most 2.1 mm. All four cases still miss the angle and
+radius bounds and pass the short drift and kinetic energy
+bounds. The dense native command exits 1. The compression
+control raises height without resolving the excessive spread.
+CUDA was untested and both temporary edits were restored.
