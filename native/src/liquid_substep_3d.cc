@@ -1070,12 +1070,16 @@ struct LiquidSubstepScheduler3D::Impl {
       LiquidAcceptedStepMeasurement3D& measurement,
       LiquidWorkPhaseObserver3D work_phase,
       const liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D* quadratic,
-      AdaptiveCarrierMode adaptive_carrier_mode
+      AdaptiveCarrierMode adaptive_carrier_mode,
+      const LiquidParticleState3D* certified_reseed
   ) {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, duration));
     STEP_TRY(owner.Deposit(trial, options, quadratic, adaptive_carrier_mode == AdaptiveCarrierMode::kBandOverlap));
+    if (certified_reseed != nullptr) {
+      STEP_TRY(owner.CheckOldReseedSupport(*certified_reseed));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
     if (ocean_boundary) {
@@ -1093,6 +1097,9 @@ struct LiquidSubstepScheduler3D::Impl {
         measurement
     ));
     diagnostics.pressure_diagnostics = measurement.pressure;
+    if (certified_reseed != nullptr) {
+      STEP_TRY(owner.CheckReseedSupport(*certified_reseed, trial.adaptive_faces.values()));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
@@ -3107,6 +3114,7 @@ struct LiquidSubstepScheduler3D::AdaptiveStateTrial {
   liquid_step_internal::AdaptiveLiquidStep3D owner;
   std::size_t accepted_reservation_bytes;
   std::optional<liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D> quadratic;
+  std::optional<LiquidParticleState3D> certified_reseed;
 };
 
 struct LiquidSubstepScheduler3D::AdaptivePhysicalTrial {
@@ -3330,13 +3338,13 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
     double step_duration,
     const LiquidAdaptiveBandRequest3D& request
 ) {
-  return AttemptAdaptiveBandPlacement(step_duration, request, false, {});
+  return AttemptAdaptiveBandPlacement(step_duration, request, std::nullopt, {});
 }
 
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptAdaptiveBandPlacement(
     double step_duration,
     const LiquidAdaptiveBandRequest3D& request,
-    bool retirement_only,
+    std::optional<LiquidBandPlacementAction3D> required_action,
     LiquidWorkPhaseObserver3D work_phase
 ) {
   const auto& state = committed();
@@ -3390,8 +3398,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptAdaptive
   if (!placement.ok()) {
     return placement.status();
   }
-  if (retirement_only && placement->action != LiquidBandPlacementAction3D::kRetire) {
-    return absl::FailedPreconditionError("authored band action requires eligible retirement");
+  if (required_action && placement->action != *required_action) {
+    return absl::FailedPreconditionError("authored band action is ineligible for the committed leaf");
   }
   switch (placement->action) {
     case LiquidBandPlacementAction3D::kKeep: {
@@ -3414,6 +3422,29 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptAdaptive
       );
     }
     case LiquidBandPlacementAction3D::kReseed: {
+      if (required_action) {
+        const auto& tank = std::get<AxisAlignedLiquidTank3D>(impl_->scene.obstacle);
+        if (!AllowsAdaptiveQuadraticTransfer(impl_->scene) || impl_->ocean_boundary || tank.piston_velocity_x != 0
+            || request.reseed_particle_count != 1) {
+          return absl::FailedPreconditionError("certified reseed requires one seed in a stationary inviscid tank");
+        }
+        return AttemptPreparedAdaptiveState(
+            step_duration,
+            [&] {
+              return PrepareAdaptiveLiquidCoreReseed3D(
+                  state,
+                  impl_->options.capacities,
+                  request.leaf,
+                  occupancy,
+                  *request.destination_carrier,
+                  1
+              );
+            },
+            0,
+            work_phase,
+            &*request.destination_carrier
+        );
+      }
       return AttemptWithAdaptiveCoreReseed(
           step_duration,
           request.leaf,
@@ -3487,7 +3518,8 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
     double step_duration,
     absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
     std::size_t certified_replacement_count,
-    LiquidWorkPhaseObserver3D work_phase
+    LiquidWorkPhaseObserver3D work_phase,
+    const LiquidHandoffCarrier3D* certified_reseed
 ) {
   auto& impl = *impl_;
   if (!impl.adaptive || std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)) {
@@ -3527,7 +3559,31 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptPrepared
       .owner = std::move(*owner),
       .accepted_reservation_bytes = accepted_bytes,
       .quadratic = std::nullopt,
+      .certified_reseed = std::nullopt,
   };
+  if (certified_reseed != nullptr) {
+    const auto particles = candidate.state.particles.values();
+    const auto seed = std::ranges::lower_bound(particles, first_id, {}, &LiquidParticleState3D::id);
+    if (seed == particles.end() || seed->id != first_id || candidate.state.next_particle_id <= first_id
+        || candidate.state.next_particle_id - first_id != 1) {
+      return absl::FailedPreconditionError("certified reseed has an unexpected particle ID");
+    }
+    const auto width_m = candidate.owner.ParticleSupportWidth(seed->world_position);
+    if (!width_m.ok()) {
+      return width_m.status();
+    }
+    const double radius_m = GradedMacTransfer3D::kSupportRadiusInLeafWidths * *width_m;
+    const auto& tank = std::get<AxisAlignedLiquidTank3D>(impl.scene.obstacle);
+    const auto& plane = std::get<LiquidHorizontalPlaneSurface3D>(impl.scene.field);
+    const auto center = seed->world_position;
+    if (center.x - tank.start_low_x < radius_m || tank.high_x - center.x < radius_m
+        || center.y - tank.floor_y < radius_m || plane.world_surface_height_y - center.y < radius_m
+        || center.z - tank.low_z < radius_m || tank.high_z - center.z < radius_m) {
+      return absl::FailedPreconditionError("certified reseed radial support intersects a tank boundary");
+    }
+    STEP_TRY(candidate.owner.CheckReseedSupport(*seed, committed().adaptive_faces.values(), certified_reseed));
+    candidate.certified_reseed = *seed;
+  }
   if (certified_replacement_count != 0) {
     const auto next_id = candidate.state.next_particle_id;
     std::array<std::uint64_t, liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D::kMaximumParticles> ids{};
@@ -3929,27 +3985,31 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
       ResetAdaptiveQuadraticBasis(particle);
     }
   }
-  auto status = adaptive_owner != nullptr ? impl.ExecuteAdaptive(
-                                                *adaptive_owner,
-                                                step_duration,
-                                                **trial,
-                                                accepted_measurement,
-                                                work_phase,
-                                                quadratic_transfer,
-                                                adaptive_carrier_mode
-                                            )
-                                          : impl.Execute(
-                                                step_duration,
-                                                **trial,
-                                                accepted_measurement,
-                                                work_phase,
-                                                piston_load,
-                                                dynamic_piston,
-                                                coupled_piston,
-                                                update_with_reaction,
-                                                floating_box,
-                                                snow
-                                            );
+  auto status = adaptive_owner != nullptr
+      ? impl.ExecuteAdaptive(
+            *adaptive_owner,
+            step_duration,
+            **trial,
+            accepted_measurement,
+            work_phase,
+            quadratic_transfer,
+            adaptive_carrier_mode,
+            adaptive_replacement != nullptr && adaptive_replacement->certified_reseed
+                ? &*adaptive_replacement->certified_reseed
+                : nullptr
+        )
+      : impl.Execute(
+            step_duration,
+            **trial,
+            accepted_measurement,
+            work_phase,
+            piston_load,
+            dynamic_piston,
+            coupled_piston,
+            update_with_reaction,
+            floating_box,
+            snow
+        );
   if (status.ok()) {
     const auto clock = impl.transaction.PreviewAcceptedClock(step_duration);
     status = clock.ok() ? impl.backend.prepare_publication(impl.backend.context, **trial, *clock) : clock.status();
@@ -4129,7 +4189,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
     const auto outcome = [&]() -> absl::StatusOr<LiquidAttemptOutcome3D> {
       if (!snow_inputs) {
         if (band) {
-          return AttemptAdaptiveBandPlacement(*duration, band->request, true, observer.work_phase);
+          const auto action =
+              band->certify_reseed ? LiquidBandPlacementAction3D::kReseed : LiquidBandPlacementAction3D::kRetire;
+          return AttemptAdaptiveBandPlacement(*duration, band->request, action, observer.work_phase);
         }
         return width ? AttemptWithAdaptiveWidth(*duration, width->request, observer.work_phase)
                      : Attempt(*duration, observer.work_phase);

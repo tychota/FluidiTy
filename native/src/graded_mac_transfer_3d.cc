@@ -15,7 +15,7 @@ namespace {
 using Components3D = std::array<double, 3>;
 using Matrix3D = std::array<Components3D, 3>;
 
-constexpr double kSupportRadiusInLeafWidths = 2;
+constexpr double kSupportRadiusInLeafWidths = GradedMacTransfer3D::kSupportRadiusInLeafWidths;
 constexpr double kMinimumRelativePivot = 1e-12;
 
 Components3D Components(Vec3 value) {
@@ -646,6 +646,58 @@ absl::StatusOr<GradedMacSupportMomentWitness3D> GradedMacTransfer3D::MeasureSupp
   witness.matches_quadratic_moments = MatchesUniformMoments(witness, LiquidUniformResamplingBasis3D::kQuadratic);
   witness.matches_cubic_normal_moments = MatchesUniformMoments(witness, LiquidUniformResamplingBasis3D::kCubicNormal);
   return witness;
+}
+
+absl::Status GradedMacTransfer3D::CheckCompleteRadialSupport(
+    const LiquidParticleState3D& particle,
+    std::span<const LiquidAdaptiveFaceState3D> carriers,
+    const LiquidHandoffCarrier3D* affine
+) const {
+  const auto witness = MeasureSupportMoments(particle, carriers);
+  if (!witness.ok()) {
+    return witness.status();
+  }
+  if (witness->has_masked_support || witness->has_width_transition
+      || std::ranges::any_of(witness->rows, [](const auto& row) {
+           return !row.full_rank || row.uses_low_mass || row.positive_sample_count == 0;
+         })) {
+    return absl::FailedPreconditionError("reseed requires complete full-rank radial support");
+  }
+  return VisitSupport<true>(
+      std::span(face_support_bounds_),
+      faces_,
+      carriers,
+      particle,
+      witness->leaf_width_m,
+      true,
+      [&](std::size_t slot, std::size_t axis, const Components3D&, double) {
+        const auto& donor = carriers[slot];
+        if (donor.validity != LiquidFaceValidity3D::kValid) {
+          return absl::FailedPreconditionError("reseed requires valid radial donors");
+        }
+        if (affine == nullptr) {
+          return absl::OkStatus();
+        }
+        const std::array rows{
+            affine->velocity_slopes.x_row,
+            affine->velocity_slopes.y_row,
+            affine->velocity_slopes.z_row
+        };
+        const auto slope = rows[axis];
+        const auto offset = Components(faces_[slot].world_anchor);
+        const auto center = Components(particle.world_position);
+        const double increment = std::fma(
+            slope.x,
+            offset[0] - center[0],
+            std::fma(slope.y, offset[1] - center[1], slope.z * (offset[2] - center[2]))
+        );
+        const double predicted = Components(affine->cell_center_velocity)[axis] + increment;
+        if (!std::isfinite(predicted) || predicted != donor.carrier_velocity) {
+          return absl::FailedPreconditionError("reseed affine carrier disagrees with an accepted radial donor");
+        }
+        return absl::OkStatus();
+      }
+  );
 }
 
 absl::Status GradedMacTransfer3D::CheckUniformResamplingSupport(

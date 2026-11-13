@@ -42,6 +42,14 @@ particle depth and 2h carrier overlap before choosing retirement, reseeding or
 the ordinary trial. Retirement and reseeding use the existing atomic publication
 path. Missing carrier support and stale epochs fail before the trial.
 
+Public Simulate reads authored band actions from the canonical resolved scene.
+A one-center reseed uses FLRS v4 and authenticates the accepted clock and state
+digest. It requires a full Eulerian leaf and complete same-level radial support
+inside the stationary tank. The authored affine carrier must agree with each
+accepted donor's normal velocity. The trial checks those donors again after
+deposit and pressure before publishing the new particle owner and ID. Replay
+reads the same action and reexecutes the trial from its frame-zero checkpoint.
+
 The deep planar fixture exercises late rejection, retirement and reseeding. CPU
 checks the committed epoch and represented inventory. SM120 reads the accepted
 device bank after rejection and both ownership transitions. The existing

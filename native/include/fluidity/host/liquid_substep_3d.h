@@ -393,6 +393,7 @@ struct LiquidAdaptiveBandRequest3D {
 struct LiquidAdaptiveBandTrial3D {
   LiquidAdaptiveBandRequest3D request;
   double maximum_step_duration_s;
+  bool certify_reseed = false;
 };
 using LiquidAdaptiveBandSelector3D =
     absl::FunctionRef<absl::StatusOr<std::optional<LiquidAdaptiveBandTrial3D>>(const LiquidState3D&)>;
@@ -693,7 +694,7 @@ class LiquidSubstepScheduler3D {
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptAdaptiveBandPlacement(
       double step_duration,
       const LiquidAdaptiveBandRequest3D& request,
-      bool retirement_only,
+      std::optional<LiquidBandPlacementAction3D> required_action,
       LiquidWorkPhaseObserver3D work_phase
   );
   struct AdaptiveStateTrial;
@@ -703,7 +704,8 @@ class LiquidSubstepScheduler3D {
       double step_duration,
       absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
       std::size_t certified_replacement_count = 0,
-      LiquidWorkPhaseObserver3D work_phase = {}
+      LiquidWorkPhaseObserver3D work_phase = {},
+      const LiquidHandoffCarrier3D* certified_reseed = nullptr
   );
   enum class AdaptiveCarrierMode {
     kDefault,

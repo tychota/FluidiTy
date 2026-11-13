@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <tuple>
 
@@ -104,6 +105,7 @@ absl::Status ValidateAdaptiveWidthPlan(LiquidResolvedSceneView3D input, LiquidCa
 }
 
 constexpr std::uint32_t kAdaptiveBandSceneVersion = 3;
+constexpr std::uint32_t kAdaptiveReseedSceneVersion = 4;
 
 absl::Status ValidateAdaptiveBandActions(LiquidResolvedSceneView3D input, LiquidCacheLimits3D limits) {
   const auto actions = input.adaptive_band_actions;
@@ -891,7 +893,8 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
                     carrier.current_density,
                     carrier.volume_ratio,
                     &velocity,
-                    &slopes
+                    &slopes,
+                    action.reseed ? flatbuffers::Optional<bool>{true} : flatbuffers::Optional<bool>{}
                 );
               }
           );
@@ -900,8 +903,12 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
           }
           band_actions = *actions;
         }
-        const std::uint32_t version =
-            band_actions.o != 0 ? kAdaptiveBandSceneVersion : (width_plan.o != 0 ? kAdaptiveWidthSceneVersion : 1);
+        std::uint32_t version = width_plan.o != 0 ? kAdaptiveWidthSceneVersion : 1;
+        if (band_actions.o != 0) {
+          version = std::ranges::any_of(input.adaptive_band_actions, &LiquidAdaptiveBandAction3D::reseed)
+              ? kAdaptiveReseedSceneVersion
+              : kAdaptiveBandSceneVersion;
+        }
         const auto origin = detail::PackCanonical(input.geometry.world_origin);
         const auto acceleration = detail::PackCanonical(scene.world_acceleration);
         const auto build = detail::Pack(input.build_digest);
@@ -934,7 +941,7 @@ EncodeLiquidResolvedScene3D(LiquidResolvedSceneView3D input, LiquidCacheLimits3D
 absl::StatusOr<LiquidResolvedScene3D>
 DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimits3D limits) {
   auto verified =
-      detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits, kAdaptiveBandSceneVersion);
+      detail::Verify<wire::ResolvedScene>(bytes, wire::ResolvedSceneIdentifier(), limits, kAdaptiveReseedSceneVersion);
   if (!verified.ok()) {
     return verified.status();
   }
@@ -1075,7 +1082,8 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
     }
   }
   const auto* band_actions = root->adaptive_band_actions();
-  if ((root->schema_version() == kAdaptiveBandSceneVersion) != (band_actions != nullptr)) {
+  const bool reseed_version = root->schema_version() == kAdaptiveReseedSceneVersion;
+  if ((root->schema_version() == kAdaptiveBandSceneVersion || reseed_version) != (band_actions != nullptr)) {
     return detail::Corrupt();
   }
   if (band_actions != nullptr) {
@@ -1084,6 +1092,22 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
     }
     if (band_actions->size() > limits.maximum_upstream_records || band_actions->size() > (1 << 20)) {
       return detail::Error(absl::StatusCode::kResourceExhausted);
+    }
+    bool has_reseed = false;
+    for (const auto* action : *band_actions) {
+      if (!detail::ValidBoolean(action, wire::AdaptiveBandAction::VT_RESEED)) {
+        return detail::Corrupt();
+      }
+      const auto reseed = action->reseed();
+      if (reseed.has_value()) {
+        if (!*reseed || !reseed_version) {
+          return detail::Corrupt();
+        }
+        has_reseed = true;
+      }
+    }
+    if (has_reseed != reseed_version) {
+      return detail::Corrupt();
     }
     SCENE_TRY(detail::Materialize(result->adaptive_band_actions, band_actions, [](const auto* action) {
       const auto* lower = action->lower_corner();
@@ -1103,6 +1127,7 @@ DecodeLiquidResolvedScene3D(std::span<const std::uint8_t> bytes, LiquidCacheLimi
                .velocity_slopes =
                    {detail::Unpack(&slopes->x_row()), detail::Unpack(&slopes->y_row()), detail::Unpack(&slopes->z_row())
                    }},
+          .reseed = action->reseed().value_or(false),
       };
     }));
     const auto valid = ValidateAdaptiveBandActions(result->View(), limits);
