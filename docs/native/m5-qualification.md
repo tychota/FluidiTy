@@ -4929,3 +4929,24 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Use actual deposited mass for compatible-floor acceleration
+
+On 3008848, use the actual deposited mass in the compatible
+floor acceleration denominator and account for the full stress
+impulse as applied work. Keep donor eligibility and wall traction
+unchanged. Both default native and SM120 dry-scene tests pass.
+
+All four native 3 s logs match the original clearing runs byte
+for byte. No case hits the motion bound. This confirms that
+thin faces excluded from the stress donor set carry no stress
+impulse in these runs. The acceleration mass floor therefore
+does not drive the two coarse geometry failures at the original
+donor threshold. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-actual-force-mass-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
