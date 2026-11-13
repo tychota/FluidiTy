@@ -180,6 +180,16 @@ EndpointOccupancy(const FrozenGradedLiquidLeaf3D& geometry, double cell_volume_m
 
 }  // namespace
 
+TranslatingHalfspace3D EndGradedLiquidWetTransitionSolid3D(TranslatingHalfspace3D start_solid, double duration_s) {
+  const auto& normal = start_solid.unit_normal;
+  const auto& velocity = start_solid.wall_velocity;
+  const double wall_plane_speed_m_per_s =
+      std::fma(normal.x, velocity.x, std::fma(normal.y, velocity.y, std::fma(normal.z, velocity.z, 0)));
+  start_solid.start_plane_coordinate =
+      std::fma(duration_s, wall_plane_speed_m_per_s, start_solid.start_plane_coordinate);
+  return start_solid;
+}
+
 absl::StatusOr<GradedLiquidWetTransition3D> PrepareGradedLiquidWetTransition3D(
     const LiquidState3D& accepted,
     const GradedLiquidWetTransitionRequest3D& request,
@@ -225,14 +235,7 @@ absl::StatusOr<GradedLiquidWetTransition3D> PrepareGradedLiquidWetTransition3D(
   if (!before.ok()) {
     return before.status();
   }
-  const auto& normal = request.start_solid.unit_normal;
-  const auto& velocity = request.start_solid.wall_velocity;
-  // Match the frozen geometry's signed-plane reduction order.
-  const double wall_plane_speed_m_per_s =
-      std::fma(normal.x, velocity.x, std::fma(normal.y, velocity.y, std::fma(normal.z, velocity.z, 0)));
-  auto end_solid = request.start_solid;
-  end_solid.start_plane_coordinate =
-      std::fma(request.step_duration_s, wall_plane_speed_m_per_s, request.start_solid.start_plane_coordinate);
+  const auto end_solid = EndGradedLiquidWetTransitionSolid3D(request.start_solid, request.step_duration_s);
   auto end_liquid = request.start_liquid;
   end_liquid.plane_coordinate_m = request.end_liquid_plane_coordinate_m;
   auto after = FreezeGradedPlanarLiquidGeometry3D(
