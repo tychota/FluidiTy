@@ -11265,3 +11265,27 @@ puts three angles in band, but the coarse half-step exceeds
 larger. These results identify horizontal affine transfer as
 a contributor to spread and show the regression from uniform
 attenuation. CUDA was untested and temporary edits were restored.
+
+
+#### Attenuate only horizontal expansion in granular APIC
+
+On 14667da, subtract one quarter of the positive horizontal
+trace from each horizontal diagonal entry at deposit. The
+positive trace is halved while horizontal compression and
+off-diagonal entries are unchanged. Run the original native
+dry-scene test and both three-second column samplings.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) | Dense last ≈1 s angle drift |
+|---|---:|---:|---:|---:|
+| Coarse | 38.163989° | 34.527709° | 0.148471 | 0.283589° |
+| Fine | 37.744717° | 32.176911° | 0.156825 | 0.176797° |
+| Coarse half-step | 36.913127° | 34.533284° | 0.134807 | 7.407639° |
+| Fine half-step | 34.018457° | 31.469931° | 0.146609 | 7.153803° |
+
+The dense command exits 0, but both half-step angles fall
+more than 7° over the last second. The sparse matrix exits
+with three angles above the band and the default native pile
+fails at 52.495345° with a 0.092817 m radius. Positive
+horizontal trace alone accounts for much of the response to
+row attenuation. This control does not demonstrate repose.
+CUDA was untested and both temporary edits were restored.
