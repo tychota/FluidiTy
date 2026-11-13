@@ -11784,3 +11784,24 @@ fine). Its fine half-step result was pending at this comparison.
 The reported cut work is separate from Q-SOLID's uncut identity.
 The parallel change reproduces this work receipt along with the
 failing pile geometry. It does not resolve the cut work imbalance.
+
+
+#### Attenuate expansive strain only during late settlement
+
+On 7826560, repeat the half-removal expansive strain control
+only on ordinary granular steps starting at or after 3 s.
+Use the native six-second sparse command and its original
+acceptance criteria.
+
+| Case | Baseline angle | Late-only angle | Baseline mean log Jpl | Late-only mean log Jpl |
+|---|---:|---:|---:|---:|
+| Coarse | 33.842809° | 33.842839° | 0.309825 | 0.286393 |
+| Fine | 23.424520° | 23.424520° | 0.250506 | 0.229187 |
+| Coarse half-step | 17.104058° | 17.104058° | 0.177330 | 0.146114 |
+| Fine half-step | 13.060319° | 13.098997° | 0.182548 | 0.170024 |
+
+Mean log Jpl decreases in every case while the angles change
+by at most 0.039° and radii agree at printed precision. The
+native matrix exits 1. Reducing late expansive strain after
+the pile has formed has little effect on geometry in this
+control. CUDA was untested and the temporary edits were restored.
