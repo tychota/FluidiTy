@@ -1336,6 +1336,53 @@ TEST(LiquidSubstep3D, AdvancesGradedTankThroughTheAcceptedScheduler) {
   EXPECT_NE(scheduler->committed().particles[0].world_position.x, state.particles[0].world_position.x);
 }
 
+TEST(LiquidSubstep3D, GradedSwellForcesFrozenCanonicalFacesAndRollsBack) {
+  LiquidState3D initial;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
+  auto options = Options();
+  options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
+  options.ocean_boundary = test::PrepareGradedSwellFixture3D(initial);
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options);
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject swell") : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->Attempt(0.02);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  ExpectIdenticalSerializedState(initial, scheduler->committed());
+  scheduler->SetStageFaultHookForTesting({});
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  const auto accepted = scheduler->Attempt(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+  ASSERT_TRUE(scheduler->diagnostics().accepted_measurement.has_value());
+  EXPECT_GT(scheduler->diagnostics().accepted_measurement->pressure_rhs_l2_m3_per_s, 1e-5);
+  EXPECT_LT(scheduler->diagnostics().accepted_measurement->pressure.max_volume_scaled_residual, 1e-6);
+  EXPECT_EQ(scheduler->committed().adaptive_cells.size(), initial.adaptive_cells.size());
+  EXPECT_EQ(scheduler->committed().adaptive_faces.size(), initial.adaptive_faces.size());
+  const auto original = initial.particles[0].world_position;
+  const auto moved = scheduler->committed().particles[0].world_position;
+  EXPECT_GT(std::hypot(moved.x - original.x, moved.y - original.y, moved.z - original.z), 1e-7);
+  for (std::size_t leaf = 0; leaf < initial.adaptive_cells.size(); ++leaf) {
+    const auto& before = initial.adaptive_cells[leaf].key;
+    const auto& after = scheduler->committed().adaptive_cells[leaf].key;
+    EXPECT_EQ(after.width_exponent, before.width_exponent);
+    EXPECT_EQ(after.lower_corner.x, before.lower_corner.x);
+    EXPECT_EQ(after.lower_corner.y, before.lower_corner.y);
+    EXPECT_EQ(after.lower_corner.z, before.lower_corner.z);
+    EXPECT_DOUBLE_EQ(
+        scheduler->committed().adaptive_cells[leaf].inventory.mass_kg,
+        initial.adaptive_cells[leaf].inventory.mass_kg
+    );
+  }
+}
+
 TEST(LiquidSubstep3D, GradedCompressionPreservesPressureAndVolumeAcrossRollback) {
   constexpr std::array<std::optional<LiquidEosLaw>, 3> kLaws{
       std::nullopt,

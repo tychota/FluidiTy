@@ -91,6 +91,22 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+inline OceanBoundarySettings3D PrepareGradedSwellFixture3D(LiquidState3D& state) {
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& leaf : state.adaptive_cells.values()) {
+    leaf.inventory.momentum_kg_m_per_s = {};
+  }
+  return {
+      .swell = {.still_water_height_m = 1, .water_depth_m = 1, .wave_height_m = 0.05, .wave_period_s = 2},
+      .inlet_wall_x_m = 0,
+      .inlet_interior_x_m = 1.25,
+      .outlet_interior_x_m = 1.375,
+      .outlet_wall_x_m = 1.5,
+      .inlet_rate_per_s = 8,
+  };
+}
 // A real divergence-free circulation in the lower X/Z plane. The particle-owned
 // cap separates the core from the open surface. Equal support weights on the
 // two eligible carriers in each horizontal direction give zero PIC motion.
