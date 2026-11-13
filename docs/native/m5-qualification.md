@@ -6453,3 +6453,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear both tangent affine rows and retain normal feedback
+
+On 3008848, zero the x and z rows of stored affine velocity
+after the wall sweep. Keep the normal row and the paired
+stress and deformation transfer. Both default dry-scene
+tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---|
+| Coarse | 48.332970° | 0.136706 | 0.291211 |
+| Coarse half-step | 59.879126° | 0.102097 | 0.159363 |
+| Fine | 41.319563° | 0.144111 | 0.562006 |
+| Fine half-step | 54.767594° | 0.115443 | 0.213225 |
+
+All four radii enter the allowed interval and all angles
+exceed 35°. Nominal fine plastic volume accumulation
+increases even though the pile spreads less. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-tangent-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
