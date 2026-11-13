@@ -9450,3 +9450,29 @@ Run the experimental native binary from the preceding check
 with `--q-sand-symmetric-affine-decay 0 fine-quarter all 24`
 and repeat with `coarse-half`. The run uses the existing binary
 and leaves the isolated source unchanged.
+
+### Refine the timestep from the same formed wall-anchored pile
+
+Use the full wall-anchored fit and the fine half-step through
+3 s, then halve the timestep to 0.000390625 s. The pile matches
+the constant-step run at 3 s in height, radius and angle.
+Keep the material, operator and diagnostic bounds fixed.
+
+| Time | Constant fine half-step | Quarter-step after 3 s |
+|---|---:|---:|
+| 3 s | 37.296256° | 37.296256° |
+| 6 s | 34.970927° | 35.926382° |
+| 12 s | 32.725580° | 34.527499° |
+| 18 s | 30.215362° | 33.713488° |
+| 24 s | 28.418463° | 31.969522° |
+
+The switched run passes the 24 s endpoint at 31.969522°
+and 0.154708 m radius. It still loses 6.67 mm of height
+from 18 to 24 s, compared with 6.38 mm at constant timestep.
+The finer late timestep improves retention from the same
+formed pile and leaves measurable creep. The absolute
+paired stress-work residual is 8.39e-17 J or less.
+
+Run the same experimental native binary with
+`--q-sand-symmetric-affine-decay 0 fine-half all 24 half`.
+The isolated tracked sources are clean.
