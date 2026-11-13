@@ -5567,3 +5567,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Exchange the shifted grid axis
+
+On 3008848, repeat the one-axis translation with grid origin
+(0, 0, h/2). Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Maximum absolute x (m) | Maximum absolute z (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 31.130497° | 0.181106 | 0.142666 | 0.130954 |
+| Coarse half-step | 38.753154° | 0.159600 | 0.121617 | 0.113951 |
+| Fine | 28.548713° | 0.171107 | 0.144439 | 0.122547 |
+| Fine half-step | 32.727603° | 0.169248 | 0.141194 | 0.108735 |
+
+The larger extent follows the unshifted axis in every case.
+After exchanging axes, the paired extents differ by at most
+3.10 mm and the angles by at most 0.406°. All four cases
+retain their failed checks. This comparison identifies grid
+alignment as the main influence on the direction of spread
+in these controls. The temporary fixture edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-z-phase-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
