@@ -11949,3 +11949,28 @@ The half-step angles gain 0.70° and 0.94°, but all four cases
 still fail persistence and the matrix exits 1. This control
 leaves the volume rate unchanged and does not resolve repose.
 CUDA and dense sampling were untested. The edit was restored.
+
+
+#### Suppress late yielding on the ordinary floor
+
+On 33ee019, repeat the six-second native sparse matrix with
+translated cohesion set to 10 on steps starting at or after
+3 s. Preserve prior state and other settings. This diagnostic
+moves the yield surface away and changes the admissible
+tensile response. It is outside the cohesionless gate.
+
+| Case | Baseline angle at 6 s | Yield suppression angle at 6 s | Final ≈1 s drift |
+|---|---:|---:|---:|
+| Coarse | 33.842809° | 21.872167° | 4.332104° |
+| Fine | 23.424520° | 9.672184° | 5.713894° |
+| Coarse half-step | 17.104058° | 12.625588° | 3.522127° |
+| Fine half-step | 13.060319° | 10.823780° | 3.354686° |
+
+Plastic volume stops accumulating after the switch to the
+reported precision. All four angles decrease, even though
+radii stay close to baseline. This ordinary-floor result
+differs from the earlier compatible-floor candidate's
+response to late yield suppression. It does not isolate
+the effects of shear return from tensile stress. The
+native command exits 1. CUDA was untested and the fixture
+was restored.
