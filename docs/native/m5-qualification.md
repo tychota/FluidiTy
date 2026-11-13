@@ -11445,3 +11445,27 @@ geometry, short drift, and last-second drift lines match
 the native output at printed precision. This duration is
 a shared-device observation and is not a controlled
 before-and-after speedup measurement.
+
+
+#### Preserve total trace while attenuating horizontal APIC expansion
+
+On 6a920d5, subtract one quarter of the positive horizontal
+APIC trace from each horizontal diagonal and add their sum to
+the vertical diagonal. Leave the off-diagonals and the rest
+of the dry step unchanged. This preserves the full deposit
+trace while redirecting horizontal expansion vertically.
+Run the default native dry scene and the sparse 3 s command.
+
+| Case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 38.826184° | 0.110178 |
+| Fine | 38.634935° | 0.118343 |
+| Coarse half-step | 44.440546° | 0.100108 |
+| Fine half-step | 41.305530° | 0.109930 |
+
+All four angles exceed 35°. The default coarse case also
+fails at 58.566080° and 0.088590 m. Moving the removed
+expansion into the vertical diagonal increases the
+overshoot relative to horizontal attenuation alone.
+CUDA and dense sampling were untested. The temporary
+solver edit was restored.
