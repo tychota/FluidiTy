@@ -10508,3 +10508,21 @@ The coarse nominal case meets the endpoint bounds and falls
 nominal and coarse half-step fall below 30°. The native
 matrix exits 1. Temporary sources were restored. CUDA was
 untested for this extension.
+
+### Compare the merged sand solver at matched absolute timesteps
+
+On f0354f1, keep the original material and 1.5 s endpoint.
+Run both grid widths with the fine nominal and half-step
+durations on native and SM120.
+
+| Step (s) | Coarse angle | Fine angle |
+|---|---:|---:|
+| 0.00156250 | 26.727865° | 26.761332° |
+| 0.00078125 | 30.385098° | 27.033753° |
+
+Both backends agree to six decimal places. At the larger
+matched step the grid-width difference is 0.033467°.
+At the smaller step it grows to 3.351345°. Both matrices
+fail, with the coarse smaller-step case alone meeting
+all fixture bounds. Angle is the only failing criterion
+in the other three cases. The temporary fixture was restored.
