@@ -9678,3 +9678,31 @@ within 1.9e-16 J.
 Run `--q-sand-symmetric-affine-decay 0 fine-half all 18 half`
 and `--q-sand-symmetric-affine-decay 0 fine-quarter all 18`.
 The first exits 0 and the second exits 1.
+
+### Check independent surface slopes with the combined operator
+
+On 43ec90c, rebuild the combined wall fit and stress midpoint
+with the independent annular surface fit enabled for both
+particle samplings. Use the same native fine half-step through
+18 s. The dense case doubles sampling per axis while keeping
+grid width, timestep, release geometry and material parameters.
+
+| Sampling | Envelope | Radius (m) | Signed quadrant surface slopes |
+|---|---:|---:|---:|
+| Original | 33.900254° | 0.157910 | −34.225006° to 0.000000° |
+| Doubled per axis | 26.312249° | 0.245209 | 8.302677° to 11.160215° |
+
+All four quadrant fits resolve at each sampling. Negative
+angles mean the fitted heights rise outward. The original
+sampling passes the envelope bounds and has no quadrant
+surface slope in the target range. The denser release spreads
+farther, fails the envelope and radius bounds, and has
+shallow outward-descending slopes. The paired work residuals
+are below 1.5e-16 J. The passing envelope is sensitive to
+particle sampling and leaves the free-surface angle unqualified.
+
+Run the experimental native binary with
+`--q-sand-symmetric-affine-decay 0 fine-half all 18`
+and with `fine-half-dense` for the temporary denser selection.
+The two exits are 0 and 1 respectively. Both solver files
+and the fixture source were restored before the runs.
