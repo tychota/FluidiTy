@@ -6690,3 +6690,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Run the floor-supported 45-degree cone on tangent clearing
+
+On 3008848, select the existing 371-particle cone release
+at zero gap and 0.025 m sampling. Use the original clearing
+grid widths and timesteps. This release changes both shape
+and total mass relative to the column. The cone diagnostic
+tests angle, drift and kinetic energy. Both default native
+and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Envelope | Quadrant slopes |
+|---|---:|---:|
+| Coarse | 37.335867° | 49.160345° to 52.933307° |
+| Coarse half-step | 39.355429° | 47.552856° to 50.252795° |
+| Fine | 36.087403° | 45.465249° to 49.817676° |
+| Fine half-step | 38.517101° | 46.633052° to 47.084221° |
+
+All four envelopes exceed 35°. Every radius is 0.160078 m
+at printed precision, and mean log plastic Jacobian remains
+below 0.00103. This release shows a different failure mode
+from the spreading column. The temporary fixture edit was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-cone-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
