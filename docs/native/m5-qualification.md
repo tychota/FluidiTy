@@ -9867,3 +9867,26 @@ late tensile-apex events. The next useful control is to
 resolve the no-hit events by height and measure whether
 their stress reset changes load support near the floor.
 The temporary solver trace was restored.
+
+### Measure incoming compression of late tensile-apex particles
+
+On 72cdcda, split the accepted native return trace by starting
+height. Sum the positive part of compressive Kirchhoff stress
+in the vertical direction, weighted by particle reference
+volume, for all updates and for apex events alone. This proxy
+measures incoming stress carried by those particles before
+the return. Aggregate after the 0.75 s sample through 1.5 s.
+
+| Case | Apex at floor | Apex above floor through h/2 | Apex above h/2 | Share of incoming compression on apex events |
+|---|---:|---:|---:|---:|
+| Coarse | 0 | 7602 | 2879 | 0.000267% |
+| Fine | 0 | 8733 | 2368 | 0.000143% |
+| Coarse half-step | 0 | 5100 | 4126 | 0.0000244% |
+| Fine half-step | 0 | 10024 | 2652 | 0.0000348% |
+
+Most returns occur below half a cell above the floor. The
+particles undergoing them carry less than 0.0003% of the
+incoming compression summed over the window in every case.
+This bounds direct removal of incoming compressive stress
+at the return events. The native fixture reproduces the
+baseline angles and exits 1. The temporary trace was restored.
