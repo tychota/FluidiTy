@@ -11480,3 +11480,19 @@ short-window drift, and kinetic energy to the printed
 precision. Both paths fail the angle and radius checks
 in all four cases. The CUDA command exits 1. The sparse
 and dense failures therefore both reproduce on SM120.
+
+
+#### Apply granular return at the floor impact boundary
+
+On e1b6b44, when swept contact occurs strictly inside the
+step, return the pre-impact trial strain to the granular cone
+before integrating the post-impact gradient. Carry the
+returned plastic Jacobian into the final return. Keep all
+transfer and contact impulses unchanged.
+
+The default native dry scene passes. The sparse 3 s command
+exits 1 with angles 30.519543°, 23.904277°, 22.853454°, and
+20.811628°. The largest change from baseline is 0.000028°.
+Returning at the actual contact split leaves the observed
+flattening intact. CUDA and dense sampling were untested.
+The solver edit was restored.
