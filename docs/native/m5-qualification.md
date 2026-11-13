@@ -10773,3 +10773,25 @@ three extended cases and fails the default coarse case at
 occurs on uncut stencils in this comparison. Both native
 Q-SAND matrices fail. The temporary source was restored.
 CUDA was untested.
+
+#### Trace the coarse collapse with uncut compression retention
+
+On 68ae076, sample the native coarse nominal angle at the
+first accepted step at or after each 0.1 s mark. Compare
+the original solver with the uncut exp(−400 dt) control.
+
+| Time (s) | Baseline | Uncut control |
+|---|---:|---:|
+| 0.10125 | 79.287674° | 79.287674° |
+| 0.200625 | 72.108231° | 72.702763° |
+| 0.30000 | 47.080203° | 60.609532° |
+| 0.500625 | 37.962759° | 50.694881° |
+| 0.800625 | 32.226688° | 41.792279° |
+| 1.50000 | 29.113507° | 32.888475° |
+
+The largest sampled gap is 13.529329° at 0.3 s, during
+the initial collapse. By 1.5 s the gap falls to 3.774968°
+and the control has lost 5.17° over the final half-second.
+The short-horizon overshoot begins during collapse, and
+its later angle pass does not establish settlement.
+Both native matrices exit 1. Temporary sources were restored.
