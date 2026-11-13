@@ -12454,3 +12454,25 @@ angles overshoot. Dense half-step drift remains above five
 degrees. The combined control therefore does not address
 the dense persistence failure. CUDA was untested and the
 temporary source edit was restored.
+
+#### Extend ordinary-floor sparse settlement to twelve seconds
+
+On 92b3d73, add a 12 s endpoint to the ordinary column fixture
+and run the native executable with `--q-sand-column-long-settle 12`.
+Keep the production solver, initial state, sampling, and acceptance
+limits. Compare against the recorded 6 s baseline.
+
+| Case | Angle at 6 s | Angle at 12 s | Final ≈1 s drift | Radius at 12 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 33.842809° | 33.955949° | 0.231448° | 0.137319 |
+| Fine | 23.424520° | 24.353065° | 0.081166° | 0.146767 |
+| Coarse half-step | 17.104058° | 2.304259° | 3.401364° | 0.143950 |
+| Fine half-step | 13.060319° | 0.000000° | 0.407319° | 0.155423 |
+
+The coarse nominal case remains in range and changes by 0.113°
+between endpoints. Both half-step piles lose nearly all their
+height, while their radii change by less than 0.3 mm from the
+six-second baseline. This confirms that the late half-step
+angle loss is vertical collapse at essentially fixed radius.
+The matrix exits 1. CUDA and dense sampling were untested.
+The temporary fixture edit was restored.
