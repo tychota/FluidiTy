@@ -5,7 +5,7 @@ Local branch `codex/m5-granular-snow`, based on verified upstream
 M5 implementations against §§2.3, 5.2, 8.1–8.2 and 15.2 of the
 [design](../superpowers/specs/2026-11-07-fluidity-design.md).
 
-The branch now includes main through 160e2fa. Constitutive models,
+The branch includes upstream main through 6472b77. Constitutive models,
 face contact, impulse scatter, dry snow, and plastic checkpoint records
 landed in GitHub PRs 74, 80, 81, 82, and 83. Draft PR 75 continues the
 milestone qualification. The dry snow and plastic checkpoint PRs were
@@ -25,7 +25,7 @@ dry-scene target retains the sand and snow qualification cases.
 | Snow constitutive invariants | Pass | Compression and tension clamps, reconstructed total volume, hardened corotational stress, repeated compaction, and invalid-state output preservation. |
 | Full 3D material state and wave bound | Pass for the tested domain | Rotated and repeated stretches, reflection and singular rejection, isotropic and hardened wave oracles, and rejection of axial and principal-plane loss of ellipticity. Principal-plane checks do not certify ellipticity in every fully oblique direction. The Hessian row bound covers continuous elastic wave speed. The tested discrete acoustic factor is 0.25 for the bounded scenes. |
 | Q-SOLID uncut quadrature | Pass | Analytic affine gradient gives 87.5 W particle power and −87.5 W grid power, with 3.25e-16 scaled residual on both backends versus 1e-6 allowed. This measures uncut stress quadrature and the matching gather derivative. |
-| Q-SAND 30° pile | Open | The landed Coulomb deformation update reduces late timestep sensitivity. The nominal reference case reaches 32.825896° at 0.75 s and flattens to 29.113507° at 1.5 s. All four grid-width and timestep combinations miss the 30–35° range at the extended endpoint. |
+| Q-SAND 30° pile | Open | The nominal reference case reaches 32.825896° at 0.75 s and flattens to 29.113507° at 1.5 s. The isolated sand candidate passes both fine cases at 3 s and both fall below 30° by 9 s. SM120 reproduces the fine half-step creep through 12 s. |
 | Dry snow compaction | Pass | Two resolutions pass a compress–unload cycle. Mean log plastic Jacobian stays below −0.34 after unload. |
 | Dry step acceptance | Pass for the tested domain | Motion and acoustic bounds are checked during the step. Tests reject an inadmissible initial snow state and a move out of allocated support, preserving the particle record. |
 | Isolated distinct-body contact | Pass | Closing, separating, sticking, sliding and invalid pairs. Unequal masses give 6 N·s normal and −1.5 N·s sliding impulse on the first body. Momentum is conserved within the fixture tolerance, and pair kinetic energy decreases. |
@@ -6296,6 +6296,15 @@ Use the earlier clean-build and Blender commands with
 out/build/m5-main-6472b77-release, out/authored-upstream-6472b77-cpu,
 and out/authored-upstream-6472b77-cuda. The default dry-scene
 targets do not include the extended sand matrix. Q-SAND remains open.
+
+Verified upstream main at 6472b77 and the M6 qualification branch
+at 996a34e. The latter is an ancestor of upstream main. Reran all
+11 M5 CTest targets using the build above. All passed, and the
+tracked native and Blender sources match b58e678.
+
+```powershell
+ctest --test-dir out/build/m5-main-6472b77-release -R '^M5' --no-tests=error --output-on-failure
+```
 
 ### Clear horizontal derivatives of the normal affine row
 
