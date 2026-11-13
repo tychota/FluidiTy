@@ -9005,3 +9005,23 @@ All four cases complete and miss at least one bound. The paired
 cut stress work residual stays within 1.6e-16 J. This control
 adds grid support before deformation while retaining the original
 friction cap. The temporary solver changes were restored.
+
+### Include projected normal support in the grid friction cap
+
+On 43ec90c, retain four projected normal sweeps. Scatter
+the final per-particle normal impulse into the reaction map
+using the compatible normal stencil, in addition to the
+existing stress-derived reaction. Keep the particle sweep
+for any remaining contact.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.912205° | 0.170983 |
+| Coarse half-step | 41.440564° | 0.158930 |
+| Fine | 31.876072° | 0.165500 |
+| Fine half-step | 36.073858° | 0.160435 |
+
+All four cases miss at least one bound. The absolute cut work
+residual stays below 1.9e-16 J. This control uses the updated
+normal reaction in a subsequent tangential solve, with no
+coupled iteration between them. The temporary edits were restored.
