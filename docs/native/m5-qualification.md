@@ -10571,3 +10571,28 @@ places. All cases fail angle and radius and pass kinetic
 energy and short drift. The CUDA fixture exits 1 with
 `--q-sand-dense-column-long-settle` after matching the two
 absolute timesteps. The temporary fixture was restored.
+
+#### Track bulk height at the smaller matched timestep
+
+On 0d1cd2d, trace mass-weighted height and vertical velocity
+for the original particle sampling at both widths and the
+same 0.78125 ms step. The mass fraction within half a cell
+uses each grid's own width. Heights are measured from the
+same physical floor.
+
+| Time (s) | Coarse mean height (mm) | Fine mean height (mm) |
+|---|---:|---:|
+| 0.1961 | 111.371 | 109.257 |
+| 0.3914 | 64.690 | 53.551 |
+| 0.7820 | 37.481 | 24.057 |
+| 1.5000 | 19.387 | 11.794 |
+
+At 1.5 s the fine mean height is 7.59 mm lower and the
+maximum height is only 2.25 mm lower. Mean downward
+velocity remains 18.4 mm/s on coarse and 10.9 mm/s on
+fine. The integrated vertical momentum residuals are
+−1.10e-4 and 1.48e-5 N·s. The fine case's greater bulk
+settlement is already visible by 0.3914 s. These global
+receipts leave local load distribution open. The native
+diagnostic reproduced the matched-step angle results,
+and the temporary fixture was restored.
