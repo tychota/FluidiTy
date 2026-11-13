@@ -11588,3 +11588,30 @@ The default test passes. At 3 s the four angles are 30.497792°,
 returns 1. Spatial centering in the frozen field leaves the
 observed flattening intact. CUDA and dense sampling were
 untested. The temporary source edit was restored.
+
+
+#### Attenuate expansive volumetric strain before granular return
+
+On 157abf7, remove the positive trace of the ordinary-floor
+granular gradient from the incoming deformation increment,
+using equal diagonal corrections. Preserve the deviatoric
+gradient, post-impact gradient, transport and contact.
+Compare full and half removal.
+
+Full removal rejects every sparse case before the 0.75 s
+sample and fails the default native dry scene. Half removal
+passes the default test. At 3 s its angles are 33.382799°,
+24.432601°, 25.197573°, and 19.566472°. Only the coarse
+nominal case meets all checks. The other three miss angle,
+radius and persistence. The half-removal command exits 1.
+CUDA and dense sampling were untested. The solver was restored.
+
+
+At 6 s with half removal, the coarse nominal case still
+passes with a 31.896233° envelope, 0.480711° drift over
+the final second, and 0.159309 m radius. The other cases
+reach 22.472928°, 20.986038°, and 11.002120°, all with
+radii above 0.16 m. The sparse native command exits 1.
+The fine half-step loses another 2.312968° over the last
+second and ends below the unmodified solver. The solver
+edit was restored. CUDA and dense sampling were untested.
