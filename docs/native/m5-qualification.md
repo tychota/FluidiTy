@@ -8457,3 +8457,27 @@ fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-same-state-motion-probe-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Clear downward carried translation before each late step
+
+On 255739e, use the native fine half-step through 3 s. Before
+each subsequent attempt, zero negative stored vertical velocity
+in one of two groups. Account for each reset as external
+vertical impulse and leave the deformation and slopes intact.
+
+| Group reset | Envelope at 6 s | 9 s | 12 s |
+|---|---:|---:|---:|
+| On floor | 30.869627° | 27.988015° | 25.473317° |
+| Above floor | 31.939357° | 29.838500° | 27.992297° |
+
+The floor-only reset reproduces baseline at printed precision.
+The above-floor reset retains 8.62 mm more height by 12 s and
+still falls below 30°. The outer radius stays at 0.156304 m
+in both cases. The resets are diagnostic external impulses.
+The temporary fixture edits were restored.
+
+```powershell
+foreach ($variant in 'late-floor-vertical-reset', 'late-above-floor-reset') {
+  & "out/pr-m5-sand-affine/out/sand-affine-$variant-bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 12
+}
+```
