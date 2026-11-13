@@ -11412,3 +11412,26 @@ within 0.000001° on the final envelope and last-second
 drift. The fine half-step falls from 15.249811° to 13.060318°
 over that last second while meeting the final 0.05 s drift
 limit. The remaining failure reproduces on both paths.
+
+
+#### Compare the compatible floor at six seconds
+
+On cddc51d, run the existing aligned compatible-floor matrix
+without changing the solver, scene bounds, or endpoint sampling.
+
+```powershell
+& ./out/requalified/fluidity_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle all aligned 6
+& ./out/requalified/fluidity_cuda_m5_dry_scene_tests.exe --q-sand-compatible-floor-long-settle all aligned 6
+```
+
+| Case | Native ordinary floor | Native compatible floor | Compatible floor absolute drift over last ≈1 s |
+|---|---:|---:|---:|
+| Coarse | 33.842809° | 31.267274° | 0.245937° |
+| Fine | 23.424520° | 18.236314° | 1.364131° |
+| Coarse half-step | 17.104058° | 17.135791° | 2.288315° |
+| Fine half-step | 13.060319° | 13.385210° | 2.755325° |
+
+The native compatible-floor matrix exits 1. Only the coarse
+nominal angle meets the band. All four cases meet the radius,
+short drift and kinetic-energy bounds. The fine half-step
+keeps flattening despite the compatible transfer.
