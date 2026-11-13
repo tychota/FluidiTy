@@ -11615,3 +11615,26 @@ radii above 0.16 m. The sparse native command exits 1.
 The fine half-step loses another 2.312968° over the last
 second and ends below the unmodified solver. The solver
 edit was restored. CUDA and dense sampling were untested.
+
+
+#### Measure plastic activity over the final second
+
+On 157abf7, move only the native sparse column plastic
+diagnostic window from the final 0.05 s to the steps starting
+at or after 5 s. Run the unchanged solver to 6 s. The floor
+layer consists of particles ending a step within 0.05 m of
+the floor.
+
+| Case | Projected particle-time | Plastic volume change particle-time | Mean absolute log Jpl path | Floor-layer contribution |
+|---|---:|---:|---:|---:|
+| Coarse | 3.17% | 1.59% | 0.00349686 | below 1e-14 |
+| Fine | 4.76% | 4.76% | 0.01526072 | 0.01271852 |
+| Coarse half-step | 10.62% | 10.62% | 0.01487805 | 0.01487805 |
+| Fine half-step | 4.76% | 4.76% | 0.00632193 | 0.00632193 |
+
+The two flattening half-step cases accumulate their measurable
+late plastic volume path in the floor layer. The coarse
+nominal case gains angle with almost no floor-layer path.
+These counts locate activity and do not establish causation.
+The command reproduces the baseline angles and exits 1.
+CUDA was untested and the fixture edit was restored.
