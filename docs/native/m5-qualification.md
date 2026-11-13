@@ -4394,3 +4394,37 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
 }
 ```
+
+### Affine-exact midpoint donors for bounded tangent reconstruction
+
+Starting from 3008848, search the existing tangent donor list
+for a pair whose offsets about the target sum to zero, when
+the full-rank fit has a negative coefficient. Use equal
+weights on the first such pair in donor order and keep the
+stored affine row eligible. The mean of those donor values
+reproduces an affine velocity at the target and stays within
+the donor range. When there is no pair, retain the candidate's
+nearest-donor fallback. The gather and stress transpose use
+the same coefficients.
+
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 34.277038° | 0.168270 m | Radius |
+| Coarse half-step | 40.490051° | 0.156751 m | Angle |
+| Fine | 31.619054° | 0.158899 m | Pass |
+| Fine half-step | 34.783849° | 0.155557 m | Pass |
+
+The midpoint control preserves both fine passes and improves
+their radius margins. Both coarse cases retain their failed
+checks. The largest absolute vertical momentum residual is
+5.94e-9 N·s and the largest cut stress work mismatch is
+2.10e-16 J. The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-midpoint-donor-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
