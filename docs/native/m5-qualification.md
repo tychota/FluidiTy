@@ -7553,3 +7553,32 @@ the extended Q-SAND gate open.
 ```powershell
 fluidity_m5_dry_scene_tests.exe --q-sand-symmetric-affine-decay 0 fine-quarter all 18
 ```
+
+### Compare the APIC affine fit with the deformation derivative
+
+The granular return on 3008848 uses the specified radial
+deviator correction at fixed trace under compression. As a
+transfer control, use the complete ghost-field APIC affine fit
+for the trial deformation wherever that fit is enabled. Keep
+the original stress scatter and its paired derivative for the
+work receipt. Use the standard native column matrix.
+
+| Case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.026817° | 0.167161 |
+| Coarse half-step | 40.982734° | 0.157041 |
+| Fine | 32.727131° | 0.158585 |
+| Fine half-step | 35.964369° | 0.155640 |
+
+Only the fine nominal case passes. The reported stress work
+residual still measures the original derivative and its
+transpose. Qualifying the affine fit as the deformation
+operator would require its own paired stress scatter. The
+temporary change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-fit-deformation-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
