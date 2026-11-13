@@ -8384,3 +8384,25 @@ unchanged and the temporary instrumentation was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-rest-support-bands-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Halve the timestep only after the pile forms
+
+On 255739e, run the native fine half-step column to 3 s, then
+switch from 0.00078125 s to 0.000390625 s for the remaining
+steps. The 3 s state and geometry match the baseline.
+
+| Time (s) | Baseline envelope | Envelope with smaller late steps |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 32.588625° |
+| 9 | 27.988015° | 30.869518° |
+| 12 | 25.473317° | 29.370816° |
+
+The late height loss drops from 33.74 mm to 20.24 mm.
+The outer radius remains 0.156304 m. The timestep affects
+creep from the same formed pile, and the smaller step still
+falls below 30° by 12 s. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-half-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
