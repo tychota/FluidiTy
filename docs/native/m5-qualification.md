@@ -8432,3 +8432,28 @@ The fixture source was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-same-state-support-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Separate translation and affine motion in matched-state wall support
+
+Repeat the one-step native support probe at 3 s on 255739e.
+Reset carried particle translation and APIC slopes independently
+on copies of the formed pile.
+
+| Carried motion cleared | Swept support at 0.781250 ms (N) | 0.390625 ms (N) | 0.195313 ms (N) |
+|---|---:|---:|---:|
+| Neither | 8.988 | 13.264 | 21.815 |
+| Translation | 4.182 | 3.652 | 2.591 |
+| APIC slopes | 9.518 | 14.324 | 23.936 |
+| Both | 4.712 | 4.712 | 4.712 |
+
+The grid contribution stays at 14.155 N and all probes record
+17 swept contacts. The carried translation supplies the
+step-independent closing impulse in this snapshot. The affine
+contribution partially offsets it. Clearing both yields a
+duration-proportional swept impulse. The probe exits after
+the copied steps and does not test settlement. The temporary
+fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-same-state-motion-probe-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
