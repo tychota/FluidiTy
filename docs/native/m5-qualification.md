@@ -11740,3 +11740,27 @@ apex regains compression after the 3 s sample. These
 snapshots do not resolve transitions between samples. The
 native run reproduces the six-second geometry and exits 1.
 CUDA was untested and the fixture edit was restored.
+
+
+#### Resolve the final apex unloading time
+
+On e1fb2b1, trace each particle on every accepted native
+step through 6 s. For the particle highest at 6 s, report
+its last step with vertical Kirchhoff stress below −1e-6 Pa
+and its last step with a log Jpl increase above 1e-9.
+
+| Case | Last compressed (s) | Last expansive return (s) |
+|---|---:|---:|
+| Coarse | 6.000000 | 3.757500 |
+| Fine | 2.679688 | 6.000000 |
+| Coarse half-step | 2.125313 | 6.000000 |
+| Fine half-step | 3.653125 | 6.000000 |
+
+The failing apex particles remain unloaded after their
+last compressive step and still undergo expansive return
+at 6 s. In the specified cohesionless return, a positive
+plastic log-volume increment implies a positive trial
+elastic log Jacobian. This identifies continued expansion
+but does not isolate its source in transfer or contact.
+The native command reproduces baseline and exits 1. CUDA
+was untested and the temporary fixture edit was restored.
