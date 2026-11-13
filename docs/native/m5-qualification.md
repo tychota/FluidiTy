@@ -4516,3 +4516,16 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+Instrumenting the default test runner identifies
+TestWallImpulseBudget(true) as the first failure on both
+native and SM120. The isolated fixture starts on the floor
+with downward velocity. Its compatible-floor oracle requires
+the reflected normal derivative of minus one per second to
+compress the elastic determinant to 0.99 over 0.01 s while
+the wall impulse stops the inward velocity. The swept split
+instead projects the deformation gradient from the start of
+the step because contact is immediate. The oracle therefore
+tests a change to the wall deformation model independently of
+the pile geometry. The instrumentation and solver control
+were both restored.
