@@ -7609,3 +7609,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Probe the discrete force balance from rest
+
+On 255739e, copy the native fine half-step state at 3, 6 and
+9 s. Clear translation and APIC slopes on each copy and
+advance it one ordinary step with gravity and contact. Divide
+the resulting stored velocity by step duration to measure the
+effective acceleration. The copies leave the main trajectory
+intact, and its 12 s angle reproduces the baseline.
+
+| Time (s) | RMS (m/s²) | Maximum (m/s²) | Mean vertical (m/s²) |
+|---|---:|---:|---:|
+| 3 | 3.786 | 6.814 | −1.824 |
+| 6 | 2.134 | 7.335 | −1.063 |
+| 9 | 2.491 | 7.513 | −0.881 |
+
+The low observed kinetic energy coexists with a substantial
+discrete force imbalance in the from-rest probes. These values
+include contact and transfer and measure their combined result.
+The temporary fixture changes were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-rest-force-probe-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
