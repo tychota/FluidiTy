@@ -11916,3 +11916,20 @@ second and exits 1. Its cut stress work residual is
 closes the reported spatial work balance while leaving
 late flattening. CUDA and the other cases were untested.
 The temporary solver edit was restored.
+
+
+#### Average granular volumetric strain within grid cells
+
+On d3a249a, group ordinary-floor granular particles by their
+start cell on the aligned grid. Replace the gathered velocity
+gradient trace with the reference-volume-weighted trace in that
+cell. Use equal diagonal corrections to preserve the deviator.
+Use this gradient in the existing swept split. Transfer,
+stress scatter and the granular return remain unchanged.
+
+The default native dry scene passes. The sparse 3 s angles are
+29.620245°, 22.485443°, 20.685610°, and 20.152352°. All four
+angles decrease relative to the baseline, by up to 2.17°.
+All pass the radius and short-drift checks and fail angle and
+persistence. The native matrix exits 1. CUDA and dense
+sampling were untested. The temporary solver edit was restored.
