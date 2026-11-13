@@ -6639,3 +6639,28 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Apply horizontal expansion damping only during initial collapse
+
+On 3008848, use the same 150 per second positive horizontal
+trace damping as in the late-only control, but enable it only
+before 0.75 s. Both default dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 35.705880° | 0.164674 |
+| Coarse half-step | 41.427366° | 0.151870 |
+| Fine | 32.342130° | 0.154659 |
+| Fine half-step | 35.607926° | 0.158103 |
+
+Early-only damping shifts the final angle more than late-only
+damping in all four cases. It does not recover either coarse
+case. Only nominal fine passes. The solver and fixture edits
+were restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-early-plane-trace-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
