@@ -10206,3 +10206,22 @@ The other angles remain below 30°, and the fine half-step
 also exceeds the radius bound by 0.247 mm. The default
 native dry-scene test passes and the Q-SAND matrix fails.
 The temporary solver edit was restored. CUDA was untested.
+
+#### Separate vertical and horizontal midpoint gradients
+
+Repeat the ordinary-floor midpoint test on 6104805, averaging
+only the vertical row in the first variant and only the two
+horizontal rows in the second. Keep both sweep intervals.
+
+| Case | Baseline | Vertical midpoint | Horizontal midpoint |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 30.494929° | 29.719217° |
+| Fine | 26.761332° | 27.783781° | 26.962533° |
+| Coarse half-step | 29.006384° | 29.710618° | 29.015467° |
+| Fine half-step | 27.033753° | 27.652184° | 27.019219° |
+
+The vertical row produces most of the angle increase seen
+with all rows centered. Only the coarse case passes with
+vertical centering. Both variants pass the default native
+dry-scene test and fail Q-SAND. The temporary sources were
+restored. CUDA was untested for these controls.
