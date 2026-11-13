@@ -7026,3 +7026,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Include wall-face stopping impulse in the grid friction cap
+
+On 3008848, clamp incoming normal velocity to zero on grid faces
+exactly on the floor. Add the resulting positive normal impulse
+divided by the step duration to the local reconstructed reaction.
+Keep the two tangential sweeps and the particle contact fallback.
+
+| Native case at 3 s | Envelope | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.162185° | 0.154494 |
+| Coarse half-step | 37.624260° | 0.145693 |
+| Fine | 27.781766° | 0.179817 |
+| Fine half-step | 33.068293° | 0.175965 |
+
+The coarse nominal case passes. The coarse half-step remains too
+steep and both fine cases exceed the radius limit. The maximum
+absolute paired cut stress work residual is 7.7e-17 J. Particle
+sweep energy change falls below 0.000061 J in each run, indicating
+that the grid clamp takes over almost all normal stopping work
+in this fixture. The experiment was restored and Q-SAND stays open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-wall-face-normal-cap-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
