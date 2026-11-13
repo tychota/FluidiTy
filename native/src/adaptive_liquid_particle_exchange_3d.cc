@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "adaptive_liquid_particle_exchange_3d_internal.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "liquid_exact_inventory_sum_internal.h"
 #include "mac_pressure_3d_arithmetic.h"
@@ -70,18 +71,19 @@ struct LeafParticles {
 };
 
 absl::Status BinParticles(
-    const LiquidState3D& step_start,
+    std::span<const LiquidAdaptiveCellState3D> cells,
+    std::span<const LiquidParticleState3D> particles,
     const GradedMacTransfer3D& transfer,
     std::span<const std::uint8_t> affected,
     std::span<LeafParticles> binned
 ) {
-  for (std::size_t ordinal = 0; ordinal < step_start.particles.size(); ++ordinal) {
-    const auto& particle = step_start.particles[ordinal];
+  for (std::size_t ordinal = 0; ordinal < particles.size(); ++ordinal) {
+    const auto& particle = particles[ordinal];
     const auto leaf = transfer.ParticleLeafOrdinal(particle.world_position);
     if (!leaf.ok()) {
       return leaf.status();
     }
-    if (step_start.adaptive_cells[*leaf].material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian) {
+    if (cells[*leaf].material_owner == AdaptiveLiquidMaterialOwner3D::kEulerian) {
       return absl::FailedPreconditionError("particle exchange source overlaps Eulerian ownership");
     }
     if (affected[*leaf] == 0) {
@@ -273,7 +275,7 @@ absl::StatusOr<AdaptiveLiquidParticleExchangeCandidate3D> PrepareAdaptiveLiquidP
     affected[leaf] = 1;
   }
   std::vector<LeafParticles> binned(source_cells.size());
-  const auto bin_status = BinParticles(step_start, *transfer, affected, binned);
+  const auto bin_status = BinParticles(source_cells, step_start.particles.values(), *transfer, affected, binned);
   if (!bin_status.ok()) {
     return bin_status;
   }
@@ -308,6 +310,92 @@ absl::StatusOr<AdaptiveLiquidParticleExchangeCandidate3D> PrepareAdaptiveLiquidP
       .exchange = std::move(*exchange),
       .candidate_particles = std::move(candidate_particles),
   };
+}
+
+absl::Status liquid_step_internal::ReconcileProjectedAdaptiveOwnerExchange3D(
+    std::span<const LiquidAdaptiveCellState3D> step_start_cells,
+    const AdaptiveLiquidOwnerExchangePlan3D& exchange,
+    const GradedMacTransfer3D& transfer,
+    std::span<const LiquidAdaptiveFaceState3D> projected_carriers,
+    double reference_density_kg_per_m3,
+    std::span<LiquidParticleState3D> particles,
+    std::span<LiquidRemapInventory3D> inventories
+) {
+  if (HasParticleEnthalpy(step_start_cells, exchange)) {
+    return absl::FailedPreconditionError("particle exchange cannot represent signed enthalpy");
+  }
+  std::vector<std::uint8_t> affected(step_start_cells.size());
+  for (const auto leaf : exchange.particle_reconciliation_leaf_ordinals) {
+    affected[leaf] = 1;
+  }
+  std::vector<LeafParticles> binned(step_start_cells.size());
+  const auto bin_status = BinParticles(step_start_cells, particles, transfer, affected, binned);
+  if (!bin_status.ok()) {
+    return bin_status;
+  }
+
+  struct Revision {
+    std::size_t leaf;
+    std::size_t particle;
+    LiquidParticleState3D state;
+    LiquidRemapInventory3D inventory;
+  };
+  std::vector<Revision> revisions;
+  revisions.reserve(exchange.particle_reconciliation_leaf_ordinals.size());
+  for (const auto leaf : exchange.particle_reconciliation_leaf_ordinals) {
+    const auto& entry = binned[leaf];
+    if (!entry.carrier_ordinal) {
+      return absl::FailedPreconditionError("projected owner exchange has no resident carrier");
+    }
+    const auto start = InventoryAmounts(step_start_cells[leaf].inventory);
+    const auto planned = InventoryAmounts(exchange.candidate_cells[leaf].inventory);
+    const auto baseline = InventoryAmounts(inventories[leaf]);
+    if (entry.totals != baseline || start[kMass] != baseline[kMass]
+        || start[kReferenceVolume] != baseline[kReferenceVolume] || start[kCurrentVolume] != baseline[kCurrentVolume]) {
+      return absl::FailedPreconditionError("projected owner exchange kinematic baseline changed material ownership");
+    }
+    ParticleAmounts target{};
+    for (std::size_t lane = 0; lane < target.size(); ++lane) {
+      const auto amount = ApplyLeafDelta(baseline[lane], start[lane], planned[lane]);
+      if (!amount.ok()) {
+        return amount.status();
+      }
+      target[lane] = *amount;
+    }
+
+    const auto& source_particle = particles[*entry.carrier_ordinal];
+    const auto candidate = ReconcileCarrier(
+        source_particle,
+        entry,
+        baseline,
+        target,
+        AdaptiveLiquidParticlePrescribedState3D{reference_density_kg_per_m3, source_particle.volume_ratio}
+    );
+    if (!candidate.ok()) {
+      return candidate.status();
+    }
+    const auto support = transfer.Gather(*candidate, projected_carriers);
+    if (!support.ok()) {
+      return support.status();
+    }
+    revisions.push_back({
+        .leaf = leaf,
+        .particle = *entry.carrier_ordinal,
+        .state = *candidate,
+        .inventory =
+            {
+                .mass_kg = target[kMass],
+                .reference_volume_m3 = target[kReferenceVolume],
+                .current_volume_m3 = target[kCurrentVolume],
+                .momentum_kg_m_per_s = {target[kMomentumX], target[kMomentumY], target[kMomentumZ]},
+            },
+    });
+  }
+  for (const auto& revision : revisions) {
+    particles[revision.particle] = revision.state;
+    inventories[revision.leaf] = revision.inventory;
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace fluidity

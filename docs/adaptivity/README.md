@@ -167,3 +167,23 @@ edge and corner pressure cases, both orientation signs, the two masks and the in
 counterexample. Production qualification still needs physical fallback, multilevel topology, remap,
 F3/F4, and a matched-error wave benchmark. See the
 [M3 plan](../superpowers/plans/2026-11-11-m3-adaptivity-and-band.md) for the M2 integration dependencies.
+
+### Certified affine family remap
+
+A certified F3 split can assign different pure momentum to each child. The scheduler bins the
+replacement particles by canonical leaf and requires exact cancellation of the represented
+family mass, reference volume, current volume, and all three momentum components. It then
+uses the measured per-leaf momentum partition and verifies the remaining inventory fields.
+The inverse F4 merge uses the same balance check. A retained marked particle must keep
+its physical quadratic support width and qualify on the new canonical subfaces before the
+trial can start.
+
+The CPU fixture uses a nonzero off-diagonal affine field on the 125-to-314 leaf split, then
+uses dyadic child data for the inverse merge. It also exercises a retained marked particle
+whose support width would change. The CUDA fixture checks that a late rejection preserves
+the old host state and device epoch before the shortened retry publishes all eight marks.
+
+```powershell
+ctest --test-dir out/build/affine-family-cpu -V -R 'LiquidSubstep3D|AdaptiveFamilyReplay.cpu' --no-tests=error
+ctest --test-dir out/build/affine-family-cuda -V -R 'CudaAdaptiveSimulate3D|AdaptiveFamilyReplay.cuda' --no-tests=error
+```

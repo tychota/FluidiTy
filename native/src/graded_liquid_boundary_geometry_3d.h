@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -13,6 +14,8 @@
 
 namespace fluidity {
 
+struct LiquidAdaptiveCellState3D;
+
 struct GradedLiquidPlanarSurface3D {
   Vec3 unit_normal;  // Outward from liquid; liquid is n dot x < plane_coordinate_m.
   double plane_coordinate_m;  // World meters at the freeze time.
@@ -22,6 +25,7 @@ struct FrozenGradedLiquidLeaf3D {
   Vec3 world_lower_m;
   Vec3 world_upper_m;
   double fluid_volume_m3;  // Intersection of liquid and nonsolid.
+  bool known_air;  // Entire leaf is strictly nonsolid and on the dry side of the liquid plane.
 };
 
 struct FrozenGradedLiquidSubface3D {
@@ -49,8 +53,17 @@ class FrozenGradedPlanarLiquidGeometry3D {
   const AdaptiveMacTopology3D& topology() const {
     return topology_;
   }
+  // World-space lower corner of finest lattice cell zero, in meters.
+  Vec3 world_origin_m() const {
+    return world_origin_m_;
+  }
   double step_duration_s() const {
     return step_duration_s_;
+  }
+  // Reserved dynamic bytes owned by this frozen layout and its measured records.
+  std::size_t reserved_bytes() const {
+    return topology_.reserved_bytes() + leaves_.capacity() * sizeof(FrozenGradedLiquidLeaf3D)
+        + subfaces_.capacity() * sizeof(FrozenGradedLiquidSubface3D);
   }
 
  private:
@@ -62,11 +75,12 @@ class FrozenGradedPlanarLiquidGeometry3D {
       double
   );
 
-  FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, double step_duration_s)
-      : topology_(topology), step_duration_s_(step_duration_s) {
+  FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, Vec3 world_origin_m, double step_duration_s)
+      : topology_(topology), world_origin_m_(world_origin_m), step_duration_s_(step_duration_s) {
   }
 
   AdaptiveMacTopology3D topology_;
+  Vec3 world_origin_m_;
   double step_duration_s_;
   std::vector<FrozenGradedLiquidLeaf3D> leaves_;
   std::vector<FrozenGradedLiquidSubface3D> subfaces_;
@@ -114,12 +128,20 @@ struct GradedLiquidPressureInputs3D {
   std::vector<pressure_internal::AdaptiveMacPressureSubface3D> subfaces;
 };
 
+enum class GradedLiquidPressureDomain3D {
+  kAllWet,
+  kKnownAir
+};
+
 // Compose canonical pressure input rows without solving. This lets a scheduler
 // freeze aperture and wall terms before adding its trial predictor velocities.
+// kKnownAir allows geometrically certified zero-volume leaves in the staging
+// arrays. Pass them to the sparse graph preparer for occupancy admission.
 absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
-    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields,
+    GradedLiquidPressureDomain3D domain = GradedLiquidPressureDomain3D::kAllWet
 );
 
 // Compose explicit pressure fields with frozen physical measures and canonical
@@ -134,6 +156,39 @@ absl::StatusOr<pressure_internal::PreparedMacPressureSystem3D> PrepareGradedPlan
     const FrozenGradedPlanarLiquidGeometry3D& geometry,
     std::span<const GradedLiquidPressureCellFields3D> cell_fields,
     std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
+struct GradedWetPressureSubset3D {
+  pressure_internal::PreparedMacPressureSystem3D system;
+  // Maps compact pressure row ordinals to canonical accepted leaf ordinals.
+  std::vector<std::size_t> leaf_ordinals;
+};
+
+// Prepare a positive-volume pressure subset on the fixed accepted leaf roster.
+// Supply validated accepted leaf records whose inventory accounts for all
+// resident material. Field spans retain canonical leaf and global subface
+// order, and returned links retain global face slots. A dry leaf must already
+// be accepted empty air and be geometrically certified. Wetting, drying,
+// unsupported occupancy, an open wet/air interface, and nonempty fields for
+// omitted rows or faces return FailedPrecondition. Inconsistent extents or
+// keys return InvalidArgument.
+// Geometry and graph errors propagate. Inputs remain unchanged on failure.
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubset3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
+    std::span<const GradedLiquidPressureCellFields3D> cell_fields,
+    std::span<const GradedLiquidPressureSubfaceFields3D> subface_fields
+);
+
+// Prepare the same subset from canonical inputs produced by Compose for this
+// geometry. The caller may stage predictor velocities and warm-start pressure
+// on the wet domain before assembly. The sparse admission and graph checks
+// apply to the completed fields, with no change to the borrowed inputs.
+absl::StatusOr<GradedWetPressureSubset3D> PrepareGradedWetPressureSubsetFromInputs3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const LiquidAdaptiveCellState3D> accepted_leaves,
+    std::span<const MacPressureCell3D> cell_inputs,
+    std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subface_inputs
 );
 
 }  // namespace fluidity

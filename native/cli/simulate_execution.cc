@@ -859,6 +859,47 @@ absl::StatusOr<std::string> ExecuteCommand(
     return absl::InvalidArgumentError("effects capture requires a contiguous point-frame range");
   }
   const bool adaptive_mode = starting_state.adaptive_cells.size() != 0;
+  const auto width_actions = scene.adaptive_width_actions.values();
+  if (!width_actions.empty() && !adaptive_mode) {
+    return absl::FailedPreconditionError("adaptive width actions require a graded initial state");
+  }
+  const auto select_width = [&](const LiquidState3D& state
+                            ) -> absl::StatusOr<std::optional<LiquidAdaptiveWidthTrial3D>> {
+    const auto action = std::ranges::lower_bound(width_actions, state.clock.epoch, {}, [](const auto& entry) {
+      return entry.accepted_clock.epoch;
+    });
+    if (action == width_actions.end() || action->accepted_clock.epoch != state.clock.epoch) {
+      return std::nullopt;
+    }
+    if (action->accepted_clock != state.clock) {
+      return absl::FailedPreconditionError("adaptive width action clock differs from the committed clock");
+    }
+    const auto bytes = EncodeLiquidState3D(state);
+    if (!bytes.ok()) {
+      return bytes.status();
+    }
+    if (LiquidContentDigest3D(bytes->values()) != action->accepted_state_digest) {
+      return absl::FailedPreconditionError("adaptive width action does not authenticate the committed state");
+    }
+    return LiquidAdaptiveWidthTrial3D{
+        .request =
+            {
+                .accepted_epoch = state.clock.epoch,
+                .leaf = action->leaf,
+                .demand = action->demand,
+                .parent_and_halo = {},
+                .complete_halo = false,
+                .hysteresis_duration_s = 1,
+            },
+        .maximum_step_duration_s = action->maximum_step_duration_s,
+    };
+  };
+  if (!width_actions.empty()) {
+    const auto starting_action = select_width(starting_state);
+    if (!starting_action.ok()) {
+      return starting_action.status();
+    }
+  }
   if (mixed) {
     if (!solid || solid->plastic_particles.empty() || !solid->bodies.empty() || !solid->sides.empty()
         || !solid->elastic_particles.empty() || adaptive_mode) {
@@ -877,10 +918,17 @@ absl::StatusOr<std::string> ExecuteCommand(
     resume.capacities = {
         .particles = starting_state.particles.size(),
         .blocks = 0,
-        .cells = starting_state.adaptive_cells.size(),
-        .faces = starting_state.adaptive_faces.size(),
+        .cells = width_actions.empty() ? starting_state.adaptive_cells.size() : scene.adaptive_width_cell_capacity,
+        .faces = width_actions.empty() ? starting_state.adaptive_faces.size() : scene.adaptive_width_face_capacity,
         .sources = starting_state.sources.size(),
     };
+  }
+  if (!width_actions.empty()
+      && (resume.capacities.cells != scene.adaptive_width_cell_capacity
+          || resume.capacities.faces != scene.adaptive_width_face_capacity
+          || starting_state.adaptive_cells.size() > resume.capacities.cells
+          || starting_state.adaptive_faces.size() > resume.capacities.faces)) {
+    return absl::FailedPreconditionError("adaptive state does not fit the authenticated width reservations");
   }
   options.capacities = resume.capacities;
   options.capacity_replay_reservations = resume.capacity_replay_reservations;
@@ -1190,7 +1238,8 @@ absl::StatusOr<std::string> ExecuteCommand(
     const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
     const auto advanced = [&]() -> absl::Status {
       if (!solid) {
-        return scheduler->AdvanceFrame(*time, observer);
+        return width_actions.empty() ? scheduler->AdvanceFrame(*time, observer)
+                                     : scheduler->AdvanceFrameWithAdaptiveWidth(*time, select_width, observer);
       }
       const auto grid = SnowFrameGrid(scene.geometry, solid->plastic_particles, kCapacities.blocks);
       if (!grid.ok()) {

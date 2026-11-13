@@ -111,10 +111,12 @@ add_library(fluidity_native STATIC
   native/src/mac_pressure_3d_system.cc
   native/src/liquid_boundary_geometry_3d.cc
   native/src/graded_liquid_boundary_geometry_3d.cc
+  native/src/graded_liquid_wet_transition_3d.cc
   native/src/liquid_boundary_transfer_3d.cc
   native/src/liquid_wall_contact_3d.cc
   native/src/mac_pressure_3d_bounded_hierarchy.cc
   native/src/mac_pressure_workspace_3d.cc
+  native/src/graded_liquid_sparse_publication_3d.cc
   native/src/mac_pressure_3d.cc
   native/src/mac_pressure_3d_multigrid.cc
   native/src/adaptive_width_policy_3d.cc
@@ -311,6 +313,7 @@ if(BUILD_TESTING)
   add_executable(fluidity_native_tests
     native/tests/test_surface_settings_3d.cc
     native/tests/test_surface_stage_3d.cc
+    native/tests/test_live_graded_mesh_3d.cc
     native/tests/test_surface_component_lineage_3d.cc
     native/tests/test_surface_material_components_3d.cc
     native/tests/test_whitewater_sphere_source_3d.cc
@@ -359,6 +362,7 @@ if(BUILD_TESTING)
     native/tests/test_mac_pressure_3d_system.cc
     native/tests/test_liquid_boundary_geometry_3d.cc
     native/tests/test_graded_liquid_boundary_geometry_3d.cc
+    native/tests/test_graded_liquid_sparse_publication_3d.cc
     native/tests/test_liquid_boundary_transfer_3d.cc
     native/tests/test_liquid_wall_contact_3d.cc
     native/tests/test_mac_pressure_workspace_3d.cc
@@ -425,7 +429,7 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu)
   set_tests_properties(AdaptiveFamilyReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
-  foreach(scenario IN ITEMS eos viscous miscible)
+  foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge quadratic-persistent)
     add_test(NAME AdaptiveFamilyReplay.cpu.${scenario}
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu ${scenario})
@@ -439,6 +443,10 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu physical)
   set_tests_properties(AdaptivePhysicalReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptivePhysicalAirReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu physical-air)
+  set_tests_properties(AdaptivePhysicalAirReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   add_test(NAME AdaptiveWidthReplay.cpu
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu width)
@@ -447,6 +455,14 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
       "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu closure)
   set_tests_properties(AdaptiveClosureReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveOwnerExchangeReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu exchange)
+  set_tests_properties(AdaptiveOwnerExchangeReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
+  add_test(NAME AdaptiveBandOverlapReplay.cpu
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+      "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cpu overlap)
+  set_tests_properties(AdaptiveBandOverlapReplay.cpu PROPERTIES LABELS cpu TIMEOUT 60)
   if(FLUIDITY_ENABLE_CUDA)
     target_compile_definitions(fluidity_adaptive_family_fixture PRIVATE FLUIDITY_ADAPTIVE_FIXTURE_CUDA)
     target_link_libraries(fluidity_adaptive_family_fixture PRIVATE fluidity_cuda_operators CUDA::cudart)
@@ -454,7 +470,7 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda)
     set_tests_properties(AdaptiveFamilyReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
-    foreach(scenario IN ITEMS eos viscous miscible)
+    foreach(scenario IN ITEMS eos viscous miscible quadratic-split quadratic-merge quadratic-persistent)
       add_test(NAME AdaptiveFamilyReplay.cuda.${scenario}
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
           "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda ${scenario})
@@ -468,6 +484,10 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda physical)
     set_tests_properties(AdaptivePhysicalReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptivePhysicalAirReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda physical-air)
+    set_tests_properties(AdaptivePhysicalAirReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
     add_test(NAME AdaptiveWidthReplay.cuda
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda width)
@@ -476,6 +496,14 @@ if(BUILD_TESTING)
       COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
         "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda closure)
     set_tests_properties(AdaptiveClosureReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveOwnerExchangeReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda exchange)
+    set_tests_properties(AdaptiveOwnerExchangeReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
+    add_test(NAME AdaptiveBandOverlapReplay.cuda
+      COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tools/native/tests/test_adaptive_family_replay.py"
+        "$<TARGET_FILE:fluidity_adaptive_family_fixture>" cuda overlap)
+    set_tests_properties(AdaptiveBandOverlapReplay.cuda PROPERTIES LABELS cuda-adaptivity TIMEOUT 60)
   endif()
 
   if(FLUIDITY_ENABLE_CUDA)
@@ -508,7 +536,10 @@ if(BUILD_TESTING)
     gtest_discover_tests(fluidity_cuda_operator_tests PROPERTIES LABELS gpu)
 
     # Keep bounded adaptivity parity separate from the production CUDA validation inventory.
-    add_executable(fluidity_cuda_coarse_fine_tests native/tests/test_cuda_coarse_fine_transfer_3d.cc)
+    add_executable(fluidity_cuda_coarse_fine_tests
+      native/tests/test_cuda_coarse_fine_transfer_3d.cc
+      native/tests/test_live_graded_mesh_3d.cc)
+    target_compile_definitions(fluidity_cuda_coarse_fine_tests PRIVATE FLUIDITY_LIVE_GRADED_MESH_CUDA)
     target_include_directories(fluidity_cuda_coarse_fine_tests PRIVATE "${PROJECT_SOURCE_DIR}/native/cuda")
     target_link_libraries(fluidity_cuda_coarse_fine_tests
       PRIVATE fluidity_cuda_operators CUDA::cudart GTest::gtest_main)

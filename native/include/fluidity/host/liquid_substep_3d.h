@@ -306,6 +306,25 @@ struct LiquidFloatingBoxAttempt3D {
   std::optional<OrientedFloatingBoxLoads3D> oriented_loads;  // Present only on oriented acceptance.
 };
 
+// Borrowed synchronously for a single certified split. The refinement
+// closure must name every required parent exactly once.
+struct LiquidAdaptiveQuadraticSplitRequest3D {
+  std::uint64_t accepted_epoch;
+  std::span<const AdaptiveMacCellKey3D> exact_refinement_closure;
+  AdaptiveMacCellKey3D split_parent;
+  std::uint64_t source_particle_id;
+};
+
+// Borrowed synchronously for a single certified merge. Supply the explicit
+// coarsening halo and all two to eight distinct source IDs for the selected
+// family. Order of the closure and IDs does not determine reduction order.
+struct LiquidAdaptiveQuadraticMergeRequest3D {
+  std::uint64_t accepted_epoch;
+  std::span<const AdaptiveMacCellKey3D> exact_coarsening_halo;
+  AdaptiveMacCellKey3D merge_parent;
+  std::span<const std::uint64_t> source_particle_ids;
+};
+
 struct LiquidAdaptivePhysicalExteriorPressure3D {
   double pressure_pa;  // Gauge pressure including any caller-supplied lift.
   double distance_m;  // Positive pressure gradient distance.
@@ -315,9 +334,10 @@ struct LiquidAdaptivePhysicalExteriorPressure3D {
 // translating halfspace at time zero and the horizontal planar liquid surface.
 struct LiquidAdaptivePhysicalGeometryRequest3D {
   LiquidClock3D accepted_clock;  // Must equal the current committed clock.
-  std::span<const double> target_divergences_s_inv;  // One independent source per canonical leaf.
+  // One independent source per canonical leaf. Certified air requires zero.
+  std::span<const double> target_divergences_s_inv;
   // Empty seals all exteriors. Otherwise supply one optional entry per
-  // canonical global subface slot. Interior slots must be absent.
+  // canonical global subface slot. Interior and omitted air slots must be absent.
   std::span<const std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures{};
 };
 
@@ -332,6 +352,14 @@ struct LiquidAdaptiveWidthRequest3D {
   bool complete_halo;
   double hysteresis_duration_s;
 };
+
+// A width request plus the maximum duration covered by its evidence.
+struct LiquidAdaptiveWidthTrial3D {
+  LiquidAdaptiveWidthRequest3D request;
+  double maximum_step_duration_s;
+};
+using LiquidAdaptiveWidthSelector3D =
+    absl::FunctionRef<absl::StatusOr<std::optional<LiquidAdaptiveWidthTrial3D>>(const LiquidState3D&)>;
 
 // One band placement request for the current accepted graded epoch.
 struct LiquidAdaptiveBandRequest3D {
@@ -394,18 +422,37 @@ class LiquidSubstepScheduler3D {
   // diagnostics. Fatal/exhausted retries close physical progress, never change committed.
   absl::StatusOr<LiquidAttemptOutcome3D> Attempt(double step_duration, LiquidWorkPhaseObserver3D work_phase = {});
 
+  // Attempt an ordinary graded physical step with explicit projected owner
+  // exchange. The bounded path requires a stationary implicit-liquid tank.
+  // Refusal leaves the accepted particle, core, and clock state unchanged.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveOwnerExchange(double step_duration);
+
+  // Run an ordinary stationary implicit-liquid graded tank attempt with a 2h
+  // carrier overlap. The actual particle deposit and accepted same-side core
+  // carrier are blended before the old snapshot. Missing particle support
+  // uses the core carrier and PIC. Ownership and mixed-flux refusal are unchanged.
+  // The duration is in seconds. Unsupported attempts leave committed state intact.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandOverlap(double step_duration);
+
   // Request one graded family refinement (refine=true) or coarsening before
   // the physical attempt. Preparation errors leave the current frame open
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptWithAdaptiveFamily(double step_duration, AdaptiveMacCellKey3D parent, bool refine);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveFamily(
+      double step_duration,
+      AdaptiveMacCellKey3D parent,
+      bool refine,
+      LiquidWorkPhaseObserver3D work_phase = {}
+  );
   // Refine the requested committed parents and the necessary 2:1 closure.
   // Coarser parents are prepared first. All changed inventories and signed
   // subfaces must pass exact rebinning and remap before one physical trial.
   // An empty request is invalid. Refusal or rejection leaves the committed
   // topology, histories and inventories unchanged.
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptWithAdaptiveRefinementClosure(double step_duration, std::span<const AdaptiveMacCellKey3D> requested_parents);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveRefinementClosure(
+      double step_duration,
+      std::span<const AdaptiveMacCellKey3D> requested_parents,
+      LiquidWorkPhaseObserver3D work_phase = {}
+  );
   // Try the width policy for one leaf and one possible sibling family. The
   // scheduler checks the accepted epoch, derives sibling membership from the
   // committed keys and freezes any topology change before the physical trial.
@@ -413,16 +460,35 @@ class LiquidSubstepScheduler3D {
   // earns the proposed duration only on acceptance. An accepted trial resets
   // other eligibility, including when it receives no width evidence. Refusal
   // or rejection preserves the previous ages and topology.
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptWithAdaptiveWidth(double step_duration, const LiquidAdaptiveWidthRequest3D& request);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveWidth(
+      double step_duration,
+      const LiquidAdaptiveWidthRequest3D& request,
+      LiquidWorkPhaseObserver3D work_phase = {}
+  );
   // Attempt a positive duration in seconds with one particle's quadratic
   // MAC transfer, selected by ID in the exact committed epoch. Requires a
   // graded, inviscid incompressible particle-only tank. Unsupported carrier/support
   // eligibility uses the ordinary radial transfer before the trial starts.
+  // A successful selection records its basis in the accepted particle.
+  // Ordinary attempts retain that basis while all stored rows qualify.
   // A stale epoch, absent ID, malformed input or later physical failure leaves
   // the committed state and backend publication unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptiveQuadraticTransfer(double step_duration, std::uint64_t committed_epoch, std::uint64_t particle_id);
+
+  // Attempt a positive duration in seconds with a detached certified F3
+  // split in an inviscid incompressible graded tank. The committed epoch
+  // must match the request. All eight replacement transfers must qualify
+  // before any physical stage. Rejection leaves the previous publication.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveQuadraticSplit(double step_duration, const LiquidAdaptiveQuadraticSplitRequest3D& request);
+
+  // Attempt a positive duration in seconds with a detached certified F4
+  // merge in an inviscid incompressible graded tank. The committed epoch
+  // must match the request and the replacement transfer must qualify before
+  // any physical stage. Rejection leaves the previous publication.
+  absl::StatusOr<LiquidAttemptOutcome3D>
+  AttemptWithAdaptiveQuadraticMerge(double step_duration, const LiquidAdaptiveQuadraticMergeRequest3D& request);
 
   // Evaluate the particle-band policy at the accepted stationary planar
   // interface using the named leaf's full-volume inventory and swept margins.
@@ -437,8 +503,9 @@ class LiquidSubstepScheduler3D {
   // Every such attempt, including retries and restored continuations, requires
   // a clock-bound request with canonical source and exterior fields.
   // The wall pose is derived from the same resolved scene and accepted time.
-  // The geometry requires positive wet volume on every leaf at both interval
-  // endpoints. Unsupported activation, stale requests, and malformed fields
+  // Liquid leaves require positive wet volume throughout the interval. Air
+  // leaves require unchanged certified empty air. Unsupported activation,
+  // stale requests, and malformed fields
   // fail without publishing any trial state. Geometry and an independent
   // graded owner are allocated before the transaction enters its stages.
   absl::StatusOr<LiquidAttemptOutcome3D>
@@ -535,6 +602,16 @@ class LiquidSubstepScheduler3D {
   // A failure preserves the latest accepted version (or replay's frame start).
   absl::Status AdvanceFrame(double target_time, LiquidProgressObserver3D observer = {});
 
+  // Apply a deterministic width selection from each accepted state. Empty
+  // selections use ordinary attempts. The same state is passed after a
+  // retry, and the selector must return identical evidence or an error.
+  // Returned spans are borrowed through the selected synchronous attempt.
+  absl::Status AdvanceFrameWithAdaptiveWidth(
+      double target_time,
+      LiquidAdaptiveWidthSelector3D select,
+      LiquidProgressObserver3D observer = {}
+  );
+
   // Advances liquid and snow to target_time using both materials' step bounds.
   // Copies the initial records from inputs before advancing, so they may alias
   // accepted_snow. On failure after the frame begins, accepted_snow matches
@@ -572,14 +649,25 @@ class LiquidSubstepScheduler3D {
       double target_time,
       LiquidProgressObserver3D observer,
       std::optional<LiquidSnowStepInputs3D> snow_inputs,
-      std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow
+      std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow,
+      const LiquidAdaptiveWidthSelector3D* select_width = nullptr
   );
   struct SnowTrial;
   struct AdaptiveStateTrial;
   struct AdaptivePhysicalTrial;
   struct AdaptiveWidthAgeTrial;
-  absl::StatusOr<LiquidAttemptOutcome3D>
-  AttemptPreparedAdaptiveState(double step_duration, absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare);
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptPreparedAdaptiveState(
+      double step_duration,
+      absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
+      std::size_t certified_replacement_count = 0,
+      LiquidWorkPhaseObserver3D work_phase = {}
+  );
+  enum class AdaptiveCarrierMode {
+    kDefault,
+    kOwnerExchange,
+    kBandOverlap
+  };
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveCarrierMode(double step_duration, AdaptiveCarrierMode mode);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -592,7 +680,8 @@ class LiquidSubstepScheduler3D {
       AdaptiveStateTrial* adaptive_replacement = nullptr,
       const AdaptiveWidthAgeTrial* adaptive_age = nullptr,
       AdaptivePhysicalTrial* adaptive_physical = nullptr,
-      std::optional<std::uint64_t> quadratic_particle_id = std::nullopt
+      std::optional<std::uint64_t> quadratic_particle_id = std::nullopt,
+      AdaptiveCarrierMode adaptive_carrier_mode = AdaptiveCarrierMode::kDefault
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,

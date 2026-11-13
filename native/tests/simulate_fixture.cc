@@ -228,13 +228,18 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool ocean = args[5] == "ocean" || ocean_level;
   const bool wave_column_seed = args[5] == "bounded-wave-column-seed";
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
-  const bool graded_effects = args[5] == "graded-effects";
+  const bool matched_uniform = args[5] == "matched-uniform-tank";
+  const bool matched_tank = matched_uniform || args[5] == "matched-graded-tank";
+  const bool width_stale = args[5] == "graded-width-stale";
+  const bool graded_width = args[5] == "graded-width" || width_stale;
+  const bool graded_effects = args[5] == "graded-effects" || matched_tank || graded_width;
+  const bool graded_swell = args[5] == "graded-swell";
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
   const bool graded_viscous = args[5] == "graded-viscous";
   const bool graded_miscible_viscous = args[5] == "graded-miscible-viscous";
   const bool graded_tank = args[5] == "graded-tank" || graded_effects || graded_eos || graded_miscible || graded_viscous
-      || graded_miscible_viscous;
+      || graded_miscible_viscous || graded_swell;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -326,6 +331,7 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   fluidity::LiquidState3D state;
   state.random_seed = scene.random_seed;
   fluidity::LiquidUpstreamContent3D upstream;
+  fluidity::LiquidAdaptiveWidthAction3D width_action;
   fluidity::LiquidEmissionSource3D source;
   const bool exhaust_particle_capacity = args[5] == "capacity-failure";
   if (args[5] == "source" || args[5] == "boundary" || exhaust_particle_capacity) {
@@ -340,12 +346,22 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   }
   if (initial_particle) {
     if (graded_tank) {
-      const auto authored = fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
+      const auto authored = graded_width
+          ? fluidity::test::PopulateGradedRefinementClosureFixture3D(state, scene.scene, true)
+          : matched_tank ? fluidity::test::PopulateGradedFamilyFixture3D(state, scene.scene)
+                         : fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
       if (!authored.ok()) {
         std::cerr << authored << '\n';
         return 3;
       }
       scene.geometry = state.geometry;
+      if (matched_uniform) {
+        state.adaptive_cells = {};
+        state.adaptive_faces = {};
+      }
+      if (graded_swell) {
+        scene.options.ocean_boundary = fluidity::test::PrepareGradedSwellFixture3D(state);
+      }
       if (graded_eos) {
         fluidity::test::SetGradedTankEos3D(state, scene.scene);
       }
@@ -482,6 +498,19 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     upstream.byte_length = initial->size();
     upstream.digest = fluidity::LiquidContentDigest3D(initial->values());
     scene.upstream = std::span(&upstream, 1);
+    if (graded_width) {
+      width_action.accepted_clock = state.clock;
+      width_action.accepted_state_digest = upstream.digest;
+      if (width_stale) {
+        width_action.accepted_state_digest[0] ^= 1;
+      }
+      width_action.leaf = {.lower_corner = {4, 0, 0}, .width_exponent = 1};
+      width_action.demand.maximum_width = 0.5;
+      width_action.maximum_step_duration_s = 0.005;
+      scene.adaptive_width_actions = std::span(&width_action, 1);
+      scene.adaptive_width_cell_capacity = 19;
+      scene.adaptive_width_face_capacity = 160;
+    }
   }
   if (args[5] == "plastic-body") {
     scene.scene.field = fluidity::LiquidAnalyticSphere3D{{2.5, 2.5, 2.5}, 1.1};
@@ -662,6 +691,46 @@ int SourceBirthFixture(const std::filesystem::path& path) {
             << ",\"last_accepted_step\":" << frame->motion.last_clock.accepted_step_ordinal << "}\n";
   return 0;
 }
+
+int MatchedMotionFixture(const std::filesystem::path& path) {
+  const auto source = fluidity::EffectsSource3D::Open(path);
+  if (!source.ok()) {
+    std::cerr << source.status() << '\n';
+    return 2;
+  }
+  std::cout.precision(17);
+  std::cout << '[';
+  for (std::uint64_t ordinal = 0; ordinal <= 2; ++ordinal) {
+    const auto frame = source->ReadFrame(ordinal);
+    if (!frame.ok()) {
+      std::cerr << frame.status() << '\n';
+      return 3;
+    }
+    const auto& accepted = frame->motion.samples.back();
+    if (ordinal != 0) {
+      std::cout << ',';
+    }
+    const bool adaptive = accepted.adaptive_cells.size() != 0;
+    const auto cell_count = adaptive ? accepted.adaptive_cells.size() : accepted.cells.size();
+    const auto face_count = adaptive ? accepted.adaptive_faces.size() : accepted.faces.size();
+    std::cout << "{\"frame\":" << accepted.clock.frame_ordinal << ",\"epoch\":" << accepted.clock.epoch
+              << ",\"cells\":" << cell_count << ",\"faces\":" << face_count << ",\"particles\":[";
+    const char* separator = "";
+    for (const auto& particle : accepted.particles.values()) {
+      const auto position = particle.world_position;
+      const auto velocity = particle.world_velocity;
+      std::cout << separator << "{\"id\":" << particle.id << ",\"position\":[" << position.x << ',' << position.y << ','
+                << position.z << "],\"velocity\":[" << velocity.x << ',' << velocity.y << ',' << velocity.z
+                << "],\"mass\":" << particle.mass << ",\"reference_volume\":" << particle.reference_volume
+                << ",\"current_volume\":" << particle.reference_volume * particle.volume_ratio << '}';
+      separator = ",";
+    }
+    std::cout << "]}";
+  }
+  std::cout << "]\n";
+  return 0;
+}
+
 int GradedSourceFixture(const std::filesystem::path& path) {
   const auto source = fluidity::EffectsSource3D::Open(path);
   if (!source.ok()) {
@@ -723,6 +792,9 @@ int Entry(const std::vector<std::filesystem::path>& args) {
   }
   if (args.size() == 3 && args[1] == "wave-volume-settings") {
     return VolumeSettingsFixture(args[2], true);
+  }
+  if (args.size() == 3 && args[1] == "matched-motion") {
+    return MatchedMotionFixture(args[2]);
   }
   if (args.size() == 3 && args[1] == "graded-source") {
     return GradedSourceFixture(args[2]);

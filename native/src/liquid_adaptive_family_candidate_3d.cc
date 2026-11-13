@@ -15,6 +15,7 @@
 #include "fluidity/host/adaptive_liquid_remap_3d.h"
 #include "fluidity/host/graded_mac_transfer_3d.h"
 #include "fluidity/host/graded_quadratic_mac_transfer_3d.h"
+#include "liquid_exact_inventory_sum_internal.h"
 #include "liquid_remap_3d_internal.h"
 
 namespace fluidity::liquid_step_internal {
@@ -131,7 +132,8 @@ LiquidRemapStencil3D ParentStencil(
   return stencil;
 }
 
-absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const GradedMacTransfer3D& transfer) {
+absl::StatusOr<std::vector<LiquidRemapInventory3D>>
+BinParticleOwnedInventories(const LiquidState3D& state, const GradedMacTransfer3D& transfer) {
   std::vector<LiquidRemapInventory3D> binned(state.adaptive_cells.size());
   std::vector<liquid_remap_internal::ConstituentSums> constituent_sums;
   if (state.particles[0].phase_id != 0) {
@@ -169,6 +171,12 @@ absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const Gra
         return stored;
       }
     }
+  }
+  return binned;
+}
+
+absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, std::span<const LiquidRemapInventory3D> binned) {
+  for (std::size_t cell = 0; cell < binned.size(); ++cell) {
     auto particle_owned = state.adaptive_cells[cell];
     particle_owned.inventory = binned[cell];
     if (particle_owned != state.adaptive_cells[cell]) {
@@ -176,6 +184,69 @@ absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const Gra
     }
   }
   return absl::OkStatus();
+}
+
+absl::Status CheckParticleOwnedInventories(const LiquidState3D& state, const GradedMacTransfer3D& transfer) {
+  const auto binned = BinParticleOwnedInventories(state, transfer);
+  if (!binned.ok()) {
+    return binned.status();
+  }
+  return CheckParticleOwnedInventories(state, *binned);
+}
+
+// Replace only the affected family's momentum partition. A split can give
+// each child different pure momentum through its certified affine velocity.
+// Check the complete represented family balance before changing any lane.
+absl::Status ReconcileResampledFamilyInventories(
+    const LiquidState3D& committed,
+    const AdaptiveFamilyChange3D& family,
+    bool refine,
+    std::span<const LiquidRemapInventory3D> binned,
+    LiquidState3D& candidate
+) {
+  constexpr std::size_t kFamilyTerms = 9;
+  constexpr std::size_t kExtensiveLanes = 6;
+  std::array<liquid_exchange_internal::ExactInventorySum<kFamilyTerms>, kExtensiveLanes> balance;
+  const auto accumulate = [&](const LiquidRemapInventory3D& inventory, double sign) {
+    const auto momentum = inventory.momentum_kg_m_per_s;
+    const std::array quantities{
+        inventory.mass_kg,
+        inventory.reference_volume_m3,
+        inventory.current_volume_m3,
+        momentum.x,
+        momentum.y,
+        momentum.z,
+    };
+    for (std::size_t lane = 0; lane < quantities.size(); ++lane) {
+      if (!std::isfinite(quantities[lane]) || !balance[lane].Add(sign * quantities[lane])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const std::span<const std::size_t> parent(&family.parent_ordinal, 1);
+  const std::span<const std::size_t> children(family.child_ordinals);
+  const auto old_ordinals = refine ? parent : children;
+  const auto new_ordinals = refine ? children : parent;
+  for (const auto ordinal : old_ordinals) {
+    if (!accumulate(committed.adaptive_cells[ordinal].inventory, 1)) {
+      return absl::OutOfRangeError("accepted quadratic family inventory is unrepresentable");
+    }
+  }
+  for (const auto ordinal : new_ordinals) {
+    if (!accumulate(binned[ordinal], -1)) {
+      return absl::OutOfRangeError("resampled quadratic family inventory is unrepresentable");
+    }
+  }
+  if (std::ranges::any_of(balance, [](const auto& lane) {
+        return lane.sign() != 0;
+      })) {
+    return absl::OutOfRangeError("quadratic resampling does not conserve represented family inventory");
+  }
+  for (const auto ordinal : new_ordinals) {
+    candidate.adaptive_cells[ordinal].inventory.momentum_kg_m_per_s = binned[ordinal].momentum_kg_m_per_s;
+  }
+  return CheckParticleOwnedInventories(candidate, binned);
 }
 
 absl::StatusOr<double> IntegratedFlux(double carrier_velocity, double open_area_m2, double normal_sign) {
@@ -246,6 +317,17 @@ absl::Status ApplyQuadraticResampling(
     const auto& particle = roster[ordinal];
     if (std::ranges::find(request.particle_ids, particle.id) == request.particle_ids.end()) {
       continue;
+    }
+    const std::array rows{
+        particle.velocity_slopes.x_row,
+        particle.velocity_slopes.y_row,
+        particle.velocity_slopes.z_row,
+    };
+    const bool has_affine_data = particle.affine_enabled && std::ranges::any_of(rows, [](Vec3 row) {
+                                   return row.x != 0 || row.y != 0 || row.z != 0;
+                                 });
+    if (has_affine_data && !particle.quadratic_adaptive_transfer) {
+      return absl::FailedPreconditionError("quadratic resampling requires accepted quadratic affine data");
     }
     const auto source_leaf = source_location->ParticleLeafOrdinal(particle.world_position);
     if (!source_leaf.ok()) {
@@ -599,9 +681,13 @@ absl::StatusOr<LiquidState3D> PrepareFamily(
     if (!resampled.ok()) {
       return resampled;
     }
-    const auto particle_inventory = CheckParticleOwnedInventories(*candidate, *new_transfer);
-    if (!particle_inventory.ok()) {
-      return particle_inventory;
+    const auto binned = BinParticleOwnedInventories(*candidate, *new_transfer);
+    if (!binned.ok()) {
+      return binned.status();
+    }
+    const auto balanced = ReconcileResampledFamilyInventories(committed, proposal->family, refine, *binned, *candidate);
+    if (!balanced.ok()) {
+      return balanced;
     }
   }
 
@@ -651,7 +737,8 @@ absl::StatusOr<LiquidState3D> PrepareRefinementClosure(
     const AdaptiveMacTopology3D& topology,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     const AdaptiveMacCellKey3D* split_parent,
-    std::uint64_t split_particle_id
+    std::uint64_t split_particle_id,
+    bool require_exact_closure
 ) {
   if (requested_parents.empty()) {
     return absl::InvalidArgumentError("adaptive refinement closure requires at least one parent");
@@ -673,9 +760,18 @@ absl::StatusOr<LiquidState3D> PrepareRefinementClosure(
     }
     requested.push_back(static_cast<std::size_t>(found - leaves.begin()));
   }
+  if (require_exact_closure) {
+    std::ranges::sort(requested);
+    if (std::ranges::adjacent_find(requested) != requested.end()) {
+      return absl::InvalidArgumentError("certified refinement closure contains duplicate parents");
+    }
+  }
   auto closure = topology.RefinementClosure(requested, capacities.cells);
   if (!closure.ok()) {
     return closure.status();
+  }
+  if (require_exact_closure && closure->size() != requested.size()) {
+    return absl::FailedPreconditionError("certified refinement closure omits a required parent");
   }
   const auto selected_key = split_parent == nullptr ? std::nullopt : std::optional(LeafKey(*split_parent));
   std::ranges::sort(*closure, {}, [&](std::size_t ordinal) {
@@ -719,7 +815,7 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidRefinementClosureCandidate3D(
     const AdaptiveMacTopology3D& topology,
     std::span<const AdaptiveMacCellKey3D> requested_parents
 ) {
-  return PrepareRefinementClosure(committed, scene, capacities, topology, requested_parents, nullptr, 0);
+  return PrepareRefinementClosure(committed, scene, capacities, topology, requested_parents, nullptr, 0, false);
 }
 
 absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
@@ -728,7 +824,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
     LiquidStateCapacities3D capacities,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     AdaptiveMacCellKey3D split_parent,
-    std::uint64_t split_particle_id
+    std::uint64_t split_particle_id,
+    bool require_exact_closure
 ) {
   if (split_particle_id == 0) {
     return absl::InvalidArgumentError("quadratic split requires a parent particle ID");
@@ -744,7 +841,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticSplitCandidate3D(
       *topology,
       requested_parents,
       &split_parent,
-      split_particle_id
+      split_particle_id,
+      require_exact_closure
   );
 }
 
@@ -754,7 +852,8 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
     LiquidStateCapacities3D capacities,
     std::span<const AdaptiveMacCellKey3D> requested_parents,
     AdaptiveMacCellKey3D merge_parent,
-    std::span<const std::uint64_t> children
+    std::span<const std::uint64_t> children,
+    bool require_exact_closure
 ) {
   constexpr std::size_t kMaximumChildren = 8;
   if (children.size() < 2 || children.size() > kMaximumChildren || requested_parents.empty()
@@ -784,6 +883,9 @@ absl::StatusOr<LiquidState3D> PrepareAdaptiveLiquidQuadraticMergeCandidate3D(
     return std::tuple{canonical == selected_key, canonical};
   });
   const auto duplicate_tail = std::ranges::unique(ordered, {}, LeafKey);
+  if (require_exact_closure && !duplicate_tail.empty()) {
+    return absl::InvalidArgumentError("certified coarsening halo contains duplicate parents");
+  }
   ordered.erase(duplicate_tail.begin(), duplicate_tail.end());
   if (LeafKey(ordered.back()) != selected_key) {
     return absl::FailedPreconditionError("quadratic merge parent must be in the coarsening halo");

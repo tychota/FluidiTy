@@ -490,6 +490,63 @@ TEST(LiquidCache3D, AdaptiveWidthAgeUsesVersionFourAndRoundTripsCanonicalCheckpo
   EXPECT_EQ(Copy(*repeated), Copy(*mixed_bytes));
 }
 
+TEST(LiquidCache3D, AdaptiveQuadraticBasisSurvivesCanonicalCheckpointInRosterOrder) {
+  LiquidState3D initial;
+  initial.particles = Records<LiquidParticleState3D>(3);
+  initial.particles[0].id = 9;
+  initial.particles[1].id = 3;
+  initial.particles[2].id = 7;
+  initial.next_particle_id = 10;
+  initial.particles[0].quadratic_adaptive_transfer = true;
+  initial.particles[2].quadratic_adaptive_transfer = true;
+  EXPECT_EQ(ValidateLiquidState3D(initial).code(), absl::StatusCode::kInvalidArgument);
+
+  initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(2);
+  initial.adaptive_faces = Records<LiquidAdaptiveFaceState3D>(14);
+  initial.adaptive_cells[0].key = {.lower_corner = {-2, 0, 0}, .width_exponent = 1};
+  initial.adaptive_cells[0].material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+  initial.adaptive_cells[0].coarsening_eligible_duration_s = 0.125;
+  initial.adaptive_cells[1].key = {.lower_corner = {0, 0, 0}, .width_exponent = 0};
+  auto resume = Resume();
+  resume.capacities = {3, 0, 2, 14, 0};
+  resume.capacity_replay_reservations = {};
+
+  const auto encoded = EncodeLiquidCheckpoint3D(initial, resume);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto* root = wire::GetLiquidState(encoded->values().data());
+  EXPECT_EQ(root->schema_version(), 5U);
+  const auto restored = DecodeLiquidCheckpoint3D(encoded->values());
+  ASSERT_TRUE(restored.ok()) << restored.status();
+  EXPECT_EQ(restored->state, initial);
+  EXPECT_EQ(restored->resume, resume);
+  EXPECT_TRUE(restored->state.particles[0].quadratic_adaptive_transfer);
+  EXPECT_FALSE(restored->state.particles[1].quadratic_adaptive_transfer);
+  EXPECT_TRUE(restored->state.particles[2].quadratic_adaptive_transfer);
+  const auto replayed = EncodeLiquidCheckpoint3D(restored->state, restored->resume);
+  ASSERT_TRUE(replayed.ok()) << replayed.status();
+  EXPECT_EQ(Copy(*replayed), Copy(*encoded));
+
+  ASSERT_NE(root->adaptive()->quadratic_particle_ids(), nullptr);
+  ASSERT_EQ(root->adaptive()->quadratic_particle_ids()->size(), 2U);
+  EXPECT_EQ(root->adaptive()->quadratic_particle_ids()->Get(0), 9U);
+  EXPECT_EQ(root->adaptive()->quadratic_particle_ids()->Get(1), 7U);
+  auto corrupted = Copy(*encoded);
+  auto* changed = wire::GetMutableLiquidState(corrupted.data());
+  ASSERT_TRUE(changed->mutate_schema_version(4));
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(corrupted).status().code(), absl::StatusCode::kDataLoss);
+  ASSERT_TRUE(changed->mutate_schema_version(5));
+  auto* ids = changed->mutable_adaptive()->mutable_quadratic_particle_ids();
+  ASSERT_NE(ids, nullptr);
+  ids->Mutate(0, 7);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(corrupted).status().code(), absl::StatusCode::kDataLoss);
+  ids->Mutate(0, 9);
+  ids->Mutate(1, 8);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(corrupted).status().code(), absl::StatusCode::kDataLoss);
+  ids->Mutate(0, 7);
+  ids->Mutate(1, 9);
+  EXPECT_EQ(DecodeLiquidCheckpoint3D(corrupted).status().code(), absl::StatusCode::kDataLoss);
+}
+
 TEST(LiquidCache3D, RejectsInvalidAdaptiveWidthAgeInRawAndWireState) {
   LiquidState3D initial;
   initial.adaptive_cells = Records<LiquidAdaptiveCellState3D>(1);
@@ -988,6 +1045,45 @@ TEST(LiquidCache3D, ResolvedFingerprintChangesWithSettingsAndExactUpstreamConten
     EXPECT_NE(LiquidExecutionId3D(*fingerprint), LiquidExecutionId3D(*baseline)) << change;
   }
 }
+TEST(LiquidCache3D, AuthenticatesCanonicalAdaptiveWidthActions) {
+  LiquidResolvedSceneView3D scene;
+  scene.scene.field = LiquidHorizontalPlaneSurface3D{1};
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{0, 2, 0, 0, 1, 0};
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  LiquidAdaptiveWidthAction3D action{
+      .leaf = {.lower_corner = {0, 0, 0}, .width_exponent = 1},
+      .demand = {.maximum_width = 0.5},
+      .maximum_step_duration_s = 0.005,
+  };
+  action.accepted_state_digest[0] = 1;
+  scene.adaptive_width_actions = std::span(&action, 1);
+  scene.adaptive_width_cell_capacity = 19;
+  scene.adaptive_width_face_capacity = 160;
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_EQ(decoded->adaptive_width_actions.size(), 1);
+  EXPECT_EQ(decoded->adaptive_width_actions[0].accepted_state_digest, action.accepted_state_digest);
+  EXPECT_EQ(decoded->adaptive_width_actions[0].leaf.width_exponent, action.leaf.width_exponent);
+  const auto lower = decoded->adaptive_width_actions[0].leaf.lower_corner;
+  EXPECT_EQ(lower.x, action.leaf.lower_corner.x);
+  EXPECT_EQ(lower.y, action.leaf.lower_corner.y);
+  EXPECT_EQ(lower.z, action.leaf.lower_corner.z);
+  EXPECT_DOUBLE_EQ(decoded->adaptive_width_actions[0].demand.maximum_width, 0.5);
+  EXPECT_EQ(decoded->adaptive_width_face_capacity, 160);
+  EXPECT_EQ(Copy(*encoded), Copy(*EncodeLiquidResolvedScene3D(decoded->View())));
+  const auto planned = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(planned.ok()) << planned.status();
+  EXPECT_NE(*baseline, *planned);
+  action.accepted_state_digest[0] = 2;
+  EXPECT_NE(*planned, *ResolvedSceneFingerprint(scene));
+  const std::array repeated{action, action};
+  scene.adaptive_width_actions = repeated;
+  EXPECT_TRUE(absl::IsInvalidArgument(EncodeLiquidResolvedScene3D(scene).status()));
+}
+
 TEST(LiquidCache3D, CanonicalResolvedBytesMatchIndependentFlatcGolden) {
   std::ifstream file(FLUIDITY_CACHE_GOLDEN_PATH);
   std::string hex;

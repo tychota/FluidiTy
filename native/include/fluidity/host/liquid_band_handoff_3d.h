@@ -7,6 +7,7 @@
 #include <span>
 
 #include "absl/status/statusor.h"
+#include "fluidity/base/mac_transfer_types_3d.h"
 #include "fluidity/host/liquid_remap_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 
@@ -112,6 +113,22 @@ absl::StatusOr<LiquidBandCarrierBlend3D> BlendLiquidBandCarrier3D(
     double face_signed_distance_m,
     std::int64_t face_side_tag,
     const LiquidAdaptiveFaceState3D& particle_carrier,
+    const LiquidAdaptiveFaceState3D& eulerian_carrier
+);
+
+// Prepare the 2h carrier overlap at an open Eulerian-touching subface.
+// The caller supplies its fine incident width and signed interface distance
+// in meters, and an actual same-side particle deposit. Returns an empty
+// result outside inward depths [4h, 6h). Within the overlap a usable
+// Eulerian carrier is required even at the shallow endpoint. Invalid
+// geometry or deposit data returns InvalidArgument, and arithmetic overflow
+// returns OutOfRange. This changes no carrier or material inventory.
+absl::StatusOr<std::optional<LiquidBandCarrierBlend3D>> PrepareLiquidBandOverlapFace3D(
+    double fine_width_m,
+    double face_signed_distance_m,
+    std::int64_t face_side_tag,
+    double minimum_face_mass_kg,
+    const MacFaceDeposit3D& particle_deposit,
     const LiquidAdaptiveFaceState3D& eulerian_carrier
 );
 

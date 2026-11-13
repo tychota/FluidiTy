@@ -103,6 +103,74 @@ gap, the coarsening halo restores the original 125-leaf graph and face
 history, with one fresh ID for the merged particle. A lone family without the
 required halo is refused in either direction. Duplicate child IDs fail
 preflight. The proposal is detached from accepted scheduler publication.
+
+### Certified family trials
+
+The explicit split and merge scheduler requests bind a committed epoch,
+the complete parent closure and the source particle IDs. The detached
+candidate owner freezes its replacement IDs and actual quadratic face rows
+before the physical stages. The split stages eight replacement particles
+and the merge stages one. A missing or ineligible row refuses the entire
+request. The old and projected grid snapshots use the same rows.
+
+The interrupted replay fixtures start from independent coarse and authored
+fine dyadic seeds. Each saves an accepted checkpoint before the certified
+operation, kills the process, and reapplies the request after restore. A late
+fault checks that the committed host and device versions retain the previous
+layout and IDs. The resumed request also reverses its input order to check
+that the accepted result follows canonical particle order.
+
+Certified replacement IDs publish with the quadratic basis. An ordinary
+attempt on the replacement roster then uses the accepted policy described
+below. A resampling source with nonzero active affine slopes must already
+carry an accepted quadratic basis. This keeps the measured support
+covariance aligned with the source affine data.
+
+### Accepted transfer basis in FLST
+
+An accepted particle may carry the quadratic adaptive basis flag. FLST v5
+stores only marked particle IDs in stable roster order inside the adaptive
+state table. The reader requires a nonempty, duplicate-free subsequence of
+the decoded particle roster. The field is absent in v1–v4, where the flag
+defaults to false. Ownership and width ages remain independently valid v5
+fields. Uniform states cannot carry the adaptive flag.
+
+The CUDA arena stores the flag beside the affine and PIC bits in its particle
+bank. Preparing and discarding a trial preserves the old flag and epoch.
+Publishing the trial switches the flag with the particle and topology state.
+Ordinary attempts rebuild the marked support from the accepted roster and
+freeze it through deposit and both gather histories. A changed topology
+clears incompatible existing marks before a replacement trial. If the
+stored roster loses complete accepted support, the trial resets its
+marked slopes and PIC history before radial deposit. Rejection retains the
+previous accepted marks. A single explicit promotion stages zero old
+affine slopes when changing from radial to quadratic. Scratch is reserved
+from the admitted owner extent. The eight-ID bound applies to one explicit
+split or merge request.
+
+The persistent fixture publishes a v5 checkpoint after a real promotion,
+terminates the process, and advances the restored state with ordinary
+attempts. It compares the completed state against uninterrupted execution
+and checks the real CUDA device bank. The CPU controls also exercise
+pretrial support loss, late rejection of the reset, and a 16-particle stored
+roster.
+The CPU and SM120 runs reproduced checkpoint BLAKE3
+`a4e42dd663461a1bfbf67d117e7d518bbaf52d03abc59ee9681661d69cb2d79c`
+and completed state BLAKE3
+`3467cd43610645e6bcf48f8630a0e2cead97e9e19a3e1a88d0f385e887d8b039`.
+
+
+```powershell
+ctest --test-dir out/build/persistent-green-cpu -R 'GradedPersistentQuadraticBasis|quadratic-persistent' --output-on-failure
+ctest --test-dir out/build/persistent-green-cuda -R 'GradedExplicitQuadraticRejectionPreservesDeviceEpoch|quadratic-persistent' --output-on-failure
+```
+
+```powershell
+ctest --test-dir out/build/basis-green-cpu -R 'LiquidCache3D|LiquidState3D|Schema|Adaptive(Family|Band|Width|Closure|Physical)Replay.cpu' --output-on-failure
+ctest --test-dir out/build/basis-green-cuda -R 'Adaptive(Family|Band|Width|Closure|Physical)Replay.cuda' --output-on-failure
+& ./out/build/basis-green-cuda/fluidity_cuda_arena_tests.exe
+```
+
 ## Production band and M2 boundary
 
 Build the surface band from Simulate occupancy and its signed physical interface, with support, accepted movement and reseeding margins. Measure the 6h depth and 2h overlap on manufactured and wave fixtures. Blend valid particle and Eulerian carriers before the old-grid snapshot and enforce single ownership of extensive material. Reseed fully liquid cells with the checked density and EOS contract. Refuse unavailable carrier or occupancy.
@@ -119,10 +187,13 @@ component and cavity lineage, exact replay and rollback on the M2 accepted
 source. Verify Whitewater and Volumes use the same authenticated stage
 identities. [Occupancy and motion fixture](native-band-occupancy.md)
 
-The current bounded handoff accepts explicit one-leaf retirement and reseed
-requests. Automatic placement, overlap blending, conservative nonzero
-cross-owner exchange, and remap of mixed owners each require an independent
-qualification before the wave.
+The bounded handoff accepts an epoch-bound placement request for one leaf
+using the 6h depth, 2h carrier overlap, and measured sweep margins. The
+native planar Mesh path consumes accepted mixed-owner volume. The explicit
+owner-exchange attempt qualifies nonzero projected flux with a same-leaf
+stationary contact witness and exact represented inventories. Moving
+overlap blending, nonplanar authoritative extraction, and mixed-owner
+family remap still require qualification.
 
 ## Matched-error wave campaign
 
@@ -177,6 +248,111 @@ CUDA control in the same run took 24.6398 ms and 8.7352 ms. Peak allocated arena
 bytes were 9,360,128 and 3,396,608 for the two capacity tiers. Peak active
 pressure scratch was 7,411,928 and 2,540,864 bytes. These measurements cover
 the sealed-cube arena. Use the full-wave procedure below for the job-wide peak.
+### Current capacity boundary
+
+The adaptive topology and state validators admit 4,096 leaves and 24,576
+canonical subfaces. At 0.035 m, 4,096 finest leaves cover at most 0.175616 m³
+before coarser leaves or the face limit consume capacity. The largest
+qualified arena pressure control used 4,096 rows, 13,056 faces, and four
+hierarchy levels. Its maximum physical defect was 1.01548e-5 s⁻¹. A public
+graded scene without a width plan starts with its authenticated seed's exact
+extents. The FLRS v2 width plan can reserve additional leaves and canonical
+faces and bind a refinement action to its exact accepted clock and state
+digest. Its replay control restores the five-leaf checkpoint and reexecutes
+the same 19-leaf closure on CPU and SM120. The public uniform path defaults
+to 1,024 particles, 128 blocks, 4,096 cells and 24,576 slots.
+[Public width action](https://github.com/tychota/FluidiTy/pull/158)
+
+The 3-frame matched public tank exercises Simulate and Mesh at identical
+initial particle inventories and error limits. Its short-run receipts
+report zero drift, 458 retained Mesh IDs, and relative volume error
+1.11022e-15. [Matched public control](matched-error-pressure.md#public-simulate-and-mesh-control)
+
+The control passed again at `507b41a85e66ab18b33a2569786620ababad148d` with
+the same zero particle drift, 458 retained Mesh IDs and 1.11022e-15 relative
+volume error in both layouts. It ran Simulate and Mesh over frames 0–2 and
+replayed both stages read-only.
+
+| Simulate backend | Uniform elapsed (s) | Graded elapsed (s) | Uniform CUDA arena peak (B) | Graded CUDA arena peak (B) |
+| --- | ---: | ---: | ---: | ---: |
+| Debug CPU | 82.028 | 77.190 | — | — |
+| Release SM120 | 5.758 | 4.108 | 113,726,464 | 291,584 |
+
+These are single samples on a shared host. The memory figures cover the
+Simulate CUDA arena. The exact fixture/executable hashes, per-variant inputs
+and commands are in each output receipt. Reproduce from the matching CPU or
+CUDA build with `BACKEND` set to `cpu` or `cuda` and `BUILD` set to that
+build directory.
+
+```powershell
+uv run --offline --project reference --locked --group native python tools/adaptivity/qualify_matched_runtime.py --solver "$env:BUILD/fluidity_simulate.exe" --fixture "$env:BUILD/fluidity_simulate_fixture.exe" --backend "$env:BACKEND" --output "out/matched-joint-$env:BACKEND"
+```
+
+- CPU receipt SHA-256 `F178AD78719EF50CB439C52D22753E035799D0BBF6F80F6C92B1ABECDB572409`
+- CUDA receipt SHA-256 `444D6CD38F7322170927DBC26694163667C52101986A673C949E9C3E4B49EF90`
+### Bounded graded swell predictor
+
+An authored Stokes target can drive a conforming stationary graded tank with
+inlet particle emission disabled. The predictor samples each eligible open
+canonical subface at its physical anchor and trial end time. Relaxation
+changes the force-predicted velocities before pressure assembly. The
+normalized old carriers remain available for FLIP and for retries. The
+pressure graph still owns the apertures and incidence used for correction.
+
+The five-leaf control starts from rest with 25 canonical subfaces and applies
+a 0.05 m, 2 s swell target. CPU and RTX 5060 Ti reach the same frame-two
+state `ba2a02662807d30dcfb61aaffc27fd56bb7d65e01d3b25de7b9edfbc4950e910`.
+Across four accepted steps the peak pressure RHS norm is 0.00471685 m³/s
+and maximum volume-scaled residual is 2.74373e-10 s⁻¹. Both backends
+preserve the original five particle IDs and leaf keys. A late rejected trial
+preserves the committed host state and, on CUDA, its acquired device epoch.
+
+The public process test kills Simulate after it publishes the frame-ten
+checkpoint. A new process resumes without an initial-state argument and
+matches the uninterrupted frame-eleven state on each backend. The CPU and
+SM120 checkpoint and final state digests also match each other.
+
+- Checkpoint `c09bb3055b8af37c3b5c922ea2b1f064afd2062c00b21b0afd1956121c05aab4`
+- Final state `eb9dd88f3e941e83e2285034a69e475e414128c746b23d931b394e68ab487dfa`
+
+```powershell
+ctest --test-dir out/build/graded-swell-green-cpu -V -R 'GradedSwellForcesFrozen|SimulateCli.cpu_replay' --no-tests=error
+ctest --test-dir out/build/graded-swell-green-cuda -V -R 'PublishesGradedSwellAfterDeviceRollback|SimulateCli.cuda_replay' --no-tests=error
+```
+
+This control measures forced motion with fixed planar occupancy. The reference
+wave still needs graded inlet volume control, moving free-surface activation,
+and accepted motion and topology evidence from M2's wave stages.
+
+### Reference-wave admission
+
+The reference scene specifies an 8 × 20 × 8 m domain, a 3 m inlet
+tapering along a 20 m beach, and 240 frames at 24 fps. The authored M2
+bounded swell is a 5 × 1 m strip with 0.25 m cells, a 0.25 m swell and a 2 s
+period. Its 240 accepted substeps reach frame 48. [Design reference job](../superpowers/specs/2026-11-07-fluidity-design.md#21-reference-job)
+· [Bounded swell](../references/m2-bounded-wave-evidence.md)
+
+M2's integrated tracked wave through frame 41 used accepted motion and
+reopened relative surface, foam and volume caches in Blender. Its maximum
+absolute relative volume error was 0.49555%. The subsequent frame-42
+attempt remained outside the surface topology gate. The M3 moving
+correspondence and cavity-lineage campaign needs the accepted M2
+MotionInterval and tracked surface for the selected wave frames, including
+valid carrier support, component volume targets and obstacle closure. An
+end-to-end wave timing also needs authenticated Whitewater and Volumes
+for that same accepted frame range. M2 branch receipt
+`5856e91b737d6c9f27da6543315fff52378363a8` covers the shorter prefix.
+[M2 integrated wave receipt](https://github.com/tychota/FluidiTy/blob/5856e91b737d6c9f27da6543315fff52378363a8/docs/references/m2-bounded-wave-evidence.md)
+
+The graded scheduler qualifies a stationary tank and bounded physical
+halfspace cases. The full moving wave requires nonplanar wet occupancy and
+canonical apertures, a scene-driven width and band policy, conservative
+wet-front and inlet inventory, and a capacity receipt at the reference
+sampling. The all-finest leaf limit above bounds the fine region before
+graded neighbors consume capacity. A specific authored layout still needs
+its own capacity measurement. The 3 h adaptive and 6 h temporary
+uniform-sparse gates have no full-wave run receipt.
+
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

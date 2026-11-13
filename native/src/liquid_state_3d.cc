@@ -424,6 +424,7 @@ bool LiquidParticleState3D::operator==(const LiquidParticleState3D& other) const
              other.side_tag,
              other.pic_initialized
       )
+      && quadratic_adaptive_transfer == other.quadratic_adaptive_transfer
       && Components(world_position) == Components(other.world_position)
       && Components(world_velocity) == Components(other.world_velocity)
       && Components(velocity_slopes) == Components(other.velocity_slopes) && phase_id == other.phase_id
@@ -537,7 +538,8 @@ absl::Status ValidateLiquidState3D(const LiquidState3D& state) {
   }
   for (std::size_t index = 0; index < state.particles.size(); ++index) {
     const auto& particle = state.particles[index];
-    if (particle.id == 0 || particle.id >= state.next_particle_id) {
+    if (particle.id == 0 || particle.id >= state.next_particle_id
+        || (particle.quadratic_adaptive_transfer && state.adaptive_cells.size() == 0)) {
       return absl::Status(absl::StatusCode::kInvalidArgument, {});
     }
     if (!Finite(particle.world_position) || !Finite(particle.world_velocity) || !Finite(particle.velocity_slopes.x_row)
