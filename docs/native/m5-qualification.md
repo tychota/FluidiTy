@@ -4529,3 +4529,30 @@ the step because contact is immediate. The oracle therefore
 tests a change to the wall deformation model independently of
 the pile geometry. The instrumentation and solver control
 were both restored.
+
+### Retain the compatible normal derivative in the swept split
+
+On the bounded tangent clearing candidate, retain the gathered
+normal row in the post-impact gradient and apply the swept
+Coulomb projection only to the tangential rows. Both default
+dry-scene targets still fail. This run did not instrument their
+first failing assertion.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 40.106682° | 0.168126 m | 0.984805 |
+| Coarse half-step | 40.721210° | 0.157737 m | 0.170025 |
+| Fine | 36.910317° | 0.158798 m | 0.847430 |
+| Fine half-step | 40.227663° | 0.154002 m | 1.582018 |
+
+All four angles exceed the gate. The fine half-step accumulates
+more than ten times the mean log plastic Jacobian of clearing
+alone. The gather/transpose work diagnostic still measures the
+unprojected gradient. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-tangent-sweep-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
