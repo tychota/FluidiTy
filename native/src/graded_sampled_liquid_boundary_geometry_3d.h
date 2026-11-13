@@ -2,15 +2,10 @@
 
 #include <span>
 
+#include "fluidity/host/liquid_substep_3d.h"
 #include "graded_liquid_boundary_geometry_3d.h"
 
 namespace fluidity {
-
-struct GradedLiquidCornerSample3D {
-  CellCornerIndex3D corner;
-  double liquid_distance_m;  // Negative in liquid.
-  double solid_distance_m;  // Positive outside stationary solid.
-};
 
 // Freeze the piecewise-affine geometry on the canonical tetrahedra and
 // subface diagonals. Supply unique finite corner samples ordered by signed
@@ -31,6 +26,15 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedSampledLiquidGeom
     double step_duration_s,
     std::span<const GradedLiquidCornerSample3D> samples,
     std::span<const std::uint8_t> certified_air_leaves
+);
+
+// Evaluate the same tetrahedral liquid trace at a world position inside the
+// named canonical leaf. The corner roster has passed the sampled freeze.
+absl::StatusOr<double> EvaluateGradedSampledLiquidDistance3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidCornerSample3D> samples,
+    std::size_t leaf_ordinal,
+    Vec3 position_m
 );
 
 }  // namespace fluidity

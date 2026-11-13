@@ -165,6 +165,8 @@ class AdaptiveLiquidStep3D {
     // Stored only when certified air leaves require a sparse pressure graph.
     std::optional<FrozenGradedPlanarLiquidGeometry3D> sparse_geometry;
     std::optional<GradedLiquidWetTransitionRequest3D> wet_transition;
+    std::optional<FrozenGradedPlanarLiquidGeometry3D> sampled_end_geometry;
+    std::span<const GradedLiquidCornerSample3D> sampled_end_corners;
   };
 
   AdaptiveMacTopology3D topology_;

@@ -13,6 +13,7 @@
 #include "absl/functional/function_ref.h"
 #include "fluidity/host/liquid_cache_3d.h"
 #include "fluidity/host/liquid_substep_backend_3d.h"
+#include "graded_sampled_runtime_fixture.h"  // Authored sampled replay controls.
 #include "graded_tank_fixture.h"
 #include "graded_wet_transition_fixture_3d.h"
 #ifdef FLUIDITY_ADAPTIVE_FIXTURE_CUDA
@@ -588,7 +589,8 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
   const bool physical_air = scenario == "physical-air";
   const bool wetting = scenario == "physical-wetting";
   const bool wet_transition = wetting || scenario == "physical-drying";
-  const bool physical = physical_air || wet_transition || scenario == "physical";
+  const bool sampled = scenario == "physical-sampled";
+  const bool physical = physical_air || wet_transition || sampled || scenario == "physical";
   const bool width = scenario == "width";
   const bool batch = scenario == "closure";
   const bool merge = scenario == "quadratic-merge";
@@ -631,6 +633,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     }
     if (exchange) {
       return test::PopulateGradedOwnerExchangeFixture3D(state, scene);
+    }
+    if (sampled) {
+      return test::PopulateGradedSampledRuntimeFixture3D(state, scene);
     }
     if (wet_transition) {
       return test::PopulateGradedPhysicalWetTransitionFixture3D(state, scene, wetting);
@@ -712,6 +717,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
     const std::uint8_t overlap_identity[]{1, 4, 32, 5};
     resume.resolved_fingerprint = LiquidContentDigest3D(overlap_identity);
   }
+  if (sampled) {
+    resume.resolved_fingerprint = test::GradedSampledRuntimeFingerprint();
+  }
   resume.execution_id = LiquidExecutionId3D(resume.resolved_fingerprint);
   resume.capacities = capacities;
   if (mode == "resume") {
@@ -772,7 +780,7 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
 #endif
   LiquidStepOptions3D options;
   options.capacities = capacities;
-  if (exchange || wet_transition) {
+  if (exchange || wet_transition || sampled) {
     options.maximum_step_duration = 0.125;
   }
   if (wet_transition) {
@@ -862,6 +870,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
       if (quadratic) {
         return scheduler->AdvanceFrame(0.01);
+      }
+      if (sampled) {
+        return test::AdvanceGradedSampledRuntime3D(*scheduler, true, check_device_epoch);
       }
       if (physical) {
         return AdvancePhysical(*scheduler, 0.01, true, check_device_epoch);
@@ -961,6 +972,9 @@ Run(std::string_view backend_name, std::string_view mode, const char* checkpoint
       }
       return scheduler->FinishFrame();
     }
+    if (sampled) {
+      return test::AdvanceGradedSampledRuntime3D(*scheduler, false, check_device_epoch);
+    }
     if (physical) {
       return AdvancePhysical(*scheduler, 0.02, false, check_device_epoch);
     }
@@ -1021,9 +1035,9 @@ int main(int argc, char** argv) {
   const std::string_view scenario = argc == 5 ? argv[4] : "";
   if (!scenario.empty() && scenario != "band" && scenario != "eos" && scenario != "viscous" && scenario != "miscible"
       && scenario != "width" && scenario != "closure" && scenario != "physical" && scenario != "physical-air"
-      && scenario != "physical-wetting" && scenario != "physical-drying" && scenario != "quadratic-split"
-      && scenario != "quadratic-merge" && scenario != "quadratic-persistent" && scenario != "exchange"
-      && scenario != "overlap") {
+      && scenario != "physical-wetting" && scenario != "physical-drying" && scenario != "physical-sampled"
+      && scenario != "quadratic-split" && scenario != "quadratic-merge" && scenario != "quadratic-persistent"
+      && scenario != "exchange" && scenario != "overlap") {
     return 2;
   }
   const std::string_view backend = argv[1];
