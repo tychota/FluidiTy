@@ -8361,3 +8361,26 @@ under both grid alignments. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-half-phase-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Resolve the from-rest vertical acceleration by height
+
+On 255739e, repeat the loaded one-step probe on copies of
+the native fine half-step state. Group by initial height.
+Report mean stored vertical acceleration and track the
+highest particle in each snapshot separately.
+
+| Time (s) | Floor (m/s²) | Above floor and below 50 mm (m/s²) | At least 50 mm (m/s²) | Apex (m/s²) |
+|---|---:|---:|---:|---:|
+| 3 | 0 | −4.234 | 1.089 | 0.643 |
+| 6 | 0 | −3.330 | 0.598 | 0.824 |
+| 9 | 0 | −6.800 | −0.276 | 0.077 |
+
+The apex accelerates upward in all three probes. The lower
+group accelerates downward even when the upper group is
+supported on average. This localizes the net downward
+acceleration in the from-rest test. The trajectory remains
+unchanged and the temporary instrumentation was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-rest-support-bands-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
