@@ -6779,3 +6779,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Locate the timestep-sensitive return energy by height
+
+Repeat the native cone diagnostic and group each particle's energy
+change by its height at the start of the accepted step. Report the
+energy from 0.75 to 3 s in three bands. The first band covers one
+initial particle spacing. The upper band starts one coarse grid
+cell above the floor. Total energy and final geometry reproduce
+the preceding runs.
+
+| Case | Below 0.025 m (mJ) | 0.025 to 0.075 m (mJ) | At least 0.075 m (mJ) |
+|---|---:|---:|---:|
+| Coarse | 2.467 | 3.482 | 3.722 |
+| Coarse half-step | 1.090 | 2.607 | 1.218 |
+| Fine | 1.674 | 7.874 | 5.246 |
+| Fine half-step | 0.974 | 4.030 | 2.007 |
+
+The first band accounts for 29% of the energy reduction on timestep
+halving at the coarse width and 9% at the fine width. The upper band
+accounts for 53% and 42%, respectively. This locates where the return
+removes energy. Boundary effects can propagate through the pile, so
+these bands alone cannot locate the source of the sensitivity.
+The temporary instrumentation and fixture changes were restored.
+All four runs still fail the angle gate.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-cone-energy-height-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
