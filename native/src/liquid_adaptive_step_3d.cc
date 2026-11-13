@@ -95,8 +95,13 @@ using FaceGradient = std::array<std::array<MacStrainTerm3D, 4>, 3>;
 
 // Select a deterministic local affine stencil. The determinant is measured
 // in units of leaf width cubed. Sealed anchors have prescribed zero velocity.
-absl::StatusOr<FaceGradient>
-FitFaceGradient(std::span<const GradedMacFace3D> faces, Vec3 center, double width, FaceNormalAxis velocity_axis) {
+absl::StatusOr<FaceGradient> FitFaceGradient(
+    std::span<const GradedMacFace3D> faces,
+    Vec3 center,
+    double width,
+    FaceNormalAxis velocity_axis,
+    std::span<const std::uint8_t> support
+) {
   struct Anchor {
     std::size_t slot;
     Vec3 offset;
@@ -106,7 +111,7 @@ FitFaceGradient(std::span<const GradedMacFace3D> faces, Vec3 center, double widt
   constexpr double kRadius = 1.5;
   for (std::size_t slot = 0; slot < faces.size(); ++slot) {
     const auto& face = faces[slot];
-    if (face.axis != velocity_axis) {
+    if (face.axis != velocity_axis || (!support.empty() && !support[slot])) {
       continue;
     }
     const Vec3 offset{
@@ -177,13 +182,16 @@ absl::Status AppendViscousRows(
     std::span<const GradedMacFace3D> faces,
     std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
     std::span<const double> sealed_wall_velocities,
+    std::span<const std::uint8_t> support,
+    Vec3 wall_velocity,
+    double wet_volume,
     const std::array<MacStrainRow3D, 3>& normal_rows,
     std::vector<MacStrainRow3D>& rows
 ) {
   constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
   std::array<FaceGradient, 3> gradients{};
   for (std::size_t axis = 0; axis < axes.size(); ++axis) {
-    const auto gradient = FitFaceGradient(faces, center, leaf.cell_width, axes[axis]);
+    const auto gradient = FitFaceGradient(faces, center, leaf.cell_width, axes[axis], support);
     if (!gradient.ok()) {
       return gradient.status();
     }
@@ -195,7 +203,9 @@ absl::Status AppendViscousRows(
       if (coefficient == 0.0) {
         continue;
       }
-      if (subfaces[term.face_slot].open_area_m2 > 0.0) {
+      if (term.face_slot >= subfaces.size()) {
+        row.prescribed_strain += coefficient * NormalComponent(wall_velocity, faces[term.face_slot].axis);
+      } else if (subfaces[term.face_slot].open_area_m2 > 0.0) {
         row.terms[row.term_count] = {term.face_slot, coefficient};
         ++row.term_count;
       } else {
@@ -211,7 +221,7 @@ absl::Status AppendViscousRows(
         }
         continue;
       }
-      const double quadrature_weight = 4.0 * viscosity * leaf.cell_volume;
+      const double quadrature_weight = 4.0 * viscosity * wet_volume;
       if (!std::isnormal(quadrature_weight)) {
         return absl::OutOfRangeError("graded viscous strain quadrature is unrepresentable");
       }
@@ -244,7 +254,9 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     double dynamic_viscosity,
     std::span<const GradedMacFace3D> faces,
     std::span<const pressure_internal::AdaptiveMacPressureSubface3D> subfaces,
-    std::span<std::size_t> leaf_row_offsets
+    std::span<std::size_t> leaf_row_offsets,
+    const FrozenGradedPlanarLiquidGeometry3D* geometry,
+    Vec3 wall_velocity
 ) {
   if (faces.size() != subfaces.size() || !std::isfinite(dynamic_viscosity) || dynamic_viscosity <= 0.0) {
     return absl::InvalidArgumentError("graded viscosity needs one physical record per face and positive viscosity");
@@ -264,11 +276,43 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     }
     leaf_row_offsets.front() = 0;
   }
+  std::vector<GradedMacFace3D> physical_anchors;
+  std::vector<std::uint8_t> support;
+  if (geometry != nullptr) {
+    if (geometry->leaves().size() != leaves.size() || geometry->subfaces().size() != faces.size()) {
+      return absl::InvalidArgumentError("graded viscous geometry extent differs from topology");
+    }
+    physical_anchors.assign(faces.begin(), faces.end());
+    physical_anchors.resize(2 * faces.size());
+    support.resize(physical_anchors.size());
+    for (std::size_t slot = 0; slot < faces.size(); ++slot) {
+      const auto& measured = geometry->subfaces()[slot];
+      if (subfaces[slot].open_area_m2 > 0) {
+        if (!measured.wet_open_centroid_m) {
+          return absl::InvalidArgumentError("open strain face has no wet centroid");
+        }
+        physical_anchors[slot].world_anchor = *measured.wet_open_centroid_m;
+        support[slot] = 1;
+      }
+      if (measured.wet_solid_centroid_m) {
+        const auto wall_slot = faces.size() + slot;
+        physical_anchors[wall_slot] = faces[slot];
+        physical_anchors[wall_slot].world_anchor = *measured.wet_solid_centroid_m;
+        support[wall_slot] = 1;
+      }
+    }
+  }
+  const auto wet_volume = [&](std::size_t cell) {
+    return geometry == nullptr ? leaves[cell].cell_volume : geometry->leaves()[cell].fluid_volume_m3;
+  };
   std::vector<std::array<MacStrainRow3D, 3>> normal_rows(leaves.size());
   constexpr std::array axes{FaceNormalAxis::kX, FaceNormalAxis::kY, FaceNormalAxis::kZ};
   for (std::size_t cell = 0; cell < leaves.size(); ++cell) {
     const auto& leaf = leaves[cell];
-    const double weight = 2.0 * dynamic_viscosity * leaf.cell_volume;
+    if (wet_volume(cell) == 0) {
+      continue;
+    }
+    const double weight = 2.0 * dynamic_viscosity * wet_volume(cell);
     if (!std::isnormal(weight)) {
       return absl::OutOfRangeError("graded normal strain quadrature is unrepresentable");
     }
@@ -287,6 +331,9 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
   // The three normal rows sum to the pressure operator's finite-volume
   // divergence. A 2:1 leaf side contributes at most four owned subfaces.
   const auto add_normal = [&](std::size_t cell, std::size_t slot, FaceNormalAxis axis, double area, double sign) {
+    if (wet_volume(cell) == 0) {
+      return absl::OkStatus();
+    }
     auto& row = normal_rows[cell][static_cast<std::size_t>(axis)];
     const double open_area = subfaces[slot].open_area_m2;
     if (!std::isfinite(open_area) || open_area < 0.0 || open_area > area || faces[slot].axis != axis) {
@@ -297,11 +344,11 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
       return absl::InvalidArgumentError("graded prescribed wall flux needs finite blocked support");
     }
     if (wall_flux != 0.0) {
-      if (open_area > 0.0) {
+      if (open_area > 0.0 && geometry == nullptr) {
         return absl::UnimplementedError("graded moving cut strain requires separate wall quadrature");
       }
       const double wall_velocity = wall_flux / area;
-      const double normal_strain = sign * wall_flux / leaves[cell].cell_volume;
+      const double normal_strain = sign * wall_flux / wet_volume(cell);
       if (!std::isnormal(wall_velocity) || !std::isnormal(normal_strain)) {
         return absl::OutOfRangeError("graded prescribed wall velocity or strain is unrepresentable");
       }
@@ -314,7 +361,7 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
     if (open_area == 0.0) {
       return absl::OkStatus();
     }
-    const double coefficient = sign * open_area / leaves[cell].cell_volume;
+    const double coefficient = sign * open_area / wet_volume(cell);
     if (row.term_count == row.terms.size() || !std::isnormal(coefficient)) {
       return absl::OutOfRangeError("graded normal strain coefficient or extent is unrepresentable");
     }
@@ -357,13 +404,22 @@ absl::StatusOr<std::vector<MacStrainRow3D>> AssembleGradedViscousStrainRows3D(
         std::fma(lower.y, finest_width, world_origin.y) + half_width,
         std::fma(lower.z, finest_width, world_origin.z) + half_width,
     };
+    if (wet_volume(cell) == 0) {
+      if (!leaf_row_offsets.empty()) {
+        leaf_row_offsets[cell + 1] = rows.size();
+      }
+      continue;
+    }
     const auto status = AppendViscousRows(
         leaf,
         center,
         dynamic_viscosity,
-        faces,
+        geometry == nullptr ? faces : std::span<const GradedMacFace3D>(physical_anchors),
         subfaces,
         sealed_wall_velocities,
+        support,
+        wall_velocity,
+        wet_volume(cell),
         normal_rows[cell],
         rows
     );
@@ -403,8 +459,8 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     );
   }
   if (physical
-      && (options.motion_sample_intervals != 0 || scene.surface_tension != 0 || scene.dynamic_viscosity != 0
-          || scene.eos || !std::isinf(scene.bulk_modulus) || !scene.constituent_materials.empty()
+      && (options.motion_sample_intervals != 0 || scene.surface_tension != 0 || scene.eos
+          || !std::isinf(scene.bulk_modulus) || !scene.constituent_materials.empty()
           || std::ranges::any_of(initial.adaptive_cells.values(), IsEulerian))) {
     return absl::UnimplementedError("graded physical halfspace requires implicit incompressible particle-owned liquid");
   }
@@ -607,7 +663,7 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
       });
     });
   }
-  if (can_apply_viscosity) {
+  if (can_apply_viscosity && !physical) {
     if (composition_viscosity) {
       result.leaf_strain_row_offsets_.resize(leaves.size() + 1);
     }
@@ -878,6 +934,25 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     }
     physical.sampled_end_geometry = std::move(*end_geometry);
     physical.sampled_end_corners = sampled->end_corners;
+  }
+  if (scene.dynamic_viscosity > 0) {
+    if (sampled) {
+      return absl::UnimplementedError("sampled graded viscosity requires wall centroid data");
+    }
+    auto rows = AssembleGradedViscousStrainRows3D(
+        topology_,
+        start_geometry->world_origin_m(),
+        scene.dynamic_viscosity,
+        transfer_.faces(),
+        pressure->subfaces,
+        {},
+        &*start_geometry,
+        start_halfspace->wall_velocity
+    );
+    if (!rows.ok()) {
+      return rows.status();
+    }
+    strain_rows_ = std::move(*rows);
   }
   pressure_cells_ = std::move(pressure->cells);
   subfaces_ = std::move(pressure->subfaces);
