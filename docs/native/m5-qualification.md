@@ -7736,3 +7736,17 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon creep with the paired blended gather
+
+Run the native fine half-step blended control through 12 s.
+The envelope is 34.940182° at 3 s, 31.483194° at 6 s,
+28.789183° at 9 s and 26.147053° at 12 s. The radius stays
+at 0.156519 m to printed precision. The final angle is
+0.67° higher than baseline and still falls below the gate.
+Paired cut stress work residual is −1.29e-16 J. The temporary
+solver change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-paired-blended-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
