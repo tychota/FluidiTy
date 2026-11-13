@@ -11805,3 +11805,18 @@ by at most 0.039° and radii agree at printed precision. The
 native matrix exits 1. Reducing late expansive strain after
 the pile has formed has little effect on geometry in this
 control. CUDA was untested and the temporary edits were restored.
+
+
+#### Attenuate expansive strain only during collapse
+
+On 7826560, apply the same half removal only before the
+accepted 0.75 s sample. At 6 s, the native sparse angles
+are 31.949541°, 22.438349°, 20.188247°, and 10.066382°.
+The coarse nominal case passes. The other three fail
+angle, radius, and persistence. The matrix exits 1.
+
+The collapse-only control reproduces the full-run angles
+within 0.94° and the radii within 3 mm. The late-only control
+changes the baseline geometry much less. The large change
+in radius therefore originates mainly during formation for
+this control. CUDA was untested and both edits were restored.
