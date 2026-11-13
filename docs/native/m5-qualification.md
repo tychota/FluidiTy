@@ -10371,3 +10371,26 @@ within 0.023°. The effect is therefore mainly in steps
 where neither displacement reaches the floor. Both native
 default tests pass and Q-SAND fails. Temporary source was
 restored. CUDA was untested.
+
+#### Separate gravity and stress in the above-floor midpoint
+
+On a638560, subtract half of the uniform gravity increment
+from the final vertical PIC velocity in one control. In
+the other control, subtract half of the gathered grid
+increment minus the uniform gravity increment. Apply each
+change only when both its path and the baseline stay
+above the floor. The residual includes the small difference
+between uniform gravity and the gathered occupied-face kick.
+
+| Case | Gravity midpoint | Residual midpoint |
+|---|---:|---:|
+| Coarse | 30.401200° | 25.337593° |
+| Fine | 27.517651° | 23.207458° |
+| Coarse half-step | 29.398101° | 28.012009° |
+| Fine half-step | 27.429057° | 26.256851° |
+
+Gravity centering raises all four angles. Centering the
+residual lowers all four, accounting for the sign of the
+combined midpoint result. Both variants pass default native
+dry scenes and fail Q-SAND. Temporary source was restored.
+CUDA was untested for these controls.
