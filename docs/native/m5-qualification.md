@@ -6973,3 +6973,30 @@ foreach ($variant in 'no-grid-traction', 'relaxed-grid-traction') {
   }
 }
 ```
+
+### Keep grid traction and remove particle tangential friction
+
+On 3008848, keep the full grid traction solve and the particle
+sweep's normal constraint. On the compatible floor path, set the
+particle sweep and its affine derivative's friction coefficient
+to zero. Use the original 63-particle column.
+
+| Native case at 3 s | Envelope | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.444340° | 0.172618 |
+| Coarse half-step | 40.202194° | 0.155628 |
+| Fine | 30.258110° | 0.166274 |
+| Fine half-step | 34.478580° | 0.157770 |
+
+The fine half-step passes. Both nominal runs exceed the radius
+limit and the coarse half-step exceeds the angle limit. The
+paired cut stress work residual stays within 2.6e-16 J. Removing
+particle tangential friction leaves the timestep sensitivity
+and the extended Q-SAND gate open. The solver edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-grid-only-traction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
