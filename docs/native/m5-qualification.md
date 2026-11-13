@@ -8757,3 +8757,17 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon settlement with the gravity-free donor field
+
+On 5ff4866, extend the native fine half-step gravity-free
+deformation diagnostic to 12 s. Its angle drops from 34.087972°
+at 3 s to 25.760826° at 6 s, 17.307059° at 9 s, and 8.472996°
+at 12 s. The apex loses 79.77 mm after 3 s, versus 33.74 mm
+with the original gradient. The final radius is 0.151327 m
+and the cut work difference is −0.584012 J. The apparent
+3 s pass does not persist. The temporary edit was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-long-gravity-free-gradient-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
