@@ -113,7 +113,8 @@ bool TestScene(
     double symmetric_affine_decay_per_second = 0,
     std::string_view affine_decay_region = "all",
     bool trace_early_contact = false,
-    bool retry_motion = false
+    bool retry_motion = false,
+    std::array<double, 2> late_step_scale = {1, 1}
 ) {
   std::vector<BlockIndex3D> blocks;
   const int maximum_block_y = compatible_floor ? 2 : 4;
@@ -205,7 +206,8 @@ bool TestScene(
       // Replay the original two sampling boundaries before extending the run.
       phase_end = t < 0.70 ? 0.70 : 0.75;
     }
-    double next_time = t + duration >= phase_end - 1e-12 ? phase_end : t + duration;
+    const double trial_duration = extended_column && t >= 3.0 ? duration * late_step_scale[step % 2] : duration;
+    double next_time = t + trial_duration >= phase_end - 1e-12 ? phase_end : t + trial_duration;
     double step_duration = next_time - t;
     const double step_energy_blend = stored_velocity_decay_rate > 0
         ? std::min(1.0, std::exp(-stored_velocity_decay_rate * step_duration) / 0.99)
@@ -1391,7 +1393,7 @@ int main(int argc, char** argv) {
     const double duration = width / (timestep_name == "quarter" ? 160 : 320);
     return TestScene(width, duration, false, 0, 1, 0.10, false, 3.0, 0, {}, 0.7, false, 1, 0, 700, true) ? 0 : 1;
   }
-  if (argc >= 4 && argc <= 6 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
+  if (argc >= 4 && argc <= 7 && std::string_view(argv[1]) == "--q-sand-symmetric-affine-decay") {
     const std::string_view rate_name = argv[2];
     if (rate_name != "0" && rate_name != "2" && rate_name != "8" && rate_name != "32") {
       return 2;
@@ -1408,11 +1410,29 @@ int main(int argc, char** argv) {
     if (region != "all" && region != "floor" && region != "interior") {
       return 2;
     }
-    const std::string_view horizon = argc == 6 ? argv[5] : "1.5";
+    const std::string_view horizon = argc >= 6 ? argv[5] : "1.5";
     if (horizon != "1.5" && horizon != "3" && horizon != "12" && horizon != "18") {
       return 2;
     }
     const double end_time = horizon == "18" ? 18.0 : (horizon == "12" ? 12.0 : (horizon == "3" ? 3.0 : 1.5));
+    std::array<double, 2> late_step_scale{1, 1};
+    if (argc == 7) {
+      const std::string_view schedule = argv[6];
+      if (end_time <= 3) {
+        return 2;
+      }
+      if (schedule == "half") {
+        late_step_scale = {0.5, 0.5};
+      } else if (schedule == "double") {
+        late_step_scale = {2, 2};
+      } else if (schedule == "alternating") {
+        late_step_scale = {0.5, 1.5};
+      } else if (schedule == "alternating-reversed") {
+        late_step_scale = {1.5, 0.5};
+      } else {
+        return 2;
+      }
+    }
     const std::string_view selection = argv[3];
     const bool coarse = selection == "coarse" || selection == "coarse-half";
     const bool fine = selection == "fine" || selection == "fine-half" || selection == "fine-quarter";
@@ -1446,7 +1466,10 @@ int main(int argc, char** argv) {
                700,
                true,
                rate,
-               region
+               region,
+               false,
+               false,
+               late_step_scale
            )
         ? 0
         : 1;
