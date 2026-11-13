@@ -10129,3 +10129,121 @@ reached 28.543189° and 0.154080 m. The other three native
 cases reproduced the preceding control. The face-motion
 rejection was recoverable and the angle gate still failed.
 The temporary solver and fixture edits were restored.
+
+#### Measure the face that triggers the motion retry
+
+On 6104805, repeat the unregularized native run and log the
+first face-motion rejection. At step 460, the vertical face
+at (−0.03125, 0.18750, −0.03125) m carries 5.923e-10 kg, or
+1.579e-8 of one particle mass. Its stress force is 9.213 µN.
+The deposited velocity is −0.07985 m/s. Stress and gravity
+take it to 24.20842 m/s, above the 18 m/s bound. Substituting
+the existing mass floor into that same update gives
+−0.09134 m/s. The face lies three fine cells above the floor.
+This locates the retry in thin support above the pile.
+The other three angles reproduce the preceding control.
+Temporary sources were restored.
+
+### Limit thin-face stress acceleration by the motion bound
+
+On 6104805, use actual deposited mass for granular faces
+below the existing acceleration mass floor if the gravity
+and deposited motion stay inside 99% of the face speed
+limit. Bound the stress increment to the remaining speed
+interval and use the resulting effective mass in the work
+and omitted impulse receipts. Run the ordinary native
+Q-SAND matrix.
+
+| Case | Existing mass floor | Motion-limited stress |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.113649° |
+| Fine | 26.761332° | 26.754162° |
+| Coarse half-step | 29.006384° | 29.002684° |
+| Fine half-step | 27.033753° | 27.032133° |
+
+All cases reach the endpoint. Reported omitted stress impulse
+is at most 2e-9 N·s and the angles move by less than 0.008°.
+The default native dry-scene test passes. Q-SAND still fails.
+The temporary source was restored. CUDA was untested.
+
+### Integrate the merged deformation step to second order
+
+On 6104805, add the quadratic term (dt²/2) L²F to each
+frozen-gradient increment, including both intervals of the
+swept floor split. Keep the grid velocities and constitutive
+return timing unchanged.
+
+| Case | Euler | Quadratic |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.102928° |
+| Fine | 26.761332° | 26.847840° |
+| Coarse half-step | 29.006384° | 29.009818° |
+| Fine half-step | 27.033753° | 27.045365° |
+
+The largest change is 0.087°. The default native dry-scene
+test passes and Q-SAND fails. The integration order at a
+fixed velocity gradient has little effect on the measured
+angles. The temporary source was restored. CUDA was untested.
+
+### Center the ordinary-floor deformation gradient in time
+
+On 6104805, gather the ordinary granular gradient from
+the pre-force field and the final grid field. Use their
+arithmetic mean for both intervals of the existing swept
+deformation split. Transport and affine storage still use
+the final field. Snow and the compatible-floor path keep
+their original deformation update.
+
+| Case | Final-field gradient | Midpoint gradient |
+|---|---:|---:|
+| Coarse | 29.113507° | 31.045043° |
+| Fine | 26.761332° | 27.864590° |
+| Coarse half-step | 29.006384° | 29.712519° |
+| Fine half-step | 27.033753° | 27.634628° |
+
+All four angles improve. The coarse nominal case passes.
+The other angles remain below 30°, and the fine half-step
+also exceeds the radius bound by 0.247 mm. The default
+native dry-scene test passes and the Q-SAND matrix fails.
+The temporary solver edit was restored. CUDA was untested.
+
+#### Separate vertical and horizontal midpoint gradients
+
+Repeat the ordinary-floor midpoint test on 6104805, averaging
+only the vertical row in the first variant and only the two
+horizontal rows in the second. Keep both sweep intervals.
+
+| Case | Baseline | Vertical midpoint | Horizontal midpoint |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 30.494929° | 29.719217° |
+| Fine | 26.761332° | 27.783781° | 26.962533° |
+| Coarse half-step | 29.006384° | 29.710618° | 29.015467° |
+| Fine half-step | 27.033753° | 27.652184° | 27.019219° |
+
+The vertical row produces most of the angle increase seen
+with all rows centered. Only the coarse case passes with
+vertical centering. Both variants pass the default native
+dry-scene test and fail Q-SAND. The temporary sources were
+restored. CUDA was untested for these controls.
+
+#### Center only the vertical normal stress increment
+
+On 6104805, assemble the vertical force from the yy stress
+component separately. Subtract half its velocity increment
+from the final vertical field for the ordinary granular
+deformation gradient. Keep shear, gravity, transport, affine
+storage and contact at their previous time levels.
+
+| Case | Full vertical midpoint | yy stress midpoint |
+|---|---:|---:|
+| Coarse | 30.494929° | 30.499204° |
+| Fine | 27.783781° | 27.761428° |
+| Coarse half-step | 29.710618° | 29.729921° |
+| Fine half-step | 27.652184° | 27.633602° |
+
+The two results agree within 0.023° across the native matrix.
+The default dry-scene test passes. The coarse case reaches
+the angle band and the other three remain below it. The
+normal stress increment accounts for nearly all the effect
+of centering the vertical field in this control. Temporary
+sources were restored. CUDA was untested.
