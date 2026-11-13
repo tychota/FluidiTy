@@ -6064,3 +6064,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear the vertical derivative of the normal affine row
+
+On 3008848, zero only the y derivative of stored normal
+velocity after the wall sweep. Retain the two horizontal
+derivatives and the existing tangent feedback. Both default
+dry-scene tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 42.785261° | 0.148737 |
+| Coarse half-step | 52.915989° | 0.124165 |
+| Fine | 38.117050° | 0.146770 |
+| Fine half-step | 47.031431° | 0.139084 |
+
+All radii enter the allowed interval and all angles exceed
+35°. Keeping the horizontal derivatives of normal velocity
+makes the piles steeper than clearing the entire normal row
+in the preceding control. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-normal-diagonal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
