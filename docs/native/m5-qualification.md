@@ -10571,3 +10571,84 @@ places. All cases fail angle and radius and pass kinetic
 energy and short drift. The CUDA fixture exits 1 with
 `--q-sand-dense-column-long-settle` after matching the two
 absolute timesteps. The temporary fixture was restored.
+
+#### Track bulk height at the smaller matched timestep
+
+On 0d1cd2d, trace mass-weighted height and vertical velocity
+for the original particle sampling at both widths and the
+same 0.78125 ms step. The mass fraction within half a cell
+uses each grid's own width. Heights are measured from the
+same physical floor.
+
+| Time (s) | Coarse mean height (mm) | Fine mean height (mm) |
+|---|---:|---:|
+| 0.1961 | 111.371 | 109.257 |
+| 0.3914 | 64.690 | 53.551 |
+| 0.7820 | 37.481 | 24.057 |
+| 1.5000 | 19.387 | 11.794 |
+
+At 1.5 s the fine mean height is 7.59 mm lower and the
+maximum height is only 2.25 mm lower. Mean downward
+velocity remains 18.4 mm/s on coarse and 10.9 mm/s on
+fine. The integrated vertical momentum residuals are
+−1.10e-4 and 1.48e-5 N·s. The fine case's greater bulk
+settlement is already visible by 0.3914 s. These global
+receipts leave local load distribution open. The native
+diagnostic reproduced the matched-step angle results,
+and the temporary fixture was restored.
+
+#### Trace early floor support at the smaller matched timestep
+
+On 0d1cd2d, use the 0.78125 ms step at both widths and sum
+accepted vertical wall impulses over successive 0.1 s
+intervals. Both runs begin with zero vertical momentum.
+
+| Interval (s) | Coarse floor impulse (N·s) | Fine floor impulse (N·s) |
+|---|---:|---:|
+| 0–0.1 | 0 | 0 |
+| 0.1–0.2 | 2.488292 | 2.318574 |
+| 0.2–0.3 | 4.466719 | 4.564617 |
+| 0.3–0.4 | 2.074988 | 2.054150 |
+| 0.4–0.5 | 2.309966 | 2.444664 |
+
+The fine pile receives 0.169718 N·s less initial support
+by 0.2 s despite the same contact count (477). Its momentum
+is lower by the same amount. By 0.5 s cumulative fine
+support exceeds coarse by 0.042040 N·s, after the fine
+pile has already settled lower. This locates the first
+global impulse difference during collapse and leaves
+the local force distribution unresolved. The native
+fixture reproduces the matched angles and was restored.
+
+#### Separate arrival and resident support during first collapse
+
+On 0d1cd2d, classify the swept normal impulse by starting
+height at the matched 0.78125 ms step. In the interval
+0.1–0.2 s both widths record nine arrivals supplying
+0.527671 N·s and 468 floor-start contacts. The floor-start
+impulse is 1.960622 N·s on coarse and 1.790903 N·s on fine.
+This accounts for the entire initial 0.169718 N·s support
+difference within trace precision. The 0.2–0.4 s windows
+contain only floor-start contacts in both runs. The
+native fixture reproduces the previous matched angles.
+The temporary solver and fixture were restored.
+
+#### Decompose the first resident support difference
+
+On 0d1cd2d, gather the deposited vertical velocity, gravity
+kick and stress kick separately at ordinary floor-start
+contacts. Negate each mass-weighted contribution so the sum
+gives the impulse needed to stop incoming vertical motion.
+
+| Grid width (m) | Deposit (N·s) | Gravity (N·s) | Stress (N·s) | Measured wall (N·s) |
+|---|---:|---:|---:|---:|
+| 0.075 | 1.683442 | 0.134504 | 0.142675 | 1.960622 |
+| 0.0625 | 1.472552 | 0.134504 | 0.183847 | 1.790903 |
+
+The terms close to roundoff over 0.1–0.2 s. The fine grid
+gathers 0.210891 N·s less downward momentum from the
+deposit stage and 0.041172 N·s more from stress. Gravity
+matches. This points to the pre-force transfer and the
+carried velocity distribution for the next comparison.
+The native trace reproduces the matched angles. Temporary
+sources were restored.
