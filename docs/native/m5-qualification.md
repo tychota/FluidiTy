@@ -5814,3 +5814,28 @@ the existing acceptance thresholds.
 $b = 'out/build/m5-main-d6e8c6e-release'
 & "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-column-long-settle
 ```
+
+### Reverse the order of the two wall traction sweeps
+
+On 3008848, visit the same floor reaction points in reverse
+order on the first sweep and forward order on the second.
+Keep each sweep's half share of the Coulomb impulse cap.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.439206° | 0.168254 |
+| Coarse half-step | 40.501578° | 0.156711 |
+| Fine | 31.434087° | 0.159357 |
+| Fine half-step | 34.645655° | 0.156346 |
+
+Both coarse failures persist. The largest change is 0.110°
+in angle and 0.200 mm in radius. Both fine cases still pass
+at 3 s. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-reverse-traction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
