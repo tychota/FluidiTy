@@ -10247,3 +10247,65 @@ the angle band and the other three remain below it. The
 normal stress increment accounts for nearly all the effect
 of centering the vertical field in this control. Temporary
 sources were restored. CUDA was untested.
+
+#### Sample deformation before the normal stress kick
+
+On 04b21df, subtract the entire yy stress velocity increment
+from the deformation sample. Keep the complete kick for
+transport, affine storage and contact as in the midpoint test.
+
+| Case | Normal midpoint | Before normal kick |
+|---|---:|---:|
+| Coarse | 30.499204° | 32.330788° |
+| Fine | 27.761428° | 28.336343° |
+| Coarse half-step | 29.729921° | 30.660133° |
+| Fine half-step | 27.633602° | 28.179787° |
+
+Both coarse cases pass at 1.5 s. Both fine cases remain below
+30°, and the fine half-step exceeds the radius limit by
+0.818 mm. The default native dry-scene test passes and
+Q-SAND fails. Earlier sampling improves all four angles
+and leaves the grid-width discrepancy. Temporary source
+was restored. CUDA was untested for this control.
+
+#### Use the pre-kick vertical field for translation as well
+
+On 04b21df, additionally subtract the yy stress increment
+from the PIC translation and its grid velocity increment.
+The wall sweep receives that translation and the stored
+affine fit still comes from the final field.
+
+| Case | Pre-kick deformation only | Pre-kick deformation and translation |
+|---|---:|---:|
+| Coarse | 32.330788° | 21.657478° |
+| Fine | 28.336343° | 19.671279° |
+| Coarse half-step | 30.660133° | 23.278828° |
+| Fine half-step | 28.179787° | 21.037452° |
+
+The default native dry-scene and Q-SAND tests fail. Removing
+the normal stress kick from the particle translation also
+removes its impulse from the advancing particle velocity.
+This control shows that the previous improvement depends on
+keeping that impulse in transport. The temporary source was
+restored. CUDA was untested.
+
+#### Center displacement while retaining the stored velocity kick
+
+On 04b21df, average the pre-force and final PIC velocities
+for the ordinary granular wall sweep path. Keep the final
+PIC velocity as the stored velocity entering contact and
+keep the original deformation gradient. The wall sweep
+therefore sees a different path and impact time.
+
+| Case | Baseline | Midpoint displacement |
+|---|---:|---:|
+| Coarse | 29.113507° | 27.032886° |
+| Fine | 26.761332° | 24.422122° |
+| Coarse half-step | 29.006384° | 28.555911° |
+| Fine half-step | 27.033753° | 26.757779° |
+
+The default native dry-scene test passes. All four sand
+angles fall and Q-SAND still fails. This control isolates
+the time level of advection and the associated contact
+timing from the stored velocity update. The temporary
+source was restored. CUDA was untested.
