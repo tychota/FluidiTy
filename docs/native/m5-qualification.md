@@ -12205,3 +12205,30 @@ below 30°. This probes the tangential term without using the
 singular normal derivative of the clamped endpoint as a material
 deformation map. CUDA and dense sampling were untested.
 The temporary source edit was restored.
+
+#### Add the tangential arrival term to the accepted deformation
+
+On d522b8e, use the preceding arrival vectors a and b but
+add their outer product times the accepted elastic deformation
+to the sweep-split trial, instead of left-composing the
+correction with the trial. Keep the normal row unchanged.
+In a second run, also average the three diagonal APIC entries
+before each ordinary-floor granular step starting before 0.75 s,
+as in the earlier collapse-only control.
+
+Build the native dry-scene target and run it with
+`--q-sand-column-long-settle 6`. The additive term alone also
+passes the no-argument run at 33.555075°.
+
+| Case | Additive term | Combined controls | Combined final drift |
+|---|---:|---:|---:|
+| Coarse | 33.530778° | 28.441280° | 0.212546° |
+| Fine | 24.565894° | 24.032534° | 0.838778° |
+| Coarse half-step | 19.849614° | 24.706440° | 0.886700° |
+| Fine half-step | 18.603412° | 24.135115° | 0.995536° |
+
+The additive term differs from the previous composed control
+by less than 0.073° in every case. Combining it with the
+collapse control keeps all radii and final drift within their
+limits, but every angle falls below 30°. Both matrices exit 1.
+CUDA and dense sampling were untested. Both edits were restored.
