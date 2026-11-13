@@ -4843,3 +4843,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Isolate the stress support mass threshold
+
+On 3008848, halve the stress donor threshold and the force
+acceleration mass floor to 5e-5 times minimum particle mass.
+Keep the tangential wall traction threshold at 1e-4 times
+minimum particle mass. The same mass floor remains in the
+stress work accounting. Both default dry-scene tests pass
+on native and SM120.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 34.284955° | 0.167796 m | 0.324151 |
+| Coarse half-step | 40.283552° | 0.156850 m | 0.159805 |
+| Fine | 30.946031° | 0.162001 m | 0.354115 |
+| Fine half-step | 34.300342° | 0.158655 m | 0.197440 |
+
+This reproduces the increased fine-grid plastic volume and
+nominal fine radius failure seen with the shared threshold
+change. The traction-only control did not reproduce either.
+Both coarse failures persist. The temporary source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-half-stress-support-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
