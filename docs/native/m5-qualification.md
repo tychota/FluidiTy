@@ -11638,3 +11638,22 @@ nominal case gains angle with almost no floor-layer path.
 These counts locate activity and do not establish causation.
 The command reproduces the baseline angles and exits 1.
 CUDA was untested and the fixture edit was restored.
+
+
+#### Retain particle velocity during the final second
+
+On e0a0931, repeat the preceding native plastic diagnostic
+and set particle_energy_blend to 0.6 on steps starting at
+or after 5 s. Keep the original duration and wall settings.
+The stored correction uses the existing history eligibility
+and mass-weighted momentum correction.
+
+Three cases reproduce the baseline angles and plastic
+diagnostics at printed precision. The coarse half-step
+angle falls from 17.104058° to 16.681018°, while its mean
+absolute log Jpl path falls from 0.01487805 to 0.01417311.
+Its final-second angle loss increases from 1.747565° to
+2.170605°. The matrix exits 1. This late transfer change
+reduces measured plastic volume activity in that case
+without preserving pile height. CUDA was untested and the
+temporary fixture edit was restored.
