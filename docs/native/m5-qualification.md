@@ -6557,3 +6557,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Apply time-scaled damping only to tangent extension
+
+On 3008848, apply exp(−150 dt) to the stored x/x and z/z
+derivatives after the wall sweep. Keep both horizontal
+cross derivatives. Both default dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.741154° | 0.164712 |
+| Coarse half-step | 43.101068° | 0.149279 |
+| Fine | 32.539640° | 0.154698 |
+| Fine half-step | 36.927869° | 0.155942 |
+
+Relative to damping the entire in-plane block at the same
+rate, the largest angle change is 0.028° and the largest
+radius change is 0.093 mm. Damping the diagonal terms
+alone reproduces nearly all of the geometry response.
+Only nominal fine passes. The source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-damp-tangent-diagonal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
