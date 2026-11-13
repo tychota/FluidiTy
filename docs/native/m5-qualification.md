@@ -9426,3 +9426,27 @@ between 18 and 24 s at fixed radius, despite drifting only
 0.013509° over the final 0.05 s. The paired stress-work
 residual is −8.30e-17 J. Both temporary sources were restored
 before running the rebuilt executable.
+
+### Refine the wall-anchored timestep through 24 seconds
+
+Use the same native binary and fixture bounds as the preceding
+24 s run. At the fine width of 0.0625 m, halve the timestep again
+from 0.00078125 s to 0.000390625 s. Extend the coarse half-step
+to the same horizon.
+
+| Case | 3 s | 12 s | 18 s | 21 s | 24 s | Radius at 24 s (m) |
+|---|---:|---:|---:|---:|---:|---:|
+| Fine quarter-step | 45.340° | 35.073° | 34.196° | 31.457° | 29.786° | 0.155289 |
+| Coarse half-step | 42.761° | 36.358° | 33.922° | 33.037° | 32.276° | 0.162393 |
+
+Both cases exit 1. Fine timestep refinement delays the angle
+crossing and leaves the angle below 30° by 24 s. The fine
+quarter-step loses 16.63 mm of height from 18 to 24 s at fixed
+radius, compared with 6.38 mm at the fine half-step. The
+coarse half-step still exceeds the radius bound by 2.39 mm.
+The absolute paired stress-work residual stays below 3.4e-16 J.
+
+Run the experimental native binary from the preceding check
+with `--q-sand-symmetric-affine-decay 0 fine-quarter all 24`
+and repeat with `coarse-half`. The run uses the existing binary
+and leaves the isolated source unchanged.
