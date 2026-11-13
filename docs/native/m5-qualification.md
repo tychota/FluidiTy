@@ -5839,3 +5839,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Divide the wall traction cap across eight sweeps
+
+On 3008848, replace two alternating sweeps with eight,
+each receiving one eighth of the original total Coulomb
+impulse cap. Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.674466° | 0.166994 |
+| Coarse half-step | 40.852974° | 0.155189 |
+| Fine | 31.547053° | 0.158528 |
+| Fine half-step | 34.788473° | 0.155500 |
+
+All four radii decrease by 0.804–1.523 mm. The coarse nominal
+radius remains above 0.16 m, and the coarse half-step angle
+rises by 0.352°. Both fine cases still pass at 3 s. This
+control changes the subdivision of the impulse cap, so it
+does not test convergence of a coupled friction solve.
+The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-eight-traction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
