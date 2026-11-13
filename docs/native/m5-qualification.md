@@ -7327,3 +7327,34 @@ foreach ($case in 'coarse-half', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Attribute late constitutive energy loss to the return branches
+
+Repeat the native 12 s half-step column runs on 3008848.
+For each accepted step, evaluate reference-volume-weighted
+Hencky energy before and after granular return. Attribute the
+loss to the tensile apex when the trial log stretch trace is
+nonnegative. The remainder is dominated by the compressed
+shear branch. Sample at the same 3 s boundaries.
+
+| Case and interval | Total return loss (mJ) | Tensile apex loss (mJ) |
+|---|---:|---:|
+| Coarse half-step, 3–6 s | 314.198 | 2.232897 |
+| Coarse half-step, 6–9 s | 17.102 | 0.000175 |
+| Coarse half-step, 9–12 s | 6.762 | 0.000621 |
+| Fine half-step, 3–6 s | 55.651 | 0.001472 |
+| Fine half-step, 6–9 s | 14.636 | 0.000743 |
+| Fine half-step, 9–12 s | 5.571 | 0.001191 |
+
+The tensile apex accounts for at most 0.72% of return loss in
+these late intervals. This identifies the dominant dissipation
+branch while the pile creeps, leaving open which transfer or
+contact effects repeatedly load that branch. Both trajectories
+reproduce the previous results. Temporary edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-late-return-branches-bin'
+foreach ($case in 'coarse-half', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
