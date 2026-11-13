@@ -9747,3 +9747,19 @@ The CUDA refined angle differs by 0.000001°. The standalone
 candidate commit applies cleanly. The stacked PR includes
 earlier history and conflicts with merged main. The candidate
 was reverted on the evidence branch after qualification.
+
+### Run the sand settlement gate in CTest
+
+Configure the existing native or CUDA build with
+`-DFLUIDITY_ENABLE_Q_SAND=ON` and build the dry-scene targets.
+Run `ctest --test-dir out/build -R '^QSand\.' --no-tests=error --output-on-failure`.
+Each test runs the original-density 1.5 s column at both grid
+widths and timesteps with the existing physical acceptance
+checks. Independent surface fits and longer experimental
+runs are separate diagnostics.
+
+On merged main 5b175ec, both default dry-scene tests pass.
+Both QSand tests fail with the same final envelope angles
+to six decimal places, in fixture order: 29.113507°,
+26.761332°, 29.006384°, and 27.033753°. The option is off
+by default while this gate remains open.
