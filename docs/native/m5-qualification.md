@@ -10619,3 +10619,16 @@ pile has already settled lower. This locates the first
 global impulse difference during collapse and leaves
 the local force distribution unresolved. The native
 fixture reproduces the matched angles and was restored.
+
+#### Separate arrival and resident support during first collapse
+
+On 0d1cd2d, classify the swept normal impulse by starting
+height at the matched 0.78125 ms step. In the interval
+0.1–0.2 s both widths record nine arrivals supplying
+0.527671 N·s and 468 floor-start contacts. The floor-start
+impulse is 1.960622 N·s on coarse and 1.790903 N·s on fine.
+This accounts for the entire initial 0.169718 N·s support
+difference within trace precision. The 0.2–0.4 s windows
+contain only floor-start contacts in both runs. The
+native fixture reproduces the previous matched angles.
+The temporary solver and fixture were restored.
