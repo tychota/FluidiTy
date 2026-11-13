@@ -10752,3 +10752,24 @@ Three native cases pass, and the coarse half-step exceeds
 This reduces the half-step overshoot of constant 50%
 retention, while leaving the short-horizon regression and
 Q-SAND failure. Temporary source was restored. CUDA was untested.
+
+#### Localize time-scaled compression by stencil support
+
+On 53e7662, apply the same exp(−400 dt) multiplier only
+when a nonzero vertical weight crosses below the floor,
+then apply it only to stencils wholly on or above the floor.
+
+| Case | Floor-crossing only | Uncut only |
+|---|---:|---:|
+| Coarse | 25.001785° | 32.888475° |
+| Fine | 24.109886° | 32.192299° |
+| Coarse half-step | 29.380047° | 36.841241° |
+| Fine half-step | 27.136347° | 33.641611° |
+
+The floor-crossing control passes the native default test
+and fails all four extended angles. The uncut control passes
+three extended cases and fails the default coarse case at
+42.895836°. The angle improvement from time-scaled retention
+occurs on uncut stencils in this comparison. Both native
+Q-SAND matrices fail. The temporary source was restored.
+CUDA was untested.
