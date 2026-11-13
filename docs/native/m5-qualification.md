@@ -9378,3 +9378,30 @@ Run the isolated native scene with
 `--q-sand-single-particle-strain` and
 `--q-sand-symmetric-affine-decay 0 <case> all <seconds>`.
 The temporary solver source was restored.
+
+### Extend the wall-anchored fit across the sand matrix
+
+Build the full wall-anchored fit on 43ec90c with the fit ahead
+of the exact reflection shortcut. Extend the four native
+column cases to 18 s with unchanged estimator, material
+parameters and acceptance bounds.
+
+| Case | Angle at 6 s | 9 s | 12 s | 15 s | 18 s | Radius at 18 s (m) |
+|---|---:|---:|---:|---:|---:|---:|
+| Coarse | 36.962° | 33.925° | 31.968° | 30.200° | 28.496° | 0.165163 |
+| Coarse half-step | 38.680° | 37.246° | 36.358° | 34.979° | 33.922° | 0.162393 |
+| Fine | 32.804° | 30.192° | 28.437° | 27.003° | 25.725° | 0.157070 |
+| Fine half-step | 34.971° | 34.692° | 32.726° | 31.320° | 30.216° | 0.154708 |
+
+Only the fine half-step passes at 18 s. It loses 2.510°
+from 12 to 18 s despite drifting just 0.016752° during
+the final 0.05 s. The coarse half-step meets the angle
+band at 18 s and exceeds the radius bound by 2.39 mm.
+The stress-work residual remains below 3.4e-16 J. The
+fit improves retention while leaving long-horizon creep
+and grid and timestep sensitivity unresolved.
+
+Run the experimental native scene binary with
+`--q-sand-symmetric-affine-decay 0 <case> all 18`.
+The fine half-step exits 0 and the other cases exit 1.
+The experimental source was restored before the runs.
