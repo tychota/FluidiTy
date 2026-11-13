@@ -7883,3 +7883,28 @@ temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-coarse-quarter-18-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 coarse-quarter all 18
 ```
+
+### Split compatible-floor deformation at swept impact
+
+On 255739e, enable the existing pre-impact and post-impact
+deformation composition for compatible-floor sand. Use the
+gathered gradient before impact and its Coulomb projection
+after impact. Keep the existing stress scatter and grid contact.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 37.933422° | 0.168036 |
+| Coarse half-step | 40.748841° | 0.154928 |
+| Fine | 31.651993° | 0.161478 |
+| Fine half-step | 35.020386° | 0.155106 |
+
+All four cases fail at 3 s. The cut stress work receipt still
+uses the pre-projection gather and cannot certify the split
+deformation increment. The temporary edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-compatible-impact-split-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
