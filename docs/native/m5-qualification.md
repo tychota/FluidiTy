@@ -11878,3 +11878,23 @@ fine. The fine result is within 0.009° of the full-run shift,
 so this part of the phase effect does not require changing
 the collapse. The native command exits 1. CUDA was untested
 and the fixture edit was restored.
+
+
+#### Alternate vertical grid alignment after collapse
+
+On 7494211, repeat the native sparse half-step phase matrix
+with an aligned grid through the 0.75 s sample. After that
+sample alternate the aligned and shifted grids by step
+parity. Carry the particle state unchanged between grids.
+
+| Grid width (m) | Aligned | Alternate quarter shift | Alternate half shift | Fixed late half shift |
+|---|---:|---:|---:|---:|
+| 0.075 | 22.853454° | 22.848691° | 21.668147° | 20.601170° |
+| 0.0625 | 20.811628° | 20.576246° | 20.059458° | 19.466541° |
+
+The half-cell alternation finishes between the aligned and
+fixed late shift in both cases. It recovers part of the
+angle lost with the fixed shift, and all cases remain below
+30°. The 0.75 s samples match the baseline. The native
+command exits 1. CUDA was untested and the fixture edit
+was restored.
