@@ -7000,3 +7000,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Transpose the wall reaction traversal
+
+On 3008848, order the same floor reaction points by z then x
+instead of x then z. Keep the forward and reverse sweeps and
+their original impulse caps. Use the standard 63-particle column.
+
+| Native case at 3 s | Envelope | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.389107° | 0.168137 |
+| Coarse half-step | 40.501222° | 0.156712 |
+| Fine | 31.456976° | 0.159442 |
+| Fine half-step | 34.696680° | 0.156300 |
+
+The two fine cases pass and the two coarse cases fail, as in the
+original traversal. The cut stress work residual stays within
+2.9e-16 J. Traversal transposition leaves the coarse half-step
+angle more than 5° above the limit. The experimental sort was
+restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-transposed-traction-order-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
