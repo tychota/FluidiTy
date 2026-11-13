@@ -11838,3 +11838,23 @@ every tested alignment and all six angles miss the band.
 The native command exits 1. The test varies alignment for
 the entire trajectory, so it does not isolate first impact.
 CUDA was untested and the fixture edit was restored.
+
+
+#### Return to an aligned grid after collapse
+
+On 0abeeb7, repeat the sparse phase matrix with a shifted
+grid through the accepted 0.75 s sample. Recreate the
+aligned grid at that boundary and carry over the particle
+state without remapping it. Advance to 3 s.
+
+| Grid width (m) | Aligned | Quarter shift before 0.75 s | Half shift before 0.75 s |
+|---|---:|---:|---:|
+| 0.075 | 22.853454° | 23.847315° | 22.404500° |
+| 0.0625 | 20.811628° | 22.963537° | 21.012102° |
+
+All cases miss the angle band. Holding a half-cell shift
+through the full run gives lower angles than switching
+back to aligned by 2.30° on coarse and 1.55° on fine.
+The post-collapse grid therefore contributes to the
+full-run phase effect. The native command exits 1.
+CUDA was untested and the fixture edit was restored.
