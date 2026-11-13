@@ -12336,3 +12336,25 @@ passes at the baseline 32.825896°. Empty-face gravity is ruled
 out as a cause of the measured native sparse angle deficit at
 this precision. The CUDA long-window matrix and dense sampling
 were untested for this control. The source edit was restored.
+
+#### Release the granular column with isotropic overburden stress
+
+On 11014d1, initialize the six-second native sparse fixture
+with isotropic compressive Kirchhoff stress of magnitude
+rho g times depth below the column top. Use diagonal elastic
+stretch exp(-pressure / (3 lambda + 2 mu)) and initialize
+log J_pl to minus three times its log so the total Jacobian
+starts at one. Keep the release height, positions, mass,
+friction and update unchanged. This is an initial-stress
+sensitivity control. The released column has free sides,
+so isotropic compression does not put it in equilibrium.
+
+Build the native dry-scene target and run it with
+`--q-sand-column-long-settle 6`. The angles at 0.75 s are
+14.543956°, 9.874377°, 18.795867° and 10.695996° in coarse,
+fine, coarse half-step and fine half-step order. At six
+seconds they are 0°, 0°, 3.042217° and 0.776028°. Every case
+fails angle and radius. The command exits 1. The initial
+isotropic compression increases spreading substantially
+under this release, so it does not resolve Q-SAND. CUDA
+and dense sampling were untested. The fixture edit was restored.
