@@ -4589,3 +4589,21 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Requalification against upstream d6e8c6e
+
+The milestone branch integrated upstream d6e8c6e at 68c7902,
+including the graded liquid band overlap and Stokes relaxation
+changes. A clean Windows Release SM120 build passed all 11 M5
+CTest targets. Blender 5.2.3 passed the 20-frame authored
+snow–water bake, frame-10 checkpoint resume and playback on
+native and SM120. Both runs measured minimum snow volume ratio
+0.648350539, minimum log plastic Jacobian −0.420240034 and
+emitted water gap 0.631821917 m.
+
+Repeat the earlier clean-build and Blender commands using
+out/build/m5-main-d6e8c6e-release and the output directories
+out/authored-upstream-d6e8c6e-cpu and
+out/authored-upstream-d6e8c6e-cuda. Configure with the qualified
+Conan Release CUDA toolchain and CLI11 2.7.2 package. The
+extended Q-SAND gate remains open.
