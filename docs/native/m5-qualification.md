@@ -5485,3 +5485,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Match absolute timesteps across grids on affine clearing
+
+On 3008848, exchange the coarse and fine absolute durations
+at both nominal and half step. Keep the solver, release,
+3 s endpoint, and acceptance checks. Both default dry-scene
+tests pass on native and SM120.
+
+| Absolute dt (s) | Coarse angle / radius | Fine angle / radius |
+|---:|---:|---:|
+| 0.00187500 | 34.329576° / 0.168211 m | 30.573436° / 0.157574 m |
+| 0.00156250 | 35.439121° / 0.166939 m | 31.443051° / 0.159557 m |
+| 0.00093750 | 40.501234° / 0.156712 m | 33.754916° / 0.159084 m |
+| 0.00078125 | 42.008730° / 0.151892 m | 34.693822° / 0.156304 m |
+
+All four fine-grid results pass the 3 s geometry checks.
+All four coarse-grid results fail at least one check. At
+the same absolute timestep the fine angle is 3.76–7.31°
+shallower. The gap grows as the absolute timestep shrinks
+across these cases. Equalizing timestep does not remove
+the grid-width difference. The temporary fixture edit was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-matched-dt-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
