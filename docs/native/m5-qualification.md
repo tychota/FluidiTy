@@ -9932,3 +9932,60 @@ to below 7.3e-17 J. All four angles decrease and the matrix
 still fails. The native default dry scene passes. This
 isolates work consistency from angle retention for the
 normalized derivative. Both temporary edits were restored.
+
+### Pair the complete floor continuation with its stress transpose
+
+On 4300d54, port the weighted floor ghost rows from 43ec90c
+as a temporary native control. Scatter complete quadratic
+stress through the row transpose and gather the complete
+deformation gradient from the same rows. Keep the merged
+solver's swept deformation and compatible PIC translation.
+
+| Case | Normalized derivative | Complete ghost transpose |
+|---|---:|---:|
+| Coarse | 28.407709° | 36.571036° |
+| Fine | 26.082740° | 32.610886° |
+| Coarse half-step | 31.915729° | 37.590067° |
+| Fine half-step | 29.126156° | 35.079876° |
+
+The integrated cut stress-work residual stays below 3e-16 J.
+All four angles increase, and only the fine nominal case
+is within the band. The default native dry-scene executable
+also exits 1 before printing scene results. The experimental
+sources were restored. The control has no CUDA result.
+
+#### Identify the default fixture regression
+
+Run all nine default native checks individually with the
+same complete ghost transpose. Only the compatible
+single-particle wall impulse fixture fails. It returns OK
+with one hit, a −0.5 N·s tangential impulse, a 1 N·s normal
+impulse, −0.875 J of particle wall kinetic work and zero grid
+wall impulse, cut stress work and plastic volume events.
+Those fields match the fixture. Its granular projection
+count is one, versus the fixture requirement of zero.
+The ordinary floor variant reports zero projections.
+The failure is in the deformation path of a stress-free
+initial particle. The impulse accounting still passes.
+Temporary diagnostics and solver edits were restored.
+
+#### Use the complete continuation for the full deformation step
+
+On 4300d54, keep the complete ghost transpose control and
+skip the additional swept deformation split on that path.
+Keep the swept position update, wall impulse and return
+mapping. The native default dry-scene test passes, including
+the compatible wall oracle that failed with both corrections.
+
+| Case | With swept split | Without swept split |
+|---|---:|---:|
+| Coarse | 36.571036° | 34.892353° |
+| Fine | 32.610886° | 29.430121° |
+| Coarse half-step | 37.590067° | 37.222976° |
+| Fine half-step | 35.079876° | 34.001150° |
+
+The native matrix still exits 1. The absolute cut stress-work
+residual stays below 4.2e-16 J. Removing the second deformation
+correction resolves the single-particle regression and leaves
+the sand result sensitive to grid width and timestep.
+The temporary solver and fixture edits were restored.
