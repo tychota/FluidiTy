@@ -8339,3 +8339,25 @@ angle estimator is used for the gate. Temporary tracing was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-height-distribution-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Check long-horizon creep under a half-cell horizontal grid shift
+
+On 255739e, set the fine grid origin to (h/2, 0, h/2) and
+run the native half-step through 12 s. Keep the release and
+floor at their original world coordinates.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 34.880324° | 0.171549 |
+| 6 | 28.998285° | 0.177584 |
+| 9 | 25.796791° | 0.177584 |
+| 12 | 22.964356° | 0.177584 |
+
+The shifted pile loses 44.34 mm of height after 3 s compared
+with 33.74 mm at the original phase. The 12 s radius exceeds
+0.16 m and the angle falls below 30°. Late height loss persists
+under both grid alignments. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-half-phase-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
