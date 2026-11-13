@@ -7797,3 +7797,32 @@ change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-dense-long-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Include the affine normal velocity in floor patch prediction
+
+On 255739e, activate the patch for existing contacts and when
+a one-step prediction crosses the floor. Use the stored vertical
+translation minus h times the norm of the vertical APIC slope
+row, then add the gravity kick. This samples an incoming speed
+bound over a ball of radius h around the particle. Keep the
+original stress transpose, gather, and particle sweep.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.179340° | 0.170465 |
+| Coarse half-step | 40.574660° | 0.158481 |
+| Fine | 31.187908° | 0.163386 |
+| Fine half-step | 34.611556° | 0.158611 |
+
+The fine half-step passes. Both nominal radii exceed 0.16 m
+and the coarse half-step still exceeds 35°. All four radii
+also increase relative to the translation-only prediction.
+The cut work residual stays within 2.6e-16 J. The temporary
+solver edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-affine-predicted-contact-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
