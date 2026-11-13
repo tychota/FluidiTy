@@ -264,6 +264,39 @@ The 3-frame matched public tank exercises Simulate and Mesh at identical
 initial particle inventories and error limits. Its short-run receipts
 report zero drift, 458 retained Mesh IDs, and relative volume error
 1.11022e-15. [Matched public control](matched-error-pressure.md#public-simulate-and-mesh-control)
+### Bounded graded swell predictor
+
+An authored Stokes target can drive a conforming stationary graded tank with
+inlet particle emission disabled. The predictor samples each eligible open
+canonical subface at its physical anchor and trial end time. Relaxation
+changes the force-predicted velocities before pressure assembly. The
+normalized old carriers remain available for FLIP and for retries. The
+pressure graph still owns the apertures and incidence used for correction.
+
+The five-leaf control starts from rest with 25 canonical subfaces and applies
+a 0.05 m, 2 s swell target. CPU and RTX 5060 Ti reach the same frame-two
+state `ba2a02662807d30dcfb61aaffc27fd56bb7d65e01d3b25de7b9edfbc4950e910`.
+Across four accepted steps the peak pressure RHS norm is 0.00471685 m³/s
+and maximum volume-scaled residual is 2.74373e-10 s⁻¹. Both backends
+preserve the original five particle IDs and leaf keys. A late rejected trial
+preserves the committed host state and, on CUDA, its acquired device epoch.
+
+The public process test kills Simulate after it publishes the frame-ten
+checkpoint. A new process resumes without an initial-state argument and
+matches the uninterrupted frame-eleven state on each backend. The CPU and
+SM120 checkpoint and final state digests also match each other.
+
+- Checkpoint `c09bb3055b8af37c3b5c922ea2b1f064afd2062c00b21b0afd1956121c05aab4`
+- Final state `eb9dd88f3e941e83e2285034a69e475e414128c746b23d931b394e68ab487dfa`
+
+```powershell
+ctest --test-dir out/build/graded-swell-green-cpu -V -R 'GradedSwellForcesFrozen|SimulateCli.cpu_replay' --no-tests=error
+ctest --test-dir out/build/graded-swell-green-cuda -V -R 'PublishesGradedSwellAfterDeviceRollback|SimulateCli.cuda_replay' --no-tests=error
+```
+
+This control measures forced motion with fixed planar occupancy. The reference
+wave still needs graded inlet volume control, moving free-surface activation,
+and accepted motion and topology evidence from M2's wave stages.
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

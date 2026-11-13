@@ -393,9 +393,13 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const bool physical = std::holds_alternative<TranslatingHalfspace3D>(scene.obstacle);
   const bool stationary_tank = tank != nullptr && tank->piston_velocity_x == 0;
   if (plane == nullptr || (!physical && !stationary_tank) || scene.target_divergence != 0 || initial.next_cavity_id != 0
-      || options.whitewater_capture || !scene.sources.empty() || options.ocean_boundary.has_value()
+      || options.whitewater_capture || !scene.sources.empty()
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate requires a conforming tank or explicit physical halfspace");
+  }
+  if (options.ocean_boundary && (!stationary_tank || options.ocean_boundary->inlet_particle_spacing_m > 0)) {
+    return absl::UnimplementedError("graded swell relaxation requires a stationary tank without inlet particle emission"
+    );
   }
   if (physical
       && (options.motion_sample_intervals != 0 || scene.surface_tension != 0 || scene.dynamic_viscosity != 0
@@ -1123,6 +1127,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& options,
     const LiquidSubstepBackend3D& backend,
+    const ResolvedOceanBoundary3D* ocean_boundary,
     MacPressureWorkspace3D& workspace,
     LiquidAcceptedStepMeasurement3D& measurement
 ) {
@@ -1249,6 +1254,33 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
     subfaces_[slot].predicted_normal_velocity_m_per_s =
         old_faces_[slot].carrier_velocity + duration * potential_difference / NormalComponent(displacement, axis);
+  }
+  // Relax only the predicted bank after acceleration. The normalized old
+  // carriers remain the FLIP baseline, including when the trial is retried.
+  if (ocean_boundary != nullptr) {
+    const double sample_time_s = trial.clock.time + duration;
+    const auto geometry = transfer_.faces();
+    for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+      auto& subface = subfaces_[slot];
+      const auto& old_carrier = old_faces_[slot];
+      if (subface.open_area_m2 == 0 || !old_carrier.structurally_eligible
+          || (old_carrier.validity != LiquidFaceValidity3D::kValid
+              && old_carrier.validity != LiquidFaceValidity3D::kPredicted)) {
+        continue;
+      }
+      const auto& face = geometry[slot];
+      const auto relaxed_velocity = ocean_boundary->RelaxFace(
+          face.axis,
+          face.world_anchor,
+          subface.predicted_normal_velocity_m_per_s,
+          sample_time_s,
+          duration
+      );
+      if (!relaxed_velocity.ok()) {
+        return relaxed_velocity.status();
+      }
+      subface.predicted_normal_velocity_m_per_s = *relaxed_velocity;
+    }
   }
   if (!predictor_density_.empty()) {
     for (const auto& exterior : exterior_faces_) {

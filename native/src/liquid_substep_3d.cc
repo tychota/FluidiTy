@@ -1078,8 +1078,20 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(owner.Deposit(trial, options, quadratic, adaptive_carrier_mode == AdaptiveCarrierMode::kBandOverlap));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
+    if (ocean_boundary) {
+      STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, duration));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kPressure, duration));
-    STEP_TRY(owner.Project(trial, duration, scene, options, backend, workspace.pressure(), measurement));
+    STEP_TRY(owner.Project(
+        trial,
+        duration,
+        scene,
+        options,
+        backend,
+        ocean_boundary ? &*ocean_boundary : nullptr,
+        workspace.pressure(),
+        measurement
+    ));
     diagnostics.pressure_diagnostics = measurement.pressure;
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);

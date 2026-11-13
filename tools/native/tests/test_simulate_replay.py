@@ -287,7 +287,8 @@ def make_scene(executable, fixture, directory, backend, mode="initial"):
     initial_modes = (
         "initial", "slow", "effects", "whitewater-effects", "whitewater-beach", "ocean", "ocean-level",
         "viscous", "viscous-control", "cavity-loss", "shared-surface", "graded-tank", "graded-effects",
-        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous", "graded-width", "graded-width-stale",
+        "graded-eos", "graded-miscible", "graded-viscous", "graded-miscible-viscous", "graded-swell",
+        "graded-width", "graded-width-stale",
     )
     initial = ["--initial-state", str(scene) + ".flst"] if mode in initial_modes else []
     return scene, initial
@@ -684,6 +685,7 @@ def case_cuda_graded_replay(executable, fixture, directory, cuda):
 def case_cpu_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cpu")
     graded_replay_case(executable, fixture, directory / "graded", "cpu")
+    graded_replay_case(executable, fixture, directory / "swell", "cpu", "graded-swell")
     graded_replay_case(executable, fixture, directory / "graded-eos", "cpu", "graded-eos")
     graded_replay_case(executable, fixture, directory / "graded-miscible", "cpu", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "graded-viscous", "cpu", "graded-viscous")
@@ -700,6 +702,7 @@ def case_cuda_execution(executable, fixture, directory, cuda):
 def case_cuda_replay(executable, fixture, directory, cuda):
     replay_case(executable, fixture, directory, "cuda")
     graded_replay_case(executable, fixture, directory / "graded", "cuda")
+    graded_replay_case(executable, fixture, directory / "swell", "cuda", "graded-swell")
     graded_replay_case(executable, fixture, directory / "graded-eos", "cuda", "graded-eos")
     graded_replay_case(executable, fixture, directory / "graded-miscible", "cuda", "graded-miscible")
     graded_replay_case(executable, fixture, directory / "graded-viscous", "cuda", "graded-viscous")
