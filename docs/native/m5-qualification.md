@@ -5343,3 +5343,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Isolate compression and expansion in tangent affine feedback
+
+On 3008848, retain only the diagonal derivative on each
+affected tangent row. The compression control keeps negative
+derivatives and the expansion control keeps positive derivatives.
+Both default native and SM120 dry-scene tests pass for each control.
+
+| Native case | Compression-only angle / radius at 3 s | Expansion-only outcome |
+|---|---|---|
+| Coarse | 34.583093° / 0.167699 m | Unlabeled FailedPrecondition at step 1149 |
+| Coarse half-step | 40.508843° / 0.156688 m | 32.022436° / 0.161609 m |
+| Fine | 31.475272° / 0.159046 m | Unlabeled FailedPrecondition at step 377 |
+| Fine half-step | 34.717325° / 0.156230 m | Unlabeled FailedPrecondition at step 2071 |
+
+Compression-only retains both fine passes and both coarse
+failures. Expansion-only reproduces early rejection in three
+cases. Its coarse half-step reaches the angle window but exceeds
+the radius limit. Positive extensional feedback is sufficient
+for the early failures in this control. The sources were restored.
+
+```powershell
+foreach ($mode in 'compression-only', 'expansion-only') {
+  $bin = "out/pr-m5-sand-affine/out/sand-affine-$mode-bin"
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
