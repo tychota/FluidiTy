@@ -9065,3 +9065,18 @@ changes to extension and is larger in magnitude at every
 refinement. Support at the particle's interpolated velocity
 does not constrain the local deformation gradient. Temporary
 diagnostic tolerances and solver edits were restored.
+
+### Project the wall-normal strain rate in the continued field
+
+On 43ec90c, visit particles starting on the floor once and
+project each normal velocity stencil against its vertical
+shape derivative. Use the modified continued field for the
+gather and keep the original force scatter and transport.
+Overlapping stencils can change previously visited constraints.
+
+The single-particle probe retains yy stretch 0.95 at all four
+timesteps. Its total volume still drifts through tangential
+strain. The fine half-step pile reaches 29.417241° with a
+0.191044 m radius at 3 s, and its stress work difference is
+0.974122 J. The unpaired projection is a diagnostic and fails
+the pile bounds. The temporary code was restored.
