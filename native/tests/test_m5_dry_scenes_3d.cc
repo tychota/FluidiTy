@@ -435,12 +435,22 @@ bool TestScene(
       std::printf("sand surface slope unresolved: fewer than four occupied radial bins per quadrant\n");
     }
   }
-  std::fflush(stdout);
-  if (release_cone) {
-    return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && kinetic_energy < 0.01;
+  const bool angle_in_range = envelope_angle >= 30 && envelope_angle <= 35;
+  const bool short_drift_in_range = settling_drift <= 2;
+  const bool radius_in_range = release_cone || (maximum_radius > 0.10 && maximum_radius < 0.16);
+  const bool kinetic_energy_in_range = kinetic_energy < 0.01;
+  const bool passed = angle_in_range && short_drift_in_range && radius_in_range && kinetic_energy_in_range;
+  if (!passed) {
+    std::printf(
+        "sand acceptance angle=%s short_drift=%s radius=%s kinetic_energy=%s\n",
+        angle_in_range ? "pass" : "fail",
+        short_drift_in_range ? "pass" : "fail",
+        radius_in_range ? "pass" : "fail",
+        kinetic_energy_in_range ? "pass" : "fail"
+    );
   }
-  return envelope_angle >= 30 && envelope_angle <= 35 && settling_drift <= 2 && maximum_radius > 0.10
-      && maximum_radius < 0.16 && kinetic_energy < 0.01;
+  std::fflush(stdout);
+  return passed;
 }
 
 bool TestSandSurfaceFit() {
