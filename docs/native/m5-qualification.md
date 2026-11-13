@@ -11171,3 +11171,27 @@ radius bounds and pass the short drift and kinetic energy
 bounds. The dense native command exits 1. The compression
 control raises height without resolving the excessive spread.
 CUDA was untested and both temporary edits were restored.
+
+
+#### Locate the first radius-limit crossing
+
+On 274e124, repeat the native dense three-second matrix.
+For each particle, record its height at the first accepted
+step with radius at least 0.16 m. Report the cohort still
+at or beyond the limit at 3 s. A particle within 1e-8 m
+of the floor counts as on the floor.
+
+| Case | Outside at 3 s | On floor at first crossing | On floor at 3 s | Highest first crossing (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 12 | 0 | 12 | 0.058806 |
+| Fine | 20 | 0 | 20 | 0.082933 |
+| Coarse half-step | 12 | 0 | 8 | 0.068649 |
+| Fine half-step | 20 | 0 | 20 | 0.088380 |
+
+Every particle outside at 3 s first crossed above the floor.
+Most later settled onto the floor. This points to transport
+above the floor as the stage at which the excess radius first
+appears. The trace does not exclude effects from prior floor
+contact or grid forces. The native matrix reproduces the
+baseline geometry and exits 1. CUDA was untested and the
+fixture edit was restored.
