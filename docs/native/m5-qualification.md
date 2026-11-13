@@ -9763,3 +9763,30 @@ Both QSand tests fail with the same final envelope angles
 to six decimal places, in fixture order: 29.113507°,
 26.761332°, 29.006384°, and 27.033753°. The option is off
 by default while this gate remains open.
+
+### Isolate the swept deformation gradient on merged main
+
+On 72cdcda, run the opt-in Q-SAND matrix with two temporary
+post-impact deformation controls. In the first, remove the
+normal velocity gradient row for incoming motion and retain
+the tangential rows. In the second, use the original Coulomb
+gradient projection and restore only the normal derivative
+of normal velocity. Leave particle advection and wall impulse
+unchanged in both controls.
+
+| Operator | Coarse | Fine | Coarse half-step | Fine half-step |
+|---|---:|---:|---:|---:|
+| Baseline | 29.113507° | 26.761332° | 29.006384° | 27.033753° |
+| Normal-only projection | 22.283879° | 22.241051° | 28.477639° | 27.128322° |
+| Restore normal derivative | 24.691677° | 23.755083° | 30.375928° | 29.212625° |
+
+Native and SM120 agree to within 0.000001°. Both controls pass
+the default dry-scene tests and fail the Q-SAND tests. Removing
+tangential projection worsens both nominal-step angles.
+Restoring the normal derivative raises both half-step angles
+and lowers both nominal-step angles. This leaves timestep
+sensitivity within the swept deformation treatment.
+
+Run each variant with `FLUIDITY_ENABLE_Q_SAND=ON` and
+`ctest --test-dir out/build -R '^(QSand|M5DryScenes)\.' --output-on-failure`.
+The temporary solver source was restored after each build.
