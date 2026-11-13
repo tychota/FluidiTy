@@ -10129,3 +10129,17 @@ reached 28.543189° and 0.154080 m. The other three native
 cases reproduced the preceding control. The face-motion
 rejection was recoverable and the angle gate still failed.
 The temporary solver and fixture edits were restored.
+
+#### Measure the face that triggers the motion retry
+
+On 6104805, repeat the unregularized native run and log the
+first face-motion rejection. At step 460, the vertical face
+at (−0.03125, 0.18750, −0.03125) m carries 5.923e-10 kg, or
+1.579e-8 of one particle mass. Its stress force is 9.213 µN.
+The deposited velocity is −0.07985 m/s. Stress and gravity
+take it to 24.20842 m/s, above the 18 m/s bound. Substituting
+the existing mass floor into that same update gives
+−0.09134 m/s. The face lies three fine cells above the floor.
+This locates the retry in thin support above the pile.
+The other three angles reproduce the preceding control.
+Temporary sources were restored.
