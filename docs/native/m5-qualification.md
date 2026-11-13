@@ -10165,3 +10165,22 @@ All cases reach the endpoint. Reported omitted stress impulse
 is at most 2e-9 N·s and the angles move by less than 0.008°.
 The default native dry-scene test passes. Q-SAND still fails.
 The temporary source was restored. CUDA was untested.
+
+### Integrate the merged deformation step to second order
+
+On 6104805, add the quadratic term (dt²/2) L²F to each
+frozen-gradient increment, including both intervals of the
+swept floor split. Keep the grid velocities and constitutive
+return timing unchanged.
+
+| Case | Euler | Quadratic |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.102928° |
+| Fine | 26.761332° | 26.847840° |
+| Coarse half-step | 29.006384° | 29.009818° |
+| Fine half-step | 27.033753° | 27.045365° |
+
+The largest change is 0.087°. The default native dry-scene
+test passes and Q-SAND fails. The integration order at a
+fixed velocity gradient has little effect on the measured
+angles. The temporary source was restored. CUDA was untested.
