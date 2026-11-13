@@ -10652,3 +10652,65 @@ matches. This points to the pre-force transfer and the
 carried velocity distribution for the next comparison.
 The native trace reproduces the matched angles. Temporary
 sources were restored.
+
+### Disable vertical affine deposition at matched timesteps
+
+On 48302e2, set only the vertical APIC row to zero in
+ordinary granular deposits. Keep horizontal affine
+deposition, translation, grid stress and the wall sweep.
+
+| Step (ms) | Grid width (m) | Original angle | No vertical affine deposit |
+|---|---:|---:|---:|
+| 1.56250 | 0.075 | 26.727865° | 37.566203° |
+| 1.56250 | 0.0625 | 26.761332° | 30.768585° |
+| 0.78125 | 0.075 | 30.385098° | 52.469166° |
+| 0.78125 | 0.0625 | 27.033753° | 43.640523° |
+
+The angle increases in every case. The smaller-step
+grid-width gap grows to 8.83°. Only the fine nominal
+case passes. The default native dry-scene test also
+fails, with its coarse pile reaching 49.046609° at
+0.75 s. Vertical affine deposition strongly affects
+settlement and removing it does not qualify the gate.
+Temporary solver and fixture sources were restored.
+CUDA was untested.
+
+#### Remove only the vertical normal affine term
+
+On 48302e2, repeat the matched timestep control with only
+the yy APIC entry set to zero at deposit. Keep the two
+cross derivatives of vertical velocity.
+
+| Step (ms) | Width (m) | No vertical row | No yy entry |
+|---|---:|---:|---:|
+| 1.56250 | 0.075 | 37.566203° | 40.222214° |
+| 1.56250 | 0.0625 | 30.768585° | 35.961672° |
+| 0.78125 | 0.075 | 52.469166° | 53.173398° |
+| 0.78125 | 0.0625 | 43.640523° | 46.948907° |
+
+Removing yy alone raises every angle more than removing
+the full row. All four cases pass radius, short drift and
+kinetic energy and fail the upper angle bound. The default
+native sand case also fails at 50.248767°. The result
+isolates the dominant vertical feedback to yy in this
+control. Temporary sources were restored. CUDA was untested.
+
+#### Separate compressive and extensional vertical affine feedback
+
+On 48302e2, run the registered native matrix while dropping
+the yy deposit term only when it is negative or only when it
+is positive. Use the original timesteps for this comparison.
+
+| Case | Baseline | Drop compression | Drop extension |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 37.099832° | 27.619309° |
+| Fine | 26.761332° | 36.036959° | 25.824766° |
+| Coarse half-step | 29.006384° | 49.762374° | 28.756002° |
+| Fine half-step | 27.033753° | 46.949070° | 26.741414° |
+
+Dropping compression raises every angle above 35° and fails
+the default native dry-scene test. Dropping extension lowers
+every angle and passes the default test. Both matrices fail.
+The influence of the yy term is concentrated in its negative
+values in this control. Temporary source was restored.
+CUDA was untested.
