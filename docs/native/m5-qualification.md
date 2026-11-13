@@ -11898,3 +11898,21 @@ angle lost with the fixed shift, and all cases remain below
 30°. The 0.75 s samples match the baseline. The native
 command exits 1. CUDA was untested and the fixture edit
 was restored.
+
+
+#### Extend the normalized stress and gradient pair to six seconds
+
+On 78381d0, use the normalized weight gradients from the
+compatible stress scatter for deformation, keeping the
+complete ghost APIC fit and the original swept contact.
+Use the same gradient for the particle-side cut work.
+Run the native command with fine-half aligned 6.
+
+The default dry-scene test passes. The six-second angle
+is 13.182260° versus 13.385210° with the complete ghost
+gradient. The paired case loses 2.790216° over the last
+second and exits 1. Its cut stress work residual is
+2.92e-17 J versus −0.0839133049 J before pairing. Pairing
+closes the reported spatial work balance while leaving
+late flattening. CUDA and the other cases were untested.
+The temporary solver edit was restored.
