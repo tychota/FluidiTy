@@ -48,6 +48,19 @@ FLUIDITY_HD inline int CheckConstitutiveCases() {
       || !Near(::log(state.elastic_stretches.z), -0.1 - shear_offset) || !Near(state.log_plastic_jacobian, 0.2)) {
     return 4;
   }
+  // At zero friction, a compressed return is purely volumetric even if the modulus ratio overflows.
+  constexpr GranularParameters3D frictionless_sand{
+      .shear_modulus = 1e-310,
+      .lame_lambda = 3,
+      .friction_angle = 0,
+      .cohesion_log_strain = 0,
+  };
+  if (!ReturnGranularPrincipal3D({::exp(0.4), ::exp(-0.1), ::exp(-0.6)}, 0.2, frictionless_sand, state)
+      || !Near(state.elastic_stretches.x, ::exp(-0.1)) || !Near(state.elastic_stretches.y, ::exp(-0.1))
+      || !Near(state.elastic_stretches.z, ::exp(-0.1)) || !Near(state.log_plastic_jacobian, 0.2)) {
+    return 17;
+  }
+
   const SnowParameters3D
       snow{.shear_modulus = 2, .lame_lambda = 3, .compression_limit = 0.1, .stretch_limit = 0.05, .hardening = 5};
   if (!fluidity::ReturnSnowPrincipal3D({0.7, 1.2, 0.98}, 0, snow, state) || !Near(state.elastic_stretches.x, 0.9)

@@ -123,8 +123,9 @@ FLUIDITY_HD inline bool ReturnGranularPrincipal3D(
     const double deviator_norm = ::sqrt(deviator.x * deviator.x + deviator.y * deviator.y + deviator.z * deviator.z);
     const double sine_friction = ::sin(parameters.friction_angle);
     const double friction_slope = ::sqrt(2.0 / 3) * (2 * sine_friction / (3 - sine_friction));
-    const double cone_radius =
-        (-cone_trace * friction_slope) * (1 + 1.5 * (parameters.lame_lambda / parameters.shear_modulus));
+    const double cone_radius = friction_slope == 0
+        ? 0
+        : (-cone_trace * friction_slope) * (1 + 1.5 * (parameters.lame_lambda / parameters.shear_modulus));
     if (solid_detail::numeric::isnan(cone_radius)) {
       return false;
     }
