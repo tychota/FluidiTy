@@ -10632,3 +10632,23 @@ difference within trace precision. The 0.2–0.4 s windows
 contain only floor-start contacts in both runs. The
 native fixture reproduces the previous matched angles.
 The temporary solver and fixture were restored.
+
+#### Decompose the first resident support difference
+
+On 0d1cd2d, gather the deposited vertical velocity, gravity
+kick and stress kick separately at ordinary floor-start
+contacts. Negate each mass-weighted contribution so the sum
+gives the impulse needed to stop incoming vertical motion.
+
+| Grid width (m) | Deposit (N·s) | Gravity (N·s) | Stress (N·s) | Measured wall (N·s) |
+|---|---:|---:|---:|---:|
+| 0.075 | 1.683442 | 0.134504 | 0.142675 | 1.960622 |
+| 0.0625 | 1.472552 | 0.134504 | 0.183847 | 1.790903 |
+
+The terms close to roundoff over 0.1–0.2 s. The fine grid
+gathers 0.210891 N·s less downward momentum from the
+deposit stage and 0.041172 N·s more from stress. Gravity
+matches. This points to the pre-force transfer and the
+carried velocity distribution for the next comparison.
+The native trace reproduces the matched angles. Temporary
+sources were restored.
