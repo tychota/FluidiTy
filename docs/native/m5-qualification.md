@@ -7860,3 +7860,26 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Extend the coarse quarter-step through 18 seconds
+
+On 255739e, halve the coarse half-step duration to 0.00046875 s
+and sample the native trajectory every 3 s.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 3 | 48.077570° | 0.131962 |
+| 6 | 40.028898° | 0.154003 |
+| 9 | 37.100592° | 0.161386 |
+| 12 | 33.722170° | 0.161805 |
+| 15 | 32.342969° | 0.161805 |
+| 18 | 31.200871° | 0.161805 |
+
+The coarse quarter-step reaches the angle band at the sampled
+times from 12 s onward, with radius above 0.16 m throughout
+that interval. Its angle falls 1.14° from 15 to 18 s. The
+temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-coarse-quarter-18-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 coarse-quarter all 18
+```
