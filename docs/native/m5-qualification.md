@@ -11516,3 +11516,23 @@ check. The nominal cases reproduce baseline and the
 matrix exits 1. This refinement does not establish a
 settled angle. CUDA was untested and the fixture edit
 was restored.
+
+
+#### Check persistence at ordinary-floor eighth timesteps
+
+On add9bf8, replace the half-step durations in the sparse
+column fixture with 0.000234375 and 0.0001953125 s.
+Keep the nominal comparison cases. Run the native column
+commands at 3 and 6 s.
+
+| Case | Angle at 3 s | Angle at 6 s | Radius at 6 s (m) | Last ≈1 s drift at 6 s |
+|---|---:|---:|---:|---:|
+| Coarse eighth-step | 34.222781° | 26.950165° | 0.141473 | 1.635993° |
+| Fine eighth-step | 30.312137° | 24.968552° | 0.156011 | 1.528740° |
+
+Both eighth-step cases enter the angle band at 3 s and
+leave it by 6 s. Both still flatten during the final
+second. The nominal controls reproduce baseline. Both
+matrices exit 1. Further timestep refinement can shift
+the transient angle without demonstrating repose. CUDA
+was untested and the fixture edit was restored.
