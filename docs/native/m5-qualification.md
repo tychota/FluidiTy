@@ -11101,3 +11101,28 @@ The three other cases remain below the band for every
 omission. The full-sample checks are unchanged and the
 native matrix fails. CUDA was untested for this trace.
 The temporary fixture edit was restored.
+
+
+#### Compare the two particle samplings at three seconds
+
+On 89e7511, change only the four column end times from
+1.5 to 3 s and run the native executable with
+`--q-sand-dense-column-long-settle`. The dense sampling
+uses 504 particles at 25 mm spacing. The existing baseline
+uses 63 particles at 50 mm spacing. Both represent the same
+released column dimensions, total mass and material.
+
+| Case | Sparse angle | Dense angle | Sparse radius (m) | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 30.519543° | 29.703637° | 0.137319 | 0.170290 |
+| Fine | 23.904249° | 26.954622° | 0.146767 | 0.182075 |
+| Coarse half-step | 22.853454° | 21.853351° | 0.143316 | 0.172975 |
+| Fine half-step | 20.811628° | 20.623778° | 0.155423 | 0.185666 |
+
+Resampling changes the angle by up to 3.05° and increases
+the radius by 29.7–35.3 mm. The dense matrix exits 1.
+All four dense cases miss both angle and radius bounds,
+while passing short drift and kinetic energy. The sparse
+coarse angle pass is sensitive to initial sampling as well
+as to omission from the final state. CUDA was untested for
+the dense endpoint. The temporary fixture edit was restored.
