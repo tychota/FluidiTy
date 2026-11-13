@@ -8179,3 +8179,30 @@ temporary trace was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-floor-diagonal-trace-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Remove the wall-normal diagonal in the paired operators
+
+On 255739e, zero the deformation gradient's yy component for
+particles that start on the floor. Omit the corresponding
+stress term from the force scatter for those same particles.
+The modification also changes the reconstructed normal
+reaction, since it changes the stress scattered to the wall.
+
+| Native case | Envelope at 3 s | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 31.191050° | 0.167437 | 0.483013 |
+| Coarse half-step | 39.504671° | 0.155209 | 0.221387 |
+| Fine | 29.535828° | 0.162030 | 0.388308 |
+| Fine half-step | 34.844536° | 0.155381 | 0.254342 |
+
+Only the fine half-step passes. The cut work residual stays
+within 3.5e-16 J, while mean log plastic Jacobian increases
+in all four cases. Eliminating one positive trace contribution
+does not remove the coupled pile failure. Temporary edits were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-floor-normal-diagonal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
