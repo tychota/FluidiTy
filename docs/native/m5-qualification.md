@@ -9953,3 +9953,18 @@ All four angles increase, and only the fine nominal case
 is within the band. The default native dry-scene executable
 also exits 1 before printing scene results. The experimental
 sources were restored. The control has no CUDA result.
+
+#### Identify the default fixture regression
+
+Run all nine default native checks individually with the
+same complete ghost transpose. Only the compatible
+single-particle wall impulse fixture fails. It returns OK
+with one hit, a −0.5 N·s tangential impulse, a 1 N·s normal
+impulse, −0.875 J of particle wall kinetic work and zero grid
+wall impulse, cut stress work and plastic volume events.
+Those fields match the fixture. Its granular projection
+count is one, versus the fixture requirement of zero.
+The ordinary floor variant reports zero projections.
+The failure is in the deformation path of a stress-free
+initial particle. The impulse accounting still passes.
+Temporary diagnostics and solver edits were restored.
