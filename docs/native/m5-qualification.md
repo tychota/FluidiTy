@@ -10652,3 +10652,25 @@ matches. This points to the pre-force transfer and the
 carried velocity distribution for the next comparison.
 The native trace reproduces the matched angles. Temporary
 sources were restored.
+
+### Disable vertical affine deposition at matched timesteps
+
+On 48302e2, set only the vertical APIC row to zero in
+ordinary granular deposits. Keep horizontal affine
+deposition, translation, grid stress and the wall sweep.
+
+| Step (ms) | Grid width (m) | Original angle | No vertical affine deposit |
+|---|---:|---:|---:|
+| 1.56250 | 0.075 | 26.727865° | 37.566203° |
+| 1.56250 | 0.0625 | 26.761332° | 30.768585° |
+| 0.78125 | 0.075 | 30.385098° | 52.469166° |
+| 0.78125 | 0.0625 | 27.033753° | 43.640523° |
+
+The angle increases in every case. The smaller-step
+grid-width gap grows to 8.83°. Only the fine nominal
+case passes. The default native dry-scene test also
+fails, with its coarse pile reaching 49.046609° at
+0.75 s. Vertical affine deposition strongly affects
+settlement and removing it does not qualify the gate.
+Temporary solver and fixture sources were restored.
+CUDA was untested.
