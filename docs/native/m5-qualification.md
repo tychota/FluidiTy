@@ -5289,3 +5289,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Identify the extension-only support failures
+
+Repeat the extension-only control with a trace at the sparse
+face owner lookup. The rejection steps match the earlier
+runs. Each missing owner lies outside the horizontal extent
+of the allocated pile grid.
+
+| Native case | Rejected step | Requested face lattice index |
+|---|---:|---|
+| Coarse | 1150 | (12, −1, −4) |
+| Coarse half-step | 2703 | (−9, −1, −3) |
+| Fine | 370 | (−9, −1, −7) |
+| Fine half-step | 2102 | (−7, −1, −9) |
+
+Both default native and SM120 dry-scene tests pass. The
+extended failures arise in face support lookup. They provide
+no settled geometry. The solver and sparse-grid instrumentation
+were both restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-extension-status-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
