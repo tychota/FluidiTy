@@ -6348,3 +6348,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Apply wall-normal skew before the fallback mask
+
+On 3008848, take the skew part of the xy/yx and zy/yz
+derivative pairs immediately after the complete affine fit.
+Then apply the existing row clearing and swept wall
+projection. This ordering avoids adding new entries after
+either projection. Both default native and SM120 dry-scene
+tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 30.529058° | 0.183879 |
+| Coarse half-step | 38.104872° | 0.164157 |
+| Fine | 27.391408° | 0.178679 |
+| Fine half-step | 31.001749° | 0.170541 |
+
+Every radius exceeds 0.16 m. The radii are smaller than in
+the post-projection skew control and larger than on the
+clearing candidate. Both fine passes disappear. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-skew-before-mask-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
