@@ -10563,3 +10563,11 @@ fine-grid deficit in envelope angle grows from 3.35° at the
 original sampling to 3.81°. The independent slope is shallower
 than the envelope in every case. The fixture exits 1.
 The temporary fixture was restored. CUDA was untested.
+
+SM120 reproduces the four dense matched-step failures on
+48de18d. Envelope angles and fitted quadrant slopes agree
+with native within 0.000002°. Radii agree to six decimal
+places. All cases fail angle and radius and pass kinetic
+energy and short drift. The CUDA fixture exits 1 with
+`--q-sand-dense-column-long-settle` after matching the two
+absolute timesteps. The temporary fixture was restored.
