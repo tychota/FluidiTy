@@ -5046,3 +5046,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Count tangent continuation fallbacks
+
+On 3008848, count tangent ghost rows and rows marked fallback
+at the start of the compatible gather. Both default dry-scene
+tests pass. Removing the added trace lines gives the original
+native pile output in each case.
+
+| Native case at 3 s | Fallback rows / tangent rows | Fallback rows / tangent rows in final steps covering 0.05 s |
+|---|---:|---:|
+| Coarse | 124361 / 124361 | 3213 / 3213 |
+| Coarse half-step | 186186 / 186186 | 3614 / 3614 |
+| Fine | 186424 / 186424 | 4190 / 4190 |
+| Fine half-step | 261117 / 261117 | 7912 / 7912 |
+
+Every missing tangent target requiring continuation uses a
+fallback throughout the matrix. The counter includes all
+fallback reasons and does not distinguish rank deficiency
+from rejection of negative affine coefficients. Changing fit
+weights can affect these cases only if it changes the fallback
+decision or donor. The temporary instrumentation was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-fallback-trace-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
