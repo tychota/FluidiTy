@@ -11820,3 +11820,21 @@ within 0.94° and the radii within 3 mm. The late-only control
 changes the baseline geometry much less. The large change
 in radius therefore originates mainly during formation for
 this control. CUDA was untested and both edits were restored.
+
+
+#### Shift the vertical grid origin for sparse three-second piles
+
+On 10d1333, repeat the existing floor-grid-phase command
+with 63 particles and a 3 s endpoint. Keep h/80 and the
+physical floor, drop and material unchanged.
+
+| Grid width (m) | Aligned | Quarter-cell shift | Half-cell shift |
+|---|---:|---:|---:|
+| 0.075 | 22.853454° | 23.808758° | 20.100073° |
+| 0.0625 | 20.811628° | 21.964544° | 19.457961° |
+
+The maximum span is 3.71°. The finer pile is shallower at
+every tested alignment and all six angles miss the band.
+The native command exits 1. The test varies alignment for
+the entire trajectory, so it does not isolate first impact.
+CUDA was untested and the fixture edit was restored.
