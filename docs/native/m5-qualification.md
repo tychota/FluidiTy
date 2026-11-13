@@ -11289,3 +11289,26 @@ fails at 52.495345° with a 0.092817 m radius. Positive
 horizontal trace alone accounts for much of the response to
 row attenuation. This control does not demonstrate repose.
 CUDA was untested and both temporary edits were restored.
+
+
+#### Scale horizontal APIC expansion attenuation by step duration
+
+On becba6d, retain exp(−200 dt) of the positive horizontal
+trace at deposit, with dt in seconds. Apply the removed
+trace equally to the two horizontal diagonal entries.
+Repeat the default native test and the sparse and dense
+three-second matrices with the original acceptance bounds.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 36.505935° | 32.734790° | 0.156364 |
+| Fine | 34.905420° | 30.761359° | 0.163859 |
+| Coarse half-step | 28.110172° | 26.281559° | 0.156245 |
+| Fine half-step | 25.969430° | 24.036955° | 0.170850 |
+
+All three test invocations fail. Only the dense coarse
+nominal case meets both geometry bounds. Both half-step
+angles fall below 30° at either particle sampling. The
+default coarse angle is 47.046222°. This rate weakens the
+short-scene overshoot but does not improve agreement across
+timesteps. CUDA was untested and both edits were restored.
