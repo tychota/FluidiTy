@@ -11717,3 +11717,26 @@ support a particle with zero local stress.
 
 The native command reproduces the baseline and exits 1.
 CUDA was untested and the temporary fixture edit was restored.
+
+
+#### Track the final apex stress through settlement
+
+On fb92414, record vertical Kirchhoff stress at the first
+accepted samples at or after 0.75, 1.5, 3, and 5 s. For
+each native sparse case, trace the particle highest at 6 s
+back through those samples. Negative values are compressive.
+
+| Case | 0.75 s (Pa) | 1.5 s (Pa) | 3 s (Pa) | 5 s (Pa) | 6 s (Pa) |
+|---|---:|---:|---:|---:|---:|
+| Coarse | −32.63 | 0 | 0 | −21.08 | −33.23 |
+| Fine | −69.16 | −36.28 | 0 | 0 | 0 |
+| Coarse half-step | −35.43 | −19.41 | 0 | 0 | 0 |
+| Fine half-step | −13.87 | −51.14 | −22.72 | 0 | 0 |
+
+All three failing apex particles carry compression at 1.5 s.
+Two lose it by the 3 s sample, while the fine half-step
+retains it at 3 s and loses it by 5 s. The passing coarse
+apex regains compression after the 3 s sample. These
+snapshots do not resolve transitions between samples. The
+native run reproduces the six-second geometry and exits 1.
+CUDA was untested and the fixture edit was restored.
