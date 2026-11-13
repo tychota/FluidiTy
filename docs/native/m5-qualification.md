@@ -5457,3 +5457,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Scale in-plane affine retention by resolved face support
+
+On 3008848, sum compatible non-fallback face weights, scaling
+each contribution by the smaller of one and the face mass
+divided by 0.1 times the minimum particle mass. Use that sum
+to scale the stored in-plane tangent derivatives on affected
+rows. Clear their wall-normal derivative and clear affected
+normal rows. Both default dry-scene tests pass.
+
+| Native case | First rejected step | Status |
+|---|---:|---|
+| Coarse | 424 | Face motion bound |
+| Coarse half-step | 1321 | Unlabeled FailedPrecondition |
+| Fine | 405 | Face motion bound |
+| Fine half-step | 2137 | Unlabeled FailedPrecondition |
+
+All four reject before 3 s. Weighting by the resolved
+fraction of the stencil alone leaves enough in-plane
+feedback to produce early rejections. The source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-support-weighted-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
