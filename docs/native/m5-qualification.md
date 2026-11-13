@@ -10329,3 +10329,23 @@ full midpoint displacement control. Centering the horizontal
 components increases angles by at most 0.172°. Both native
 variants pass the default dry-scene test and fail Q-SAND.
 The temporary source was restored. CUDA was untested.
+
+#### Separate above-floor and floor-start vertical displacement
+
+On 146f854, apply the vertical midpoint displacement only to
+updates starting above the floor, then only to updates starting
+on the floor. Keep final stored velocity and deformation.
+
+| Case | Above floor only | At floor only |
+|---|---:|---:|
+| Coarse | 26.961980° | 29.048986° |
+| Fine | 24.308982° | 26.731736° |
+| Coarse half-step | 28.442358° | 29.013248° |
+| Fine half-step | 26.731460° | 27.028059° |
+
+The above-floor variant reproduces the full vertical midpoint
+effect within 0.031°. The floor-start variant is within 0.065°
+of baseline. This attributes the difference to above-floor
+transport, which includes both flight and arrival steps.
+Both variants pass the default native dry-scene test and fail
+Q-SAND. The temporary source was restored. CUDA was untested.
