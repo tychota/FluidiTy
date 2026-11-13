@@ -7685,3 +7685,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Average particle translation for the wall sweep path
+
+On 255739e, use the average of the old stored particle velocity
+and the new PIC velocity to advect particles on the compatible
+floor path. Keep the new PIC velocity as the incoming stored
+velocity for contact and leave the deformation gather unchanged.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.462340° | 0.167904 |
+| Coarse half-step | 40.532172° | 0.156108 |
+| Fine | 31.532431° | 0.159377 |
+| Fine half-step | 34.680534° | 0.155862 |
+
+The largest angle change from the original path is 0.133°.
+Both fine cases pass the 3 s endpoint and both coarse failures
+persist. The cut stress work residual stays within 3.5e-16 J.
+The temporary edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-midpoint-advection-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
