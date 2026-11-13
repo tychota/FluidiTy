@@ -4486,3 +4486,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Sweep-split deformation with bounded tangent clearing
+
+Starting at 3008848, enable the existing impact-split
+granular deformation update on the compatible floor. Advance
+with the gathered gradient until the sweep hits the floor,
+then use its Coulomb-projected derivative for the remaining
+interval. The stress transpose still pairs with the gathered
+gradient before this projection.
+
+| Native case at 3 s | Angle | Radius | Result |
+|---|---:|---:|---|
+| Coarse | 37.933422° | 0.168036 m | Angle and radius |
+| Coarse half-step | 40.748841° | 0.154928 m | Angle |
+| Fine | 31.651993° | 0.161478 m | Radius |
+| Fine half-step | 35.020386° | 0.155106 m | Angle |
+
+Neither default dry-scene CTest target passes with this
+control. Both exit without a diagnostic identifying the
+first failed assertion. All four extended native cases
+finish and miss at least one geometric check. The nominal
+coarse mean log plastic Jacobian increases from 0.328605
+to 0.905271. The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clearing-sweep-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
