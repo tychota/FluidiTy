@@ -10267,3 +10267,24 @@ Both coarse cases pass at 1.5 s. Both fine cases remain below
 Q-SAND fails. Earlier sampling improves all four angles
 and leaves the grid-width discrepancy. Temporary source
 was restored. CUDA was untested for this control.
+
+#### Use the pre-kick vertical field for translation as well
+
+On 04b21df, additionally subtract the yy stress increment
+from the PIC translation and its grid velocity increment.
+The wall sweep receives that translation and the stored
+affine fit still comes from the final field.
+
+| Case | Pre-kick deformation only | Pre-kick deformation and translation |
+|---|---:|---:|
+| Coarse | 32.330788° | 21.657478° |
+| Fine | 28.336343° | 19.671279° |
+| Coarse half-step | 30.660133° | 23.278828° |
+| Fine half-step | 28.179787° | 21.037452° |
+
+The default native dry-scene and Q-SAND tests fail. Removing
+the normal stress kick from the particle translation also
+removes its impulse from the advancing particle velocity.
+This control shows that the previous improvement depends on
+keeping that impulse in transport. The temporary source was
+restored. CUDA was untested.
