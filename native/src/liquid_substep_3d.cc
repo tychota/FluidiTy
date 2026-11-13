@@ -3330,6 +3330,15 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
     double step_duration,
     const LiquidAdaptiveBandRequest3D& request
 ) {
+  return AttemptAdaptiveBandPlacement(step_duration, request, false, {});
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptAdaptiveBandPlacement(
+    double step_duration,
+    const LiquidAdaptiveBandRequest3D& request,
+    bool retirement_only,
+    LiquidWorkPhaseObserver3D work_phase
+) {
   const auto& state = committed();
   const auto* plane = std::get_if<LiquidHorizontalPlaneSurface3D>(&impl_->scene.field);
   if (!impl_->adaptive || plane == nullptr || !std::holds_alternative<AxisAlignedLiquidTank3D>(impl_->scene.obstacle)
@@ -3381,12 +3390,28 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
   if (!placement.ok()) {
     return placement.status();
   }
+  if (retirement_only && placement->action != LiquidBandPlacementAction3D::kRetire) {
+    return absl::FailedPreconditionError("authored band action requires eligible retirement");
+  }
   switch (placement->action) {
     case LiquidBandPlacementAction3D::kKeep: {
       return Attempt(step_duration);
     }
     case LiquidBandPlacementAction3D::kRetire: {
-      return AttemptWithAdaptiveBandRetirement(step_duration, request.leaf, occupancy, *request.destination_carrier);
+      return AttemptPreparedAdaptiveState(
+          step_duration,
+          [&] {
+            return PrepareAdaptiveLiquidBandRetirement3D(
+                committed(),
+                impl_->options.capacities,
+                request.leaf,
+                occupancy,
+                *request.destination_carrier
+            );
+          },
+          0,
+          work_phase
+      );
     }
     case LiquidBandPlacementAction3D::kReseed: {
       return AttemptWithAdaptiveCoreReseed(
@@ -4003,12 +4028,24 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrameWithAdaptiveWidth(
   return AdvanceFrameImpl(target_time, observer, std::nullopt, nullptr, &select);
 }
 
+absl::Status LiquidSubstepScheduler3D::AdvanceFrameWithAdaptiveBand(
+    double target_time,
+    LiquidAdaptiveBandSelector3D select,
+    LiquidProgressObserver3D observer
+) {
+  if (!impl_->adaptive) {
+    return absl::FailedPreconditionError("adaptive band scheduling requires a graded layout");
+  }
+  return AdvanceFrameImpl(target_time, observer, std::nullopt, nullptr, nullptr, &select);
+}
+
 absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
     double target,
     LiquidProgressObserver3D observer,
     std::optional<LiquidSnowStepInputs3D> snow_inputs,
     std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow,
-    const LiquidAdaptiveWidthSelector3D* select_width
+    const LiquidAdaptiveWidthSelector3D* select_width,
+    const LiquidAdaptiveBandSelector3D* select_band
 ) {
   if (impl_->adaptive && std::holds_alternative<TranslatingHalfspace3D>(impl_->scene.obstacle)) {
     return absl::FailedPreconditionError("graded physical halfspace requires explicit per-attempt requests");
@@ -4067,13 +4104,23 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
         return absl::InvalidArgumentError("adaptive width evidence duration must be finite and positive");
       }
     }
-    if (retry) {
-      duration = *retry;
-    } else if (width) {
-      duration = std::min(*duration, width->maximum_step_duration_s);
+    std::optional<LiquidAdaptiveBandTrial3D> band;
+    if (select_band != nullptr) {
+      const auto selected = (*select_band)(committed());
+      if (!selected.ok()) {
+        return selected.status();
+      }
+      band = *selected;
     }
-    if (width && *duration > width->maximum_step_duration_s) {
-      return absl::FailedPreconditionError("adaptive width evidence does not cover the scheduled retry");
+    const double ceiling = width ? width->maximum_step_duration_s
+        : band                   ? band->maximum_step_duration_s
+                                 : std::numeric_limits<double>::infinity();
+    if (band && (!std::isfinite(ceiling) || ceiling <= 0)) {
+      return absl::InvalidArgumentError("adaptive band evidence duration must be finite and positive");
+    }
+    duration = retry ? *retry : std::min(*duration, ceiling);
+    if (*duration > ceiling) {
+      return absl::FailedPreconditionError("adaptive evidence does not cover the scheduled retry");
     }
     const auto start_clock = committed().clock;
     const auto previous_attempt_count = diagnostics().attempts;
@@ -4081,6 +4128,9 @@ absl::Status LiquidSubstepScheduler3D::AdvanceFrameImpl(
         observer.observe_attempt ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto outcome = [&]() -> absl::StatusOr<LiquidAttemptOutcome3D> {
       if (!snow_inputs) {
+        if (band) {
+          return AttemptAdaptiveBandPlacement(*duration, band->request, true, observer.work_phase);
+        }
         return width ? AttemptWithAdaptiveWidth(*duration, width->request, observer.work_phase)
                      : Attempt(*duration, observer.work_phase);
       }

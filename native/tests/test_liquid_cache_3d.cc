@@ -1084,6 +1084,40 @@ TEST(LiquidCache3D, AuthenticatesCanonicalAdaptiveWidthActions) {
   EXPECT_TRUE(absl::IsInvalidArgument(EncodeLiquidResolvedScene3D(scene).status()));
 }
 
+TEST(LiquidCache3D, AuthenticatesCanonicalAdaptiveBandRetirement) {
+  LiquidResolvedSceneView3D scene;
+  scene.scene.field = LiquidHorizontalPlaneSurface3D{4};
+  scene.scene.obstacle = AxisAlignedLiquidTank3D{0, 2, 0, 0, 1, 0};
+  const auto baseline = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(baseline.ok()) << baseline.status();
+  LiquidAdaptiveBandAction3D action{
+      .maximum_step_duration_s = 0.005,
+      .margins = {.particle_support_radius_m = 1.5},
+      .carrier = {.current_density = 2, .volume_ratio = 1},
+  };
+  action.accepted_state_digest[0] = 1;
+  scene.adaptive_band_actions = std::span(&action, 1);
+  const auto encoded = EncodeLiquidResolvedScene3D(scene);
+  ASSERT_TRUE(encoded.ok()) << encoded.status();
+  EXPECT_EQ(wire::GetResolvedScene(encoded->values().data())->schema_version(), 3);
+  auto wrong_version = Copy(*encoded);
+  ASSERT_TRUE(wire::GetMutableResolvedScene(wrong_version.data())->mutate_schema_version(2));
+  EXPECT_TRUE(absl::IsDataLoss(DecodeLiquidResolvedScene3D(wrong_version).status()));
+  const auto decoded = DecodeLiquidResolvedScene3D(encoded->values());
+  ASSERT_TRUE(decoded.ok()) << decoded.status();
+  ASSERT_EQ(decoded->adaptive_band_actions.size(), 1);
+  EXPECT_EQ(decoded->adaptive_band_actions[0].accepted_state_digest, action.accepted_state_digest);
+  EXPECT_EQ(decoded->adaptive_band_actions[0].carrier.current_density, 2);
+  EXPECT_EQ(Copy(*encoded), Copy(*EncodeLiquidResolvedScene3D(decoded->View())));
+  const auto planned = ResolvedSceneFingerprint(scene);
+  ASSERT_TRUE(planned.ok()) << planned.status();
+  EXPECT_NE(*baseline, *planned);
+  action.carrier.current_density = 3;
+  EXPECT_NE(*planned, *ResolvedSceneFingerprint(scene));
+  action.margins.reseed_radius_m = 0.25;
+  EXPECT_TRUE(absl::IsInvalidArgument(EncodeLiquidResolvedScene3D(scene).status()));
+}
+
 TEST(LiquidCache3D, CanonicalResolvedBytesMatchIndependentFlatcGolden) {
   std::ifstream file(FLUIDITY_CACHE_GOLDEN_PATH);
   std::string hex;
