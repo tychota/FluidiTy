@@ -163,6 +163,8 @@ bool TestScene(
   const double settling_sample_time = time == 0.75 ? 0.70 : time - 0.05;
   constexpr double kDegreesPerRadian = 57.29577951308232;
   double early_envelope_angle = 0;
+  double long_window_angle = 0;
+  double long_window_sample_time = 0;
   double late_projection_particle_seconds = 0;
   double late_plastic_volume_particle_seconds = 0;
   double late_particle_seconds = 0;
@@ -262,7 +264,8 @@ bool TestScene(
     }
     const bool late_drift_sample = !snow && t < settling_sample_time && next_time == settling_sample_time;
     const bool original_endpoint = extended_column && t < 0.75 && next_time == 0.75;
-    if (late_drift_sample || original_endpoint) {
+    const bool long_window_sample = extended_column && t < time - 1 && next_time >= time - 1;
+    if (late_drift_sample || original_endpoint || long_window_sample) {
       double height = 0;
       double radius = 0;
       for (const auto& particle : particles) {
@@ -270,6 +273,10 @@ bool TestScene(
         radius = std::fmax(radius, std::hypot(particle.world_position.x, particle.world_position.z));
       }
       const double angle = kDegreesPerRadian * std::atan2(height, radius);
+      if (long_window_sample) {
+        long_window_angle = angle;
+        long_window_sample_time = next_time;
+      }
       if (late_drift_sample) {
         early_envelope_angle = angle;
       }
@@ -406,6 +413,15 @@ bool TestScene(
   const double envelope_angle = kDegreesPerRadian * std::atan2(maximum_height, maximum_radius);
   const double settling_drift = std::abs(envelope_angle - early_envelope_angle);
   std::printf("sand envelope_degrees=%.6f drift_degrees=%.6f\n", envelope_angle, settling_drift);
+  if (extended_column && long_window_sample_time > 0) {
+    std::printf(
+        "sand long-window sample_s=%.9f elapsed_s=%.9f angle_degrees=%.6f drift_degrees=%.6f\n",
+        long_window_sample_time,
+        time - long_window_sample_time,
+        long_window_angle,
+        std::abs(envelope_angle - long_window_angle)
+    );
+  }
   if (particles_per_axis_multiplier > 1 && maximum_radius > 0) {
     const auto slopes = FitSandSurface(particles, maximum_radius);
     if (slopes.size > 0) {

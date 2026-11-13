@@ -5794,3 +5794,23 @@ not persist. The temporary fixture change was restored.
 $bin = 'out/pr-m5-sand-affine/out/sand-affine-nine-second-bin'
 & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 9
 ```
+
+### Report one-second drift in extended sand diagnostics
+
+Extended sand cases now print the angle at the first
+accepted step at or after one second before the endpoint,
+the actual interval, and the absolute angle change. The
+diagnostic does not split a step to take this sample.
+
+Both default native and SM120 dry-scene tests pass. In the
+native 1.5 s column matrix, the nominal coarse, nominal fine,
+half-step coarse and half-step fine one-second drifts are
+8.849252°, 6.428438°, 15.183327° and 11.922014°. Each passes
+the original short-window drift check and fails the angle
+check. The longer window is reported without changing
+the existing acceptance thresholds.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+& "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-column-long-settle
+```
