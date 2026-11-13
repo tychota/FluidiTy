@@ -8827,3 +8827,32 @@ native fine half-step pile reaches 34.557628° and a radius of
 This field subtraction preserves relative increments within
 the patch but changes the work pairing. Temporary edits were
 restored and Q-SAND remains open.
+
+### Pair floor-patch mean removal with its force transpose
+
+On 5ff4866, subtract the mass-weighted mean normal velocity
+on the occupied floor-patch faces before applying the ghost
+gather. After ghost force scatter, subtract the summed patch
+normal force distributed in proportion to face mass. Record
+the resulting net force change in the wall impulse budget.
+This projects the velocity itself, including carried motion.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 29.936016° | 0.180357 |
+| Coarse half-step | 36.765210° | 0.180493 |
+| Fine | 27.682320° | 0.164679 |
+| Fine half-step | 34.693725° | 0.163743 |
+
+The maximum absolute cut work residual is 3.82e-16 J.
+All four piles exceed the radius limit. The patch-wide
+projection preserves the work pairing and changes the
+stress-driven transport. The temporary solver changes were
+restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-patch-projection-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
