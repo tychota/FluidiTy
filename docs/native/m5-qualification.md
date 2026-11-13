@@ -9576,3 +9576,31 @@ refinement bound and leaves a larger strain error at 1 ms.
 Run the experimental native executable with
 `--q-sand-symmetric-affine-decay 0 <case> all 18` and
 `--q-sand-single-particle-strain`. The isolated source is clean.
+
+### Center gravity with the vertical stress kick
+
+On 43ec90c, subtract half the vertical stress and gravity
+increments from the final deformation donor field. Apply
+the existing ghost rows to the offset and use the resulting
+vertical deformation field in the stress-work receipt.
+PIC transport, affine storage and contact use the final field.
+
+| Time | Vertical stress midpoint | Vertical stress and gravity midpoint |
+|---|---:|---:|
+| 3 s | 35.061270° | 34.665918° |
+| 6 s | 33.660867° | 31.284990° |
+| 9 s | 30.608857° | 28.930263° |
+| 12 s | 29.672977° | 26.392718° |
+
+The fine half-step loses 30.83 mm in height from 3 to 12 s.
+The radius stays at 0.157836 m. Centering gravity removes
+most of the retention gain from centering stress alone.
+The stationary strain probe passes all four refinements.
+Its 1 ms final elastic yy stretch is 0.949746986210,
+closer to the initial 0.95 than either earlier variant.
+The cut stress-work residual is −6.74e-17 J.
+
+Run the isolated native binary with
+`--q-sand-single-particle-strain` and
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+The first exits 0 and the second exits 1. The source was restored.
