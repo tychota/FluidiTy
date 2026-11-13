@@ -6531,3 +6531,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Scale in-plane tangent damping with the timestep
+
+On 3008848, apply exp(−150 dt) to the four horizontal
+derivatives of stored tangent velocity after the sweep.
+The damping rate is 150 per second. This gives retention
+near 0.75 at the coarse nominal step and weaker damping
+per half-step. Both default dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.713658° | 0.164619 |
+| Coarse half-step | 43.098913° | 0.149296 |
+| Fine | 32.554909° | 0.154768 |
+| Fine half-step | 36.930262° | 0.155928 |
+
+Both half-step angles fall relative to fixed retention of
+0.75, but still exceed 35°. The nominal fine case is the
+only pass. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-timed-tangent-plane-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
