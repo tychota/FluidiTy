@@ -5689,3 +5689,31 @@ foreach ($phase in 'aligned', 'half-x') {
   & "$b/fluidity_m5_floor_reset_diagnostic.exe" --q-sand-compatible-floor-long-settle fine $phase 6
 }
 ```
+
+### Pair the tracked floor deformation gradient with stress scatter for six seconds
+
+For the tracked compatible-floor solver, replace the completed
+ghost gradient with the sum of compatible normalized weight
+gradients times face velocity. Use that derivative in the
+cut stress work budget and retain the existing affine fit
+and swept wall contact. Repeat the nominal fine aligned
+and half-cell x cases to 6 s on native.
+
+| Phase | Angle with ghost gradient | Angle with paired gradient | Paired radius (m) | Paired cut stress work (J) |
+|---|---:|---:|---:|---:|
+| Aligned | 18.236314° | 10.952469° | 0.148108 | 1.39e-16 |
+| Half-cell x | 11.621296° | 6.695033° | 0.146455 | −2.01e-17 |
+
+The paired gradient closes the measured cut stress work
+residual to roundoff. Both piles settle flatter and miss
+the angle gate. This comparison isolates the work mismatch
+from a sufficient explanation for late flattening. The
+temporary solver edit was restored and the original native
+target rebuilt. The six-second control ran on native only.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+foreach ($phase in 'aligned', 'half-x') {
+  & "$b/fluidity_m5_paired_6s_diagnostic.exe" --q-sand-compatible-floor-long-settle fine $phase 6
+}
+```
