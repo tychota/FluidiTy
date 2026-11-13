@@ -4359,3 +4359,38 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
 }
 ```
+
+### Locate plastic volume accumulation during late settling
+
+Repeat the six-second clearing candidate runs and accumulate
+absolute changes in log plastic Jacobian from 3 s to 6 s.
+Classify floor residents using the existing contact tolerance
+at both step endpoints. The floor layer includes particles
+ending the step within one initial spacing (0.05 m) of the
+floor. The layer column overlaps the other columns.
+
+| Case | Total per particle | Floor residents | Above contact tolerance at both endpoints | Floor layer |
+|---|---:|---:|---:|---:|
+| Coarse | 0.01159529 | 0.01140852 | 0.00018676 | 0.01159529 |
+| Coarse half-step | 0.03887955 | 0.01356335 | 0.02530078 | 0.03864232 |
+| Fine | 0.01670783 | 0.01653805 | 0.00016318 | 0.01670783 |
+| Fine half-step | 0.00761967 | 0.00754693 | 0.00007274 | 0.00754693 |
+
+At least 99% of the plastic volume path is in the floor layer
+in each case. In the coarse half-step case most of the path
+occurs above the contact tolerance, so a change limited to
+particles already on the floor would miss most of that case's
+plastic volume accumulation. All geometry results match the
+previous six-second runs at printed precision. Both default
+dry-scene tests pass. The diagnostic changes were restored.
+
+To rebuild the trace, use the preceding six-second fixture
+change and set the diagnostic accumulation predicate in
+TestScene to extended_column && t >= 3.0 for this matrix.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-creep-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
+}
+```
