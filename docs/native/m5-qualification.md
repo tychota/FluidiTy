@@ -10733,3 +10733,22 @@ half-steps. The default native sand case fails at 37.89°
 and 43.13° respectively. A fixed retention fraction leaves
 a large timestep dependence. Temporary source was restored.
 CUDA was untested for these diagnostic controls.
+
+#### Scale compressive retention by physical time
+
+On 302f85e, multiply negative yy by exp(−400 dt), with
+dt in seconds, at ordinary granular deposit. At the
+registered steps the factor ranges from 0.472 to 0.732.
+
+| Case | Final angle |
+|---|---:|
+| Coarse | 32.238003° |
+| Fine | 31.145172° |
+| Coarse half-step | 37.620263° |
+| Fine half-step | 33.832469° |
+
+Three native cases pass, and the coarse half-step exceeds
+35°. The default native sand case also fails at 43.616929°.
+This reduces the half-step overshoot of constant 50%
+retention, while leaving the short-horizon regression and
+Q-SAND failure. Temporary source was restored. CUDA was untested.
