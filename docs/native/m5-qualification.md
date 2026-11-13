@@ -4967,3 +4967,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Remove mass weighting from normal fits
+
+On 3008848, set normal affine fit row scales to one. Retain
+the tangent fit and rank fallback. Both default native and
+SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 34.343882° | 0.168194 m |
+| Coarse half-step | 40.499841° | 0.156715 m |
+| Fine | 31.470486° | 0.159433 m |
+| Fine half-step | 34.695889° | 0.156278 m |
+
+The largest angle change is 0.028° and the largest radius
+change is 0.124 mm. Both coarse failures persist and both
+fine cases retain their 3 s passes. The source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-unweighted-normal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
