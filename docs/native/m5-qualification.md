@@ -4293,3 +4293,38 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Full extended native and SM120 parity for affine row clearing
+
+Run the three previously unchecked SM120 cases using the
+component-wise clearing binaries from the matrix above. Compare
+the complete logs with SHA-256. All three match byte for byte,
+as did the previously recorded fine half-step case.
+
+| Case at 3 s | Angle | Radius | Native and SM120 result |
+|---|---:|---:|---|
+| Coarse | 34.329576° | 0.168211 m | Radius fails |
+| Coarse half-step | 40.501234° | 0.156712 m | Angle fails |
+| Fine | 31.443051° | 0.159557 m | Pass |
+| Fine half-step | 34.693822° | 0.156304 m | Pass |
+
+The same coarse failures reproduce on both backends. Q-SAND
+remains open. Parity here covers the four extended pile cases
+with the component-wise clearing candidate.
+
+```powershell
+$s = 'out/pr-m5-sand-affine'
+$bin = "$s/out/sand-component-affine-bin"
+$logs = "$s/out/floor-wall-gradient-native"
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  $native = "$logs/component-affine-$case.log"
+  $cuda = "$logs/component-affine-cuda-$case.log"
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3 *> $native
+  $nativeExit = $LASTEXITCODE
+  & "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3 *> $cuda
+  $cudaExit = $LASTEXITCODE
+  if ($nativeExit -ne $cudaExit -or (Get-FileHash $native).Hash -ne (Get-FileHash $cuda).Hash) {
+    throw "Backend mismatch for $case"
+  }
+}
+```
