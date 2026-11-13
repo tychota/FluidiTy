@@ -6402,3 +6402,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check the local work identity for wall traction
+
+On 3008848, compare the sum of midpoint face impulse work
+for each wall reaction point with the analytic kinetic energy
+change J dot u plus one half of J dot M J. Here J is the
+point's tangent impulse, u is its pre-impulse gathered velocity,
+and M is the diagonal mobility formed by summing squared
+normalized weights divided by face mass. This checks the
+actual traction gather and scatter, which use the same
+eligible weights. Both default dry-scene tests pass.
+
+| Native case through 3 s | Traction updates | Maximum absolute work residual (J) |
+|---|---:|---:|
+| Coarse | 59772 | 1.63e-19 |
+| Coarse half-step | 95700 | 2.72e-20 |
+| Fine | 78108 | 1.36e-19 |
+| Fine half-step | 118478 | 2.72e-20 |
+
+The largest positive measured work is below 1e-37 J.
+The geometry reproduces the original clearing matrix.
+This audit covers individual traction updates with frozen
+normal reaction. It does not establish a coupled contact
+solution or close Q-SAND. The instrumentation was restored.
