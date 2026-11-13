@@ -9604,3 +9604,24 @@ Run the isolated native binary with
 `--q-sand-single-particle-strain` and
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 The first exits 0 and the second exits 1. The source was restored.
+
+### Halve the late timestep with vertical midpoint sampling
+
+Use the existing paired vertical midpoint executable, with
+the fine half-step through 3 s and a quarter-step afterward.
+The two runs have identical recorded height and radius at
+3 s. Neither the material nor the stress sampling changes.
+
+| Time | Constant fine half-step | Quarter-step after 3 s |
+|---|---:|---:|
+| 3 s | 35.061270° | 35.061270° |
+| 6 s | 33.660867° | 34.175474° |
+| 12 s | 29.672579° | 32.152035° |
+| 18 s | 28.982269° | 29.958344° |
+
+The smaller late step improves the 18 s angle by 0.976° and
+still falls below 30°. The radius stays at 0.159789 m. The
+height drops by 8.34 mm from 12 to 18 s with late refinement.
+The stress-work residual is 1.62e-16 J. The native diagnostic
+exits 1 with
+`--q-sand-symmetric-affine-decay 0 fine-half all 18 half`.
