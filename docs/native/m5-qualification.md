@@ -9890,3 +9890,24 @@ incoming compression summed over the window in every case.
 This bounds direct removal of incoming compressive stress
 at the return events. The native fixture reproduces the
 baseline angles and exits 1. The temporary trace was restored.
+
+### Compare the compatible-floor path on both backends
+
+On 72cdcda, enable the existing compatible floor path in the
+four Q-SAND column cases. Keep the 1.5 s horizon, material,
+sampling and gate criteria. Native and SM120 agree at the
+reported precision.
+
+| Case | Final angle | Integrated cut stress-work residual (J) |
+|---|---:|---:|
+| Coarse | 29.962967° | −0.097516 |
+| Fine | 27.424648° | −0.111296 |
+| Coarse half-step | 32.042153° | 0.020711 |
+| Fine half-step | 29.277572° | −0.026814 |
+
+Only the coarse half-step reaches the angle band. Both CTest
+entries fail. The compatible stress scatter uses normalized
+weight derivatives while deformation gathers the complete
+ghost field. The measured work residual motivates testing a
+deformation gather paired with the normalized scatter.
+The temporary fixture edit was restored.
