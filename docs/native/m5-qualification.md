@@ -6038,3 +6038,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clear only the normal affine row after the wall sweep
+
+On 3008848, clear the normal row for every compatible-floor
+particle after applying the wall sweep. Keep component-wise
+tangent clearing and the deformation and stress operators.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 38.052574° | 0.155184 | 0.154000 |
+| Coarse half-step | 52.708577° | 0.117199 | 0.106111 |
+| Fine | 34.460965° | 0.160164 | 0.255365 |
+| Fine half-step | 44.380313° | 0.138741 | 0.181887 |
+
+The nominal coarse radius enters the allowed interval,
+but its angle exceeds 35°. The other three cases also
+miss at least one check. Normal feedback has a substantial
+effect, especially at half-step. Source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-clear-normal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
