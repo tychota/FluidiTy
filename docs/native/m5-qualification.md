@@ -12150,3 +12150,28 @@ with `--q-sand-column-long-settle 6`, and with
 fail every angle and persistence check, and the dense matrix
 also fails every radius check. This offset does not produce
 a stable pile. CUDA was untested and the source edit was restored.
+
+#### Match the granular deformation increment Jacobian to the velocity trace
+
+On 950cfc4, for each incoming and projected granular increment
+with positive Euler Jacobian, rescale the Euler trial matrix
+uniformly by the cube root of exp(dt tr L) / det(I + dt L).
+This matches the constant-gradient volume factor while
+preserving the Euler trial stretch ratios. The nonpositive
+Jacobian path, the return, transfer, contact and snow are
+unchanged. Build the native dry-scene target and run it without
+arguments and with `--q-sand-column-long-settle 6`.
+
+| Case | Baseline at 6 s | Matched Jacobian at 6 s |
+|---|---:|---:|
+| Coarse | 33.842809° | 33.953710° |
+| Fine | 23.424520° | 23.665081° |
+| Coarse half-step | 17.104058° | 17.088157° |
+| Fine half-step | 13.060319° | 13.113653° |
+
+The default test passes. The six-second matrix exits 1 and
+the three shallow piles remain below 30°. The maximum angle
+change is 0.241°. The Euler increment's volume error therefore
+does not account for the shallow angles in these native sparse
+cases. CUDA and dense sampling were untested. The temporary
+source edit was restored.
