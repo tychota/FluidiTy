@@ -11933,3 +11933,19 @@ angles decrease relative to the baseline, by up to 2.17°.
 All pass the radius and short-drift checks and fail angle and
 persistence. The native matrix exits 1. CUDA and dense
 sampling were untested. The temporary solver edit was restored.
+
+
+#### Reduce symmetric shear in the incoming deformation
+
+On cb653b1, halve the symmetric off-diagonal part of the
+ordinary-floor granular gradient in the incoming deformation
+increment. Preserve its skew part and all diagonal entries.
+Keep stress scatter, the post-contact gradient, advection,
+and affine storage on their original paths.
+
+The default native dry-scene test passes. The sparse 3 s
+angles are 30.450681°, 24.028899°, 23.551505°, and 21.751824°.
+The half-step angles gain 0.70° and 0.94°, but all four cases
+still fail persistence and the matrix exits 1. This control
+leaves the volume rate unchanged and does not resolve repose.
+CUDA and dense sampling were untested. The edit was restored.
