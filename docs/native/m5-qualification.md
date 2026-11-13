@@ -8604,3 +8604,19 @@ restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-no-affine-wall-projection-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Probe wall support with one compressed particle
+
+On c58b4ba, place a stationary 1 kg granular particle on the
+floor of a unit-width grid. Use reference volume 0.1 m³ and
+isotropic elastic stretch 0.95. Advance independent copies for
+1 ms and 0.5 ms. With gravity −1 m/s², both steps produce
+0.0666813 N of reconstructed grid support and 0.933319 N of
+swept support, with zero final vertical velocity. With gravity
+zero, the swept support vanishes and the same grid reaction
+accelerates the particle upward at 0.0666813 m/s².
+
+This minimal native case reproduces the two support paths and
+exhibits duration-proportional impulse from rest. It supplies a
+reference for testing changes to wall transfer before rerunning
+the pile. The temporary fixture was restored. Q-SAND remains open.
