@@ -7582,3 +7582,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Pair the APIC deformation fit with its stress transpose
+
+On 255739e, use the complete APIC fit for compatible-floor
+deformation and scatter stress with its transpose. For a face
+at displacement r with weight w, the slope coefficient is
+4wr/h². Apply the same ghost transpose and leave particle
+transport unchanged. Evaluate cut stress work using the fit.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 35.297495° | 0.168524 |
+| Coarse half-step | 40.197258° | 0.159639 |
+| Fine | 32.832225° | 0.158354 |
+| Fine half-step | 35.324804° | 0.155874 |
+
+The paired work residual stays within 3.3e-16 J. Only the
+fine nominal case passes the endpoint. The coarse half-step
+remains more than 5° above the limit. The temporary solver
+changes were restored and Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-affine-deformation-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
