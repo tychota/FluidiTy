@@ -10309,3 +10309,23 @@ angles fall and Q-SAND still fails. This control isolates
 the time level of advection and the associated contact
 timing from the stored velocity update. The temporary
 source was restored. CUDA was untested.
+
+#### Isolate the vertical midpoint displacement
+
+On 146f854, center the vertical displacement alone or the
+two horizontal components alone in the ordinary granular
+sweep. Keep final stored velocity and the final deformation
+field in both variants.
+
+| Case | Baseline | Vertical midpoint displacement | Horizontal midpoint displacement |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 26.931189° | 29.211256° |
+| Fine | 26.761332° | 24.302544° | 26.932741° |
+| Coarse half-step | 29.006384° | 28.443352° | 29.138165° |
+| Fine half-step | 27.033753° | 26.713218° | 27.096094° |
+
+The vertical change accounts for the angle reduction in the
+full midpoint displacement control. Centering the horizontal
+components increases angles by at most 0.172°. Both native
+variants pass the default dry-scene test and fail Q-SAND.
+The temporary source was restored. CUDA was untested.
