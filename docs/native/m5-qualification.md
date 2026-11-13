@@ -8567,3 +8567,17 @@ fixture change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-alternating-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Reverse the phase of the alternating late timestep
+
+Repeat the fine half-step alternating schedule on 255739e with
+the long and short steps exchanged. At 6, 9 and 12 s the
+angles are 30.278973°, 26.906027° and 24.331512°. All differ
+from the original alternating schedule by less than 0.0005°.
+The radius matches at 0.156304 m. For this schedule the increased
+creep persists under phase reversal. The temporary fixture was
+restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-reversed-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
