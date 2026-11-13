@@ -4607,3 +4607,20 @@ out/authored-upstream-d6e8c6e-cpu and
 out/authored-upstream-d6e8c6e-cuda. Configure with the qualified
 Conan Release CUDA toolchain and CLI11 2.7.2 package. The
 extended Q-SAND gate remains open.
+
+The tracked native sources pass the full clang-format 19.1.5
+check from AGENTS.md. The tracked long-settling sand diagnostic
+runs all four 1.5 s column cases on native and SM120. Both
+executables exit 1. The final reported geometry and drift
+match at printed precision. The nominal coarse, nominal fine,
+half-step coarse and half-step fine angles are 29.113507°,
+26.761332°, 29.006384° and 27.033753°, respectively. All four
+radii are within the declared interval, and all four angles
+fall below 30°. Full logs differ in stress budgets, momentum
+residuals, plastic path measurements, and one 0.75 s angle.
+
+```powershell
+$b = 'out/build/m5-main-d6e8c6e-release'
+& "$b/fluidity_m5_dry_scene_tests.exe" --q-sand-column-long-settle
+& "$b/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-column-long-settle
+```
