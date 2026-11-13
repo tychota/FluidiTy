@@ -7908,3 +7908,28 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Restrict the impact split to steps starting above the floor
+
+On 255739e, split compatible-floor deformation at the swept
+impact only when the particle starts above contact tolerance.
+Particles starting on the floor keep the ordinary deformation
+gather. Compare with the preceding all-impact control.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---|
+| Coarse | 34.798496° | 0.168340 |
+| Coarse half-step | 40.681377° | 0.157332 |
+| Fine | 31.638407° | 0.159137 |
+| Fine half-step | 34.962261° | 0.156023 |
+
+Both fine cases pass again. The coarse nominal radius and
+coarse half-step angle still fail. The stress work receipt
+still uses the unsplit gather. The temporary edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-first-impact-split-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
