@@ -9101,3 +9101,24 @@ work in the late intervals. The latter includes the effects
 of gravity and wall traction on the velocity used in the
 receipt. This comparison does not close the full energy
 budget. The temporary trace was restored.
+
+### Measure grid kinetic work at the stress kick
+
+On 43ec90c, multiply each applied stress impulse by its
+face velocity averaged immediately before and after the
+stress kick. Sum the result before gravity and wall traction.
+This measures the actual grid kinetic-energy change across
+that operation in the native fine half-step.
+
+| Interval | Midpoint stress work (J) | Stress work at final velocity (J) |
+|---|---:|---:|
+| 0–3 s | −1.981555 | −2.065886 |
+| 3–6 s | 0.054758 | −0.008212 |
+| 6–9 s | 0.051397 | 0.003841 |
+| 9–12 s | 0.053892 | −0.000444 |
+
+The stress kick adds 0.160047 J of grid kinetic energy from
+3 to 12 s. The end-velocity receipt sums to −0.004815 J over
+the same interval. The kick can release elastic energy, so a
+full balance needs the material energy change and transfer
+losses as well. The trace was restored.
