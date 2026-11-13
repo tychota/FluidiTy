@@ -9911,3 +9911,24 @@ weight derivatives while deformation gathers the complete
 ghost field. The measured work residual motivates testing a
 deformation gather paired with the normalized scatter.
 The temporary fixture edit was restored.
+
+### Pair normalized stress scatter with the deformation gather
+
+On d27b5b4, enable the compatible floor in all four native
+Q-SAND cases. Gather the deformation gradient using the
+normalized weight derivatives already used by the stress
+scatter. Keep the complete ghost gather for the APIC fit
+and leave PIC translation and the swept contact unchanged.
+
+| Case | Complete ghost gradient | Paired normalized gradient |
+|---|---:|---:|
+| Coarse | 29.962967° | 28.407709° |
+| Fine | 27.424648° | 26.082740° |
+| Coarse half-step | 32.042153° | 31.915729° |
+| Fine half-step | 29.277572° | 29.126156° |
+
+The integrated work residual drops from at most 0.111296 J
+to below 7.3e-17 J. All four angles decrease and the matrix
+still fails. The native default dry scene passes. This
+isolates work consistency from angle retention for the
+normalized derivative. Both temporary edits were restored.
