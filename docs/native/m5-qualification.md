@@ -9220,3 +9220,36 @@ Run the instrumented native scene binary with
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 It reproduced 25.473317° and exited 1. The isolated solver
 source was restored and its worktree was clean.
+
+### Attribute vertical PIC variance to the stress kick
+
+On 43ec90c, center the post-deposit vertical velocity and the
+vertical stress-induced velocity increment separately within each
+compatible PIC stencil. Sum half the particle mass times the
+weighted square of each centered field and twice their product.
+The three terms add to the post-stress variance. The final
+pre-gather measurement includes gravity and grid wall traction.
+
+| Interval | Stencil | After deposit (J) | Stress increment alone (J) | Cross term (J) | After stress and before gather (J) |
+|---|---|---:|---:|---:|---:|
+| 0–3 s | Full | 12.111978 | 0.062035 | −0.038392 | 12.135621 |
+| 0–3 s | Cut | 1.196594 | 0.040184 | −0.084000 | 1.152777 |
+| 3–6 s | Full | 0.029180 | 0.037597 | −0.001787 | 0.064990 |
+| 3–6 s | Cut | 0.008877 | 0.059547 | −0.015304 | 0.053120 |
+| 6–9 s | Full | 0.001803 | 0.002026 | 0.000447 | 0.004275 |
+| 6–9 s | Cut | 0.017751 | 0.093439 | −0.018684 | 0.092506 |
+| 9–12 s | Full | 0.001309 | 0.002669 | −0.000673 | 0.003305 |
+| 9–12 s | Cut | 0.000379 | 0.036678 | −0.002676 | 0.034381 |
+
+The stress kick accounts for 0.153001 J of the 0.180007 J
+of late cut-normal variance after including its cross term
+with deposited motion. The post-stress and pre-gather values
+agree to the shown precision. Gravity shifts the vertical
+face velocities uniformly and the grid wall traction changes
+only the tangent components. The measured stress contribution
+combines the force distribution and the face mass denominator.
+
+The instrumented native scene ran with
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+The angle reproduced 25.473317° and the command exited 1.
+The temporary solver instrumentation was restored.
