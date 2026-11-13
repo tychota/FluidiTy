@@ -11536,3 +11536,21 @@ second. The nominal controls reproduce baseline. Both
 matrices exit 1. Further timestep refinement can shift
 the transient angle without demonstrating repose. CUDA
 was untested and the fixture edit was restored.
+
+
+#### Predict the deposited granular stress at midstep
+
+On 3f69e24, advance a temporary elastic trial by half a
+step using the stored APIC slope. Apply the granular
+return to evaluate the stress deposited on the ordinary
+floor path. Keep the accepted state and final deformation
+update on their original path. This is a stress-lag control
+using the available particle slope.
+
+The default native dry-scene test passes. The sparse 3 s
+angles are 30.477668°, 23.974733°, 22.832948°, and
+20.801352°. The largest angle change is 0.070484° and the
+largest radius change is 0.343 mm. The extended command
+exits 1. The diagnostic does not support this predictor
+as a remedy for flattening. CUDA and dense sampling were
+untested. The solver edit was restored.
