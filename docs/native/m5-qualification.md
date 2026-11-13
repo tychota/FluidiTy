@@ -7419,3 +7419,28 @@ fixture change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-motion-reset-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Freeze material history after the late motion reset
+
+On 3008848, reset stored motion at 3 s and restore the accepted
+elastic deformation and plastic Jacobian after each subsequent
+step. The step still performs constitutive validation before
+the fixture restores state. Gravity, transfer and wall contact
+remain active. This freezes each particle's stress as it moves.
+
+| Time (s) | Height (m) | Radius (m) | Envelope |
+|---|---:|---:|---:|
+| 3 | 0.108205 | 0.156304 | 34.693822° |
+| 6 | 0.107948 | 0.156304 | 34.629900° |
+| 9 | 0.111661 | 0.156304 | 35.541333° |
+| 12 | 0.250637 | 0.374428 | 33.797831° |
+
+The frozen control suppresses the initial late height loss,
+then spreads beyond the radius limit and reaches 0.034064 J
+of kinetic energy. Restoring stress after advection severs
+the constitutive feedback and can inject energy, so the late
+trajectory is diagnostic only. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-frozen-material-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
