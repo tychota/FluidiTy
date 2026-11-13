@@ -11403,3 +11403,12 @@ short drift values on native and SM120. The sparse native
 6 s run returns 1 with angles 33.842809°, 23.424520°,
 17.104058°, and 13.060319° in fixture order. Both default
 dry-scene CTest entries pass. Q-SAND remains open.
+
+
+On 4339f4c, the sparse SM120 command at 6 s also returns 1.
+Its envelope angles are 33.842809°, 23.424520°, 17.104058°,
+and 13.060318° in fixture order. Native and SM120 agree
+within 0.000001° on the final envelope and last-second
+drift. The fine half-step falls from 15.249811° to 13.060318°
+over that last second while meeting the final 0.05 s drift
+limit. The remaining failure reproduces on both paths.
