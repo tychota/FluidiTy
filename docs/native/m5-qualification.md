@@ -6178,3 +6178,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
     Where-Object { $_ -like 'vertical feedback *' }
 }
 ```
+
+### Bound normal affine feedback by the local velocity range
+
+On 3008848, scale the stored normal row after the wall sweep
+so its centered affine correction plus accepted normal velocity
+lies within the range of that velocity and the current
+positive-weight compatible face samples. This applies to
+the sampled stencil and does not certify the next deposit
+after advection. Both default native and SM120 dry-scene
+tests pass.
+
+| Native case at 3 s | Angle | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 36.212855° | 0.162125 | 0.106731 |
+| Coarse half-step | 43.527380° | 0.140910 | 0.042938 |
+| Fine | 31.918908° | 0.155877 | 0.095343 |
+| Fine half-step | 38.844720° | 0.148874 | 0.038311 |
+
+All four cases accumulate less plastic volume and spread
+less than the original clearing runs. Only nominal fine
+passes. The limiter makes both half-step piles steeper.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-normal-range-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
