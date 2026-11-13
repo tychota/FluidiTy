@@ -4900,3 +4900,32 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Raise only the force acceleration mass floor
+
+On 3008848, double the mass floor in the face acceleration
+denominator and the corresponding applied stress work calculation.
+Keep donor selection and wall traction at the original thresholds.
+Both default dry-scene tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius | Vertical momentum residual (N·s) |
+|---|---:|---:|---:|
+| Coarse | 34.505519° | 0.168238 m | 4.31e-5 |
+| Coarse half-step | 40.510052° | 0.156758 m | −5.21e-5 |
+| Fine | 31.489858° | 0.159589 m | −1.07e-4 |
+| Fine half-step | 34.720394° | 0.156461 m | 8.34e-5 |
+
+Both fine geometry checks still pass and both coarse failures
+persist. The largest vertical momentum residual rises from
+9.3e-9 to 1.07e-4 N·s. The cut stress work residual stays below
+2.1e-16 J because it includes work associated with the omitted
+impulse. A good work residual alone therefore does not certify
+momentum conservation with this denominator. The source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-double-force-mass-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
