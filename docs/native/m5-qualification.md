@@ -5399,3 +5399,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Scale the positive extension cap with the acoustic rate
+
+On 3008848, cap each affected positive diagonal tangent
+derivative at 0.2 times the accepted particle acoustic bound
+divided by cell width. This replaces the previous 0.01/dt
+cap with a rate that has no explicit timestep dependence.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case | Outcome at 3 s |
+|---|---|
+| Coarse | 24.548186° / 0.221322 m |
+| Coarse half-step | 32.577760° / 0.160288 m |
+| Fine | 15.377568° / 0.276944 m |
+| Fine half-step | Unlabeled FailedPrecondition at step 2429 |
+
+Every case fails at least one check. The coarse half-step
+misses the radius limit by 0.288 mm, and both nominal cases
+spread farther than with the timestep-scaled cap. Removing
+explicit timestep dependence from this control does not
+remove timestep sensitivity. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-acoustic-extension-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
