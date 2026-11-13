@@ -9190,3 +9190,33 @@ Run the instrumented native scene binary with
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 The run reproduced the 25.473317° endpoint and exited 1.
 The temporary instrumentation was restored.
+
+### Resolve PIC kinetic energy loss by stencil and direction
+
+On 43ec90c, sum the weighted squared deviation of each occupied
+face velocity from its particle's compatible PIC velocity,
+multiplied by half the particle mass. Group each component
+stencil by whether it excludes a structurally incompatible
+sample. Use the same native fine half-step and zero retained
+velocity as the transfer-stage trace.
+
+| Interval | Full x (J) | Full y (J) | Full z (J) | Cut x (J) | Cut y (J) | Cut z (J) |
+|---|---:|---:|---:|---:|---:|---:|
+| 0–3 s | 0.649055 | 12.135621 | 0.649141 | 0.123398 | 1.152777 | 0.123547 |
+| 3–6 s | 0.001668 | 0.064990 | 0.001684 | 0.007858 | 0.053120 | 0.007825 |
+| 6–9 s | 0.000772 | 0.004275 | 0.000784 | 0.001049 | 0.092506 | 0.001053 |
+| 9–12 s | 0.000380 | 0.003305 | 0.000389 | 0.000179 | 0.034381 | 0.000185 |
+
+From 3 to 12 s, the six components sum to 0.276403 J,
+matching the independently traced gather energy loss to
+six decimal places. The cut normal component contributes
+0.180007 J, or 65%. All normal components together contribute
+0.252578 J, or 91%. This localizes the loss to vertical
+velocity variation, with the largest share in floor-cut
+stencils. The variance does not identify which grid operation
+created that variation.
+
+Run the instrumented native scene binary with
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+It reproduced 25.473317° and exited 1. The isolated solver
+source was restored and its worktree was clean.
