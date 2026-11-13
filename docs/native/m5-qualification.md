@@ -12016,3 +12016,28 @@ overshoot and the default native scene fails at 61.115376°.
 The sparse matrix exits 1. Retaining rotation alone removes
 too much spread in this control. CUDA and dense sampling
 were untested. The temporary source edit was restored.
+
+#### Remove symmetric off-diagonal shear from granular APIC deposition
+
+On e58302b, subtract half the sum of each transposed off-diagonal
+pair from both entries of that pair in the ordinary-floor granular
+APIC deposit slope. This preserves all three diagonal entries and
+the skew part. Use the original slope for storage and leave
+deformation, stress and contact on their original paths.
+
+Build the native dry-scene target, run it without arguments, then
+run it with `--q-sand-column-long-settle 3`. The default angle
+is 29.691360° and the default command exits 1.
+
+| Case | Angle at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 28.357544° | 0.149164 |
+| Fine | 20.920179° | 0.159373 |
+| Coarse half-step | 20.810808° | 0.153329 |
+| Fine half-step | 17.355195° | 0.172360 |
+
+All four cases fail angle and persistence. The fine half-step
+also exceeds the radius limit. The native matrix exits 1.
+Removing off-diagonal shear while retaining normal affine strain
+does not reproduce the steepening from rotation-only deposition.
+CUDA and dense sampling were untested. The source edit was restored.
