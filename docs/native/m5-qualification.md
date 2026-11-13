@@ -7167,3 +7167,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Measure late tangential contact work by contact path
+
+On 3008848, log the grid friction work and the horizontal
+components of midpoint velocity dotted with the swept particle
+wall impulse. Use the original native column matrix and sum the
+accepted steps from 0.75 s to 3 s.
+
+| Case | Grid tangential work (J) | Swept particle tangential work (J) |
+|---|---:|---:|
+| Coarse | −0.174694 | −0.000855 |
+| Coarse half-step | −0.166236 | −0.000470 |
+| Fine | −0.094254 | −0.001292 |
+| Fine half-step | −0.123967 | −0.000613 |
+
+The grid accounts for at least 98.6% of the measured tangential
+work in every case. Despite the shift toward grid normal support
+at both widths, halving the timestep reduces net tangential
+dissipation on the coarse grid and increases it on the fine grid.
+The final geometry reproduces the original matrix, including both
+coarse failures. The temporary trace was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-wall-tangent-work-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
