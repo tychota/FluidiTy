@@ -11554,3 +11554,20 @@ largest radius change is 0.343 mm. The extended command
 exits 1. The diagnostic does not support this predictor
 as a remedy for flattening. CUDA and dense sampling were
 untested. The solver edit was restored.
+
+
+#### Require persistence in the explicit long-horizon checks
+
+The extended column commands at 3 and 6 s require the
+envelope at the sample approximately one second before
+the endpoint to be within 30–35°, and its change to the
+endpoint to be at most 2°. This extends the existing
+short drift tolerance to the reported longer window.
+It measures two samples. Motion between them is unresolved.
+
+On d891161 with this fixture change, native and SM120 give
+the same four acceptance lines at 3 s. The coarse nominal
+case passes the original endpoint checks but fails
+persistence because its earlier angle is 29.062617°.
+The other three fail angle and persistence. Both default
+dry-scene executables pass.
