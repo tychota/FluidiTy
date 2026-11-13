@@ -8928,3 +8928,24 @@ to printed precision. The alternating command reproduces
 24.331512° at 12 s and exits with status 1 on the angle check.
 The `half`, `double`, and `alternating` options apply their named
 schedules after 3 s. Omit the schedule to use constant steps.
+
+### Shift the horizontal phase of the stationary particle
+
+On 43ec90c, run the stationary native probe at 1 ms for one
+second. Change x and z together and allocate two blocks along
+each horizontal axis so every phase has full stencil support.
+
+| x and z (m) | Final elastic yy entry | Final elastic Jacobian |
+|---|---:|---:|
+| 2.000 | 0.949494669937 | 0.857033307788 |
+| 2.125 | 0.949494694172 | 0.857035761616 |
+| 2.250 | 0.949494657882 | 0.857043687601 |
+| 2.375 | 0.949494639337 | 0.857059654457 |
+| 2.500 | 0.949494228338 | 0.857413422584 |
+
+Normal compression is similar across all phases. Total volume
+drift changes sign at the half-cell phase, where the tangential
+strain more than offsets normal compression. The smaller
+allocation rejects that phase, and the wider allocation gives
+the same result at the other four phases to printed precision.
+The temporary fixture was restored.
