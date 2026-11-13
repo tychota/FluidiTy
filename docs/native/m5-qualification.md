@@ -9932,3 +9932,24 @@ to below 7.3e-17 J. All four angles decrease and the matrix
 still fails. The native default dry scene passes. This
 isolates work consistency from angle retention for the
 normalized derivative. Both temporary edits were restored.
+
+### Pair the complete floor continuation with its stress transpose
+
+On 4300d54, port the weighted floor ghost rows from 43ec90c
+as a temporary native control. Scatter complete quadratic
+stress through the row transpose and gather the complete
+deformation gradient from the same rows. Keep the merged
+solver's swept deformation and compatible PIC translation.
+
+| Case | Normalized derivative | Complete ghost transpose |
+|---|---:|---:|
+| Coarse | 28.407709° | 36.571036° |
+| Fine | 26.082740° | 32.610886° |
+| Coarse half-step | 31.915729° | 37.590067° |
+| Fine half-step | 29.126156° | 35.079876° |
+
+The integrated cut stress-work residual stays below 3e-16 J.
+All four angles increase, and only the fine nominal case
+is within the band. The default native dry-scene executable
+also exits 1 before printing scene results. The experimental
+sources were restored. The control has no CUDA result.
