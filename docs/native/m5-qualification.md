@@ -5974,3 +5974,13 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+The first failure under the geometric mask is
+TestUnsupportedFloorHasNoReaction on both native and SM120.
+The fixture starts a compressed particle 0.2 m above the
+floor on a 1 m grid with zero incoming velocity. It requires
+a nonzero stress deposit, zero particle contacts and less
+than 1e-12 N·s of grid wall impulse. The broader mask
+includes this airborne particle's stencil. The diagnostic
+reported the first failing fixture without isolating a
+single predicate. Both temporary changes were restored.
