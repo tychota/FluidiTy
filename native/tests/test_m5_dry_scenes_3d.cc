@@ -1285,6 +1285,8 @@ int main(int argc, char** argv) {
       return 2;
     }
     const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+    constexpr double kInitialStretch = 0.95;
+    double previous_drift = 0;
     for (const int steps : {1000, 2000, 4000, 8000}) {
       DrySolidParticle3D particle{
           .world_position = {2.25, 0, 2.25},
@@ -1312,6 +1314,15 @@ int main(int argc, char** argv) {
 #else
         const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
 #endif
+        if (status.ok()) {
+          const double expected_impulse = -particle.mass * settings.gravity_y * settings.duration;
+          const double wall_impulse = budget.grid_wall_impulse_y + budget.wall_impulse_on_particles.y;
+          if (particle.world_position.y != 0 || particle.world_velocity.y != 0
+              || !(std::abs(wall_impulse - expected_impulse) <= 1e-9 * expected_impulse)) {
+            std::fprintf(stderr, "stationary support mismatch at step %d of %d\n", step, steps);
+            return 1;
+          }
+        }
         if (!status.ok()) {
           std::fprintf(stderr, "%s\n", status.ToString().c_str());
           return 2;
@@ -1320,6 +1331,13 @@ int main(int argc, char** argv) {
       const auto [x, y, z] = particle.elastic_deformation;
       const double jacobian =
           x.x * (y.y * z.z - y.z * z.y) + x.y * (y.z * z.x - y.x * z.z) + x.z * (y.x * z.y - y.y * z.x);
+      const double drift = std::abs(y.y - kInitialStretch);
+      if (!(drift <= settings.duration || drift <= 1e-12)
+          || (steps != 1000 && !(drift <= 0.55 * previous_drift + 1e-12))) {
+        std::fprintf(stderr, "stationary strain drift exceeds refinement bound at %d steps\n", steps);
+        return 1;
+      }
+      previous_drift = drift;
       std::printf(
           "single_strain steps=%d y=%.12g uy=%.12g Fy=%.12g J=%.12g grid=%.12g sweep=%.12g\n",
           steps,
