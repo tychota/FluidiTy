@@ -6885,3 +6885,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Gather deformation after a half stress kick
+
+On 3008848, keep the ordinary post-contact field for PIC advection
+and APIC storage. For deformation only, subtract half of the
+applied stress acceleration times the step duration from the
+post-contact donors and reconstruct the ghost rows from that
+field. Gravity and wall traction enter the field with their full
+increments. This is a split-update control, with the original
+63-particle release and 0.10 m gap.
+
+| Native case at 3 s | Envelope | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 35.418809° | 0.197559 | 0.404900 |
+| Coarse half-step | 39.977885° | 0.177459 | 0.190201 |
+| Fine | 34.726713° | 0.175517 | 0.257545 |
+| Fine half-step | 34.470502° | 0.169788 | 0.118874 |
+
+All four radii exceed 0.16 m and the coarse half-step angle
+still exceeds 35°. The experiment gathers deformation from a
+different time level than the grid stress-work receipt, so its
+cut work residual cannot qualify the paired operator. The
+temporary solver change was restored. Q-SAND remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-midpoint-stress-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
