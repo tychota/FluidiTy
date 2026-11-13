@@ -11007,3 +11007,27 @@ reduces both half-step angles by more than 3°. The default
 native dry scene also fails at 35.114976°. Both native CTest
 entries fail. CUDA was untested and both temporary edits
 were restored.
+
+
+### Recheck production snow–water after the upstream liquid changes
+
+On 2c18ed5, rebuild the production simulator, Blender bridge,
+and both M5PlanarCoupling executables with Windows Release
+and SM120 enabled. Both planar coupling CTest entries pass.
+Run the authored Blender 5.2.3 bake and reopen command above
+once per backend with fresh output directories. Both backends
+report the same minimum snow volume ratio (0.648350539),
+minimum log plastic Jacobian (−0.420240034), and emitted
+water gap (0.631821917 m). These match the earlier merged
+qualification. Q-SAND remains open.
+
+```powershell
+cmake --build out/requalified --target fluidity_simulate fluidity_blender_bridge fluidity_m5_planar_coupling_tests fluidity_cuda_m5_planar_coupling_tests
+ctest --test-dir out/requalified -R '^M5PlanarCoupling\.' --no-tests=error --output-on-failure
+$tree = (Get-Location).Path
+$bin = (Resolve-Path out/requalified).Path
+$blender = 'C:/Program Files/Blender Foundation/Blender 5.2/blender.exe'
+foreach ($backend in 'cpu', 'cuda') {
+  & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $bin "$tree/out/authored-recheck-2c18ed5-$backend" $backend
+}
+```
