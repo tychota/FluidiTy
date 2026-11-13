@@ -4698,3 +4698,30 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Radial spread with denser sampling
+
+For the same 504-particle clearing runs, sort the final
+horizontal radii. Use index floor((count - 1) times percentile)
+for each quantile. All particles have equal mass.
+
+| Native case at 3 s | Median radius (m) | 90th percentile (m) | 95th percentile (m) | Count at or beyond 0.16 m |
+|---|---:|---:|---:|---:|
+| Coarse | 0.094939 | 0.161861 | 0.174068 | 55 |
+| Coarse half-step | 0.090580 | 0.153633 | 0.163413 | 36 |
+| Fine | 0.102345 | 0.174490 | 0.185365 | 87 |
+| Fine half-step | 0.095300 | 0.159896 | 0.170568 | 51 |
+
+Between 7.1% and 17.3% of the mass is outside the radius
+limit. Even the 95th percentile exceeds that limit in every
+case. The outer radius failure therefore spans many particles.
+The existing quadrant fit and pile acceptance checks are
+unchanged. Both default native and SM120 dry-scene tests pass.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-dense-radial-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
