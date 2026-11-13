@@ -7933,3 +7933,26 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Disable grid traction after the initial pile forms
+
+On 255739e, run the native fine half-step column with the
+ordinary solver through 3 s. Disable only grid tangential
+traction for the remaining accepted steps. Keep swept particle
+contact and the existing deformation and stress operators.
+
+| Time (s) | Baseline envelope | Grid traction off after 3 s |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 28.583616° |
+| 9 | 27.988015° | 24.777995° |
+| 12 | 25.473317° | 21.946015° |
+
+The late control loses an additional 11.48 mm of height at
+12 s with the same printed radius of 0.156304 m. The existing
+grid traction resists late height loss in this case. The cut
+stress work residual is −1.24e-16 J. Temporary edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-grid-traction-off-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
