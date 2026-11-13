@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "case": "uniform_wedge",
+  "inputs": {
+    "width_m": 8,
+    "length_m": 20,
+    "height_m": 8,
+    "inlet_depth_m": 3,
+    "cell_width_m": 0.035,
+    "wave_height_m": 1,
+    "wave_period_s": 4,
+    "frame_end": 239,
+    "fps": 24
+  },
+  "provenance": "Design reference dimensions with an explicitly assumed linear still-water taper and nominal Stokes amplitude. Capacity diagnostic only."
+}

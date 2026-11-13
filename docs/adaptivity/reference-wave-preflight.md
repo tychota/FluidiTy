@@ -29,3 +29,15 @@ The sequential attempted-stage elapsed time was 94.213 s, including the failed M
 The measured GPU was an RTX 5060 Ti on driver 610.88, with the executed kernel reporting SM120. Simulate allocator telemetry reported 17,102,864,384 total device bytes, 15,908,995,072 free bytes at its accounting baseline, and an enforced 11,972,005,068-byte budget. Its reservation peak was 113,726,464 bytes and zero remained after drain. A separate preflight `nvidia-smi` snapshot had 13,353,615,360 bytes free. The readings come from different measurement paths. Neither supplies a simultaneous full-reference pipeline peak.
 
 The run receipt SHA-256 is `823aa340adaaee6eeb7f95a7143fea671c8b45112f4ea0b176290c89673752bc`. The solver and fixture SHA-256 values are `70af7859c63fb34f4f72d8fb8ad0b9d00458b5445be612ac8853c2b1d836334d` and `e0927108c4f4909739df9d322d4b09ef23f9a4fd712cd7564cf2b86bab6d221e`. The 240-frame reference, matched-error timing, and simultaneous GPU-memory gates remain open.
+
+## Explicit authoring manifests
+
+`tools/adaptivity/author_wave_manifest.py` reads a versioned JSON input, rejects duplicate or unexpected fields, and writes a receipt to a fresh output directory. The committed examples under `tools/adaptivity/wave_manifests` label where each value came from. The uniform wedge uses decimal-exact center-column arithmetic and refuses 5,671,872 initially wet cells against the public 4,096-cell cap before authoring any particles. A wedge inside the cell cap still needs complete material, block, face, and pipeline admission.
+
+The graded manifest reports the missing camera refinement footprint, canonical leaf roster, resolved scene, initial state, pipeline settings, and matched-error targets. Supplying their names does not validate their contents or admit execution. The bounded manifest delegates to the existing native partial-column and volume-settings fixture and hashes the emitted FLRS, FLST and FLVC. Its geometry and output defaults are specific to the existing M2 control.
+
+```powershell
+python tools/adaptivity/author_wave_manifest.py tools/adaptivity/wave_manifests/uniform_wedge.json --output out/uniform-wedge
+python tools/adaptivity/author_wave_manifest.py tools/adaptivity/wave_manifests/graded_reference.json --output out/graded-reference
+python tools/adaptivity/author_wave_manifest.py tools/adaptivity/wave_manifests/bounded_column.json --output out/bounded-wave --solver out/wave-cuda/fluidity_simulate.exe --fixture out/wave-cuda/fluidity_simulate_fixture.exe
+```
