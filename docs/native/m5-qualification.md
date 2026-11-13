@@ -7299,3 +7299,31 @@ foreach ($case in 'coarse-half', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Suppress late yielding as a diagnostic control
+
+On 3008848, keep the original cohesionless column until 3 s.
+Then move the granular yield surface away by setting translated
+cone cohesion to 10 in log strain units. Keep the elastic
+moduli, velocities, deformation and existing plastic history.
+This switch probes the role of return in creep under load.
+
+| Native case | Angle at 3 s | Angle at 12 s | Height at 12 s (m) | Radius at 12 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse half-step | 40.500210° | 37.991655° | 0.135311 | 0.173242 |
+| Fine half-step | 34.693822° | 33.516368° | 0.103520 | 0.156304 |
+
+The coarse apex remains near its 3 s height. The fine apex
+loses 4.7 mm compared with 33.7 mm in the cohesionless control.
+Mean log plastic Jacobian stays at its 3 s value to printed
+precision. The fine case passes the endpoint checks under the
+changed material; the coarse case still exceeds both upper
+bounds. The physical gate requires the original cohesionless
+material. The temporary fixture change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-late-elastic-bin'
+foreach ($case in 'coarse-half', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
