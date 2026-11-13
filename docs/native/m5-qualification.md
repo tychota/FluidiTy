@@ -10349,3 +10349,25 @@ of baseline. This attributes the difference to above-floor
 transport, which includes both flight and arrival steps.
 Both variants pass the default native dry-scene test and fail
 Q-SAND. The temporary source was restored. CUDA was untested.
+
+#### Separate floor arrival from transport above the floor
+
+On 146f854, classify steps starting above the floor using
+both the ordinary and midpoint swept endpoints. Apply the
+vertical midpoint in the arrival control when either path
+reaches the floor, and in the above-floor control when
+neither path reaches it.
+
+| Case | Arrival only | Above-floor transport only |
+|---|---:|---:|
+| Coarse | 29.086256° | 26.984932° |
+| Fine | 26.710930° | 24.313435° |
+| Coarse half-step | 29.006001° | 28.442677° |
+| Fine half-step | 27.033504° | 26.729852° |
+
+Arrival-only angles stay within 0.051° of baseline.
+Above-floor transport reproduces the all-above-start control
+within 0.023°. The effect is therefore mainly in steps
+where neither displacement reaches the floor. Both native
+default tests pass and Q-SAND fails. Temporary source was
+restored. CUDA was untested.
