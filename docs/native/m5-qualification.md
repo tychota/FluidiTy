@@ -9830,3 +9830,18 @@ four-case Q-SAND matrix. The largest angle change is 0.123°.
 This rules out clearing the post-contact affine fit as the
 dominant effect in the tested merged solver. The temporary
 solver edit was restored.
+
+### Separate accumulated granular plastic volume from the elastic return
+
+On 72cdcda, temporarily reset the granular log plastic Jacobian
+to zero after each accepted update. Keep the returned elastic
+deformation and all solver operations. This control deliberately
+breaks total volume bookkeeping and tests feedback from the
+stored history only.
+
+All four native and SM120 Q-SAND cases reproduce the baseline
+angles, heights, radii and kinetic energies at printed precision
+with mean log plastic Jacobian zero. Both gate invocations fail.
+The result rules out feedback from accumulated plastic volume in
+this fixture. It leaves the effect of the elastic return to the
+tensile apex open. The temporary solver source was restored.
