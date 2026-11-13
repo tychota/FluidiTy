@@ -12041,3 +12041,30 @@ also exceeds the radius limit. The native matrix exits 1.
 Removing off-diagonal shear while retaining normal affine strain
 does not reproduce the steepening from rotation-only deposition.
 CUDA and dense sampling were untested. The source edit was restored.
+
+#### Separate vertical and horizontal normal strain in granular APIC deposition
+
+On 75de2ef, replace the diagonal of the ordinary-floor granular
+APIC deposit slope by its mean diagonal entry. In the horizontal
+control, average only the xx and zz entries and preserve yy.
+Both controls preserve the trace and the full off-diagonal part.
+Use the original slope for storage, with the original deformation,
+stress and contact updates.
+
+Run the native dry-scene executable without arguments and with
+`--q-sand-column-long-settle 3`. The horizontal-only control
+passes the default test at 32.770452°. Averaging all three
+entries fails the default test at 60.859696° and 0.086553 m.
+
+| Case | Horizontal mean angle | Horizontal mean radius (m) | Full mean angle | Full mean radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 30.349030° | 0.137801 | 34.523784° | 0.103113 |
+| Fine | 23.380153° | 0.148390 | 33.175054° | 0.118203 |
+| Coarse half-step | 22.692118° | 0.144055 | 48.336718° | 0.095580 |
+| Fine half-step | 20.128799° | 0.157242 | 45.328855° | 0.108407 |
+
+Both sparse matrices exit 1 and every case fails persistence.
+The steepening seen with rotation-only deposition also occurs
+with the full diagonal mean, which retains trace and shear.
+Averaging the horizontal entries alone has a much smaller effect.
+CUDA and dense sampling were untested. Both source edits were restored.
