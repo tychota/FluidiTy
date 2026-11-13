@@ -10815,3 +10815,22 @@ native test, which ends at the switch time. The larger
 changes seen when retention starts at release depend on
 earlier history. The temporary solver and fixture were
 restored. CUDA was untested for this control.
+
+#### Retain compression correction during collapse only
+
+On 87e9687, apply the uncut exp(−400 dt) control from release
+through the accepted 0.75 s sample. Return to the ordinary
+solver afterward. The native 1.5 s Q-SAND CTest entry passes
+all four cases. Repeat at 3 s with the same switch and bounds.
+
+| Case | Angle at 0.75 s | Angle at 1.5 s | Angle at 3 s |
+|---|---:|---:|---:|
+| Coarse | 42.895836° | 31.741264° | 29.018562° |
+| Fine | 39.173403° | 31.001955° | 27.851871° |
+| Coarse half-step | 49.152848° | 34.547276° | 26.687394° |
+| Fine half-step | 43.759664° | 31.809489° | 25.493112° |
+
+The 1.5 s pass is transient. Every case loses another
+2.72° or more by 3 s and falls below the angle band. The
+short default coarse endpoint also exceeds 35°. CUDA was
+untested for this diagnostic. Both sources were restored.
