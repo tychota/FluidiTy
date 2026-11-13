@@ -9080,3 +9080,24 @@ strain. The fine half-step pile reaches 29.417241° with a
 0.191044 m radius at 3 s, and its stress work difference is
 0.974122 J. The unpaired projection is a diagnostic and fails
 the pile bounds. The temporary code was restored.
+
+### Measure stress-kick self-work during creep
+
+On 43ec90c, sum half the squared scattered stress impulse
+divided by force mass on occupied faces. This is the quadratic
+term in the grid kinetic-energy change from the stress kick.
+Compare it with stress impulse dotted into the final grid
+velocity for the native fine half-step.
+
+| Interval | Stress-kick quadratic term (J) | Stress work at final velocity (J) |
+|---|---:|---:|
+| 0–3 s | 0.544661 | −2.065886 |
+| 3–6 s | 0.219911 | −0.008212 |
+| 6–9 s | 0.159695 | 0.003841 |
+| 9–12 s | 0.069781 | −0.000444 |
+
+The quadratic term is much larger than the net final-velocity
+work in the late intervals. The latter includes the effects
+of gravity and wall traction on the velocity used in the
+receipt. This comparison does not close the full energy
+budget. The temporary trace was restored.
