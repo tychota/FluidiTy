@@ -7539,3 +7539,17 @@ The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-fine-quarter-18-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Rebuild the extended sand diagnostic from source
+
+Commit `255739e` on `codex/m5-sand-affine` exposes the fine
+quarter-step and 12 s and 18 s horizons explicitly. Build the
+native or CUDA dry-scene test executable from that commit and
+run the command below. The native fine quarter-step reproduces
+the 18 s angle of 27.813410°. The default native and SM120
+dry-scene CTest targets both pass. The diagnostic leaves
+the extended Q-SAND gate open.
+
+```powershell
+fluidity_m5_dry_scene_tests.exe --q-sand-symmetric-affine-decay 0 fine-quarter all 18
+```
