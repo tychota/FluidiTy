@@ -10490,3 +10490,21 @@ cases and the default dry-scene test. The fine half-step
 meets the radius bound and misses the angle bound. Q-SAND
 still fails. CUDA and later horizons were untested. The
 experimental solver source was restored.
+
+#### Check persistence of the smooth bottom-cell correction
+
+On fa9c791, extend the smooth control to 6 s with unchanged
+material, sampling and acceptance bounds.
+
+| Case | Angle at 1.5 s | Angle at 6 s | Radius at 6 s (m) |
+|---|---:|---:|---:|
+| Coarse | 33.284429° | 34.653684° | 0.150013 |
+| Fine | 30.473579° | 27.250852° | 0.154368 |
+| Coarse half-step | 30.728948° | 28.398747° | 0.153679 |
+| Fine half-step | 28.685323° | 20.674222° | 0.160561 |
+
+The coarse nominal case meets the endpoint bounds and falls
+0.998° in the final second. The two earlier passes on fine
+nominal and coarse half-step fall below 30°. The native
+matrix exits 1. Temporary sources were restored. CUDA was
+untested for this extension.
