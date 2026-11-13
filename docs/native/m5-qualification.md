@@ -10596,3 +10596,26 @@ settlement is already visible by 0.3914 s. These global
 receipts leave local load distribution open. The native
 diagnostic reproduced the matched-step angle results,
 and the temporary fixture was restored.
+
+#### Trace early floor support at the smaller matched timestep
+
+On 0d1cd2d, use the 0.78125 ms step at both widths and sum
+accepted vertical wall impulses over successive 0.1 s
+intervals. Both runs begin with zero vertical momentum.
+
+| Interval (s) | Coarse floor impulse (N·s) | Fine floor impulse (N·s) |
+|---|---:|---:|
+| 0–0.1 | 0 | 0 |
+| 0.1–0.2 | 2.488292 | 2.318574 |
+| 0.2–0.3 | 4.466719 | 4.564617 |
+| 0.3–0.4 | 2.074988 | 2.054150 |
+| 0.4–0.5 | 2.309966 | 2.444664 |
+
+The fine pile receives 0.169718 N·s less initial support
+by 0.2 s despite the same contact count (477). Its momentum
+is lower by the same amount. By 0.5 s cumulative fine
+support exceeds coarse by 0.042040 N·s, after the fine
+pile has already settled lower. This locates the first
+global impulse difference during collapse and leaves
+the local force distribution unresolved. The native
+fixture reproduces the matched angles and was restored.
