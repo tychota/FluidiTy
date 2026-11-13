@@ -9968,3 +9968,24 @@ The ordinary floor variant reports zero projections.
 The failure is in the deformation path of a stress-free
 initial particle. The impulse accounting still passes.
 Temporary diagnostics and solver edits were restored.
+
+#### Use the complete continuation for the full deformation step
+
+On 4300d54, keep the complete ghost transpose control and
+skip the additional swept deformation split on that path.
+Keep the swept position update, wall impulse and return
+mapping. The native default dry-scene test passes, including
+the compatible wall oracle that failed with both corrections.
+
+| Case | With swept split | Without swept split |
+|---|---:|---:|
+| Coarse | 36.571036° | 34.892353° |
+| Fine | 32.610886° | 29.430121° |
+| Coarse half-step | 37.590067° | 37.222976° |
+| Fine half-step | 35.079876° | 34.001150° |
+
+The native matrix still exits 1. The absolute cut stress-work
+residual stays below 4.2e-16 J. Removing the second deformation
+correction resolves the single-particle regression and leaves
+the sand result sensitive to grid width and timestep.
+The temporary solver and fixture edits were restored.
