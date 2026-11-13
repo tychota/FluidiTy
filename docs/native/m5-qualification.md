@@ -5770,3 +5770,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
 }
 ```
+
+### Extend the passing fine half-step to nine seconds
+
+On 3008848, temporarily set the explicit endpoint of the
+symmetric-affine-decay diagnostic to 9 s. Keep zero decay
+and the original fine half-step duration and acceptance
+checks. Both default native and SM120 dry-scene tests pass.
+The extended native case returns a geometry failure.
+
+| Time (s) | Angle | Radius (m) | Particles on floor |
+|---:|---:|---:|---:|
+| 6 | 30.869627° | 0.156304 | 37 of 63 |
+| 9 | 27.988015° | 0.156304 | 51 of 63 |
+
+The radius is stable to the reported precision while maximum
+height falls from 0.093434 to 0.083067 m. The 9 s angle drift
+over the last 0.05 s is 0.051583°, within the short-window
+limit. The sole six-second geometry pass therefore does
+not persist. The temporary fixture change was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-nine-second-bin'
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 9
+```
