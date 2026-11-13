@@ -9164,3 +9164,29 @@ to the midpoint evaluation. Gravity shifts that receipt down by
 0.558040 J and grid traction by another 0.056201 J. These
 differences are cross terms with the stress impulse. The
 trace was restored and the trajectory reproduces baseline.
+
+### Measure transfer-stage kinetic energy during late settlement
+
+On 43ec90c, trace occupied-grid kinetic energy just after APIC
+deposit and just before PIC gather on each accepted native fine
+half-step. Compare with particle translational kinetic energy
+at step start and just before the particle wall sweep,
+respectively. The stored-velocity blend is zero in this case.
+
+| Interval | Grid after deposit minus starting particle translation (J) | Gathered particle translation minus grid before gather (J) |
+|---|---:|---:|
+| 0–3 s | 12.072329 | −14.833539 |
+| 3–6 s | −0.002789 | −0.137145 |
+| 6–9 s | −0.044268 | −0.100440 |
+| 9–12 s | −0.000945 | −0.038819 |
+
+The gather-stage change sums to −0.276403 J from 3 to 12 s,
+compared with 0.160047 J added by the stress kick over that
+interval. Deposit uses APIC affine velocity, while the particle
+reference includes translational energy only. The deposit
+column therefore measures a change between energy representations.
+
+Run the instrumented native scene binary with
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+The run reproduced the 25.473317° endpoint and exited 1.
+The temporary instrumentation was restored.
