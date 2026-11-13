@@ -7519,3 +7519,23 @@ remain open. The temporary fixture was restored.
 
 The temporary runner maps `fine-half` to the quarter-step and
 the final argument to 12 s.
+
+### Check whether the fine quarter-step pass persists
+
+Extend the native fine quarter-step diagnostic on 3008848 to
+18 s. Keep the exact 3 s sampling boundaries.
+
+| Time (s) | Envelope | Radius (m) |
+|---|---:|---:|
+| 12 | 30.772442° | 0.156462 |
+| 15 | 29.223607° | 0.156462 |
+| 18 | 27.813410° | 0.156462 |
+
+The 12 s pass is transient. The angle drops below 30° by 15 s
+while the radius stays constant to printed precision. The final
+0.05 s drift is 0.027°, compared with 1.41° from 15 to 18 s.
+The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-fine-quarter-18-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
