@@ -11053,3 +11053,26 @@ angles by at most 0.446° and passes the default native dry
 scene. Both extended matrices fail. The three-second
 geometry effect comes predominantly from the first 0.75 s.
 CUDA was untested. Both temporary sources were restored.
+
+
+#### Attenuate resident compression over the acoustic timescale
+
+On d5c90e2, multiply min(0, gathered yy) at zero-fraction
+floor hits by exp(−dt c / (h C)), where c is the particle's
+accepted acoustic speed bound, h is the cell width and C
+is the dry acoustic CFL setting. Keep all four cases and
+acceptance bounds. Rebuild the native dry-scene target
+and run M5DryScenes.native and QSand.native. Repeat
+QSand.native with the endpoint extended from 3 to 6 s.
+
+| Case | Angle at 3 s | Angle at 6 s |
+|---|---:|---:|
+| Coarse | 39.005939° | 36.943464° |
+| Fine | 31.659782° | 29.643051° |
+| Coarse half-step | 30.493135° | 32.887773° |
+| Fine half-step | 30.868832° | 29.326368° |
+
+The default native dry scene passes. Both extended matrices
+fail. Both fine cases cross below 30° between 3 and 6 s,
+and the coarse nominal case remains above 35°. This native
+control was not run on CUDA. Temporary edits were restored.
