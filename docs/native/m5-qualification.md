@@ -7956,3 +7956,28 @@ stress work residual is −1.24e-16 J. Temporary edits were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-grid-traction-off-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Measure Coulomb cap saturation during late creep
+
+On 255739e, record the norm of each solved grid traction
+impulse and its cap, for visits with positive cap and
+nonzero tangent mobilities. Count a visit as saturated
+within 1e-8 relative of the cap. Use the native fine
+half-step trajectory.
+
+| Interval | Sum of impulse norms / sum of caps | Saturated visits |
+|---|---:|---:|
+| 0–3 s | 89.9% | 85.5% |
+| 3–6 s | 86.7% | 90.3% |
+| 6–9 s | 89.5% | 90.2% |
+| 9–12 s | 95.9% | 93.3% |
+
+The late visits use nearly all the available scalar impulse
+budget. This is consistent with the limited effect of more
+sweeps. The sums are over visit magnitudes, so they do not
+measure the net impulse vector or certify solver convergence.
+The geometry reproduces baseline and the trace was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-traction-saturation-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
