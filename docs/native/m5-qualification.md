@@ -11996,3 +11996,23 @@ coarse nominal case overshoots the upper bound. Unlike
 raising cohesion, suppressing only the compressive shear
 return does not further flatten all four cases. The native
 command exits 1. CUDA was untested and edits were restored.
+
+
+#### Deposit only the skew APIC slope on the ordinary floor
+
+On 50ce28b, replace the granular APIC slope at deposit with
+its skew part on the ordinary floor. Leave fitted slope
+storage, deformation, stress and contact unchanged.
+
+| Case | Angle at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 31.113488° | 0.092979 |
+| Fine | 31.409299° | 0.099825 |
+| Coarse half-step | 48.244810° | 0.087905 |
+| Fine half-step | 46.243948° | 0.092843 |
+
+Every radius falls below 0.10 m. Both half-step angles
+overshoot and the default native scene fails at 61.115376°.
+The sparse matrix exits 1. Retaining rotation alone removes
+too much spread in this control. CUDA and dense sampling
+were untested. The temporary source edit was restored.
