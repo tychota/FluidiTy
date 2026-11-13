@@ -5741,3 +5741,32 @@ The final envelope is measured from a handful of elevated
 particles while the bulk lies on the floor. Both native traces
 reproduce the original six-second angles. The instrumentation
 was restored and the original native target rebuilt.
+
+### Compare upper pile retention on bounded tangent clearing
+
+On 3008848, repeat the six-second height trace on native with
+the same 1e-9 m floor tolerance. Both default native and SM120
+dry-scene tests pass. The four extended geometry results match
+the earlier clearing runs.
+
+| Case | Floor count near 3 s | Floor count at 6 s | 90th-percentile height at 6 s (m) | Maximum height at 6 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 38 | 58 | 0 | 0.092598 |
+| Coarse half-step | 13 | 38 | 0.042772 | 0.111769 |
+| Fine | 37 | 58 | 0 | 0.077173 |
+| Fine half-step | 17 | 37 | 0.030998 | 0.093434 |
+
+Both nominal cases have 58 of 63 particles on the floor at
+6 s. Both half-step cases retain at least 25 elevated particles.
+The nominal fine clearing case retains five elevated particles
+at 6 s versus two on the tracked aligned compatible-floor case.
+The time-step dependence therefore includes a change in how
+much mass stays above the floor. The temporary fixture edit
+was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-height-trace-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 6
+}
+```
