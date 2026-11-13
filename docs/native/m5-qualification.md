@@ -5717,3 +5717,27 @@ foreach ($phase in 'aligned', 'half-x') {
   & "$b/fluidity_m5_paired_6s_diagnostic.exe" --q-sand-compatible-floor-long-settle fine $phase 6
 }
 ```
+
+### Trace the transition to a floor layer
+
+In the tracked compatible-floor nominal fine case, sample the
+committed particle heights at the first step ending at or after
+each integer second. Count a particle on the floor when its
+height is at most 1e-9 m. There are 63 equal-mass particles.
+
+| Time (s) | Aligned floor count | Aligned maximum (m) | Half-cell x floor count | Half-cell x maximum (m) |
+|---:|---:|---:|---:|---:|
+| 1 | 34 | 0.084971 | 30 | 0.078910 |
+| 2 | 51 | 0.071561 | 49 | 0.062010 |
+| 3 | 60 | 0.064925 | 58 | 0.052115 |
+| 4 | 60 | 0.058321 | 61 | 0.044525 |
+| 5 | 61 | 0.052881 | 61 | 0.037859 |
+| 6 | 61 | 0.048930 | 62 | 0.030176 |
+
+The aligned pile loses 6.6 mm of maximum height between the
+3 and 4 s samples with the floor count fixed at 60. The shifted
+pile loses 6.7 mm between 4 and 5 s with the count fixed at 61.
+The final envelope is measured from a handful of elevated
+particles while the bulk lies on the floor. Both native traces
+reproduce the original six-second angles. The instrumentation
+was restored and the original native target rebuilt.
