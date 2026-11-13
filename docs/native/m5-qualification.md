@@ -10962,3 +10962,26 @@ remove the coarse overshoot. The extension-only control
 passes the default native dry scene and lowers all four
 extended angles relative to baseline. Both QSand.native
 runs fail. CUDA was untested and both edits were restored.
+
+
+#### Extend zero-fraction compression on native and CUDA
+
+On 08797c1, repeat the zero-fraction compression diagnostic
+above and set the four shared column end times to 6 s.
+Build both dry-scene targets and run both QSand CTest entries.
+Native and SM120 match to six decimals for the geometry
+and drift measures below.
+
+| Case | Angle at 3 s | Angle at 6 s | Absolute drift over last ≈1 s | Radius at 6 s (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 39.909968° | 36.442893° | 0.418467° | 0.142033 |
+| Fine | 32.236242° | 30.159032° | 0.335024° | 0.147397 |
+| Coarse half-step | 31.685760° | 34.609817° | 0.974711° | 0.142443 |
+| Fine half-step | 31.860759° | 30.112880° | 0.511944° | 0.152230 |
+
+Both matrices fail on the coarse angle. Both fine cases
+remain above 30° at 6 s with less than 0.16° of margin
+and are still flattening over the last second. Every case
+meets the radius, kinetic energy, and short drift limits.
+These results leave Q-SAND open. Temporary sources were
+restored.
