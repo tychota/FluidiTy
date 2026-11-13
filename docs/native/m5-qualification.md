@@ -4667,3 +4667,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Double the particle sampling of the clearing candidate
+
+Set the sampling multiplier to two in the extended diagnostic
+on 3008848. This gives 504 particles at 0.025 m spacing.
+The release dimensions and reference density, grid widths,
+timesteps, and acceptance checks are the same. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Envelope | Radius | Quadrant fit |
+|---|---:|---:|---:|
+| Coarse | 29.225650° | 0.210420 m | 25.436163° to 26.949057° |
+| Coarse half-step | 32.676751° | 0.199398 m | 21.111038° to 21.281019° |
+| Fine | 25.814558° | 0.221056 m | 13.186272° to 16.096608° |
+| Fine half-step | 30.083739° | 0.204909 m | 17.267139° to 22.394147° |
+
+Every dense case spreads farther than the corresponding
+63-particle case and exceeds the radius limit. Every fitted
+downhill angle falls below 30°. In the preceding sparse
+table, negative fitted angles indicate surfaces rising with
+radius because the estimator negates the fitted height
+derivative. The dense diagnostic resolves downhill surfaces
+in all quadrants and exposes shallower slopes than the
+envelope. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-dense-audit-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
