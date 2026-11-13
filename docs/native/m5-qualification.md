@@ -8138,3 +8138,27 @@ trace was restored. Q-SAND stays open.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-material-volume-bands-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Attribute late volume change by contact transition
+
+On 255739e, sum per-particle changes in total material Jacobian
+over accepted steps from 3 to 12 s in the native fine half-step.
+Classify each change by whether the particle is on the floor at
+the start and end of the step.
+
+| Contact transition | Sum of Jacobian changes |
+|---|---:|
+| Above to above | 1.741839 |
+| Above to floor | 0.001029 |
+| Floor to above | 0 |
+| Floor to floor | 3.928191 |
+
+Sustained floor contact accounts for 69.3% of the net gain.
+The sum of 5.671059 reconstructs the increase in carried volume
+reported earlier. The measurement isolates sustained floor
+contact as the largest contributor and leaves the source of
+its positive deformation trace open. The fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-volume-transitions-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
