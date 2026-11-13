@@ -237,12 +237,13 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool width_stale = args[5] == "graded-width-stale";
   const bool graded_width = args[5] == "graded-width" || width_stale;
   const bool graded_effects = args[5] == "graded-effects" || matched_tank || graded_width || graded_band;
+  const bool graded_swell = args[5] == "graded-swell";
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
   const bool graded_viscous = args[5] == "graded-viscous";
   const bool graded_miscible_viscous = args[5] == "graded-miscible-viscous";
   const bool graded_tank = args[5] == "graded-tank" || graded_effects || graded_eos || graded_miscible || graded_viscous
-      || graded_miscible_viscous;
+      || graded_miscible_viscous || graded_swell;
   const bool shear_tank = args[5] == "viscous" || args[5] == "viscous-control";
   const bool cavity_loss = args[5] == "cavity-loss";
   const bool shared_surface = args[5] == "shared-surface";
@@ -362,6 +363,9 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
       if (matched_uniform) {
         state.adaptive_cells = {};
         state.adaptive_faces = {};
+      }
+      if (graded_swell) {
+        scene.options.ocean_boundary = fluidity::test::PrepareGradedSwellFixture3D(state);
       }
       if (graded_eos) {
         fluidity::test::SetGradedTankEos3D(state, scene.scene);

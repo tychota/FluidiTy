@@ -254,16 +254,105 @@ The adaptive topology and state validators admit 4,096 leaves and 24,576
 canonical subfaces. At 0.035 m, 4,096 finest leaves cover at most 0.175616 m³
 before coarser leaves or the face limit consume capacity. The largest
 qualified arena pressure control used 4,096 rows, 13,056 faces, and four
-hierarchy levels. Its maximum physical defect was 1.01548e-5 s⁻¹. The
-public adaptive CLI starts with the authenticated seed's exact extents.
-Native trial fixtures reserve additional particle, leaf and face capacity
-explicitly. The public uniform path defaults to 1,024 particles, 128 blocks,
-4,096 cells and 24,576 slots.
+hierarchy levels. Its maximum physical defect was 1.01548e-5 s⁻¹. A public
+graded scene without a width plan starts with its authenticated seed's exact
+extents. The FLRS v2 width plan can reserve additional leaves and canonical
+faces and bind a refinement action to its exact accepted clock and state
+digest. Its replay control restores the five-leaf checkpoint and reexecutes
+the same 19-leaf closure on CPU and SM120. The public uniform path defaults
+to 1,024 particles, 128 blocks, 4,096 cells and 24,576 slots.
+[Public width action](https://github.com/tychota/FluidiTy/pull/158)
 
 The 3-frame matched public tank exercises Simulate and Mesh at identical
 initial particle inventories and error limits. Its short-run receipts
 report zero drift, 458 retained Mesh IDs, and relative volume error
 1.11022e-15. [Matched public control](matched-error-pressure.md#public-simulate-and-mesh-control)
+
+The control passed again at `507b41a85e66ab18b33a2569786620ababad148d` with
+the same zero particle drift, 458 retained Mesh IDs and 1.11022e-15 relative
+volume error in both layouts. It ran Simulate and Mesh over frames 0–2 and
+replayed both stages read-only.
+
+| Simulate backend | Uniform elapsed (s) | Graded elapsed (s) | Uniform CUDA arena peak (B) | Graded CUDA arena peak (B) |
+| --- | ---: | ---: | ---: | ---: |
+| Debug CPU | 82.028 | 77.190 | — | — |
+| Release SM120 | 5.758 | 4.108 | 113,726,464 | 291,584 |
+
+These are single samples on a shared host. The memory figures cover the
+Simulate CUDA arena. The exact fixture/executable hashes, per-variant inputs
+and commands are in each output receipt. Reproduce from the matching CPU or
+CUDA build with `BACKEND` set to `cpu` or `cuda` and `BUILD` set to that
+build directory.
+
+```powershell
+uv run --offline --project reference --locked --group native python tools/adaptivity/qualify_matched_runtime.py --solver "$env:BUILD/fluidity_simulate.exe" --fixture "$env:BUILD/fluidity_simulate_fixture.exe" --backend "$env:BACKEND" --output "out/matched-joint-$env:BACKEND"
+```
+
+- CPU receipt SHA-256 `F178AD78719EF50CB439C52D22753E035799D0BBF6F80F6C92B1ABECDB572409`
+- CUDA receipt SHA-256 `444D6CD38F7322170927DBC26694163667C52101986A673C949E9C3E4B49EF90`
+### Bounded graded swell predictor
+
+An authored Stokes target can drive a conforming stationary graded tank with
+inlet particle emission disabled. The predictor samples each eligible open
+canonical subface at its physical anchor and trial end time. Relaxation
+changes the force-predicted velocities before pressure assembly. The
+normalized old carriers remain available for FLIP and for retries. The
+pressure graph still owns the apertures and incidence used for correction.
+
+The five-leaf control starts from rest with 25 canonical subfaces and applies
+a 0.05 m, 2 s swell target. CPU and RTX 5060 Ti reach the same frame-two
+state `ba2a02662807d30dcfb61aaffc27fd56bb7d65e01d3b25de7b9edfbc4950e910`.
+Across four accepted steps the peak pressure RHS norm is 0.00471685 m³/s
+and maximum volume-scaled residual is 2.74373e-10 s⁻¹. Both backends
+preserve the original five particle IDs and leaf keys. A late rejected trial
+preserves the committed host state and, on CUDA, its acquired device epoch.
+
+The public process test kills Simulate after it publishes the frame-ten
+checkpoint. A new process resumes without an initial-state argument and
+matches the uninterrupted frame-eleven state on each backend. The CPU and
+SM120 checkpoint and final state digests also match each other.
+
+- Checkpoint `c09bb3055b8af37c3b5c922ea2b1f064afd2062c00b21b0afd1956121c05aab4`
+- Final state `eb9dd88f3e941e83e2285034a69e475e414128c746b23d931b394e68ab487dfa`
+
+```powershell
+ctest --test-dir out/build/graded-swell-green-cpu -V -R 'GradedSwellForcesFrozen|SimulateCli.cpu_replay' --no-tests=error
+ctest --test-dir out/build/graded-swell-green-cuda -V -R 'PublishesGradedSwellAfterDeviceRollback|SimulateCli.cuda_replay' --no-tests=error
+```
+
+This control measures forced motion with fixed planar occupancy. The reference
+wave still needs graded inlet volume control, moving free-surface activation,
+and accepted motion and topology evidence from M2's wave stages.
+
+### Reference-wave admission
+
+The reference scene specifies an 8 × 20 × 8 m domain, a 3 m inlet
+tapering along a 20 m beach, and 240 frames at 24 fps. The authored M2
+bounded swell is a 5 × 1 m strip with 0.25 m cells, a 0.25 m swell and a 2 s
+period. Its 240 accepted substeps reach frame 48. [Design reference job](../superpowers/specs/2026-11-07-fluidity-design.md#21-reference-job)
+· [Bounded swell](../references/m2-bounded-wave-evidence.md)
+
+M2's integrated tracked wave through frame 41 used accepted motion and
+reopened relative surface, foam and volume caches in Blender. Its maximum
+absolute relative volume error was 0.49555%. The subsequent frame-42
+attempt remained outside the surface topology gate. The M3 moving
+correspondence and cavity-lineage campaign needs the accepted M2
+MotionInterval and tracked surface for the selected wave frames, including
+valid carrier support, component volume targets and obstacle closure. An
+end-to-end wave timing also needs authenticated Whitewater and Volumes
+for that same accepted frame range. M2 branch receipt
+`5856e91b737d6c9f27da6543315fff52378363a8` covers the shorter prefix.
+[M2 integrated wave receipt](https://github.com/tychota/FluidiTy/blob/5856e91b737d6c9f27da6543315fff52378363a8/docs/references/m2-bounded-wave-evidence.md)
+
+The graded scheduler qualifies a stationary tank and bounded physical
+halfspace cases. The full moving wave requires nonplanar wet occupancy and
+canonical apertures, a scene-driven width and band policy, conservative
+wet-front and inlet inventory, and a capacity receipt at the reference
+sampling. The all-finest leaf limit above bounds the fine region before
+graded neighbors consume capacity. A specific authored layout still needs
+its own capacity measurement. The 3 h adaptive and 6 h temporary
+uniform-sparse gates have no full-wave run receipt.
+
 ### Full wave
 
 - Pin the executable, scene and initial-state digests, device and executed architecture, driver, seed, cache/checkpoint policy, accepted frame range and comparison reference. Establish fixed surface, volume, cavity, trajectory, divergence and source-balance error thresholds before measuring performance. Run uniform and adaptive at the same error target, record achieved errors and qualify the short trajectories before promoting either timing.

@@ -447,6 +447,58 @@ absl::StatusOr<LiquidBandCarrierBlend3D> BlendLiquidBandCarrier3D(
   };
 }
 
+absl::StatusOr<std::optional<LiquidBandCarrierBlend3D>> PrepareLiquidBandOverlapFace3D(
+    double fine_width_m,
+    double face_signed_distance_m,
+    std::int64_t face_side_tag,
+    double minimum_face_mass_kg,
+    const MacFaceDeposit3D& particle_deposit,
+    const LiquidAdaptiveFaceState3D& eulerian_carrier
+) {
+  if (!PositiveFinite(fine_width_m) || !std::isfinite(face_signed_distance_m) || !std::isfinite(minimum_face_mass_kg)
+      || minimum_face_mass_kg < 0) {
+    return absl::InvalidArgumentError("invalid measured liquid band overlap");
+  }
+  const LiquidBandWidths3D widths{.particle_depth_m = 6 * fine_width_m, .overlap_width_m = 2 * fine_width_m};
+  if (!std::isfinite(widths.particle_depth_m)) {
+    return absl::OutOfRangeError("liquid band overlap width is unrepresentable");
+  }
+  const double inward_depth_m = -face_signed_distance_m;
+  if (inward_depth_m < widths.particle_depth_m - widths.overlap_width_m || inward_depth_m >= widths.particle_depth_m) {
+    return std::nullopt;
+  }
+  if (!eulerian_carrier.structurally_eligible || eulerian_carrier.side_tag != face_side_tag
+      || (eulerian_carrier.validity != LiquidFaceValidity3D::kValid
+          && eulerian_carrier.validity != LiquidFaceValidity3D::kPredicted)) {
+    return absl::FailedPreconditionError("liquid band overlap requires a same-side Eulerian carrier");
+  }
+  if (!std::isfinite(eulerian_carrier.carrier_velocity)) {
+    return absl::InvalidArgumentError("nonfinite liquid band Eulerian carrier");
+  }
+  const double mass_kg = particle_deposit.deposited_mass;
+  const double momentum_kg_m_per_s = particle_deposit.deposited_pure_momentum;
+  if (!std::isfinite(mass_kg) || mass_kg < 0 || !std::isfinite(momentum_kg_m_per_s)
+      || (mass_kg == 0 && momentum_kg_m_per_s != 0)) {
+    return absl::InvalidArgumentError("invalid particle deposit in liquid band overlap");
+  }
+  LiquidAdaptiveFaceState3D particle_carrier{.side_tag = face_side_tag};
+  if (mass_kg > minimum_face_mass_kg) {
+    particle_carrier.validity = LiquidFaceValidity3D::kValid;
+    particle_carrier.carrier_velocity = momentum_kg_m_per_s / mass_kg;
+    if (!std::isfinite(particle_carrier.carrier_velocity)) {
+      return absl::OutOfRangeError("liquid band particle velocity is unrepresentable");
+    }
+  } else if (mass_kg > 0) {
+    particle_carrier.validity = LiquidFaceValidity3D::kLowMass;
+  }
+  const auto blend =
+      BlendLiquidBandCarrier3D(widths, face_signed_distance_m, face_side_tag, particle_carrier, eulerian_carrier);
+  if (!blend.ok()) {
+    return blend.status();
+  }
+  return *blend;
+}
+
 absl::StatusOr<LiquidRemapInventory3D> RetireLiquidBandCell3D(
     const LiquidHandoffCell3D& cell,
     std::span<const LiquidParticleState3D> band_particles,

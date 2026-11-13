@@ -11,6 +11,7 @@
 #include "adaptive_liquid_particle_exchange_3d_internal.h"
 #include "fluidity/base/liquid_boundary_geometry_math_3d.h"
 #include "fluidity/host/adaptive_liquid_core_transport_3d.h"
+#include "fluidity/host/liquid_band_handoff_3d.h"
 #include "fluidity/host/liquid_eos.h"
 #include "graded_liquid_boundary_geometry_3d.h"
 #include "graded_liquid_sparse_publication_3d.h"
@@ -392,9 +393,13 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
   const bool physical = std::holds_alternative<TranslatingHalfspace3D>(scene.obstacle);
   const bool stationary_tank = tank != nullptr && tank->piston_velocity_x == 0;
   if (plane == nullptr || (!physical && !stationary_tank) || scene.target_divergence != 0 || initial.next_cavity_id != 0
-      || options.whitewater_capture || !scene.sources.empty() || options.ocean_boundary.has_value()
+      || options.whitewater_capture || !scene.sources.empty()
       || options.capacity_replay_reservations != LiquidStateCapacities3D{}) {
     return absl::UnimplementedError("graded Simulate requires a conforming tank or explicit physical halfspace");
+  }
+  if (options.ocean_boundary && (!stationary_tank || options.ocean_boundary->inlet_particle_spacing_m > 0)) {
+    return absl::UnimplementedError("graded swell relaxation requires a stationary tank without inlet particle emission"
+    );
   }
   if (physical
       && (options.motion_sample_intervals != 0 || scene.surface_tension != 0 || scene.dynamic_viscosity != 0
@@ -466,6 +471,8 @@ absl::StatusOr<AdaptiveLiquidStep3D> AdaptiveLiquidStep3D::Create(
     result.core_transport_.emplace(std::move(*core_transport));
     result.core_faces_.resize(initial.adaptive_faces.size());
     result.core_fluxes_.resize(result.topology_.interior_faces().size());
+    result.band_fallback_slots_.reserve(result.topology_.interior_faces().size());
+    result.band_projected_history_.reserve(initial.adaptive_faces.size());
     result.exchange_samples_.resize(result.topology_.interior_faces().size());
     result.exchange_paths_.resize(initial.particles.size());
   }
@@ -636,7 +643,8 @@ std::size_t AdaptiveLiquidStep3D::reserved_bytes() const {
       + pressure_cells_.capacity() * sizeof(MacPressureCell3D)
       + (strain_rows_.capacity() + unit_strain_rows_.capacity()) * sizeof(MacStrainRow3D)
       + leaf_strain_row_offsets_.capacity() * sizeof(std::size_t)
-      + old_faces_.capacity() * sizeof(LiquidAdaptiveFaceState3D)
+      + (old_faces_.capacity() + band_projected_history_.capacity()) * sizeof(LiquidAdaptiveFaceState3D)
+      + band_fallback_slots_.capacity() * sizeof(std::size_t)
       + quadratic_particles_.capacity() * sizeof(PreparedAdaptiveQuadraticParticle3D)
       + quadratic_deposits_.capacity() * sizeof(MacFaceDeposit3D)
       + gathered_.capacity() * sizeof(LiquidBoundaryParticleGather3D) + distances_.capacity() * sizeof(double)
@@ -940,8 +948,13 @@ absl::StatusOr<std::optional<PreparedAdaptiveQuadraticTransfer3D>> AdaptiveLiqui
 absl::Status AdaptiveLiquidStep3D::Deposit(
     const LiquidState3D& trial,
     const LiquidStepOptions3D& options,
-    const PreparedAdaptiveQuadraticTransfer3D* quadratic
+    const PreparedAdaptiveQuadraticTransfer3D* quadratic,
+    bool blend_band_overlap
 ) {
+  band_fallback_slots_.clear();
+  if (blend_band_overlap && (physical_trial_ || quadratic != nullptr || core_faces_.empty())) {
+    return absl::FailedPreconditionError("adaptive band overlap requires an ordinary trial with Eulerian ownership");
+  }
   if (quadratic != nullptr) {
     if (trial.clock.epoch != quadratic->epoch) {
       return absl::FailedPreconditionError("prepared quadratic transfer does not match the trial epoch");
@@ -973,7 +986,39 @@ absl::Status AdaptiveLiquidStep3D::Deposit(
   if (!deposits.ok()) {
     return deposits.status();
   }
-  return NormalizeDeposits(trial, options, *deposits);
+  const auto normalized = NormalizeDeposits(trial, options, *deposits);
+  if (!normalized.ok() || !blend_band_overlap) {
+    return normalized;
+  }
+  bool found_overlap = false;
+  for (const auto slot : interior_slots_) {
+    if (core_faces_[slot] == 0 || subfaces_[slot].open_area_m2 <= 0) {
+      continue;
+    }
+    const auto& geometry = transfer_.faces()[slot];
+    const auto blend = PrepareLiquidBandOverlapFace3D(
+        geometry.width_m,
+        geometry.world_anchor.y - surface_height_,
+        0,
+        options.minimum_face_mass,
+        (*deposits)[slot],
+        trial.adaptive_faces[slot]
+    );
+    if (!blend.ok()) {
+      return blend.status();
+    }
+    if (blend->has_value()) {
+      found_overlap = true;
+      old_faces_[slot].carrier_velocity = (*blend)->normal_velocity_m_per_s;
+      if ((*blend)->reset_particle_to_pic) {
+        band_fallback_slots_.push_back(slot);
+      }
+    }
+  }
+  if (!found_overlap) {
+    return absl::FailedPreconditionError("adaptive band overlap has no open Eulerian carrier in its 2h interval");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status AdaptiveLiquidStep3D::NormalizeDeposits(
@@ -1082,6 +1127,7 @@ absl::Status AdaptiveLiquidStep3D::Project(
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& options,
     const LiquidSubstepBackend3D& backend,
+    const ResolvedOceanBoundary3D* ocean_boundary,
     MacPressureWorkspace3D& workspace,
     LiquidAcceptedStepMeasurement3D& measurement
 ) {
@@ -1208,6 +1254,33 @@ absl::Status AdaptiveLiquidStep3D::Project(
     }
     subfaces_[slot].predicted_normal_velocity_m_per_s =
         old_faces_[slot].carrier_velocity + duration * potential_difference / NormalComponent(displacement, axis);
+  }
+  // Relax only the predicted bank after acceleration. The normalized old
+  // carriers remain the FLIP baseline, including when the trial is retried.
+  if (ocean_boundary != nullptr) {
+    const double sample_time_s = trial.clock.time + duration;
+    const auto geometry = transfer_.faces();
+    for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+      auto& subface = subfaces_[slot];
+      const auto& old_carrier = old_faces_[slot];
+      if (subface.open_area_m2 == 0 || !old_carrier.structurally_eligible
+          || (old_carrier.validity != LiquidFaceValidity3D::kValid
+              && old_carrier.validity != LiquidFaceValidity3D::kPredicted)) {
+        continue;
+      }
+      const auto& face = geometry[slot];
+      const auto relaxed_velocity = ocean_boundary->RelaxFace(
+          face.axis,
+          face.world_anchor,
+          subface.predicted_normal_velocity_m_per_s,
+          sample_time_s,
+          duration
+      );
+      if (!relaxed_velocity.ok()) {
+        return relaxed_velocity.status();
+      }
+      subface.predicted_normal_velocity_m_per_s = *relaxed_velocity;
+    }
   }
   if (!predictor_density_.empty()) {
     for (const auto& exterior : exterior_faces_) {
@@ -1392,6 +1465,15 @@ absl::Status AdaptiveLiquidStep3D::Project(
 
 absl::Status
 AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQuadraticTransfer3D* quadratic) {
+  auto new_history = trial.adaptive_faces.values();
+  if (!band_fallback_slots_.empty()) {
+    band_projected_history_.assign(new_history.begin(), new_history.end());
+    for (const auto slot : band_fallback_slots_) {
+      old_faces_[slot].validity = LiquidFaceValidity3D::kLowMass;
+      band_projected_history_[slot].validity = LiquidFaceValidity3D::kLowMass;
+    }
+    new_history = band_projected_history_;
+  }
   auto selections =
       quadratic != nullptr ? quadratic->selections() : std::span<const PreparedAdaptiveQuadraticParticle3D>{};
   for (std::size_t ordinal = 0; ordinal < trial.particles.size(); ++ordinal) {
@@ -1430,7 +1512,7 @@ AdaptiveLiquidStep3D::Gather(const LiquidState3D& trial, const PreparedAdaptiveQ
     if (!before.ok()) {
       return before.status();
     }
-    const auto after = transfer_.Gather(particle, trial.adaptive_faces.values());
+    const auto after = transfer_.Gather(particle, new_history);
     if (!after.ok()) {
       return after.status();
     }

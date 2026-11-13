@@ -387,6 +387,51 @@ TEST(CudaAdaptiveSimulate3D, PublishesNonzeroAffineF3AndPreservesRejectedDeviceE
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }
 
+TEST(CudaAdaptiveSimulate3D, PublishesGradedSwellAfterDeviceRollback) {
+  LiquidState3D initial;
+  LiquidSceneInputs3D scene;
+  ASSERT_TRUE(test::PopulateGradedTankFixture3D(initial, scene).ok());
+  LiquidStepOptions3D options;
+  options.capacities = {initial.particles.size(), 0, initial.adaptive_cells.size(), initial.adaptive_faces.size(), 0};
+  options.ocean_boundary = test::PrepareGradedSwellFixture3D(initial);
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(initial, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(initial, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  ASSERT_TRUE(scheduler->BeginFrame(0.02).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject swell") : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->Attempt(0.02);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt);
+  EXPECT_EQ(scheduler->committed(), initial);
+  {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, initial);
+  }
+  scheduler->SetStageFaultHookForTesting({});
+  ASSERT_TRUE(rejected->retry_duration.has_value());
+  const auto accepted = scheduler->Attempt(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted);
+  const auto& measurement = scheduler->diagnostics().accepted_measurement;
+  ASSERT_TRUE(measurement.has_value());
+  EXPECT_GT(measurement->pressure_rhs_l2_m3_per_s, 1e-5);
+  EXPECT_LT(measurement->pressure.max_volume_scaled_residual, 1e-6);
+  const auto epoch = backend->AcquireCommitted();
+  ASSERT_TRUE(epoch.ok()) << epoch.status();
+  ASSERT_TRUE(epoch->Readback(*readback).ok());
+  EXPECT_EQ(*readback, scheduler->committed());
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
 TEST(CudaAdaptiveSimulate3D, PublishesLiveFamilyAndPreservesRejectedDeviceEpoch) {
   LiquidState3D state;
   LiquidSceneInputs3D scene;
@@ -540,6 +585,50 @@ TEST(CudaAdaptiveSimulate3D, PublishesProjectedOwnerExchangeWithLateDeviceRollba
   ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[0].mass, 0.1875);
   EXPECT_DOUBLE_EQ(scheduler->committed().particles[1].mass, 0.1875);
+  ASSERT_NO_FATAL_FAILURE(expect_device_state(scheduler->committed()));
+  EXPECT_EQ(backend->usage().compiled_architecture, 1200);
+}
+
+TEST(CudaAdaptiveSimulate3D, PublishesProjectedBandOverlapWithLateDeviceRollback) {
+  LiquidState3D state;
+  LiquidSceneInputs3D scene;
+  const auto slot = test::PopulateGradedBandOverlapFixture3D(state, scene);
+  ASSERT_TRUE(slot.ok()) << slot.status();
+  LiquidStepOptions3D options;
+  options.capacities = {state.particles.size(), 0, state.adaptive_cells.size(), state.adaptive_faces.size(), 0};
+  options.maximum_step_duration = 0.01;
+  auto backend = CudaLiquidSubstepBackend3D::Create(options.capacities, 0, false, false, true);
+  ASSERT_TRUE(backend.ok()) << backend.status();
+  auto scheduler = LiquidSubstepScheduler3D::Create(state, scene, options, backend->operations());
+  ASSERT_TRUE(scheduler.ok()) << scheduler.status();
+  auto readback = CloneLiquidState3D(state, options.capacities);
+  ASSERT_TRUE(readback.ok()) << readback.status();
+  const auto expect_device_state = [&](const LiquidState3D& expected) {
+    const auto epoch = backend->AcquireCommitted();
+    ASSERT_TRUE(epoch.ok()) << epoch.status();
+    ASSERT_TRUE(epoch->Readback(*readback).ok());
+    EXPECT_EQ(*readback, expected);
+  };
+  ASSERT_TRUE(scheduler->BeginFrame(0.01).ok());
+  scheduler->SetStageFaultHookForTesting({
+      .context = nullptr,
+      .before_stage =
+          [](void*, LiquidPhysicalStage3D stage, double) {
+            return stage == LiquidPhysicalStage3D::kAccept ? absl::AbortedError("reject projected band overlap")
+                                                           : absl::OkStatus();
+          },
+  });
+  const auto rejected = scheduler->AttemptWithAdaptiveBandOverlap(0.01);
+  ASSERT_TRUE(rejected.ok()) << rejected.status();
+  ASSERT_EQ(rejected->disposition, LiquidAttemptDisposition3D::kRetryDt) << scheduler->diagnostics().failure_code;
+  EXPECT_EQ(scheduler->diagnostics().failed_stage, LiquidPhysicalStage3D::kAccept);
+  ASSERT_NO_FATAL_FAILURE(expect_device_state(state));
+  scheduler->SetStageFaultHookForTesting({});
+  const auto accepted = scheduler->AttemptWithAdaptiveBandOverlap(*rejected->retry_duration);
+  ASSERT_TRUE(accepted.ok()) << accepted.status();
+  ASSERT_EQ(accepted->disposition, LiquidAttemptDisposition3D::kAccepted) << scheduler->diagnostics().failure_code;
+  EXPECT_DOUBLE_EQ(scheduler->committed().adaptive_faces[*slot].carrier_velocity, 0.75);
+  EXPECT_EQ(scheduler->committed().adaptive_faces[*slot].validity, LiquidFaceValidity3D::kValid);
   ASSERT_NO_FATAL_FAILURE(expect_device_state(scheduler->committed()));
   EXPECT_EQ(backend->usage().compiled_architecture, 1200);
 }

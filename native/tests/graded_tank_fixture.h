@@ -91,6 +91,22 @@ inline absl::Status PopulateGradedTankFixture3D(LiquidState3D& state, LiquidScen
   return ValidateLiquidState3D(state);
 }
 
+inline OceanBoundarySettings3D PrepareGradedSwellFixture3D(LiquidState3D& state) {
+  for (auto& particle : state.particles.values()) {
+    particle.world_velocity = {};
+  }
+  for (auto& leaf : state.adaptive_cells.values()) {
+    leaf.inventory.momentum_kg_m_per_s = {};
+  }
+  return {
+      .swell = {.still_water_height_m = 1, .water_depth_m = 1, .wave_height_m = 0.05, .wave_period_s = 2},
+      .inlet_wall_x_m = 0,
+      .inlet_interior_x_m = 1.25,
+      .outlet_interior_x_m = 1.375,
+      .outlet_wall_x_m = 1.5,
+      .inlet_rate_per_s = 8,
+  };
+}
 // A real divergence-free circulation in the lower X/Z plane. The particle-owned
 // cap separates the core from the open surface. Equal support weights on the
 // two eligible carriers in each horizontal direction give zero PIC motion.
@@ -381,6 +397,64 @@ PopulateDeepGradedBandFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene
   state.adaptive_faces = std::move(*faces);
   state.particles = std::move(*particles);
   return ValidateLiquidState3D(state);
+}
+
+// A divergence-free horizontal circulation inside the 2h overlap.
+// Particle P2G contributes zero velocity on the four Eulerian faces.
+inline absl::StatusOr<std::size_t>
+PopulateGradedBandOverlapFixture3D(LiquidState3D& state, LiquidSceneInputs3D& scene) {
+  const auto populated = PopulateDeepGradedBandFixture3D(state, scene, 2);
+  if (!populated.ok()) {
+    return populated;
+  }
+  std::vector<AdaptiveMacCellKey3D> keys;
+  for (auto& cell : state.adaptive_cells.values()) {
+    keys.push_back(cell.key);
+    if (cell.key.lower_corner.y == 2) {
+      cell.material_owner = AdaptiveLiquidMaterialOwner3D::kEulerian;
+    }
+  }
+  const auto removed = std::ranges::remove_if(state.particles.values(), [](const auto& particle) {
+    return particle.world_position.y == 1.25;
+  });
+  const auto resized =
+      state.particles.Resize(static_cast<std::size_t>(removed.begin() - state.particles.values().begin()));
+  if (!resized.ok()) {
+    return resized;
+  }
+  const auto topology = AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+  if (!topology.ok()) {
+    return topology.status();
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(*topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  std::optional<std::size_t> positive_x_slot;
+  for (std::size_t ordinal = 0; ordinal < topology->interior_faces().size(); ++ordinal) {
+    const auto& face = topology->interior_faces()[ordinal];
+    const auto lower = face.face_index.lattice_index;
+    if (lower.y != 2 || face.face_index.axis == FaceNormalAxis::kY) {
+      continue;
+    }
+    const auto slot = ownership->interior_face_slots[ordinal];
+    if (face.face_index.axis == FaceNormalAxis::kX) {
+      state.adaptive_faces[slot].carrier_velocity = lower.z == 0 ? 1 : -1;
+      if (lower.z == 0) {
+        positive_x_slot = slot;
+      }
+    } else {
+      state.adaptive_faces[slot].carrier_velocity = lower.x == 0 ? -1 : 1;
+    }
+  }
+  if (!positive_x_slot) {
+    return absl::InternalError("missing positive X carrier in overlap fixture");
+  }
+  const auto valid = ValidateLiquidState3D(state);
+  if (!valid.ok()) {
+    return valid;
+  }
+  return *positive_x_slot;
 }
 
 inline absl::Status PopulateGradedPhysicalHalfspaceFixture3D(

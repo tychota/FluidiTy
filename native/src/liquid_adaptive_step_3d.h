@@ -99,14 +99,18 @@ class AdaptiveLiquidStep3D {
   absl::Status Deposit(
       const LiquidState3D& trial,
       const LiquidStepOptions3D& options,
-      const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr
+      const PreparedAdaptiveQuadraticTransfer3D* quadratic = nullptr,
+      bool blend_band_overlap = false
   );
+  // Predict and project the frozen graph. Optional swell samples eligible
+  // canonical subfaces at the trial end and leaves old carriers intact.
   absl::Status Project(
       LiquidState3D& trial,
       double duration,
       const LiquidSceneInputs3D& scene,
       const LiquidStepOptions3D& options,
       const LiquidSubstepBackend3D& backend,
+      const ResolvedOceanBoundary3D* ocean_boundary,
       MacPressureWorkspace3D& workspace,
       LiquidAcceptedStepMeasurement3D& measurement
   );
@@ -180,6 +184,9 @@ class AdaptiveLiquidStep3D {
   std::vector<MacStrainRow3D> unit_strain_rows_;
   std::vector<std::size_t> leaf_strain_row_offsets_;
   std::vector<LiquidAdaptiveFaceState3D> old_faces_;
+  // Attempt-local PIC flags. The accepted carrier bank keeps the valid core carrier.
+  std::vector<std::size_t> band_fallback_slots_;
+  std::vector<LiquidAdaptiveFaceState3D> band_projected_history_;
   std::vector<PreparedAdaptiveQuadraticParticle3D> quadratic_particles_;
   std::vector<MacFaceDeposit3D> quadratic_deposits_;
   std::vector<LiquidBoundaryParticleGather3D> gathered_;

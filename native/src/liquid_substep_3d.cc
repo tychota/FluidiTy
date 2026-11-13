@@ -1070,23 +1070,42 @@ struct LiquidSubstepScheduler3D::Impl {
       LiquidAcceptedStepMeasurement3D& measurement,
       LiquidWorkPhaseObserver3D work_phase,
       const liquid_step_internal::PreparedAdaptiveQuadraticTransfer3D* quadratic,
-      bool allow_owner_exchange
+      AdaptiveCarrierMode adaptive_carrier_mode
   ) {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kActivate, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kDepositNormalization);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kDeposit, duration));
-    STEP_TRY(owner.Deposit(trial, options, quadratic));
+    STEP_TRY(owner.Deposit(trial, options, quadratic, adaptive_carrier_mode == AdaptiveCarrierMode::kBandOverlap));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kOldSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kForcesGeometryPressure);
+    if (ocean_boundary) {
+      STEP_TRY(Enter(LiquidPhysicalStage3D::kWaves, duration));
+    }
     STEP_TRY(Enter(LiquidPhysicalStage3D::kPressure, duration));
-    STEP_TRY(owner.Project(trial, duration, scene, options, backend, workspace.pressure(), measurement));
+    STEP_TRY(owner.Project(
+        trial,
+        duration,
+        scene,
+        options,
+        backend,
+        ocean_boundary ? &*ocean_boundary : nullptr,
+        workspace.pressure(),
+        measurement
+    ));
     diagnostics.pressure_diagnostics = measurement.pressure;
     STEP_TRY(Enter(LiquidPhysicalStage3D::kNewSnapshot, duration));
     SetWorkPhase(work_phase, LiquidWorkPhase3D::kGatherContactAcceptance);
     STEP_TRY(Enter(LiquidPhysicalStage3D::kGather, duration));
     STEP_TRY(owner.Gather(trial, quadratic));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
-    STEP_TRY(owner.Update(trial, duration, scene, options, backend, allow_owner_exchange));
+    STEP_TRY(owner.Update(
+        trial,
+        duration,
+        scene,
+        options,
+        backend,
+        adaptive_carrier_mode == AdaptiveCarrierMode::kOwnerExchange
+    ));
     STEP_TRY(Enter(LiquidPhysicalStage3D::kValidate, duration));
     STEP_TRY(ValidateLiquidState3D(trial));
     return Enter(LiquidPhysicalStage3D::kAccept, duration);
@@ -3545,13 +3564,26 @@ LiquidSubstepScheduler3D::Attempt(double step_duration, LiquidWorkPhaseObserver3
 
 absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveOwnerExchange(double step_duration
 ) {
+  return AttemptWithAdaptiveCarrierMode(step_duration, AdaptiveCarrierMode::kOwnerExchange);
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdaptiveBandOverlap(double step_duration) {
+  return AttemptWithAdaptiveCarrierMode(step_duration, AdaptiveCarrierMode::kBandOverlap);
+}
+
+absl::StatusOr<LiquidAttemptOutcome3D>
+LiquidSubstepScheduler3D::AttemptWithAdaptiveCarrierMode(double step_duration, AdaptiveCarrierMode mode) {
   const auto& scene = impl_->scene;
   const auto* tank = std::get_if<AxisAlignedLiquidTank3D>(&scene.obstacle);
   if (!impl_->adaptive || tank == nullptr || tank->piston_velocity_x != 0.0 || scene.friction_coefficient != 0.0
       || !std::isinf(scene.bulk_modulus) || scene.eos || scene.drift || scene.cavity || scene.cavity_provider.prepare
       || scene.surface_tension != 0.0 || scene.dynamic_viscosity != 0.0 || !scene.phase_pairs.empty()
       || !scene.constituent_materials.empty() || impl_->options.motion_sample_intervals != 0) {
-    return absl::FailedPreconditionError("projected owner exchange requires a stationary implicit-liquid graded tank");
+    return absl::FailedPreconditionError(
+        mode == AdaptiveCarrierMode::kBandOverlap
+            ? "adaptive band overlap requires a stationary implicit-liquid graded tank"
+            : "projected owner exchange requires a stationary implicit-liquid graded tank"
+    );
   }
   return AttemptImpl(
       step_duration,
@@ -3566,7 +3598,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptWithAdap
       nullptr,
       nullptr,
       std::nullopt,
-      true
+      mode
   );
 }
 
@@ -3809,7 +3841,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
     const AdaptiveWidthAgeTrial* adaptive_age,
     AdaptivePhysicalTrial* adaptive_physical,
     std::optional<std::uint64_t> quadratic_particle_id,
-    bool allow_owner_exchange
+    AdaptiveCarrierMode adaptive_carrier_mode
 ) {
   auto& impl = *impl_;
   if (impl.adaptive && std::holds_alternative<TranslatingHalfspace3D>(impl.scene.obstacle)
@@ -3903,7 +3935,7 @@ absl::StatusOr<LiquidAttemptOutcome3D> LiquidSubstepScheduler3D::AttemptImpl(
                                                 accepted_measurement,
                                                 work_phase,
                                                 quadratic_transfer,
-                                                allow_owner_exchange
+                                                adaptive_carrier_mode
                                             )
                                           : impl.Execute(
                                                 step_duration,
