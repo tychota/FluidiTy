@@ -9763,3 +9763,130 @@ Both QSand tests fail with the same final envelope angles
 to six decimal places, in fixture order: 29.113507°,
 26.761332°, 29.006384°, and 27.033753°. The option is off
 by default while this gate remains open.
+
+### Isolate the swept deformation gradient on merged main
+
+On 72cdcda, run the opt-in Q-SAND matrix with two temporary
+post-impact deformation controls. In the first, remove the
+normal velocity gradient row for incoming motion and retain
+the tangential rows. In the second, use the original Coulomb
+gradient projection and restore only the normal derivative
+of normal velocity. Leave particle advection and wall impulse
+unchanged in both controls.
+
+| Operator | Coarse | Fine | Coarse half-step | Fine half-step |
+|---|---:|---:|---:|---:|
+| Baseline | 29.113507° | 26.761332° | 29.006384° | 27.033753° |
+| Normal-only projection | 22.283879° | 22.241051° | 28.477639° | 27.128322° |
+| Restore normal derivative | 24.691677° | 23.755083° | 30.375928° | 29.212625° |
+
+Native and SM120 agree to within 0.000001°. Both controls pass
+the default dry-scene tests and fail the Q-SAND tests. Removing
+tangential projection worsens both nominal-step angles.
+Restoring the normal derivative raises both half-step angles
+and lowers both nominal-step angles. This leaves timestep
+sensitivity within the swept deformation treatment.
+
+Run each variant with `FLUIDITY_ENABLE_Q_SAND=ON` and
+`ctest --test-dir out/build -R '^(QSand|M5DryScenes)\.' --output-on-failure`.
+The temporary solver source was restored after each build.
+
+### Separate first impact and sustained floor contact
+
+On 72cdcda, restrict the existing swept deformation split to
+particles starting above the floor in the first control, then
+to particles starting on the floor in the second. Keep the
+position sweep and Coulomb impulse in both controls.
+
+| Deformation split | Coarse | Fine | Coarse half-step | Fine half-step |
+|---|---:|---:|---:|---:|
+| First impact only | 20.804356° | 20.578893° | 28.040286° | 26.585617° |
+| Sustained contact only | 29.004946° | 26.721486° | 29.004619° | 27.031849° |
+
+The sustained-contact control is within 0.11° of baseline in
+all four cases. Restricting the split to first impact lowers
+both nominal-step angles by more than 6°. The baseline effect
+therefore depends on treating repeated floor contact. Both
+controls pass default dry-scene tests and fail the opt-in
+Q-SAND matrix on native and SM120, with cross-backend angle
+agreement within 0.000001°. The solver source was restored.
+
+### Preserve the Coulomb-projected affine fit after contact
+
+On 72cdcda, apply the existing swept Coulomb gradient map
+to the stored APIC fit when a granular particle hits the
+stationary floor. Keep the baseline deformation and sweep.
+Run the native and SM120 Q-SAND and default dry-scene tests.
+
+| Case | Baseline | Projected affine storage |
+|---|---:|---:|
+| Coarse | 29.113507° | 29.083229° |
+| Fine | 26.761332° | 26.790663° |
+| Coarse half-step | 29.006384° | 28.883736° |
+| Fine half-step | 27.033753° | 26.915365° |
+
+Both backends pass the default dry-scene tests and fail the
+four-case Q-SAND matrix. The largest angle change is 0.123°.
+This rules out clearing the post-contact affine fit as the
+dominant effect in the tested merged solver. The temporary
+solver edit was restored.
+
+### Separate accumulated granular plastic volume from the elastic return
+
+On 72cdcda, temporarily reset the granular log plastic Jacobian
+to zero after each accepted update. Keep the returned elastic
+deformation and all solver operations. This control deliberately
+breaks total volume bookkeeping and tests feedback from the
+stored history only.
+
+All four native and SM120 Q-SAND cases reproduce the baseline
+angles, heights, radii and kinetic energies at printed precision
+with mean log plastic Jacobian zero. Both gate invocations fail.
+The result rules out feedback from accumulated plastic volume in
+this fixture. It leaves the effect of the elastic return to the
+tensile apex open. The temporary solver source was restored.
+
+### Locate late tensile-apex returns in the merged sand solver
+
+On 72cdcda, classify accepted granular updates by whether the
+sweep hits the floor and whether the particle starts at the
+floor. Count a tensile-apex return when the log plastic
+Jacobian changes beyond the existing material-state tolerance.
+Aggregate after the 0.75 s sample through 1.5 s.
+
+| Case | No floor hit | Arriving floor hit | Sustained floor hit | Share of apex returns with no hit |
+|---|---:|---:|---:|---:|
+| Coarse | 10468 / 11535 | 13 / 13 | 0 / 13715 | 99.88% |
+| Fine | 11081 / 12436 | 20 / 20 | 0 / 17784 | 99.82% |
+| Coarse half-step | 9226 / 32265 | 0 / 12 | 0 / 18186 | 100% |
+| Fine half-step | 12668 / 36439 | 8 / 13 | 0 / 24028 | 99.94% |
+
+The native run reproduced all four baseline envelope angles
+and exited 1. Repeated floor hits contribute no measured
+late tensile-apex events. The next useful control is to
+resolve the no-hit events by height and measure whether
+their stress reset changes load support near the floor.
+The temporary solver trace was restored.
+
+### Measure incoming compression of late tensile-apex particles
+
+On 72cdcda, split the accepted native return trace by starting
+height. Sum the positive part of compressive Kirchhoff stress
+in the vertical direction, weighted by particle reference
+volume, for all updates and for apex events alone. This proxy
+measures incoming stress carried by those particles before
+the return. Aggregate after the 0.75 s sample through 1.5 s.
+
+| Case | Apex at floor | Apex above floor through h/2 | Apex above h/2 | Share of incoming compression on apex events |
+|---|---:|---:|---:|---:|
+| Coarse | 0 | 7602 | 2879 | 0.000267% |
+| Fine | 0 | 8733 | 2368 | 0.000143% |
+| Coarse half-step | 0 | 5100 | 4126 | 0.0000244% |
+| Fine half-step | 0 | 10024 | 2652 | 0.0000348% |
+
+Most returns occur below half a cell above the floor. The
+particles undergoing them carry less than 0.0003% of the
+incoming compression summed over the window in every case.
+This bounds direct removal of incoming compressive stress
+at the return events. The native fixture reproduces the
+baseline angles and exits 1. The temporary trace was restored.
