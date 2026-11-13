@@ -9729,3 +9729,21 @@ the mass ends beyond the radius bound. This is bulk spread.
 The radial trace reproduces the 26.312249° envelope and exits 1.
 Run the instrumented native fixture with
 `--q-sand-symmetric-affine-decay 0 fine-half-dense all 18`.
+
+### Recheck the floor candidate from PR 111 on merged main
+
+Cherry-pick the isolated floor change 98e2107 onto e8c4a45
+and build Windows Release native and SM120 dry scene tests.
+Both default dry scene tests pass. Both backends reproduce
+the same failure pattern in the explicit sand commands.
+
+| Command | Native angles in fixture order | Exit on both backends |
+|---|---|---:|
+| --q-sand-refined | 30.052977° | 0 |
+| --q-sand-half-step | 37.729429°, 33.013884° | 1 |
+| --q-sand-column-long-settle | 29.113507°, 26.761332°, 29.006384°, 27.033753° | 1 |
+
+The CUDA refined angle differs by 0.000001°. The standalone
+candidate commit applies cleanly. The stacked PR includes
+earlier history and conflicts with merged main. The candidate
+was reverted on the evidence branch after qualification.
