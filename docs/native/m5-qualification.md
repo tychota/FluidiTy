@@ -8305,3 +8305,16 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon creep with zero normal ghost continuation
+
+Run the same native fine half-step binary with zero normal ghost
+continuation through 12 s. The envelope is 34.180426° at 3 s,
+30.220503° at 6 s, 27.485918° at 9 s and 24.457285° at 12 s.
+The radius stays at 0.154918 m. The apex loses 34.74 mm after
+3 s, about 1 mm more than baseline. The paired cut work residual
+is 8.26e-17 J. The early angle pass is temporary.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-zero-normal-ghost-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
