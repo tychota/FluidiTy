@@ -12404,3 +12404,28 @@ with `--q-sand-column-long-settle 6`, and with
 angle is 36.034513°. Dense radii change by at most 1.24 mm and
 all still exceed 0.16 m. This floor-local control was tested
 alone. CUDA was untested and the temporary source edit was restored.
+
+#### Attenuate positive horizontal APIC expansion above the floor
+
+On 90dca92, reduce positive horizontal trace of the ordinary
+granular APIC deposit by half above one cell width. Taper
+the reduction linearly to zero at the floor. Apply the
+correction equally to xx and zz. This is complementary
+to the preceding bottom-cell control. Keep deformation,
+contact, and the other transfer components unchanged.
+
+| Case | Sparse angle at 6 s | Dense angle at 3 s | Dense radius (m) | Dense final drift |
+|---|---:|---:|---:|---:|
+| Coarse | 42.258354° | 33.666166° | 0.147836 | 0.245770° |
+| Fine | 37.882920° | 31.916787° | 0.155212 | 0.201096° |
+| Coarse half-step | 24.549948° | 33.525692° | 0.134823 | 7.209156° |
+| Fine half-step | 25.782893° | 31.075900° | 0.135353 | 6.892670° |
+
+Build the native dry-scene target and run it without arguments,
+with `--q-sand-column-long-settle 6`, and with
+`--q-sand-dense-column-long-settle 3`. All exit 1. The default
+angle is 50.678178°. Dense radii decrease by 22.5–50.3 mm and
+all four dense angles and radii pass at 3 s, while both dense
+half-step cases fail persistence. The sparse cases all miss
+the angle band at 6 s. CUDA was untested and the source edit
+was restored.
