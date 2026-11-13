@@ -12175,3 +12175,33 @@ change is 0.241°. The Euler increment's volume error therefore
 does not account for the shallow angles in these native sparse
 cases. CUDA and dense sampling were untested. The temporary
 source edit was restored.
+
+#### Include the tangential effect of a varying floor arrival time
+
+On 0fb2dd3, after the usual granular sweep split, apply an
+additional increment I + a outer b only for interior impacts
+with incoming normal velocity vy < 0. Here a is the change in
+tangential advection velocity across impact divided by vy, with
+zero normal component. The row b is e_y plus the incoming
+duration times the normal row of the gathered velocity gradient.
+The correction approximates the tangential arrival-time term
+as a left-composed increment. It preserves its own determinant
+at first order only when a dot b vanishes. The normal endpoint,
+contact response, scatter and constitutive return are unchanged.
+
+Build and run the native dry-scene executable without arguments
+and with `--q-sand-column-long-settle 6`. The default passes
+at 33.563096°. The matrix exits 1.
+
+| Case | Baseline at 6 s | Arrival correction at 6 s |
+|---|---:|---:|
+| Coarse | 33.842809° | 33.578260° |
+| Fine | 23.424520° | 24.637866° |
+| Coarse half-step | 17.104058° | 19.854237° |
+| Fine half-step | 13.060319° | 18.607054° |
+
+The half-step angles improve by 2.75° and 5.55° but remain
+below 30°. This probes the tangential term without using the
+singular normal derivative of the clamped endpoint as a material
+deformation map. CUDA and dense sampling were untested.
+The temporary source edit was restored.
