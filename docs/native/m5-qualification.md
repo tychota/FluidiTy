@@ -11571,3 +11571,20 @@ case passes the original endpoint checks but fails
 persistence because its earlier angle is 29.062617°.
 The other three fail angle and persistence. Both default
 dry-scene executables pass.
+
+
+#### Gather the deformation gradient at the trajectory midpoint
+
+On 42260e0, sample the ordinary granular deformation gradient
+halfway along the post-force PIC displacement for steps with
+no swept floor hit. Use the same frozen grid velocities.
+Retain the original transport, affine storage, and gradient
+split at hits. Run the default native test and the sparse
+three-second command.
+
+The default test passes. At 3 s the four angles are 30.497792°,
+23.898065°, 22.854290°, and 20.806276°. The largest change is
+0.021751°. All four still fail persistence and the command
+returns 1. Spatial centering in the frozen field leaves the
+observed flattening intact. CUDA and dense sampling were
+untested. The temporary source edit was restored.
