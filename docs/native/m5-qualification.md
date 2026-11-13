@@ -6583,3 +6583,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Damp only positive horizontal divergence in stored affine velocity
+
+On 3008848, damp the positive part of the horizontal trace
+by exp(−150 dt) after the wall sweep. Subtract half the
+removed trace from each horizontal diagonal entry. This
+preserves the diagonal difference and both cross derivatives.
+Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.765858° | 0.164527 |
+| Coarse half-step | 43.124785° | 0.149189 |
+| Fine | 32.413558° | 0.155175 |
+| Fine half-step | 36.866956° | 0.156118 |
+
+Relative to damping both horizontal diagonal entries,
+angles differ by at most 0.127° and radii by 0.477 mm.
+The response is largely reproduced by damping positive
+trace alone. Only nominal fine passes. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-positive-plane-trace-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
