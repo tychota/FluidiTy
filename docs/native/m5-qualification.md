@@ -12358,3 +12358,27 @@ fails angle and radius. The command exits 1. The initial
 isotropic compression increases spreading substantially
 under this release, so it does not resolve Q-SAND. CUDA
 and dense sampling were untested. The fixture edit was restored.
+
+#### Retain incident rotation with resident floor compression
+
+On e31cc4f, at ordinary-floor zero-fraction granular contacts,
+keep the compressive part of incoming yy and retain the
+incoming skew part of the xy and zy pairs. Keep the symmetric
+off-diagonal entries of the projected gradient and leave
+positive-time impacts, the particle sweep and stress unchanged.
+Build the native dry-scene target. Run without arguments and
+with `--q-sand-column-long-settle 6` and
+`--q-sand-dense-column-long-settle 3`.
+
+| Case | Sparse angle at 6 s | Sparse final drift | Dense angle at 3 s | Dense radius (m) |
+|---|---:|---:|---:|---:|
+| Coarse | 35.428256° | 0.727771° | 34.332577° | 0.174015 |
+| Fine | 30.203405° | 0.142391° | 29.557011° | 0.183271 |
+| Coarse half-step | 33.318075° | 0.812641° | 26.607787° | 0.174958 |
+| Fine half-step | 29.258834° | 0.368356° | 24.929450° | 0.185992 |
+
+The default test passes at 34.841448°. All sparse radii
+and final drift magnitudes pass, but two sparse angles
+miss the band. All dense radii exceed 0.16 m and three
+dense angles miss the band. Both matrices exit 1.
+CUDA was untested and the temporary source edit was restored.
