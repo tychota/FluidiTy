@@ -10415,3 +10415,21 @@ Both coarse cases pass. Both fine cases remain below 30°
 and the fine half-step radius is 0.162090 m. The default
 native dry-scene test passes and Q-SAND fails. Temporary
 source was restored. CUDA was untested.
+
+#### Extend the combined timing control to three seconds
+
+Use the same native combined timing operator and four
+nominal and half-step cases on 8777acf. Extend only the
+endpoint from 1.5 to 3 s.
+
+| Case | Angle at 1.5 s | Angle at 3 s | Radius at 3 s (m) |
+|---|---:|---:|---:|
+| Coarse | 32.625579° | 34.231526° | 0.153019 |
+| Fine | 28.705882° | 26.184369° | 0.158969 |
+| Coarse half-step | 30.998102° | 27.815078° | 0.156228 |
+| Fine half-step | 28.526939° | 24.097968° | 0.164120 |
+
+Only the coarse nominal case passes at 3 s. The coarse
+half-step loses 3.18° after its earlier pass and the two
+fine cases flatten further. The native matrix exits 1.
+The temporary solver and fixture were restored.
