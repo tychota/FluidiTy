@@ -11126,3 +11126,26 @@ while passing short drift and kinetic energy. The sparse
 coarse angle pass is sensitive to initial sampling as well
 as to omission from the final state. CUDA was untested for
 the dense endpoint. The temporary fixture edit was restored.
+
+
+#### Locate the radial spread in the dense baseline
+
+On 24147a5, repeat the native dense three-second run above.
+At 0.75 and 3 s, sort the 504 equal-mass particle radii and
+read the 95th percentile at index floor(0.95 × (N − 1)).
+Count samples at or beyond 0.16 m at both endpoints.
+
+| Case | 95th percentile at 0.75 → 3 s (m) | Count at or beyond 0.16 m at 0.75 → 3 s |
+|---|---:|---:|
+| Coarse | 0.140213 → 0.147554 | 4 → 12 |
+| Fine | 0.148825 → 0.155540 | 20 → 20 |
+| Coarse half-step | 0.135840 → 0.144721 | 0 → 12 |
+| Fine half-step | 0.147016 → 0.157702 | 16 → 20 |
+
+At 3 s, 2.38–3.97% of the mass lies at or beyond the radius
+limit. The 95th percentile grows by 6.71–10.69 mm in every
+case and stays within the limit. The excess reaches multiple
+particles, including cases that already exceeded the limit
+at 0.75 s. The maximum-radius check remains in effect. The
+matrix exits 1 with the same final geometry as before. CUDA
+was untested for this trace. The temporary edit was restored.
