@@ -6090,3 +6090,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Taper vertical affine feedback near the floor
+
+On 3008848, multiply the stored normal velocity's y derivative
+by the accepted height divided by cell width, clamped to [0, 1].
+Apply this after the wall sweep. Both default dry-scene tests
+pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.874953° | 0.165185 |
+| Coarse half-step | 40.126370° | 0.154796 |
+| Fine | 31.853856° | 0.154852 |
+| Fine half-step | 35.007421° | 0.154754 |
+
+All radii decrease. The coarse nominal radius still exceeds
+0.16 m, and the coarse half-step still exceeds 35°. The fine
+half-step misses the angle limit by 0.007421°. The source was
+restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-taper-normal-diagonal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
