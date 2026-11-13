@@ -8543,3 +8543,27 @@ temporary solver change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-constitutive-substeps-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Alternate late step lengths at the same mean timestep
+
+On 255739e, form the native fine half-step pile through 3 s.
+Then alternate 0.390625 ms and 1.171875 ms steps. The mean is
+the original 0.78125 ms, so the number of transfer and contact
+updates per pair of steps is unchanged.
+
+| Time (s) | Constant timestep angle | Alternating timestep angle |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 30.279380° |
+| 9 | 27.988015° | 26.906364° |
+| 12 | 25.473317° | 24.331743° |
+
+The alternating schedule loses 37.53 mm of height after 3 s,
+3.79 mm more than the constant schedule. The final radius
+matches at 0.156304 m. The timestep distribution affects
+creep at the same mean transfer frequency. The temporary
+fixture change was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-alternating-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
