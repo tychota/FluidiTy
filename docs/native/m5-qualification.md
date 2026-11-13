@@ -8906,3 +8906,25 @@ The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-balanced-stationary-load-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-balanced-load
 ```
+
+### Reproduce the sand timestep and stationary wall probes from source
+
+Build both dry-scene executables from `43ec90c` on
+`codex/m5-sand-affine`. Use the same Windows Release SM120
+configuration as the main qualification build. In the commands
+below, set `$bin` to the directory containing those executables.
+
+```powershell
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-single-particle-strain
+& "$bin/fluidity_cuda_m5_dry_scene_tests.exe" --q-sand-single-particle-strain
+& "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 fine-half all 12 alternating-reversed
+```
+
+The stationary command checks exact floor position and vertical
+velocity at every step, relative wall impulse error of at most
+1e-9, and the refinement bound for the one-second yy strain drift.
+Native and SM120 pass all four timestep refinements and agree
+to printed precision. The alternating command reproduces
+24.331512° at 12 s and exits with status 1 on the angle check.
+The `half`, `double`, and `alternating` options apply their named
+schedules after 3 s. Omit the schedule to use constant steps.
