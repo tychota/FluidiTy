@@ -887,14 +887,22 @@ int main(int argc, char** argv) {
     }
     return all_pass ? 0 : 1;
   }
-  if (argc == 2
+  if (argc >= 2
       && (std::string_view(argv[1]) == "--q-sand-column-long-settle"
           || std::string_view(argv[1]) == "--q-sand-dense-column-long-settle")) {
+    if (argc > 3) {
+      return 2;
+    }
+    const std::string_view endpoint = argc == 3 ? argv[2] : "1.5";
+    if (endpoint != "1.5" && endpoint != "3" && endpoint != "6") {
+      return 2;
+    }
+    const double end_time = endpoint == "6" ? 6.0 : endpoint == "3" ? 3.0 : 1.5;
     const int sampling_multiplier = std::string_view(argv[1]) == "--q-sand-dense-column-long-settle" ? 2 : 1;
-    const bool reference = TestScene(0.075, 0.001875, false, 0, sampling_multiplier, 0.10, false, 1.5);
-    const bool refined = TestScene(0.0625, 0.0015625, false, 0, sampling_multiplier, 0.10, false, 1.5);
-    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, sampling_multiplier, 0.10, false, 1.5);
-    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, sampling_multiplier, 0.10, false, 1.5);
+    const bool reference = TestScene(0.075, 0.001875, false, 0, sampling_multiplier, 0.10, false, end_time);
+    const bool refined = TestScene(0.0625, 0.0015625, false, 0, sampling_multiplier, 0.10, false, end_time);
+    const bool reference_half = TestScene(0.075, 0.0009375, false, 0, sampling_multiplier, 0.10, false, end_time);
+    const bool refined_half = TestScene(0.0625, 0.00078125, false, 0, sampling_multiplier, 0.10, false, end_time);
     return reference && refined && reference_half && refined_half ? 0 : 1;
   }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-dense-three-second") {

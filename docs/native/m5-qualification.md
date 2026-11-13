@@ -11380,3 +11380,26 @@ half-step angles fall below 30°. Initial attenuation changes
 the collapse, while continued attenuation was also needed
 for the earlier dense endpoint passes. All three invocations
 fail. CUDA was untested and both temporary edits were restored.
+
+
+#### Run the persistence matrices without editing the fixture
+
+The sparse and dense column commands accept an optional endpoint
+of 1.5, 3, or 6 seconds. An omitted endpoint selects 1.5 s.
+Invalid endpoints and extra arguments return 2. The physical
+bounds are identical at all endpoints.
+
+```powershell
+$bin = 'out/requalified'
+foreach ($target in 'fluidity_m5_dry_scene_tests', 'fluidity_cuda_m5_dry_scene_tests') {
+  & "$bin/$target.exe" --q-sand-column-long-settle 3
+  & "$bin/$target.exe" --q-sand-dense-column-long-settle 3
+  & "$bin/$target.exe" --q-sand-column-long-settle 6
+}
+```
+
+The sparse 3 s run reproduces all four previous angles and
+short drift values on native and SM120. The sparse native
+6 s run returns 1 with angles 33.842809°, 23.424520°,
+17.104058°, and 13.060319° in fixture order. Both default
+dry-scene CTest entries pass. Q-SAND remains open.
