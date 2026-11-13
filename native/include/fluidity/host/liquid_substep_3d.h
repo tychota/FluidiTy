@@ -430,6 +430,13 @@ class LiquidSubstepScheduler3D {
   // Refusal leaves the accepted particle, core, and clock state unchanged.
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveOwnerExchange(double step_duration);
 
+  // Run an ordinary stationary implicit-liquid graded tank attempt with a 2h
+  // carrier overlap. The actual particle deposit and accepted same-side core
+  // carrier are blended before the old snapshot. Missing particle support
+  // uses the core carrier and PIC. Ownership and mixed-flux refusal are unchanged.
+  // The duration is in seconds. Unsupported attempts leave committed state intact.
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveBandOverlap(double step_duration);
+
   // Request one graded family refinement (refine=true) or coarsening before
   // the physical attempt. Preparation errors leave the current frame open
   // and consume no attempt. Rejection preserves the accepted topology and inventories.
@@ -659,6 +666,12 @@ class LiquidSubstepScheduler3D {
       std::size_t certified_replacement_count = 0,
       LiquidWorkPhaseObserver3D work_phase = {}
   );
+  enum class AdaptiveCarrierMode {
+    kDefault,
+    kOwnerExchange,
+    kBandOverlap
+  };
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptWithAdaptiveCarrierMode(double step_duration, AdaptiveCarrierMode mode);
   absl::StatusOr<LiquidAttemptOutcome3D> AttemptImpl(
       double step_duration,
       LiquidWorkPhaseObserver3D work_phase,
@@ -672,7 +685,7 @@ class LiquidSubstepScheduler3D {
       const AdaptiveWidthAgeTrial* adaptive_age = nullptr,
       AdaptivePhysicalTrial* adaptive_physical = nullptr,
       std::optional<std::uint64_t> quadratic_particle_id = std::nullopt,
-      bool allow_owner_exchange = false
+      AdaptiveCarrierMode adaptive_carrier_mode = AdaptiveCarrierMode::kDefault
   );
   absl::StatusOr<LiquidPlanarPistonAttempt3D> AttemptDynamicPistonImpl(
       double step_duration,
