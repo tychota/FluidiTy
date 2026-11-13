@@ -8206,3 +8206,28 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Halve the wall-normal diagonal in both paired operators
+
+Repeat the paired floor-normal control on 255739e with half
+of the yy component retained in deformation and stress scatter.
+
+| Native case | Envelope at 3 s | Radius (m) | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 32.900528° | 0.166899 | 0.355598 |
+| Coarse half-step | 39.852304° | 0.154416 | 0.175731 |
+| Fine | 31.122463° | 0.160001 | 0.290157 |
+| Fine half-step | 34.773384° | 0.155880 | 0.192113 |
+
+Mean log plastic Jacobian lies between baseline and full
+removal in each case. The fine nominal misses the radius by
+about 1 µm and the coarse half-step remains nearly 5° above
+the angle limit. The paired work residual stays within 4.1e-16 J.
+The temporary changes were restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-half-normal-diagonal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
