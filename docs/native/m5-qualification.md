@@ -10862,3 +10862,28 @@ below 30°. The coarse case loses 1.50° with the correction.
 The fine half-step baseline still loses 3.83° in the last
 second even though its final kinetic energy is 0.000037 J.
 The fixture edit was restored.
+
+
+#### Bound the effect of late floor friction
+
+On 283e2ce, repeat the native three-second column control.
+In the fixture, keep the floor coefficient at 0.7 until the
+0.75 s sample, then change only the coefficient to 1e6 or 0
+for the remaining accepted steps. Use the same native build
+target and QSand.native CTest entry as the baseline above.
+
+| Case | Coefficient 0.7 | Coefficient 1e6 after 0.75 s | Coefficient 0 after 0.75 s |
+|---|---:|---:|---:|
+| Coarse | 30.519543° | 30.519543° | 10.806232° |
+| Fine | 23.904249° | 23.904249° | 8.134887° |
+| Coarse half-step | 22.853454° | 22.853454° | 17.119293° |
+| Fine half-step | 20.811628° | 20.811628° | 15.842373° |
+
+The large coefficient leaves every reported angle, drift,
+radius and kinetic energy unchanged at printed precision.
+The zero coefficient reduces the angle in every case and
+both fine cases also exceed the radius bound. Late basal
+friction therefore supports the pile, but raising the
+existing Coulomb cap does not arrest the residual flattening.
+Both native matrices fail. CUDA was untested for the two
+controls. The fixture edit was restored.
