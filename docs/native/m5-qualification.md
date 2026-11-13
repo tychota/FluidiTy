@@ -9706,3 +9706,44 @@ Run the experimental native binary with
 and with `fine-half-dense` for the temporary denser selection.
 The two exits are 0 and 1 respectively. Both solver files
 and the fixture source were restored before the runs.
+
+### Measure bulk radial spread in the denser combined run
+
+Repeat the doubled-per-axis native fine half-step with the
+combined wall fit and stress midpoint through 18 s. At each
+3 s boundary, sort the 504 particle radii and report the
+lower-index empirical quantiles. Sum the mass beyond the
+0.16 m fixture radius separately.
+
+| Time | Median radius (m) | 90th percentile (m) | 95th percentile (m) | Mass outside 0.16 m |
+|---|---:|---:|---:|---:|
+| 3 s | 0.096799 | 0.161239 | 0.171733 | 10.52% |
+| 6 s | 0.105113 | 0.172103 | 0.182525 | 16.87% |
+| 9 s | 0.114188 | 0.178746 | 0.187972 | 23.21% |
+| 12 s | 0.118268 | 0.186816 | 0.197432 | 27.38% |
+| 15 s | 0.124559 | 0.195189 | 0.208446 | 30.56% |
+| 18 s | 0.132646 | 0.208789 | 0.224442 | 34.72% |
+
+The median moves outward by 35.85 mm and more than a third of
+the mass ends beyond the radius bound. This is bulk spread.
+The radial trace reproduces the 26.312249° envelope and exits 1.
+Run the instrumented native fixture with
+`--q-sand-symmetric-affine-decay 0 fine-half-dense all 18`.
+
+### Recheck the floor candidate from PR 111 on merged main
+
+Cherry-pick the isolated floor change 98e2107 onto e8c4a45
+and build Windows Release native and SM120 dry scene tests.
+Both default dry scene tests pass. Both backends reproduce
+the same failure pattern in the explicit sand commands.
+
+| Command | Native angles in fixture order | Exit on both backends |
+|---|---|---:|
+| --q-sand-refined | 30.052977° | 0 |
+| --q-sand-half-step | 37.729429°, 33.013884° | 1 |
+| --q-sand-column-long-settle | 29.113507°, 26.761332°, 29.006384°, 27.033753° | 1 |
+
+The CUDA refined angle differs by 0.000001°. The standalone
+candidate commit applies cleanly. The stacked PR includes
+earlier history and conflicts with merged main. The candidate
+was reverted on the evidence branch after qualification.
