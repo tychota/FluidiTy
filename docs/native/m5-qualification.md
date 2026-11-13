@@ -7826,3 +7826,20 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Exclude zero-weight faces from the predicted contact patch
+
+On 255739e, combine the gravity and translation contact predictor
+with a positive-weight requirement for each face in its patch.
+All four native cases reproduce the preceding translation-only
+prediction to printed precision. The coarse half-step remains
+at 40.558258° and only the fine half-step passes. Zero-weight
+stencil entries do not explain the predicted-contact outcomes
+in this matrix. The temporary code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-weighted-prediction-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
