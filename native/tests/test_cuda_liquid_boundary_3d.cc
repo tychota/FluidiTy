@@ -722,5 +722,50 @@ TEST(CudaLiquidBoundary3D, CoupledBoundaryOperatorsPreserveFailure) {
   Receipt("liquid_boundary_coupled_3d", gathered->measurement);
 }
 
+TEST(CudaLiquidBoundary3D, OwningCompatibleTransfersRejectInParticleOrder) {
+  Hardware();
+  boundary_transfer_test::BoundaryFixture fixture;
+  auto incompatible = fixture.particle;
+  incompatible.side_tag = 8;
+  auto excessive = fixture.particle;
+  excessive.transfer.particle_velocity.x = std::numeric_limits<double>::max();
+
+  std::array particles{excessive, incompatible};
+  auto deposit = fixture.DepositInputs();
+  deposit.particles = particles;
+  deposit.quantization.declared_particle_capacity = particles.size();
+  EXPECT_EQ(CudaDepositCompatibleMacQuanta3D(deposit).status().code(), absl::StatusCode::kOutOfRange);
+  std::swap(particles[0], particles[1]);
+  EXPECT_EQ(CudaDepositCompatibleMacQuanta3D(deposit).status().code(), absl::StatusCode::kFailedPrecondition);
+
+  particles = {fixture.particle, incompatible};
+  auto gather = fixture.GatherInputs();
+  gather.particles = particles;
+  EXPECT_EQ(CudaGatherLiquidBoundaryParticles3D(gather).status().code(), absl::StatusCode::kFailedPrecondition);
+
+  particles[1] = fixture.particle;
+  const auto deposited = CudaDepositCompatibleMacQuanta3D(deposit);
+  const auto expected_deposit = DepositCompatibleMacQuanta3D(deposit);
+  ASSERT_TRUE(deposited.ok()) << deposited.status();
+  ASSERT_TRUE(expected_deposit.ok()) << expected_deposit.status();
+  ASSERT_EQ(deposited->deposits.face_quanta.size(), expected_deposit->face_quanta.size());
+  for (std::size_t slot = 0; slot < expected_deposit->face_quanta.size(); ++slot) {
+    EXPECT_EQ(
+        deposited->deposits.face_quanta[slot].mass_quanta_sum,
+        expected_deposit->face_quanta[slot].mass_quanta_sum
+    );
+    EXPECT_EQ(
+        deposited->deposits.face_quanta[slot].pure_momentum_quanta_sum,
+        expected_deposit->face_quanta[slot].pure_momentum_quanta_sum
+    );
+  }
+  const auto gathered = CudaGatherLiquidBoundaryParticles3D(gather);
+  ASSERT_TRUE(gathered.ok()) << gathered.status();
+  ASSERT_EQ(gathered->gathered.particles.size(), particles.size());
+  for (const auto& result : gathered->gathered.particles) {
+    boundary_transfer_test::ExpectVec(result.new_pic_velocity, {3, 3, 3});
+  }
+}
+
 }  // namespace
 }  // namespace fluidity
