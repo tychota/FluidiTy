@@ -400,15 +400,10 @@ absl::Status internal::AdvanceDrySolidWithTransfers3D(
   const auto& history = blend_stored_velocity ? old_velocities : velocities;
   if (compatible_floor) {
     std::vector<LiquidFaceValidity3D> validity(grid.face_count(), LiquidFaceValidity3D::kMissing);
-    std::vector<LiquidPrescribedWallSample3D> walls(grid.face_count());
+    const std::vector<LiquidPrescribedWallSample3D> walls(grid.face_count());
     for (std::size_t slot = 0; slot < deposits.size(); ++slot) {
       if (deposits[slot].deposited_mass > 0) {
         validity[slot] = LiquidFaceValidity3D::kValid;
-      }
-      if (!floor_tags[slot].structurally_eligible) {
-        // The continuation may extrapolate tangential velocity inside the
-        // stationary floor. It cannot extrapolate normal flow there.
-        walls[slot] = {.available = true, .unit_normal = {0, 1, 0}};
       }
     }
     const auto gathered = floor_transfers->gather({

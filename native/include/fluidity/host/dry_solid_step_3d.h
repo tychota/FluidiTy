@@ -63,7 +63,6 @@ struct DrySolidStepBudget3D {
 // The force-acceleration denominator is floored at 1e-4 times the smallest particle mass for low-mass faces.
 // The compatible floor uses normalized face weights for deposit and PIC,
 // and a complete same-side ghost gather for deformation and affine feedback.
-// Below-floor ghosts impose stationary normal velocity and continue tangential velocity.
 // Compatible-floor transfer is bounded by the boundary transfer capacities.
 // Requires the platen gap to exceed one cell throughout the step and enforces motion and acoustic bounds.
 // Invalid inputs return InvalidArgument, inadmissible material or unsupported motion return FailedPrecondition,
