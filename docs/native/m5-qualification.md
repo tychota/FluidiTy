@@ -11469,3 +11469,14 @@ expansion into the vertical diagonal increases the
 overshoot relative to horizontal attenuation alone.
 CUDA and dense sampling were untested. The temporary
 solver edit was restored.
+
+
+#### Reproduce the dense baseline on SM120
+
+On 31bfab4, run the CUDA dry-scene executable with
+`--q-sand-dense-column-long-settle 3`. All four cases
+match the earlier native dense heights, radii, angles,
+short-window drift, and kinetic energy to the printed
+precision. Both paths fail the angle and radius checks
+in all four cases. The CUDA command exits 1. The sparse
+and dense failures therefore both reproduce on SM120.
