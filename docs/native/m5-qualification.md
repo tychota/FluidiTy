@@ -9351,3 +9351,30 @@ Run the experimental native scene binary with
 The 12 s fine half-step exits 0 and the four three-second
 cases with the shortcut replaced exit 1. The isolated
 source was restored after each variant.
+
+### Blend the wall-anchored fit with exact reflection
+
+On 43ec90c, use the arithmetic mean of the exact reflected
+donor row and the wall-anchored fit where the exact donor is
+available. Keep the baseline fallback elsewhere. Use the
+same blended row for the continuation and force transpose.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 36.554786° | 0.167061 |
+| Coarse half-step | 41.435573° | 0.154798 |
+| Fine | 33.303573° | 0.159124 |
+| Fine half-step | 35.837405° | 0.155348 |
+
+The stationary strain probe passes all four refinements.
+The stress-work residual is below 1.5e-16 J. The fine nominal
+case passes at 3 s. The fine half-step misses the upper angle
+bound at 3 s and reaches 28.284089° at 12 s, missing the lower
+bound. Its height decreases by 28.60 mm from 3 to 12 s,
+between the exact reflection and full fit results. A fixed
+50% blend therefore does not resolve the two endpoint failures.
+
+Run the isolated native scene with
+`--q-sand-single-particle-strain` and
+`--q-sand-symmetric-affine-decay 0 <case> all <seconds>`.
+The temporary solver source was restored.
