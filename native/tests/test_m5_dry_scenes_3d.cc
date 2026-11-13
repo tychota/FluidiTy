@@ -1278,6 +1278,61 @@ bool TestUncutStressWork() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--q-sand-single-particle-strain") {
+    constexpr std::array blocks{BlockIndex3D{0, -1, 0}, BlockIndex3D{0, 0, 0}};
+    const auto grid = SparseMacGrid3D::Create({{}, 1}, blocks, blocks.size());
+    if (!grid.ok()) {
+      return 2;
+    }
+    const DrySolidMaterial3D material = fluidity::GranularParameters3D{2, 3, 0.5, 0};
+    for (const int steps : {1000, 2000, 4000, 8000}) {
+      DrySolidParticle3D particle{
+          .world_position = {2.25, 0, 2.25},
+          .mass = 1,
+          .reference_volume = 0.1,
+          .elastic_deformation = {{0.95, 0, 0}, {0, 0.95, 0}, {0, 0, 0.95}},
+      };
+      const DrySolidStep3D settings{
+          .duration = 1.0 / steps,
+          .gravity_y = -1,
+          .acoustic_cfl = 0.25,
+          .compatible_floor = true,
+      };
+      fluidity::DrySolidStepBudget3D budget{};
+      for (int step = 0; step < steps; ++step) {
+#if defined(FLUIDITY_M5_CUDA_SCENES)
+        const auto status = fluidity::CudaAdvanceDrySolid3D(
+            *grid,
+            material,
+            settings,
+            {0x1p-42, 0x1p-38, 128},
+            {&particle, 1},
+            &budget
+        );
+#else
+        const auto status = fluidity::AdvanceDrySolid3D(*grid, material, settings, {&particle, 1}, &budget);
+#endif
+        if (!status.ok()) {
+          std::fprintf(stderr, "%s\n", status.ToString().c_str());
+          return 2;
+        }
+      }
+      const auto [x, y, z] = particle.elastic_deformation;
+      const double jacobian =
+          x.x * (y.y * z.z - y.z * z.y) + x.y * (y.z * z.x - y.x * z.z) + x.z * (y.x * z.y - y.y * z.x);
+      std::printf(
+          "single_strain steps=%d y=%.12g uy=%.12g Fy=%.12g J=%.12g grid=%.12g sweep=%.12g\n",
+          steps,
+          particle.world_position.y,
+          particle.world_velocity.y,
+          y.y,
+          jacobian,
+          budget.grid_wall_impulse_y / settings.duration,
+          budget.wall_impulse_on_particles.y / settings.duration
+      );
+    }
+    return 0;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--q-sand-reset-column-velocity") {
     const bool reference = TestScene(0.075, 0.001875, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
     const bool refined = TestScene(0.0625, 0.0015625, false, 0, 1, 0.10, false, 1.5, 0, {}, 0.7, true);
