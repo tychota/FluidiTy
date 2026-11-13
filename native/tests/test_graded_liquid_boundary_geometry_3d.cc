@@ -7,11 +7,21 @@
 #include "../src/graded_liquid_boundary_geometry_3d.h"
 #include "../src/graded_liquid_wet_transition_3d.h"
 #include "../src/graded_sampled_liquid_boundary_geometry_3d.h"
+#include "curved_matched_pressure_fixture.h"
 #include "fluidity/host/liquid_state_3d.h"
+#include "fluidity/host/mac_pressure_workspace_3d.h"
 #include "gtest/gtest.h"
 
 namespace fluidity {
 namespace {
+
+TEST(GradedLiquidBoundaryGeometry3D, MatchesUniformCurvedPressureAndGeometryError) {
+  auto workspace = MacPressureWorkspace3D::Create(448, 1520);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  pressure_test::CheckCurvedMatchedPressure([&](const auto& graph) {
+    return workspace->ProjectPrepared(graph);
+  });
+}
 
 TEST(GradedLiquidBoundaryGeometry3D, FreezesNonplanarSampledCutAndExplicitPressure) {
   constexpr std::array keys{AdaptiveMacCellKey3D{{-1, -1, -1}, 0}};
