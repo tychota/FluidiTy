@@ -5427,3 +5427,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Limit retained tangent rows by the local face velocity range
+
+On 3008848, scale an affected tangent row uniformly so
+the compatible PIC mean plus its centered affine correction
+lies within the minimum and maximum velocities on the current
+positive-weight compatible stencil. This preserves the weighted
+mean for that stencil. The control acts at gather time, so the
+bound applies to the sampled stencil before particle advection
+and the subsequent wall projection. Both default dry-scene
+tests pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 28.581131° | 0.173046 m |
+| Coarse half-step | 35.582541° | 0.160602 m |
+| Fine | 23.383563° | 0.185300 m |
+| Fine half-step | 29.562396° | 0.169252 m |
+
+All four complete, and all four exceed the radius limit.
+The local range bound avoids the support rejections of full
+affine retention but loses both fine passes. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-local-envelope-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
