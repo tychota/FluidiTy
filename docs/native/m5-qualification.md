@@ -6207,3 +6207,22 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Clip positive vertical affine feedback only after contact
+
+On 3008848, discard the positive vertical derivative of
+the stored normal velocity only for particles whose wall
+sweep reports contact. The contact projection already
+zeros the normal row for incoming downward motion. Both
+default native and SM120 dry-scene tests pass. The four
+extended native logs match the original clearing runs byte
+for byte. The difference from applying the signed limiter
+to every particle therefore comes from particles outside
+this contact branch. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-contact-normal-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
