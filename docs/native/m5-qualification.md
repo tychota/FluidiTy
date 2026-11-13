@@ -5185,3 +5185,27 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Retain in-plane derivatives on tangent fallback rows
+
+On 3008848, retain the x and z derivatives of fitted tangent
+rows that sample fallback faces and clear their y derivative.
+Clear the entire affected normal row as before. This changes
+the stored affine velocity for the next deposit. The current
+deformation gradient still uses the paired ghost field.
+
+Both default dry-scene tests pass on native and SM120.
+None of the extended native pile runs reaches 3 s. The
+coarse, coarse half-step and fine runs reject on the face
+motion bound at steps 530, 1197 and 357, respectively. The
+fine half-step returns an unlabeled FailedPrecondition at
+step 1986. Removing the wall-normal derivative alone is
+insufficient to retain stable affine feedback in this fixture.
+The temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-in-plane-retain-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
