@@ -7981,3 +7981,29 @@ The geometry reproduces baseline and the trace was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-traction-saturation-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Carry unused Coulomb cap into the reverse traction sweep
+
+On 255739e, give each point the unused scalar allowance from its
+first half-cap solve in addition to its usual second half-cap.
+The sum of both impulse magnitudes remains bounded by the original
+full cap. Keep the original wall model and native column matrix.
+
+| Case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.329576° | 0.168211 |
+| Coarse half-step | 40.501234° | 0.156712 |
+| Fine | 31.428980° | 0.159587 |
+| Fine half-step | 34.677697° | 0.156346 |
+
+Both coarse geometries are unchanged at printed precision.
+Fine angles change by at most 0.017°. The existing split of
+the cap has little effect on these outcomes. The temporary
+code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-carry-traction-cap-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
