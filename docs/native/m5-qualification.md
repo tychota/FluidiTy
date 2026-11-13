@@ -9845,3 +9845,25 @@ with mean log plastic Jacobian zero. Both gate invocations fail.
 The result rules out feedback from accumulated plastic volume in
 this fixture. It leaves the effect of the elastic return to the
 tensile apex open. The temporary solver source was restored.
+
+### Locate late tensile-apex returns in the merged sand solver
+
+On 72cdcda, classify accepted granular updates by whether the
+sweep hits the floor and whether the particle starts at the
+floor. Count a tensile-apex return when the log plastic
+Jacobian changes beyond the existing material-state tolerance.
+Aggregate after the 0.75 s sample through 1.5 s.
+
+| Case | No floor hit | Arriving floor hit | Sustained floor hit | Share of apex returns with no hit |
+|---|---:|---:|---:|---:|
+| Coarse | 10468 / 11535 | 13 / 13 | 0 / 13715 | 99.88% |
+| Fine | 11081 / 12436 | 20 / 20 | 0 / 17784 | 99.82% |
+| Coarse half-step | 9226 / 32265 | 0 / 12 | 0 / 18186 | 100% |
+| Fine half-step | 12668 / 36439 | 8 / 13 | 0 / 24028 | 99.94% |
+
+The native run reproduced all four baseline envelope angles
+and exited 1. Repeated floor hits contribute no measured
+late tensile-apex events. The next useful control is to
+resolve the no-hit events by height and measure whether
+their stress reset changes load support near the floor.
+The temporary solver trace was restored.
