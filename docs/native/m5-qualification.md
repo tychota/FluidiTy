@@ -4756,3 +4756,34 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Integrate the skew part of the floor gradient as a rotation
+
+Starting at 3008848, split the compatible-floor gradient into
+its symmetric rate and skew spin. Advance the symmetric
+gradient with the usual Euler increment and left-multiply the
+result by the Rodrigues rotation of the spin over the step.
+Pure skew then gives a rotation without a spurious volume or
+stretch increment. The gather, stress scatter and acceptance
+criteria are unchanged. Both default dry-scene targets pass.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 34.921635° | 0.168019 m | 0.339524 |
+| Coarse half-step | 40.497664° | 0.156731 m | 0.164615 |
+| Fine | 31.961405° | 0.159452 m | 0.226044 |
+| Fine half-step | 34.692508° | 0.156388 m | 0.136926 |
+
+The maximum radius change from ordinary clearing is 0.192 mm.
+Both fine cases still pass at 3 s and both coarse failures
+persist. The coarse nominal mean log plastic Jacobian rises
+by 0.011. The results do not support skew integration error
+as the dominant cause of either coarse failure. The temporary
+source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-rotation-split-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
