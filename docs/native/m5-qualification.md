@@ -6116,3 +6116,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Isolate the sign of vertical affine feedback
+
+On 3008848, retain only negative or only positive values
+of the stored normal velocity's vertical derivative after
+the wall sweep. Keep all other derivatives and the paired
+stress and deformation operators. Both default dry-scene
+tests pass for both controls on native and SM120.
+
+| Native case at 3 s | Compression-only angle / radius | Expansion-only angle / radius |
+|---|---:|---:|
+| Coarse | 35.869053° / 0.156974 m | 43.034526° / 0.149088 m |
+| Coarse half-step | 41.208446° / 0.145862 m | 52.929172° / 0.124214 m |
+| Fine | 31.542354° / 0.151578 m | 38.285957° / 0.146650 m |
+| Fine half-step | 35.240760° / 0.151825 m | 47.064008° / 0.139058 m |
+
+Expansion-only is within 0.25° of zero vertical feedback
+across the matrix. Compression-only spreads the piles
+farther and leaves only the nominal fine case passing.
+The nominal coarse radius is in range but its angle is
+0.869° high. Both temporary source controls were restored.
+
+```powershell
+foreach ($mode in 'compression', 'expansion') {
+  $bin = "out/pr-m5-sand-affine/out/sand-affine-normal-$mode-bin"
+  foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+    & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+  }
+}
+```
