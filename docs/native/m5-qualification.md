@@ -4787,3 +4787,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Halve the floor transfer mass threshold
+
+On 3008848, lower the face force mass floor and donor and
+wall-traction eligibility threshold from 1e-4 to 5e-5 times
+minimum particle mass. Leave the paired reconstruction and
+affine clearing rules in place. Both default dry-scene tests
+pass on native and SM120.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 34.361373° | 0.167440 m | 0.325000 |
+| Coarse half-step | 40.282181° | 0.156694 m | 0.159777 |
+| Fine | 30.974147° | 0.161721 m | 0.357368 |
+| Fine half-step | 34.340979° | 0.158384 m | 0.197393 |
+
+The coarse nominal radius improves by 0.771 mm and still
+fails. The coarse half-step angle remains above 40°. Both
+fine cases accumulate more plastic volume and the nominal
+fine case loses its radius pass. The source was restored
+after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-half-support-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
