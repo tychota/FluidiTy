@@ -8280,3 +8280,28 @@ deformation. The temporary solver change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-sustained-normal-extension-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Set the active below-floor normal ghost velocity to zero
+
+On 255739e, retain the tangent continuation and replace reflected
+below-floor normal ghost rows with empty rows. Use the same rows
+for the stress transpose and deformation gather.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 31.046973° | 0.164257 |
+| Coarse half-step | 38.758295° | 0.149804 |
+| Fine | 30.509111° | 0.157475 |
+| Fine half-step | 34.180426° | 0.154918 |
+
+The coarse half-step angle falls 1.74° and remains above 35°.
+The coarse nominal radius still exceeds 0.16 m. Both fine
+cases pass at 3 s and cut work residual stays within 3e-16 J.
+The temporary solver edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-zero-normal-ghost-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
