@@ -11031,3 +11031,25 @@ foreach ($backend in 'cpu', 'cuda') {
   & $blender --background --factory-startup --python-exit-code 1 --python "$tree/tools/blender/verify_m5_snow_water.py" -- $tree $bin "$tree/out/authored-recheck-2c18ed5-$backend" $backend
 }
 ```
+
+
+#### Separate collapse and late resident-floor compression
+
+On 9bc9c8f, apply the full zero-fraction compression diagnostic
+from release to the accepted 0.75 s sample, or only on steps
+after that sample. Run the native column matrix through 3 s
+using the same CTest entry and bounds as above.
+
+| Case | Baseline | Collapse only | Late only | Full resident compression |
+|---|---:|---:|---:|---:|
+| Coarse | 30.519543° | 39.909968° | 30.519588° | 39.909968° |
+| Fine | 23.904249° | 32.236242° | 23.904249° | 32.236242° |
+| Coarse half-step | 22.853454° | 31.646974° | 23.299272° | 31.685760° |
+| Fine half-step | 20.811628° | 31.845897° | 20.941489° | 31.860759° |
+
+Collapse-only compression reproduces the full diagnostic
+within 0.039°. Late-only compression improves the final
+angles by at most 0.446° and passes the default native dry
+scene. Both extended matrices fail. The three-second
+geometry effect comes predominantly from the first 0.75 s.
+CUDA was untested. Both temporary sources were restored.
