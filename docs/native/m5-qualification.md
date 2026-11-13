@@ -10939,3 +10939,26 @@ fail. The opposing response to signed and compression-only
 updates shows that extension matters to the contact split.
 These were native controls. The fixture and solver edits
 were restored.
+
+
+#### Restrict post-contact deformation to zero-fraction hits
+
+On b8d3a1d, apply the same yy control only when the swept
+contact fraction equals zero. Keep the original projected
+gradient for positive-time hits. Compare compression
+min(0, yy) and extension max(0, yy) at 3 s on native.
+
+| Case | Baseline | Compression at zero fraction | Extension at zero fraction |
+|---|---:|---:|---:|
+| Coarse | 30.519543° | 39.909968° | 12.957675° |
+| Fine | 23.904249° | 32.236242° | 11.354341° |
+| Coarse half-step | 22.853454° | 31.685760° | 21.186607° |
+| Fine half-step | 20.811628° | 31.860759° | 19.436887° |
+
+Compression agrees within 0.0006° with the all-hit control
+in every case and still fails the default dry scene at
+35.674372°. Restricting it to zero-fraction hits does not
+remove the coarse overshoot. The extension-only control
+passes the default native dry scene and lowers all four
+extended angles relative to baseline. Both QSand.native
+runs fail. CUDA was untested and both edits were restored.
