@@ -10116,3 +10116,16 @@ The default native dry-scene test passes. The Q-SAND
 matrix fails and the absolute cut work residual remains
 below 3e-16 J on completed runs. The temporary sources
 were restored. CUDA was untested for this control.
+
+#### Retry the fine nominal face-motion rejection
+
+On the same unregularized paired blend, retry only the
+duration-bound failures, halving the attempted step and
+resuming the nominal schedule after each accepted retry.
+The fine nominal run needed three halvings across two
+steps near 0.719 s. It reached 1.5 s with an envelope of
+28.514871° and radius 0.154059 m. The regularized run
+reached 28.543189° and 0.154080 m. The other three native
+cases reproduced the preceding control. The face-motion
+rejection was recoverable and the angle gate still failed.
+The temporary solver and fixture edits were restored.
