@@ -10012,3 +10012,23 @@ angle bounds, and exceeds the fine half-step radius bound
 by 1.60 mm. The absolute work residual is below 3.2e-16 J.
 The temporary edits were restored. Neither blend was tested
 on CUDA.
+
+### Refine both grid widths with the half-complete derivative
+
+On d220fa4, rerun the equal paired blend with quarter and
+eighth nominal timesteps. Keep the 1.5 s measurement horizon
+and original particle sampling. The prior half-step is
+included for comparison.
+
+| Grid width (m) | Half-step | Quarter-step | Eighth-step |
+|---|---:|---:|---:|
+| 0.075 | 33.852203° | 39.880769° | 49.489569° |
+| 0.0625 | 31.796255° | 35.920061° | 44.069917° |
+
+All four new native cases exceed 35°. The difference between
+grid widths grows from 2.06° to 5.42° over this step sequence.
+The eighth-step radius shrinks to 0.112709 m on the coarse grid
+and 0.131221 m on the fine grid. The integrated cut work
+residual stays below 2.4e-16 J. This finite-time result leaves
+the smaller-step settlement behavior unqualified. The
+temporary sources were restored. CUDA was untested.
