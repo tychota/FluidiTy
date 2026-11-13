@@ -8983,3 +8983,25 @@ post-force response is removed.
 The native fine half-step ends at 35.059702° and 0.181033 m
 at 3 s, with a cut work difference of 4.115359 J. The
 deformation-only change fails both bounds and was restored.
+
+### Project resting particle normal velocity on the grid
+
+On 43ec90c, perform four projected Gauss–Seidel sweeps on the
+normal velocity at particles starting on the floor. Use the
+compatible PIC stencil for the constraint and its transpose
+for the face impulse. Keep impulses unilateral and record
+them in the grid wall budget. The particle sweep still resolves
+remaining contact. The tangential cap still uses its original
+stress-derived reaction.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 33.250446° | 0.170759 |
+| Coarse half-step | 41.238694° | 0.153238 |
+| Fine | 31.264093° | 0.168854 |
+| Fine half-step | 36.414652° | 0.157928 |
+
+All four cases complete and miss at least one bound. The paired
+cut stress work residual stays within 1.6e-16 J. This control
+adds grid support before deformation while retaining the original
+friction cap. The temporary solver changes were restored.
