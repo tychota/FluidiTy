@@ -7711,3 +7711,28 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Blend the quadratic derivative and APIC fit with matched scatter
+
+On 255739e, average the quadratic shape derivative and complete
+APIC fit in the compatible-floor deformation gather. Scatter
+stress with the same equal-weight combination of their transposes.
+Use the standard native column matrix.
+
+| Case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.749673° | 0.168411 |
+| Coarse half-step | 40.203489° | 0.158945 |
+| Fine | 32.091002° | 0.159766 |
+| Fine half-step | 34.940182° | 0.156519 |
+
+The paired work residual stays within 5.2e-16 J. Both fine
+cases pass the endpoint. The coarse radius and coarse
+half-step angle still fail. The temporary code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-paired-blended-deformation-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
