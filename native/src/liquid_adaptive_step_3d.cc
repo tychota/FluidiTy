@@ -669,9 +669,9 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     return absl::OutOfRangeError("Graded physical trial end time is unrepresentable");
   }
   const auto start_wall = ObstacleAtTime(scene.obstacle, accepted.clock.time);
-  const auto end_wall = ObstacleAtTime(scene.obstacle, end_time);
+  auto end_wall = ObstacleAtTime(scene.obstacle, end_time);
   const auto* start_halfspace = std::get_if<TranslatingHalfspace3D>(&start_wall);
-  const auto* end_halfspace = std::get_if<TranslatingHalfspace3D>(&end_wall);
+  auto* end_halfspace = std::get_if<TranslatingHalfspace3D>(&end_wall);
   if (start_halfspace == nullptr || end_halfspace == nullptr) {
     return absl::FailedPreconditionError("Graded physical requests require a translating halfspace scene");
   }
@@ -679,6 +679,15 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       .unit_normal = {0, 1, 0},
       .plane_coordinate_m = surface_height_,
   };
+  const bool changing_membership = request.end_surface_height_m.has_value();
+  auto end_surface = surface;
+  if (changing_membership) {
+    end_surface.plane_coordinate_m = *request.end_surface_height_m;
+    if (!std::isfinite(end_surface.plane_coordinate_m) || end_surface.plane_coordinate_m == surface_height_) {
+      return absl::InvalidArgumentError("Graded physical transition requires a finite changed surface endpoint");
+    }
+    *end_halfspace = EndGradedLiquidWetTransitionSolid3D(*start_halfspace, duration);
+  }
   auto start_geometry = FreezeGradedPlanarLiquidGeometry3D(
       topology_,
       accepted.geometry.world_origin,
@@ -690,9 +699,16 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     return start_geometry.status();
   }
   auto frozen_end_wall = *end_halfspace;
-  frozen_end_wall.wall_velocity = {};
-  const auto end_geometry =
-      FreezeGradedPlanarLiquidGeometry3D(topology_, accepted.geometry.world_origin, frozen_end_wall, surface, duration);
+  if (!changing_membership) {
+    frozen_end_wall.wall_velocity = {};
+  }
+  const auto end_geometry = FreezeGradedPlanarLiquidGeometry3D(
+      topology_,
+      accepted.geometry.world_origin,
+      frozen_end_wall,
+      end_surface,
+      duration
+  );
   if (!end_geometry.ok()) {
     return end_geometry.status();
   }
@@ -704,8 +720,10 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
       .wet_open_faces = {},
       .end_fluid_volumes_m3 = {},
       .sparse_geometry = std::nullopt,
+      .wet_transition = std::nullopt,
   };
   bool has_known_air = false;
+  std::size_t changed_leaves = 0;
   physical.end_fluid_volumes_m3.reserve(topology_.cells().size());
   std::vector<GradedLiquidPressureCellFields3D> cells;
   cells.reserve(topology_.cells().size());
@@ -714,20 +732,29 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
     const auto& end_leaf = end_geometry->leaves()[cell];
     const auto& record = accepted.adaptive_cells[cell];
     const double target_divergence_s_inv = request.target_divergences_s_inv[cell];
+    const bool start_air = record.occupancy == LiquidCellOccupancy3D::kAir;
+    if (changing_membership) {
+      if (end_leaf.fluid_volume_m3 == 0 && !end_leaf.known_air) {
+        return absl::FailedPreconditionError("Graded physical transition endpoint requires wet liquid or certified air"
+        );
+      }
+      changed_leaves += start_air != end_leaf.known_air;
+    }
     physical.end_fluid_volumes_m3.push_back(end_leaf.fluid_volume_m3);
-    if (record.occupancy == LiquidCellOccupancy3D::kAir) {
+    if (start_air) {
       auto empty = record;
       empty.inventory = {};
-      if (!start_leaf.known_air || !end_leaf.known_air || record != empty || target_divergence_s_inv != 0) {
+      if (!start_leaf.known_air || (!changing_membership && !end_leaf.known_air) || record != empty
+          || target_divergence_s_inv != 0) {
         return absl::FailedPreconditionError(
-            "Graded physical trial air requires unchanged empty occupancy and zero source"
+            "Graded physical trial air requires certified empty occupancy and zero source"
         );
       }
       has_known_air = true;
       cells.push_back({});
       continue;
     }
-    if (start_leaf.fluid_volume_m3 <= 0 || end_leaf.fluid_volume_m3 <= 0) {
+    if (start_leaf.fluid_volume_m3 <= 0 || (!changing_membership && end_leaf.fluid_volume_m3 <= 0)) {
       return absl::FailedPreconditionError("Graded physical trial requires positive wet volume throughout the sweep");
     }
     if (record.inventory.current_volume_m3 > start_leaf.fluid_volume_m3) {
@@ -737,6 +764,18 @@ absl::Status AdaptiveLiquidStep3D::PreparePhysicalTrial(
         .target_divergence_s_inv = target_divergence_s_inv,
         .previous_pressure_pa = record.previous_pressure,
     });
+  }
+  if (changing_membership) {
+    if (changed_leaves != 1) {
+      return absl::FailedPreconditionError("Graded physical transition requires exactly one wet/air membership change");
+    }
+    physical.wet_transition = GradedLiquidWetTransitionRequest3D{
+        .expected_accepted_clock = accepted.clock,
+        .step_duration_s = duration,
+        .start_solid = *start_halfspace,
+        .start_liquid = surface,
+        .end_liquid_plane_coordinate_m = end_surface.plane_coordinate_m,
+    };
   }
   for (const auto& particle : accepted.particles.values()) {
     const double wall_distance = SolidDistance(start_wall, particle.world_position);
@@ -1597,14 +1636,88 @@ absl::Status AdaptiveLiquidStep3D::CheckExchangePaths(std::span<const LiquidPart
   return absl::OkStatus();
 }
 
+absl::StatusOr<GradedLiquidWetTransition3D> AdaptiveLiquidStep3D::CertifyWetTransition(
+    const LiquidState3D& accepted,
+    const GradedLiquidWetTransitionRequest3D& request,
+    const LiquidSceneInputs3D& scene
+) const {
+  std::vector<GradedLiquidParticlePath3D> paths;
+  paths.reserve(accepted.particles.size());
+  bool crossed = false;
+  const auto interior = topology_.interior_faces();
+  for (std::size_t ordinal = 0; ordinal < accepted.particles.size(); ++ordinal) {
+    const auto& particle = accepted.particles[ordinal];
+    // This implicit incompressible branch advects with the new PIC velocity.
+    const auto contact = ResolveLiquidWallContactBounded3D({
+        .start_world_position = particle.world_position,
+        .stored_world_velocity = particle.world_velocity,
+        .advecting_world_velocity = gathered_[ordinal].new_pic_velocity,
+        .obstacle = request.start_solid,
+        .step_duration = request.step_duration_s,
+        .friction_coefficient = scene.friction_coefficient,
+        .penetration_tolerance = scene.penetration_tolerance,
+    });
+    if (!contact.ok()) {
+      return contact.status();
+    }
+    if (contact->diagnostic != LiquidWallContactDiagnostic3D::kNone) {
+      return absl::FailedPreconditionError("Graded wet transition requires free straight particle advection");
+    }
+    const auto start_leaf = transfer_.ParticleLeafOrdinal(particle.world_position);
+    const auto end_leaf = transfer_.ParticleLeafOrdinal(contact->world_position);
+    if (!start_leaf.ok() || !end_leaf.ok()) {
+      return absl::FailedPreconditionError("Graded wet transition path leaves the fixed canonical roster");
+    }
+    GradedLiquidParticlePath3D path{
+        .particle_id = particle.id,
+        .start_m = particle.world_position,
+        .end_m = contact->world_position,
+        .start_leaf_ordinal = *start_leaf,
+        .end_leaf_ordinal = *end_leaf,
+    };
+    if (*start_leaf != *end_leaf) {
+      if (crossed) {
+        return absl::FailedPreconditionError("Graded physical transition admits only one cross-leaf particle");
+      }
+      const auto crossing = std::ranges::find_if(interior, [&](const auto& face) {
+        return (face.tail_cell_ordinal == *start_leaf && face.head_cell_ordinal == *end_leaf)
+            || (face.head_cell_ordinal == *start_leaf && face.tail_cell_ordinal == *end_leaf);
+      });
+      if (crossing == interior.end()) {
+        return absl::FailedPreconditionError("Graded wet transition path has no shared canonical interior subface");
+      }
+      path.crossing_face_slot = interior_slots_[static_cast<std::size_t>(crossing - interior.begin())];
+      crossed = true;
+    }
+    paths.push_back(path);
+  }
+  if (!crossed) {
+    return absl::FailedPreconditionError("Graded physical transition requires a certified material crossing");
+  }
+  return PrepareGradedLiquidWetTransition3D(accepted, request, paths);
+}
+
 absl::Status AdaptiveLiquidStep3D::Update(
     LiquidState3D& trial,
+    const LiquidState3D& accepted,
     double duration,
     const LiquidSceneInputs3D& scene,
     const LiquidStepOptions3D& options,
     const LiquidSubstepBackend3D& backend,
     bool allow_owner_exchange
 ) {
+  std::optional<GradedLiquidWetTransition3D> wet_transition;
+  if (physical_trial_ && physical_trial_->wet_transition) {
+    if (trial.particles.size() != accepted.particles.size() || gathered_.size() != accepted.particles.size()) {
+      return absl::FailedPreconditionError("Graded wet transition changed the projected particle roster");
+    }
+    auto certified = CertifyWetTransition(accepted, *physical_trial_->wet_transition, scene);
+    if (!certified.ok()) {
+      return certified.status();
+    }
+    wet_transition.emplace(std::move(*certified));
+  }
+
   std::optional<AdaptiveLiquidOwnerExchangePlan3D> exchange;
   if (allow_owner_exchange && core_transport_) {
     bool has_mixed_flux = false;
@@ -1654,6 +1767,21 @@ absl::Status AdaptiveLiquidStep3D::Update(
   if (!updated.ok()) {
     return updated;
   }
+  if (wet_transition) {
+    for (std::size_t ordinal = 0; ordinal < wet_transition->paths.size(); ++ordinal) {
+      const auto& original = accepted.particles[ordinal];
+      const auto& particle = trial.particles[ordinal];
+      const auto endpoint = wet_transition->paths[ordinal].end_m;
+      const auto position = particle.world_position;
+      if (particle.id != original.id || particle.mass != original.mass
+          || particle.reference_volume != original.reference_volume || particle.volume_ratio != original.volume_ratio
+          || particle.tag != original.tag || particle.side_tag != original.side_tag
+          || particle.phase_id != original.phase_id || particle.constituent_count != original.constituent_count
+          || std::tie(position.x, position.y, position.z) != std::tie(endpoint.x, endpoint.y, endpoint.z)) {
+        return absl::FailedPreconditionError("Graded particle update disagrees with its certified wet transition");
+      }
+    }
+  }
   if (exchange) {
     const auto paths = CheckExchangePaths(trial.particles.values());
     if (!paths.ok()) {
@@ -1661,9 +1789,11 @@ absl::Status AdaptiveLiquidStep3D::Update(
     }
   }
   if (physical_trial_) {
+    const double end_surface_height_m =
+        wet_transition ? wet_transition->request.end_liquid_plane_coordinate_m : surface_height_;
     for (const auto& particle : trial.particles.values()) {
       const double wall_distance = SolidDistance(physical_trial_->end_wall, particle.world_position);
-      if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= surface_height_) {
+      if (!std::isfinite(wall_distance) || wall_distance < 0 || particle.world_position.y >= end_surface_height_m) {
         return absl::AbortedError("Graded physical trial moved a particle outside the liquid");
       }
     }
@@ -1718,7 +1848,35 @@ absl::Status AdaptiveLiquidStep3D::Update(
       }
     }
   }
+  if (wet_transition) {
+    for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+      const auto& certified_inventory = wet_transition->leaves[cell].inventory;
+      const auto& updated_inventory = inventories_[cell];
+      if (updated_inventory.mass_kg != certified_inventory.mass_kg
+          || updated_inventory.reference_volume_m3 != certified_inventory.reference_volume_m3
+          || updated_inventory.current_volume_m3 != certified_inventory.current_volume_m3) {
+        return absl::FailedPreconditionError("Graded wet transition transport changed represented material");
+      }
+    }
+    for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+      auto& record = trial.adaptive_cells[cell];
+      if (record.occupancy != wet_transition->leaves[cell].occupancy) {
+        record.occupancy = wet_transition->leaves[cell].occupancy;
+        record.previous_pressure = 0;
+        record.coarsening_eligible_duration_s = 0;
+      }
+    }
+    for (std::size_t slot = 0; slot < subfaces_.size(); ++slot) {
+      const bool was_wet = wet_transition->before.subfaces()[slot].wet_open_area_m2 > 0;
+      const bool remains_wet = wet_transition->after.subfaces()[slot].wet_open_area_m2 > 0;
+      if (!was_wet || !remains_wet) {
+        trial.adaptive_faces[slot].carrier_velocity = 0;
+        trial.adaptive_faces[slot].validity = LiquidFaceValidity3D::kMissing;
+      }
+    }
+  }
   for (std::size_t cell = 0; cell < inventories_.size(); ++cell) {
+    // Retain physical pressure impulse from the updated particle velocities.
     trial.adaptive_cells[cell].inventory = inventories_[cell];
   }
   return absl::OkStatus();

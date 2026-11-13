@@ -339,6 +339,9 @@ struct LiquidAdaptivePhysicalGeometryRequest3D {
   // Empty seals all exteriors. Otherwise supply one optional entry per
   // canonical global subface slot. Interior and omitted air slots must be absent.
   std::span<const std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures{};
+  // A finite end height authorizes one wet/air change. The resolved scene
+  // supplies the start height. The same endpoint is required on replay.
+  std::optional<double> end_surface_height_m = std::nullopt;
 };
 
 // Width evidence for one accepted leaf and its candidate sibling family.
@@ -511,11 +514,12 @@ class LiquidSubstepScheduler3D {
   // Every such attempt, including retries and restored continuations, requires
   // a clock-bound request with canonical source and exterior fields.
   // The wall pose is derived from the same resolved scene and accepted time.
-  // Liquid leaves require positive wet volume throughout the interval. Air
-  // leaves require unchanged certified empty air. Unsupported activation,
-  // stale requests, and malformed fields
-  // fail without publishing any trial state. Geometry and an independent
-  // graded owner are allocated before the transaction enters its stages.
+  // An omitted endpoint requires unchanged wet/air membership. An explicit
+  // endpoint admits a single certified wet/air transition on that layout.
+  // Unsupported paths, stale requests and malformed fields fail without
+  // publishing trial state. A changed surface needs an authored continuation
+  // with its new start pose. Geometry and a graded owner are staged before
+  // the transaction enters its stages.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptivePhysicalGeometry(double step_duration, const LiquidAdaptivePhysicalGeometryRequest3D& request);
 
