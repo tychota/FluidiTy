@@ -87,14 +87,23 @@ struct StagedTransfer {
   std::vector<cuda_internal::BoundaryTransferParticle3D> particles;
   std::vector<cuda_internal::BoundaryTransferFaceResult3D> face_results;
   std::vector<cuda_internal::BoundaryTransferParticleResult3D> particle_results;
+  std::vector<cuda_internal::BoundaryGatherRunResult3D> gather_results;
   cuda_internal::BoundaryTransferReport3D report{};
 };
 // Every upload and download owner belongs to the caller, outliving runtime cleanup.
 absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
   staged.query.face_count = staged.faces.size();
   staged.query.particle_count = staged.particles.size();
-  staged.face_results.resize(staged.faces.size());
-  staged.particle_results.resize(staged.particles.size());
+  const bool parallel_deposit =
+      staged.query.operation == cuda_internal::BoundaryTransferOperation3D::kDeposit && staged.query.particle_count > 0;
+  const bool parallel_gather =
+      staged.query.operation == cuda_internal::BoundaryTransferOperation3D::kGather && staged.query.particle_count > 0;
+  if (parallel_gather) {
+    staged.gather_results.resize(staged.particles.size());
+  } else {
+    staged.face_results.resize(staged.faces.size());
+    staged.particle_results.resize(staged.particles.size());
+  }
   CudaOperatorMeasurement measurement{};
   absl::Status cleanup;
   absl::Status status;
@@ -123,7 +132,53 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
       if (!current.ok()) {
         return current;
       }
-      current = runtime.Allocate(staged.faces.size(), face_results);
+      if (parallel_gather) {
+        cuda_internal::BoundaryGatherRunResult3D* gather_results = nullptr;
+        current = runtime.Allocate(staged.gather_results.size(), gather_results);
+        if (!current.ok()) {
+          return current;
+        }
+        current = runtime.RecordKernelStart();
+        if (!current.ok()) {
+          return current;
+        }
+        current = cuda_internal::CheckCuda(
+            static_cast<cudaError_t>(cuda_internal::LaunchLiquidBoundaryGatherRun3D(
+                query,
+                faces,
+                particles,
+                gather_results,
+                static_cast<unsigned>(staged.query.particle_count),
+                runtime.stream()
+            )),
+            "Launch boundary gather"
+        );
+        if (!current.ok()) {
+          return current;
+        }
+        current = runtime.SynchronizeAndMeasureKernel();
+        if (!current.ok()) {
+          return current;
+        }
+        current = runtime.Download(gather_results, std::span(staged.gather_results));
+        if (!current.ok()) {
+          return current;
+        }
+        for (const auto& result : staged.gather_results) {
+          const auto measured = runtime.ValidateKernelMeasurement(result.compiled_architecture);
+          if (!measured.ok()) {
+            return measured.status();
+          }
+          current = boundary_internal::ArithmeticStatus(result.error);
+          if (!current.ok()) {
+            return current;
+          }
+          measurement = *measured;
+        }
+        return absl::OkStatus();
+      }
+      current = parallel_deposit ? runtime.AllocateZeroed(staged.faces.size(), face_results)
+                                 : runtime.Allocate(staged.faces.size(), face_results);
       if (!current.ok()) {
         return current;
       }
@@ -131,7 +186,14 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
       if (!current.ok()) {
         return current;
       }
-      current = runtime.Allocate(1, report);
+      if (parallel_deposit) {
+        current = runtime.Upload(std::span<const cuda_internal::BoundaryTransferReport3D>(&staged.report, 1), report);
+        if (!current.ok()) {
+          return current;
+        }
+      } else {
+        current = runtime.Allocate(1, report);
+      }
       if (!current.ok()) {
         return current;
       }
@@ -139,18 +201,26 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
       if (!current.ok()) {
         return current;
       }
-      current = cuda_internal::CheckCuda(
-          static_cast<cudaError_t>(cuda_internal::LaunchLiquidBoundaryTransfer3D(
-              query,
-              faces,
-              particles,
-              face_results,
-              particle_results,
-              report,
-              runtime.stream()
-          )),
-          "Launch boundary transfer"
-      );
+      const int launch_result = parallel_deposit ? cuda_internal::LaunchLiquidBoundaryDeposit3D(
+                                                       query,
+                                                       faces,
+                                                       particles,
+                                                       face_results,
+                                                       particle_results,
+                                                       report,
+                                                       staged.query.particle_count,
+                                                       runtime.stream()
+                                                   )
+                                                 : cuda_internal::LaunchLiquidBoundaryTransfer3D(
+                                                       query,
+                                                       faces,
+                                                       particles,
+                                                       face_results,
+                                                       particle_results,
+                                                       report,
+                                                       runtime.stream()
+                                                   );
+      current = cuda_internal::CheckCuda(static_cast<cudaError_t>(launch_result), "Launch boundary transfer");
       if (!current.ok()) {
         return current;
       }
@@ -175,7 +245,16 @@ absl::StatusOr<CudaOperatorMeasurement> Execute(StagedTransfer& staged) {
         return measured.status();
       }
       measurement = *measured;
-      return boundary_internal::ArithmeticStatus(staged.report.error);
+      if (!parallel_deposit) {
+        return boundary_internal::ArithmeticStatus(staged.report.error);
+      }
+      if (staged.report.first_parallel_error == cuda_internal::kNoParallelTransferError) {
+        return absl::OkStatus();
+      }
+      const auto error = static_cast<boundary_internal::Error>(
+          staged.report.first_parallel_error % cuda_internal::kBoundaryTransferErrorCodeCount
+      );
+      return boundary_internal::ArithmeticStatus(error);
     };
     status = execute();
   }
@@ -373,7 +452,8 @@ absl::StatusOr<CudaLiquidBoundaryGatherResults3D> CudaGatherLiquidBoundaryPartic
     return measurement.status();
   }
   LiquidBoundaryGatherResults3D result;
-  for (const auto& particle : staged.particle_results) {
+  result.particles.reserve(staged.gather_results.size());
+  for (const auto& particle : staged.gather_results) {
     result.particles.push_back(particle.gathered);
     result.old_pic_fallback_particle_count += particle.gathered.old_pic_fallback ? 1 : 0;
     result.new_pic_fallback_particle_count += particle.gathered.new_pic_fallback ? 1 : 0;
