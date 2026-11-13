@@ -7358,3 +7358,17 @@ foreach ($case in 'coarse-half', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Reproduce long-horizon fine half-step creep on SM120
+
+Run the same 12 s fixture on SM120 with exact 3 s sampling.
+The envelope angles at 3, 6, 9 and 12 s are 34.693822°,
+30.869627°, 27.988015° and 25.473317°. All four heights,
+radii and angles match native at printed precision. The
+final radius is 0.156304435 m. The hybrid CUDA transfer path
+therefore reproduces the native loss of pile height and
+fails the 30° lower bound. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-cuda-long-horizon-bin/fluidity_cuda_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
