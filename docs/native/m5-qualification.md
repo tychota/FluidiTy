@@ -5921,3 +5921,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Predict floor contact on the bounded tangent clearing candidate
+
+Repeat the earlier predicted-contact mask on 3008848.
+Activate the floor mask for current contacts and particles
+whose height after one gravity-predicted step falls within
+the contact tolerance. Keep the same paired stress transfer
+and wall sweep. Both default native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.312393° | 0.169355 |
+| Coarse half-step | 40.558258° | 0.157815 |
+| Fine | 31.300106° | 0.161715 |
+| Fine half-step | 34.684115° | 0.156606 |
+
+All four radii increase. The coarse half-step angle changes
+by only 0.057°. The nominal fine loses its radius pass, and
+both coarse failures persist. The temporary source was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-predict-contact-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
