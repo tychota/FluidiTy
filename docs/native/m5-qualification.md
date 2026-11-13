@@ -6810,3 +6810,33 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Unload the cone by removing gravity at 0.75 s
+
+On 3008848, repeat the native elastic return energy diagnostic and
+split the timestep exactly at 0.75 s. Set gravity to zero for the
+remaining attempts. The cumulative elastic return loss before
+unloading reproduces the loaded control at the reported precision.
+
+| Case | Loaded loss from 0.75 to 2.25 s (mJ) | Unloaded loss over the same interval (mJ) | Last accepted unloaded time (s) |
+|---|---:|---:|---:|
+| Coarse | 6.514 | 20.661 | 2.645625 |
+| Coarse half-step | 3.191 | 10.913 | 2.648438 |
+| Fine | 10.609 | 17.848 | 2.251562 |
+| Fine half-step | 4.325 | 9.415 | 2.292969 |
+
+The unload excites a transient with more constitutive energy loss
+than the loaded control. At both widths, the loss still drops by
+roughly half with the timestep. Continued gravitational acceleration
+is therefore unnecessary for this sensitivity in the unload transient.
+All four runs terminate with FailedPrecondition after the comparison
+interval. The release build reports an empty status message, confirmed
+by printing the raw message in a separate fine-grid rerun. The temporary
+edits were restored. The standard Q-SAND gate remains open.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-cone-energy-unloaded-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
