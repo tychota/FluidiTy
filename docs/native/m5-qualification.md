@@ -4815,3 +4815,31 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Isolate the wall traction mass threshold
+
+On 3008848, halve the minimum eligible face mass in the
+tangential wall gather, mobility and impulse scatter only.
+Keep the stress donor threshold and face acceleration mass
+floor at 1e-4 times minimum particle mass. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius | Mean log plastic Jacobian |
+|---|---:|---:|---:|
+| Coarse | 34.398561° | 0.167928 m | 0.328692 |
+| Coarse half-step | 40.522901° | 0.156508 m | 0.164579 |
+| Fine | 31.491192° | 0.159365 m | 0.226366 |
+| Fine half-step | 34.717691° | 0.156193 m | 0.136328 |
+
+All four radii change by less than 0.3 mm and retain their
+original pass or fail status. The fine-grid plastic volume
+increase seen when halving the shared threshold does not
+reproduce when changing traction eligibility alone. The
+temporary source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-half-traction-support-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
