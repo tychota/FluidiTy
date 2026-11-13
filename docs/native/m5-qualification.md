@@ -8091,3 +8091,27 @@ The temporary solver edits were restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-compatible-energy-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Compare carried material volume with late pile height
+
+On 255739e, sum V0 det(F_E) exp(log J_pl) over the native fine
+half-step particles and divide by the initial reference volume.
+Also report the elastic-only volume ratio and the center height
+of the equal-mass particles.
+
+| Time (s) | Total material volume ratio | Elastic-only ratio | Center height (mm) |
+|---|---:|---:|---:|
+| 3 | 1.07537 | 0.92013 | 24.914 |
+| 6 | 1.11490 | 0.94771 | 14.475 |
+| 9 | 1.14359 | 0.96599 | 5.562 |
+| 12 | 1.16538 | 0.97333 | 4.726 |
+
+The carried material volume grows 8.37% after 3 s while the
+center falls 20.19 mm and the printed outer radius stays
+fixed. The Jacobian sum measures particle-carried volume.
+Particle centers supply the independent geometric measurement.
+The temporary trace was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-material-volume-horizon-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
