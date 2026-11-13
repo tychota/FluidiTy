@@ -7750,3 +7750,28 @@ solver change was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-paired-blended-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Add the quadratic term to the frozen-gradient deformation increment
+
+On 255739e, use (I + dt L + 0.5 dt² L²) F for compatible-floor
+trial deformation, with L held at the gathered velocity
+gradient. Keep transfer, contact and constitutive return intact.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.405267° | 0.167779 |
+| Coarse half-step | 40.522743° | 0.156163 |
+| Fine | 31.474673° | 0.159112 |
+| Fine half-step | 34.674671° | 0.156574 |
+
+The largest angle change relative to the first-order control
+is 0.076°. Both coarse failures persist. This checks the
+frozen-gradient time integration term without correcting the
+velocity field's time dependence. Temporary code was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-quadratic-deformation-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
