@@ -10985,3 +10985,25 @@ and are still flattening over the last second. Every case
 meets the radius, kinetic energy, and short drift limits.
 These results leave Q-SAND open. Temporary sources were
 restored.
+
+
+#### Bound resident compression by incoming normal speed
+
+On c524856, repeat the native three-second matrix with the
+zero-fraction control. Clamp the retained yy rate to the
+interval from min(0, incoming PIC y velocity / cell width)
+to zero. This bounds the per-step added normal strain by
+the incoming normal travel divided by the cell width.
+
+| Case | Full resident compression | Speed-bounded compression |
+|---|---:|---:|
+| Coarse | 39.909968° | 39.013679° |
+| Fine | 32.236242° | 31.662281° |
+| Coarse half-step | 31.685760° | 28.385289° |
+| Fine half-step | 31.860759° | 27.723006° |
+
+The bound reduces the coarse overshoot by 0.90° but
+reduces both half-step angles by more than 3°. The default
+native dry scene also fails at 35.114976°. Both native CTest
+entries fail. CUDA was untested and both temporary edits
+were restored.
