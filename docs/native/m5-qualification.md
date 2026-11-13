@@ -10433,3 +10433,21 @@ Only the coarse nominal case passes at 3 s. The coarse
 half-step loses 3.18° after its earlier pass and the two
 fine cases flatten further. The native matrix exits 1.
 The temporary solver and fixture were restored.
+
+#### Check persistence of the combined timing control
+
+On b06dea6, extend the same combined timing runs to 6 s
+with the original angle, radius and short drift bounds.
+
+| Case | Angle at 3 s | Angle at 6 s | Radius at 6 s (m) |
+|---|---:|---:|---:|
+| Coarse | 34.231526° | 33.098793° | 0.153019 |
+| Fine | 26.184369° | 24.760041° | 0.158969 |
+| Coarse half-step | 27.815078° | 27.422196° | 0.158282 |
+| Fine half-step | 24.097968° | 19.515452° | 0.164120 |
+
+The coarse nominal case still passes the endpoint. It
+loses 4.37 mm of height from 3 to 6 s at fixed radius.
+The fine half-step loses 15.24 mm of height at fixed
+radius. The native matrix exits 1. The sources were
+restored and CUDA was untested for this extension.
