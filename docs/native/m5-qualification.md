@@ -10309,3 +10309,65 @@ angles fall and Q-SAND still fails. This control isolates
 the time level of advection and the associated contact
 timing from the stored velocity update. The temporary
 source was restored. CUDA was untested.
+
+#### Isolate the vertical midpoint displacement
+
+On 146f854, center the vertical displacement alone or the
+two horizontal components alone in the ordinary granular
+sweep. Keep final stored velocity and the final deformation
+field in both variants.
+
+| Case | Baseline | Vertical midpoint displacement | Horizontal midpoint displacement |
+|---|---:|---:|---:|
+| Coarse | 29.113507° | 26.931189° | 29.211256° |
+| Fine | 26.761332° | 24.302544° | 26.932741° |
+| Coarse half-step | 29.006384° | 28.443352° | 29.138165° |
+| Fine half-step | 27.033753° | 26.713218° | 27.096094° |
+
+The vertical change accounts for the angle reduction in the
+full midpoint displacement control. Centering the horizontal
+components increases angles by at most 0.172°. Both native
+variants pass the default dry-scene test and fail Q-SAND.
+The temporary source was restored. CUDA was untested.
+
+#### Separate above-floor and floor-start vertical displacement
+
+On 146f854, apply the vertical midpoint displacement only to
+updates starting above the floor, then only to updates starting
+on the floor. Keep final stored velocity and deformation.
+
+| Case | Above floor only | At floor only |
+|---|---:|---:|
+| Coarse | 26.961980° | 29.048986° |
+| Fine | 24.308982° | 26.731736° |
+| Coarse half-step | 28.442358° | 29.013248° |
+| Fine half-step | 26.731460° | 27.028059° |
+
+The above-floor variant reproduces the full vertical midpoint
+effect within 0.031°. The floor-start variant is within 0.065°
+of baseline. This attributes the difference to above-floor
+transport, which includes both flight and arrival steps.
+Both variants pass the default native dry-scene test and fail
+Q-SAND. The temporary source was restored. CUDA was untested.
+
+#### Separate floor arrival from transport above the floor
+
+On 146f854, classify steps starting above the floor using
+both the ordinary and midpoint swept endpoints. Apply the
+vertical midpoint in the arrival control when either path
+reaches the floor, and in the above-floor control when
+neither path reaches it.
+
+| Case | Arrival only | Above-floor transport only |
+|---|---:|---:|
+| Coarse | 29.086256° | 26.984932° |
+| Fine | 26.710930° | 24.313435° |
+| Coarse half-step | 29.006001° | 28.442677° |
+| Fine half-step | 27.033504° | 26.729852° |
+
+Arrival-only angles stay within 0.051° of baseline.
+Above-floor transport reproduces the all-above-start control
+within 0.023°. The effect is therefore mainly in steps
+where neither displacement reaches the floor. Both native
+default tests pass and Q-SAND fails. Temporary source was
+restored. CUDA was untested.
