@@ -11335,3 +11335,26 @@ It still fails the default check. Both sparse nominal cases
 pass at 3 s and both half-step cases fail. All four dense
 radii exceed 0.16 m. CUDA was untested and both temporary
 edits were restored.
+
+
+#### Attenuate positive horizontal trace after collapse
+
+On c7c1f2e, halve the positive horizontal APIC trace only
+on steps starting at or after the accepted 0.75 s sample.
+Run the default native dry scene and both three-second
+column samplings with their original bounds.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 30.609475° | 29.903200° | 0.168704 |
+| Fine | 24.554257° | 27.649621° | 0.181639 |
+| Coarse half-step | 23.531808° | 22.566166° | 0.168540 |
+| Fine half-step | 21.579585° | 21.160088° | 0.183133 |
+
+The default test passes and the 0.75 s samples match
+baseline. The late-only control reduces the dense radii
+by 0.44–4.44 mm, leaving all four above 0.16 m. Its maximum
+angle gain across both samplings is 0.77°. Both extended
+runs fail. Most of the response to this attenuation requires
+changing the initial collapse. CUDA was untested and the
+temporary edits were restored.
