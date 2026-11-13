@@ -5159,3 +5159,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Use the nearest donor for rank-deficient tangent fits
+
+On 3008848, keep the geometrically nearest donor for
+rank-deficient tangent rows instead of selecting by deposited
+mass divided by one plus squared distance. The normal
+fallback and full-rank fit rules are unchanged. Both default
+native and SM120 dry-scene tests pass.
+
+| Native case at 3 s | Angle | Radius |
+|---|---:|---:|
+| Coarse | 34.328114° | 0.168211 m |
+| Coarse half-step | 40.501234° | 0.156712 m |
+| Fine | 31.431266° | 0.159557 m |
+| Fine half-step | 34.693731° | 0.156304 m |
+
+All radii match the baseline at printed precision. The
+largest angle change is 0.012°. Both coarse failures
+persist. The source was restored after linking.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-rank-nearest-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
