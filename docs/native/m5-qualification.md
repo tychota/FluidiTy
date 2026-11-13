@@ -8406,3 +8406,29 @@ falls below 30° by 12 s. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-half-timestep-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
 ```
+
+### Compare wall support at a fixed formed state across timesteps
+
+On 255739e, copy the native fine half-step column at 3 s
+and advance each copy once with its original timestep, half
+of that timestep, or one quarter. Preserve carried motion and
+material history. Divide each vertical wall impulse by its own
+step duration.
+
+| Step (ms) | Grid support (N) | Swept particle support (N) | Particle contacts |
+|---|---:|---:|---:|
+| 0.781250 | 14.154662 | 8.987635 | 17 |
+| 0.390625 | 14.154662 | 13.263539 | 17 |
+| 0.195313 | 14.154662 | 21.815347 | 17 |
+
+The grid force is unchanged. Swept support increases in units
+of force as the timestep shrinks, with the same contact count.
+The impulse data fit a step-independent swept contribution of
+about 3.34 mN·s plus a duration-scaled contribution. This test
+isolates the immediate timestep response. The temporary probe
+returned after the copied steps and bypassed the endpoint gate.
+The fixture source was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-same-state-support-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
