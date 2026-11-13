@@ -9253,3 +9253,36 @@ The instrumented native scene ran with
 `--q-sand-symmetric-affine-decay 0 fine-half all 12`.
 The angle reproduced 25.473317° and the command exited 1.
 The temporary solver instrumentation was restored.
+
+### Separate the original vertical stress force from floor reconstruction
+
+On 43ec90c, divide the original force and the change made by
+the floor ghost transpose by the same production face mass
+denominator and multiply by the accepted duration. Center
+both increments over each compatible vertical PIC stencil.
+The entries are half the particle mass times the weighted
+variance or twice the weighted covariance, summed by interval.
+
+| Interval | Stencil | Original force (J) | Reconstruction change (J) | Cross term (J) | Combined kick (J) |
+|---|---|---:|---:|---:|---:|
+| 0–3 s | Full | 0.140204 | 0.038012 | −0.116181 | 0.062035 |
+| 0–3 s | Cut | 0.113387 | 0.032541 | −0.105744 | 0.040184 |
+| 3–6 s | Full | 0.051298 | 0.004051 | −0.017752 | 0.037597 |
+| 3–6 s | Cut | 0.067697 | 0.010436 | −0.018587 | 0.059547 |
+| 6–9 s | Full | 0.001718 | 0.001151 | −0.000843 | 0.002026 |
+| 6–9 s | Cut | 0.054424 | 0.010719 | 0.028297 | 0.093439 |
+| 9–12 s | Full | 0.001919 | 0.000778 | −0.000028 | 0.002669 |
+| 9–12 s | Cut | 0.013062 | 0.008914 | 0.014702 | 0.036678 |
+
+The original cut-normal force produces 0.135183 J of variance
+from 3 to 12 s at the recorded states. The reconstruction
+change and its cross term add a net 0.054482 J. Reconstruction
+reduces the kick variance through 6 s and increases it afterward.
+The measured kick on faces below the force mass floor contributes
+zero variance at 1e-9 J precision. These are contributions at
+the recorded states, so they leave the trajectory response to
+a different force operator open.
+
+The instrumented native run used
+`--q-sand-symmetric-affine-decay 0 fine-half all 12`.
+It reproduced 25.473317° and exited 1. The source was restored.
