@@ -7468,3 +7468,27 @@ diagnostic intervention. The temporary fixture was restored.
 ```powershell
 & 'out/pr-m5-sand-affine/out/sand-affine-late-stress-rebuild-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
 ```
+
+### Clear elastic shear while retaining elastic volume
+
+On 3008848, reset stored motion once at 3 s in the native fine
+half-step column. Set the elastic map to the isotropic stretch
+given by the cube root of its determinant. This preserves the
+elastic Jacobian and hydrostatic Hencky stress while removing
+deviatoric stress. Keep positions and plastic history.
+
+| Time (s) | Baseline envelope | Envelope after shear reset |
+|---|---:|---:|
+| 3 | 34.693822° | 34.693822° |
+| 6 | 30.869627° | 31.251379° |
+| 9 | 27.988015° | 28.027629° |
+| 12 | 25.473317° | 25.360606° |
+
+The radius stays at 0.156304 m and the final angle differs
+by 0.11°. The late height loss persists when the elastic
+shear stress is rebuilt from the same geometry and elastic
+volume. The temporary fixture was restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-late-isochoric-reset-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 3
+```
