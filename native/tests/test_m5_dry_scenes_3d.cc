@@ -198,6 +198,9 @@ bool TestScene(
   for (double t = 0; t < time; ++step) {
     double phase_end =
         snow ? (t < 0.23 ? 0.23 : (t < 0.35 ? 0.35 : time)) : (t < settling_sample_time ? settling_sample_time : time);
+    if (extended_column && sand_end_time > 3.0 && t >= 0.75) {
+      phase_end = std::min(phase_end, 3.0 * (1 + std::floor(t / 3.0)));
+    }
     if (extended_column && t < 0.75) {
       // Replay the original two sampling boundaries before extending the run.
       phase_end = t < 0.70 ? 0.70 : 0.75;
@@ -288,6 +291,21 @@ bool TestScene(
           status.ToString().c_str()
       );
       return false;
+    }
+    if (extended_column && sand_end_time > 3.0 && next_time == 3.0 * std::round(next_time / 3.0)) {
+      double height = 0;
+      double radius = 0;
+      for (const auto& particle : particles) {
+        height = std::max(height, particle.world_position.y);
+        radius = std::max(radius, std::hypot(particle.world_position.x, particle.world_position.z));
+      }
+      std::printf(
+          "sand horizon t=%.3f height=%.9g radius=%.9g envelope=%.9g\n",
+          next_time,
+          height,
+          radius,
+          std::atan2(height, radius) * 180 / std::acos(-1.0)
+      );
     }
     if (compatible_floor) {
       fluidity::Vec3 momentum{};
@@ -1390,18 +1408,20 @@ int main(int argc, char** argv) {
     if (region != "all" && region != "floor" && region != "interior") {
       return 2;
     }
-    if (argc == 6 && std::string_view(argv[5]) != "3") {
+    const std::string_view horizon = argc == 6 ? argv[5] : "1.5";
+    if (horizon != "1.5" && horizon != "3" && horizon != "12" && horizon != "18") {
       return 2;
     }
-    const double end_time = argc == 6 ? 3.0 : 1.5;
+    const double end_time = horizon == "18" ? 18.0 : (horizon == "12" ? 12.0 : (horizon == "3" ? 3.0 : 1.5));
     const std::string_view selection = argv[3];
     const bool coarse = selection == "coarse" || selection == "coarse-half";
-    const bool fine = selection == "fine" || selection == "fine-half";
+    const bool fine = selection == "fine" || selection == "fine-half" || selection == "fine-quarter";
     if (!coarse && !fine) {
       return 2;
     }
     const double width = coarse ? 0.075 : 0.0625;
-    const double duration = width / (selection.ends_with("-half") ? 80 : 40);
+    const double steps_per_cell = selection == "fine-quarter" ? 160 : (selection.ends_with("-half") ? 80 : 40);
+    const double duration = width / steps_per_cell;
     std::printf(
         "symmetric APIC decay in inverse seconds=%.0f region=%.*s\n",
         rate,
