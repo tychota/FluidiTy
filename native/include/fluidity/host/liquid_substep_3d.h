@@ -330,8 +330,22 @@ struct LiquidAdaptivePhysicalExteriorPressure3D {
   double distance_m;  // Positive pressure gradient distance.
 };
 
+struct GradedLiquidCornerSample3D {
+  CellCornerIndex3D corner;
+  double liquid_distance_m;
+  double solid_distance_m;
+};
+
+// Canonical sampled start/end fields and leaf-order whole-air certificates.
+// Each sample must be nonsolid for the sampled physical runtime.
+struct LiquidAdaptiveSampledPhysicalGeometry3D {
+  std::span<const GradedLiquidCornerSample3D> start_corners;
+  std::span<const GradedLiquidCornerSample3D> end_corners;
+  std::span<const std::uint8_t> certified_air_leaves;
+};
+
 // Borrowed for one synchronous attempt. The resolved scene supplies the
-// translating halfspace at time zero and the horizontal planar liquid surface.
+// translating halfspace and the plane for attempts without sampled geometry.
 struct LiquidAdaptivePhysicalGeometryRequest3D {
   LiquidClock3D accepted_clock;  // Must equal the current committed clock.
   // One independent source per canonical leaf. Certified air requires zero.
@@ -339,6 +353,11 @@ struct LiquidAdaptivePhysicalGeometryRequest3D {
   // Empty seals all exteriors. Otherwise supply one optional entry per
   // canonical global subface slot. Interior and omitted air slots must be absent.
   std::span<const std::optional<LiquidAdaptivePhysicalExteriorPressure3D>> exterior_pressures{};
+  // A finite end height authorizes one wet/air change. The resolved scene
+  // supplies the start height. The same endpoint is required on replay.
+  std::optional<double> end_surface_height_m = std::nullopt;
+  // Explicit sampled endpoints, mutually exclusive with end_surface_height_m.
+  std::optional<LiquidAdaptiveSampledPhysicalGeometry3D> sampled = std::nullopt;
 };
 
 // Width evidence for one accepted leaf and its candidate sibling family.
@@ -369,6 +388,15 @@ struct LiquidAdaptiveBandRequest3D {
   std::optional<LiquidHandoffCarrier3D> destination_carrier;
   std::size_t reseed_particle_count = 1;
 };
+
+// One authored retirement request, bounded by its evidence duration.
+struct LiquidAdaptiveBandTrial3D {
+  LiquidAdaptiveBandRequest3D request;
+  double maximum_step_duration_s;
+  bool certify_reseed = false;
+};
+using LiquidAdaptiveBandSelector3D =
+    absl::FunctionRef<absl::StatusOr<std::optional<LiquidAdaptiveBandTrial3D>>(const LiquidState3D&)>;
 
 // All attempts, including rejection/status destruction, allocate and free nothing.
 // Create, frame capacity growth, move and destruction are outside physical attempts.
@@ -503,11 +531,12 @@ class LiquidSubstepScheduler3D {
   // Every such attempt, including retries and restored continuations, requires
   // a clock-bound request with canonical source and exterior fields.
   // The wall pose is derived from the same resolved scene and accepted time.
-  // Liquid leaves require positive wet volume throughout the interval. Air
-  // leaves require unchanged certified empty air. Unsupported activation,
-  // stale requests, and malformed fields
-  // fail without publishing any trial state. Geometry and an independent
-  // graded owner are allocated before the transaction enters its stages.
+  // An omitted endpoint requires unchanged wet/air membership. An explicit
+  // endpoint admits a single certified wet/air transition on that layout.
+  // Unsupported paths, stale requests and malformed fields fail without
+  // publishing trial state. A changed surface needs an authored continuation
+  // with its new start pose. Geometry and a graded owner are staged before
+  // the transaction enters its stages.
   absl::StatusOr<LiquidAttemptOutcome3D>
   AttemptWithAdaptivePhysicalGeometry(double step_duration, const LiquidAdaptivePhysicalGeometryRequest3D& request);
 
@@ -612,6 +641,14 @@ class LiquidSubstepScheduler3D {
       LiquidProgressObserver3D observer = {}
   );
 
+  // Run authenticated retirement requests using the ordinary frame retry path.
+  // Borrowed evidence must be identical when the accepted state is unchanged.
+  absl::Status AdvanceFrameWithAdaptiveBand(
+      double target_time,
+      LiquidAdaptiveBandSelector3D select,
+      LiquidProgressObserver3D observer = {}
+  );
+
   // Advances liquid and snow to target_time using both materials' step bounds.
   // Copies the initial records from inputs before advancing, so they may alias
   // accepted_snow. On failure after the frame begins, accepted_snow matches
@@ -650,9 +687,16 @@ class LiquidSubstepScheduler3D {
       LiquidProgressObserver3D observer,
       std::optional<LiquidSnowStepInputs3D> snow_inputs,
       std::vector<PlasticSolidCheckpointParticle3D>* accepted_snow,
-      const LiquidAdaptiveWidthSelector3D* select_width = nullptr
+      const LiquidAdaptiveWidthSelector3D* select_width = nullptr,
+      const LiquidAdaptiveBandSelector3D* select_band = nullptr
   );
   struct SnowTrial;
+  absl::StatusOr<LiquidAttemptOutcome3D> AttemptAdaptiveBandPlacement(
+      double step_duration,
+      const LiquidAdaptiveBandRequest3D& request,
+      std::optional<LiquidBandPlacementAction3D> required_action,
+      LiquidWorkPhaseObserver3D work_phase
+  );
   struct AdaptiveStateTrial;
   struct AdaptivePhysicalTrial;
   struct AdaptiveWidthAgeTrial;
@@ -660,7 +704,8 @@ class LiquidSubstepScheduler3D {
       double step_duration,
       absl::FunctionRef<absl::StatusOr<LiquidState3D>()> prepare,
       std::size_t certified_replacement_count = 0,
-      LiquidWorkPhaseObserver3D work_phase = {}
+      LiquidWorkPhaseObserver3D work_phase = {},
+      const LiquidHandoffCarrier3D* certified_reseed = nullptr
   );
   enum class AdaptiveCarrierMode {
     kDefault,

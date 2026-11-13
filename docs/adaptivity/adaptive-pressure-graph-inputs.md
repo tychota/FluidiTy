@@ -58,8 +58,22 @@ its own inventory accounting. Restore the accepted clock and canonical
 state, recreate the same resolved scene, and reapply the request with the
 attempt duration, canonical sources and optional global-slot exterior
 pressures. Each retry and restored continuation requires its own request.
-The current sparse runtime keeps wet and air membership fixed throughout
-the attempt.
+An omitted endpoint keeps wet and air membership fixed throughout the
+attempt. An explicit finite `end_surface_height_m` admits one changed leaf
+and one orthogonal particle crossing on the same canonical roster. The
+resolved horizontal plane supplies the start height. Pressure uses the
+start geometry. The post-pressure PIC path must be straight and contact-free
+and match the actual stable-ID particle update. Exact represented mass and
+volume transport uses the detached transition proof. The accepted inventory
+retains the momentum computed from the updated particle velocities.
+
+The publication clears pressure and coarsening age on the changed leaf and
+masks carriers without wet support at either endpoint. An attempt using
+the old resolved start plane is refused after membership changes. Replaying
+the transition from its start checkpoint requires the same explicit endpoint
+and start pressure fields. The wetting and drying replay fixtures bind
+their heights, duration and canonical source values to the checkpoint
+identity.
 
 Use the accepted carrier and per-leaf material owner from the same epoch
 when qualifying constituent transport. Current M4 cases cover particle-owned
@@ -142,3 +156,39 @@ All 670 native CPU CTests, 68 focused CPU CTests, seven real CUDA pressure and t
 Clean verification on code commit `e8a20d9a736b8269879b0daa9637a4b2d579dd31` passed 120 focused Windows Debug CPU CTests covering adaptive state, cache, and schemas. Windows Release CUDA passed the adaptive arena publication and growth test and all 10 adaptive scheduler tests on the RTX 5060 Ti (architecture 1200). Raw logs are `out/dyadic-v4-cpu-ctest.log`, `out/dyadic-v4-cuda-arena.log`, and `out/dyadic-v4-cuda-ctest.log`.
 
 The preceding code commit `0d64ebf999366270a2258a456b102a93fe704369` passed the full 896-test Windows Debug CPU suite before the v4 merge. Its clean-run receipt is `out/dyadic-merged-clean-ctest.log`.
+
+## M4 handoff baseline with signed wet transitions
+
+Use merged runtime `6b2be6faec21c20747f68654375e9752ba6fff1e`.
+The verified implementation head was `5a83798d5f08a3190b83457a5ee32cc226705ee2`.
+For the authored wetting and drying trials, freeze the **start** geometry and
+accepted inventories with the request clock. Record the row-to-leaf map,
+canonical subface slot and incidence, wet-open area and centroid, pressure
+distance, mobility, and signed wall and cell source terms. Use this exact
+start graph for traction and flux residuals. Publish the end occupancy with
+the post-pressure inventory as a separate accepted epoch on the same roster.
+The newly wet leaf starts with zero pressure warm start. A face without wet
+support at both endpoints loses its published carrier. The supported crossing
+covers one particle and one coarse/fine subface. A continuation requires the
+new accepted plane as its authored start. [Signed wet transition runtime](https://github.com/tychota/FluidiTy/pull/162)
+
+For the constituent control, compare extensive inventories before and after
+the accepted step using the same canonical leaf ownership and count each
+oriented flux once. Report the physical pressure impulse separately from
+transport. The signed wet-transition cases use implicit liquid. Qualify
+constituents and traction using the existing miscible and manufactured
+normal-traction cases, then extend to the M4 viscosity-ratio, tangential
+traction, resolution, and timestep gates on the intended geometry.
+
+Fresh local execution on the pinned artifacts passed 4/4 CPU and 5/5 RTX 5060 Ti
+SM120 checks. The wetting and drying hard-kill replays produced identical
+checkpoint and final digests on both backends. Exact commands and receipts
+follow.
+
+```powershell
+ctest --test-dir out/jc -V -R 'GradedMiscible|AdaptivePhysicalWetTransitionReplay.cpu' --no-tests=error
+ctest --test-dir out/jg -V -R 'CoupledGradedNormalTraction|GradedMiscible|AdaptivePhysicalWetTransitionReplay.cuda' --no-tests=error
+```
+
+- CPU `out/m4-handoff-cpu.log` SHA-256 `C74B115CDC8F6953BB416652F50792E31D65187EF9AFEE59CC7F5C49D6A27E16`
+- CUDA `out/m4-handoff-cuda.log` SHA-256 `4A80B525A4280BA3DC9487450437D68C7B2C32771B763C24B7016247FED5D347`

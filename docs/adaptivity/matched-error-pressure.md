@@ -118,3 +118,48 @@ Use fresh output directories. Each `receipt.json` records executable and
 input hashes, exact process arguments, limits, device budget and numerical
 results. The reference-wave gate uses the complete pipeline and a matched
 moving-surface reference. [Full-wave qualification](production-integration.md#full-wave)
+
+
+## Curved sampled geometry control
+
+The signed cube spans [-1, 1] m on each axis and has analytic liquid height
+`z = 1/2 + (x² + y²)/8`. Both layouts sample the same piecewise-affine
+surface on the fine cap. The graded layout coarsens the fully wet lower
+half and retains 64 open coarse/fine links. Its mixed interfaces stay below
+the cut. The analytic liquid volume is 19/3 m³.
+
+An affine pressure `p = 1 + z/2` Pa defines the manufactured predictor.
+Both layouts anchor the low-Z boundary at 0.5 Pa, using their actual
+half-cell distances, and use zero source divergence. The common limits
+are 0.011 m³ volume error, 1e-4 Pa pressure error, 2e-6 m³/s maximum
+corrected face flux, and 2e-5 s⁻¹ maximum cell constraint defect.
+
+| Layout | Wet rows | Pressure links | Volume error (m³) | Max pressure error (Pa) | Max face flux (m³/s) | Max defect (s⁻¹) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uniform finest | 448 | 1,520 | 0.0104167 | 1.00409e-7 | 9.76921e-9 | 5.26157e-6 |
+| Two-level | 224 | 800 | 0.0104167 | 3.11952e-7 | 2.65726e-8 | 9.99567e-6 |
+
+The pressure comparison uses the same explicit graph backend for both
+layouts. These measurements cover an authored sampled geometry with a
+common error budget. Cut coarse/fine traces and live surface evolution
+remain outside this control.
+
+```powershell
+cmake --build out/e --parallel 2 --target fluidity_native_tests
+ctest --test-dir out/e -V -R 'GradedLiquidBoundaryGeometry3D.MatchesUniformCurvedPressureAndGeometryError'
+```
+
+
+The CUDA test constructs the same frozen graphs through the shared fixture.
+The persistent SM120 arena met the same four limits and reproduced the
+reported CPU metrics at the displayed precision. Device reservation count,
+free count and live bytes remained fixed across both solves. The full CUDA
+MAC pressure suite passed 12 tests, and Compute Sanitizer found zero errors
+in the curved arena case.
+
+```powershell
+cmake --build out/g --parallel 2 --target fluidity_cuda_operator_tests
+ctest --test-dir out/g -V -R '^CudaMacPressure3D'
+$env:NV_COMPUTE_SANITIZER_LOCAL_CONNECTION_OVERRIDE = 'named-pipes'
+compute-sanitizer --tool memcheck --require-cuda-init yes --error-exitcode 97 --launch-timeout 30 ./out/g/fluidity_cuda_operator_tests.exe '--gtest_filter=CudaMacPressure3D.MatchesUniformCurvedPressureAndGeometryErrorInArena'
+```

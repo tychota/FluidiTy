@@ -860,8 +860,9 @@ absl::StatusOr<std::string> ExecuteCommand(
   }
   const bool adaptive_mode = starting_state.adaptive_cells.size() != 0;
   const auto width_actions = scene.adaptive_width_actions.values();
-  if (!width_actions.empty() && !adaptive_mode) {
-    return absl::FailedPreconditionError("adaptive width actions require a graded initial state");
+  const auto band_actions = scene.adaptive_band_actions.values();
+  if ((!width_actions.empty() || !band_actions.empty()) && !adaptive_mode) {
+    return absl::FailedPreconditionError("adaptive actions require a graded initial state");
   }
   const auto select_width = [&](const LiquidState3D& state
                             ) -> absl::StatusOr<std::optional<LiquidAdaptiveWidthTrial3D>> {
@@ -900,6 +901,37 @@ absl::StatusOr<std::string> ExecuteCommand(
       return starting_action.status();
     }
   }
+  const auto select_band = [&](const LiquidState3D& state) -> absl::StatusOr<std::optional<LiquidAdaptiveBandTrial3D>> {
+    const auto action = std::ranges::lower_bound(band_actions, state.clock.epoch, {}, [](const auto& entry) {
+      return entry.accepted_clock.epoch;
+    });
+    if (action == band_actions.end() || action->accepted_clock.epoch != state.clock.epoch) {
+      return std::nullopt;
+    }
+    const auto bytes = EncodeLiquidState3D(state);
+    if (!bytes.ok()) {
+      return bytes.status();
+    }
+    if (action->accepted_clock != state.clock
+        || LiquidContentDigest3D(bytes->values()) != action->accepted_state_digest) {
+      return absl::FailedPreconditionError("adaptive band action does not authenticate the committed state");
+    }
+    return LiquidAdaptiveBandTrial3D{
+        .request =
+            {.accepted_epoch = state.clock.epoch,
+             .leaf = action->leaf,
+             .margins = action->margins,
+             .destination_carrier = action->carrier},
+        .maximum_step_duration_s = action->maximum_step_duration_s,
+        .certify_reseed = action->reseed,
+    };
+  };
+  if (!band_actions.empty()) {
+    const auto starting_action = select_band(starting_state);
+    if (!starting_action.ok()) {
+      return starting_action.status();
+    }
+  }
   if (mixed) {
     if (!solid || solid->plastic_particles.empty() || !solid->bodies.empty() || !solid->sides.empty()
         || !solid->elastic_particles.empty() || adaptive_mode) {
@@ -915,8 +947,16 @@ absl::StatusOr<std::string> ExecuteCommand(
     }
   }
   if (adaptive_mode && !loaded_checkpoint) {
+    const auto reseed_count =
+        static_cast<std::size_t>(std::ranges::count(band_actions, true, &LiquidAdaptiveBandAction3D::reseed));
+    const auto starting_particle_count = starting_state.particles.size();
+    if (reseed_count != 0
+        && (starting_particle_count > kCapacities.particles
+            || reseed_count > kCapacities.particles - starting_particle_count)) {
+      return absl::ResourceExhaustedError("authored reseed reservations exceed the public particle capacity");
+    }
     resume.capacities = {
-        .particles = starting_state.particles.size(),
+        .particles = starting_particle_count + reseed_count,
         .blocks = 0,
         .cells = width_actions.empty() ? starting_state.adaptive_cells.size() : scene.adaptive_width_cell_capacity,
         .faces = width_actions.empty() ? starting_state.adaptive_faces.size() : scene.adaptive_width_face_capacity,
@@ -1238,6 +1278,9 @@ absl::StatusOr<std::string> ExecuteCommand(
     const auto accepted_steps_before_frame = scheduler->committed().clock.accepted_step_ordinal;
     const auto advanced = [&]() -> absl::Status {
       if (!solid) {
+        if (!band_actions.empty()) {
+          return scheduler->AdvanceFrameWithAdaptiveBand(*time, select_band, observer);
+        }
         return width_actions.empty() ? scheduler->AdvanceFrame(*time, observer)
                                      : scheduler->AdvanceFrameWithAdaptiveWidth(*time, select_width, observer);
       }

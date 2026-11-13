@@ -14,6 +14,7 @@
 #include "../cuda/liquid_pressure_stage_3d.h"
 #include "../src/graded_liquid_boundary_geometry_3d.h"
 #include "adaptive_pressure_checkpoint_fixture.h"
+#include "curved_matched_pressure_fixture.h"
 #include "fluidity/host/cuda_mac_pressure_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
 #include "fluidity/host/mac_pressure_workspace_3d.h"
@@ -361,6 +362,26 @@ TEST(CudaMacPressure3D, ExplicitGraphMatchesEdgeAndCornerReferencePressure) {
     return std::move(projected->projection);
   });
   Receipt("explicit_coarse_fine_pressure", maximum_measurement);
+}
+
+TEST(CudaMacPressure3D, MatchesUniformCurvedPressureAndGeometryErrorInArena) {
+  std::cout << "CTEST_FULL_OUTPUT\n";
+  constexpr LiquidStateCapacities3D capacity{1, 0, 448, 1520, 0};
+  auto arena = CudaLiquidArena3D::Create(capacity, 0, std::numeric_limits<std::size_t>::max(), true, true);
+  ASSERT_TRUE(arena.ok()) << arena.status();
+  auto workspace = MacPressureWorkspace3D::Create(capacity.cells, capacity.faces);
+  ASSERT_TRUE(workspace.ok()) << workspace.status();
+  arena->SetWorkPhase(LiquidWorkPhase3D::kForcesGeometryPressure);
+  const auto before = arena->metrics();
+  pressure_test::CheckCurvedMatchedPressure([&](const auto& graph) {
+    return cuda_internal::ProjectArenaAdaptivePressure3D(*arena, graph, {}, *workspace);
+  });
+  const auto after = arena->metrics();
+  EXPECT_EQ(after.compiled_architecture, 1200);
+  EXPECT_EQ(after.device_reservations, before.device_reservations);
+  EXPECT_EQ(after.device_frees, before.device_frees);
+  EXPECT_EQ(after.live_device_bytes, before.live_device_bytes);
+  EXPECT_GT(after.peak_active_device_scratch_bytes, 0U);
 }
 
 TEST(CudaMacPressure3D, ExplicitAdaptiveGraphUsesPersistentArenaAndKeepsPublishedResultOnFailure) {

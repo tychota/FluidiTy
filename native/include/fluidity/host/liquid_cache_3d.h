@@ -97,6 +97,17 @@ struct LiquidAdaptiveWidthAction3D {
   AdaptiveWidthDemand3D demand{};
   double maximum_step_duration_s = 0;  // Evidence covers this duration and shorter retries.
 };
+// Authored retirement or one-center-seed evidence for one fully occupied stationary tank leaf.
+// Reseed requires the implicit-liquid carrier to match the accepted radial donors.
+struct LiquidAdaptiveBandAction3D {
+  LiquidClock3D accepted_clock{};
+  LiquidDigest3D accepted_state_digest{};
+  AdaptiveMacCellKey3D leaf{};
+  double maximum_step_duration_s = 0;
+  LiquidBandMargins3D margins{};
+  LiquidHandoffCarrier3D carrier{};
+  bool reseed = false;  // True selects one center seed. False selects retirement.
+};
 inline constexpr std::uint32_t kLiquidOnlyResolvedModel3D = 1;
 inline constexpr std::uint32_t kPlasticBodyResolvedModel3D = 2;
 
@@ -118,6 +129,7 @@ struct LiquidResolvedSceneView3D {
   std::span<const LiquidAdaptiveWidthAction3D> adaptive_width_actions{};  // Strictly increasing accepted epoch.
   std::uint32_t adaptive_width_cell_capacity = 0;
   std::uint32_t adaptive_width_face_capacity = 0;
+  std::span<const LiquidAdaptiveBandAction3D> adaptive_band_actions{};
 };
 // Owning decoded scene; View() binds spans to this owner's arrays. Reacquire after
 // move; a view cannot outlive this object. No pointer into encoded bytes survives.
@@ -137,6 +149,7 @@ struct LiquidResolvedScene3D {
   LiquidRecords3D<LiquidAdaptiveWidthAction3D> adaptive_width_actions;
   std::uint32_t adaptive_width_cell_capacity = 0;
   std::uint32_t adaptive_width_face_capacity = 0;
+  LiquidRecords3D<LiquidAdaptiveBandAction3D> adaptive_band_actions;
   LiquidResolvedSceneView3D View() const;
 };
 // Exact unkeyed BLAKE3-256 over bytes; no domain prefix (standard known answers).

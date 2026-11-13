@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "case": "bounded_column",
+  "inputs": {
+    "width_m": 1,
+    "length_m": 5,
+    "inlet_depth_m": 0.75,
+    "cell_width_m": 0.25,
+    "wave_height_m": 0.25,
+    "wave_period_s": 2,
+    "frame_end": 48,
+    "fps": 24
+  },
+  "provenance": "Established M2 bounded-wave-column-seed and wave-volume-settings native fixture defaults."
+}

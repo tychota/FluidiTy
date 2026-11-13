@@ -6,11 +6,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 #include "absl/status/status.h"
 #include "fluidity/base/sampled_solid_liquid_geometry_3d.h"
 #include "fluidity/host/liquid_state_3d.h"
+#include "graded_sampled_liquid_boundary_geometry_3d.h"
 #include "liquid_boundary_backend.h"
 #include "mac_pressure_3d_arithmetic.h"
 
@@ -110,16 +112,41 @@ struct PlanePair {
   double liquid_coordinate_m;
 };
 
+struct CornerDistances {
+  double liquid;
+  double solid;
+};
+
+template <typename LatticeIndex>
+CellCornerIndex3D LatticeCorner(LatticeIndex lower, std::uint8_t exponent, int bits) {
+  const auto width = std::int32_t{1} << exponent;
+  return {
+      lower.x + ((bits & 1) ? width : 0),
+      lower.y + ((bits & 2) ? width : 0),
+      lower.z + ((bits & 4) ? width : 0),
+  };
+}
+
+CornerDistances SamplePlanes(const PlanePair& planes, CartesianVector point) {
+  return {
+      SignedPlaneDistance(planes.liquid_normal, point, planes.liquid_coordinate_m),
+      SignedPlaneDistance(planes.solid_normal, point, planes.solid_coordinate_m),
+  };
+}
+
+template <typename Sample>
 absl::StatusOr<FrozenGradedLiquidLeaf3D>
-MeasureLeaf(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, const PlanePair& planes) {
+MeasureLeaf(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, const Sample& sample) {
   bool known_air = true;
   boundary_internal::SampledSolidLiquidCell query{.cell_width = leaf.cell_width};
   for (int corner_bits = 0; corner_bits < 8; ++corner_bits) {
-    const auto world_corner = Corner(bounds, corner_bits);
-    query.solid_distance[corner_bits] =
-        SignedPlaneDistance(planes.solid_normal, world_corner, planes.solid_coordinate_m);
-    query.liquid_distance[corner_bits] =
-        SignedPlaneDistance(planes.liquid_normal, world_corner, planes.liquid_coordinate_m);
+    const auto distance =
+        sample(LatticeCorner(leaf.key.lower_corner, leaf.key.width_exponent, corner_bits), Corner(bounds, corner_bits));
+    if (!distance.ok()) {
+      return distance.status();
+    }
+    query.solid_distance[corner_bits] = distance->solid;
+    query.liquid_distance[corner_bits] = distance->liquid;
     if (!std::isfinite(query.solid_distance[corner_bits]) || !std::isfinite(query.liquid_distance[corner_bits])) {
       return absl::OutOfRangeError("Graded liquid corner distance is unrepresentable");
     }
@@ -142,13 +169,14 @@ MeasureLeaf(const WorldBounds& bounds, const AdaptiveMacLeaf3D& leaf, const Plan
   };
 }
 
+template <typename Sample>
 absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
     FaceIndex3D face_index,
     std::uint8_t width_exponent,
     bool exterior,
     double finest_width_m,
     CartesianVector world_origin_m,
-    const PlanePair& planes,
+    const Sample& sample,
     CartesianVector wall_velocity
 ) {
   const int normal_axis = static_cast<int>(face_index.axis);
@@ -177,12 +205,15 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
   const std::array corner_bits{0, first_bit, second_bit, upper_corner};
   double largest_solid_distance = 0;
   for (const int corner : corner_bits) {
-    const auto world_corner = Corner(*bounds, corner);
+    const auto distance = sample(LatticeCorner(lattice_index, width_exponent, corner), Corner(*bounds, corner));
+    if (!distance.ok()) {
+      return distance.status();
+    }
     auto& vertex = vertices[corner];
     vertex.cell_width_position[first_axis] = (corner & first_bit) != 0 ? 1 : 0;
     vertex.cell_width_position[second_axis] = (corner & second_bit) != 0 ? 1 : 0;
-    vertex.liquid_distance = SignedPlaneDistance(planes.liquid_normal, world_corner, planes.liquid_coordinate_m);
-    const double solid_distance = SignedPlaneDistance(planes.solid_normal, world_corner, planes.solid_coordinate_m);
+    vertex.liquid_distance = distance->liquid;
+    const double solid_distance = distance->solid;
     if (!std::isfinite(vertex.liquid_distance) || !std::isfinite(solid_distance)) {
       return absl::OutOfRangeError("Graded liquid subface corner distance is unrepresentable");
     }
@@ -201,8 +232,31 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
 
   double wet_open_area_m2 = 0;
   double wet_solid_area_m2 = 0;
-  double centroid_weight = 0;
-  CartesianVector centroid_fraction{};
+  struct CentroidMoment {
+    double area_m2 = 0;
+    CartesianVector fraction{};
+  };
+  CentroidMoment open_centroid;
+  CentroidMoment solid_centroid;
+  // Accumulate in normalized face coordinates to avoid world-offset cancellation.
+  const auto accumulate_centroid = [&](const ClippingPolygon& polygon, CentroidMoment& centroid) {
+    const auto anchor = polygon[0].cell_width_position;
+    for (std::size_t corner = 1; corner + 1 < polygon.size(); ++corner) {
+      const auto second = polygon[corner].cell_width_position;
+      const auto third = polygon[corner + 1].cell_width_position;
+      const ClippingPolygon triangle{polygon[0], polygon[corner], polygon[corner + 1]};
+      const double area_m2 = boundary_internal::ComputeClippedArea(triangle, nominal_width_m);
+      if (area_m2 == 0) {
+        continue;
+      }
+      centroid.area_m2 += area_m2;
+      const double relative_weight = area_m2 / centroid.area_m2;
+      for (const int axis : {first_axis, second_axis}) {
+        const double triangle_centroid = (anchor[axis] + second[axis] + third[axis]) / 3.0;
+        centroid.fraction[axis] = std::lerp(centroid.fraction[axis], triangle_centroid, relative_weight);
+      }
+    }
+  };
   for (const int middle_corner : {first_bit, second_bit}) {
     const int triangle_corners[]{0, middle_corner, upper_corner};
     const ClippingPolygon triangle{vertices[0], vertices[middle_corner], vertices[upper_corner]};
@@ -220,28 +274,14 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
     const double open_area_m2 = boundary_internal::ComputeOpenFaceArea(wet, fluid_side, nominal_width_m);
     wet_open_area_m2 += open_area_m2;
     if (open_area_m2 > 0) {
-      // Take moments in normalized face coordinates to avoid world-offset
-      // cancellation and avoid changing the pressure area arithmetic.
-      const auto open = boundary_internal::ClipPolygon(wet, fluid_side);
-      const auto anchor = open[0].cell_width_position;
-      for (std::size_t corner = 1; corner + 1 < open.size(); ++corner) {
-        const auto second = open[corner].cell_width_position;
-        const auto third = open[corner + 1].cell_width_position;
-        const ClippingPolygon fan_triangle{open[0], open[corner], open[corner + 1]};
-        const double weight = boundary_internal::ComputeClippedArea(fan_triangle, nominal_width_m);
-        if (weight == 0) {
-          continue;
-        }
-        centroid_weight += weight;
-        const double relative_weight = weight / centroid_weight;
-        for (const int axis : {first_axis, second_axis}) {
-          const double triangle_centroid = (anchor[axis] + second[axis] + third[axis]) / 3.0;
-          centroid_fraction[axis] = std::lerp(centroid_fraction[axis], triangle_centroid, relative_weight);
-        }
-      }
+      accumulate_centroid(boundary_internal::ClipPolygon(wet, fluid_side), open_centroid);
     }
-    wet_solid_area_m2 +=
-        boundary_internal::ComputeClippedArea(boundary_internal::ClipPolygon(wet, solid_side), nominal_width_m);
+    const auto blocked = boundary_internal::ClipPolygon(wet, solid_side);
+    const double solid_area_m2 = boundary_internal::ComputeClippedArea(blocked, nominal_width_m);
+    wet_solid_area_m2 += solid_area_m2;
+    if (solid_area_m2 > 0) {
+      accumulate_centroid(blocked, solid_centroid);
+    }
   }
   if ((wet_open_area_m2 + wet_solid_area_m2) / nominal_full_area_m2 > 1 + kMeasureRoundoff) {
     return absl::OutOfRangeError("Graded liquid wet areas exceed the subface area");
@@ -254,20 +294,31 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
   if (!physical_solid.ok()) {
     return physical_solid.status();
   }
-  std::optional<Vec3> wet_open_centroid_m;
-  if (*physical_open > 0) {
-    if (!std::isnormal(centroid_weight)) {
+  const auto world_centroid = [&](double area_m2,
+                                  const CentroidMoment& centroid) -> absl::StatusOr<std::optional<Vec3>> {
+    if (area_m2 == 0) {
+      return std::nullopt;
+    }
+    if (!std::isnormal(centroid.area_m2)) {
       return absl::OutOfRangeError("Graded liquid wet centroid weight is unrepresentable");
     }
-    auto world_centroid = bounds->lower;
+    auto position = bounds->lower;
     for (const int axis : {first_axis, second_axis}) {
-      const double fraction = centroid_fraction[axis];
+      const double fraction = centroid.fraction[axis];
       if (!std::isfinite(fraction) || fraction < -kMeasureRoundoff || fraction > 1 + kMeasureRoundoff) {
         return absl::OutOfRangeError("Graded liquid wet centroid lies outside its subface");
       }
-      world_centroid[axis] = std::lerp(bounds->lower[axis], bounds->upper[axis], std::clamp(fraction, 0.0, 1.0));
+      position[axis] = std::lerp(bounds->lower[axis], bounds->upper[axis], std::clamp(fraction, 0.0, 1.0));
     }
-    wet_open_centroid_m = ToVec3(world_centroid);
+    return std::optional<Vec3>{ToVec3(position)};
+  };
+  const auto wet_open_centroid_m = world_centroid(*physical_open, open_centroid);
+  if (!wet_open_centroid_m.ok()) {
+    return wet_open_centroid_m.status();
+  }
+  const auto wet_solid_centroid_m = world_centroid(*physical_solid, solid_centroid);
+  if (!wet_solid_centroid_m.ok()) {
+    return wet_solid_centroid_m.status();
   }
   const double wall_normal_flux_m3_per_s = *physical_solid * wall_velocity[normal_axis];
   if (!pressure_internal::arithmetic::IsRepresentablePressureProduct(
@@ -285,8 +336,9 @@ absl::StatusOr<FrozenGradedLiquidSubface3D> MeasureSubface(
       .world_upper_m = ToVec3(bounds->upper),
       .full_area_m2 = physical_full_area_m2,
       .wet_open_area_m2 = *physical_open,
-      .wet_open_centroid_m = wet_open_centroid_m,
+      .wet_open_centroid_m = *wet_open_centroid_m,
       .wet_solid_area_m2 = *physical_solid,
+      .wet_solid_centroid_m = *wet_solid_centroid_m,
       .wall_normal_flux_m3_per_s = wall_normal_flux_m3_per_s,
   };
 }
@@ -337,6 +389,9 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   if (face_count > pressure_internal::arithmetic::kMaxPressureFaces) {
     return absl::ResourceExhaustedError("Graded liquid subface count exceeds the state limit");
   }
+  const auto sample = [&](CellCornerIndex3D, CartesianVector world) -> absl::StatusOr<CornerDistances> {
+    return SamplePlanes(planes, world);
+  };
   const double finest_width_m = topology.finest_cell_width();
   FrozenGradedPlanarLiquidGeometry3D result(topology, world_origin_m, step_duration_s);
   result.leaves_.reserve(topology.cells().size());
@@ -348,7 +403,7 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
     if (!bounds.ok()) {
       return bounds.status();
     }
-    const auto measured = MeasureLeaf(*bounds, leaf, planes);
+    const auto measured = MeasureLeaf(*bounds, leaf, sample);
     if (!measured.ok()) {
       return measured.status();
     }
@@ -357,7 +412,7 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   for (std::size_t ordinal = 0; ordinal < interior.size(); ++ordinal) {
     const auto& face = interior[ordinal];
     const auto measured =
-        MeasureSubface(face.face_index, face.width_exponent, false, finest_width_m, origin, planes, wall_velocity);
+        MeasureSubface(face.face_index, face.width_exponent, false, finest_width_m, origin, sample, wall_velocity);
     if (!measured.ok()) {
       return measured.status();
     }
@@ -365,13 +420,226 @@ absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedPlanarLiquidGeome
   }
   for (const auto& face : ownership->exterior_faces) {
     const auto measured =
-        MeasureSubface(face.face_index, face.width_exponent, true, finest_width_m, origin, planes, wall_velocity);
+        MeasureSubface(face.face_index, face.width_exponent, true, finest_width_m, origin, sample, wall_velocity);
     if (!measured.ok()) {
       return measured.status();
     }
     result.subfaces_[face.face_slot] = *measured;
   }
   return result;
+}
+
+namespace {
+
+auto SampleOrder(CellCornerIndex3D corner) {
+  return std::tuple{corner.z, corner.y, corner.x};
+}
+
+// Require one strict classification across both traces of every subdivided
+// side. This is sufficient for the piecewise-affine aperture to agree even
+// when the two tessellations interpolate different distance magnitudes.
+template <typename Sample>
+absl::Status CheckSubdividedSide(
+    const AdaptiveMacLeaf3D& leaf,
+    FaceIndex3D face,
+    std::uint8_t exponent,
+    bool tail,
+    const Sample& sample
+) {
+  if (leaf.key.width_exponent == exponent) {
+    return absl::OkStatus();
+  }
+  const int normal_bit = 1 << static_cast<int>(face.axis);
+  const auto reference =
+      sample(LatticeCorner(leaf.key.lower_corner, leaf.key.width_exponent, tail ? normal_bit : 0), {});
+  if (!reference.ok()) {
+    return reference.status();
+  }
+  for (int bits = 0; bits < 8; ++bits) {
+    if ((bits & normal_bit) != 0) {
+      continue;
+    }
+    const auto coarse =
+        sample(LatticeCorner(leaf.key.lower_corner, leaf.key.width_exponent, bits | (tail ? normal_bit : 0)), {});
+    const auto fine = sample(LatticeCorner(face.lattice_index, exponent, bits), {});
+    if (!coarse.ok()) {
+      return coarse.status();
+    }
+    if (!fine.ok()) {
+      return fine.status();
+    }
+    const auto same_sign = [](double left, double right) {
+      return (left > 0 && right > 0) || (left < 0 && right < 0);
+    };
+    for (const auto value : {*coarse, *fine}) {
+      if (!same_sign(reference->liquid, value.liquid) || !same_sign(reference->solid, value.solid)) {
+        return absl::FailedPreconditionError("Sampled graded geometry has a cut or uncertain subdivided coarse side");
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D> FreezeGradedSampledLiquidGeometry3D(
+    const AdaptiveMacTopology3D& topology,
+    Vec3 world_origin_m,
+    double step_duration_s,
+    std::span<const GradedLiquidCornerSample3D> samples,
+    std::span<const std::uint8_t> certified_air_leaves
+) {
+  const auto origin = CartesianComponents(world_origin_m);
+  const auto leaves = topology.cells();
+  if (!HasFiniteComponents(origin) || !std::isfinite(step_duration_s) || step_duration_s <= 0
+      || certified_air_leaves.size() != leaves.size() || samples.empty()) {
+    return absl::InvalidArgumentError("Invalid sampled graded geometry extents, origin or duration");
+  }
+  const auto ownership = BuildAdaptiveMacFaceOwnership3D(topology);
+  if (!ownership.ok()) {
+    return ownership.status();
+  }
+  const auto interior = topology.interior_faces();
+  const std::size_t face_count = interior.size() + ownership->exterior_faces.size();
+  if (face_count > pressure_internal::arithmetic::kMaxPressureFaces) {
+    return absl::ResourceExhaustedError("Sampled graded subface count exceeds the state limit");
+  }
+  if (samples.size() > 8 * leaves.size() + 4 * face_count) {
+    return absl::InvalidArgumentError("Sampled graded geometry has excessive corner samples");
+  }
+  for (std::size_t ordinal = 0; ordinal < samples.size(); ++ordinal) {
+    const auto& entry = samples[ordinal];
+    if (!std::isfinite(entry.liquid_distance_m) || !std::isfinite(entry.solid_distance_m)
+        || (ordinal > 0 && SampleOrder(samples[ordinal - 1].corner) >= SampleOrder(entry.corner))) {
+      return absl::InvalidArgumentError("Sampled graded corners must be finite, unique and canonically ordered");
+    }
+  }
+
+  std::vector<std::uint8_t> used(samples.size());
+  const auto sample = [&](CellCornerIndex3D corner, CartesianVector) -> absl::StatusOr<CornerDistances> {
+    const auto found = std::ranges::lower_bound(samples, SampleOrder(corner), {}, [](const auto& entry) {
+      return SampleOrder(entry.corner);
+    });
+    if (found == samples.end() || SampleOrder(found->corner) != SampleOrder(corner)) {
+      return absl::FailedPreconditionError("Sampled graded geometry is missing a canonical corner");
+    }
+    used[static_cast<std::size_t>(found - samples.begin())] = 1;
+    return CornerDistances{found->liquid_distance_m, found->solid_distance_m};
+  };
+
+  const double finest_width_m = topology.finest_cell_width();
+  FrozenGradedPlanarLiquidGeometry3D result(topology, world_origin_m, step_duration_s);
+  result.leaves_.reserve(leaves.size());
+  result.subfaces_.resize(face_count);
+  for (std::size_t ordinal = 0; ordinal < leaves.size(); ++ordinal) {
+    const auto& leaf = leaves[ordinal];
+    const auto corner = leaf.key.lower_corner;
+    const auto bounds =
+        MakeWorldBounds({corner.x, corner.y, corner.z}, leaf.key.width_exponent, -1, finest_width_m, origin);
+    if (!bounds.ok()) {
+      return bounds.status();
+    }
+    auto measured = MeasureLeaf(*bounds, leaf, sample);
+    if (!measured.ok()) {
+      return measured.status();
+    }
+    const auto certificate = certified_air_leaves[ordinal];
+    if (certificate > 1) {
+      return absl::InvalidArgumentError("Sampled graded air certificate must be zero or one");
+    }
+    const bool air = certificate == 1;
+    if ((air && !measured->known_air) || (air != (measured->fluid_volume_m3 == 0))) {
+      return absl::FailedPreconditionError("Sampled graded geometry has uncertified or conflicting dry occupancy");
+    }
+    measured->known_air = air;
+    result.leaves_.push_back(*measured);
+  }
+
+  for (std::size_t ordinal = 0; ordinal < interior.size(); ++ordinal) {
+    const auto& face = interior[ordinal];
+    const auto tail =
+        CheckSubdividedSide(leaves[face.tail_cell_ordinal], face.face_index, face.width_exponent, true, sample);
+    if (!tail.ok()) {
+      return tail;
+    }
+    const auto head =
+        CheckSubdividedSide(leaves[face.head_cell_ordinal], face.face_index, face.width_exponent, false, sample);
+    if (!head.ok()) {
+      return head;
+    }
+    const auto measured =
+        MeasureSubface(face.face_index, face.width_exponent, false, finest_width_m, origin, sample, {});
+    if (!measured.ok()) {
+      return measured.status();
+    }
+    result.subfaces_[ownership->interior_face_slots[ordinal]] = *measured;
+  }
+  for (const auto& face : ownership->exterior_faces) {
+    const auto trace =
+        CheckSubdividedSide(leaves[face.cell_ordinal], face.face_index, face.width_exponent, face.cell_is_tail, sample);
+    if (!trace.ok()) {
+      return trace;
+    }
+    const auto measured =
+        MeasureSubface(face.face_index, face.width_exponent, true, finest_width_m, origin, sample, {});
+    if (!measured.ok()) {
+      return measured.status();
+    }
+    result.subfaces_[face.face_slot] = *measured;
+  }
+  if (std::ranges::find(used, 0) != used.end()) {
+    return absl::InvalidArgumentError("Sampled graded geometry has unrelated corner samples");
+  }
+  return result;
+}
+
+absl::StatusOr<double> EvaluateGradedSampledLiquidDistance3D(
+    const FrozenGradedPlanarLiquidGeometry3D& geometry,
+    std::span<const GradedLiquidCornerSample3D> samples,
+    std::size_t leaf_ordinal,
+    Vec3 position_m
+) {
+  if (leaf_ordinal >= geometry.leaves().size()) {
+    return absl::InvalidArgumentError("Sampled liquid query names an invalid leaf");
+  }
+  const auto& measured = geometry.leaves()[leaf_ordinal];
+  const auto& key = geometry.topology().cells()[leaf_ordinal].key;
+  const auto point = CartesianComponents(position_m);
+  const auto low = CartesianComponents(measured.world_lower_m);
+  const auto high = CartesianComponents(measured.world_upper_m);
+  CartesianVector fraction{};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!(point[axis] >= low[axis] && point[axis] < high[axis])) {
+      return absl::FailedPreconditionError("Sampled liquid query is outside its canonical leaf");
+    }
+    fraction[axis] = (point[axis] - low[axis]) / (high[axis] - low[axis]);
+  }
+  std::array axes{0, 1, 2};
+  std::ranges::sort(axes, [&](int left, int right) {
+    return fraction[left] == fraction[right] ? left < right : fraction[left] > fraction[right];
+  });
+  const std::array corner_bits{0, 1 << axes[0], (1 << axes[0]) | (1 << axes[1]), 7};
+  const std::array weights{
+      1 - fraction[axes[0]],
+      fraction[axes[0]] - fraction[axes[1]],
+      fraction[axes[1]] - fraction[axes[2]],
+      fraction[axes[2]],
+  };
+  double distance = 0;
+  for (std::size_t vertex = 0; vertex < corner_bits.size(); ++vertex) {
+    const auto corner = SampleOrder(LatticeCorner(key.lower_corner, key.width_exponent, corner_bits[vertex]));
+    const auto found = std::ranges::lower_bound(samples, corner, {}, [](const auto& entry) {
+      return SampleOrder(entry.corner);
+    });
+    if (found == samples.end() || SampleOrder(found->corner) != corner) {
+      return absl::FailedPreconditionError("Sampled liquid query lacks a canonical corner");
+    }
+    distance = std::fma(weights[vertex], found->liquid_distance_m, distance);
+  }
+  if (!std::isfinite(distance)) {
+    return absl::OutOfRangeError("Sampled liquid distance is unrepresentable");
+  }
+  return distance;
 }
 
 absl::StatusOr<GradedLiquidPressureInputs3D> ComposeGradedPlanarLiquidPressureInputs3D(

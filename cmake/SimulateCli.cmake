@@ -79,7 +79,7 @@ if(BUILD_TESTING)
   endif()
   # Ignore inherited PYTHONOPTIMIZE/PYTHONPATH while keeping Unicode paths and
   # diagnostics in UTF-8 explicitly; the driver also rejects direct -O invocation.
-  foreach(case IN ITEMS arguments schema identity inspection cpu_device cpu_execution cpu_replay execution_validation cpu_lifecycle cpu_effects cpu_mesh cpu_ocean cpu_graded_width)
+  foreach(case IN ITEMS arguments schema identity inspection cpu_device cpu_execution cpu_replay execution_validation cpu_lifecycle cpu_effects cpu_mesh cpu_ocean cpu_graded_width cpu_graded_band cpu_graded_reseed)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>
@@ -102,7 +102,7 @@ if(BUILD_TESTING)
         --executable $<TARGET_FILE:fluidity_simulate> --fault-executable $<TARGET_FILE:fluidity_simulate_fault_fixture>
         --fixture $<TARGET_FILE:fluidity_simulate_fixture>)
     set_tests_properties(SimulateReliability.InterruptionCampaign PROPERTIES LABELS cuda-reliability TIMEOUT 300)
-    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_mixed cuda_lifecycle cuda_effects cuda_ocean cuda_graded_width)
+    foreach(case IN ITEMS cuda_device cuda_execution cuda_replay cuda_mixed cuda_lifecycle cuda_effects cuda_ocean cuda_graded_width cuda_graded_band cuda_graded_reseed)
     add_test(NAME SimulateCli.${case}
       COMMAND "${Python3_EXECUTABLE}" -E -X utf8 "${PROJECT_SOURCE_DIR}/tools/native/tests/test_simulate_replay.py"
         --executable $<TARGET_FILE:fluidity_simulate> --fixture $<TARGET_FILE:fluidity_simulate_fixture>

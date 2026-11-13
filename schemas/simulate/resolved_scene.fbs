@@ -149,6 +149,20 @@ table AdaptiveWidthPlan {
   face_capacity:uint (id:1);
   actions:[AdaptiveWidthAction] (required, id:2);
 }
+table AdaptiveBandAction {
+  accepted_clock:Clock (required, id:0);
+  accepted_state:Digest (required, id:1);
+  lower_corner:Index3 (required, id:2);
+  width_exponent:ubyte (id:3);
+  maximum_step_duration_s:double (id:4);
+  particle_support_radius_m:double (id:5);
+  accepted_sweep_m:double (id:6);
+  current_density:double (id:7);
+  volume_ratio:double (id:8);
+  cell_center_velocity:Vector3 (required, id:9);
+  velocity_slopes:Matrix3 (required, id:10);
+  reseed:bool = null (id:11);
+}
 table ResolvedScene {
   schema_version:uint = 1 (id:0);
   byte_length:ulong (id:1);
@@ -169,6 +183,7 @@ table ResolvedScene {
   liquid_phase_pairs:[LiquidPhasePair] (id:16);
   plastic_bodies:[PlasticBodyBinding] (id:17);
   adaptive_width_plan:AdaptiveWidthPlan (id:18);
+  adaptive_band_actions:[AdaptiveBandAction] (id:19);
 }
 root_type ResolvedScene;
 file_identifier "FLRS";

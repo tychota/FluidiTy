@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -10,6 +11,7 @@
 #include "../src/liquid_cache_files_3d_internal.h"
 #include "fluidity/host/effects_source_3d.h"
 #include "fluidity/host/liquid_cache_3d.h"
+#include "fluidity/host/surface_cache_3d.h"
 #include "fluidity/host/whitewater_volume_cache_3d.h"
 #include "graded_tank_fixture.h"
 #include "liquid_cavity_scheduler_cases.h"
@@ -230,9 +232,15 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   const bool bounded_wave = args[5] == "bounded-wave" || wave_column_seed;
   const bool matched_uniform = args[5] == "matched-uniform-tank";
   const bool matched_tank = matched_uniform || args[5] == "matched-graded-tank";
+  const bool band_bad_carrier = args[5] == "graded-band-bad-carrier";
+  const bool reseed_bad_donor = args[5] == "graded-reseed-bad-donor";
+  const bool reseed_low_mass = args[5] == "graded-reseed-low-mass";
+  const bool graded_reseed = args[5] == "graded-reseed" || reseed_bad_donor || reseed_low_mass;
+  const bool graded_band = args[5] == "graded-band" || band_bad_carrier || graded_reseed;
+  const fluidity::AdaptiveMacCellKey3D reseed_leaf{.lower_corner = {2, 4, 2}, .width_exponent = 0};
   const bool width_stale = args[5] == "graded-width-stale";
   const bool graded_width = args[5] == "graded-width" || width_stale;
-  const bool graded_effects = args[5] == "graded-effects" || matched_tank || graded_width;
+  const bool graded_effects = args[5] == "graded-effects" || matched_tank || graded_width || graded_band;
   const bool graded_swell = args[5] == "graded-swell";
   const bool graded_eos = args[5] == "graded-eos";
   const bool graded_miscible = args[5] == "graded-miscible";
@@ -332,6 +340,7 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
   state.random_seed = scene.random_seed;
   fluidity::LiquidUpstreamContent3D upstream;
   fluidity::LiquidAdaptiveWidthAction3D width_action;
+  fluidity::LiquidAdaptiveBandAction3D band_action;
   fluidity::LiquidEmissionSource3D source;
   const bool exhaust_particle_capacity = args[5] == "capacity-failure";
   if (args[5] == "source" || args[5] == "boundary" || exhaust_particle_capacity) {
@@ -344,15 +353,65 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     source.world_position = {2.5, 2.5, 2.5};
     scene.scene.sources = std::span(&source, 1);
   }
+  if (reseed_low_mass) {
+    scene.options.minimum_face_mass = 1;
+  }
   if (initial_particle) {
     if (graded_tank) {
-      const auto authored = graded_width
-          ? fluidity::test::PopulateGradedRefinementClosureFixture3D(state, scene.scene, true)
+      const auto authored = graded_band
+          ? fluidity::test::PopulateDeepGradedBandFixture3D(state, scene.scene, graded_reseed ? 5 : 3)
+          : graded_width ? fluidity::test::PopulateGradedRefinementClosureFixture3D(state, scene.scene, true)
           : matched_tank ? fluidity::test::PopulateGradedFamilyFixture3D(state, scene.scene)
                          : fluidity::test::PopulateGradedTankFixture3D(state, scene.scene);
       if (!authored.ok()) {
         std::cerr << authored << '\n';
         return 3;
+      }
+      if (graded_reseed) {
+        auto cells = state.adaptive_cells.values();
+        const auto leaf = std::ranges::find_if(cells, [&](const auto& candidate) {
+          const auto lower = candidate.key.lower_corner;
+          return candidate.key.width_exponent == 0 && lower.x == 2 && lower.y == 4 && lower.z == 2;
+        });
+        if (leaf == cells.end()) {
+          return 3;
+        }
+        const auto ordinal = static_cast<std::size_t>(leaf - cells.begin());
+        leaf->material_owner = fluidity::AdaptiveLiquidMaterialOwner3D::kEulerian;
+        auto particles = state.particles.values();
+        std::move(particles.begin() + ordinal + 1, particles.end(), particles.begin() + ordinal);
+        if (!state.particles.Resize(particles.size() - 1).ok()) {
+          return 3;
+        }
+        if (reseed_bad_donor) {
+          std::vector<fluidity::AdaptiveMacCellKey3D> keys;
+          for (const auto& cell : cells) {
+            keys.push_back(cell.key);
+          }
+          const auto topology = fluidity::AdaptiveMacTopology3D::Create(keys, state.geometry.cell_width);
+          if (!topology.ok()) {
+            return 3;
+          }
+          const auto ownership = fluidity::BuildAdaptiveMacFaceOwnership3D(*topology);
+          if (!ownership.ok()) {
+            return 3;
+          }
+          bool changed_donor = false;
+          const auto interior = topology->interior_faces();
+          for (std::size_t face_ordinal = 0; face_ordinal < interior.size(); ++face_ordinal) {
+            const auto& face = interior[face_ordinal];
+            const auto tail = topology->cells()[face.tail_cell_ordinal].key.lower_corner;
+            const auto head = topology->cells()[face.head_cell_ordinal].key.lower_corner;
+            if (tail.x == 2 && tail.y == 3 && tail.z == 2 && head.z == 3) {
+              state.adaptive_faces[ownership->interior_face_slots[face_ordinal]].carrier_velocity = 0.125;
+              changed_donor = true;
+              break;
+            }
+          }
+          if (!changed_donor) {
+            return 3;
+          }
+        }
       }
       scene.geometry = state.geometry;
       if (matched_uniform) {
@@ -498,6 +557,18 @@ int SceneFixture(const std::vector<std::filesystem::path>& args) {
     upstream.byte_length = initial->size();
     upstream.digest = fluidity::LiquidContentDigest3D(initial->values());
     scene.upstream = std::span(&upstream, 1);
+    if (graded_band) {
+      band_action = {
+          .accepted_clock = state.clock,
+          .accepted_state_digest = upstream.digest,
+          .leaf = graded_reseed ? reseed_leaf : state.adaptive_cells[0].key,
+          .maximum_step_duration_s = 0.005,
+          .margins = {.particle_support_radius_m = 1.5},
+          .carrier = {.current_density = band_bad_carrier ? 3.0 : 2.0, .volume_ratio = 1},
+          .reseed = graded_reseed,
+      };
+      scene.adaptive_band_actions = std::span(&band_action, 1);
+    }
     if (graded_width) {
       width_action.accepted_clock = state.clock;
       width_action.accepted_state_digest = upstream.digest;
@@ -731,14 +802,38 @@ int MatchedMotionFixture(const std::filesystem::path& path) {
   return 0;
 }
 
-int GradedSourceFixture(const std::filesystem::path& path) {
+int MeshTopologyFixture(const std::filesystem::path& path) {
+  const auto mesh = fluidity::EffectsCache3D::OpenForInspection(path);
+  if (!mesh.ok()) {
+    return 2;
+  }
+  const auto payload = mesh->ReadFrame(1);
+  if (!payload.ok()) {
+    return 3;
+  }
+  const auto frame = fluidity::DecodeSurfaceFrame3D(payload->payload.values());
+  if (!frame.ok()) {
+    return 4;
+  }
+  const auto metrics = fluidity::MeasureSurfaceMesh3D(frame->mesh);
+  if (!metrics.ok() || frame->volumes.size() != 1) {
+    return 5;
+  }
+  std::cout.precision(17);
+  std::cout << "{\"outer_boundaries\":" << metrics->positive_volume_components
+            << ",\"inner_boundaries\":" << metrics->negative_volume_components
+            << ",\"material_m3\":" << frame->volumes[0].material_m3 << "}\n";
+  return 0;
+}
+
+int GradedSourceFixture(const std::filesystem::path& path, std::uint64_t final_frame = 2) {
   const auto source = fluidity::EffectsSource3D::Open(path);
   if (!source.ok()) {
     std::cerr << source.status() << '\n';
     return 2;
   }
   std::cout << '[';
-  for (std::uint64_t ordinal = 0; ordinal <= 2; ++ordinal) {
+  for (std::uint64_t ordinal = 0; ordinal <= final_frame; ++ordinal) {
     const auto frame = source->ReadFrame(ordinal);
     if (!frame.ok()) {
       std::cerr << frame.status() << '\n';
@@ -759,7 +854,13 @@ int GradedSourceFixture(const std::filesystem::path& path) {
       if (index != 0) {
         std::cout << ',';
       }
-      std::cout << "{\"frame\":" << sample.clock.frame_ordinal << ",\"substep\":" << sample.clock.substep_ordinal
+      const auto eulerian_count = std::ranges::count_if(sample.adaptive_cells.values(), [](const auto& leaf) {
+        return leaf.material_owner == fluidity::AdaptiveLiquidMaterialOwner3D::kEulerian;
+      });
+      std::cout << "{\"eulerian_cells\":" << eulerian_count << ",\"next_particle_id\":" << sample.next_particle_id
+                << ",\"first_particle_id\":" << (sample.particles.size() ? sample.particles[0].id : 0)
+                << ",\"last_particle_id\":" << (sample.particles.size() ? sample.particles.values().back().id : 0)
+                << ",\"frame\":" << sample.clock.frame_ordinal << ",\"substep\":" << sample.clock.substep_ordinal
                 << ",\"state_digest\":\""
                 << fluidity::LiquidDigestHex3D(fluidity::LiquidContentDigest3D(state->values())).data()
                 << "\",\"adaptive_cell_count\":" << sample.adaptive_cells.size()
@@ -798,6 +899,12 @@ int Entry(const std::vector<std::filesystem::path>& args) {
   }
   if (args.size() == 3 && args[1] == "graded-source") {
     return GradedSourceFixture(args[2]);
+  }
+  if (args.size() == 3 && args[1] == "mesh-topology") {
+    return MeshTopologyFixture(args[2]);
+  }
+  if (args.size() == 3 && args[1] == "band-source") {
+    return GradedSourceFixture(args[2], 1);
   }
   if (args.size() == 3 && args[1] == "source-births") {
     return SourceBirthFixture(args[2]);

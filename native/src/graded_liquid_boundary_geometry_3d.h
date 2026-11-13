@@ -15,6 +15,7 @@
 namespace fluidity {
 
 struct LiquidAdaptiveCellState3D;
+struct GradedLiquidCornerSample3D;
 
 struct GradedLiquidPlanarSurface3D {
   Vec3 unit_normal;  // Outward from liquid; liquid is n dot x < plane_coordinate_m.
@@ -38,6 +39,7 @@ struct FrozenGradedLiquidSubface3D {
   double wet_open_area_m2;  // Liquid intersect nonsolid; excludes dry nonsolid area.
   std::optional<Vec3> wet_open_centroid_m;  // World-space area centroid, absent for zero wet-open area.
   double wet_solid_area_m2;  // Liquid intersect solid; excludes dry solid area.
+  std::optional<Vec3> wet_solid_centroid_m;  // World-space area centroid, absent for zero wet-solid area.
   double wall_normal_flux_m3_per_s;  // Wet solid area times wall speed along the positive MAC axis.
 };
 
@@ -74,6 +76,9 @@ class FrozenGradedPlanarLiquidGeometry3D {
       const GradedLiquidPlanarSurface3D&,
       double
   );
+
+  friend absl::StatusOr<FrozenGradedPlanarLiquidGeometry3D>
+  FreezeGradedSampledLiquidGeometry3D(const AdaptiveMacTopology3D&, Vec3, double, std::span<const GradedLiquidCornerSample3D>, std::span<const std::uint8_t>);
 
   FrozenGradedPlanarLiquidGeometry3D(const AdaptiveMacTopology3D& topology, Vec3 world_origin_m, double step_duration_s)
       : topology_(topology), world_origin_m_(world_origin_m), step_duration_s_(step_duration_s) {
