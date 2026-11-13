@@ -11312,3 +11312,26 @@ angles fall below 30° at either particle sampling. The
 default coarse angle is 47.046222°. This rate weakens the
 short-scene overshoot but does not improve agreement across
 timesteps. CUDA was untested and both edits were restored.
+
+
+#### Limit horizontal APIC attenuation to volumetric expansion
+
+On 67b15d7, subtract one quarter of max(0, min(horizontal
+trace, total trace)) from each horizontal diagonal at deposit.
+This preserves horizontal expansion balanced by vertical
+compression. Run the default native scene and the sparse and
+dense three-second matrices with their original bounds.
+
+| Case | Sparse angle | Dense angle | Dense radius (m) |
+|---|---:|---:|---:|
+| Coarse | 33.085378° | 31.634141° | 0.160664 |
+| Fine | 30.849635° | 29.763998° | 0.166359 |
+| Coarse half-step | 25.798491° | 24.268430° | 0.161680 |
+| Fine half-step | 24.534414° | 22.530705° | 0.173688 |
+
+The default coarse angle drops to 38.981000° compared with
+52.495345° when all positive horizontal trace is attenuated.
+It still fails the default check. Both sparse nominal cases
+pass at 3 s and both half-step cases fail. All four dense
+radii exceed 0.16 m. CUDA was untested and both temporary
+edits were restored.
