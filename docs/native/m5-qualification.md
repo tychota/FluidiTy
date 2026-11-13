@@ -11858,3 +11858,23 @@ back to aligned by 2.30° on coarse and 1.55° on fine.
 The post-collapse grid therefore contributes to the
 full-run phase effect. The native command exits 1.
 CUDA was untested and the fixture edit was restored.
+
+
+#### Shift the grid after the pile forms
+
+On bc8e93b, start all sparse half-step runs with the aligned
+grid. At the accepted 0.75 s sample, recreate the grid with
+the specified vertical offset and carry the particle state
+unchanged. Continue to 3 s.
+
+| Grid width (m) | Aligned | Quarter shift after 0.75 s | Half shift after 0.75 s |
+|---|---:|---:|---:|
+| 0.075 | 22.853454° | 22.763191° | 20.601170° |
+| 0.0625 | 20.811628° | 20.297780° | 19.466541° |
+
+The 0.75 s angles agree within each width. The late half-cell
+shift lowers the final angle by 2.25° on coarse and 1.35° on
+fine. The fine result is within 0.009° of the full-run shift,
+so this part of the phase effect does not require changing
+the collapse. The native command exits 1. CUDA was untested
+and the fixture edit was restored.
