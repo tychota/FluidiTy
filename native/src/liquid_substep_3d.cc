@@ -1100,6 +1100,7 @@ struct LiquidSubstepScheduler3D::Impl {
     STEP_TRY(Enter(LiquidPhysicalStage3D::kParticleUpdate, duration));
     STEP_TRY(owner.Update(
         trial,
+        transaction.committed(),
         duration,
         scene,
         options,
