@@ -8007,3 +8007,29 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Compare a frozen-gradient midpoint deformation update
+
+On 255739e, use four fixed-point iterations of the frozen-gradient
+implicit midpoint equation for compatible-floor deformation.
+Seed the iterations with the Euler trial. An exact midpoint
+solve gives a Cayley rotation for a pure skew gradient. This
+finite-iteration control does not certify exact orthogonality.
+
+| Native case | Envelope at 3 s | Radius (m) |
+|---|---:|---:|
+| Coarse | 34.443076° | 0.167572 |
+| Coarse half-step | 40.522921° | 0.156163 |
+| Fine | 31.453697° | 0.159176 |
+| Fine half-step | 34.674912° | 0.156575 |
+
+The midpoint results are within 0.038° of the quadratic
+frozen-gradient control. Both coarse failures persist.
+The temporary solver edit was restored.
+
+```powershell
+$bin = 'out/pr-m5-sand-affine/out/sand-affine-midpoint-frozen-rotation-bin'
+foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
+  & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
+}
+```
