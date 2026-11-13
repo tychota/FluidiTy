@@ -8070,3 +8070,24 @@ foreach ($case in 'coarse', 'coarse-half', 'fine', 'fine-half') {
   & "$bin/fluidity_m5_dry_scene_tests.exe" --q-sand-symmetric-affine-decay 0 $case all 3
 }
 ```
+
+### Check long-horizon creep with compatible retained translation
+
+Repeat the native fine half-step with the 0.6 energy blend
+through 12 s. The radius stays at 0.157328 m from 3 s onward.
+
+| Time (s) | Envelope |
+|---|---:|
+| 3 | 33.609119° |
+| 6 | 30.140807° |
+| 9 | 27.317809° |
+| 12 | 25.046935° |
+
+The pile loses 31.04 mm of height from 3 to 12 s, compared
+with 33.74 mm at zero blend. It still falls below the angle
+bound by 9 s. The paired cut work residual is 7.43e-17 J.
+The temporary solver edits were restored.
+
+```powershell
+& 'out/pr-m5-sand-affine/out/sand-affine-compatible-energy-long-bin/fluidity_m5_dry_scene_tests.exe' --q-sand-symmetric-affine-decay 0 fine-half all 12
+```
